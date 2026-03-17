@@ -12,6 +12,20 @@ and other trusted local workflows.
 
 ## Release Checklist
 
+0. Ensure npm trusted publishing is configured for both packages:
+
+- `@prisma/streams-local`
+- `@prisma/streams-server`
+
+For each package on npmjs.com, add a GitHub Actions trusted publisher with:
+
+- Organization or user: `prisma`
+- Repository: `streams`
+- Workflow filename: `release.yml`
+
+The workflow cannot publish new versions until both packages trust this
+repository workflow.
+
 1. Run repository verification:
 
 ```bash
