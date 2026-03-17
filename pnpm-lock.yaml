@@ -51,13 +51,9 @@ importers:
         specifier: ^4.0.18
         version: 4.0.18(@types/node@25.1.0)(tsx@4.21.0)(yaml@2.8.2)
 
-  packages/common-utils: {}
+  packages/streams-local: {}
 
-  packages/example:
-    dependencies:
-      '@jkomyno/common-utils':
-        specifier: workspace:*
-        version: link:../common-utils
+  packages/streams-server: {}
 
 packages:
 

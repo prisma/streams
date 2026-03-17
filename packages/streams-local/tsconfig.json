@@ -1,6 +1,6 @@
 {
-  "extends": "../../tsconfig.test.json",
-  "include": ["src", "__tests__"],
+  "extends": "../../tsconfig.src.json",
+  "include": ["src"],
   "compilerOptions": {
     // Specify an output folder for all emitted files.
     "outDir": "build",

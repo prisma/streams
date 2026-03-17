@@ -1,31 +1,33 @@
 {
   "private": false,
-  "name": "@jkomyno/common-utils",
-  "version": "0.1.0",
-  "description": "Demo library that contains common utility functions",
-  "repository": "https://github.com/jkomyno/pnpm-monorepo-example.git",
+  "name": "@prisma/streams-local",
+  "version": "0.0.1",
+  "description": "Stub package reserved for the Prisma Streams local runtime.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prisma/streams.git"
+  },
   "author": {
     "name": "Alberto Schiabel",
     "email": "alberto.schiabel@gmail.com"
   },
+  "license": "MIT",
   "files": [
     "build"
   ],
-
   "main": "./build/index.js",
   "module": "./build/index.mjs",
   "types": "./build/index.d.ts",
-  "__exports-comment": "// Define output files for Node.js export maps (https://nodejs.org/api/packages.html#exports)",
   "exports": {
     ".": {
       "import": {
-        "@jkomyno/source": "./src/index.ts",
+        "@prisma/source": "./src/index.ts",
         "types": "./build/index.d.mts",
         "import": "./build/index.mjs",
         "default": "./build/index.mjs"
       },
       "require": {
-        "@jkomyno/source": "./src/index.ts",
+        "@prisma/source": "./src/index.ts",
         "types": "./build/index.d.ts",
         "import": "./build/index.js",
         "default": "./build/index.js"
@@ -33,15 +35,14 @@
     },
     "./package.json": "./package.json"
   },
-
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "clean": "rimraf build .turbo",
     "build": "tsdown --config-loader unrun",
     "build:watch": "tsdown --config-loader unrun --watch",
     "check:exports": "attw --pack .",
-    "typecheck": "tsc --noEmit -p tsconfig.build.json",
-    "test": "vitest run",
-    "test:unit": "vitest --project unit run",
-    "test:integration": "vitest --project integration run"
+    "typecheck": "tsc --noEmit -p tsconfig.build.json"
   }
 }

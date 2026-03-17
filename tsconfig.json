@@ -3,10 +3,10 @@
   "files": [],
   "references": [
     {
-      "path": "packages/common-utils"
+      "path": "packages/streams-local"
     },
     {
-      "path": "packages/example"
+      "path": "packages/streams-server"
     }
   ]
 }

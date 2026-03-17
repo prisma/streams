@@ -1,9 +1,12 @@
 {
   "private": true,
   "type": "module",
-  "name": "@jkomyno/pnpm-monorepo-example",
-  "description": "Practical example of a `TypeScript` monorepo with `pnpm`, `turborepo`, and `vitest`",
-  "repository": "https://github.com/jkomyno/pnpm-monorepo-example.git",
+  "name": "prisma-streams-workspace",
+  "description": "Workspace for the @prisma/streams-local and @prisma/streams-server stub packages",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prisma/streams.git"
+  },
   "author": {
     "name": "Alberto Schiabel",
     "email": "alberto.schiabel@gmail.com"
@@ -25,7 +28,7 @@
     "bench:watch": "turbo run bench:watch",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install",
-    "release": "pnpm build && pnpm -r --filter='!@jkomyno/example' exec -- npx npm@11 publish --no-git-checks --provenance",
+    "release": "pnpm build && pnpm -r --filter @prisma/streams-local --filter @prisma/streams-server exec -- npx npm@11 publish --no-git-checks --provenance",
     "prepare": "is-ci || husky"
   },
   "devDependencies": {

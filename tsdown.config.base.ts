@@ -24,14 +24,7 @@ export const baseConfig = {
     console.info('Build succeeded!')
   },
 
-  // Built-in validation tools
-  attw: {
-    entrypoints: ['.'],
-    enabled: true,
-    level: 'error',
-    profile: 'node16',
-  },
-
+  // ATTW runs in a separate script because tsdown's built-in pack step breaks on these scoped stubs.
   publint: {
     enabled: true,
     level: 'error',

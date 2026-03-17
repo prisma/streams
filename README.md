@@ -1,101 +1,31 @@
-# pnpm-monorepo-template
+# prisma-streams
 
-[![Github Actions](https://github.com/jkomyno/pnpm-monorepo-template/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/jkomyno/pnpm-monorepo-template/actions/workflows/ci.yaml)
+Monorepo for two npm packages:
 
-> Pragmatic template for a `TypeScript` monorepo with [`pnpm`](https://pnpm.io), [`turborepo`](https://turborepo.org), and [`vitest`](https://vitest.dev/).
+- `@prisma/streams-local`
+- `@prisma/streams-server`
 
-Tested with:
-- **Node.js v24.13.0**
-- **pnpm v10.28.2**
-- **vitest v4.0.18**
+Both packages are intentionally minimal stubs so the names can be published now and implemented later.
 
----------------------------------------------
+## Packages
 
-## Table of Contents
+- `packages/streams-local`: public stub package for the local Prisma Streams runtime.
+- `packages/streams-server`: public stub package for the server Prisma Streams runtime.
 
-- [What's Included](#whats-included)
-- [Available Scripts](#available-scripts)
-- [Publishing (OIDC)](#publishing-oidc)
-- [Test Structure](#test-structure)
-- [FAQ](#faq)
-- [Author](#-author)
-- [Show your support](#-show-your-support)
-- [License](#-license)
+## Scripts
 
-## What's Included
+- `pnpm install`: install workspace dependencies.
+- `pnpm build`: build both publishable packages.
+- `pnpm check:exports`: validate package export maps after build.
+- `pnpm typecheck`: run TypeScript checks for both packages.
+- `pnpm release`: build and publish both packages to npm.
 
-- `pnpm` workspace, whose configuration is stored in [`pnpm-workspace.yaml`](/pnpm-workspace.yaml). Two example packages are included, [`common-utils`](packages/common-utils) and [`example`](packages/example), with the latter importing `common-utils` as a dependency. All local packages are decorated with a `@jkomyno/*` scope (you may want to substitute these instances in the `name` entries of any `package.json` with yours or your company's name).
-- `tsdown` bundler, whose configuration is stored in [`tsdown.config.base.ts`](./tsdown.config.base.ts).
-- `turborepo`, whose configuration is stored in [`turbo.json`](./turbo.json)
-- an example [`Dockerfile`](./Dockerfile.pnpm) that can be built and used as a base image for your Node.js Docker containers.
-- the `vitest` test engine, whose configuration is stored in [`vitest.config.ts`](./vitest.config.ts).
-- opinionated linting setups via [`biome`](https://biomejs.dev/), whose configuration is defined in the [`biome.jsonc`](./biome.jsonc) file.
-- [**Changesets**](https://github.com/changesets/changesets) for versioning and changelogs; the **Release** workflow opens a "Version Packages" PR when changesets land on `main`, and publishes to npm when that PR is merged using [npm trusted publishing (OIDC)](https://docs.npmjs.com/trusted-publishers)—no long-lived tokens. See [Publishing (OIDC)](#publishing-oidc) below.
-- [**pkg.pr.new**](https://pkg.pr.new) for continuous preview releases: each PR gets installable preview packages (install the [GitHub App](https://github.com/apps/pkg-pr-new) on the repo first).
+## Publishing
 
-## Available Scripts
+Each package declares `publishConfig.access: "public"` and starts at version `0.0.1`.
 
-- `pnpm install`: install the dependencies needed for each package.
-- `pnpm build`: typecheck and transpile the local TypeScript packages to JavaScript.
-- `pnpm build:watch`: transpile the local TypeScript packages to JavaScript, and watch for changes.
-- `pnpm check:exports`: check that the `exports` field in the `package.json` files of each exported package is correctly set, using [`@arethetypeswrong/cli`](https://www.npmjs.com/package/@arethetypeswrong/cli).
-- `pnpm typecheck`: run type checks for packages that define a `typecheck` script.
-- `pnpm lint:ci`: check that the code follows the `biome` guidelines.
-- `pnpm lint`: check that the code follows the `biome` guidelines, and override it to follow them if possible.
-- `pnpm lint:fix`: same as `pnpm lint`; included as a clearer alias.
-- `pnpm test:unit`: run unit tests.
-- `pnpm test:integration`: run integration tests.
-- `pnpm test`: run all tests.
-- `pnpm bench`: run benchmarks for packages that define a `bench` script.
-- `pnpm bench:watch`: run benchmarks in watch mode for packages that define `bench:watch`.
-- `pnpm changeset`: add a new changeset (version bump + changelog entry).
-- `pnpm version-packages`: apply changesets (bump versions, update changelogs, then `pnpm install`). Used by the Release workflow.
+Before publishing, make sure the active npm account has permission to publish the `@prisma` scoped packages.
 
-## Publishing (OIDC)
+## Attribution
 
-Releases use [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so you **do not** need an `NPM_TOKEN` secret. You configure npm to trust this repo's workflow once per package:
-
-> Template note: the release workflow is scaffolded but disabled by default in [`release.yaml`](./.github/workflows/release.yaml). After you configure npm trusted publishing (OIDC), remove `if: false` and uncomment the Changesets step in that file.
-
-1. **Publish the package manually once** (if it has never been published), so it exists on npm.
-2. On [npmjs.com](https://www.npmjs.com), open the package → **Package settings** → **Trusted Publisher**.
-3. Choose **GitHub Actions** and set:
-   - **Organization or user**: your GitHub org or username (e.g. `jkomyno`)
-   - **Repository**: this repo name (e.g. `pnpm-monorepo-template`)
-   - **Workflow filename**: `release.yaml` (must match exactly, including extension)
-4. Save. Future publishes from the **Release** workflow will use OIDC; no tokens required.
-
-Repeat for each publishable package in the monorepo. Optional: under **Publishing access**, enable “Require two-factor authentication and disallow tokens” so only the trusted workflow can publish.
-
-## Test Structure
-
-We follow an opinionated convention for storing and running tests.
-All tests should be written in the `__tests__` directory of a local package.
-Moreover, unit tests should be placed in the `__tests__/unit` folder; similarly, integration tests should be placed in the `__tests__/integration` folder.
-This allows for easily running groups of tests (for instance, you might want to run unit tests locally, while deferring integration tests - that will probably need access to external services like Docker containers - to the CI only).
-
-## FAQ
-
-1. How do I add a new package to the local workspace?
-
-- Create a new folder `$packageName` in [`packages/`](packages/). Initialize it with a `tsconfig.json` file (which will reference the [`tsconfig.base.node.json`](./tsconfig.base.node.json) file at the root level) and a `package.json` file similarly to how it's done in the  [`common-utils`](packages/common-utils) package.
-
-2. How do I add a new dependency that should be available to each package in the local workspace?
-
-> `pnpm add -w $dependencyName`
-
-## 👤 Author
-
-Hi, I'm **Alberto Schiabel**, you can follow me on:
-
-- Github: [@jkomyno](https://github.com/jkomyno)
-- Twitter: [@jkomyno](https://twitter.com/jkomyno)
-
-## 🦄 Show your support
-
-Give a ⭐️ if this project helped or inspired you!
-
-## 📝 License
-
-Built with ❤️ by [Alberto Schiabel](https://github.com/jkomyno).<br />
-This project is [MIT](https://github.com/jkomyno/pnpm-monorepo-example/blob/main/LICENSE) licensed.
+This repository was originally scaffolded from the `jkomyno/pnpm-monorepo-template` template.
