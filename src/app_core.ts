@@ -1676,7 +1676,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               "content-type": streamContentType,
               ...baseHeaders,
             };
-            return new Response(outBytes, { status: 200, headers: withNosniff(headers) });
+            const outBody = new Uint8Array(outBytes.byteLength);
+            outBody.set(outBytes);
+            return new Response(outBody, { status: 200, headers: withNosniff(headers) });
           };
 
           if (mode === "sse") {
