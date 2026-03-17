@@ -1,12 +1,15 @@
 {
-  "extends": "./tsconfig.options.json",
-  "files": [],
-  "references": [
-    {
-      "path": "packages/streams-local"
-    },
-    {
-      "path": "packages/streams-server"
-    }
-  ]
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["bun-types"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/bench/**", "src/demo/**", "src/loadtests/**", "test/**"]
 }

@@ -1,0 +1,331 @@
+# Durable Streams HTTP Protocol Spec for the Bun+TypeScript rewrite
+
+This document is a **normative** description of the HTTP behavior the Bun+TypeScript rewrite must implement.
+
+It is designed so an engineer (or coding agent) can implement the server **without access to the Go source code**.
+
+Primary inputs (docs in this repo):
+- `README.md`
+- `ARCHITECTURE.md`
+- `docs/SQLITE_SCHEMA.md`
+- `SCHEMAS.md`
+
+If any of those documents disagree, this spec is the tie-breaker for the rewrite.
+
+---
+
+## 1. Terminology
+
+- **Stream**: an append-only ordered log addressed by a URL path segment (the “stream name”).
+- **Entry**: one appended item. Every entry has:
+  - `offset` (opaque, monotonic)
+  - `append_time` (server-defined, monotonic per stream)
+  - optional `key` (routing key / primary key)
+  - `data` (opaque bytes)
+- **Offset**: an opaque string checkpoint used for resumable reads.
+  - The only special offset is `-1` meaning “before the first entry”.
+- **Routing key**: a per-entry key used for key-filtered reads.
+
+---
+
+## 2. HTTP resources
+
+### 2.1 Stream resource
+
+- `PUT  /v1/stream/{name}` create stream
+- `POST /v1/stream/{name}` append
+- `GET  /v1/stream/{name}` read
+- `HEAD /v1/stream/{name}` metadata
+- `DELETE /v1/stream/{name}` delete
+
+### 2.2 Schema subresource
+
+- `GET  /v1/stream/{name}/_schema` get schema registry
+- `POST /v1/stream/{name}/_schema` update schema registry
+
+### 2.3 Streams collection
+
+- `GET /v1/streams` list streams
+
+System streams (reserved names):
+- `__stream_metrics__` (metrics; see `METRICS.md`)
+- `__stream_stats__` (segment stats; see `internal/STREAM_STATS.md`) (proposal only; not implemented in current Bun+TS server)
+- `__registry__` (stream lifecycle log; recommended to make listing cheap)
+
+---
+
+## 3. Headers
+
+### 3.1 Append request headers
+
+- `Stream-Key: <string>`
+  - Optional routing key for the appended entry (byte mode) or for each entry (JSON mode when allowed).
+  - If the stream has a configured schema routing key extraction (see `SCHEMAS.md`), then **JSON appends must NOT include `Stream-Key`**.
+
+- `Stream-Timestamp: <rfc3339 | rfc3339nano | unix_nanos>`
+  - Optional append-time hint.
+  - The server clamps timestamps so append time is monotonic per stream.
+
+- `Stream-Seq: <string>`
+  - Optional write coordination.
+  - If provided, the server enforces monotonic increase (lexicographic compare).
+
+- `Content-Type: application/json`
+  - If set, the body must be a JSON array and the server appends one entry per array element.
+  - Otherwise, the body is treated as opaque bytes and appended as a single entry.
+
+### 3.2 Create request headers
+
+- `Stream-TTL: <duration>` (example: `24h`, `30m`, `15s`)
+- `Stream-Expires-At: <rfc3339 | rfc3339nano>`
+
+Rules:
+- At most one of `Stream-TTL` and `Stream-Expires-At` may be provided.
+- If provided, the stream becomes unavailable for reads/appends after expiry.
+
+### 3.3 Read request headers
+
+None required.
+
+### 3.4 Response headers
+
+All successful responses should include:
+
+- `Stream-Next-Offset: <offset>`
+  - The checkpoint the client should pass as `offset=` in the next read.
+  - For reads that return no new data, it should equal the request’s `offset` (or the canonicalized equivalent).
+
+Reads should also include:
+
+- `Stream-End-Offset: <offset>`
+  - A checkpoint representing the current end of stream (at response time). Useful for UIs and diagnostics.
+
+Caching headers:
+
+- For non-live reads with bounded responses, return
+  - `ETag: W/"slice:<start>:<next>:key=<keyOrEmpty>:fmt=<fmt>"`
+  - `Cache-Control: immutable, max-age=31536000`
+
+- For live reads (`live=true` or `live=long-poll`), return
+  - `Cache-Control: no-store`
+
+---
+
+## 4. Query parameters
+
+### 4.1 Read parameters
+
+- `offset=<opaque>` (required for normal reads)
+  - `-1` means start.
+
+- `since=<timestamp>` (optional)
+  - Seek by append time (RFC3339/RFC3339Nano or unix nanos).
+  - If both `offset` and `since` are present, **offset wins**.
+
+- `format=json` (optional)
+  - If set, server returns a JSON array of messages.
+  - If absent, server returns raw concatenated bytes (byte mode).
+
+- `live=true` OR `live=long-poll` (optional)
+  - If set and there is no data available after `offset`, the server waits until either:
+    - new data becomes available, or
+    - timeout expires.
+
+- `timeout=<duration>` (optional)
+  - Only meaningful with `live`.
+  - Default: 30s.
+
+- `key=<string>` (optional)
+  - Routing-key filtered read.
+
+Path form (equivalent to `key=`):
+- `GET /v1/stream/{name}/pk/{url-escaped-key}?offset=...`
+
+### 4.2 List streams
+
+- `GET /v1/streams`
+  - Returns a JSON array of stream descriptors.
+  - Must be efficient up to ~1,000,000 streams.
+
+---
+
+## 5. Offsets
+
+### 5.1 Semantics
+
+- Offsets are **opaque strings**.
+- The only special offset is `-1` meaning “start of stream”.
+- A read with `offset=X` returns entries with offsets strictly greater than X.
+- The server returns `Stream-Next-Offset` which the client uses for the next read.
+
+### 5.2 Canonical encoding used by this rewrite
+
+To be cache-friendly and sortable, offsets are encoded as Crockford base32 of a 128-bit tuple:
+
+- `epoch` (u32)
+- `hi` (u32)
+- `lo` (u32)
+- `in_block` (u32)
+
+Canonical representation:
+- 26 characters of Crockford base32 (case-insensitive on input; server outputs uppercase).
+- Left-pad with zero bits so the string is always 26 chars.
+- `-1` is accepted as input shorthand for start-of-stream; response headers are canonical 26-char offsets.
+
+Interpretation used by this rewrite:
+- `epoch` fences offsets across resets/migrations.
+- `hi|lo` together store the 64-bit **logical entry offset** within the epoch.
+- `in_block` is reserved for future sub-entry slicing; the rewrite sets it to 0 for all returned offsets.
+
+This keeps the storage engine’s internal offsets simple (a u64 sequence per epoch) while matching the “128-bit opaque offset” protocol shape.
+
+Implementation requirement:
+- The server must accept both:
+  - `-1`, and
+  - 26-char base32 offsets.
+- Decimal aliases like `0`, `1`, `2`, ... are rejected in this implementation.
+
+---
+
+## 6. Create stream (PUT)
+
+### Request
+
+`PUT /v1/stream/{name}`
+
+Headers:
+- Optional TTL (`Stream-TTL`) or expiry (`Stream-Expires-At`).
+
+### Response
+
+- `201 Created` if created
+- `200 OK` if already exists (idempotent)
+
+---
+
+## 7. Append (POST)
+
+### 7.1 Byte mode append
+
+`POST /v1/stream/{name}` with any content-type except `application/json`.
+
+- Body is treated as opaque bytes.
+- Exactly one entry is appended.
+- Routing key is taken from `Stream-Key` if present.
+
+### 7.2 JSON mode append
+
+`POST /v1/stream/{name}` with `Content-Type: application/json`.
+
+- Body must be a JSON array.
+- Each element in the array is appended as one entry.
+- If the stream has `routingKey` configured in its schema registry:
+  - server extracts routing keys per entry using the JSON pointer
+  - request must not include `Stream-Key`
+
+### 7.3 Timestamps
+
+- If `Stream-Timestamp` is provided, it is used as an append-time hint.
+- The server clamps timestamps so they never go backwards per stream.
+- If omitted, the server assigns append time.
+
+### 7.4 `Stream-Seq`
+
+If `Stream-Seq` is provided:
+- The server treats it as an optimistic concurrency control value.
+- The value is opaque and compared lexicographically.
+- The server rejects the append if `Stream-Seq` is less than or equal to the stream's current value.
+- Rejection should be `409 Conflict` with a helpful error body.
+
+### 7.5 Response
+
+- `200 OK`
+- Must include `Stream-Next-Offset` (the offset of the last appended entry).
+
+---
+
+## 8. Read (GET)
+
+### 8.1 Non-live reads
+
+`GET /v1/stream/{name}?offset=<off>`
+
+- Returns a bounded batch.
+- Must include `Stream-Next-Offset`.
+
+### 8.2 Live reads (long-poll)
+
+`GET /v1/stream/{name}?offset=<off>&live=true&timeout=30s`
+
+- If data exists after `off`, return immediately.
+- Otherwise, wait for new data or timeout.
+- On timeout, return an empty batch with `Stream-Next-Offset` unchanged.
+
+### 8.3 Formats
+
+- Default (raw): response body is concatenated bytes of returned entries.
+- `format=json`: response body is a JSON array of entry payloads (each element is the raw JSON value that was appended).
+
+### 8.4 Key-filtered reads
+
+- `key=<k>` or `/pk/<k>` selects only entries whose routing key equals `<k>`.
+
+Correctness requirement:
+- Key-filtering is exact: false positives from bloom/index must still validate actual key matches.
+
+---
+
+## 9. HEAD (metadata)
+
+`HEAD /v1/stream/{name}`
+
+Should return:
+- `200 OK` if exists
+- `404` if missing
+
+Headers:
+- `Stream-End-Offset`
+- `Content-Type` for the stream if known
+- `Stream-Expires-At` if the stream has TTL
+
+---
+
+## 10. DELETE
+
+`DELETE /v1/stream/{name}`
+
+- Deletes/tombstones the stream.
+- Must be idempotent.
+
+---
+
+## 11. Errors
+
+Recommended status codes:
+
+- `400 Bad Request`: invalid parameters, invalid JSON, invalid schema/lens
+- `404 Not Found`: unknown stream
+- `409 Conflict`: `Stream-Seq` mismatch
+- `410 Gone`: expired stream (or `404` if you prefer hiding existence; choose one and keep it consistent)
+- `413 Payload Too Large`: append body too large
+- `429 Too Many Requests` or `503 Service Unavailable`: backpressure / memory budget exhausted
+- `500 Internal Server Error`: unexpected errors
+
+Errors should be JSON:
+
+```json
+{"error": {"code": "...", "message": "..."}}
+```
+
+---
+
+## 12. Schema endpoints
+
+See `SCHEMAS.md` for the full model.
+
+Minimum behavior required:
+- `GET /_schema` returns the schema registry JSON (or 404 if none and stream missing).
+- `POST /_schema` installs first schema only on empty streams.
+- Later updates require a lens `v -> v+1` and must record a boundary at the current end offset.
+- Appends validate against current schema.
+- Reads promote older events through the lens chain to the current schema.

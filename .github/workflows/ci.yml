@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Result Policy
+        run: bun run check:result-policy
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Node Local Package Smoke
+        run: bun run test:node-local-package
+
+      - name: Bun Server Package Smoke
+        run: bun run test:bun-server-package
+
+      - name: Conformance
+        run: bun run test:conformance
+
+      - name: Local Conformance
+        run: bun run test:conformance:local

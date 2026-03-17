@@ -1,0 +1,619 @@
+import type { SqliteDatabase } from "../sqlite/adapter.ts";
+import { dsError } from "../util/ds_error.ts";
+
+/**
+ * SQLite schema + migrations.
+ *
+ * This rewrite uses SQLite as:
+ *  - WAL (durable append log)
+ *  - local metadata store (streams/segments/manifests/schemas)
+ */
+
+export const SCHEMA_VERSION = 10;
+
+export const DEFAULT_PRAGMAS_SQL = `
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA foreign_keys = ON;
+PRAGMA busy_timeout = 5000;
+PRAGMA temp_store = MEMORY;
+`;
+
+const CREATE_TABLES_V4_SQL = `
+CREATE TABLE IF NOT EXISTS streams (
+  stream TEXT PRIMARY KEY,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+
+  content_type TEXT NOT NULL,
+  stream_seq TEXT NULL,
+  closed INTEGER NOT NULL DEFAULT 0,
+  closed_producer_id TEXT NULL,
+  closed_producer_epoch INTEGER NULL,
+  closed_producer_seq INTEGER NULL,
+  ttl_seconds INTEGER NULL,
+
+  epoch INTEGER NOT NULL,
+  next_offset INTEGER NOT NULL,
+  sealed_through INTEGER NOT NULL,
+  uploaded_through INTEGER NOT NULL,
+  uploaded_segment_count INTEGER NOT NULL DEFAULT 0,
+
+  pending_rows INTEGER NOT NULL,
+  pending_bytes INTEGER NOT NULL,
+
+  -- Logical size of retained rows in the wal table for this stream (payload-only bytes).
+  -- This is explicitly tracked because SQLite file size is high-water and does not shrink
+  -- deterministically after DELETE-based GC/retention trimming.
+  wal_rows INTEGER NOT NULL DEFAULT 0,
+  wal_bytes INTEGER NOT NULL DEFAULT 0,
+
+  last_append_ms INTEGER NOT NULL,
+  last_segment_cut_ms INTEGER NOT NULL,
+  segment_in_progress INTEGER NOT NULL,
+
+  expires_at_ms INTEGER NULL,
+  stream_flags INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS streams_pending_bytes_idx ON streams(pending_bytes);
+CREATE INDEX IF NOT EXISTS streams_last_cut_idx ON streams(last_segment_cut_ms);
+CREATE INDEX IF NOT EXISTS streams_inprog_pending_idx ON streams(segment_in_progress, pending_bytes, last_segment_cut_ms);
+
+CREATE TABLE IF NOT EXISTS wal (
+  id INTEGER PRIMARY KEY,
+  stream TEXT NOT NULL,
+  offset INTEGER NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  payload BLOB NOT NULL,
+  payload_len INTEGER NOT NULL,
+  routing_key BLOB NULL,
+  content_type TEXT NULL,
+  flags INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
+CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
+CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
+-- Partial index for internal companion touch streams (WAL-only, routing-key heavy).
+CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';
+
+CREATE TABLE IF NOT EXISTS segments (
+  segment_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  segment_index INTEGER NOT NULL,
+  start_offset INTEGER NOT NULL,
+  end_offset INTEGER NOT NULL,
+  block_count INTEGER NOT NULL,
+  last_append_ms INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  local_path TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  uploaded_at_ms INTEGER NULL,
+  r2_etag TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stream_segment_meta (
+  stream TEXT PRIMARY KEY,
+  segment_count INTEGER NOT NULL,
+  segment_offsets BLOB NOT NULL,
+  segment_blocks BLOB NOT NULL,
+  segment_last_ts BLOB NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS segments_stream_index_uniq ON segments(stream, segment_index);
+CREATE INDEX IF NOT EXISTS segments_stream_start_idx ON segments(stream, start_offset);
+CREATE INDEX IF NOT EXISTS segments_pending_upload_idx ON segments(uploaded_at_ms);
+
+CREATE TABLE IF NOT EXISTS manifests (
+  stream TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  uploaded_generation INTEGER NOT NULL,
+  last_uploaded_at_ms INTEGER NULL,
+  last_uploaded_etag TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS schemas (
+  stream TEXT PRIMARY KEY,
+  schema_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS producer_state (
+  stream TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, producer_id)
+);
+
+CREATE TABLE IF NOT EXISTS stream_interpreters (
+  stream TEXT PRIMARY KEY,
+  interpreted_through INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+-- Live Query V2 dynamic template registry (per base stream).
+CREATE TABLE IF NOT EXISTS live_templates (
+  stream TEXT NOT NULL,
+  template_id TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  fields_json TEXT NOT NULL,
+  encodings_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  last_seen_at_ms INTEGER NOT NULL,
+  inactivity_ttl_ms INTEGER NOT NULL,
+  active_from_source_offset INTEGER NOT NULL,
+  retired_at_ms INTEGER NULL,
+  retired_reason TEXT NULL,
+  PRIMARY KEY (stream, template_id)
+);
+
+CREATE INDEX IF NOT EXISTS live_templates_stream_entity_state_last_seen_idx
+  ON live_templates(stream, entity, state, last_seen_at_ms);
+CREATE INDEX IF NOT EXISTS live_templates_stream_state_last_seen_idx
+  ON live_templates(stream, state, last_seen_at_ms);
+`;
+
+const CREATE_INDEX_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS index_state (
+  stream TEXT PRIMARY KEY,
+  index_secret BLOB NOT NULL,
+  indexed_through INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS index_runs (
+  run_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  start_segment INTEGER NOT NULL,
+  end_segment INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  filter_len INTEGER NOT NULL,
+  record_count INTEGER NOT NULL,
+  retired_gen INTEGER NULL,
+  retired_at_ms INTEGER NULL
+);
+
+CREATE INDEX IF NOT EXISTS index_runs_stream_idx ON index_runs(stream, level, start_segment);
+`;
+
+const CREATE_TABLES_V4_SUFFIX_SQL = (suffix: string): string => `
+CREATE TABLE streams_${suffix} (
+  stream TEXT PRIMARY KEY,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+
+  content_type TEXT NOT NULL,
+  stream_seq TEXT NULL,
+  closed INTEGER NOT NULL DEFAULT 0,
+  closed_producer_id TEXT NULL,
+  closed_producer_epoch INTEGER NULL,
+  closed_producer_seq INTEGER NULL,
+  ttl_seconds INTEGER NULL,
+
+  epoch INTEGER NOT NULL,
+  next_offset INTEGER NOT NULL,
+  sealed_through INTEGER NOT NULL,
+  uploaded_through INTEGER NOT NULL,
+  uploaded_segment_count INTEGER NOT NULL DEFAULT 0,
+
+  pending_rows INTEGER NOT NULL,
+  pending_bytes INTEGER NOT NULL,
+
+  last_append_ms INTEGER NOT NULL,
+  last_segment_cut_ms INTEGER NOT NULL,
+  segment_in_progress INTEGER NOT NULL,
+
+  expires_at_ms INTEGER NULL,
+  stream_flags INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE wal_${suffix} (
+  id INTEGER PRIMARY KEY,
+  stream TEXT NOT NULL,
+  offset INTEGER NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  payload BLOB NOT NULL,
+  payload_len INTEGER NOT NULL,
+  routing_key BLOB NULL,
+  content_type TEXT NULL,
+  flags INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE segments_${suffix} (
+  segment_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  segment_index INTEGER NOT NULL,
+  start_offset INTEGER NOT NULL,
+  end_offset INTEGER NOT NULL,
+  block_count INTEGER NOT NULL,
+  last_append_ms INTEGER NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  local_path TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  uploaded_at_ms INTEGER NULL,
+  r2_etag TEXT NULL
+);
+
+CREATE TABLE manifests_${suffix} (
+  stream TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  uploaded_generation INTEGER NOT NULL,
+  last_uploaded_at_ms INTEGER NULL,
+  last_uploaded_etag TEXT NULL
+);
+
+CREATE TABLE schemas_${suffix} (
+  stream TEXT PRIMARY KEY,
+  schema_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE producer_state_${suffix} (
+  stream TEXT NOT NULL,
+  producer_id TEXT NOT NULL,
+  epoch INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, producer_id)
+);
+`;
+
+const CREATE_INDEXES_V4_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
+CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
+CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
+CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';
+
+CREATE INDEX IF NOT EXISTS streams_pending_bytes_idx ON streams(pending_bytes);
+CREATE INDEX IF NOT EXISTS streams_last_cut_idx ON streams(last_segment_cut_ms);
+CREATE INDEX IF NOT EXISTS streams_inprog_pending_idx ON streams(segment_in_progress, pending_bytes, last_segment_cut_ms);
+
+CREATE UNIQUE INDEX IF NOT EXISTS segments_stream_index_uniq ON segments(stream, segment_index);
+CREATE INDEX IF NOT EXISTS segments_stream_start_idx ON segments(stream, start_offset);
+CREATE INDEX IF NOT EXISTS segments_pending_upload_idx ON segments(uploaded_at_ms);
+`;
+
+export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean } = {}): void {
+  db.exec(DEFAULT_PRAGMAS_SQL);
+
+  // Some worker processes only need read/write access to existing tables and
+  // should avoid concurrent schema init/migration work.
+  if (opts.skipMigrations) return;
+
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);`);
+
+  const readSchemaVersion = (): number | null => {
+    const row = db.query("SELECT version FROM schema_version LIMIT 1;").get() as any;
+    if (!row) return null;
+    const raw = row.version;
+    if (typeof raw === "bigint") return Number(raw);
+    if (typeof raw === "number") return raw;
+    return Number(raw);
+  };
+
+  const version0 = readSchemaVersion();
+  if (version0 == null) {
+    db.exec(CREATE_TABLES_V4_SQL);
+    db.exec(CREATE_INDEX_TABLES_SQL);
+    db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
+    return;
+  }
+
+  if (version0 === SCHEMA_VERSION) return;
+
+  let version = version0;
+  while (version !== SCHEMA_VERSION) {
+    if (version === 1) {
+      migrateV1ToV4(db);
+    } else if (version === 2) {
+      migrateV2ToV4(db);
+    } else if (version === 3) {
+      migrateV3ToV4(db);
+    } else if (version === 4) {
+      migrateV4ToV5(db);
+    } else if (version === 5) {
+      migrateV5ToV6(db);
+    } else if (version === 6) {
+      migrateV6ToV7(db);
+    } else if (version === 7) {
+      migrateV7ToV8(db);
+    } else if (version === 8) {
+      migrateV8ToV9(db);
+    } else if (version === 9) {
+      migrateV9ToV10(db);
+    } else {
+      throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
+    }
+    const next = readSchemaVersion();
+    if (next == null) throw dsError("schema_version row missing after migration");
+    version = next;
+  }
+}
+
+function migrateV1ToV4(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_TABLES_V4_SUFFIX_SQL("v4"));
+
+    // Streams
+    db.exec(`
+      INSERT INTO streams_v4(
+        stream, created_at_ms, updated_at_ms,
+        content_type, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
+        epoch,
+        next_offset, sealed_through, uploaded_through,
+        pending_rows, pending_bytes,
+        last_append_ms, last_segment_cut_ms, segment_in_progress,
+        expires_at_ms, stream_flags
+      )
+      SELECT
+        stream,
+        CAST(created_at_ns / 1000000 AS INTEGER),
+        CAST(updated_at_ns / 1000000 AS INTEGER),
+        'application/octet-stream',
+        NULL,
+        0,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        epoch,
+        next_seq,
+        sealed_through_seq,
+        uploaded_through_seq,
+        pending_rows,
+        pending_bytes,
+        CAST(last_append_ns / 1000000 AS INTEGER),
+        CAST(last_segment_cut_ns / 1000000 AS INTEGER),
+        segment_in_progress,
+        CASE WHEN expires_at_ns IS NULL THEN NULL ELSE CAST(expires_at_ns / 1000000 AS INTEGER) END,
+        CASE WHEN deleted != 0 THEN 1 ELSE 0 END
+      FROM streams;
+    `);
+
+    // WAL
+    db.exec(`
+      INSERT INTO wal_v4(
+        stream, offset, ts_ms, payload, payload_len, routing_key, content_type, flags
+      )
+      SELECT
+        stream,
+        seq,
+        CAST(append_ns / 1000000 AS INTEGER),
+        payload,
+        payload_len,
+        CASE WHEN routing_key IS NULL THEN NULL ELSE CAST(routing_key AS BLOB) END,
+        CASE WHEN is_json != 0 THEN 'application/json' ELSE NULL END,
+        0
+      FROM wal;
+    `);
+
+    // Segments
+    db.exec(`
+      INSERT INTO segments_v4(
+        segment_id, stream, segment_index, start_offset, end_offset, block_count,
+        last_append_ms, size_bytes, local_path, created_at_ms, uploaded_at_ms, r2_etag
+      )
+      SELECT
+        segment_id,
+        stream,
+        segment_index,
+        start_seq,
+        end_seq,
+        block_count,
+        CAST(last_append_ns / 1000000 AS INTEGER),
+        size_bytes,
+        local_path,
+        CAST(created_at_ns / 1000000 AS INTEGER),
+        CASE WHEN uploaded_at_ns IS NULL THEN NULL ELSE CAST(uploaded_at_ns / 1000000 AS INTEGER) END,
+        NULL
+      FROM segments;
+    `);
+
+    // Manifests
+    db.exec(`
+      INSERT INTO manifests_v4(
+        stream, generation, uploaded_generation, last_uploaded_at_ms, last_uploaded_etag
+      )
+      SELECT
+        stream,
+        generation,
+        uploaded_generation,
+        CASE WHEN last_uploaded_at_ns IS NULL THEN NULL ELSE CAST(last_uploaded_at_ns / 1000000 AS INTEGER) END,
+        last_uploaded_etag
+      FROM manifests;
+    `);
+
+    // Schemas
+    db.exec(`
+      INSERT INTO schemas_v4(stream, schema_json, updated_at_ms)
+      SELECT stream, schema_json, CAST(updated_at_ns / 1000000 AS INTEGER)
+      FROM schemas;
+    `);
+
+    db.exec(`DROP TABLE wal;`);
+    db.exec(`DROP TABLE streams;`);
+    db.exec(`DROP TABLE segments;`);
+    db.exec(`DROP TABLE manifests;`);
+    db.exec(`DROP TABLE schemas;`);
+
+    db.exec(`ALTER TABLE streams_v4 RENAME TO streams;`);
+    db.exec(`ALTER TABLE wal_v4 RENAME TO wal;`);
+    db.exec(`ALTER TABLE segments_v4 RENAME TO segments;`);
+    db.exec(`ALTER TABLE manifests_v4 RENAME TO manifests;`);
+    db.exec(`ALTER TABLE schemas_v4 RENAME TO schemas;`);
+    db.exec(`ALTER TABLE producer_state_v4 RENAME TO producer_state;`);
+
+    db.exec(CREATE_INDEXES_V4_SQL);
+
+    db.exec(CREATE_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 4;`);
+  });
+
+  tx();
+}
+
+function migrateV2ToV4(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE segments ADD COLUMN block_count INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE segments ADD COLUMN last_append_ms INTEGER NOT NULL DEFAULT 0;`);
+
+    db.exec(`ALTER TABLE streams ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/octet-stream';`);
+    db.exec(`ALTER TABLE streams ADD COLUMN stream_seq TEXT NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_id TEXT NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_epoch INTEGER NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_seq INTEGER NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN ttl_seconds INTEGER NULL;`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS producer_state (
+        stream TEXT NOT NULL,
+        producer_id TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        last_seq INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (stream, producer_id)
+      );
+    `);
+    db.exec(CREATE_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 4;`);
+  });
+
+  tx();
+}
+
+function migrateV3ToV4(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/octet-stream';`);
+    db.exec(`ALTER TABLE streams ADD COLUMN stream_seq TEXT NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_id TEXT NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_epoch INTEGER NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN closed_producer_seq INTEGER NULL;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN ttl_seconds INTEGER NULL;`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS producer_state (
+        stream TEXT NOT NULL,
+        producer_id TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        last_seq INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (stream, producer_id)
+      );
+    `);
+    db.exec(CREATE_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 4;`);
+  });
+
+  tx();
+}
+
+function migrateV4ToV5(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 5;`);
+  });
+  tx();
+}
+
+function migrateV5ToV6(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN uploaded_segment_count INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_segment_meta (
+        stream TEXT PRIMARY KEY,
+        segment_count INTEGER NOT NULL,
+        segment_offsets BLOB NOT NULL,
+        segment_blocks BLOB NOT NULL,
+        segment_last_ts BLOB NOT NULL
+      );
+    `);
+    db.exec(`UPDATE schema_version SET version = 6;`);
+  });
+  tx();
+}
+
+function migrateV6ToV7(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_interpreters (
+        stream TEXT PRIMARY KEY,
+        interpreted_through INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+    db.exec(`UPDATE schema_version SET version = 7;`);
+  });
+  tx();
+}
+
+function migrateV7ToV8(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';`);
+    db.exec(`UPDATE schema_version SET version = 8;`);
+  });
+  tx();
+}
+
+function migrateV8ToV9(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS live_templates (
+        stream TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        entity TEXT NOT NULL,
+        fields_json TEXT NOT NULL,
+        encodings_json TEXT NOT NULL,
+        state TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        last_seen_at_ms INTEGER NOT NULL,
+        inactivity_ttl_ms INTEGER NOT NULL,
+        active_from_source_offset INTEGER NOT NULL,
+        retired_at_ms INTEGER NULL,
+        retired_reason TEXT NULL,
+        PRIMARY KEY (stream, template_id)
+      );
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS live_templates_stream_entity_state_last_seen_idx
+        ON live_templates(stream, entity, state, last_seen_at_ms);
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS live_templates_stream_state_last_seen_idx
+        ON live_templates(stream, state, last_seen_at_ms);
+    `);
+    db.exec(`UPDATE schema_version SET version = 9;`);
+  });
+  tx();
+}
+
+function migrateV9ToV10(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN wal_rows INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE streams ADD COLUMN wal_bytes INTEGER NOT NULL DEFAULT 0;`);
+
+    // Backfill current retained WAL rows/bytes per stream so metrics are correct after upgrade.
+    db.exec(`DROP TABLE IF EXISTS temp.wal_stats;`);
+    db.exec(`
+      CREATE TEMP TABLE wal_stats AS
+      SELECT stream, COUNT(*) as rows, COALESCE(SUM(payload_len), 0) as bytes
+      FROM wal
+      GROUP BY stream;
+    `);
+    db.exec(`
+      UPDATE streams
+      SET wal_rows = COALESCE((SELECT rows FROM wal_stats WHERE wal_stats.stream = streams.stream), 0),
+          wal_bytes = COALESCE((SELECT bytes FROM wal_stats WHERE wal_stats.stream = streams.stream), 0);
+    `);
+    db.exec(`DROP TABLE wal_stats;`);
+
+    db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION};`);
+  });
+  tx();
+}
