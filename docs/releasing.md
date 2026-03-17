@@ -71,6 +71,10 @@ gh workflow run release.yml
 The GitHub workflow builds, validates, and publishes both packages with npm
 trusted publishing and provenance enabled.
 
+The workflow currently runs the full repository validation on `macos-latest`
+and package smoke checks on both macOS and Ubuntu. This keeps the release gate
+stable while still verifying that the published package shapes work on Linux.
+
 ## Build Notes
 
 The release pipeline is intentionally split:
