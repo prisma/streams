@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Result } from "better-result";
 import type { Config } from "../config";
@@ -116,13 +116,10 @@ export class TouchInterpreterWorkerPool {
 
   private spawnWorker(idx: number, generation: number = this.generation): void {
     const workerUrl = new URL("./interpreter_worker.ts", import.meta.url);
-    let workerSpec: string | URL = workerUrl;
-    if (workerUrl.protocol === "file:") {
-      const candidate = fileURLToPath(workerUrl);
-      if (!existsSync(candidate)) {
-        const fallback = resolve(process.cwd(), "src/touch/interpreter_worker.ts");
-        if (existsSync(fallback)) workerSpec = pathToFileURL(fallback);
-      }
+    let workerSpec = fileURLToPath(workerUrl);
+    if (!existsSync(workerSpec)) {
+      const fallback = resolve(process.cwd(), "src/touch/interpreter_worker.ts");
+      if (existsSync(fallback)) workerSpec = fallback;
     }
 
     const worker = new Worker(workerSpec, {
