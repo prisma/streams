@@ -30,7 +30,7 @@ See [SECURITY.md](./SECURITY.md) and [docs/AUTH.md](./docs/AUTH.md).
 
 ## Prerequisites
 
-- Bun `>=1.3.6`
+- Bun `>=1.3.11`
 - Node.js `>=22` for local embedding and Node-based consumers
 
 ## Quick Start
