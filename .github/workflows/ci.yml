@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -48,8 +48,8 @@ jobs:
       - name: Local Conformance
         run: bun run test:conformance:local
 
-  linux-smoke:
-    runs-on: ubuntu-latest
+  mac-smoke:
+    runs-on: macos-latest
 
     steps:
       - name: Checkout

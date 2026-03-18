@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   validate:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -42,8 +42,8 @@ jobs:
           bun run test:node-local-package
           bun run test:bun-server-package
 
-  linux-smoke:
-    runs-on: ubuntu-latest
+  mac-smoke:
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -74,7 +74,7 @@ jobs:
     runs-on: macos-latest
     needs:
       - validate
-      - linux-smoke
+      - mac-smoke
 
     steps:
       - name: Checkout
