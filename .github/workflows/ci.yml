@@ -34,7 +34,7 @@ jobs:
         run: bun run typecheck
 
       - name: Test
-        run: bun test
+        run: bun run test:ci
 
       - name: Node Local Package Smoke
         run: bun run test:node-local-package
