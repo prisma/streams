@@ -1,3 +1,6 @@
+import { createRequire } from "node:module";
+import type { HostRuntime } from "../runtime/host_runtime.ts";
+import { detectHostRuntime } from "../runtime/host_runtime.ts";
 import { dsError } from "../util/ds_error.ts";
 export interface SqliteStatement {
   get(...params: any[]): any;
@@ -149,16 +152,37 @@ class NodeDatabaseAdapter implements SqliteDatabase {
 }
 
 let openImpl: ((path: string) => SqliteDatabase) | null = null;
+let openImplRuntime: HostRuntime | null = null;
+let runtimeOverride: HostRuntime | null = null;
+const require = createRequire(import.meta.url);
 
-if (typeof (globalThis as any).Bun !== "undefined") {
-  const { Database } = await import("bun:sqlite");
-  openImpl = (path: string) => new BunDatabaseAdapter(new Database(path));
-} else {
-  const { DatabaseSync } = await import("node:sqlite");
-  openImpl = (path: string) => new NodeDatabaseAdapter(new DatabaseSync(path));
+function selectedRuntime(): HostRuntime {
+  return runtimeOverride ?? detectHostRuntime();
+}
+
+function buildOpenImpl(runtime: HostRuntime): (path: string) => SqliteDatabase {
+  if (runtime === "bun") {
+    const { Database } = require("bun:sqlite") as { Database: new (path: string) => any };
+    return (path: string) => new BunDatabaseAdapter(new Database(path));
+  }
+  const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => any };
+  return (path: string) => new NodeDatabaseAdapter(new DatabaseSync(path));
+}
+
+export function setSqliteRuntimeOverride(runtime: HostRuntime | null): void {
+  runtimeOverride = runtime;
+  if (runtimeOverride && openImplRuntime && runtimeOverride !== openImplRuntime) {
+    openImpl = null;
+    openImplRuntime = null;
+  }
 }
 
 export function openSqliteDatabase(path: string): SqliteDatabase {
+  const runtime = selectedRuntime();
+  if (!openImpl || openImplRuntime !== runtime) {
+    openImpl = buildOpenImpl(runtime);
+    openImplRuntime = runtime;
+  }
   if (!openImpl) throw dsError("sqlite adapter not initialized");
   return openImpl(path);
 }

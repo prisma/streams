@@ -38,6 +38,7 @@ bun run test:conformance:local
 
 ```bash
 bun run test:node-local-package
+bun run test:bun-local-package
 bun run test:bun-server-package
 ```
 
@@ -45,6 +46,7 @@ These tests build the generated package directories, pack them, install them
 into temporary consumers, and verify:
 
 - Node end-to-end usage of `@prisma/streams-local`
+- Bun end-to-end usage of `@prisma/streams-local`, including the live `/touch/*` path
 - Bun CLI startup for `@prisma/streams-server`
 
 3. Build the publishable package directories:
@@ -94,8 +96,7 @@ shapes work on macOS before release.
 
 The release pipeline is intentionally split:
 
-- `scripts/build-local-node.mjs` generates the Node-compatible local runtime
-  artifacts in `dist/`
+- `scripts/build-local-node.mjs` generates the local runtime artifacts in `dist/`
 - `scripts/build-npm-packages.mjs` assembles the publishable package
   directories in `dist/npm/`
 - `@prisma/streams-local` publishes only generated local runtime artifacts,
@@ -107,6 +108,8 @@ For `@prisma/streams-local`, the build intentionally:
 
 - emits shared chunks under `dist/local/` so `index.js` and `daemon.js` do not
   each embed their own copy of the runtime
+- keeps the local runtime Bun-compatible even though the generated bundle
+  targets the Node module surface
 - keeps npm dependencies external instead of rebundling them into the local
   package tarball
 

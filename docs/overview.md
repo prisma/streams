@@ -80,6 +80,11 @@ await server.close();
 The published `@prisma/streams-local` surface is built to run on both Bun and
 Node. The full self-hosted server remains Bun-only.
 
+The package smoke tests cover the local Live path under both host runtimes:
+
+- `bun run test:node-local-package`
+- `bun run test:bun-local-package`
+
 `@prisma/streams-local/internal/daemon` is exported for Prisma CLI integration, but it is intentionally internal and does not carry the same compatibility guarantee as `@prisma/streams-local`.
 
 More detail is in [local-dev.md](./local-dev.md).

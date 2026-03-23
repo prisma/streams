@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Config } from "../config";
+import { detectHostRuntime } from "../runtime/host_runtime.ts";
 import type { SegmenterHooks, SegmenterOptions } from "./segmenter";
 
 export type SegmenterController = {
@@ -63,6 +64,7 @@ export class SegmenterWorkerPool implements SegmenterController {
     const worker = new Worker(workerSpec, {
       workerData: {
         config: this.config,
+        hostRuntime: detectHostRuntime(),
         opts: this.opts,
       },
       type: "module",

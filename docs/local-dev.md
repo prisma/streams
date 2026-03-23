@@ -117,6 +117,7 @@ bun run build:npm-packages
 bun test test/local_server.test.ts
 bun run test:conformance:local
 bun run test:node-local-package
+bun run test:bun-local-package
 ```
 
 See [conformance.md](./conformance.md) for the current upstream suite status.

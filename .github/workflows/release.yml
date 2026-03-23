@@ -38,6 +38,7 @@ jobs:
       - name: Package Smoke Tests
         run: |
           bun run test:node-local-package
+          bun run test:bun-local-package
           bun run test:bun-server-package
 
   mac-smoke:
@@ -64,6 +65,7 @@ jobs:
       - name: Package Smoke Tests
         run: |
           bun run test:node-local-package
+          bun run test:bun-local-package
           bun run test:bun-server-package
 
   publish:

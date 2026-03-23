@@ -22,7 +22,7 @@ function run(cmd, args, cwd) {
   return result.stdout.trim();
 }
 
-const tmpRoot = mkdtempSync(join(tmpdir(), "prisma-streams-node-e2e-"));
+const tmpRoot = mkdtempSync(join(tmpdir(), "prisma-streams-bun-local-e2e-"));
 
 try {
   run("node", ["scripts/build-npm-packages.mjs"], repoRoot);
@@ -42,7 +42,7 @@ try {
     join(consumerDir, "package.json"),
     JSON.stringify(
       {
-        name: "prisma-streams-node-consumer-smoke",
+        name: "prisma-streams-bun-consumer-smoke",
         private: true,
         type: "module",
       },
@@ -51,7 +51,7 @@ try {
     )
   );
 
-  run("npm", ["install", "--no-package-lock", tarballPath], consumerDir);
+  run("bun", ["add", tarballPath], consumerDir);
 
   writeFileSync(
     join(consumerDir, "consumer.mjs"),
@@ -59,7 +59,7 @@ try {
 import { startLocalDurableStreamsServer } from "@prisma/streams-local";
 
 const server = await startLocalDurableStreamsServer({
-  name: "node-e2e",
+  name: "bun-e2e",
   port: 0,
   hostname: "127.0.0.1",
 });
@@ -168,7 +168,7 @@ try {
 `
   );
 
-  run("node", ["consumer.mjs"], consumerDir);
+  run("bun", ["consumer.mjs"], consumerDir);
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }

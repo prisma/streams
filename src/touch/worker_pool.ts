@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Result } from "better-result";
 import type { Config } from "../config";
+import { detectHostRuntime } from "../runtime/host_runtime.ts";
 import type { ProcessRequest, ProcessResult, WorkerMessage } from "./worker_protocol";
 import { dsError } from "../util/ds_error.ts";
 
@@ -123,7 +124,7 @@ export class TouchInterpreterWorkerPool {
     }
 
     const worker = new Worker(workerSpec, {
-      workerData: { config: this.cfg },
+      workerData: { config: this.cfg, hostRuntime: detectHostRuntime() },
       type: "module",
       smol: true,
     } as any);

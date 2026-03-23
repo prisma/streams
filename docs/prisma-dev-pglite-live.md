@@ -51,7 +51,7 @@ Target behavior:
 - Live does not consume raw PostgreSQL WAL bytes directly.
   - Adapters must map database change events into Durable Streams State Protocol.
 - Prisma Streams still does not include a built-in `@prisma/dev` integration.
-  - The published `@prisma/streams-local` package is Node-compatible after build/pack.
+  - The published `@prisma/streams-local` package is package-tested under Node and Bun, including the live `/touch/*` path.
   - The Prisma-owned adapter and lifecycle wiring still need to be implemented.
 
 ## Important Constraint: Use An In-Process Adapter
@@ -322,15 +322,14 @@ Current repo status:
 
 ## Recommended Next Changes In This Repo
 
-1. Make `@prisma/streams-local` a truly Node-safe import target.
-2. Keep an integration test that starts the local server and exercises:
+1. Keep package smoke coverage that starts the local server under both Node and Bun and exercises:
    - `/_schema`
    - `/touch/meta`
    - `/touch/templates/activate`
    - `/touch/wait`
-3. Add a small example adapter contract doc for mapping database changes into
+2. Add a small example adapter contract doc for mapping database changes into
    State Protocol.
-4. Keep the touch config minimal and memory-journal based.
+3. Keep the touch config minimal and memory-journal based.
 
 ## Bottom Line
 

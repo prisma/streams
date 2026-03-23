@@ -37,6 +37,9 @@ jobs:
       - name: Node Local Package Smoke
         run: bun run test:node-local-package
 
+      - name: Bun Local Package Smoke
+        run: bun run test:bun-local-package
+
       - name: Bun Server Package Smoke
         run: bun run test:bun-server-package
 
@@ -69,6 +72,9 @@ jobs:
 
       - name: Node Local Package Smoke
         run: bun run test:node-local-package
+
+      - name: Bun Local Package Smoke
+        run: bun run test:bun-local-package
 
       - name: Bun Server Package Smoke
         run: bun run test:bun-server-package

@@ -2,6 +2,8 @@ import { parentPort, workerData } from "node:worker_threads";
 import { Result } from "better-result";
 import type { Config } from "../config.ts";
 import { SqliteDurableStore } from "../db/db.ts";
+import type { HostRuntime } from "../runtime/host_runtime.ts";
+import { setSqliteRuntimeOverride } from "../sqlite/adapter.ts";
 import { initConsoleLogging } from "../util/log.ts";
 import type { ProcessRequest } from "./worker_protocol.ts";
 import { interpretRecordToChanges } from "./engine.ts";
@@ -10,8 +12,11 @@ import { isTouchEnabled } from "./spec.ts";
 
 initConsoleLogging();
 
-const data = workerData as { config: Config };
+const data = workerData as { config: Config; hostRuntime?: HostRuntime };
 const cfg = data.config;
+// Bun worker_threads can miss the Bun globals that the main thread sees.
+// Use the parent host runtime hint before the worker opens SQLite.
+setSqliteRuntimeOverride(data.hostRuntime ?? null);
 // The main server process initializes/migrates schema; workers should avoid
 // concurrent migrations on the same sqlite file.
 const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes, skipMigrations: true });
