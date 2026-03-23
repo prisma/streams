@@ -43,7 +43,6 @@ and tooling.
 - [assumptions.md](./assumptions.md) — protocol assumptions that must remain covered by tests
 - [pitfalls-and-guardrails.md](./pitfalls-and-guardrails.md) — implementation guardrails for high-risk areas
 - [prisma-dev-pglite-live.md](./prisma-dev-pglite-live.md) — Prisma local Postgres embedding guidance
-- [lens/legacy-go-notes.md](./lens/legacy-go-notes.md) — legacy Go lens notes retained for reference
 
 Repository policy note:
 - `better-result` is mandatory for fallible development paths in this

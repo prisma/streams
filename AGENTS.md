@@ -16,7 +16,7 @@ These instructions apply to the whole repository.
 - Core architecture and storage: [docs/architecture.md](docs/architecture.md), [docs/sqlite-schema.md](docs/sqlite-schema.md), [docs/tiered-index.md](docs/tiered-index.md)
 - Live / touch: [docs/live.md](docs/live.md), [docs/prisma-dev-pglite-live.md](docs/prisma-dev-pglite-live.md)
 - Local mode and package surfaces: [docs/local-dev.md](docs/local-dev.md), [docs/overview.md](docs/overview.md), [docs/releasing.md](docs/releasing.md)
-- Schemas and lenses: [docs/schemas.md](docs/schemas.md), [docs/durable-lens-v1-schema.md](docs/durable-lens-v1-schema.md), [docs/lens/legacy-go-notes.md](docs/lens/legacy-go-notes.md)
+- Schemas and lenses: [docs/schemas.md](docs/schemas.md), [docs/durable-lens-v1-schema.md](docs/durable-lens-v1-schema.md)
 - Ops, recovery, and performance: [docs/operational-notes.md](docs/operational-notes.md), [docs/recovery-integrity-runbook.md](docs/recovery-integrity-runbook.md), [docs/metrics.md](docs/metrics.md), [docs/live-load-tests.md](docs/live-load-tests.md), [docs/segment-performance.md](docs/segment-performance.md), [docs/routing-key-performance.md](docs/routing-key-performance.md)
 - Security posture: [docs/auth.md](docs/auth.md), [docs/security.md](docs/security.md)
 - Workflow and validation: [docs/contributing.md](docs/contributing.md), [docs/conformance.md](docs/conformance.md), [docs/better-result-adoption.md](docs/better-result-adoption.md)
