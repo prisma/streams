@@ -30,13 +30,17 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function copyTextFile(src, dest) {
+  writeFileSync(dest, readFileSync(src));
+}
+
 function copyCommonDocs(destDir, readmeText) {
   mkdirSync(destDir, { recursive: true });
   writeFileSync(join(destDir, "README.md"), readmeText);
   cpSync(join(repoRoot, "LICENSE"), join(destDir, "LICENSE"));
-  cpSync(join(docsDir, "security.md"), join(destDir, "SECURITY.md"));
-  cpSync(join(docsDir, "contributing.md"), join(destDir, "CONTRIBUTING.md"));
-  cpSync(join(docsDir, "code-of-conduct.md"), join(destDir, "CODE_OF_CONDUCT.md"));
+  copyTextFile(join(docsDir, "security.md"), join(destDir, "SECURITY.md"));
+  copyTextFile(join(docsDir, "contributing.md"), join(destDir, "CONTRIBUTING.md"));
+  copyTextFile(join(docsDir, "code-of-conduct.md"), join(destDir, "CODE_OF_CONDUCT.md"));
 }
 
 function copyDir(src, dest, filter = () => true) {
