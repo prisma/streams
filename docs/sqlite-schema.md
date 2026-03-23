@@ -1,6 +1,7 @@
-# SQLite WAL + Metadata Schema (Bun+TypeScript rewrite)
+# Prisma Streams SQLite Schema
 
-This rewrite uses **SQLite as the durable WAL** and as the local metadata store.
+This implementation uses **SQLite as the durable WAL** and as the local
+metadata store.
 The goal is to:
 - minimize custom file formats
 - keep memory bounded under load

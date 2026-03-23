@@ -1,4 +1,4 @@
-# better-result Adoption Plan
+# Prisma Streams Better-Result Adoption Plan
 
 ## Decision
 
@@ -20,7 +20,7 @@ Implemented in this branch:
 - Added `better-result` dependency and converted runtime fallible paths to `Result<T, E>`-first handling.
 - Migrated ingest and DB append outcomes to `Result` and updated callers/tests.
 - Added Result-returning parser variants (`offset`, `duration`, `timestamp`) and switched request parsing to typed error mapping.
-- Added repository policy sections in `README.md` and `docs/README.md` mandating `better-result` for fallible development paths.
+- Added repository policy sections in `overview.md` and `index.md` mandating `better-result` for fallible development paths.
 
 Test status:
 - Pre-change baseline (`bun test`): `122 pass`, `1 skip`, `0 fail`.
@@ -177,11 +177,10 @@ Files:
 - `experiments/demo/live_fields_app.ts`
 - `experiments/demo/wal_demo_ingest.ts`
 - `experiments/demo/wal_demo_subscribe.ts`
-- `experiments/loadtests/live_v2/common.ts`
-- `experiments/loadtests/live_v2/selective_shedding.ts`
-- `experiments/loadtests/live_v2/write_path.ts`
-- `experiments/loadtests/live_v2/read_path.ts`
-- `experiments/loadtests/live_v2/disk_retention.ts`
+- `experiments/loadtests/live/common.ts`
+- `experiments/loadtests/live/selective_shedding.ts`
+- `experiments/loadtests/live/write_path.ts`
+- `experiments/loadtests/live/read_path.ts`
 - `experiments/bench/synth.ts`
 - `experiments/bench/segment_cache_perf.ts`
 - `experiments/bench/routing_key_perf.ts`
@@ -234,11 +233,10 @@ The following files currently contain `throw new Error` and/or `catch (...)` and
 - `src/index/run_format.ts`
 - `src/ingest.ts`
 - `src/lens/lens.ts`
-- `experiments/loadtests/live_v2/common.ts`
-- `experiments/loadtests/live_v2/disk_retention.ts`
-- `experiments/loadtests/live_v2/read_path.ts`
-- `experiments/loadtests/live_v2/selective_shedding.ts`
-- `experiments/loadtests/live_v2/write_path.ts`
+- `experiments/loadtests/live/common.ts`
+- `experiments/loadtests/live/read_path.ts`
+- `experiments/loadtests/live/selective_shedding.ts`
+- `experiments/loadtests/live/write_path.ts`
 - `src/local/cli.ts`
 - `src/local/daemon.ts`
 - `src/local/http.ts`

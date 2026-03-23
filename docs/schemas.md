@@ -1,4 +1,4 @@
-# Schemas & Lenses (Bun+TS server)
+# Prisma Streams Schemas And Lenses
 
 Durable Streams supports **per‑stream JSON Schemas** and **schema evolution** via
 **lenses**. Schemas and lenses are stored in SQLite as a per‑stream registry.

@@ -1,4 +1,4 @@
-# Authentication And Authorization
+# Prisma Streams Authentication And Authorization
 
 Status: **not implemented**.
 

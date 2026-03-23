@@ -119,4 +119,4 @@ bun run test:conformance:local
 bun run test:node-local-package
 ```
 
-See [docs/CONFORMANCE.md](./CONFORMANCE.md) for the current upstream suite status.
+See [conformance.md](./conformance.md) for the current upstream suite status.

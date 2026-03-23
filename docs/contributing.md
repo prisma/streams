@@ -1,10 +1,10 @@
-# Welcome to Contributing to Prisma Streams
+# Contributing to Prisma Streams
 
 Welcome. This repository is being prepared for public production use, and contributions that improve correctness, operator experience, and protocol clarity are useful.
 
 This file follows the same general baseline Prisma uses in [`prisma/prisma`](https://github.com/prisma/prisma), but is scoped to this repository and its Bun + TypeScript workflow.
 
-Please read the [Code of Conduct](./CODE_OF_CONDUCT.md) before participating.
+Please read the [Code of Conduct](./code-of-conduct.md) before participating.
 
 ## Contributing Via Comments
 
@@ -44,7 +44,7 @@ Notes:
 
 - `bun test` is the current fast repository baseline.
 - `test:conformance:local` and `test:conformance` run the upstream black-box suite against local and full server modes.
-- The current upstream conformance status is tracked in [docs/CONFORMANCE.md](./docs/CONFORMANCE.md).
+- The current upstream conformance status is tracked in [conformance.md](./conformance.md).
 
 ## Development Expectations
 
@@ -52,7 +52,7 @@ Notes:
 - Add or update tests for behavior changes.
 - Update documentation when public behavior, deployment guidance, or package surfaces change.
 - Do not commit generated archives, local databases, `.DS_Store`, or other workstation artifacts.
-- Follow the repository `better-result` policy. The current automated policy check covers `src/`; see [docs/BETTER_RESULT_ADOPTION.md](./docs/BETTER_RESULT_ADOPTION.md).
+- Follow the repository `better-result` policy. The current automated policy check covers `src/`; see [better-result-adoption.md](./better-result-adoption.md).
 
 ## Pull Requests
 
@@ -65,4 +65,4 @@ Before opening a pull request:
 
 ## Security Reports
 
-Do not open public issues for suspected vulnerabilities. Follow [SECURITY.md](./SECURITY.md).
+Do not open public issues for suspected vulnerabilities. Follow [security.md](./security.md).

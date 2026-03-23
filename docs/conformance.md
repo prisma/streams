@@ -1,4 +1,4 @@
-# Conformance Tests
+# Prisma Streams Conformance
 
 This repository uses two layers of protocol verification:
 

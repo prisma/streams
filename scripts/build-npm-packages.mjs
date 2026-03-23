@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const docsDir = join(repoRoot, "docs");
 const distDir = join(repoRoot, "dist");
 const distNpmDir = join(distDir, "npm");
 const localPackageDir = join(distNpmDir, "streams-local");
@@ -32,9 +33,10 @@ function writeJson(path, value) {
 function copyCommonDocs(destDir, readmeText) {
   mkdirSync(destDir, { recursive: true });
   writeFileSync(join(destDir, "README.md"), readmeText);
-  for (const name of ["LICENSE", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md"]) {
-    cpSync(join(repoRoot, name), join(destDir, name));
-  }
+  cpSync(join(repoRoot, "LICENSE"), join(destDir, "LICENSE"));
+  cpSync(join(docsDir, "security.md"), join(destDir, "SECURITY.md"));
+  cpSync(join(docsDir, "contributing.md"), join(destDir, "CONTRIBUTING.md"));
+  cpSync(join(docsDir, "code-of-conduct.md"), join(destDir, "CODE_OF_CONDUCT.md"));
 }
 
 function copyDir(src, dest, filter = () => true) {
@@ -114,8 +116,8 @@ This package contains the Bun-only self-hosted Prisma Streams server.
 ## What It Is
 
 \`@prisma/streams-server\` is the full Prisma Streams runtime: SQLite WAL
-storage, segmenting, upload support, indexing, recovery, and the live query
-touch system.
+storage, segmenting, upload support, indexing, recovery, and the live / touch
+system.
 
 It is intended for Bun-based self-hosted deployment. For trusted local
 development embedding, use \`@prisma/streams-local\` instead.
@@ -147,7 +149,7 @@ For R2 mode set:
 - \`DURABLE_STREAMS_R2_ACCESS_KEY_ID\`
 - \`DURABLE_STREAMS_R2_SECRET_ACCESS_KEY\`
 
-See ../README.md and ../docs/CONFORMANCE.md in the repository for the full
+See ../docs/overview.md and ../docs/conformance.md in the repository for the full
 runtime documentation.
 `;
 

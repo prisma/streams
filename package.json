@@ -10,7 +10,7 @@
   "bugs": {
     "url": "https://github.com/prisma/streams/issues"
   },
-  "homepage": "https://github.com/prisma/streams#readme",
+  "homepage": "https://github.com/prisma/streams/tree/main/docs",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "bun@1.3.6",
@@ -19,11 +19,8 @@
     "node": ">=22.0.0"
   },
   "files": [
-    "README.md",
     "LICENSE",
-    "SECURITY.md",
-    "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md",
+    "docs/",
     "tsconfig.json",
     "tsconfig.build.types.json",
     "scripts/check-result-policy.sh",

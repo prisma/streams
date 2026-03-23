@@ -1,4 +1,4 @@
-# Pitfalls & Guardrails (Bun+TypeScript + SQLite WAL)
+# Prisma Streams Pitfalls And Guardrails
 
 This document lists non-negotiable guardrails to avoid deadlocks/wedges, memory blowups, and multi-minute stalls.
 
@@ -146,4 +146,3 @@ Add tests that:
 - simulate slow SQLite queries
 - verify queues eventually drain and throughput recovers
 - verify other streams continue to make progress
-

@@ -1,8 +1,12 @@
 # Prisma Dev + Prisma Streams Live Integration
 
 This document describes how to run Prisma Streams alongside local Prisma Postgres
-(`prisma dev` / `@prisma/dev`) so Live Query V2 is always enabled and fed from
+(`prisma dev` / `@prisma/dev`) so Live is always enabled and fed from
 the local PGlite-backed database.
+
+For the generic live integration model, request shapes, and `/touch/*`
+API contract, start with [`./live.md`](./live.md). This document focuses on
+the Prisma local-development embedding story.
 
 Important:
 
@@ -31,7 +35,7 @@ Target behavior:
   - no segmenting
   - no object-store uploads
   - no credentials required
-- Live Query V2 works in local mode.
+- Live works in local mode.
 - The intended live-query flow works locally:
   - `POST /v1/stream/<stream>/touch/templates/activate`
   - `GET /v1/stream/<stream>/touch/meta`
@@ -44,7 +48,7 @@ Target behavior:
 ### Not built in yet
 
 - Prisma Streams does not include a built-in PGlite WAL/change adapter.
-- Live Query V2 does not consume raw PostgreSQL WAL bytes directly.
+- Live does not consume raw PostgreSQL WAL bytes directly.
   - Adapters must map database change events into Durable Streams State Protocol.
 - Prisma Streams still does not include a built-in `@prisma/dev` integration.
   - The published `@prisma/streams-local` package is Node-compatible after build/pack.
@@ -111,30 +115,21 @@ The interpreter should be installed once at startup:
     "format": "durable.streams/state-protocol/v1",
     "touch": {
       "enabled": true,
-      "storage": "memory",
       "onMissingBefore": "coarse"
     }
   }
 }
 ```
 
-Recommended default:
-
-- `storage: "memory"`
-
-Why:
+Recommended shape:
 
 - fully local
-- no extra persisted touch stream
 - no object store
 - best fit for local dev invalidation
 
-Use `storage: "sqlite"` only if you explicitly want persisted touch history and
-the `/touch` / `/touch/pk/...` read endpoints for debugging.
-
 ## State Protocol Mapping
 
-Prisma Streams Live Query V2 consumes State Protocol records, not raw WAL.
+Prisma Streams Live consumes State Protocol records, not raw WAL.
 
 Each committed database change should be normalized into a JSON record like:
 
@@ -252,7 +247,6 @@ async function startPrismaDevWithLive(name: string) {
         format: "durable.streams/state-protocol/v1",
         touch: {
           enabled: true,
-          storage: "memory",
           onMissingBefore: "coarse",
         },
       },
@@ -336,7 +330,7 @@ Current repo status:
    - `/touch/wait`
 3. Add a small example adapter contract doc for mapping database changes into
    State Protocol.
-4. Keep `touch.storage = "memory"` as the local default.
+4. Keep the touch config minimal and memory-journal based.
 
 ## Bottom Line
 
@@ -360,6 +354,6 @@ What still needs to be added around it:
 - Prisma local development docs:
   - https://www.prisma.io/docs/postgres/database/local-development#manage-local-prisma-postgres-programmatically
 - Prisma Streams live semantics:
-  - ../LIVE.md
+  - ./live.md
 - Prisma Streams local server:
   - ./local-dev.md

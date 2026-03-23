@@ -1,4 +1,4 @@
-# Segment Performance (Bun+TS)
+# Prisma Streams Segment Performance
 
 Status: **informational**. This repo does not ship a dedicated segment perf tool yet.
 

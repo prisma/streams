@@ -1,20 +1,21 @@
-# Live Query V2 Load Tests (Bun CLIs)
+# Prisma Streams Live Load Tests
 
-These are black-box HTTP load generators for the **Live Query V2 touch system** described in `LIVE.md`.
+These are black-box HTTP load generators for the **live / touch system**
+described in `live.md`.
 
 They run against a Durable Streams server process over HTTP, and they intentionally stress real bottlenecks:
 
 - touch interpreter throughput (CPU, JSON parse, key derivation)
 - touch coalescing behavior
-- base SQLite WAL growth + retention/GC (touch WAL only exists in legacy `sqlite` touch storage mode)
+- base SQLite WAL growth + retention/GC
 - `/touch/wait` concurrency + fanout behavior
-- `/touch/wait` keyset size overhead (in legacy `sqlite` mode this can surface SQLite parameter limits; in `memory` mode it’s mostly CPU/broad-waiter scan cost)
+- `/touch/wait` keyset size overhead
 - template activation / last-seen / retirement / eviction under load
 - live metrics stream overhead (`live.metrics`)
 
 Note:
 
-- These CLIs configure touch storage as `interpreter.touch.storage="memory"` by default (memory-only touch journal; no SQLite touch rows, no R2 touch uploads).
+- These CLIs configure the touch interpreter for the in-memory journal used by Live.
 
 ## Prereqs
 
@@ -42,7 +43,7 @@ curl -s http://127.0.0.1:8080/health
 
 ## Test 1: Write-Path Scalability
 
-Script: `experiments/loadtests/live_v2/write_path.ts`
+Script: `experiments/loadtests/live/write_path.ts`
 
 What it stresses:
 
@@ -55,7 +56,7 @@ What it stresses:
 ### Run (High cardinality: worst-case coalescing)
 
 ```bash
-bun run experiments/loadtests/live_v2/write_path.ts \
+bun run experiments/loadtests/live/write_path.ts \
   --stream load.live.write \
   --mode high-cardinality \
   --reset
@@ -64,7 +65,7 @@ bun run experiments/loadtests/live_v2/write_path.ts \
 ### Run (Low cardinality: best-case coalescing)
 
 ```bash
-bun run experiments/loadtests/live_v2/write_path.ts \
+bun run experiments/loadtests/live/write_path.ts \
   --stream load.live.write \
   --mode low-cardinality \
   --reset
@@ -104,7 +105,7 @@ Suggested pass/fail (tune for your hardware):
 
 ## Test 2: Read-Path Scalability
 
-Script: `experiments/loadtests/live_v2/read_path.ts`
+Script: `experiments/loadtests/live/read_path.ts`
 
 What it stresses:
 
@@ -124,7 +125,7 @@ Implementation note:
 Low fanout (touch a small fraction of the watched key-domain):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --scenario small \
   --concurrency 200 \
@@ -137,7 +138,7 @@ bun run experiments/loadtests/live_v2/read_path.ts \
 High fanout (invalidate a larger fraction of the watched key-domain):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --scenario small \
   --concurrency 200 \
@@ -160,7 +161,7 @@ This makes wakeups much more broadcast-y (any posts write touches the same table
 1. Setup once (create stream, enable touch, activate templates):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --scenario small \
   --duration-seconds 1 \
@@ -172,7 +173,7 @@ bun run experiments/loadtests/live_v2/read_path.ts \
 2. Terminal A: waiters only (no writer, no metrics):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --role waiters \
   --scenario small \
@@ -193,7 +194,7 @@ bun run experiments/loadtests/live_v2/read_path.ts \
 3. Terminal B: writer + metrics (no waiters):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --role writer \
   --scenario small \
@@ -216,7 +217,7 @@ Notes:
 If you want metrics only (no writer, no waiters):
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --role metrics \
   --duration-seconds 60 \
@@ -227,7 +228,7 @@ bun run experiments/loadtests/live_v2/read_path.ts \
 ### Scenario 2: Fewer waiters, huge key sets (worst-case keys-per-wait)
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --scenario huge \
   --concurrency 1000 \
@@ -248,7 +249,7 @@ This should surface:
 Accelerated TTL example:
 
 ```bash
-bun run experiments/loadtests/live_v2/read_path.ts \
+bun run experiments/loadtests/live/read_path.ts \
   --stream load.live.read \
   --scenario churn \
   --concurrency 5000 \
@@ -263,95 +264,6 @@ bun run experiments/loadtests/live_v2/read_path.ts \
 ```
 
 This scenario activates a near-cap template set across multiple entities and then keeps activating + heartbeating a moving window.
-
-## Test 3: Disk, Retention, Stale Cursor, and GC Correctness
-
-Script: `experiments/loadtests/live_v2/disk_retention.ts`
-
-What it stresses:
-
-- touch cursor behavior and staleness:
-  - `memory` mode: epoch-based stale cursor on restart/eviction (`stale=true` when epoch mismatches)
-  - `sqlite` mode (legacy): retention trimming + stale offsets (`stale=true` when `sinceTouchOffset < oldestAvailableTouchOffset`)
-- base WAL GC gating correctness when interpreter lags (WAL is not GC'd past `interpretedThrough`)
-- catch-up behavior: when interpreter later catches up, base WAL GC resumes without requiring a new upload event
-
-### Test 3A: Cursor rollover + stale cursor correctness
-
-In `memory` touch storage mode, retention-based staleness does not apply. To test `stale=true`, you must restart the DS process (epoch changes).
-
-```bash
-bun run experiments/loadtests/live_v2/disk_retention.ts \
-  --scenario 3a \
-  --stream load.live.disk.retention \
-  --duration-seconds 60 \
-  --writer-rate 500 \
-  --behind-ms 30000 \
-  --restart-pause-ms 30000 \
-  --reset
-```
-
-When it prints:
-
-```text
-[disk] subscriber B: restart pause 30000ms (restart DS now to test epoch-stale)
-```
-
-Restart DS during that pause (same `DS_ROOT` and `PORT`), then let the test continue.
-
-Optional: if the DS server is running locally and you know `DS_ROOT`, pass it so the CLI can sample on-disk size:
-
-```bash
-  --ds-root ./ds-data
-```
-
-Expected signals:
-
-- `GET /v1/stream/<stream>/touch/meta` shows the cursor/generation advancing under touch traffic.
-- Subscriber A behaves normally (touched/timeouts; never stale).
-- Subscriber B receives `stale=true` after restart, and recovery works by resetting the cursor and continuing.
-
-### Test 3B: Base WAL GC gating under interpreter lag
-
-This test is run in two phases against the **same stream**.
-
-Phase 1: start the server with interpreter effectively disabled/throttled (example):
-
-- `DS_INTERPRETER_WORKERS=0` (if supported), or
-- `DS_INTERPRETER_CHECK_MS=10000` with tiny batch sizes
-
-Then generate base WAL growth while the interpreter is behind:
-
-```bash
-bun run experiments/loadtests/live_v2/disk_retention.ts \
-  --scenario 3b-lag \
-  --stream load.live.disk.gc \
-  --duration-seconds 60 \
-  --writer-rate 1000 \
-  --reset
-```
-
-Expected signals:
-
-- `live.metrics` `live.tick` includes `base.uploadedThrough` advancing (uploads happening) while `base.interpretedThrough` lags.
-- `base.gcThrough` stays pinned to the interpreter checkpoint (min(uploadedThrough, interpretedThrough)).
-- `base.walOldestOffset` does not advance past `base.gcThrough`.
-
-Phase 2: restart the server with interpreter enabled + fast batch settings, then wait for catch-up + GC progress:
-
-```bash
-bun run experiments/loadtests/live_v2/disk_retention.ts \
-  --scenario 3b-catchup \
-  --stream load.live.disk.gc \
-  --max-wait-seconds 300 \
-  --no-setup \
-  --no-activate-templates
-```
-
-Expected signals:
-
-- `base.backlogSourceOffsets` falls toward 0.
-- `base.walOldestOffset` advances (WAL GC resumes as the interpreter catches up).
 
 ### Pass/Fail targets (suggested)
 
@@ -369,7 +281,7 @@ Scenario 3 (churn):
 
 ## Test 4: Selective Fine Shedding (Policy B)
 
-Script: `experiments/loadtests/live_v2/selective_shedding.ts`
+Script: `experiments/loadtests/live/selective_shedding.ts`
 
 What it stresses:
 
@@ -405,7 +317,7 @@ Behavior notes:
 ### Setup
 
 ```bash
-bun run experiments/loadtests/live_v2/selective_shedding.ts \
+bun run experiments/loadtests/live/selective_shedding.ts \
   --role setup \
   --url http://127.0.0.1:8080 \
   --stream load.live.shedding \
@@ -420,7 +332,7 @@ bun run experiments/loadtests/live_v2/selective_shedding.ts \
 Terminal 1 (writer):
 
 ```bash
-bun run experiments/loadtests/live_v2/selective_shedding.ts \
+bun run experiments/loadtests/live/selective_shedding.ts \
   --role writer \
   --url http://127.0.0.1:8080 \
   --config ./tmp/test4_config.json \
@@ -435,7 +347,7 @@ bun run experiments/loadtests/live_v2/selective_shedding.ts \
 Terminal 2 (appkit):
 
 ```bash
-bun run experiments/loadtests/live_v2/selective_shedding.ts \
+bun run experiments/loadtests/live/selective_shedding.ts \
   --role appkit \
   --url http://127.0.0.1:8080 \
   --config ./tmp/test4_config.json \
@@ -456,7 +368,7 @@ bun run experiments/loadtests/live_v2/selective_shedding.ts \
 Terminal 3 (metrics):
 
 ```bash
-bun run experiments/loadtests/live_v2/selective_shedding.ts \
+bun run experiments/loadtests/live/selective_shedding.ts \
   --role metrics \
   --url http://127.0.0.1:8080 \
   --config ./tmp/test4_config.json \
@@ -469,7 +381,7 @@ Terminal 4 (optional observer): `tail -f` the generated summary JSON files in `.
 ### Single command (recommended for reproducible local runs)
 
 ```bash
-bun run experiments/loadtests/live_v2/selective_shedding.ts \
+bun run experiments/loadtests/live/selective_shedding.ts \
   --role all \
   --url http://127.0.0.1:8080 \
   --stream load.live.shedding \

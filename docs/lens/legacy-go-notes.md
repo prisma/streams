@@ -1,6 +1,7 @@
-# durable-lens (spec + legacy Go notes)
+# Prisma Streams Durable Lens Legacy Go Notes
 
-Status: The Bun+TS server implements the lens spec in TypeScript (`src/lens/`).
+Status: The Prisma Streams server implements the lens spec in TypeScript
+(`src/lens/`).
 This file contains **legacy Go‑specific notes** that are kept for reference.
 
 A small Go package for applying **declarative schema-evolution lenses** to JSON
@@ -381,4 +382,5 @@ errors, but you lose the strong correctness contract.
 
 ## Testing
 
-See [TESTING.md](./TESTING.md) for a detailed strategy and how to run tests.
+These notes came from the legacy Go runtime. The original `TESTING.md`
+reference is not part of this repository.

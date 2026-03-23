@@ -1,6 +1,7 @@
-# Metrics Stream: __stream_metrics__
+# Prisma Streams Metrics Stream
 
-This document describes the **metrics events actually emitted by this Bun+TS server**.
+This document describes the **metrics events actually emitted by this Bun +
+TypeScript server**.
 The server appends interval metrics to the `__stream_metrics__` stream as JSON.
 
 ## Emission

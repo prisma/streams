@@ -1,4 +1,4 @@
-# Recovery and Integrity Runbook
+# Prisma Streams Recovery And Integrity Runbook
 
 This runbook explains how to operate, recover, and validate Durable Streams while preserving correctness.
 
@@ -9,11 +9,11 @@ It is written for operators and developers running either:
 
 Use this document with:
 
-- `README.md` (commands/config)
-- `ARCHITECTURE.md` (component model)
-- `docs/SQLITE_SCHEMA.md` (storage invariants)
-- `docs/local-dev.md` (local server lifecycle)
-- `docs/CONFORMANCE.md` (protocol verification)
+- `overview.md` (commands and configuration)
+- `architecture.md` (component model)
+- `sqlite-schema.md` (storage invariants)
+- `local-dev.md` (local server lifecycle)
+- `conformance.md` (protocol verification)
 
 ## 1. Correctness model
 
@@ -101,16 +101,14 @@ This preserves immutable storage while returning current-schema payloads.
 
 Touch APIs exist only when interpreter config has `touch.enabled=true`.
 
-Memory touch mode:
+The live system:
 
-- uses in-memory journal cursors (epoch + generation)
-- supports stale detection (`stale=true`) across restarts/epoch changes
-- can degrade to broader wakeups under pressure, but is designed to avoid missed invalidations
-
-SQLite touch mode:
-
-- persists touch rows in companion stream
-- stale semantics depend on retention/window availability
+- uses in-memory journal cursors (`epoch:generation`)
+- supports stale detection (`stale=true`) across restarts and epoch changes
+- can degrade to broader wakeups under pressure, but is designed to avoid
+  missed invalidations
+- does not use persisted touch companion streams or retention-based stale
+  offsets
 
 ### 1.7 Durability boundaries (important)
 

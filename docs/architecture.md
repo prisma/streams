@@ -1,6 +1,7 @@
-# Durable Streams Bun+TypeScript Rewrite Architecture
+# Prisma Streams Architecture
 
-This document describes the architecture of the Bun+TypeScript rewrite of Durable Streams using:
+This document describes the architecture of the Prisma Streams Bun + TypeScript
+implementation using:
 - SQLite (bun:sqlite) as the durable WAL and metadata store
 - TieredStore-style segments and manifests
 - An R2-compatible object store (MockR2 for tests)

@@ -1,11 +1,13 @@
-# durable.lens/v1 JSON Schema (reference)
+# Prisma Streams Durable Lens V1 Schema Reference
 
-This file exists so the coding agent can implement parsing and validation for the lens spec without needing access to non-markdown assets.
+This reference exists so the Prisma Streams implementation can parse and
+validate the lens spec without depending on non-Markdown assets.
 
 Source: `pkg/durable-lens/schemas/durable-lens-v1.schema.json` in the original repo.
 
-The Rust rewrite can either:
-- embed this schema as a static string and validate lens JSON against it in tests, or
+The implementation can either:
+- embed this schema as a static string and validate lens JSON against it in
+  tests, or
 - treat it as documentation and implement validation rules directly.
 
 ---

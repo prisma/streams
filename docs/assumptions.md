@@ -1,6 +1,7 @@
-# Assumptions (Bun+TypeScript Durable Streams rewrite)
+# Prisma Streams Assumptions
 
-This file records ambiguities in the docs and the chosen behavior for this rewrite.
+This file records ambiguities in the source documentation and the chosen
+behavior for this implementation.
 Each assumption must have a corresponding conformance test.
 
 ## HTTP / protocol

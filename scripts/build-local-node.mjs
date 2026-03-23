@@ -44,7 +44,7 @@ published \`@prisma/streams-local\` runtime.
 Prisma Streams local is a trusted-development Durable Streams server intended
 for embedded workflows such as \`prisma dev\`.
 
-It keeps all state in a single local SQLite database and supports the live query
+It keeps all state in a single local SQLite database and supports the live /
 touch system, but it does not run the full production segmenting and object
 store pipeline.
 
@@ -59,9 +59,9 @@ surface.
 ## Integrating It
 
 1. Start a named local server from \`@prisma/streams-local\`.
-2. Install your live-query schema via \`/_schema\` with \`touch.enabled=true\`.
+2. Install your touch-enabled interpreter via \`/_schema\`.
 3. Feed normalized State Protocol change events into the server.
-4. Use \`/touch/meta\` and \`/touch/wait\` to drive live query invalidation.
+4. Use \`/touch/meta\` and \`/touch/wait\` to drive invalidation.
 
 Programmatic example:
 
@@ -95,7 +95,7 @@ const child = fork(require.resolve("@prisma/streams-local/internal/daemon"), [
 });
 \`\`\`
 
-See ../README.md and ../docs/local-dev.md for the full runtime and release
+See ../docs/overview.md and ../docs/local-dev.md for the full runtime and release
 documentation.
 `;
 

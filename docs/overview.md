@@ -1,6 +1,8 @@
-# Prisma Streams
+# Prisma Streams Overview
 
 Prisma Streams is a Bun + TypeScript implementation of the Durable Streams HTTP protocol.
+
+Use [index.md](./index.md) for the full documentation map.
 
 This repository currently contains two server modes:
 
@@ -9,14 +11,13 @@ This repository currently contains two server modes:
 
 ## Status
 
-- `bun test` currently passes on this repository.
-- The upstream black-box conformance suites currently pass for both full and local modes.
 - The publishable npm surfaces are intentionally split:
   - `@prisma/streams-local` exports `startLocalDurableStreamsServer` and its server types
   - `@prisma/streams-local/internal/daemon` exists for Prisma CLI integration and is intentionally internal
   - `@prisma/streams-server` is the Bun-only full server package and CLI
 
-See [docs/CONFORMANCE.md](./docs/CONFORMANCE.md) for the current compatibility status and known gaps.
+See [conformance.md](./conformance.md) for current compatibility status,
+verification commands, and known gaps.
 
 ## Security
 
@@ -26,7 +27,7 @@ Prisma Streams does **not** currently implement built-in authentication or autho
 - Put the full server behind a trusted reverse proxy, API gateway, VPN boundary, or other authenticated perimeter.
 - Treat the local development server as a loopback-only tool for trusted local workflows.
 
-See [SECURITY.md](./SECURITY.md) and [docs/AUTH.md](./docs/AUTH.md).
+See [security.md](./security.md) and [auth.md](./auth.md).
 
 ## Prerequisites
 
@@ -81,7 +82,7 @@ Node. The full self-hosted server remains Bun-only.
 
 `@prisma/streams-local/internal/daemon` is exported for Prisma CLI integration, but it is intentionally internal and does not carry the same compatibility guarantee as `@prisma/streams-local`.
 
-More detail is in [docs/local-dev.md](./docs/local-dev.md).
+More detail is in [local-dev.md](./local-dev.md).
 
 ## Full Server
 
@@ -140,23 +141,24 @@ bun run test:conformance
 
 ## Documentation
 
-- [docs/local-dev.md](./docs/local-dev.md): local server behavior and Prisma CLI integration model
-- [docs/releasing.md](./docs/releasing.md): build and release process for `@prisma/streams-local` and `@prisma/streams-server`
-- [docs/prisma-dev-pglite-live.md](./docs/prisma-dev-pglite-live.md): integrating local Prisma Postgres (`prisma dev`) with Prisma Streams live queries
-- [docs/CONFORMANCE.md](./docs/CONFORMANCE.md): test commands and current upstream suite status
-- [docs/AUTH.md](./docs/AUTH.md): current authentication and authorization constraints
-- [ARCHITECTURE.md](./ARCHITECTURE.md): system architecture
-- [docs/SQLITE_SCHEMA.md](./docs/SQLITE_SCHEMA.md): SQLite schema and invariants
-- [docs/SCHEMAS.md](./docs/SCHEMAS.md): schema registry and lens behavior
-- [LIVE.md](./LIVE.md): Live Query V2 and touch semantics
-- [docs/METRICS.md](./docs/METRICS.md): emitted metrics
-- [docs/RECOVERY_INTEGRITY_RUNBOOK.md](./docs/RECOVERY_INTEGRITY_RUNBOOK.md): recovery and operational runbook
+- [index.md](./index.md): full documentation index
+- [local-dev.md](./local-dev.md): local server behavior and Prisma CLI integration model
+- [releasing.md](./releasing.md): build and release process for `@prisma/streams-local` and `@prisma/streams-server`
+- [prisma-dev-pglite-live.md](./prisma-dev-pglite-live.md): integrating local Prisma Postgres (`prisma dev`) with Prisma Streams live queries
+- [conformance.md](./conformance.md): test commands and current upstream suite status
+- [auth.md](./auth.md): current authentication and authorization constraints
+- [architecture.md](./architecture.md): system architecture
+- [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants
+- [schemas.md](./schemas.md): schema registry and lens behavior
+- [live.md](./live.md): end-to-end live / touch integration guide and API semantics
+- [metrics.md](./metrics.md): emitted metrics
+- [recovery-integrity-runbook.md](./recovery-integrity-runbook.md): recovery and operational runbook
 
 ## Open Source Baseline
 
 This repository now includes:
 
-- [LICENSE](./LICENSE)
-- [SECURITY.md](./SECURITY.md)
-- [CONTRIBUTING.md](./CONTRIBUTING.md)
-- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- [LICENSE](../LICENSE)
+- [security.md](./security.md)
+- [contributing.md](./contributing.md)
+- [code-of-conduct.md](./code-of-conduct.md)

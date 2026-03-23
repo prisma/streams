@@ -1,16 +1,19 @@
-# Durable Streams HTTP Protocol Spec for the Bun+TypeScript rewrite
+# Prisma Streams Durable Streams HTTP Protocol Reference
 
-This document is a **normative** description of the HTTP behavior the Bun+TypeScript rewrite must implement.
+This document is a **normative** description of the HTTP behavior Prisma
+Streams must implement.
 
-It is designed so an engineer (or coding agent) can implement the server **without access to the Go source code**.
+It is written so an engineer can implement the server **without access to the
+original Go source code**.
 
-Primary inputs (docs in this repo):
-- `README.md`
-- `ARCHITECTURE.md`
-- `docs/SQLITE_SCHEMA.md`
-- `SCHEMAS.md`
+Primary inputs in this repository:
+- `overview.md`
+- `architecture.md`
+- `sqlite-schema.md`
+- `schemas.md`
 
-If any of those documents disagree, this spec is the tie-breaker for the rewrite.
+If any of those documents disagree, this spec is the tie-breaker for this
+implementation.
 
 ---
 
@@ -48,8 +51,9 @@ If any of those documents disagree, this spec is the tie-breaker for the rewrite
 - `GET /v1/streams` list streams
 
 System streams (reserved names):
-- `__stream_metrics__` (metrics; see `METRICS.md`)
-- `__stream_stats__` (segment stats; see `internal/STREAM_STATS.md`) (proposal only; not implemented in current Bun+TS server)
+- `__stream_metrics__` (metrics; see `metrics.md`)
+- `__stream_stats__` (segment stats; see `internal/STREAM_STATS.md`) (proposal
+  only; not implemented in the current Bun + TypeScript server)
 - `__registry__` (stream lifecycle log; recommended to make listing cheap)
 
 ---
@@ -60,7 +64,7 @@ System streams (reserved names):
 
 - `Stream-Key: <string>`
   - Optional routing key for the appended entry (byte mode) or for each entry (JSON mode when allowed).
-  - If the stream has a configured schema routing key extraction (see `SCHEMAS.md`), then **JSON appends must NOT include `Stream-Key`**.
+  - If the stream has a configured schema routing key extraction (see `schemas.md`), then **JSON appends must NOT include `Stream-Key`**.
 
 - `Stream-Timestamp: <rfc3339 | rfc3339nano | unix_nanos>`
   - Optional append-time hint.
@@ -158,7 +162,7 @@ Path form (equivalent to `key=`):
 - A read with `offset=X` returns entries with offsets strictly greater than X.
 - The server returns `Stream-Next-Offset` which the client uses for the next read.
 
-### 5.2 Canonical encoding used by this rewrite
+### 5.2 Canonical encoding used by this implementation
 
 To be cache-friendly and sortable, offsets are encoded as Crockford base32 of a 128-bit tuple:
 
@@ -172,10 +176,11 @@ Canonical representation:
 - Left-pad with zero bits so the string is always 26 chars.
 - `-1` is accepted as input shorthand for start-of-stream; response headers are canonical 26-char offsets.
 
-Interpretation used by this rewrite:
+Interpretation used by this implementation:
 - `epoch` fences offsets across resets/migrations.
 - `hi|lo` together store the 64-bit **logical entry offset** within the epoch.
-- `in_block` is reserved for future sub-entry slicing; the rewrite sets it to 0 for all returned offsets.
+- `in_block` is reserved for future sub-entry slicing; this implementation sets
+  it to `0` for all returned offsets.
 
 This keeps the storage engine’s internal offsets simple (a u64 sequence per epoch) while matching the “128-bit opaque offset” protocol shape.
 
@@ -321,7 +326,7 @@ Errors should be JSON:
 
 ## 12. Schema endpoints
 
-See `SCHEMAS.md` for the full model.
+See `schemas.md` for the full model.
 
 Minimum behavior required:
 - `GET /_schema` returns the schema registry JSON (or 404 if none and stream missing).

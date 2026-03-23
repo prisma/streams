@@ -1,4 +1,4 @@
-# Routing Key Performance
+# Prisma Streams Routing-Key Performance
 
 Status: **informational status note**. Dedicated routing-key perf tooling is not
 currently maintained in this repo.
@@ -10,8 +10,8 @@ Current implementation status:
 
 For details, see:
 
-- `docs/INDEX.md`
-- `README.md` (routing-key benchmark section)
+- `tiered-index.md`
+- `overview.md` (repository overview and benchmark entry points)
 
 If you need custom routing-key workload benchmarks, use `experiments/bench/synth.ts`
 or build a dedicated driver for your query pattern.

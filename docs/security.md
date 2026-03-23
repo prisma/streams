@@ -1,4 +1,4 @@
-# Security Policy
+# Prisma Streams Security Policy
 
 ## Supported Versions
 
@@ -30,4 +30,4 @@ That has concrete deployment consequences:
 
 The local development server is intentionally optimized for local integration, not hostile-network deployment.
 
-More detail is documented in [docs/AUTH.md](./docs/AUTH.md).
+More detail is documented in [auth.md](./auth.md).

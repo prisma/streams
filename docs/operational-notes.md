@@ -1,10 +1,11 @@
-# Operational Notes (Bun+TypeScript Durable Streams)
+# Prisma Streams Operational Notes
 
 This document describes operational knobs, SQLite settings, and how to diagnose stalls.
 
 ## Configuration knobs
 
-Most commonly tuned environment variables (see `src/config.ts` and `README.md` for the full list):
+Most commonly tuned environment variables are listed below. For the broader
+runtime overview and command surface, see `overview.md`.
 
 - `DS_ROOT`: data directory (default `./ds-data`)
 - `DS_DB_PATH`: SQLite file path (default `${DS_ROOT}/wal.sqlite`)
