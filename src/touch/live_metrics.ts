@@ -4,8 +4,6 @@ import { STREAM_FLAG_TOUCH } from "../db/db";
 import { encodeOffset } from "../offset";
 import type { TouchConfig } from "./spec";
 import type { TemplateLifecycleEvent } from "./live_templates";
-import { resolveTouchStreamName } from "./naming";
-import type { RoutingKeyNotifier } from "./routing_key_notifier";
 import type { TouchJournalIntervalStats, TouchJournalMeta } from "./touch_journal";
 import { Result } from "better-result";
 
@@ -207,8 +205,7 @@ export class LiveMetricsV2 {
   private readonly snapshotIntervalMs: number;
   private readonly snapshotChunkSize: number;
   private readonly retentionMs: number;
-  private readonly routingKeyNotifier?: RoutingKeyNotifier;
-  private readonly getTouchJournal?: (derivedStream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+  private readonly getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
   private timer: any | null = null;
   private snapshotTimer: any | null = null;
   private retentionTimer: any | null = null;
@@ -234,8 +231,7 @@ export class LiveMetricsV2 {
       snapshotIntervalMs?: number;
       snapshotChunkSize?: number;
       retentionMs?: number;
-      routingKeyNotifier?: RoutingKeyNotifier;
-      getTouchJournal?: (derivedStream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+      getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
     }
   ) {
     this.db = db;
@@ -246,7 +242,6 @@ export class LiveMetricsV2 {
     this.snapshotIntervalMs = opts?.snapshotIntervalMs ?? 60_000;
     this.snapshotChunkSize = opts?.snapshotChunkSize ?? 200;
     this.retentionMs = opts?.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
-    this.routingKeyNotifier = opts?.routingKeyNotifier;
     this.getTouchJournal = opts?.getTouchJournal;
   }
 
@@ -500,8 +495,6 @@ export class LiveMetricsV2 {
     this.lagSumMs = 0;
     this.lagSamples = 0;
 
-    const rkInterval = this.routingKeyNotifier?.snapshotAndResetIntervalStats() ?? null;
-
     for (const st of states) {
       const stream = st.stream;
       const regRow = this.db.getStream(stream);
@@ -522,26 +515,8 @@ export class LiveMetricsV2 {
       if (!touchCfg) continue;
 
       const c = this.get(stream, touchCfg);
-      const storage = (touchCfg.storage ?? "memory") as "memory" | "sqlite";
-      const derived = resolveTouchStreamName(stream, touchCfg);
-      const journal = storage === "memory" ? this.getTouchJournal?.(derived) ?? null : null;
-      const trow = (() => {
-        try {
-          return this.db.getStream(derived);
-        } catch {
-          return null;
-        }
-      })();
-      const touchTailSeq = trow ? (trow.next_offset > 0n ? trow.next_offset - 1n : -1n) : -1n;
-      let touchWalOldestOffset: string | null = null;
-      try {
-        const oldest = this.db.getWalOldestOffset(derived);
-        touchWalOldestOffset = oldest == null || !trow ? null : encodeOffset(trow.epoch, oldest);
-      } catch {
-        touchWalOldestOffset = null;
-      }
-      const waitActive =
-        storage === "memory" ? (journal?.meta.activeWaiters ?? 0) : this.routingKeyNotifier ? this.routingKeyNotifier.getActiveWaiters(derived) : 0;
+      const journal = this.getTouchJournal?.(stream) ?? null;
+      const waitActive = journal?.meta.activeWaiters ?? 0;
       const tailSeq = regRow.next_offset > 0n ? regRow.next_offset - 1n : -1n;
       const interpretedThrough = st.interpreted_through;
       const gcThrough = interpretedThrough < regRow.uploaded_through ? interpretedThrough : regRow.uploaded_through;
@@ -571,7 +546,6 @@ export class LiveMetricsV2 {
         instanceId: this.instanceId,
         region: this.region,
         touch: {
-          storage,
           coarseIntervalMs: c.touch.coarseIntervalMs,
           coalesceWindowMs: c.touch.coalesceWindowMs,
           mode: c.touch.mode,
@@ -596,16 +570,11 @@ export class LiveMetricsV2 {
           fineTouchesSuppressedBatchesDueToLag: c.touch.fineTouchesSuppressedBatchesDueToLag,
           fineTouchesSuppressedSecondsDueToLag: c.touch.fineTouchesSuppressedMsDueToLag / 1000,
           fineTouchesSuppressedBatchesDueToBudget: c.touch.fineTouchesSuppressedBatchesDueToBudget,
-          cursor: storage === "memory" ? (journal?.meta.cursor ?? null) : null,
-          epoch: storage === "memory" ? (journal?.meta.epoch ?? null) : null,
-          generation: storage === "memory" ? (journal?.meta.generation ?? null) : null,
-          pendingKeys: storage === "memory" ? (journal?.meta.pendingKeys ?? 0) : 0,
-          overflowBuckets: storage === "memory" ? (journal?.meta.overflowBuckets ?? 0) : 0,
-          walTailOffset: trow ? encodeOffset(trow.epoch, touchTailSeq) : null,
-          walNextOffset: trow ? encodeOffset(trow.epoch, trow.next_offset) : null,
-          walOldestOffset: touchWalOldestOffset,
-          walRetainedRows: trow ? clampBigInt(trow.wal_rows) : 0,
-          walRetainedBytes: trow ? clampBigInt(trow.wal_bytes) : 0,
+          cursor: journal?.meta.cursor ?? null,
+          epoch: journal?.meta.epoch ?? null,
+          generation: journal?.meta.generation ?? null,
+          pendingKeys: journal?.meta.pendingKeys ?? 0,
+          overflowBuckets: journal?.meta.overflowBuckets ?? 0,
         },
         templates: {
           active: activeTemplates,
@@ -624,15 +593,15 @@ export class LiveMetricsV2 {
           avgLatencyMs: c.wait.calls > 0 ? c.wait.latencySumMs / c.wait.calls : 0,
           p95LatencyMs: c.wait.latencyHist.p95(),
           activeWaiters: waitActive,
-          timeoutsFired: storage === "memory" ? (journal?.interval.timeoutsFired ?? 0) : rkInterval?.timeoutsFired ?? 0,
-          timeoutSweeps: storage === "memory" ? (journal?.interval.timeoutSweeps ?? 0) : rkInterval?.timeoutSweeps ?? 0,
-          timeoutSweepMsSum: storage === "memory" ? (journal?.interval.timeoutSweepMsSum ?? 0) : rkInterval?.timeoutSweepMsSum ?? 0,
-          timeoutSweepMsMax: storage === "memory" ? (journal?.interval.timeoutSweepMsMax ?? 0) : rkInterval?.timeoutSweepMsMax ?? 0,
-          notifyWakeups: storage === "memory" ? (journal?.interval.notifyWakeups ?? 0) : 0,
-          notifyFlushes: storage === "memory" ? (journal?.interval.notifyFlushes ?? 0) : 0,
-          notifyWakeMsSum: storage === "memory" ? (journal?.interval.notifyWakeMsSum ?? 0) : 0,
-          notifyWakeMsMax: storage === "memory" ? (journal?.interval.notifyWakeMsMax ?? 0) : 0,
-          timeoutHeapSize: storage === "memory" ? (journal?.interval.heapSize ?? 0) : rkInterval?.heapSize ?? 0,
+          timeoutsFired: journal?.interval.timeoutsFired ?? 0,
+          timeoutSweeps: journal?.interval.timeoutSweeps ?? 0,
+          timeoutSweepMsSum: journal?.interval.timeoutSweepMsSum ?? 0,
+          timeoutSweepMsMax: journal?.interval.timeoutSweepMsMax ?? 0,
+          notifyWakeups: journal?.interval.notifyWakeups ?? 0,
+          notifyFlushes: journal?.interval.notifyFlushes ?? 0,
+          notifyWakeMsSum: journal?.interval.notifyWakeMsSum ?? 0,
+          notifyWakeMsMax: journal?.interval.notifyWakeMsMax ?? 0,
+          timeoutHeapSize: journal?.interval.heapSize ?? 0,
         },
         interpreter: {
           eventsIn: c.interpreter.eventsIn,

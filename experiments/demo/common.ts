@@ -16,8 +16,6 @@ export const DEMO_INTERPRETER: StreamInterpreterConfig = {
   format: "durable.streams/state-protocol/v1",
   touch: {
     enabled: true,
-    // Keep demo touches bounded in case someone forgets to clean up.
-    retention: { maxAgeMs: 60 * 60 * 1000 },
   },
 };
 

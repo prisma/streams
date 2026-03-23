@@ -211,18 +211,6 @@ export async function waitForTouchReady(baseUrl: string, stream: string, timeout
   }
 }
 
-export type TouchMetaSqlite = {
-  mode?: "sqlite";
-  currentTouchOffset: string;
-  oldestAvailableTouchOffset: string;
-  coarseIntervalMs: number;
-  touchCoalesceWindowMs: number;
-  activeTemplates: number;
-  touchRetentionMs?: number | null;
-  touchWalRetainedRows?: number;
-  touchWalRetainedBytes?: number;
-};
-
 export type TouchMetaMemory = {
   mode: "memory";
   cursor: string;
@@ -241,7 +229,6 @@ export type TouchMetaMemory = {
   flushIntervalMsP95Last10s?: number;
   coarseIntervalMs: number;
   touchCoalesceWindowMs: number;
-  touchRetentionMs?: number | null;
   activeTemplates: number;
   lagSourceOffsets?: number;
   touchMode?: "idle" | "fine" | "restricted" | "coarseOnly";
@@ -279,7 +266,7 @@ export type TouchMetaMemory = {
   journalTimeoutSweepMsTotal?: number;
 };
 
-export type TouchMeta = TouchMetaSqlite | TouchMetaMemory;
+export type TouchMeta = TouchMetaMemory;
 
 export function isMemoryTouchMeta(meta: TouchMeta): meta is TouchMetaMemory {
   return (meta as any)?.mode === "memory";

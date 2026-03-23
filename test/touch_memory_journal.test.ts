@@ -57,7 +57,7 @@ describe("touch storage=memory (journal cursors)", () => {
           interpreter: {
             apiVersion: "durable.streams/stream-interpreter/v1",
             format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true, storage: "memory" },
+            touch: { enabled: true },
           },
         }),
       });
@@ -138,7 +138,7 @@ describe("touch storage=memory (journal cursors)", () => {
           interpreter: {
             apiVersion: "durable.streams/stream-interpreter/v1",
             format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true, storage: "memory" },
+            touch: { enabled: true },
           },
         }),
       });
@@ -228,7 +228,7 @@ describe("touch storage=memory (journal cursors)", () => {
           interpreter: {
             apiVersion: "durable.streams/stream-interpreter/v1",
             format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true, storage: "memory" },
+            touch: { enabled: true },
           },
         }),
       });
@@ -308,7 +308,6 @@ describe("touch storage=memory (journal cursors)", () => {
             format: "durable.streams/state-protocol/v1",
             touch: {
               enabled: true,
-              storage: "memory",
               memory: {
                 hotKeyTtlMs: 120,
                 hotTemplateTtlMs: 120,
@@ -416,7 +415,6 @@ describe("touch storage=memory (journal cursors)", () => {
             format: "durable.streams/state-protocol/v1",
             touch: {
               enabled: true,
-              storage: "memory",
               lagDegradeFineTouchesAtSourceOffsets: 1,
               lagRecoverFineTouchesAtSourceOffsets: 0,
               memory: {
@@ -530,7 +528,6 @@ describe("touch storage=memory (journal cursors)", () => {
             format: "durable.streams/state-protocol/v1",
             touch: {
               enabled: true,
-              storage: "memory",
               lagDegradeFineTouchesAtSourceOffsets: 1,
               lagRecoverFineTouchesAtSourceOffsets: 0,
               memory: {

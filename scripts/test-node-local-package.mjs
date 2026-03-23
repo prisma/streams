@@ -92,7 +92,6 @@ try {
           format: "durable.streams/state-protocol/v1",
           touch: {
             enabled: true,
-            storage: "memory",
             onMissingBefore: "coarse",
           },
         },

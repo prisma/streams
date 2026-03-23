@@ -1,14 +1,13 @@
 /**
- * Live Query V2 load test (write path): touch generation throughput vs key cardinality.
+ * Live load test (write path): touch generation throughput vs key cardinality.
  *
  * This is a black-box HTTP load generator intended to run against a Durable Streams
  * server process (this repo) with touch enabled on the target stream.
  *
- * Docs: experiments/loadtests/live_v2/README.md
+ * Docs: docs/live-load-tests.md
  */
 
 import { templateIdFor } from "../../../src/touch/live_keys";
-import { defaultTouchStreamName } from "../../../src/touch/naming";
 import { dsError } from "../../../src/util/ds_error.ts";
 import {
   activateTemplatesChunked,
@@ -20,7 +19,6 @@ import {
   getTouchMeta,
   hasFlag,
   intArg,
-  isMemoryTouchMeta,
   parseArgs,
   sleep,
   startTailJsonStream,
@@ -37,10 +35,10 @@ const ARGS = parseArgs(process.argv.slice(2));
 function usage(exitCode = 0): never {
   // eslint-disable-next-line no-console
   console.log(`
-Live V2 Write-Path Load Test (touch generation throughput)
+Live Write-Path Load Test (touch generation throughput)
 
 Usage:
-  bun run experiments/loadtests/live_v2/write_path.ts [options]
+  bun run experiments/loadtests/live/write_path.ts [options]
 
 Options:
   --url <baseUrl>                     (default: http://127.0.0.1:8080)
@@ -64,7 +62,7 @@ Options:
   --no-setup                          Do not modify stream schema/interpreter
   --activate-templates                Activate templates pre-step (default: on)
   --no-activate-templates             Skip template activation pre-step
-  --reset                             Delete <stream> and its default touch companion (<stream>.__touch) first
+  --reset                             Delete <stream> first
   --metrics                           Tail live.metrics and print summaries (default: on)
   --no-metrics                        Disable live.metrics tailing
   --metrics-stream <name>             (default: live.metrics)
@@ -599,9 +597,9 @@ function fmtInt(n: number): string {
 
 async function warmupTouchStream(baseUrl: string, stream: string): Promise<void> {
   const meta0 = await getTouchMeta(baseUrl, stream);
-  const before = isMemoryTouchMeta(meta0) ? meta0.cursor : meta0.currentTouchOffset;
+  const before = meta0.cursor;
 
-  // Append one small change and wait for the derived touch stream to advance.
+  // Append one small change and wait for the touch cursor to advance.
   const ts = new Date().toISOString();
   const evt = `{\"type\":\"public.__warmup\",\"key\":\"warmup\",\"value\":{\"id\":\"warmup\"},\"headers\":{\"operation\":\"insert\",\"txid\":\"warmup\",\"timestamp\":${JSON.stringify(ts)}}}`;
   const body = `[${evt}]`;
@@ -620,7 +618,7 @@ async function warmupTouchStream(baseUrl: string, stream: string): Promise<void>
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const meta = await getTouchMeta(baseUrl, stream);
-    const cur = isMemoryTouchMeta(meta) ? meta.cursor : meta.currentTouchOffset;
+    const cur = meta.cursor;
     if (cur !== before) {
       // eslint-disable-next-line no-console
       console.log(`[write-path] warmup: cursor advanced: ${before} -> ${cur}`);
@@ -646,7 +644,6 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
     format: "durable.streams/state-protocol/v1",
     touch: {
       enabled: true,
-      storage: "memory",
       coarseIntervalMs,
       touchCoalesceWindowMs: coalesceWindowMs,
       lagDegradeFineTouchesAtSourceOffsets: lagDegradeOffsets,
@@ -654,7 +651,6 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
       fineTouchBudgetPerBatch: fineBudgetPerBatch,
       fineTokensPerSecond,
       fineBurstTokens: fineBurst,
-      retention: { maxAgeMs: 24 * 60 * 60 * 1000 },
       onMissingBefore: "error",
       templates: {
         // Defaults are too low for this load test; make the stream permissive.
@@ -691,11 +687,9 @@ async function main(): Promise<void> {
   const metricsStream = stringArg(ARGS, "metrics-stream", "live.metrics");
 
   if (doReset) {
-    const derived = defaultTouchStreamName(stream);
     // eslint-disable-next-line no-console
-    console.log(`[write-path] reset: deleting ${stream} and ${derived}`);
+    console.log(`[write-path] reset: deleting ${stream}`);
     await deleteStream(baseUrl, stream);
-    await deleteStream(baseUrl, derived);
   }
 
   if (doSetup) {
@@ -732,7 +726,7 @@ async function main(): Promise<void> {
     const meta = await getTouchMeta(baseUrl, stream);
     // eslint-disable-next-line no-console
     console.log(
-      `[write-path] touch/meta: mode=${(meta as any).mode ?? "sqlite"} activeTemplates=${(meta as any).activeTemplates} coarseIntervalMs=${(meta as any).coarseIntervalMs} coalesceWindowMs=${(meta as any).touchCoalesceWindowMs}`
+      `[write-path] touch/meta: mode=${meta.mode} activeTemplates=${meta.activeTemplates} coarseIntervalMs=${meta.coarseIntervalMs} coalesceWindowMs=${meta.touchCoalesceWindowMs}`
     );
 
     // Ensure templateId computation matches spec (debug aid).
@@ -810,7 +804,7 @@ async function main(): Promise<void> {
     const meta0 = await getTouchMeta(baseUrl, stream);
     // eslint-disable-next-line no-console
     console.log(
-      `[write-path] step start: rate=${fmtInt(stepRate)} events/sec (mode=${mode}) ${isMemoryTouchMeta(meta0) ? `cursor=${meta0.cursor}` : `touchOffset=${meta0.currentTouchOffset}`} activeTemplates=${(meta0 as any).activeTemplates}`
+      `[write-path] step start: rate=${fmtInt(stepRate)} events/sec (mode=${mode}) cursor=${meta0.cursor} activeTemplates=${meta0.activeTemplates}`
     );
 
     const controller = new AbortController();
@@ -855,13 +849,12 @@ async function main(): Promise<void> {
     const errSample = stats.map((s) => s.lastError).find((x) => x != null) ?? null;
     const effRate = stepSeconds > 0 ? Math.floor(totalEvents / stepSeconds) : 0;
 
-    const endCursor = isMemoryTouchMeta(meta1) ? meta1.cursor : meta1.currentTouchOffset;
-    const oldest = isMemoryTouchMeta(meta1) ? "" : ` oldest=${(meta1 as any).oldestAvailableTouchOffset}`;
+    const endCursor = meta1.cursor;
     // eslint-disable-next-line no-console
     console.log(
       `[write-path] step end: rate=${fmtInt(stepRate)} events/sec effective=${fmtInt(effRate)} events/sec sent=${fmtInt(
         totalEvents
-      )} requests=${fmtInt(totalReq)} httpErrors=${fmtInt(totalErr)} cursor=${endCursor}${oldest}`
+      )} requests=${fmtInt(totalReq)} httpErrors=${fmtInt(totalErr)} cursor=${endCursor}`
     );
     if (errSample) {
       // eslint-disable-next-line no-console

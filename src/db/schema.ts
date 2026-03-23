@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -75,8 +75,6 @@ CREATE TABLE IF NOT EXISTS wal (
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
--- Partial index for internal companion touch streams (WAL-only, routing-key heavy).
-CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';
 
 CREATE TABLE IF NOT EXISTS segments (
   segment_id TEXT PRIMARY KEY,
@@ -134,7 +132,7 @@ CREATE TABLE IF NOT EXISTS stream_interpreters (
   updated_at_ms INTEGER NOT NULL
 );
 
--- Live Query V2 dynamic template registry (per base stream).
+-- Live dynamic template registry (per base stream).
 CREATE TABLE IF NOT EXISTS live_templates (
   stream TEXT NOT NULL,
   template_id TEXT NOT NULL,
@@ -267,7 +265,6 @@ const CREATE_INDEXES_V4_SQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
-CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';
 
 CREATE INDEX IF NOT EXISTS streams_pending_bytes_idx ON streams(pending_bytes);
 CREATE INDEX IF NOT EXISTS streams_last_cut_idx ON streams(last_segment_cut_ms);
@@ -326,6 +323,8 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV8ToV9(db);
     } else if (version === 9) {
       migrateV9ToV10(db);
+    } else if (version === 10) {
+      migrateV10ToV11(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -555,7 +554,6 @@ function migrateV6ToV7(db: SqliteDatabase): void {
 
 function migrateV7ToV8(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
-    db.exec(`CREATE INDEX IF NOT EXISTS wal_touch_stream_rk_offset_idx ON wal(stream, routing_key, offset) WHERE stream LIKE '%.__touch';`);
     db.exec(`UPDATE schema_version SET version = 8;`);
   });
   tx();
@@ -613,6 +611,14 @@ function migrateV9ToV10(db: SqliteDatabase): void {
     `);
     db.exec(`DROP TABLE wal_stats;`);
 
+    db.exec(`UPDATE schema_version SET version = 10;`);
+  });
+  tx();
+}
+
+function migrateV10ToV11(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`DROP INDEX IF EXISTS wal_touch_stream_rk_offset_idx;`);
     db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION};`);
   });
   tx();

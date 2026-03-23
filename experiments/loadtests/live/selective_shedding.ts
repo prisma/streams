@@ -1,5 +1,5 @@
 /**
- * Live Query V2 load test (Test 4): selective fine shedding under high write load.
+ * Live load test (Test 4): selective fine shedding under high write load.
  *
  * Roles:
  * - setup: create stream, configure interpreter, activate templates, write config JSON
@@ -185,10 +185,10 @@ type AllSummary = {
 function usage(exitCode = 0): never {
   // eslint-disable-next-line no-console
   console.log(`
-Selective Fine Shedding Load Test (Live V2 Test 4)
+Selective Fine Shedding Load Test (Test 4)
 
 Usage:
-  bun run experiments/loadtests/live_v2/selective_shedding.ts --role <setup|writer|appkit|metrics|all> [options]
+  bun run experiments/loadtests/live/selective_shedding.ts --role <setup|writer|appkit|metrics|all> [options]
 
 Shared options:
   --url <baseUrl>                        (default: http://127.0.0.1:8080)
@@ -200,7 +200,7 @@ Setup options:
   --templates <n>                        (default: 128)
   --hot-templates <n>                    (default: 16)
   --ttl-ms <n>                           (default: 3600000)
-  --reset                                Delete stream + touch companion before setup
+  --reset                                Delete stream before setup
   --lag-degrade-offsets <n>              (default: 5000)
   --lag-recover-offsets <n>              (default: 1000)
   --fine-budget-per-batch <n>            (default: 2000)
@@ -395,7 +395,6 @@ async function runSetup(args: ParsedArgs): Promise<Test4Config> {
 
   if (hasFlag(args, "reset")) {
     await deleteStream(baseUrl, stream).catch(() => {});
-    await deleteStream(baseUrl, `${stream}.__touch`).catch(() => {});
   }
 
   await ensureStream(baseUrl, stream, "application/json");
@@ -405,8 +404,6 @@ async function runSetup(args: ParsedArgs): Promise<Test4Config> {
     format: "durable.streams/state-protocol/v1",
     touch: {
       enabled: true,
-      storage: "memory",
-      retention: { maxAgeMs: 24 * 60 * 60 * 1000 },
       coarseIntervalMs: intArg(args, "coarse-interval-ms", 100),
       touchCoalesceWindowMs: intArg(args, "coalesce-window-ms", 100),
       lagDegradeFineTouchesAtSourceOffsets: intArg(args, "lag-degrade-offsets", 5000),

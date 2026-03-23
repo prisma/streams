@@ -964,60 +964,6 @@ export class SqliteDurableStore {
     }
   }
 
-  findFirstWalOffsetForRoutingKeys(
-    stream: string,
-    startOffsetExclusive: bigint,
-    endOffsetInclusive: bigint,
-    routingKeys: Uint8Array[]
-  ): bigint | null {
-    if (routingKeys.length === 0) return null;
-    const start = this.bindInt(startOffsetExclusive);
-
-    // Avoid tripping SQLite variable limits (commonly 999) when callers watch a
-    // large number of keys. Chunking is cheap because the touch WAL ranges we
-    // scan are typically small and indexed by (stream, routing_key, offset).
-    const MAX_KEYS_PER_QUERY = 400;
-    let best: bigint | null = null;
-    let endLimit = endOffsetInclusive;
-    const touchNameLooksDefault = stream.endsWith(".__touch");
-    const touchLikeClause = touchNameLooksDefault ? " AND stream LIKE '%.__touch'" : "";
-
-    for (let i = 0; i < routingKeys.length; i += MAX_KEYS_PER_QUERY) {
-      const chunk = routingKeys.slice(i, i + MAX_KEYS_PER_QUERY);
-      if (chunk.length === 0) continue;
-      const end = this.bindInt(endLimit);
-      const placeholders = chunk.map(() => "?").join(", ");
-      const stmt = this.db.query(
-        `SELECT MIN(offset) as offset
-         FROM wal
-         WHERE stream = ?${touchLikeClause}
-           AND offset > ?
-           AND offset <= ?
-           AND routing_key IN (${placeholders});`
-      );
-      try {
-        const row = stmt.get(stream, start, end, ...chunk) as any;
-        if (!row || row.offset == null) continue;
-        const off = this.toBigInt(row.offset);
-        if (best == null || off < best) {
-          best = off;
-          // No need to search beyond the best match so far.
-          endLimit = off - 1n;
-          if (off <= startOffsetExclusive + 1n) break;
-        }
-      } finally {
-        try {
-          stmt.finalize?.();
-        } catch {
-          // ignore
-        }
-      }
-      if (endLimit < startOffsetExclusive + 1n) break;
-    }
-
-    return best;
-  }
-
   nextSegmentIndexForStream(stream: string): number {
     const row = this.stmts.nextSegmentIndex.get(stream) as any;
     return Number(row?.next_idx ?? 0);

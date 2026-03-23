@@ -1,5 +1,4 @@
 import { Result } from "better-result";
-import { parseDurationMsResult } from "../util/duration.ts";
 import { dsError } from "../util/ds_error.ts";
 
 export type StreamInterpreterConfig = {
@@ -15,22 +14,6 @@ export type StreamInterpreterConfigValidationError = {
 
 export type TouchConfig = {
   enabled: boolean;
-  /**
-   * Touch storage backend.
-   *
-   * - memory: in-process, lossy (false positives allowed), epoch-scoped journal.
-   * - sqlite: derived companion stream in SQLite WAL (legacy).
-   *
-   * Default: memory.
-   */
-  storage?: "memory" | "sqlite";
-  /**
-   * Advanced override. When unset, the server exposes touches as a companion of
-   * the source stream at `/v1/stream/<name>/touch` and uses an internal derived
-   * stream name.
-   */
-  derivedStream?: string;
-  retention?: { maxAgeMs: number };
   /**
    * Coarse invalidation interval. The server emits at most one table-touch per
    * entity per interval.
@@ -209,72 +192,22 @@ function parseIntegerField(
   return Result.ok(n);
 }
 
-function validateRetentionResult(
-  raw: any
-): Result<{ maxAgeMs: number } | undefined, StreamInterpreterConfigValidationError> {
-  if (raw == null) return Result.ok(undefined);
-  if (!raw || typeof raw !== "object") return invalidInterpreter("interpreter.touch.retention must be an object");
-  const maxAge = raw.maxAge;
-  const maxAgeMsRaw = raw.maxAgeMs;
-  if (maxAge !== undefined && maxAgeMsRaw !== undefined) {
-    return invalidInterpreter("interpreter.touch.retention must specify only one of maxAge|maxAgeMs");
-  }
-  let ms: number | null = null;
-  if (maxAgeMsRaw !== undefined) {
-    if (typeof maxAgeMsRaw !== "number" || !Number.isFinite(maxAgeMsRaw) || maxAgeMsRaw < 0) {
-      return invalidInterpreter("interpreter.touch.retention.maxAgeMs must be a non-negative number");
-    }
-    ms = maxAgeMsRaw;
-  } else if (maxAge !== undefined) {
-    if (typeof maxAge !== "string" || maxAge.trim() === "") {
-      return invalidInterpreter("interpreter.touch.retention.maxAge must be a non-empty duration string");
-    }
-    const durationRes = parseDurationMsResult(maxAge);
-    if (Result.isError(durationRes)) {
-      return invalidInterpreter(`interpreter.touch.retention.maxAge ${durationRes.error.message}`);
-    }
-    ms = durationRes.value;
-    if (ms < 0) ms = 0;
-  } else {
-    return invalidInterpreter("interpreter.touch.retention must include maxAge or maxAgeMs");
-  }
-  return Result.ok({ maxAgeMs: ms });
-}
-
 function validateTouchConfigResult(raw: any): Result<TouchConfig, StreamInterpreterConfigValidationError> {
   if (!raw || typeof raw !== "object") return invalidInterpreter("interpreter.touch must be an object");
   const enabled = !!raw.enabled;
   if (!enabled) {
-    return Result.ok({
-      enabled: false,
-      storage: undefined,
-      derivedStream: undefined,
-      retention: undefined,
-    });
+    return Result.ok({ enabled: false });
   }
 
-  const storageRaw = raw.storage === undefined ? "memory" : String(raw.storage).trim();
-  if (storageRaw !== "memory" && storageRaw !== "sqlite") {
-    return invalidInterpreter("interpreter.touch.storage must be memory|sqlite");
+  if (raw.storage !== undefined) {
+    return invalidInterpreter("interpreter.touch.storage is no longer supported; touch always uses the in-memory journal");
   }
-  const storage = storageRaw as "memory" | "sqlite";
-
-  const derivedStream =
-    raw.derivedStream === undefined
-      ? undefined
-      : typeof raw.derivedStream === "string" && raw.derivedStream.trim() !== ""
-        ? raw.derivedStream
-        : null;
-  if (derivedStream === null) {
-    return invalidInterpreter("interpreter.touch.derivedStream must be a non-empty string when provided");
+  if (raw.derivedStream !== undefined) {
+    return invalidInterpreter("interpreter.touch.derivedStream is no longer supported");
   }
-
-  // Touch companions are intended as short-retention invalidation journals.
-  // Default to 24h to prevent unbounded growth if retention is omitted.
-  const retentionRaw = raw.retention;
-  const retentionRes = retentionRaw === undefined ? Result.ok({ maxAgeMs: 24 * 60 * 60 * 1000 }) : validateRetentionResult(retentionRaw);
-  if (Result.isError(retentionRes)) return invalidInterpreter(retentionRes.error.message);
-  const retention = retentionRes.value;
+  if (raw.retention !== undefined) {
+    return invalidInterpreter("interpreter.touch.retention is no longer supported");
+  }
 
   const coarseIntervalMsRes = parseNumberField(
     raw.coarseIntervalMs,
@@ -454,9 +387,6 @@ function validateTouchConfigResult(raw: any): Result<TouchConfig, StreamInterpre
 
   return Result.ok({
     enabled: true,
-    storage,
-    derivedStream,
-    retention,
     coarseIntervalMs: coarseIntervalMsRes.value,
     touchCoalesceWindowMs: touchCoalesceWindowMsRes.value,
     onMissingBefore,

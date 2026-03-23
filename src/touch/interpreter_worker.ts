@@ -5,9 +5,8 @@ import { SqliteDurableStore } from "../db/db.ts";
 import { initConsoleLogging } from "../util/log.ts";
 import type { ProcessRequest } from "./worker_protocol.ts";
 import { interpretRecordToChanges } from "./engine.ts";
-import { encodeTemplateArg, tableKeyFor, tableKeyIdFor, templateKeyFor, templateKeyIdFor, watchKeyFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
+import { encodeTemplateArg, tableKeyIdFor, templateKeyIdFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
 import { isTouchEnabled } from "./spec.ts";
-import { resolveTouchStreamName } from "./naming.ts";
 
 initConsoleLogging();
 
@@ -50,9 +49,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     return;
   }
   const touch = interpreter.touch;
-  const derivedStream = resolveTouchStreamName(stream, touch);
-  const touchStorage = touch.storage ?? "memory";
-  const emitRoutingKey = touchStorage === "sqlite";
 
   const fineBudgetRaw = msg.fineTouchBudget ?? touch.fineTouchBudgetPerBatch;
   const fineBudget = fineBudgetRaw == null ? null : Math.max(0, Math.floor(fineBudgetRaw));
@@ -125,7 +121,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
   type PendingTouch = {
     keyId: number;
-    key?: string;
     windowStartMs: number;
     watermark: string;
     entity: string;
@@ -136,17 +131,16 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
   const pending = new Map<string, PendingTouch>();
   const templateOnlyEntityTouch = new Map<string, EntityTemplateOnlyTouch>();
-  const touches: Array<{ keyId: number; key?: string; watermark: string; entity: string; kind: "table" | "template"; templateId?: string }> = [];
+  const touches: Array<{ keyId: number; watermark: string; entity: string; kind: "table" | "template"; templateId?: string }> = [];
   let fineTouchesDroppedDueToBudget = 0;
   let fineTouchesSkippedColdTemplate = 0;
 
   const flush = (_mapKey: string, p: PendingTouch) => {
-    touches.push({ keyId: p.keyId >>> 0, key: p.key, watermark: p.watermark, entity: p.entity, kind: p.kind, templateId: p.templateId });
+    touches.push({ keyId: p.keyId >>> 0, watermark: p.watermark, entity: p.entity, kind: p.kind, templateId: p.templateId });
   };
 
   const queueTouch = (args: {
     keyId: number;
-    key?: string;
     tsMs: number;
     watermark: string;
     entity: string;
@@ -154,7 +148,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     templateId?: string;
     windowMs: number;
   }) => {
-    const mapKey = args.key ? `k:${args.key}` : `i:${args.keyId >>> 0}`;
+    const mapKey = `i:${args.keyId >>> 0}`;
     const prev = pending.get(mapKey);
 
     // Guardrail: cap fine/template touches (key cardinality) per batch.
@@ -177,7 +171,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     if (!prev) {
       pending.set(mapKey, {
         keyId: args.keyId >>> 0,
-        key: args.key,
         windowStartMs: args.tsMs,
         watermark: args.watermark,
         entity: args.entity,
@@ -194,7 +187,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     flush(mapKey, prev);
     pending.set(mapKey, {
       keyId: args.keyId >>> 0,
-      key: args.key,
       windowStartMs: args.tsMs,
       watermark: args.watermark,
       entity: args.entity,
@@ -237,7 +229,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
       const coarseKeyId = tableKeyIdFor(entity);
       queueTouch({
         keyId: coarseKeyId,
-        key: emitRoutingKey ? tableKeyFor(entity) : undefined,
         tsMs,
         watermark,
         entity,
@@ -267,7 +258,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         if (fineGranularity === "template") {
           queueTouch({
             keyId: templateKeyIdFor(tpl.templateId) >>> 0,
-            key: emitRoutingKey ? templateKeyFor(tpl.templateId) : undefined,
             tsMs,
             watermark,
             entity,
@@ -282,9 +272,9 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         const afterObj = ch.after;
         const beforeObj = ch.before;
 
-        const watchKeys = new Map<number, string | undefined>();
+        const watchKeyIds = new Set<number>();
 
-        const compute = (obj: unknown): { keyId: number; key?: string } | null => {
+        const compute = (obj: unknown): number | null => {
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
           const args: string[] = [];
           for (let i = 0; i < tpl.fields.length; i++) {
@@ -295,19 +285,15 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             if (encoded == null) return null;
             args.push(encoded);
           }
-          if (emitRoutingKey) {
-            const key = watchKeyFor(tpl.templateId, args);
-            return { keyId: Number.parseInt(key.slice(8), 16) >>> 0, key };
-          }
-          return { keyId: watchKeyIdFor(tpl.templateId, args) >>> 0 };
+          return watchKeyIdFor(tpl.templateId, args) >>> 0;
         };
 
         if (ch.op === "insert") {
           const k = compute(afterObj);
-          if (k) watchKeys.set(k.keyId >>> 0, k.key);
+          if (k != null) watchKeyIds.add(k >>> 0);
         } else if (ch.op === "delete") {
           const k = compute(beforeObj);
-          if (k) watchKeys.set(k.keyId >>> 0, k.key);
+          if (k != null) watchKeyIds.add(k >>> 0);
         } else {
           // update: compute touches from both before and after (when possible).
           // Policy for missing/insufficient before image:
@@ -317,9 +303,9 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           const kAfter = compute(afterObj);
           const kBefore = compute(beforeObj);
 
-          if (kBefore) {
-            watchKeys.set(kBefore.keyId >>> 0, kBefore.key);
-            if (kAfter) watchKeys.set(kAfter.keyId >>> 0, kAfter.key);
+          if (kBefore != null) {
+            watchKeyIds.add(kBefore >>> 0);
+            if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
           } else {
             if (beforeObj === undefined) {
               if (onMissingBefore === "error") {
@@ -335,17 +321,16 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             }
 
             if (onMissingBefore === "skipBefore") {
-              if (kAfter) watchKeys.set(kAfter.keyId >>> 0, kAfter.key);
+              if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
             } else {
               // coarse: no fine touches
             }
           }
         }
 
-        for (const [watchKeyId, watchKey] of watchKeys.entries()) {
+        for (const watchKeyId of watchKeyIds) {
           queueTouch({
             keyId: watchKeyId >>> 0,
-            key: watchKey,
             tsMs,
             watermark,
             entity,
@@ -369,7 +354,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         if (agg.offset < tpl.activeFromSourceOffset) continue;
         queueTouch({
           keyId: templateKeyIdFor(tpl.templateId) >>> 0,
-          key: emitRoutingKey ? templateKeyFor(tpl.templateId) : undefined,
           tsMs: agg.tsMs,
           watermark: agg.watermark,
           entity,
@@ -386,8 +370,8 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
   }
 
   touches.sort((a, b) => {
-    const ak = a.key ?? `~${(a.keyId >>> 0).toString(16).padStart(8, "0")}`;
-    const bk = b.key ?? `~${(b.keyId >>> 0).toString(16).padStart(8, "0")}`;
+    const ak = a.keyId >>> 0;
+    const bk = b.keyId >>> 0;
     if (ak < bk) return -1;
     if (ak > bk) return 1;
     const aw = BigInt(a.watermark);
@@ -408,7 +392,6 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     type: "result",
     id: msg.id,
     stream,
-    derivedStream,
     processedThrough,
     touches,
     stats: {

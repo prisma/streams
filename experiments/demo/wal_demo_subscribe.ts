@@ -1,5 +1,5 @@
 /**
- * Demo: Live Query V2 wait loop (coarse vs realtime).
+ * Demo: Live wait loop (coarse vs realtime).
  *
  * Usage:
  *   bun run experiments/demo/wal_demo_subscribe.ts --query q1 --mode upgrade
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   await waitForTouchEnabled(baseUrl, stream);
 
   const meta = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
-  const since0 = meta?.currentTouchOffset ?? "now";
+  const since0 = meta?.cursor ?? "now";
 
   // Activate the template (idempotent).
   const act = await activateTemplate(baseUrl, stream, q.entity, fieldsSorted, ttlMs);
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
     const keys = phase === "coarse" ? [tableKey] : [watchKey];
 
     const res = await waitOnce(baseUrl, stream, {
-      sinceTouchOffset: cursor,
+      cursor,
       timeoutMs: 30_000,
       keys,
       templateIdsUsed: [templateId],
@@ -190,21 +190,20 @@ async function main(): Promise<void> {
 
     if (res?.stale) {
       // eslint-disable-next-line no-console
-      console.log(`[demo][sub] stale cursor; oldestAvailableTouchOffset=${res.oldestAvailableTouchOffset}`);
-      cursor = res.currentTouchOffset ?? cursor;
+      console.log(`[demo][sub] stale cursor; restarting from ${String(res.cursor ?? cursor)}`);
+      cursor = res.cursor ?? cursor;
       continue;
     }
 
-    const nextCursor = res?.currentTouchOffset ?? res?.touchOffset ?? cursor;
+    const nextCursor = res?.cursor ?? cursor;
     const touched = !!res?.touched;
-    const touchedKeys = Array.isArray(res?.touchedKeys) ? res.touchedKeys : [];
+    const waitKind = String(res?.effectiveWaitKind ?? "?");
 
     // eslint-disable-next-line no-console
-    console.log(`[demo][sub] wait: touched=${touched} touchedKeys=${JSON.stringify(touchedKeys)} cursor=${cursor} -> ${nextCursor}`);
+    console.log(`[demo][sub] wait: touched=${touched} waitKind=${waitKind} cursor=${cursor} -> ${nextCursor}`);
 
     cursor = nextCursor;
   }
 }
 
 await main();
-

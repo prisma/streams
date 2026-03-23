@@ -1,14 +1,13 @@
 /**
- * Live Query V2 load test (read path): /touch/wait fanout, keyset size, and template churn.
+ * Live load test (read path): /touch/wait fanout, keyset size, and template churn.
  *
  * This is a black-box HTTP load generator intended to run against a Durable Streams
  * server process (this repo) with touch enabled on the target stream.
  *
- * Docs: experiments/loadtests/live_v2/README.md
+ * Docs: docs/live-load-tests.md
  */
 
 import { tableKeyFor, templateIdFor, watchKeyFor } from "../../../src/touch/live_keys";
-import { defaultTouchStreamName } from "../../../src/touch/naming";
 import { touchKeyIdFromRoutingKey } from "../../../src/touch/touch_key_id";
 import { dsError } from "../../../src/util/ds_error.ts";
 import {
@@ -20,7 +19,6 @@ import {
   getTouchMeta,
   hasFlag,
   intArg,
-  isMemoryTouchMeta,
   parseArgs,
   sleep,
   startTailJsonStream,
@@ -38,10 +36,10 @@ type Role = "all" | "waiters" | "writer" | "metrics";
 function usage(exitCode = 0): never {
   // eslint-disable-next-line no-console
   console.log(`
-Live V2 Read-Path Load Test (/touch/wait scalability)
+Live Read-Path Load Test (/touch/wait scalability)
 
 Usage:
-  bun run experiments/loadtests/live_v2/read_path.ts [options]
+  bun run experiments/loadtests/live/read_path.ts [options]
 
 Options:
   --url <baseUrl>                     (default: http://127.0.0.1:8080)
@@ -69,7 +67,7 @@ Options:
   --metrics                           Tail live.metrics and print summaries (default: on)
   --no-metrics                        Disable live.metrics tailing
   --metrics-stream <name>             (default: live.metrics)
-  --reset                             Delete <stream> and its default touch companion (<stream>.__touch) first
+  --reset                             Delete <stream> first
 
 Touch driver (writer):
   --writer-rate <events/sec>          (default: 200)
@@ -296,7 +294,6 @@ async function waitLoop(args: {
   baseUrl: string;
   stream: string;
   since: string;
-  useCursor: boolean;
   timeoutMs: number;
   spec: WaiterSpec;
   startDelayMs?: number;
@@ -319,10 +316,10 @@ async function waitLoop(args: {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...(args.useCursor ? { cursor } : { sinceTouchOffset: cursor }),
+          cursor,
           timeoutMs: args.timeoutMs,
           keys: args.spec.keys,
-          ...(args.useCursor && args.spec.keyIds && args.spec.keyIds.length > 0 ? { keyIds: args.spec.keyIds } : {}),
+          ...(args.spec.keyIds && args.spec.keyIds.length > 0 ? { keyIds: args.spec.keyIds } : {}),
           templateIdsUsed: args.spec.templateIdsUsed,
         }),
         signal: args.signal,
@@ -346,17 +343,17 @@ async function waitLoop(args: {
 
     if (res?.stale) {
       args.stats.stale += 1;
-      cursor = (args.useCursor ? res.cursor : res.currentTouchOffset) ?? cursor;
+      cursor = res.cursor ?? cursor;
       continue;
     }
     if (res?.touched) {
       args.stats.touched += 1;
       args.stats.touchedLatency.record(dt);
-      cursor = (args.useCursor ? res.cursor : res.currentTouchOffset ?? res.touchOffset) ?? cursor;
+      cursor = res.cursor ?? cursor;
       continue;
     }
     args.stats.timeout += 1;
-    cursor = (args.useCursor ? res?.cursor : res?.currentTouchOffset) ?? cursor;
+    cursor = res?.cursor ?? cursor;
   }
 }
 
@@ -476,7 +473,7 @@ function fmtInt(n: number): string {
 
 async function warmupTouchStream(baseUrl: string, stream: string): Promise<void> {
   const meta0 = await getTouchMeta(baseUrl, stream);
-  const before = isMemoryTouchMeta(meta0) ? meta0.cursor : meta0.currentTouchOffset;
+  const before = meta0.cursor;
 
   const ts = new Date().toISOString();
   const evt = `{\"type\":\"public.__warmup\",\"key\":\"warmup\",\"value\":{\"id\":\"warmup\"},\"headers\":{\"operation\":\"insert\",\"txid\":\"warmup\",\"timestamp\":${JSON.stringify(ts)}}}`;
@@ -491,7 +488,7 @@ async function warmupTouchStream(baseUrl: string, stream: string): Promise<void>
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const meta = await getTouchMeta(baseUrl, stream);
-    const cur = isMemoryTouchMeta(meta) ? meta.cursor : meta.currentTouchOffset;
+    const cur = meta.cursor;
     if (cur !== before) return;
     await sleep(200);
   }
@@ -508,13 +505,11 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
     format: "durable.streams/state-protocol/v1",
     touch: {
       enabled: true,
-      storage: "memory",
       lagDegradeFineTouchesAtSourceOffsets: lagDegradeOffsets,
       lagRecoverFineTouchesAtSourceOffsets: lagRecoverOffsets,
       fineTouchBudgetPerBatch: fineBudgetPerBatch,
       fineTokensPerSecond,
       fineBurstTokens: fineBurst,
-      retention: { maxAgeMs: 24 * 60 * 60 * 1000 },
       // Read-path load tests don't want interpreter batches to wedge just because
       // some active templates can't be evaluated from partial row images.
       onMissingBefore: "skipBefore",
@@ -579,11 +574,9 @@ async function main(): Promise<void> {
   if (keysPerWait > 1024) throw dsError(`--keys-per-wait too large: ${keysPerWait} (max 1024)`);
 
   if (doReset) {
-    const derived = defaultTouchStreamName(stream);
     // eslint-disable-next-line no-console
-    console.log(`[read-path] reset: deleting ${stream} and ${derived}`);
+    console.log(`[read-path] reset: deleting ${stream}`);
     await deleteStream(baseUrl, stream);
-    await deleteStream(baseUrl, derived);
   }
 
   if (doSetup) {
@@ -630,11 +623,8 @@ async function main(): Promise<void> {
   }
 
   const meta = await getTouchMeta(baseUrl, stream);
-  const useCursor = isMemoryTouchMeta(meta);
   // eslint-disable-next-line no-console
-  console.log(
-    `[read-path] touch/meta: ${useCursor ? `cursor=${(meta as any).cursor}` : `currentTouchOffset=${(meta as any).currentTouchOffset}`} activeTemplates=${(meta as any).activeTemplates}`
-  );
+  console.log(`[read-path] touch/meta: cursor=${meta.cursor} activeTemplates=${meta.activeTemplates}`);
 
   if (role === "waiters" && waiterProcesses > 1) {
     if (scenario === "churn") throw dsError(`--waiter-processes is not supported for scenario=churn (use role=all or run separate churn controller)`);
@@ -673,7 +663,7 @@ async function main(): Promise<void> {
       const cmd = [
         "bun",
         "run",
-        "experiments/loadtests/live_v2/read_path.ts",
+        "experiments/loadtests/live/read_path.ts",
         "--url",
         baseUrl,
         "--stream",
@@ -911,7 +901,7 @@ async function main(): Promise<void> {
 
   const waiterStats: WaiterStats[] = [];
   const waiterTasks: Promise<void>[] = [];
-  const since = useCursor ? (meta as any).cursor : (meta as any).currentTouchOffset ?? "now";
+  const since = meta.cursor;
   if (runWaiters) {
     for (let i = 0; i < concurrency; i++) {
       const st: WaiterStats = {
@@ -930,7 +920,6 @@ async function main(): Promise<void> {
           baseUrl,
           stream,
           since,
-          useCursor,
           timeoutMs: waitTimeoutMs,
           spec: waiters[i]!,
           startDelayMs: waiterStartJitterMs > 0 ? startRng.int(waiterStartJitterMs + 1) : 0,
@@ -970,10 +959,10 @@ async function main(): Promise<void> {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({
-                  ...(useCursor ? { cursor: cursorOffset } : { sinceTouchOffset: cursorOffset }),
+                  cursor: cursorOffset,
                   timeoutMs: 1000,
                   keys: heartbeatKeys,
-                  ...(useCursor ? { keyIds: heartbeatKeyIds } : {}),
+                  keyIds: heartbeatKeyIds,
                   templateIdsUsed: used,
                 }),
                 signal: controller.signal,
@@ -981,7 +970,7 @@ async function main(): Promise<void> {
               const text = await r.text();
               if (r.ok && text) {
                 const res = JSON.parse(text);
-                cursorOffset = (useCursor ? res.cursor : res.currentTouchOffset ?? res.touchOffset) ?? cursorOffset;
+                cursorOffset = res.cursor ?? cursorOffset;
               }
             } catch {
               // ignore

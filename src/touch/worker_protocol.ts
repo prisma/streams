@@ -2,7 +2,6 @@ import type { StreamInterpreterConfig } from "./spec.ts";
 
 export type TouchRow = {
   keyId: number;
-  key?: string;
   watermark: string; // source stream offset (base-10 string)
   entity: string;
   kind: "table" | "template";
@@ -30,7 +29,6 @@ export type ProcessResult = {
   type: "result";
   id: number;
   stream: string;
-  derivedStream: string;
   processedThrough: bigint;
   touches: TouchRow[];
   stats: {

@@ -54,14 +54,14 @@ describe("/touch/wait timeout reliability", () => {
             interpreter: {
               apiVersion: "durable.streams/stream-interpreter/v1",
               format: "durable.streams/state-protocol/v1",
-              touch: { enabled: true, retention: { maxAgeMs: 60_000 } },
+              touch: { enabled: true },
             },
           }),
         });
 
         const body = JSON.stringify({
           keys: ["k1", "k2", "k3"],
-          sinceTouchOffset: "now",
+          cursor: "now",
           timeoutMs: 1000,
         });
 
@@ -100,4 +100,3 @@ describe("/touch/wait timeout reliability", () => {
     20_000
   );
 });
-

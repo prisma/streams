@@ -1,6 +1,5 @@
 import type { Config } from "../config";
 import type { SqliteDurableStore } from "../db/db";
-import { STREAM_FLAG_TOUCH } from "../db/db";
 import type { IngestQueue } from "../ingest";
 import type { StreamNotifier } from "../notifier";
 import type { SchemaRegistryStore } from "../schema/registry";
@@ -8,11 +7,9 @@ import { isTouchEnabled } from "./spec";
 import { TouchInterpreterWorkerPool } from "./worker_pool";
 import { LruCache } from "../util/lru";
 import type { BackpressureGate } from "../backpressure";
-import { resolveTouchStreamName } from "./naming";
 import { LiveTemplateRegistry, type TemplateDecl } from "./live_templates";
 import { LiveMetricsV2 } from "./live_metrics";
 import type { TouchConfig } from "./spec";
-import type { RoutingKeyNotifier } from "./routing_key_notifier";
 import { TouchJournal } from "./touch_journal";
 import { Result } from "better-result";
 
@@ -74,16 +71,10 @@ const HOT_INTEREST_MAX_KEYS = 64;
 
 type TouchRecord = {
   keyId: number;
-  key?: string;
   watermark: string;
   entity: string;
   kind: "table" | "template";
   templateId?: string;
-};
-
-type EnsureTouchStreamError = {
-  kind: "touch_stream_content_type_mismatch";
-  message: string;
 };
 
 type RestrictedTemplateBucketState = {
@@ -111,22 +102,17 @@ type StreamRuntimeTotals = {
 export class TouchInterpreterManager {
   private readonly cfg: Config;
   private readonly db: SqliteDurableStore;
-  private readonly ingest: IngestQueue;
-  private readonly notifier: StreamNotifier;
   private readonly registry: SchemaRegistryStore;
-  private readonly backpressure?: BackpressureGate;
   private readonly pool: TouchInterpreterWorkerPool;
   private timer: any | null = null;
   private running = false;
   private stopping = false;
   private readonly dirty = new Set<string>();
   private readonly failures = new FailureTracker(1024);
-  private readonly lastTrimMs = new LruCache<string, number>(1024);
   private readonly lastBaseWalGc = new LruCache<string, { atMs: number; through: bigint }>(1024);
   private readonly templates: LiveTemplateRegistry;
   private readonly liveMetrics: LiveMetricsV2;
   private readonly lastTemplateGcMsByStream = new LruCache<string, number>(1024);
-  private readonly routingKeyNotifier?: RoutingKeyNotifier;
   private readonly journals = new Map<string, TouchJournal>();
   private readonly fineLagCoarseOnlyByStream = new Map<string, boolean>();
   private readonly touchModeByStream = new Map<string, "idle" | "fine" | "restricted" | "coarseOnly">();
@@ -146,26 +132,20 @@ export class TouchInterpreterManager {
     ingest: IngestQueue,
     notifier: StreamNotifier,
     registry: SchemaRegistryStore,
-    backpressure?: BackpressureGate,
-    routingKeyNotifier?: RoutingKeyNotifier
+    backpressure?: BackpressureGate
   ) {
     this.cfg = cfg;
     this.db = db;
-    this.ingest = ingest;
-    this.notifier = notifier;
     this.registry = registry;
-    this.backpressure = backpressure;
     this.pool = new TouchInterpreterWorkerPool(cfg, cfg.interpreterWorkers);
     this.templates = new LiveTemplateRegistry(db);
     this.liveMetrics = new LiveMetricsV2(db, ingest, {
-      routingKeyNotifier,
-      getTouchJournal: (derivedStream) => {
-        const j = this.journals.get(derivedStream);
+      getTouchJournal: (stream) => {
+        const j = this.journals.get(stream);
         if (!j) return null;
         return { meta: j.getMeta(), interval: j.snapshotAndResetIntervalStats() };
       },
     });
-    this.routingKeyNotifier = routingKeyNotifier;
   }
 
   start(): void {
@@ -261,33 +241,6 @@ export class TouchInterpreterManager {
         }
       }
 
-      // Opportunistically enforce touch retention. This keeps internal touch
-      // WAL bounded even if the touch stream isn't being actively read.
-      for (const stream of stateByStream.keys()) {
-        if (this.stopping) break;
-        const srow = this.db.getStream(stream);
-        if (!srow || this.db.isDeleted(srow)) continue;
-        const regRes = this.registry.getRegistryResult(stream);
-        if (Result.isError(regRes)) {
-          // eslint-disable-next-line no-console
-          console.error("touch registry read failed", stream, regRes.error.message);
-          continue;
-        }
-        const reg = regRes.value;
-        if (!isTouchEnabled(reg.interpreter)) continue;
-        const derived = resolveTouchStreamName(stream, reg.interpreter.touch);
-        if ((reg.interpreter.touch.storage ?? "memory") === "sqlite") {
-          const ensureRes = this.ensureTouchStream(derived);
-          if (Result.isError(ensureRes)) {
-            // eslint-disable-next-line no-console
-            console.error("touch retention stream validation failed", stream, ensureRes.error.message);
-            continue;
-          }
-          const retentionMs = reg.interpreter.touch.retention?.maxAgeMs;
-          if (retentionMs != null) this.maybeTrimTouchStream(derived, retentionMs);
-        }
-      }
-
       // Opportunistically GC base WAL beyond the interpreter checkpoint.
       //
       // commitManifest() already GC's on upload, but it can't retroactively GC
@@ -369,7 +322,6 @@ export class TouchInterpreterManager {
       return;
     }
     const touchCfg = reg.interpreter.touch;
-    const touchStorage = touchCfg.storage ?? "memory";
     const failProcessing = (message: string): void => {
       this.failures.recordFailure(stream);
       this.liveMetrics.recordInterpreterError(stream, touchCfg);
@@ -378,24 +330,19 @@ export class TouchInterpreterManager {
     };
 
     const nowMs = Date.now();
-    const hotFine = touchStorage === "memory" ? this.getHotFineSnapshot(stream, touchCfg, nowMs) : null;
+    const hotFine = this.getHotFineSnapshot(stream, touchCfg, nowMs);
     const fineWaitersActive = hotFine?.fineWaitersActive ?? 0;
     const coarseWaitersActive = hotFine?.coarseWaitersActive ?? 0;
-    const hasAnyWaiters = touchStorage === "memory" ? fineWaitersActive + coarseWaitersActive > 0 : true;
+    const hasAnyWaiters = fineWaitersActive + coarseWaitersActive > 0;
     const hasFineDemand =
-      touchStorage === "memory"
-        ? fineWaitersActive > 0 || (hotFine?.broadFineWaitersActive ?? 0) > 0 || (hotFine?.hotKeyCount ?? 0) > 0 || (hotFine?.hotTemplateCount ?? 0) > 0
-        : true;
+      fineWaitersActive > 0 || (hotFine?.broadFineWaitersActive ?? 0) > 0 || (hotFine?.hotKeyCount ?? 0) > 0 || (hotFine?.hotTemplateCount ?? 0) > 0;
 
     // Guardrail: when lag/backlog grows too large, temporarily suppress
     // fine/template touches (coarse table touches are still emitted).
     const lagAtStart = toOffset >= interpretedThrough ? toOffset - interpretedThrough : 0n;
     const suppressFineDueToLag = this.computeSuppressFineDueToLag(stream, touchCfg, lagAtStart, hasFineDemand);
-    if (touchStorage === "memory") {
-      const derived = resolveTouchStreamName(stream, touchCfg);
-      const j = this.getOrCreateJournal(derived, touchCfg);
-      j.setCoalesceMs(this.computeAdaptiveCoalesceMs(touchCfg, lagAtStart, hasAnyWaiters));
-    }
+    const j = this.getOrCreateJournal(stream, touchCfg);
+    j.setCoalesceMs(this.computeAdaptiveCoalesceMs(touchCfg, lagAtStart, hasAnyWaiters));
 
     const fineBudgetPerBatch = Math.max(0, Math.floor(touchCfg.fineTouchBudgetPerBatch ?? 2000));
     const lagReservedFineBudgetPerBatch = Math.max(0, Math.floor(touchCfg.lagReservedFineTouchBudgetPerBatch ?? 200));
@@ -480,7 +427,7 @@ export class TouchInterpreterManager {
     let fineSkippedColdKey = 0;
     let fineSkippedTemplateBucket = 0;
 
-    if (touchStorage === "memory" && hotFine && hotFine.keyFilteringEnabled && fineGranularity !== "template") {
+    if (hotFine && hotFine.keyFilteringEnabled && fineGranularity !== "template") {
       const keyActiveSet = hotFine.hotKeyActiveSet;
       const keyGraceSet = hotFine.hotKeyGraceSet;
       const keyCount = (keyActiveSet?.size ?? 0) + (keyGraceSet?.size ?? 0);
@@ -503,76 +450,22 @@ export class TouchInterpreterManager {
       }
     }
 
-    if (touchStorage === "memory" && fineGranularity === "template" && touches.length > 0) {
+    if (fineGranularity === "template" && touches.length > 0) {
       const coalesced = this.coalesceRestrictedTemplateTouches(stream, touchCfg, touches);
       touches = coalesced.touches;
       fineSkippedTemplateBucket = coalesced.dropped;
     }
 
     if (touches.length > 0) {
-      const derived = res.derivedStream;
-      if (touchStorage === "sqlite") {
-        const ensureRes = this.ensureTouchStream(derived);
-        if (Result.isError(ensureRes)) {
-          failProcessing(ensureRes.error.message);
-          return;
+      const j = this.getOrCreateJournal(stream, touchCfg);
+      for (const t of touches) {
+        let sourceOffsetSeq: bigint | undefined;
+        try {
+          sourceOffsetSeq = BigInt(t.watermark);
+        } catch {
+          sourceOffsetSeq = undefined;
         }
-        const encoder = new TextEncoder();
-        for (const t of touches) {
-          if (!t.key) {
-            failProcessing("sqlite touch storage requires routing key strings");
-            return;
-          }
-        }
-        const rows = touches.map((t) => ({
-          routingKey: encoder.encode(t.key!),
-          contentType: "application/json",
-          payload: encoder.encode(
-            JSON.stringify({
-              sourceOffset: t.watermark,
-              entity: t.entity,
-              kind: t.kind,
-              ...(t.kind === "template" && t.templateId ? { templateId: t.templateId } : {}),
-            })
-          ),
-        }));
-        const appendRes = await this.ingest.appendInternal({
-          stream: derived,
-          baseAppendMs: this.db.nowMs(),
-          rows,
-          contentType: "application/json",
-        });
-        if (Result.isError(appendRes)) {
-          failProcessing(`touch append failed: ${appendRes.error.kind}`);
-          return;
-        }
-        if (appendRes.value.appendedRows > 0) {
-          this.notifier.notify(derived, appendRes.value.lastOffset);
-          if (this.routingKeyNotifier) {
-            const appended = appendRes.value.appendedRows;
-            const start = appendRes.value.lastOffset - BigInt(appended) + 1n;
-            let keys = touches.map((t) => t.key ?? "");
-            // Be defensive: only notify for the rows we actually appended.
-            if (keys.length !== appended) keys = keys.slice(Math.max(0, keys.length - appended));
-            let seq = start;
-            for (const k of keys) {
-              if (!k) continue;
-              this.routingKeyNotifier.notify(derived, k, seq);
-              seq += 1n;
-            }
-          }
-        }
-      } else {
-        const j = this.getOrCreateJournal(derived, touchCfg);
-        for (const t of touches) {
-          let sourceOffsetSeq: bigint | undefined;
-          try {
-            sourceOffsetSeq = BigInt(t.watermark);
-          } catch {
-            sourceOffsetSeq = undefined;
-          }
-          j.touch(t.keyId >>> 0, sourceOffsetSeq);
-        }
+        j.touch(t.keyId >>> 0, sourceOffsetSeq);
       }
     }
 
@@ -647,38 +540,6 @@ export class TouchInterpreterManager {
     this.db.updateStreamInterpreterThrough(stream, res.processedThrough);
     if (res.processedThrough < toOffset) this.dirty.add(stream);
     this.failures.recordSuccess(stream);
-  }
-
-  private ensureTouchStream(stream: string): Result<void, EnsureTouchStreamError> {
-    const existing = this.db.getStream(stream);
-    if (existing) {
-      if (String(existing.content_type) !== "application/json") {
-        return Result.err({
-          kind: "touch_stream_content_type_mismatch",
-          message: `touch stream content-type mismatch: ${existing.content_type}`,
-        });
-      }
-      if ((existing.stream_flags & STREAM_FLAG_TOUCH) === 0) this.db.addStreamFlags(stream, STREAM_FLAG_TOUCH);
-      return Result.ok(undefined);
-    }
-    this.db.ensureStream(stream, { contentType: "application/json", streamFlags: STREAM_FLAG_TOUCH });
-    return Result.ok(undefined);
-  }
-
-  private maybeTrimTouchStream(stream: string, maxAgeMs: number): void {
-    const now = Date.now();
-    const last = this.lastTrimMs.get(stream) ?? 0;
-    // Throttle trims; tick can run frequently.
-    if (now - last < 10_000) return;
-    this.lastTrimMs.set(stream, now);
-
-    try {
-      const res = this.db.trimWalByAge(stream, maxAgeMs);
-      if (res.trimmedBytes > 0 && this.backpressure) this.backpressure.adjustOnWalTrim(res.trimmedBytes);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("touch retention trim failed", stream, e);
-    }
   }
 
   private maybeGcBaseWal(stream: string, uploadedThrough: bigint, interpretedThrough: bigint): void {
@@ -784,8 +645,6 @@ export class TouchInterpreterManager {
     templateIdsUsed: string[];
     interestMode: "fine" | "coarse";
   }): () => void {
-    if ((args.touchCfg.storage ?? "memory") !== "memory") return () => {};
-
     const nowMs = Date.now();
     const limits = this.getHotFineLimits(args.touchCfg);
     const state = this.getOrCreateHotFineState(args.stream);
@@ -878,10 +737,9 @@ export class TouchInterpreterManager {
     journalTimeoutSweepMsTotal: number;
   } {
     const nowMs = Date.now();
-    const hot = (args.touchCfg.storage ?? "memory") === "memory" ? this.getHotFineSnapshot(args.stream, args.touchCfg, nowMs) : null;
+    const hot = this.getHotFineSnapshot(args.stream, args.touchCfg, nowMs);
     const totals = this.getOrCreateRuntimeTotals(args.stream);
-    const derived = resolveTouchStreamName(args.stream, args.touchCfg);
-    const journal = (args.touchCfg.storage ?? "memory") === "memory" ? this.journals.get(derived) ?? null : null;
+    const journal = this.journals.get(args.stream) ?? null;
     const journalTotals = journal?.getTotalStats();
     return {
       lagSourceOffsets: this.lagSourceOffsetsByStream.get(args.stream) ?? 0,
@@ -953,8 +811,8 @@ export class TouchInterpreterManager {
     return Array.from(entities);
   }
 
-  getOrCreateJournal(derivedStream: string, touchCfg: TouchConfig): TouchJournal {
-    const existing = this.journals.get(derivedStream);
+  getOrCreateJournal(stream: string, touchCfg: TouchConfig): TouchJournal {
+    const existing = this.journals.get(stream);
     if (existing) return existing;
     const mem = touchCfg.memory ?? {};
     const j = new TouchJournal({
@@ -964,7 +822,7 @@ export class TouchInterpreterManager {
       pendingMaxKeys: mem.pendingMaxKeys ?? 100_000,
       keyIndexMaxKeys: mem.keyIndexMaxKeys ?? 32,
     });
-    this.journals.set(derivedStream, j);
+    this.journals.set(stream, j);
     return j;
   }
 
@@ -978,8 +836,8 @@ export class TouchInterpreterManager {
     return maxCoalesceMs;
   }
 
-  getJournalIfExists(derivedStream: string): TouchJournal | null {
-    return this.journals.get(derivedStream) ?? null;
+  getJournalIfExists(stream: string): TouchJournal | null {
+    return this.journals.get(stream) ?? null;
   }
 
   private computeSuppressFineDueToLag(stream: string, touchCfg: TouchConfig, lagAtStart: bigint, hasFineDemand: boolean): boolean {
@@ -1014,7 +872,7 @@ export class TouchInterpreterManager {
         hasActiveWaiters = false;
       } else {
         const reg = regRes.value;
-        if (isTouchEnabled(reg.interpreter) && (reg.interpreter.touch.storage ?? "memory") === "memory") {
+        if (isTouchEnabled(reg.interpreter)) {
           const snap = this.getHotFineSnapshot(stream, reg.interpreter.touch, nowMs);
           hasActiveWaiters = snap.fineWaitersActive + snap.coarseWaitersActive > 0;
         }

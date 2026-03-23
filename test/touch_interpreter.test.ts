@@ -14,7 +14,6 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     rootDir,
     dbPath: `${rootDir}/wal.sqlite`,
     port: 0,
-    // Disable background polling; tests call tick() manually.
     interpreterCheckIntervalMs: 0,
     interpreterWorkers: 1,
     interpreterMaxBatchRows: 1000,
@@ -31,111 +30,115 @@ async function fetchJson(url: string, init: RequestInit): Promise<any> {
   return JSON.parse(text);
 }
 
-describe("live touches v2 (state protocol)", () => {
-  test("update produces table touch + before/after template touches when template is active", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-livev2-"));
+async function installTouchInterpreter(baseUrl: string, stream: string, touch: Record<string, unknown> = {}): Promise<void> {
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      interpreter: {
+        apiVersion: "durable.streams/stream-interpreter/v1",
+        format: "durable.streams/state-protocol/v1",
+        touch: {
+          enabled: true,
+          ...touch,
+        },
+      },
+    }),
+  });
+}
+
+describe("live touches (state protocol)", () => {
+  test("update produces table and template invalidations when a template is active", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-"));
     let app: ReturnType<typeof createApp> | null = null;
     let server: any | null = null;
     try {
-      const cfg = makeConfig(root);
-      app = createApp(cfg, new MockR2Store());
+      app = createApp(makeConfig(root), new MockR2Store());
       app.deps.segmenter.stop();
       app.deps.uploader.stop();
 
       server = Bun.serve({ port: 0, fetch: app.fetch });
       const baseUrl = `http://localhost:${server.port}`;
 
-      const src = "state";
-      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const stream = "state";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-
-      const interpreter = {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
-        touch: {
-          enabled: true,
-          storage: "sqlite",
-          // Keep tests bounded/deterministic.
-          retention: { maxAgeMs: 60 * 60 * 1000 },
-        },
-      };
-
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interpreter }),
-      });
+      await installTouchInterpreter(baseUrl, stream);
 
       const entity = "posts";
-      const fieldsSorted = ["tenantId", "userId"];
-      const templateId = templateIdFor(entity, fieldsSorted);
+      const fields = ["tenantId", "userId"];
+      const templateId = templateIdFor(entity, fields);
       const tableKey = tableKeyFor(entity);
       const beforeKey = watchKeyFor(templateId, ["t1", "123"]);
       const afterKey = watchKeyFor(templateId, ["t1", "456"]);
 
-      // Activate template before any events are appended to avoid backfill ambiguity.
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/templates/activate`, {
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           templates: [
             {
               entity,
-              fields: fieldsSorted.map((name) => ({ name, encoding: "string" })),
+              fields: fields.map((name) => ({ name, encoding: "string" })),
             },
           ],
           inactivityTtlMs: 60 * 60 * 1000,
         }),
       });
 
-      const update = {
-        type: entity,
-        key: "post:1",
-        value: { tenantId: "t1", userId: "456" },
-        oldValue: { tenantId: "t1", userId: "123" },
-        headers: { operation: "update" },
-      };
-
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(update),
-      });
-
-      app.deps.touch.notify(src);
-      await app.deps.touch.tick();
-
-      const readTouch = async (key: string): Promise<any[]> => {
-        const res = await fetch(
-          `${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/pk/${encodeURIComponent(key)}?offset=-1&format=json`
-        );
-        expect(res.status).toBe(200);
-        return (await res.json()) as any[];
-      };
-
-      expect(await readTouch(tableKey)).toEqual([{ sourceOffset: "0", entity, kind: "table" }]);
-      expect(await readTouch(beforeKey)).toEqual([{ sourceOffset: "0", entity, kind: "template", templateId }]);
-      expect(await readTouch(afterKey)).toEqual([{ sourceOffset: "0", entity, kind: "template", templateId }]);
-
-      const meta = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/meta`, { method: "GET" });
-      expect(typeof meta.currentTouchOffset).toBe("string");
-      expect(typeof meta.oldestAvailableTouchOffset).toBe("string");
-
-      const wait = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/wait`, {
+      const tableWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          keys: [tableKey, beforeKey, afterKey],
-          sinceTouchOffset: "-1",
-          timeoutMs: 0,
+          cursor: "now",
+          keys: [tableKey],
+          interestMode: "coarse",
+          timeoutMs: 2000,
         }),
       });
-      expect(wait.touched).toBe(true);
-      expect(typeof wait.touchOffset).toBe("string");
-      expect(typeof wait.currentTouchOffset).toBe("string");
-      expect(Array.isArray(wait.touchedKeys)).toBe(true);
+      const waitForFineKey = (key: string) =>
+        fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cursor: "now",
+            keys: [key],
+            templateIdsUsed: [templateId],
+            timeoutMs: 2000,
+          }),
+        });
+      const beforeWaitPromise = waitForFineKey(beforeKey);
+      const afterWaitPromise = waitForFineKey(afterKey);
+
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", userId: "456" },
+          oldValue: { tenantId: "t1", userId: "123" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const tableWait = await tableWaitPromise;
+      expect(tableWait.touched).toBe(true);
+
+      const beforeWait = await beforeWaitPromise;
+      expect(beforeWait.touched).toBe(true);
+      expect(beforeWait.effectiveWaitKind).toBe("fineKey");
+
+      const afterWait = await afterWaitPromise;
+      expect(afterWait.touched).toBe(true);
+      expect(afterWait.effectiveWaitKind).toBe("fineKey");
     } finally {
       try {
         server?.stop?.();
@@ -151,85 +154,87 @@ describe("live touches v2 (state protocol)", () => {
     }
   });
 
-  test("onMissingBefore=coarse suppresses template touches when update is missing oldValue", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-livev2-missing-before-"));
+  test("onMissingBefore=coarse suppresses template invalidation when update is missing oldValue", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-missing-before-"));
     let app: ReturnType<typeof createApp> | null = null;
     let server: any | null = null;
     try {
-      const cfg = makeConfig(root);
-      app = createApp(cfg, new MockR2Store());
+      app = createApp(makeConfig(root), new MockR2Store());
       app.deps.segmenter.stop();
       app.deps.uploader.stop();
 
       server = Bun.serve({ port: 0, fetch: app.fetch });
       const baseUrl = `http://localhost:${server.port}`;
 
-      const src = "state_missing_before";
-      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const stream = "state_missing_before";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-
-      const interpreter = {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
-        touch: {
-          enabled: true,
-          storage: "sqlite",
-          retention: { maxAgeMs: 60 * 60 * 1000 },
-          onMissingBefore: "coarse",
-        },
-      };
-
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interpreter }),
-      });
+      await installTouchInterpreter(baseUrl, stream, { onMissingBefore: "coarse" });
 
       const entity = "posts";
-      const fieldsSorted = ["tenantId", "userId"];
-      const templateId = templateIdFor(entity, fieldsSorted);
+      const fields = ["tenantId", "userId"];
+      const templateId = templateIdFor(entity, fields);
       const tableKey = tableKeyFor(entity);
       const afterKey = watchKeyFor(templateId, ["t1", "456"]);
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/templates/activate`, {
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           templates: [
             {
               entity,
-              fields: fieldsSorted.map((name) => ({ name, encoding: "string" })),
+              fields: fields.map((name) => ({ name, encoding: "string" })),
             },
           ],
           inactivityTtlMs: 60 * 60 * 1000,
         }),
       });
 
-      const update = {
-        type: entity,
-        key: "post:1",
-        value: { tenantId: "t1", userId: "456" },
-        headers: { operation: "update" },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const tableWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(update),
+        body: JSON.stringify({
+          cursor: "now",
+          keys: [tableKey],
+          interestMode: "coarse",
+          timeoutMs: 2000,
+        }),
+      });
+      const fineWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: "now",
+          keys: [afterKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 2000,
+        }),
       });
 
-      app.deps.touch.notify(src);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", userId: "456" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
       await app.deps.touch.tick();
 
-      const readTouch = async (key: string): Promise<any[]> => {
-        const res = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/pk/${encodeURIComponent(key)}?offset=-1&format=json`);
-        expect(res.status).toBe(200);
-        return (await res.json()) as any[];
-      };
+      const tableWait = await tableWaitPromise;
+      expect(tableWait.touched).toBe(true);
 
-      expect(await readTouch(tableKey)).toEqual([{ sourceOffset: "0", entity, kind: "table" }]);
-      expect(await readTouch(afterKey)).toEqual([]);
+      const fineWait = await fineWaitPromise;
+      expect(fineWait.touched).toBe(false);
     } finally {
       try {
         server?.stop?.();
@@ -245,106 +250,100 @@ describe("live touches v2 (state protocol)", () => {
     }
   });
 
-  test("activation boundary prevents backfill template touches", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-livev2-boundary-"));
+  test("activation boundary prevents backfill template invalidation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-boundary-"));
     let app: ReturnType<typeof createApp> | null = null;
     let server: any | null = null;
     try {
-      const cfg = makeConfig(root);
-      app = createApp(cfg, new MockR2Store());
+      app = createApp(makeConfig(root), new MockR2Store());
       app.deps.segmenter.stop();
       app.deps.uploader.stop();
 
       server = Bun.serve({ port: 0, fetch: app.fetch });
       const baseUrl = `http://localhost:${server.port}`;
 
-      const src = "state2";
-      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const stream = "state_boundary";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-
-      const interpreter = {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
-        touch: {
-          enabled: true,
-          storage: "sqlite",
-          retention: { maxAgeMs: 60 * 60 * 1000 },
-        },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interpreter }),
-      });
+      await installTouchInterpreter(baseUrl, stream);
 
       const entity = "posts";
-      const fieldsSorted = ["tenantId", "userId"];
-      const templateId = templateIdFor(entity, fieldsSorted);
-      const watchKey = watchKeyFor(templateId, ["t1", "123"]);
+      const fields = ["tenantId", "userId"];
+      const templateId = templateIdFor(entity, fields);
+      const fineKey = watchKeyFor(templateId, ["t1", "123"]);
 
-      // Append an event first (offset 0).
-      const update0 = {
-        type: entity,
-        key: "post:1",
-        value: { tenantId: "t1", userId: "123" },
-        oldValue: { tenantId: "t1", userId: "000" },
-        headers: { operation: "update" },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const waitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(update0),
+        body: JSON.stringify({
+          cursor: "now",
+          keys: [fineKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 2000,
+        }),
       });
 
-      // Activate template after the event exists; active_from_source_offset should
-      // be >= 1 so offset 0 does not produce template touches.
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/templates/activate`, {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", userId: "123" },
+          oldValue: { tenantId: "t1", userId: "000" },
+          headers: { operation: "update" },
+        }),
+      });
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           templates: [
             {
               entity,
-              fields: fieldsSorted.map((name) => ({ name, encoding: "string" })),
+              fields: fields.map((name) => ({ name, encoding: "string" })),
             },
           ],
           inactivityTtlMs: 60 * 60 * 1000,
         }),
       });
 
-      app.deps.touch.notify(src);
-      await app.deps.touch.tick();
+      const metaAfterActivation = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
 
-      const readTouch = async (key: string): Promise<any[]> => {
-        const res = await fetch(
-          `${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/pk/${encodeURIComponent(key)}?offset=-1&format=json`
-        );
-        expect(res.status).toBe(200);
-        return (await res.json()) as any[];
-      };
-
-      expect(await readTouch(watchKey)).toEqual([]);
-
-      // Append a second event (offset 1) which should generate a template touch.
-      const update1 = {
-        type: entity,
-        key: "post:1",
-        value: { tenantId: "t1", userId: "123" },
-        oldValue: { tenantId: "t1", userId: "123" },
-        headers: { operation: "update" },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const oldWait = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(update1),
+        body: JSON.stringify({
+          cursor: metaAfterActivation.cursor,
+          keys: [fineKey],
+          timeoutMs: 0,
+        }),
       });
+      expect(oldWait.touched).toBe(false);
 
-      app.deps.touch.notify(src);
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", userId: "123" },
+          oldValue: { tenantId: "t1", userId: "123" },
+          headers: { operation: "update" },
+        }),
+      });
+      app.deps.touch.notify(stream);
       await app.deps.touch.tick();
 
-      expect(await readTouch(watchKey)).toEqual([{ sourceOffset: "1", entity, kind: "template", templateId }]);
+      const newWait = await waitPromise;
+      expect(newWait.touched).toBe(true);
     } finally {
       try {
         server?.stop?.();
@@ -360,139 +359,35 @@ describe("live touches v2 (state protocol)", () => {
     }
   });
 
-  test("touch retention makes offsets stale", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-livev2-ret-"));
+  test("touch/wait supports large key sets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-wait-keys-"));
     let app: ReturnType<typeof createApp> | null = null;
     let server: any | null = null;
     try {
-      const cfg = makeConfig(root);
-      app = createApp(cfg, new MockR2Store());
+      app = createApp(makeConfig(root), new MockR2Store());
       app.deps.segmenter.stop();
       app.deps.uploader.stop();
 
       server = Bun.serve({ port: 0, fetch: app.fetch });
       const baseUrl = `http://localhost:${server.port}`;
 
-      const src = "state_ret";
-      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
+      const stream = "state_wait_many_keys";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
+      await installTouchInterpreter(baseUrl, stream);
 
-      const interpreter = {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
-        touch: {
-          enabled: true,
-          storage: "sqlite",
-          // Trim aggressively.
-          retention: { maxAgeMs: 0 },
-        },
-      };
-
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interpreter }),
-      });
-
-      // Two different entities => two different table keys => at least two touch rows.
-      const update1 = {
-        type: "comments",
-        key: "comment:1",
-        value: { tenantId: "t1", userId: "777" },
-        oldValue: { tenantId: "t1", userId: "666" },
-        headers: { operation: "update" },
-      };
-      const update2 = {
-        type: "posts",
-        key: "post:1",
-        value: { tenantId: "t1", userId: "456" },
-        oldValue: { tenantId: "t1", userId: "123" },
-        headers: { operation: "update" },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify([update1, update2]),
-      });
-
-      app.deps.touch.notify(src);
-      await app.deps.touch.tick();
-
-      const meta = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/meta`, { method: "GET" });
-      expect(meta.currentTouchOffset).not.toBe(meta.oldestAvailableTouchOffset);
-
-      const postsTableKey = tableKeyFor("posts");
-      const wait = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/wait`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ keys: [postsTableKey], sinceTouchOffset: "-1", timeoutMs: 0 }),
-      });
-      expect(wait.stale).toBe(true);
-      expect(wait.currentTouchOffset).toBe(meta.currentTouchOffset);
-      expect(wait.oldestAvailableTouchOffset).toBe(meta.oldestAvailableTouchOffset);
-    } finally {
-      try {
-        server?.stop?.();
-      } catch {
-        // ignore
-      }
-      try {
-        app?.close?.();
-      } catch {
-        // ignore
-      }
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("touch/wait supports large key sets without hitting SQLite variable limits", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-livev2-wait-keys-"));
-    let app: ReturnType<typeof createApp> | null = null;
-    let server: any | null = null;
-    try {
-      const cfg = makeConfig(root);
-      app = createApp(cfg, new MockR2Store());
-      app.deps.segmenter.stop();
-      app.deps.uploader.stop();
-
-      server = Bun.serve({ port: 0, fetch: app.fetch });
-      const baseUrl = `http://localhost:${server.port}`;
-
-      const src = "state_wait_many_keys";
-      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-      });
-
-      const interpreter = {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
-        touch: { enabled: true, storage: "sqlite", retention: { maxAgeMs: 60 * 60 * 1000 } },
-      };
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ interpreter }),
-      });
-
-      // Append a single change so the touch stream has at least one row.
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type: "posts", key: "post:1", value: { id: "post:1" }, headers: { operation: "insert" } }),
-      });
-      app.deps.touch.notify(src);
-      await app.deps.touch.tick();
-
-      // 1000 keys + 3 fixed SQL params would exceed common SQLite variable limits
-      // if implemented as a single `IN (...)` query.
+      const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
       const keys = Array.from({ length: 1000 }, (_, i) => `${i.toString(16).padStart(16, "0")}`);
-      const res = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(src)}/touch/wait`, {
+      const res = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ keys, sinceTouchOffset: "-1", timeoutMs: 0 }),
+        body: JSON.stringify({
+          cursor: meta0.cursor,
+          keys,
+          timeoutMs: 0,
+        }),
       });
       expect(res.touched).toBe(false);
     } finally {

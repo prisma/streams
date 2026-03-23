@@ -1,4 +1,3 @@
-import { defaultTouchStreamName } from "../../src/touch/naming";
 import { templateIdFor, watchKeyFor, watchKeyIdFor } from "../../src/touch/live_keys";
 import { startLocalDurableStreamsServer, type DurableStreamsLocalServer } from "../../src/local";
 import { getStatus } from "../../src/local/state";
@@ -113,7 +112,6 @@ async function ensureSourceSchemaAndInterpreter(baseUrl: string, stream: string)
     format: "durable.streams/state-protocol/v1",
     touch: {
       enabled: true,
-      retention: { maxAgeMs: 60 * 60 * 1000 },
       coarseIntervalMs: 20,
       touchCoalesceWindowMs: 20,
     },
@@ -1061,7 +1059,7 @@ Options:
   --ds-name <name>       Local Durable Streams server name (default: live-fields-demo)
   --stream <name>        Source stream for field state events (default: demo.live.fields)
   --updates-stream <n>   Update stream for client long-poll subscriptions (default: <stream>.updates)
-  --reset                Reset source + touch companion + updates stream before startup
+  --reset                Reset source + updates stream before startup
 `);
     process.exit(0);
   }
@@ -1070,10 +1068,8 @@ Options:
   const ds = await startOrReuseLocalDs(args.dsName, args.dsPort);
   const baseUrl = ds.baseUrl;
 
-  const touchStream = defaultTouchStreamName(args.stream);
   if (args.reset) {
     await deleteStream(baseUrl, args.stream);
-    await deleteStream(baseUrl, touchStream);
     await deleteStream(baseUrl, args.updatesStream);
   }
 

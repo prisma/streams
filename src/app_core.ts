@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import type { Config } from "./config";
-import { SqliteDurableStore, STREAM_FLAG_TOUCH } from "./db/db";
+import { SqliteDurableStore } from "./db/db";
 import { IngestQueue, type ProducerInfo, type AppendRow } from "./ingest";
 import type { ObjectStore } from "./objectstore/interface";
 import type { StreamReader, ReadBatch, ReaderError } from "./reader";
@@ -20,8 +20,6 @@ import { BackpressureGate } from "./backpressure";
 import { MemoryGuard } from "./memory";
 import { TouchInterpreterManager } from "./touch/manager";
 import { isTouchEnabled } from "./touch/spec";
-import { resolveTouchStreamName } from "./touch/naming";
-import { RoutingKeyNotifier } from "./touch/routing_key_notifier";
 import { parseTouchCursor } from "./touch/touch_journal";
 import { touchKeyIdFromRoutingKeyResult } from "./touch/touch_key_id";
 import { tableKeyIdFor, templateKeyIdFor } from "./touch/live_keys";
@@ -205,7 +203,6 @@ export type App = {
     os: ObjectStore;
     ingest: IngestQueue;
     notifier: StreamNotifier;
-    touchRoutingKeyNotifier: RoutingKeyNotifier;
     reader: StreamReader;
     segmenter: SegmenterController;
     uploader: UploaderController;
@@ -224,7 +221,6 @@ export type CreateAppRuntimeArgs = {
   db: SqliteDurableStore;
   ingest: IngestQueue;
   notifier: StreamNotifier;
-  touchRoutingKeyNotifier: RoutingKeyNotifier;
   registry: SchemaRegistryStore;
   touch: TouchInterpreterManager;
   stats?: StatsCollector;
@@ -270,15 +266,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   const metrics = new Metrics();
   const ingest = new IngestQueue(cfg, db, stats, backpressure, memory, metrics);
   const notifier = new StreamNotifier();
-  const touchRoutingKeyNotifier = new RoutingKeyNotifier();
   const registry = new SchemaRegistryStore(db);
-  const touch = new TouchInterpreterManager(cfg, db, ingest, notifier, registry, backpressure, touchRoutingKeyNotifier);
+  const touch = new TouchInterpreterManager(cfg, db, ingest, notifier, registry, backpressure);
   const runtime = opts.createRuntime({
     config: cfg,
     db,
     ingest,
     notifier,
-    touchRoutingKeyNotifier,
     registry,
     touch,
     stats,
@@ -495,7 +489,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let pathKeyParam: string | null = null;
         let touchMode:
           | null
-          | { kind: "read"; key: string | null }
           | { kind: "meta" }
           | { kind: "wait" }
           | { kind: "templates_activate" } = null;
@@ -516,12 +509,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         } else if (segments.length >= 2 && segments[segments.length - 2] === "touch" && segments[segments.length - 1] === "wait") {
           touchMode = { kind: "wait" };
           segments.splice(segments.length - 2, 2);
-        } else if (segments.length >= 3 && segments[segments.length - 3] === "touch" && segments[segments.length - 2] === "pk") {
-          touchMode = { kind: "read", key: decodeURIComponent(segments[segments.length - 1]) };
-          segments.splice(segments.length - 3, 3);
-        } else if (segments[segments.length - 1] === "touch") {
-          touchMode = { kind: "read", key: null };
-          segments.pop();
         } else if (segments.length >= 2 && segments[segments.length - 2] === "pk") {
           pathKeyParam = decodeURIComponent(segments[segments.length - 1]);
           segments.splice(segments.length - 2, 2);
@@ -664,24 +651,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           if (!isTouchEnabled(reg.interpreter)) return notFound("touch not enabled");
 
           const touchCfg = reg.interpreter.touch;
-          const touchStorage = touchCfg.storage ?? "memory";
-          const derived = resolveTouchStreamName(stream, touchCfg);
-
-          const ensureTouchStream = (): Result<void, { kind: "touch_stream_content_type_mismatch"; message: string }> => {
-            const existing = db.getStream(derived);
-            if (existing) {
-              if (String(existing.content_type) !== "application/json") {
-                return Result.err({
-                  kind: "touch_stream_content_type_mismatch",
-                  message: `touch stream content-type mismatch: ${existing.content_type}`,
-                });
-              }
-              if ((existing.stream_flags & STREAM_FLAG_TOUCH) === 0) db.addStreamFlags(derived, STREAM_FLAG_TOUCH);
-              return Result.ok(undefined);
-            }
-            db.ensureStream(derived, { contentType: "application/json", streamFlags: STREAM_FLAG_TOUCH });
-            return Result.ok(undefined);
-          };
 
           if (touchMode.kind === "templates_activate") {
             if (req.method !== "POST") return badRequest("unsupported method");
@@ -728,16 +697,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               maxActiveTemplatesPerEntity: touchCfg.templates?.maxActiveTemplatesPerEntity ?? 256,
             };
 
-            let activeFromTouchOffset: string;
-            if (touchStorage === "sqlite") {
-              const touchRes = ensureTouchStream();
-              if (Result.isError(touchRes)) return conflict(touchRes.error.message);
-              const trow = db.getStream(derived)!;
-              const tailSeq = trow.next_offset - 1n;
-              activeFromTouchOffset = encodeOffset(trow.epoch, tailSeq);
-            } else {
-              activeFromTouchOffset = touch.getOrCreateJournal(derived, touchCfg).getCursor();
-            }
+            const activeFromTouchOffset = touch.getOrCreateJournal(stream, touchCfg).getCursor();
 
             const res = touch.activateTemplates({
               stream,
@@ -760,40 +720,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             } catch {
               activeTemplates = 0;
             }
-            if (touchStorage === "sqlite") {
-              const touchRes = ensureTouchStream();
-              if (Result.isError(touchRes)) return conflict(touchRes.error.message);
-              const trow = db.getStream(derived)!;
-              const tailSeq = trow.next_offset - 1n;
-              const currentTouchOffset = encodeOffset(trow.epoch, tailSeq);
-              const oldestSeq = db.getWalOldestOffset(derived);
-              const oldestCursorSeq = oldestSeq == null ? -1n : oldestSeq - 1n;
-              const oldestAvailableTouchOffset = encodeOffset(trow.epoch, oldestCursorSeq);
-              const clampBigInt = (v: bigint): number => {
-                if (v <= 0n) return 0;
-                const max = BigInt(Number.MAX_SAFE_INTEGER);
-                return v > max ? Number.MAX_SAFE_INTEGER : Number(v);
-              };
-              return json(200, {
-                mode: "sqlite",
-                currentTouchOffset,
-                oldestAvailableTouchOffset,
-                coarseIntervalMs: touchCfg.coarseIntervalMs ?? 100,
-                touchCoalesceWindowMs: touchCfg.touchCoalesceWindowMs ?? 100,
-                touchRetentionMs: touchCfg.retention?.maxAgeMs ?? null,
-                activeTemplates,
-                touchWalRetainedRows: clampBigInt(trow.wal_rows),
-                touchWalRetainedBytes: clampBigInt(trow.wal_bytes),
-              });
-            }
-            const meta = touch.getOrCreateJournal(derived, touchCfg).getMeta();
+            const meta = touch.getOrCreateJournal(stream, touchCfg).getMeta();
             const runtime = touch.getTouchRuntimeSnapshot({ stream, touchCfg });
             const interp = db.getStreamInterpreter(stream);
             return json(200, {
               ...meta,
               coarseIntervalMs: touchCfg.coarseIntervalMs ?? 100,
               touchCoalesceWindowMs: touchCfg.touchCoalesceWindowMs ?? 100,
-              touchRetentionMs: null,
               activeTemplates,
               lagSourceOffsets: runtime.lagSourceOffsets,
               touchMode: runtime.touchMode,
@@ -844,7 +777,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             }
             const keysRaw = body?.keys;
             const cursorRaw = body?.cursor;
-            const sinceRaw = body?.sinceTouchOffset;
             const timeoutMsRaw = body?.timeoutMs;
             if (keysRaw !== undefined && (!Array.isArray(keysRaw) || !keysRaw.every((k: any) => typeof k === "string" && k.trim() !== ""))) {
               return badRequest("wait.keys must be a non-empty string array when provided");
@@ -865,13 +797,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             }
             if (keys.length === 0 && keyIds.length === 0) return badRequest("wait requires keys or keyIds");
             if (keyIds.length > 1024) return badRequest("wait.keyIds too large (max 1024)");
-            if (touchStorage === "sqlite" && keys.length === 0) {
-              return badRequest("wait.keys must be a non-empty string array in sqlite touch storage mode");
-            }
-            const cursorOrSince = typeof cursorRaw === "string" && cursorRaw.trim() !== "" ? cursorRaw : sinceRaw;
-            if (typeof cursorOrSince !== "string" || cursorOrSince.trim() === "") {
-              return badRequest(touchStorage === "memory" ? "wait.cursor must be a non-empty string" : "wait.sinceTouchOffset must be a non-empty string");
-            }
+            if (typeof cursorRaw !== "string" || cursorRaw.trim() === "") return badRequest("wait.cursor must be a non-empty string");
+            const cursor = cursorRaw.trim();
 
             const timeoutMs =
               timeoutMsRaw === undefined ? 30_000 : typeof timeoutMsRaw === "number" && Number.isFinite(timeoutMsRaw) ? Math.max(0, Math.min(120_000, timeoutMsRaw)) : null;
@@ -923,16 +850,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                 templates.push({ entity, fields });
               }
               if (templates.length !== declareTemplatesRaw.length) return badRequest("wait.declareTemplates contains invalid template definitions");
-              let activeFromTouchOffset: string;
-              if (touchStorage === "sqlite") {
-                const touchRes = ensureTouchStream();
-                if (Result.isError(touchRes)) return conflict(touchRes.error.message);
-                const trow = db.getStream(derived)!;
-                const tailSeq = trow.next_offset - 1n;
-                activeFromTouchOffset = encodeOffset(trow.epoch, tailSeq);
-              } else {
-                activeFromTouchOffset = touch.getOrCreateJournal(derived, touchCfg).getCursor();
-              }
+              const activeFromTouchOffset = touch.getOrCreateJournal(stream, touchCfg).getCursor();
               touch.activateTemplates({
                 stream,
                 touchCfg,
@@ -943,344 +861,150 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               });
             }
 
-            if (touchStorage === "memory") {
-              const j = touch.getOrCreateJournal(derived, touchCfg);
-              const runtime = touch.getTouchRuntimeSnapshot({ stream, touchCfg });
-              let rawFineKeyIds = keyIds;
-              if (keyIds.length === 0) {
-                const parsedKeyIds: number[] = [];
-                for (const key of keys) {
-                  const keyIdRes = touchKeyIdFromRoutingKeyResult(key);
-                  if (Result.isError(keyIdRes)) return internalError();
-                  parsedKeyIds.push(keyIdRes.value);
-                }
-                rawFineKeyIds = parsedKeyIds;
+            const j = touch.getOrCreateJournal(stream, touchCfg);
+            const runtime = touch.getTouchRuntimeSnapshot({ stream, touchCfg });
+            let rawFineKeyIds = keyIds;
+            if (keyIds.length === 0) {
+              const parsedKeyIds: number[] = [];
+              for (const key of keys) {
+                const keyIdRes = touchKeyIdFromRoutingKeyResult(key);
+                if (Result.isError(keyIdRes)) return internalError();
+                parsedKeyIds.push(keyIdRes.value);
               }
-              const templateWaitKeyIds =
-                templateIdsUsed.length > 0
-                  ? Array.from(new Set(templateIdsUsed.map((templateId) => templateKeyIdFor(templateId) >>> 0)))
-                  : [];
-              let waitKeyIds = rawFineKeyIds;
-              let effectiveWaitKind: "fineKey" | "templateKey" | "tableKey" = "fineKey";
+              rawFineKeyIds = parsedKeyIds;
+            }
+            const templateWaitKeyIds =
+              templateIdsUsed.length > 0
+                ? Array.from(new Set(templateIdsUsed.map((templateId) => templateKeyIdFor(templateId) >>> 0)))
+                : [];
+            let waitKeyIds = rawFineKeyIds;
+            let effectiveWaitKind: "fineKey" | "templateKey" | "tableKey" = "fineKey";
 
-              if (interestMode === "coarse") {
-                effectiveWaitKind = "tableKey";
-              } else if (runtime.touchMode === "restricted" && templateIdsUsed.length > 0) {
-                effectiveWaitKind = "templateKey";
-              } else if (runtime.touchMode === "coarseOnly" && templateIdsUsed.length > 0) {
-                effectiveWaitKind = "tableKey";
-              }
+            if (interestMode === "coarse") {
+              effectiveWaitKind = "tableKey";
+            } else if (runtime.touchMode === "restricted" && templateIdsUsed.length > 0) {
+              effectiveWaitKind = "templateKey";
+            } else if (runtime.touchMode === "coarseOnly" && templateIdsUsed.length > 0) {
+              effectiveWaitKind = "tableKey";
+            }
 
-              if (effectiveWaitKind === "templateKey") {
-                waitKeyIds = templateWaitKeyIds;
-              } else if (effectiveWaitKind === "tableKey") {
-                if (templateIdsUsed.length > 0) {
-                  const entities = touch.resolveTemplateEntitiesForWait({ stream, templateIdsUsed });
-                  waitKeyIds = Array.from(new Set(entities.map((entity) => tableKeyIdFor(entity) >>> 0)));
-                }
-              }
+            if (effectiveWaitKind === "templateKey") {
+              waitKeyIds = templateWaitKeyIds;
+            } else if (effectiveWaitKind === "tableKey" && templateIdsUsed.length > 0) {
+              const entities = touch.resolveTemplateEntitiesForWait({ stream, templateIdsUsed });
+              waitKeyIds = Array.from(new Set(entities.map((entity) => tableKeyIdFor(entity) >>> 0)));
+            }
 
-              // Keep fine waits resilient to runtime mode flips: include template-key
-              // fallbacks even when the current mode is fine. This avoids starvation
-              // when a long-poll starts in fine mode but DS degrades to restricted
-              // before that waiter naturally re-issues.
-              if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0) {
-                const merged = new Set<number>();
-                for (const keyId of waitKeyIds) merged.add(keyId >>> 0);
-                for (const keyId of templateWaitKeyIds) merged.add(keyId >>> 0);
-                waitKeyIds = Array.from(merged);
-              }
+            // Keep fine waits resilient to runtime mode flips: include template-key
+            // fallbacks even when the current mode is fine. This avoids starvation
+            // when a long-poll starts in fine mode but DS degrades to restricted
+            // before that waiter naturally re-issues.
+            if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0) {
+              const merged = new Set<number>();
+              for (const keyId of waitKeyIds) merged.add(keyId >>> 0);
+              for (const keyId of templateWaitKeyIds) merged.add(keyId >>> 0);
+              waitKeyIds = Array.from(merged);
+            }
 
-              if (waitKeyIds.length === 0) {
-                waitKeyIds = rawFineKeyIds;
-                effectiveWaitKind = "fineKey";
-              }
-              const hotInterestKeyIds = interestMode === "fine" ? rawFineKeyIds : waitKeyIds;
-              const releaseHotInterest = touch.beginHotWaitInterest({
-                stream,
-                touchCfg,
-                keyIds: hotInterestKeyIds,
-                templateIdsUsed,
-                interestMode,
-              });
-              try {
-                let sinceGen: number;
-                if (cursorOrSince === "now") {
-                  sinceGen = j.getGeneration();
-                } else {
-                  const parsed = parseTouchCursor(cursorOrSince);
-                  if (!parsed) return badRequest("wait.cursor must be in the form <epochHex>:<generation> or 'now'");
-                  if (parsed.epoch !== j.getEpoch()) {
-                    const latencyMs = Date.now() - waitStartMs;
-                    touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "stale", latencyMs });
-                    return json(200, {
-                      stale: true,
-                      cursor: j.getCursor(),
-                      epoch: j.getEpoch(),
-                      generation: j.getGeneration(),
-                      effectiveWaitKind,
-                      bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                      flushAtMs: j.getLastFlushAtMs(),
-                      bucketStartMs: j.getLastBucketStartMs(),
-                      error: { code: "stale", message: "cursor epoch mismatch; rerun/re-subscribe and start from cursor" },
-                    });
-                  }
-                  sinceGen = parsed.generation;
-                }
-
-                // Clamp bogus future cursors (defensive).
-                const nowGen = j.getGeneration();
-                if (sinceGen > nowGen) sinceGen = nowGen;
-
-                // Fast path: already touched since cursor.
-                if (j.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
+            if (waitKeyIds.length === 0) {
+              waitKeyIds = rawFineKeyIds;
+              effectiveWaitKind = "fineKey";
+            }
+            const hotInterestKeyIds = interestMode === "fine" ? rawFineKeyIds : waitKeyIds;
+            const releaseHotInterest = touch.beginHotWaitInterest({
+              stream,
+              touchCfg,
+              keyIds: hotInterestKeyIds,
+              templateIdsUsed,
+              interestMode,
+            });
+            try {
+              let sinceGen: number;
+              if (cursor === "now") {
+                sinceGen = j.getGeneration();
+              } else {
+                const parsed = parseTouchCursor(cursor);
+                if (!parsed) return badRequest("wait.cursor must be in the form <epochHex>:<generation> or 'now'");
+                if (parsed.epoch !== j.getEpoch()) {
                   const latencyMs = Date.now() - waitStartMs;
-                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "stale", latencyMs });
                   return json(200, {
-                    touched: true,
+                    stale: true,
                     cursor: j.getCursor(),
+                    epoch: j.getEpoch(),
+                    generation: j.getGeneration(),
                     effectiveWaitKind,
                     bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
                     flushAtMs: j.getLastFlushAtMs(),
                     bucketStartMs: j.getLastBucketStartMs(),
+                    error: { code: "stale", message: "cursor epoch mismatch; rerun/re-subscribe and start from cursor" },
                   });
                 }
+                sinceGen = parsed.generation;
+              }
 
-                const deadline = Date.now() + timeoutMs;
-                const remaining = deadline - Date.now();
-                if (remaining <= 0) {
-                  const latencyMs = Date.now() - waitStartMs;
-                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
-                  return json(200, {
-                    touched: false,
-                    cursor: j.getCursor(),
-                    effectiveWaitKind,
-                    bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                    flushAtMs: j.getLastFlushAtMs(),
-                    bucketStartMs: j.getLastBucketStartMs(),
-                  });
-                }
+              const nowGen = j.getGeneration();
+              if (sinceGen > nowGen) sinceGen = nowGen;
 
-                // Avoid lost-wakeup races by capturing the current generation before waiting.
-                const afterGen = j.getGeneration();
-                const hit = await j.waitForAny({ keys: waitKeyIds, afterGeneration: afterGen, timeoutMs: remaining, signal: req.signal });
-                if (req.signal.aborted) return new Response(null, { status: 204 });
-
-                if (hit == null) {
-                  const latencyMs = Date.now() - waitStartMs;
-                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
-                  return json(200, {
-                    touched: false,
-                    cursor: j.getCursor(),
-                    effectiveWaitKind,
-                    bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                    flushAtMs: j.getLastFlushAtMs(),
-                    bucketStartMs: j.getLastBucketStartMs(),
-                  });
-                }
-
+              if (j.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
                 const latencyMs = Date.now() - waitStartMs;
                 touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
                 return json(200, {
                   touched: true,
                   cursor: j.getCursor(),
                   effectiveWaitKind,
-                  bucketMaxSourceOffsetSeq: hit.bucketMaxSourceOffsetSeq.toString(),
-                  flushAtMs: hit.flushAtMs,
-                  bucketStartMs: hit.bucketStartMs,
-                });
-              } finally {
-                releaseHotInterest();
-              }
-            }
-
-            // touchStorage === "sqlite"
-            const touchRes = ensureTouchStream();
-            if (Result.isError(touchRes)) return conflict(touchRes.error.message);
-            const trow = db.getStream(derived)!;
-            const tailSeq = trow.next_offset - 1n;
-            const currentTouchOffset = encodeOffset(trow.epoch, tailSeq);
-            const oldestSeq = db.getWalOldestOffset(derived);
-            const oldestCursorSeq = oldestSeq == null ? -1n : oldestSeq - 1n;
-            const oldestAvailableTouchOffset = encodeOffset(trow.epoch, oldestCursorSeq);
-
-            const staleBody = () => ({
-              stale: true,
-              currentTouchOffset,
-              oldestAvailableTouchOffset,
-              error: {
-                code: "stale",
-                message:
-                  "offset is older than oldestAvailableTouchOffset; rerun/re-subscribe and start from currentTouchOffset",
-              },
-            });
-
-            let sinceSeq: bigint;
-            if (cursorOrSince === "now") {
-              sinceSeq = tailSeq;
-            } else {
-              const sinceRes = parseOffsetResult(cursorOrSince);
-              if (Result.isError(sinceRes)) return badRequest(sinceRes.error.message);
-              sinceSeq = offsetToSeqOrNeg1(sinceRes.value);
-            }
-
-            if (sinceSeq < oldestCursorSeq) {
-              const latencyMs = Date.now() - waitStartMs;
-              touch.recordWaitMetrics({ stream, touchCfg, keysCount: keys.length, outcome: "stale", latencyMs });
-              return json(200, staleBody());
-            }
-
-            const encoder = new TextEncoder();
-            let keyBytes: Uint8Array[] | null = null;
-            const ensureKeyBytes = (): Uint8Array[] => {
-              if (keyBytes) return keyBytes;
-              keyBytes = keys.map((k) => encoder.encode(k));
-              return keyBytes;
-            };
-
-            // Only use in-memory key notifications for small key sets; for huge key
-            // sets this would cause O(keysPerWait) register/unregister overhead.
-            const KEY_NOTIFIER_MAX_KEYS = 32;
-            const useKeyNotifier = keys.length <= KEY_NOTIFIER_MAX_KEYS;
-
-            let cursorSeq = sinceSeq;
-            const deadline = Date.now() + timeoutMs;
-            for (;;) {
-              if (req.signal.aborted) return new Response(null, { status: 204 });
-
-              const latest = db.getStream(derived);
-              if (!latest || db.isDeleted(latest)) return notFound();
-
-              const endSeq = latest.next_offset - 1n;
-              const endTouchOffset = encodeOffset(latest.epoch, endSeq);
-
-              const match = cursorSeq < endSeq ? db.findFirstWalOffsetForRoutingKeys(derived, cursorSeq, endSeq, ensureKeyBytes()) : null;
-              if (match != null) {
-                let touchedKey: string | null = null;
-                try {
-                  const row = db.db.query(`SELECT routing_key FROM wal WHERE stream=? AND offset=? LIMIT 1;`).get(derived, match) as any;
-                  if (row && row.routing_key) {
-                    touchedKey = new TextDecoder().decode(row.routing_key as Uint8Array);
-                  }
-                } catch {
-                  touchedKey = null;
-                }
-                const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: keys.length, outcome: "touched", latencyMs });
-                return json(200, {
-                  touched: true,
-                  touchOffset: encodeOffset(latest.epoch, match),
-                  currentTouchOffset: endTouchOffset,
-                  touchedKeys: touchedKey ? [touchedKey] : [],
+                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
+                  flushAtMs: j.getLastFlushAtMs(),
+                  bucketStartMs: j.getLastBucketStartMs(),
                 });
               }
 
+              const deadline = Date.now() + timeoutMs;
               const remaining = deadline - Date.now();
               if (remaining <= 0) {
-                // Return the tail as-of the timeout moment, not as-of the last scan.
-                const latest2 = db.getStream(derived);
-                if (!latest2 || db.isDeleted(latest2)) return notFound();
-                const endSeq2 = latest2.next_offset - 1n;
-                const endTouchOffset2 = encodeOffset(latest2.epoch, endSeq2);
                 const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: keys.length, outcome: "timeout", latencyMs });
-                return json(200, { touched: false, currentTouchOffset: endTouchOffset2 });
-              }
-
-              if (useKeyNotifier) {
-                const hit = await touchRoutingKeyNotifier.waitForAny({
-                  stream: derived,
-                  keys,
-                  afterSeq: endSeq,
-                  timeoutMs: remaining,
-                  signal: req.signal,
-                });
-                if (req.signal.aborted) return new Response(null, { status: 204 });
-
-                const latest2 = db.getStream(derived);
-                if (!latest2 || db.isDeleted(latest2)) return notFound();
-                const endSeq2 = latest2.next_offset - 1n;
-                const endTouchOffset2 = encodeOffset(latest2.epoch, endSeq2);
-
-                if (hit == null) {
-                  const latencyMs = Date.now() - waitStartMs;
-                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: keys.length, outcome: "timeout", latencyMs });
-                  return json(200, { touched: false, currentTouchOffset: endTouchOffset2 });
-                }
-
-                const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: keys.length, outcome: "touched", latencyMs });
+                touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
                 return json(200, {
-                  touched: true,
-                  touchOffset: encodeOffset(latest2.epoch, hit.seq),
-                  currentTouchOffset: endTouchOffset2,
-                  touchedKeys: [hit.key],
+                  touched: false,
+                  cursor: j.getCursor(),
+                  effectiveWaitKind,
+                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
+                  flushAtMs: j.getLastFlushAtMs(),
+                  bucketStartMs: j.getLastBucketStartMs(),
                 });
               }
 
-              // Fallback: wait for any new touch rows. Cursor advances to the tail we already scanned.
-              await notifier.waitFor(derived, endSeq, remaining, req.signal);
+              const afterGen = j.getGeneration();
+              const hit = await j.waitForAny({ keys: waitKeyIds, afterGeneration: afterGen, timeoutMs: remaining, signal: req.signal });
               if (req.signal.aborted) return new Response(null, { status: 204 });
-              cursorSeq = endSeq;
+
+              if (hit == null) {
+                const latencyMs = Date.now() - waitStartMs;
+                touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
+                return json(200, {
+                  touched: false,
+                  cursor: j.getCursor(),
+                  effectiveWaitKind,
+                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
+                  flushAtMs: j.getLastFlushAtMs(),
+                  bucketStartMs: j.getLastBucketStartMs(),
+                });
+              }
+
+              const latencyMs = Date.now() - waitStartMs;
+              touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+              return json(200, {
+                touched: true,
+                cursor: j.getCursor(),
+                effectiveWaitKind,
+                bucketMaxSourceOffsetSeq: hit.bucketMaxSourceOffsetSeq.toString(),
+                flushAtMs: hit.flushAtMs,
+                bucketStartMs: hit.bucketStartMs,
+              });
+            } finally {
+              releaseHotInterest();
             }
           }
-
-          // touchMode.kind === "read"
-          if (req.method !== "GET") return badRequest("unsupported method");
-          if (touchStorage === "memory") {
-            return notFound("touch stream read not supported in memory mode; use /touch/wait");
-          }
-          const touchRes = ensureTouchStream();
-          if (Result.isError(touchRes)) return conflict(touchRes.error.message);
-          const trow = db.getStream(derived)!;
-          const tailSeq = trow.next_offset - 1n;
-          const currentTouchOffset = encodeOffset(trow.epoch, tailSeq);
-          const oldestSeq = db.getWalOldestOffset(derived);
-          const oldestCursorSeq = oldestSeq == null ? -1n : oldestSeq - 1n;
-          const oldestAvailableTouchOffset = encodeOffset(trow.epoch, oldestCursorSeq);
-
-          const staleBody = () => ({
-            stale: true,
-            currentTouchOffset,
-            oldestAvailableTouchOffset,
-            error: {
-              code: "stale",
-              message:
-                "offset is older than oldestAvailableTouchOffset; rerun/re-subscribe and start from currentTouchOffset",
-            },
-          });
-
-          // Default to "subscribe from now" for companion touches.
-          const nextUrl = new URL(req.url, "http://localhost");
-          if (!nextUrl.searchParams.has("offset")) {
-            const sinceParam = nextUrl.searchParams.get("since");
-            if (sinceParam) {
-              const sinceRes = parseTimestampMsResult(sinceParam);
-              if (Result.isError(sinceRes)) return badRequest(sinceRes.error.message);
-              const key = touchMode.key ?? nextUrl.searchParams.get("key");
-              const computedRes = await reader.seekOffsetByTimestampResult(derived, sinceRes.value, key ?? null);
-              if (Result.isError(computedRes)) return readerErrorResponse(computedRes.error);
-              nextUrl.searchParams.set("offset", computedRes.value);
-              nextUrl.searchParams.delete("since");
-            } else {
-              nextUrl.searchParams.set("offset", "now");
-            }
-          }
-
-          const requestedOffset = nextUrl.searchParams.get("offset") ?? "";
-          if (requestedOffset !== "now") {
-            const requestedRes = parseOffsetResult(requestedOffset);
-            if (Result.isError(requestedRes)) return badRequest(requestedRes.error.message);
-            const seq = offsetToSeqOrNeg1(requestedRes.value);
-            if (seq < oldestCursorSeq) return json(409, staleBody());
-          }
-
-          // Delegate to the standard stream read path for the internal derived stream.
-          const touchPath = touchMode.key
-            ? `${streamPrefix}${encodeURIComponent(derived)}/pk/${encodeURIComponent(touchMode.key)}`
-            : `${streamPrefix}${encodeURIComponent(derived)}`;
-          nextUrl.pathname = touchPath;
-          return fetch(new Request(nextUrl.toString(), req));
         }
 
         // Stream lifecycle.
@@ -1967,7 +1691,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       os: store,
       ingest,
       notifier,
-      touchRoutingKeyNotifier,
       reader,
       segmenter,
       uploader,

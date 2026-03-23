@@ -9,7 +9,6 @@
  *   bun run experiments/demo/wal_demo_ingest.ts --url http://127.0.0.1:8080 --stream demo.wal --delay-ms 250
  */
 
-import { defaultTouchStreamName } from "../../src/touch/naming";
 import { DEFAULT_BASE_URL, DEFAULT_STREAM, DEMO_INTERPRETER, DEMO_SCHEMA, sleep, hasFlag, parseIntArg, parseStringArg } from "./common";
 import { dsError } from "../../src/util/ds_error.ts";
 
@@ -279,18 +278,16 @@ async function main(): Promise<void> {
   const reset = hasFlag(ARGS, "--reset");
 
   if (reset) {
-    const derived = defaultTouchStreamName(stream);
     // eslint-disable-next-line no-console
-    console.log(`[demo][ingest] reset: deleting ${stream} and ${derived}`);
+    console.log(`[demo][ingest] reset: deleting ${stream}`);
     await deleteStream(baseUrl, stream);
-    await deleteStream(baseUrl, derived);
   }
 
   await ensureStream(baseUrl, stream);
   await ensureSchemaAndInterpreter(baseUrl, stream);
 
   // eslint-disable-next-line no-console
-  console.log(`[demo][ingest] stream ready: ${stream} (touch companion at /v1/stream/${stream}/touch)`);
+  console.log(`[demo][ingest] stream ready: ${stream}`);
   // eslint-disable-next-line no-console
   console.log(`[demo][ingest] delayMs=${delayMs} count=${count === 0 ? "infinite" : String(count)}`);
 
