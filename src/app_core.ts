@@ -32,6 +32,7 @@ import { Result } from "better-result";
 import {
   StreamProfileStore,
   parseProfileUpdateResult,
+  resolveJsonIngestCapability,
   resolveTouchCapability,
   type StreamTouchRoute,
 } from "./profiles";
@@ -312,7 +313,12 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     if (Result.isError(regRes)) {
       return Result.err({ status: 500, message: regRes.error.message });
     }
+    const profileRes = profiles.getProfileResult(stream);
+    if (Result.isError(profileRes)) {
+      return Result.err({ status: 500, message: profileRes.error.message });
+    }
     const reg = regRes.value;
+    const jsonIngest = resolveJsonIngestCapability(profileRes.value);
     const text = new TextDecoder().decode(bodyBytes);
     let arr: any;
     try {
@@ -333,16 +339,26 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
     const rows: AppendRow[] = [];
     for (const v of arr) {
-      if (validator && !validator(v)) {
+      let value = v;
+      let profileRoutingKey: Uint8Array | null = null;
+      if (jsonIngest) {
+        const preparedRes = jsonIngest.prepareRecordResult({ stream, profile: profileRes.value, value: v });
+        if (Result.isError(preparedRes)) return Result.err({ status: 400, message: preparedRes.error.message });
+        value = preparedRes.value.value;
+        profileRoutingKey = keyBytesFromString(preparedRes.value.routingKey);
+      }
+      if (validator && !validator(value)) {
         const msg = validator.errors ? validator.errors.map((e) => e.message).join("; ") : "schema validation failed";
         return Result.err({ status: 400, message: msg });
       }
-      const rkRes = reg.routingKey ? extractRoutingKey(reg, v) : Result.ok(keyBytesFromString(routingKeyHeader));
+      const rkRes = reg.routingKey
+        ? extractRoutingKey(reg, value)
+        : Result.ok(routingKeyHeader != null ? keyBytesFromString(routingKeyHeader) : profileRoutingKey);
       if (Result.isError(rkRes)) return Result.err({ status: 400, message: rkRes.error.message });
       rows.push({
         routingKey: rkRes.value,
         contentType: "application/json",
-        payload: new TextEncoder().encode(JSON.stringify(v)),
+        payload: new TextEncoder().encode(JSON.stringify(value)),
       });
     }
     return Result.ok({ rows });

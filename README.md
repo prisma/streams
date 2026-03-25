@@ -67,13 +67,27 @@ plain `generic` durable streams.
 
 Current built-ins:
 
+- `evlog`
 - `generic`
 - `state-protocol`
 
 Planned next built-ins:
 
-- `evlog`
 - `queue`
+
+### `evlog`
+
+`evlog` is the built-in profile for request-centric wide-event logging.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into a canonical evlog envelope
+- sensitive context keys are redacted before durable append
+- the default routing key is `requestId`, with `traceId` fallback
+
+V1 evlog uses the normal stream append and read APIs. It does not add a local
+SQLite observability index.
 
 ### `generic`
 
@@ -128,6 +142,7 @@ What does **not** belong in `/_schema`:
 - profile selection
 - touch configuration
 - State Protocol runtime behavior
+- evlog envelope normalization or redaction
 
 The supported model is strict: `/_profile` manages profile semantics,
 `/_schema` manages schema evolution.
@@ -168,6 +183,18 @@ State Protocol profile with touch enabled:
       "enabled": true,
       "onMissingBefore": "coarse"
     }
+  }
+}
+```
+
+Evlog profile with redaction:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "evlog",
+    "redactKeys": ["sessiontoken"]
   }
 }
 ```
@@ -216,10 +243,11 @@ Not implemented today:
 
 The supported behavior is:
 
-- use `/_profile` to choose `generic` or `state-protocol`
+- use `/_profile` to choose `generic`, `state-protocol`, or `evlog`
 - use `/_schema` only for schema validation, routing-key config, and schema
   evolution
 - use `/touch/*` only on `state-protocol` streams with touch enabled
+- use normal JSON appends on `evlog` streams to store canonical evlog events
 
 Legacy compatibility branches are intentionally not part of the supported
 surface.

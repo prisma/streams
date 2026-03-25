@@ -7,6 +7,9 @@
   is managed via `/_profile`.
 - `state-protocol` is implemented as a real profile, so live/touch streams are
   configured through `/_profile` instead of the schema registry.
+- `evlog` is implemented as a real profile, so request-log streams normalize
+  JSON writes into canonical wide events with profile-owned redaction and
+  routing-key defaults.
 - The public profile API uses a single `profile` field in requests and
   responses.
 - State-protocol touch processing uses profile-aligned `processor` and

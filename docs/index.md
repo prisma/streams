@@ -19,6 +19,9 @@ and tooling.
 - [durable-streams-spec.md](./durable-streams-spec.md) — canonical HTTP protocol reference for this
   implementation
 - [stream-profiles.md](./stream-profiles.md) — stream/profile/schema model and profile subresource
+- [profile-generic.md](./profile-generic.md) — reference for the baseline `generic` profile
+- [profile-state-protocol.md](./profile-state-protocol.md) — reference for the `state-protocol` profile
+- [profile-evlog.md](./profile-evlog.md) — design and reference for the `evlog` profile
 - [schemas.md](./schemas.md) — schema registry and lens behavior
 - [durable-lens-v1-schema.md](./durable-lens-v1-schema.md) — reference schema for `durable.lens/v1`
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations

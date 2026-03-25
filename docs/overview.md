@@ -8,6 +8,8 @@ Every stream has a profile.
 
 - If no profile is declared when the stream is created, it is treated as
   `generic`.
+- `evlog` is the built-in request-log profile for canonical wide events,
+  redaction, and `requestId`/`traceId` routing-key defaults.
 - `generic` means a plain durable stream with optional user-managed schema
   validation.
 - `state-protocol` is the built-in live/touch profile for JSON State Protocol
@@ -188,6 +190,10 @@ bun run test:conformance
 - [auth.md](./auth.md): current authentication and authorization constraints
 - [architecture.md](./architecture.md): system architecture
 - [stream-profiles.md](./stream-profiles.md): stream/profile/schema model
+- [profile-generic.md](./profile-generic.md): `generic` profile reference
+- [profile-state-protocol.md](./profile-state-protocol.md): `state-protocol`
+  profile reference
+- [profile-evlog.md](./profile-evlog.md): `evlog` profile reference
 - [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants
 - [schemas.md](./schemas.md): schema registry and lens behavior
 - [live.md](./live.md): end-to-end live / touch integration guide and API semantics

@@ -3,6 +3,7 @@ import type { SqliteDurableStore, StreamRow } from "../db/db";
 import { LruCache } from "../util/lru";
 import { dsError } from "../util/ds_error.ts";
 import { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
+import { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
 import {
   buildStreamProfileResource,
   cloneStreamProfileSpec,
@@ -11,6 +12,7 @@ import {
   readProfileKindResult,
   type CachedStreamProfile,
   type StoredProfileRow,
+  type StreamProfileJsonIngestCapability,
   type StreamProfileDefinition,
   type StreamProfileReadError,
   type StreamProfileResource,
@@ -21,10 +23,12 @@ import {
 import { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 
 export * from "./profile";
+export { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
 export { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
 export { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 
 const STREAM_PROFILE_DEFINITIONS: Record<string, StreamProfileDefinition> = {
+  [EVLOG_STREAM_PROFILE_DEFINITION.kind]: EVLOG_STREAM_PROFILE_DEFINITION,
   [GENERIC_STREAM_PROFILE_DEFINITION.kind]: GENERIC_STREAM_PROFILE_DEFINITION,
   [STATE_PROTOCOL_STREAM_PROFILE_DEFINITION.kind]: STATE_PROTOCOL_STREAM_PROFILE_DEFINITION,
 };
@@ -79,6 +83,11 @@ export function parseProfileUpdateResult(body: unknown): Result<StreamProfileSpe
 export function resolveTouchCapability(profile: StreamProfileSpec | null | undefined): StreamTouchCapability | null {
   if (!profile) return null;
   return resolveStreamProfileDefinition(profile.kind)?.touch ?? null;
+}
+
+export function resolveJsonIngestCapability(profile: StreamProfileSpec | null | undefined): StreamProfileJsonIngestCapability | null {
+  if (!profile) return null;
+  return resolveStreamProfileDefinition(profile.kind)?.jsonIngest ?? null;
 }
 
 export function resolveEnabledTouchCapability(

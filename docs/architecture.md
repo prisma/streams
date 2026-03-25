@@ -29,11 +29,13 @@ Current rule:
 
 Implemented built-ins today:
 
+- `evlog`
 - `generic`
 - `state-protocol`
 
 `generic` adds no canonical payload envelope and leaves schema management to the
-user. `state-protocol` owns the live `/touch/*` surface and its touch
+user. `evlog` owns canonical wide-event normalization and redaction on JSON
+append. `state-protocol` owns the live `/touch/*` surface and its touch
 configuration.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
@@ -80,6 +82,7 @@ Each profile definition owns:
 - stored profile parsing and caching
 - persistence side effects on update
 - optional capability hooks for profile-owned runtime behavior
+- optional JSON-ingest normalization hooks for profile-owned write shaping
 
 The registry in `src/profiles/index.ts` is the single place where built-in
 profiles are wired into the core engine.
@@ -98,6 +101,12 @@ Today, `state-protocol` uses this model to own:
 - touch state seeding
 - canonical change derivation for the touch processor
 - the `/touch/*` HTTP surface
+
+Today, `evlog` uses the same model to own:
+
+- canonical wide-event normalization on JSON append
+- pre-append redaction of sensitive context fields
+- routing-key defaults from `requestId` or `traceId`
 
 ## Control-Plane Metadata
 

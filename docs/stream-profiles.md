@@ -42,12 +42,12 @@ explicit `generic` declaration.
 
 Current built-ins:
 
+- `evlog`
 - `generic`
 - `state-protocol`
 
 Planned next built-ins:
 
-- `evlog`
 - `queue`
 
 ## `generic`
@@ -65,6 +65,20 @@ It means:
 
 `generic` is intentionally narrow. It is the default profile, not a catch-all
 for future features.
+
+## `evlog`
+
+`evlog` is the built-in profile for request-centric wide-event logging.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into a canonical evlog envelope
+- redaction happens before durable append
+- the default routing key is `requestId`, with `traceId` fallback
+- reads continue to use the normal stream API
+
+See [profile-evlog.md](./profile-evlog.md) for the detailed contract.
 
 ## `state-protocol`
 
@@ -156,6 +170,7 @@ What does **not** belong in `/_schema`:
 - profile selection
 - touch configuration
 - State Protocol runtime behavior
+- evlog envelope normalization or redaction
 
 ## Supported API Rules
 
@@ -222,6 +237,18 @@ State Protocol uses the same resource:
 }
 ```
 
+Evlog uses the same resource:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "evlog",
+    "redactKeys": ["sessiontoken"]
+  }
+}
+```
+
 To switch a stream back to the baseline behavior, set `profile` to
 `{ "kind": "generic" }`.
 
@@ -244,7 +271,7 @@ This keeps storage simple and avoids inventing a second metadata layer.
 
 ## Future Profiles
 
-Additional profiles such as `evlog` and `queue` should follow the same rules:
+Additional profiles such as `queue` should follow the same rules:
 
 - the stream remains the same durable append-only storage object
 - the profile defines semantic meaning and profile-owned behavior

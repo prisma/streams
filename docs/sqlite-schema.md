@@ -244,7 +244,7 @@ Columns:
 Notes:
 - `streams.profile` stores the profile kind for cheap listing/filtering
 - `stream_profiles.profile_json` stores the full JSON config for profiles such
-  as `state-protocol`
+  as `evlog` and `state-protocol`
 - missing stored profile metadata means the stream is treated as `generic`
 
 ---

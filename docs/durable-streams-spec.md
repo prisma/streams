@@ -295,7 +295,11 @@ Request:
 
 Rules:
 
-- supported built-ins are `generic` and `state-protocol`
+- supported built-ins are `evlog`, `generic`, and `state-protocol`
+- `evlog` requires an `application/json` stream content type
+- `evlog` normalizes JSON appends into a canonical request-log envelope and
+  derives a routing key from `requestId` or `traceId` when the schema does not
+  own routing-key extraction
 - `state-protocol` requires an `application/json` stream content type
 - `state-protocol.touch.enabled=true` enables the `/touch/*` routes
 - set `profile` to `{ "kind": "generic" }` to use the baseline durable stream

@@ -63,6 +63,11 @@ export type PersistProfileArgs = {
   profile: StreamProfileSpec;
 };
 
+export type PreparedJsonRecord = {
+  value: unknown;
+  routingKey: string | null;
+};
+
 export type StreamTouchRoute =
   | { kind: "meta" }
   | { kind: "wait" }
@@ -93,6 +98,10 @@ export interface StreamTouchCapability {
   handleRoute?(args: StreamTouchRouteArgs): Promise<Response>;
 }
 
+export interface StreamProfileJsonIngestCapability {
+  prepareRecordResult(args: { stream: string; profile: StreamProfileSpec; value: unknown }): Result<PreparedJsonRecord, StreamProfileValidationError>;
+}
+
 export interface StreamProfileDefinition {
   kind: StreamProfileKind;
   usesStoredProfileRow: boolean;
@@ -101,6 +110,7 @@ export interface StreamProfileDefinition {
   readProfileResult(args: { row: StoredProfileRow | null; cached: CachedStreamProfile | null }): Result<StreamProfileReadResult, StreamProfileValidationError>;
   persistProfileResult(args: PersistProfileArgs): Result<StreamProfilePersistResult, StreamProfileMutationError>;
   touch?: StreamTouchCapability;
+  jsonIngest?: StreamProfileJsonIngestCapability;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
