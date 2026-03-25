@@ -3,6 +3,13 @@
 Durable Streams supports **per‑stream JSON Schemas** and **schema evolution** via
 **lenses**. Schemas and lenses are stored in SQLite as a per‑stream registry.
 
+Profiles and schemas are separate concerns:
+
+- a **profile** defines stream semantics
+- a **schema** defines payload shape
+
+See [stream-profiles.md](./stream-profiles.md).
+
 ## Registry storage
 
 Each stream has a schema registry stored in SQLite (`schemas` table). The registry
@@ -39,26 +46,30 @@ Notes:
 
 - `GET /v1/stream/<name>/_schema` returns the registry.
 - `POST /v1/stream/<name>/_schema` updates it.
+- `POST /v1/stream/<name>/_schema` is strict: it accepts only the supported
+  fields for schema updates and routing-key updates.
+- Profile-owned live/touch configuration belongs in `/_profile`, not `/_schema`.
 
 Accepted POST shapes:
 
-1) Incremental update:
+1) Schema install or schema evolution:
 
 ```json
 {"schema": {"type": "object", "additionalProperties": true}, "lens": { ... }, "routingKey": {"jsonPointer": "/id", "required": true}}
 ```
 
-2) Registry‑shaped payload (compat with existing clients):
-
-```json
-{"apiVersion":"durable.streams/schema-registry/v1","currentVersion":1,"schemas":{"1":{...}},"lenses":{}}
-```
-
-3) Routing‑key only update:
+2) Routing-key only update:
 
 ```json
 {"routingKey": {"jsonPointer": "/subject/uri", "required": true}}
 ```
+
+Not supported:
+
+- registry-shaped writes like `{ "schemas": ..., "lenses": ... }`
+- routing-key aliases such as `routing_key`, `routingKeyPointer`, or
+  `json_pointer`
+- profile fields under `_schema`
 
 ## Write path (validation)
 
@@ -84,3 +95,13 @@ If `routingKey` is configured:
 
 - The server derives routing keys per JSON entry using the JSON Pointer.
 - JSON appends must **not** include `Stream-Key` (otherwise 400).
+
+## What Schemas Do Not Define
+
+Schemas do not define:
+
+- whether a stream is `generic`, `queue`, `evlog`, or `state-protocol`
+- profile-owned endpoints
+- profile-owned projections or indexes
+
+Those responsibilities belong to the stream profile layer.

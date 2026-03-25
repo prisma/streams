@@ -2,7 +2,7 @@
  * Live load test (Test 4): selective fine shedding under high write load.
  *
  * Roles:
- * - setup: create stream, configure interpreter, activate templates, write config JSON
+ * - setup: create stream, configure state-protocol profile, activate templates, write config JSON
  * - writer: generate high-rate noise writes + targeted writes and marker events
  * - appkit: emulate AppKit Policy B admission (fine/coarse mode switching)
  * - metrics: poll /touch/meta monotonic counters and evaluate phase deltas
@@ -19,7 +19,7 @@ import { dsError } from "../../../src/util/ds_error.ts";
 import {
   activateTemplatesChunked,
   deleteStream,
-  ensureSchemaAndInterpreter,
+  ensureSchemaAndProfile,
   ensureStream,
   fetchJson,
   getTouchMeta,
@@ -75,7 +75,7 @@ type MetaSample = {
   hotTemplates: number;
   hotFineKeys: number;
   touchMode: string;
-  interpretedThroughDeltaTotal: number;
+  processedThroughDeltaTotal: number;
   touchesEmittedTotal: number;
   touchesTemplateTotal: number;
   journalNotifyWakeupsTotal: number;
@@ -145,9 +145,9 @@ type MetricsSummary = {
   fineRateA: number;
   fineRateB: number;
   fineRateC: number;
-  interpretedDeltaRateA: number;
-  interpretedDeltaRateB: number;
-  interpretedDeltaRateC: number;
+  processedDeltaRateA: number;
+  processedDeltaRateB: number;
+  processedDeltaRateC: number;
   touchesDeltaRateA: number;
   touchesDeltaRateB: number;
   touchesDeltaRateC: number;
@@ -399,9 +399,8 @@ async function runSetup(args: ParsedArgs): Promise<Test4Config> {
 
   await ensureStream(baseUrl, stream, "application/json");
 
-  const interpreter = {
-    apiVersion: "durable.streams/stream-interpreter/v1",
-    format: "durable.streams/state-protocol/v1",
+  const profile = {
+    kind: "state-protocol",
     touch: {
       enabled: true,
       coarseIntervalMs: intArg(args, "coarse-interval-ms", 100),
@@ -434,7 +433,7 @@ async function runSetup(args: ParsedArgs): Promise<Test4Config> {
     },
   };
 
-  await ensureSchemaAndInterpreter(baseUrl, stream, interpreter, { type: "object", additionalProperties: true });
+  await ensureSchemaAndProfile(baseUrl, stream, profile, { type: "object", additionalProperties: true });
   await waitForTouchReady(baseUrl, stream, 30_000);
 
   const allTriplets = combos3(dims);
@@ -1033,7 +1032,7 @@ async function runMetrics(args: ParsedArgs, cfg: Test4Config): Promise<MetricsSu
           hotTemplates: Number(meta.hotTemplates ?? 0),
           hotFineKeys: Number(meta.hotFineKeys ?? 0),
           touchMode: String(meta.touchMode ?? "unknown"),
-          interpretedThroughDeltaTotal: Number(meta.interpretedThroughDeltaTotal ?? 0),
+          processedThroughDeltaTotal: Number(meta.processedThroughDeltaTotal ?? 0),
           touchesEmittedTotal: Number(meta.touchesEmittedTotal ?? 0),
           touchesTemplateTotal: Number(meta.touchesTemplateTotal ?? 0),
           journalNotifyWakeupsTotal: Number(meta.journalNotifyWakeupsTotal ?? 0),
@@ -1117,9 +1116,9 @@ async function runMetrics(args: ParsedArgs, cfg: Test4Config): Promise<MetricsSu
     fineRateA: deltaRate(tA0, tA1, (s) => s.touchesTemplateTotal, 10),
     fineRateB: deltaRate(tB0, tB1, (s) => s.touchesTemplateTotal, 30),
     fineRateC: deltaRate(tC0, tC1, (s) => s.touchesTemplateTotal, 10),
-    interpretedDeltaRateA: deltaRate(tA0, tA1, (s) => s.interpretedThroughDeltaTotal, 10),
-    interpretedDeltaRateB: deltaRate(tB0, tB1, (s) => s.interpretedThroughDeltaTotal, 30),
-    interpretedDeltaRateC: deltaRate(tC0, tC1, (s) => s.interpretedThroughDeltaTotal, 10),
+    processedDeltaRateA: deltaRate(tA0, tA1, (s) => s.processedThroughDeltaTotal, 10),
+    processedDeltaRateB: deltaRate(tB0, tB1, (s) => s.processedThroughDeltaTotal, 30),
+    processedDeltaRateC: deltaRate(tC0, tC1, (s) => s.processedThroughDeltaTotal, 10),
     touchesDeltaRateA: deltaRate(tA0, tA1, (s) => s.touchesEmittedTotal, 10),
     touchesDeltaRateB: deltaRate(tB0, tB1, (s) => s.touchesEmittedTotal, 30),
     touchesDeltaRateC: deltaRate(tC0, tC1, (s) => s.touchesEmittedTotal, 10),
@@ -1144,7 +1143,7 @@ async function runMetrics(args: ParsedArgs, cfg: Test4Config): Promise<MetricsSu
   console.log(
     `[test4][metrics] done lagMax=${summary.lagMax} lagEnd=${summary.lagEnd} fineRateA=${summary.fineRateA.toFixed(1)} fineRateB=${summary.fineRateB.toFixed(
       1
-    )} fineRateC=${summary.fineRateC.toFixed(1)} interpRateB=${summary.interpretedDeltaRateB.toFixed(1)} touchDeltaB=${summary.touchesDeltaRateB.toFixed(
+    )} fineRateC=${summary.fineRateC.toFixed(1)} processedRateB=${summary.processedDeltaRateB.toFixed(1)} touchDeltaB=${summary.touchesDeltaRateB.toFixed(
       1
     )} flushRateB=${summary.flushesRateB.toFixed(1)} flushP95B=${summary.flushIntervalP95B.toFixed(1)} notifyWakeMsMaxB=${summary.notifyWakeMsMaxB.toFixed(1)}`
   );

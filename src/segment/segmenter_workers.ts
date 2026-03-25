@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Config } from "../config";
@@ -53,14 +51,7 @@ export class SegmenterWorkerPool implements SegmenterController {
   }
 
   private spawnWorker(idx: number): void {
-    const workerUrl = new URL("./segmenter_worker.ts", import.meta.url);
-    let workerSpec = fileURLToPath(workerUrl);
-    if (!existsSync(workerSpec)) {
-      const fallback = resolve(process.cwd(), "src/segment/segmenter_worker.ts");
-      if (existsSync(fallback)) {
-        workerSpec = fallback;
-      }
-    }
+    const workerSpec = fileURLToPath(new URL("./segmenter_worker.ts", import.meta.url));
     const worker = new Worker(workerSpec, {
       workerData: {
         config: this.config,

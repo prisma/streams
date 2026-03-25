@@ -23,7 +23,8 @@ describe("sqlite schema", () => {
       expect(tables).toContain("index_state");
       expect(tables).toContain("index_runs");
       expect(tables).toContain("schemas");
-      expect(tables).toContain("stream_interpreters");
+      expect(tables).toContain("stream_profiles");
+      expect(tables).toContain("stream_touch_state");
       expect(tables).toContain("schema_version");
 
       const streamCols = db.db
@@ -31,6 +32,7 @@ describe("sqlite schema", () => {
         .all()
         .map((r: any) => r.name);
       expect(streamCols).toContain("uploaded_segment_count");
+      expect(streamCols).toContain("profile");
       db.close();
     } finally {
       rmSync(root, { recursive: true, force: true });

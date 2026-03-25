@@ -40,8 +40,8 @@ Correctness depends on explicit commit points in the write path:
   - updates manifest generation
   - advances `uploaded_through`
   - computes GC bound as:
-    - `uploaded_through` when no interpreter state row exists, or
-    - `min(uploaded_through, interpreted_through)` when interpreter state exists
+    - `uploaded_through` when no touch-processing state row exists, or
+    - `min(uploaded_through, processed_through)` when touch-processing state exists
   - applies chunked WAL GC up to that bound
 - This is the remote durability/visibility commit point.
 
@@ -99,7 +99,8 @@ This preserves immutable storage while returning current-schema payloads.
 
 ### 1.6 Touch/live correctness boundaries
 
-Touch APIs exist only when interpreter config has `touch.enabled=true`.
+Touch APIs exist only when the stream profile is `state-protocol` and
+`touch.enabled=true`.
 
 The live system:
 
@@ -117,6 +118,14 @@ Full mode:
 - ACKed append is durable in local SQLite immediately.
 - ACKed append is durable in object storage only after manifest commit advances `uploaded_through`.
 - If the node/disk is lost before that point, latest ACKed writes may not exist in object storage.
+- `--bootstrap-from-r2` restores published stream history and metadata from
+  object storage.
+- `--bootstrap-from-r2` does not restore transient local SQLite state such as
+  the unuploaded WAL tail, producer dedupe state, or runtime live/template
+  state.
+- Deleting a node without a local snapshot is only safe after the streams you
+  care about have uploaded through the tail you need and published a manifest
+  for that state.
 
 Local mode:
 
@@ -325,13 +334,13 @@ Actions:
 
 If `/touch/*` returns 404:
 
-- confirm stream interpreter has `touch.enabled=true` in schema registry
+- confirm the stream profile is `state-protocol` with `touch.enabled=true`
 
 If wait latency spikes:
 
 - inspect `/v1/stream/<name>/touch/meta`
-- check interpreter lag and active waiter counters
-- reduce load or tune interpreter batch/check intervals
+- check processor lag and active waiter counters
+- reduce load or tune touch batch/check intervals
 
 ### 4.7 Suspected local SQLite corruption
 
@@ -347,6 +356,10 @@ If wait latency spikes:
 ### 5.1 Rebuild full-mode state from object storage
 
 Warning: this deletes local SQLite and local/cache directories under `DS_ROOT`.
+
+This restores the published durable state from object storage. It does not
+recover data or helper state that only existed in local SQLite at the time the
+node was lost.
 
 ```bash
 bun run src/server.ts --object-store r2 --bootstrap-from-r2
@@ -382,6 +395,8 @@ Recommended:
 
 - treat object store + manifest generation as primary long-term durable history
 - snapshot SQLite for faster local recovery and operational continuity
+- keep SQLite snapshots if you need recovery of the latest ACKed local tail and
+  runtime-local helper state, not just published object-store state
 
 SQLite snapshot rules:
 

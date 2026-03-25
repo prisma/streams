@@ -61,6 +61,21 @@ describe("bootstrap from R2", () => {
         );
         expect(schemaRes.status).toBe(200);
 
+        const profileRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_profile`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              apiVersion: "durable.streams/profile/v1",
+              profile: {
+                kind: "state-protocol",
+                touch: { enabled: true },
+              },
+            }),
+          })
+        );
+        expect(profileRes.status).toBe(200);
+
         for (let i = 0; i < 4; i++) {
           const r = await app.fetch(
             new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
@@ -98,6 +113,16 @@ describe("bootstrap from R2", () => {
         const row = app2.deps.db.getStream(stream);
         expect(row).not.toBeNull();
         expect(row!.content_type).toBe("application/json");
+        expect(row!.profile).toBe("state-protocol");
+
+        const profileRow = app2.deps.db.getStreamProfile(stream);
+        expect(profileRow).not.toBeNull();
+        const profileJson = JSON.parse(profileRow!.profile_json);
+        expect(profileJson.kind).toBe("state-protocol");
+        expect(profileJson.touch?.enabled).toBe(true);
+
+        const touchStateRow = app2.deps.db.getStreamTouchState(stream);
+        expect(touchStateRow).not.toBeNull();
 
         const schemaRow = app2.deps.db.getSchemaRegistry(stream);
         expect(schemaRow).not.toBeNull();
@@ -117,6 +142,11 @@ describe("bootstrap from R2", () => {
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}?offset=-1`, { method: "GET" })
         );
         expect(readRes.status).toBe(200);
+
+        const touchMetaRes = await app2.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" })
+        );
+        expect(touchMetaRes.status).toBe(200);
       } finally {
         app2.close();
         rmSync(root, { recursive: true, force: true });

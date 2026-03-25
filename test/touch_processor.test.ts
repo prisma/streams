@@ -14,10 +14,10 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     rootDir,
     dbPath: `${rootDir}/wal.sqlite`,
     port: 0,
-    interpreterCheckIntervalMs: 0,
-    interpreterWorkers: 1,
-    interpreterMaxBatchRows: 1000,
-    interpreterMaxBatchBytes: 8 * 1024 * 1024,
+    touchCheckIntervalMs: 0,
+    touchWorkers: 1,
+    touchMaxBatchRows: 1000,
+    touchMaxBatchBytes: 8 * 1024 * 1024,
     ...overrides,
   };
 }
@@ -30,14 +30,14 @@ async function fetchJson(url: string, init: RequestInit): Promise<any> {
   return JSON.parse(text);
 }
 
-async function installTouchInterpreter(baseUrl: string, stream: string, touch: Record<string, unknown> = {}): Promise<void> {
-  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+async function installStateProtocolProfile(baseUrl: string, stream: string, touch: Record<string, unknown> = {}): Promise<void> {
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      interpreter: {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
+      apiVersion: "durable.streams/profile/v1",
+      profile: {
+        kind: "state-protocol",
         touch: {
           enabled: true,
           ...touch,
@@ -65,7 +65,7 @@ describe("live touches (state protocol)", () => {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-      await installTouchInterpreter(baseUrl, stream);
+      await installStateProtocolProfile(baseUrl, stream);
 
       const entity = "posts";
       const fields = ["tenantId", "userId"];
@@ -171,7 +171,7 @@ describe("live touches (state protocol)", () => {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-      await installTouchInterpreter(baseUrl, stream, { onMissingBefore: "coarse" });
+      await installStateProtocolProfile(baseUrl, stream, { onMissingBefore: "coarse" });
 
       const entity = "posts";
       const fields = ["tenantId", "userId"];
@@ -267,7 +267,7 @@ describe("live touches (state protocol)", () => {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-      await installTouchInterpreter(baseUrl, stream);
+      await installStateProtocolProfile(baseUrl, stream);
 
       const entity = "posts";
       const fields = ["tenantId", "userId"];
@@ -376,7 +376,7 @@ describe("live touches (state protocol)", () => {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-      await installTouchInterpreter(baseUrl, stream);
+      await installStateProtocolProfile(baseUrl, stream);
 
       const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
       const keys = Array.from({ length: 1000 }, (_, i) => `${i.toString(16).padStart(16, "0")}`);

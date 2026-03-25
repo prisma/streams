@@ -25,8 +25,8 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     ingestFlushIntervalMs: 5,
     indexL0SpanSegments: 0,
     indexCheckIntervalMs: 100_000,
-    interpreterWorkers: 0,
-    interpreterCheckIntervalMs: 0,
+    touchWorkers: 0,
+    touchCheckIntervalMs: 0,
     ...overrides,
   };
 }

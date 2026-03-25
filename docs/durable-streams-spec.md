@@ -46,7 +46,12 @@ implementation.
 - `GET  /v1/stream/{name}/_schema` get schema registry
 - `POST /v1/stream/{name}/_schema` update schema registry
 
-### 2.3 Streams collection
+### 2.3 Profile subresource
+
+- `GET  /v1/stream/{name}/_profile` get stream profile metadata
+- `POST /v1/stream/{name}/_profile` update stream profile
+
+### 2.4 Streams collection
 
 - `GET /v1/streams` list streams
 
@@ -150,6 +155,8 @@ Path form (equivalent to `key=`):
 - `GET /v1/streams`
   - Returns a JSON array of stream descriptors.
   - Must be efficient up to ~1,000,000 streams.
+  - Each descriptor should expose the stream profile. The current
+    implementation returns a single `profile` field in the list response.
 
 ---
 
@@ -206,6 +213,11 @@ Headers:
 - `201 Created` if created
 - `200 OK` if already exists (idempotent)
 
+Profile rule:
+
+- If no profile has been declared for the stream, the server treats it as a
+  `generic` stream.
+
 ---
 
 ## 7. Append (POST)
@@ -246,6 +258,48 @@ If `Stream-Seq` is provided:
 
 - `200 OK`
 - Must include `Stream-Next-Offset` (the offset of the last appended entry).
+
+## 7A. Profile resource
+
+### Get profile
+
+`GET /v1/stream/{name}/_profile`
+
+Response:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": { "kind": "generic" }
+}
+```
+
+Rules:
+
+- `profile` is always present
+- if no explicit profile was declared when the stream was created, the server
+  returns `{ "kind": "generic" }`
+
+### Update profile
+
+`POST /v1/stream/{name}/_profile`
+
+Request:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": { "kind": "generic" }
+}
+```
+
+Rules:
+
+- supported built-ins are `generic` and `state-protocol`
+- `state-protocol` requires an `application/json` stream content type
+- `state-protocol.touch.enabled=true` enables the `/touch/*` routes
+- set `profile` to `{ "kind": "generic" }` to use the baseline durable stream
+  behavior
 
 ---
 
@@ -334,3 +388,7 @@ Minimum behavior required:
 - Later updates require a lens `v -> v+1` and must record a boundary at the current end offset.
 - Appends validate against current schema.
 - Reads promote older events through the lens chain to the current schema.
+- `POST /_schema` accepts only the supported update fields: `schema`, `lens`,
+  and `routingKey` (plus optional `apiVersion`).
+- `POST /_schema` rejects registry-shaped compatibility writes, alias field
+  names, and profile-owned live/touch configuration.

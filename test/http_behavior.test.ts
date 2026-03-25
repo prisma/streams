@@ -111,6 +111,93 @@ describe("http behavior", () => {
       const names = arr.map((r: any) => r.name).sort();
       expect(names).toContain("a");
       expect(names).toContain("b");
+      const streamA = arr.find((row: any) => row.name === "a");
+      expect(streamA?.profile).toBe("generic");
+    });
+  });
+
+  test("profile subresource defaults to generic and supports explicit declaration", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      let r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+
+      r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "generic" },
+        }),
+      });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+    });
+  });
+
+  test("profile subresource rejects unsupported profiles", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      const r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "queue" },
+        }),
+      });
+      expect(r.status).toBe(400);
+    });
+  });
+
+  test("state-protocol profile requires json streams and enables touch routes", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/text-profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      let r = await fetch(`${baseUrl}/v1/stream/text-profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: {
+            kind: "state-protocol",
+            touch: { enabled: true },
+          },
+        }),
+      });
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("application/json");
+
+      await fetch(`${baseUrl}/v1/stream/json-profiled`, { method: "PUT", headers: { "content-type": "application/json" } });
+
+      r = await fetch(`${baseUrl}/v1/stream/json-profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: {
+            kind: "state-protocol",
+            touch: { enabled: true, onMissingBefore: "coarse" },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+      const profileJson = await r.json();
+      expect(profileJson.apiVersion).toBe("durable.streams/profile/v1");
+      expect(profileJson.profile?.kind).toBe("state-protocol");
+      expect(profileJson.profile?.touch?.enabled).toBe(true);
+      expect(profileJson.profile?.touch?.onMissingBefore).toBe("coarse");
+
+      r = await fetch(`${baseUrl}/v1/stream/json-profiled/touch/meta`);
+      expect(r.status).toBe(200);
     });
   });
 

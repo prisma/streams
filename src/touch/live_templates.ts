@@ -163,7 +163,7 @@ export class LiveTemplateRegistry {
    *
    * `baseStreamNextOffset` is used to set `active_from_source_offset` so we do
    * not backfill fine touches for history when a template is activated while
-   * the interpreter is behind.
+   * touch processing is behind.
    */
   activate(args: {
     stream: string;

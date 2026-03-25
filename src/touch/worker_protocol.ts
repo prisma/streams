@@ -1,4 +1,4 @@
-import type { StreamInterpreterConfig } from "./spec.ts";
+import type { StreamProfileSpec } from "../profiles";
 
 export type TouchRow = {
   keyId: number;
@@ -14,13 +14,13 @@ export type ProcessRequest = {
   stream: string;
   fromOffset: bigint;
   toOffset: bigint;
-  interpreter: StreamInterpreterConfig;
+  profile: StreamProfileSpec;
   maxRows: number;
   maxBytes: number;
   emitFineTouches?: boolean;
   fineTouchBudget?: number | null;
   fineGranularity?: "key" | "template";
-  interpretMode?: "full" | "hotTemplatesOnly";
+  processingMode?: "full" | "hotTemplatesOnly";
   filterHotTemplates?: boolean;
   hotTemplateIds?: string[] | null;
 };

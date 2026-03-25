@@ -19,6 +19,7 @@ export type StreamRow = {
   created_at_ms: bigint;
   updated_at_ms: bigint;
   content_type: string;
+  profile: string | null;
   stream_seq: string | null;
   closed: number;
   closed_producer_id: string | null;
@@ -94,6 +95,7 @@ export class SqliteDurableStore {
     upsertStream: SqliteStatement;
     listStreams: SqliteStatement;
     setDeleted: SqliteStatement;
+    setStreamProfile: SqliteStatement;
 
     insertWal: SqliteStatement;
 
@@ -142,10 +144,14 @@ export class SqliteDurableStore {
 
     getSchemaRegistry: SqliteStatement;
     upsertSchemaRegistry: SqliteStatement;
-    getStreamInterpreter: SqliteStatement;
-    upsertStreamInterpreter: SqliteStatement;
-    deleteStreamInterpreter: SqliteStatement;
-    listStreamInterpreters: SqliteStatement;
+    getStreamProfile: SqliteStatement;
+    upsertStreamProfile: SqliteStatement;
+    deleteStreamProfile: SqliteStatement;
+    getStreamTouchState: SqliteStatement;
+    upsertStreamTouchState: SqliteStatement;
+    deleteStreamTouchState: SqliteStatement;
+    listStreamTouchStates: SqliteStatement;
+    listStreamsByProfile: SqliteStatement;
     countStreams: SqliteStatement;
     sumPendingBytes: SqliteStatement;
     sumPendingSegmentBytes: SqliteStatement;
@@ -162,7 +168,7 @@ export class SqliteDurableStore {
     this.stmts = {
       getStream: this.db.query(
         `SELECT stream, created_at_ms, updated_at_ms,
-                content_type, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
+                content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                 epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
                 pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                 expires_at_ms, stream_flags
@@ -170,21 +176,22 @@ export class SqliteDurableStore {
       ),
       upsertStream: this.db.query(
         `INSERT INTO streams(stream, created_at_ms, updated_at_ms,
-                             content_type, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
+                             content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                              epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
                              pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                              expires_at_ms, stream_flags)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(stream) DO UPDATE SET
            updated_at_ms=excluded.updated_at_ms,
            expires_at_ms=excluded.expires_at_ms,
            ttl_seconds=excluded.ttl_seconds,
            content_type=excluded.content_type,
+           profile=excluded.profile,
            stream_flags=excluded.stream_flags;`
       ),
       listStreams: this.db.query(
         `SELECT stream, created_at_ms, updated_at_ms,
-                content_type, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
+                content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                 epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
                 pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                 expires_at_ms, stream_flags
@@ -195,6 +202,7 @@ export class SqliteDurableStore {
          LIMIT ? OFFSET ?;`
       ),
       setDeleted: this.db.query(`UPDATE streams SET stream_flags = (stream_flags | ?), updated_at_ms=? WHERE stream=?;`),
+      setStreamProfile: this.db.query(`UPDATE streams SET profile=?, updated_at_ms=? WHERE stream=?;`),
 
       insertWal: this.db.query(
         `INSERT INTO wal(stream, offset, ts_ms, payload, payload_len, routing_key, content_type, flags)
@@ -394,23 +402,30 @@ export class SqliteDurableStore {
         `INSERT INTO schemas(stream, schema_json, updated_at_ms) VALUES(?, ?, ?)
          ON CONFLICT(stream) DO UPDATE SET schema_json=excluded.schema_json, updated_at_ms=excluded.updated_at_ms;`
       ),
-      getStreamInterpreter: this.db.query(
-        `SELECT stream, interpreted_through, updated_at_ms
-         FROM stream_interpreters WHERE stream=? LIMIT 1;`
+      getStreamProfile: this.db.query(`SELECT stream, profile_json, updated_at_ms FROM stream_profiles WHERE stream=? LIMIT 1;`),
+      upsertStreamProfile: this.db.query(
+        `INSERT INTO stream_profiles(stream, profile_json, updated_at_ms) VALUES(?, ?, ?)
+         ON CONFLICT(stream) DO UPDATE SET profile_json=excluded.profile_json, updated_at_ms=excluded.updated_at_ms;`
       ),
-      upsertStreamInterpreter: this.db.query(
-        `INSERT INTO stream_interpreters(stream, interpreted_through, updated_at_ms)
+      deleteStreamProfile: this.db.query(`DELETE FROM stream_profiles WHERE stream=?;`),
+      getStreamTouchState: this.db.query(
+        `SELECT stream, processed_through, updated_at_ms
+         FROM stream_touch_state WHERE stream=? LIMIT 1;`
+      ),
+      upsertStreamTouchState: this.db.query(
+        `INSERT INTO stream_touch_state(stream, processed_through, updated_at_ms)
          VALUES(?, ?, ?)
          ON CONFLICT(stream) DO UPDATE SET
-           interpreted_through=excluded.interpreted_through,
+           processed_through=excluded.processed_through,
            updated_at_ms=excluded.updated_at_ms;`
       ),
-      deleteStreamInterpreter: this.db.query(`DELETE FROM stream_interpreters WHERE stream=?;`),
-      listStreamInterpreters: this.db.query(
-        `SELECT stream, interpreted_through, updated_at_ms
-         FROM stream_interpreters
+      deleteStreamTouchState: this.db.query(`DELETE FROM stream_touch_state WHERE stream=?;`),
+      listStreamTouchStates: this.db.query(
+        `SELECT stream, processed_through, updated_at_ms
+         FROM stream_touch_state
          ORDER BY stream ASC;`
       ),
+      listStreamsByProfile: this.db.query(`SELECT stream FROM streams WHERE profile=? ORDER BY stream ASC;`),
       countStreams: this.db.query(`SELECT COUNT(*) as cnt FROM streams WHERE (stream_flags & ?) = 0;`),
       sumPendingBytes: this.db.query(`SELECT COALESCE(SUM(pending_bytes), 0) as total FROM streams;`),
       sumPendingSegmentBytes: this.db.query(`SELECT COALESCE(SUM(size_bytes), 0) as total FROM segments WHERE uploaded_at_ms IS NULL;`),
@@ -448,6 +463,7 @@ export class SqliteDurableStore {
       created_at_ms: this.toBigInt(row.created_at_ms),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
       content_type: String(row.content_type),
+      profile: row.profile == null ? null : String(row.profile),
       stream_seq: row.stream_seq == null ? null : String(row.stream_seq),
       closed: Number(row.closed),
       closed_producer_id: row.closed_producer_id == null ? null : String(row.closed_producer_id),
@@ -509,6 +525,7 @@ export class SqliteDurableStore {
     stream: string,
     opts?: {
       contentType?: string;
+      profile?: string | null;
       expiresAtMs?: bigint | null;
       ttlSeconds?: number | null;
       closed?: boolean;
@@ -523,6 +540,7 @@ export class SqliteDurableStore {
     const epoch = 0;
     const nextOffset = 0n;
     const contentType = opts?.contentType ?? "application/octet-stream";
+    const profile = opts?.profile ?? "generic";
     const closed = opts?.closed ? 1 : 0;
     const closedProducer = opts?.closedProducer ?? null;
     const expiresAtMs = opts?.expiresAtMs ?? null;
@@ -533,18 +551,19 @@ export class SqliteDurableStore {
       .query(
         `INSERT INTO streams(
           stream, created_at_ms, updated_at_ms,
-          content_type, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
+          content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
           epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
           pending_rows, pending_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
           expires_at_ms, stream_flags
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
       )
       .run(
         stream,
         now,
         now,
         contentType,
+        profile,
         null,
         closed,
         closedProducer ? closedProducer.id : null,
@@ -576,6 +595,7 @@ export class SqliteDurableStore {
       row.created_at_ms,
       row.updated_at_ms,
       row.content_type,
+      row.profile,
       row.stream_seq,
       row.closed,
       row.closed_producer_id,
@@ -619,6 +639,11 @@ export class SqliteDurableStore {
     return true;
   }
 
+  updateStreamProfile(stream: string, profile: string | null): StreamRow | null {
+    this.stmts.setStreamProfile.run(profile, this.nowMs(), stream);
+    return this.getStream(stream);
+  }
+
   hardDeleteStream(stream: string): boolean {
     const tx = this.db.transaction(() => {
       const existing = this.getStream(stream);
@@ -627,7 +652,8 @@ export class SqliteDurableStore {
       this.db.query(`DELETE FROM segments WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM manifests WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM schemas WHERE stream=?;`).run(stream);
-      this.db.query(`DELETE FROM stream_interpreters WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM stream_profiles WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM stream_touch_state WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM live_templates WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM producer_state WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM index_state WHERE stream=?;`).run(stream);
@@ -649,39 +675,62 @@ export class SqliteDurableStore {
     this.stmts.upsertSchemaRegistry.run(stream, registryJson, this.nowMs());
   }
 
-  getStreamInterpreter(stream: string): { stream: string; interpreted_through: bigint; updated_at_ms: bigint } | null {
-    const row = this.stmts.getStreamInterpreter.get(stream) as any;
+  getStreamProfile(stream: string): { stream: string; profile_json: string; updated_at_ms: bigint } | null {
+    const row = this.stmts.getStreamProfile.get(stream) as any;
     if (!row) return null;
     return {
       stream: String(row.stream),
-      interpreted_through: this.toBigInt(row.interpreted_through),
+      profile_json: String(row.profile_json),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     };
   }
 
-  listStreamInterpreters(): Array<{ stream: string; interpreted_through: bigint; updated_at_ms: bigint }> {
-    const rows = this.stmts.listStreamInterpreters.all() as any[];
+  upsertStreamProfile(stream: string, profileJson: string): void {
+    this.stmts.upsertStreamProfile.run(stream, profileJson, this.nowMs());
+  }
+
+  deleteStreamProfile(stream: string): void {
+    this.stmts.deleteStreamProfile.run(stream);
+  }
+
+  getStreamTouchState(stream: string): { stream: string; processed_through: bigint; updated_at_ms: bigint } | null {
+    const row = this.stmts.getStreamTouchState.get(stream) as any;
+    if (!row) return null;
+    return {
+      stream: String(row.stream),
+      processed_through: this.toBigInt(row.processed_through),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    };
+  }
+
+  listStreamTouchStates(): Array<{ stream: string; processed_through: bigint; updated_at_ms: bigint }> {
+    const rows = this.stmts.listStreamTouchStates.all() as any[];
     return rows.map((row) => ({
       stream: String(row.stream),
-      interpreted_through: this.toBigInt(row.interpreted_through),
+      processed_through: this.toBigInt(row.processed_through),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     }));
   }
 
-  ensureStreamInterpreter(stream: string): void {
-    const existing = this.getStreamInterpreter(stream);
+  listStreamsByProfile(kind: string): string[] {
+    const rows = this.stmts.listStreamsByProfile.all(kind) as any[];
+    return rows.map((row) => String(row.stream));
+  }
+
+  ensureStreamTouchState(stream: string): void {
+    const existing = this.getStreamTouchState(stream);
     if (existing) return;
     const srow = this.getStream(stream);
     const initialThrough = srow ? srow.next_offset - 1n : -1n;
-    this.stmts.upsertStreamInterpreter.run(stream, this.bindInt(initialThrough), this.nowMs());
+    this.stmts.upsertStreamTouchState.run(stream, this.bindInt(initialThrough), this.nowMs());
   }
 
-  updateStreamInterpreterThrough(stream: string, interpretedThrough: bigint): void {
-    this.stmts.upsertStreamInterpreter.run(stream, this.bindInt(interpretedThrough), this.nowMs());
+  updateStreamTouchStateThrough(stream: string, processedThrough: bigint): void {
+    this.stmts.upsertStreamTouchState.run(stream, this.bindInt(processedThrough), this.nowMs());
   }
 
-  deleteStreamInterpreter(stream: string): void {
-    this.stmts.deleteStreamInterpreter.run(stream);
+  deleteStreamTouchState(stream: string): void {
+    this.stmts.deleteStreamTouchState.run(stream);
   }
 
   addStreamFlags(stream: string, flags: number): void {
@@ -1325,15 +1374,15 @@ export class SqliteDurableStore {
       this.stmts.upsertManifest.run(stream, generation, generation, uploadedAtMs, etag);
       this.stmts.advanceUploadedThrough.run(uploadedThrough, this.nowMs(), stream);
       let gcThrough = uploadedThrough;
-      const interp = this.stmts.getStreamInterpreter.get(stream) as any;
-      if (interp) {
-        const interpretedThrough = this.toBigInt(interp.interpreted_through);
-        gcThrough = interpretedThrough < gcThrough ? interpretedThrough : gcThrough;
+      const touchState = this.stmts.getStreamTouchState.get(stream) as any;
+      if (touchState) {
+        const processedThrough = this.toBigInt(touchState.processed_through);
+        gcThrough = processedThrough < gcThrough ? processedThrough : gcThrough;
       }
       if (gcThrough < 0n) return;
 
       // Chunk deletes to avoid large event-loop stalls on catch-up uploads.
-      // (Periodic GC in touch/manager.ts handles interpreter-gated cleanup too.)
+      // (Periodic GC in touch/manager.ts handles touch-processing-gated cleanup too.)
       let deleteThrough = gcThrough;
       if (BASE_WAL_GC_CHUNK_OFFSETS > 0) {
         const oldest = this.getWalOldestOffset(stream);

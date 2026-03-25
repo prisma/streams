@@ -1,23 +1,10 @@
-import type { StreamInterpreterConfig } from "./spec.ts";
+import type { CanonicalChange } from "../../touch/canonical_change";
 
-export type CanonicalChange = {
-  entity: string;
-  key?: string;
-  op: "insert" | "update" | "delete";
-  before?: unknown;
-  after?: unknown;
-};
-
-export function interpretRecordToChanges(record: any, _cfg: StreamInterpreterConfig): CanonicalChange[] {
-  return interpretStateProtocolRecord(record);
-}
-
-function interpretStateProtocolRecord(record: any): CanonicalChange[] {
+export function deriveStateProtocolChanges(record: unknown): CanonicalChange[] {
   if (!record || typeof record !== "object" || Array.isArray(record)) return [];
   const headers = (record as any).headers;
   if (!headers || typeof headers !== "object" || Array.isArray(headers)) return [];
 
-  // Control messages are ignored by touch derivation.
   if (typeof (headers as any).control === "string") return [];
 
   const opRaw = (headers as any).operation;
@@ -30,11 +17,7 @@ function interpretStateProtocolRecord(record: any): CanonicalChange[] {
   if (typeof type !== "string" || type.trim() === "") return [];
   if (typeof key !== "string" || key.trim() === "") return [];
 
-  const before = Object.prototype.hasOwnProperty.call(record, "oldValue")
-    ? (record as any).oldValue
-    : Object.prototype.hasOwnProperty.call(record, "old_value")
-      ? (record as any).old_value
-      : undefined;
+  const before = Object.prototype.hasOwnProperty.call(record, "oldValue") ? (record as any).oldValue : undefined;
   const after = Object.prototype.hasOwnProperty.call(record, "value") ? (record as any).value : undefined;
 
   return [{ entity: type, key, op, before, after }];

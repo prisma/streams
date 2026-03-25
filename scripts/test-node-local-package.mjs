@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
@@ -23,6 +23,7 @@ function run(cmd, args, cwd) {
 }
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "prisma-streams-node-e2e-"));
+const localServerName = basename(tmpRoot);
 
 try {
   run("node", ["scripts/build-npm-packages.mjs"], repoRoot);
@@ -59,7 +60,7 @@ try {
 import { startLocalDurableStreamsServer } from "@prisma/streams-local";
 
 const server = await startLocalDurableStreamsServer({
-  name: "node-e2e",
+  name: "${localServerName}",
   port: 0,
   hostname: "127.0.0.1",
 });
@@ -83,13 +84,13 @@ try {
   }
 
   {
-    const schema = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, {
+    const profile = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_profile\`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        interpreter: {
-          apiVersion: "durable.streams/stream-interpreter/v1",
-          format: "durable.streams/state-protocol/v1",
+        apiVersion: "durable.streams/profile/v1",
+        profile: {
+          kind: "state-protocol",
           touch: {
             enabled: true,
             onMissingBefore: "coarse",
@@ -97,7 +98,7 @@ try {
         },
       }),
     });
-    if (schema.status !== 200) throw new Error(\`schema install failed: \${schema.status}\`);
+    if (profile.status !== 200) throw new Error(\`profile install failed: \${profile.status}\`);
   }
 
   const activate = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/touch/templates/activate\`, {

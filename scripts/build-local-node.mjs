@@ -59,7 +59,7 @@ surface.
 ## Integrating It
 
 1. Start a named local server from \`@prisma/streams-local\`.
-2. Install your touch-enabled interpreter via \`/_schema\`.
+2. Install your touch-enabled \`state-protocol\` profile via \`/_profile\`.
 3. Feed normalized State Protocol change events into the server.
 4. Use \`/touch/meta\` and \`/touch/wait\` to drive invalidation.
 
@@ -117,14 +117,14 @@ run("bun", [
   "--outdir",
   "./dist/local",
 ]);
-run("bun", ["build", "./src/touch/interpreter_worker.ts", "--target=node", "--format=esm", "--packages=external", "--outdir", "./dist/touch"]);
+run("bun", ["build", "./src/touch/processor_worker.ts", "--target=node", "--format=esm", "--packages=external", "--outdir", "./dist/touch"]);
 run("bunx", ["tsc", "--project", "./tsconfig.build.types.json"]);
 
 cpSync(sourceHashVendorDir, join(distLocalDir, "hash_vendor"), { recursive: true });
 cpSync(sourceHashVendorDir, join(distTouchDir, "hash_vendor"), { recursive: true });
 
 const localReplacements = [
-  ['new URL("./interpreter_worker.ts", import.meta.url)', 'new URL("../touch/interpreter_worker.js", import.meta.url)'],
+  ['new URL("./processor_worker.ts", import.meta.url)', 'new URL("../touch/processor_worker.js", import.meta.url)'],
 ];
 
 replaceInBuiltLocalFiles(localReplacements);

@@ -225,9 +225,20 @@ export class Uploader {
       const indexState = this.db.getIndexState(stream);
       const indexRuns = this.db.listIndexRuns(stream);
       const retiredRuns = this.db.listRetiredIndexRuns(stream);
+      let profileJson: Record<string, any> | null = null;
+      const profileRow = this.db.getStreamProfile(stream);
+      if (profileRow) {
+        try {
+          profileJson = JSON.parse(profileRow.profile_json);
+        } catch {
+          this.failures.recordFailure(stream);
+          throw dsError(`invalid profile_json for ${stream}`);
+        }
+      }
       const manifestRes = buildManifestResult({
         streamName: stream,
         streamRow: srow,
+        profileJson,
         segmentMeta: meta,
         uploadedPrefixCount: uploadedPrefix,
         generation,

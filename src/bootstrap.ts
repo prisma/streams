@@ -61,6 +61,8 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
       const nextOffset = BigInt(nextOffsetNum);
 
       const contentType = typeof manifest.content_type === "string" ? manifest.content_type : "application/octet-stream";
+      const profile = typeof manifest.profile === "string" && manifest.profile !== "" ? manifest.profile : "generic";
+      const profileJson = manifest.profile_json && typeof manifest.profile_json === "object" ? manifest.profile_json : null;
       const streamSeq = typeof manifest.stream_seq === "string" ? manifest.stream_seq : null;
       const closed = typeof manifest.closed === "number" ? manifest.closed : 0;
       const closedProducerId = typeof manifest.closed_producer_id === "string" ? manifest.closed_producer_id : null;
@@ -92,6 +94,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         created_at_ms: createdAtMs,
         updated_at_ms: nowMs,
         content_type: contentType,
+        profile,
         stream_seq: streamSeq,
         closed,
         closed_producer_id: closedProducerId,
@@ -113,6 +116,11 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         expires_at_ms: expiresAtMs,
         stream_flags: streamFlags,
       });
+      if (profileJson) {
+        db.upsertStreamProfile(stream, JSON.stringify(profileJson));
+      } else {
+        db.deleteStreamProfile(stream);
+      }
 
       db.upsertSegmentMeta(stream, segmentCount, segmentOffsetsBytes, segmentBlocksBytes, segmentLastTsBytes);
 

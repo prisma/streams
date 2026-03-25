@@ -78,7 +78,7 @@ flowchart LR
   A --> C["Prisma Streams local server"]
   B --> D["In-process change adapter"]
   D --> E["State Protocol stream"]
-  E --> F["Touch interpreter"]
+  E --> F["State-protocol touch worker"]
   F --> G["/touch/meta"]
   F --> H["/touch/wait"]
   F --> I["/touch/templates/activate"]
@@ -106,13 +106,13 @@ The stream content type should be:
 
 - `application/json`
 
-The interpreter should be installed once at startup:
+The `state-protocol` profile should be installed once at startup:
 
 ```json
 {
-  "interpreter": {
-    "apiVersion": "durable.streams/stream-interpreter/v1",
-    "format": "durable.streams/state-protocol/v1",
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "state-protocol",
     "touch": {
       "enabled": true,
       "onMissingBefore": "coarse"
@@ -202,7 +202,7 @@ At Prisma dev startup:
 1. Start the local Prisma Postgres server.
 2. Start the local Prisma Streams server with the same logical instance name.
 3. Ensure the ingest stream exists.
-4. Install the stream interpreter config.
+4. Install the `state-protocol` profile.
 5. Attach the in-process PGlite change adapter.
 6. Forward all committed changes into Prisma Streams.
 
@@ -236,15 +236,15 @@ async function startPrismaDevWithLive(name: string) {
     },
   });
 
-  await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+  await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      interpreter: {
-        apiVersion: "durable.streams/stream-interpreter/v1",
-        format: "durable.streams/state-protocol/v1",
+      apiVersion: "durable.streams/profile/v1",
+      profile: {
+        kind: "state-protocol",
         touch: {
           enabled: true,
           onMissingBefore: "coarse",
@@ -323,7 +323,7 @@ Current repo status:
 ## Recommended Next Changes In This Repo
 
 1. Keep package smoke coverage that starts the local server under both Node and Bun and exercises:
-   - `/_schema`
+   - `/_profile`
    - `/touch/meta`
    - `/touch/templates/activate`
    - `/touch/wait`

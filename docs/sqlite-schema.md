@@ -68,6 +68,7 @@ Segmenting hints:
 Additional columns present in the current implementation:
 - Stream protocol/config state:
   - `content_type`
+  - `profile`
   - `stream_seq`
   - `closed`
   - `closed_producer_id`
@@ -90,6 +91,8 @@ Indexes:
 Invariants:
 - `0 <= uploaded_through <= sealed_through <= next_offset`
 - `0 <= uploaded_segment_count <= segment_count` (see `stream_segment_meta`)
+- `profile IS NULL` means the stream has no explicit declaration and is treated
+  as a `generic` stream
 - `pending_bytes` and `pending_rows` reflect WAL rows with `offset >= sealed_through` (or `>= uploaded_through`, depending on design); pick one and enforce consistently.
 - `segment_in_progress` must be 0/1.
 
@@ -226,7 +229,83 @@ Current implementation table (see `src/db/schema.ts`):
 - `updated_at_ms INTEGER NOT NULL`
 
 `schema_json` stores the serialized per-stream schema registry JSON (schema versions,
-lenses, routingKey config, interpreter config).
+lenses, and routingKey config).
+
+---
+
+### 2.10 `stream_profiles`
+Stores non-generic profile configuration.
+
+Columns:
+- `stream TEXT PRIMARY KEY`
+- `profile_json TEXT NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- `streams.profile` stores the profile kind for cheap listing/filtering
+- `stream_profiles.profile_json` stores the full JSON config for profiles such
+  as `state-protocol`
+- missing stored profile metadata means the stream is treated as `generic`
+
+---
+
+### 2.11 `stream_touch_state`
+Rebuildable helper state for touch-enabled `state-protocol` streams.
+
+Columns:
+- `stream TEXT PRIMARY KEY`
+- `processed_through INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- tracks how far the background state-protocol touch worker has processed the
+  base stream
+- rows are created only for touch-enabled `state-protocol` streams
+- the table is rebuildable from stream metadata plus the stream contents
+- it is not mirrored to object storage as exact state; bootstrap/restart reseeds
+  it locally
+
+---
+
+### 2.12 `producer_state`
+Local idempotence and gap-detection state for producer-aware appends.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `producer_id TEXT NOT NULL`
+- `epoch INTEGER NOT NULL`
+- `last_seq INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- used for `Producer-Id` / `Producer-Epoch` / `Producer-Seq` admission checks
+- local-only SQLite state; not mirrored to object storage
+- reset by `--bootstrap-from-r2`
+
+---
+
+### 2.13 `live_templates`
+Runtime template registry for touch-enabled `state-protocol` streams.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `template_id TEXT NOT NULL`
+- `entity TEXT NOT NULL`
+- `fields_json TEXT NOT NULL`
+- `encodings_json TEXT NOT NULL`
+- `state TEXT NOT NULL`
+- `created_at_ms INTEGER NOT NULL`
+- `last_seen_at_ms INTEGER NOT NULL`
+- `inactivity_ttl_ms INTEGER NOT NULL`
+- `active_from_source_offset INTEGER NOT NULL`
+- `retired_at_ms INTEGER NULL`
+- `retired_reason TEXT NULL`
+
+Notes:
+- runtime helper state for fine-grained live invalidation
+- not part of the stream's durable published history
+- not mirrored to object storage
+- rebuilt or relearned by runtime traffic after restart/bootstrap
 
 ---
 

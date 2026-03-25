@@ -11,22 +11,30 @@ import { Metrics } from "./metrics";
 import { parseTimestampMsResult } from "./util/time";
 import { cleanupTempSegments } from "./util/cleanup";
 import { MetricsEmitter } from "./metrics_emitter";
-import { SchemaRegistryStore, type SchemaRegistry, type SchemaRegistryMutationError, type SchemaRegistryReadError } from "./schema/registry";
+import {
+  SchemaRegistryStore,
+  parseSchemaUpdateResult,
+  type SchemaRegistry,
+  type SchemaRegistryMutationError,
+  type SchemaRegistryReadError,
+} from "./schema/registry";
 import { resolvePointerResult } from "./util/json_pointer";
 import { applyLensChainResult } from "./lens/lens";
 import { ExpirySweeper } from "./expiry_sweeper";
 import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
 import { MemoryGuard } from "./memory";
-import { TouchInterpreterManager } from "./touch/manager";
-import { isTouchEnabled } from "./touch/spec";
-import { parseTouchCursor } from "./touch/touch_journal";
-import { touchKeyIdFromRoutingKeyResult } from "./touch/touch_key_id";
-import { tableKeyIdFor, templateKeyIdFor } from "./touch/live_keys";
+import { TouchProcessorManager } from "./touch/manager";
 import type { SegmenterController } from "./segment/segmenter_workers";
 import type { UploaderController } from "./uploader";
 import type { IndexManager } from "./index/indexer";
 import { Result } from "better-result";
+import {
+  StreamProfileStore,
+  parseProfileUpdateResult,
+  resolveTouchCapability,
+  type StreamTouchRoute,
+} from "./profiles";
 
 function withNosniff(headers: HeadersInit = {}): HeadersInit {
   return {
@@ -209,7 +217,8 @@ export type App = {
     indexer?: IndexManager;
     metrics: Metrics;
     registry: SchemaRegistryStore;
-    touch: TouchInterpreterManager;
+    profiles: StreamProfileStore;
+    touch: TouchProcessorManager;
     stats?: StatsCollector;
     backpressure?: BackpressureGate;
     memory?: MemoryGuard;
@@ -222,7 +231,8 @@ export type CreateAppRuntimeArgs = {
   ingest: IngestQueue;
   notifier: StreamNotifier;
   registry: SchemaRegistryStore;
-  touch: TouchInterpreterManager;
+  profiles: StreamProfileStore;
+  touch: TouchProcessorManager;
   stats?: StatsCollector;
   backpressure?: BackpressureGate;
   memory: MemoryGuard;
@@ -267,13 +277,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   const ingest = new IngestQueue(cfg, db, stats, backpressure, memory, metrics);
   const notifier = new StreamNotifier();
   const registry = new SchemaRegistryStore(db);
-  const touch = new TouchInterpreterManager(cfg, db, ingest, notifier, registry, backpressure);
+  const profiles = new StreamProfileStore(db);
+  const touch = new TouchProcessorManager(cfg, db, ingest, notifier, profiles, backpressure);
   const runtime = opts.createRuntime({
     config: cfg,
     db,
     ingest,
     notifier,
     registry,
+    profiles,
     touch,
     stats,
     backpressure,
@@ -466,19 +478,26 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         const limit = Number(url.searchParams.get("limit") ?? "100");
         const offset = Number(url.searchParams.get("offset") ?? "0");
         const rows = db.listStreams(Math.max(0, Math.min(limit, 1000)), Math.max(0, offset));
-        const out = rows.map((r) => ({
-          name: r.stream,
-          created_at: new Date(Number(r.created_at_ms)).toISOString(),
-          expires_at: r.expires_at_ms == null ? null : new Date(Number(r.expires_at_ms)).toISOString(),
-          epoch: r.epoch,
-          next_offset: r.next_offset.toString(),
-          sealed_through: r.sealed_through.toString(),
-          uploaded_through: r.uploaded_through.toString(),
-        }));
+        const out = [];
+        for (const r of rows) {
+          const profileRes = profiles.getProfileResult(r.stream, r);
+          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+          const profile = profileRes.value;
+          out.push({
+            name: r.stream,
+            created_at: new Date(Number(r.created_at_ms)).toISOString(),
+            expires_at: r.expires_at_ms == null ? null : new Date(Number(r.expires_at_ms)).toISOString(),
+            epoch: r.epoch,
+            next_offset: r.next_offset.toString(),
+            sealed_through: r.sealed_through.toString(),
+            uploaded_through: r.uploaded_through.toString(),
+            profile: profile.kind,
+          });
+        }
         return json(200, out);
       }
 
-      // /v1/stream/:name[/_schema] (accept encoded or raw slashes in name)
+      // /v1/stream/:name[/_schema|/_profile] (accept encoded or raw slashes in name)
       const streamPrefix = "/v1/stream/";
       if (path.startsWith(streamPrefix)) {
         const rawRest = path.slice(streamPrefix.length);
@@ -486,14 +505,14 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         if (rest.length === 0) return badRequest("missing stream name");
         const segments = rest.split("/");
         let isSchema = false;
+        let isProfile = false;
         let pathKeyParam: string | null = null;
-        let touchMode:
-          | null
-          | { kind: "meta" }
-          | { kind: "wait" }
-          | { kind: "templates_activate" } = null;
+        let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
           isSchema = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_profile") {
+          isProfile = true;
           segments.pop();
         } else if (
           segments.length >= 3 &&
@@ -528,74 +547,16 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             return json(200, regRes.value);
           }
           if (req.method === "POST") {
-            let body: any;
+            let body: unknown;
             try {
               body = await req.json();
             } catch {
               return badRequest("schema update must be valid JSON");
             }
-            // Accept incremental update shape ({schema, lens, routingKey}),
-            // full registry payload ({schemas, lenses, currentVersion, ...}),
-            // and routingKey-only updates (used by the Bluesky demo).
-            let update = body;
-            const isSchemaObject =
-              update &&
-              (update.schema === true ||
-                update.schema === false ||
-                (typeof update.schema === "object" && update.schema !== null && !Array.isArray(update.schema)));
-            if (!isSchemaObject && update && typeof update === "object" && update.schemas && typeof update.schemas === "object") {
-              const versions = Object.keys(update.schemas)
-                .map((v) => Number(v))
-                .filter((v) => Number.isFinite(v) && v >= 0);
-              const currentVersion =
-                typeof update.currentVersion === "number" && Number.isFinite(update.currentVersion)
-                  ? update.currentVersion
-                  : versions.length > 0
-                    ? Math.max(...versions)
-                    : null;
-              if (currentVersion != null) {
-                const schema = update.schemas[String(currentVersion)];
-                const lens =
-                  update.lens ??
-                  (update.lenses && typeof update.lenses === "object" ? update.lenses[String(currentVersion - 1)] : undefined);
-                update = {
-                  schema,
-                  lens,
-                  routingKey: update.routingKey,
-                  interpreter: (update as any).interpreter,
-                };
-              }
-            }
-            if (update && typeof update === "object") {
-              if (update.schema === null) {
-                delete update.schema;
-              }
-              if (update.routingKey === undefined) {
-                const raw = update as any;
-                const candidate =
-                  raw.routing_key ?? raw.routingKeyPointer ?? raw.routing_key_pointer ?? raw.routingKey;
-                if (typeof candidate === "string") {
-                  update.routingKey = { jsonPointer: candidate, required: true };
-                } else if (candidate && typeof candidate === "object") {
-                  const jsonPointer = candidate.jsonPointer ?? candidate.json_pointer;
-                  if (typeof jsonPointer === "string") {
-                    update.routingKey = {
-                      jsonPointer,
-                      required: typeof candidate.required === "boolean" ? candidate.required : true,
-                    };
-                  }
-                }
-              } else if (update.routingKey && typeof update.routingKey === "object") {
-                const rk = update.routingKey as any;
-                if (rk.jsonPointer === undefined && typeof rk.json_pointer === "string") {
-                  update.routingKey = {
-                    jsonPointer: rk.json_pointer,
-                    required: typeof rk.required === "boolean" ? rk.required : true,
-                  };
-                }
-              }
-            }
-            if (update.schema === undefined && update.routingKey !== undefined && update.interpreter === undefined) {
+            const updateRes = parseSchemaUpdateResult(body);
+            if (Result.isError(updateRes)) return badRequest(updateRes.error.message);
+            const update = updateRes.value;
+            if (update.schema === undefined && update.routingKey !== undefined) {
               const regRes = registry.updateRoutingKeyResult(stream, update.routingKey ?? null);
               if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
               try {
@@ -605,30 +566,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               }
               return json(200, regRes.value);
             }
-            if (update.schema === undefined && update.interpreter !== undefined && update.routingKey === undefined) {
-              const regRes = registry.updateInterpreterResult(stream, update.interpreter ?? null);
-              if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
-              try {
-                await uploadSchemaRegistry(stream, regRes.value);
-              } catch {
-                return json(500, { error: { code: "internal", message: "schema upload failed" } });
-              }
-              return json(200, regRes.value);
-            }
-            if (update.schema === undefined && update.routingKey !== undefined && update.interpreter !== undefined) {
-              // Apply both updates, reusing the same endpoint semantics.
-              const routingRes = registry.updateRoutingKeyResult(stream, update.routingKey ?? null);
-              if (Result.isError(routingRes)) return schemaMutationErrorResponse(routingRes.error);
-              const interpreterRes = registry.updateInterpreterResult(stream, update.interpreter ?? null);
-              if (Result.isError(interpreterRes)) return schemaMutationErrorResponse(interpreterRes.error);
-              try {
-                await uploadSchemaRegistry(stream, interpreterRes.value);
-              } catch {
-                return json(500, { error: { code: "internal", message: "schema upload failed" } });
-              }
-              return json(200, interpreterRes.value);
-            }
-            const regRes = registry.updateRegistryResult(stream, srow, update);
+            const regRes = registry.updateRegistryResult(stream, srow, {
+              schema: update.schema,
+              lens: update.lens,
+              routingKey: update.routingKey ?? undefined,
+            });
             if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
             try {
               await uploadSchemaRegistry(stream, regRes.value);
@@ -640,371 +582,58 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           return badRequest("unsupported method");
         }
 
+        if (isProfile) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+
+          if (req.method === "GET") {
+            const profileRes = profiles.getProfileResourceResult(stream, srow);
+            if (Result.isError(profileRes)) return internalError("invalid stream profile");
+            return json(200, profileRes.value);
+          }
+
+          if (req.method === "POST") {
+            let body: any;
+            try {
+              body = await req.json();
+            } catch {
+              return badRequest("profile update must be valid JSON");
+            }
+            const nextProfileRes = parseProfileUpdateResult(body);
+            if (Result.isError(nextProfileRes)) return badRequest(nextProfileRes.error.message);
+            const profileRes = profiles.updateProfileResult(stream, srow, nextProfileRes.value);
+            if (Result.isError(profileRes)) return badRequest(profileRes.error.message);
+            try {
+              await uploader.publishManifest(stream);
+            } catch {
+              return json(500, { error: { code: "internal", message: "profile upload failed" } });
+            }
+            return json(200, profileRes.value);
+          }
+
+          return badRequest("unsupported method");
+        }
+
         if (touchMode) {
           const srow = db.getStream(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 
-          const regRes = registry.getRegistryResult(stream);
-          if (Result.isError(regRes)) return schemaReadErrorResponse(regRes.error);
-          const reg = regRes.value;
-          if (!isTouchEnabled(reg.interpreter)) return notFound("touch not enabled");
-
-          const touchCfg = reg.interpreter.touch;
-
-          if (touchMode.kind === "templates_activate") {
-            if (req.method !== "POST") return badRequest("unsupported method");
-            let body: any;
-            try {
-              body = await req.json();
-            } catch {
-              return badRequest("activate body must be valid JSON");
-            }
-            const templatesRaw = body?.templates;
-            if (!Array.isArray(templatesRaw) || templatesRaw.length === 0) {
-              return badRequest("activate.templates must be a non-empty array");
-            }
-            if (templatesRaw.length > 256) return badRequest("activate.templates too large (max 256)");
-
-            const ttlRaw = body?.inactivityTtlMs;
-            const inactivityTtlMs =
-              ttlRaw === undefined
-                ? touchCfg.templates?.defaultInactivityTtlMs ?? 60 * 60 * 1000
-                : typeof ttlRaw === "number" && Number.isFinite(ttlRaw) && ttlRaw >= 0
-                  ? Math.floor(ttlRaw)
-                  : null;
-            if (inactivityTtlMs == null) return badRequest("activate.inactivityTtlMs must be a non-negative number (ms)");
-
-            const templates: Array<{ entity: string; fields: Array<{ name: string; encoding: any }> }> = [];
-            for (const t of templatesRaw) {
-              const entity = typeof t?.entity === "string" ? t.entity.trim() : "";
-              const fieldsRaw = t?.fields;
-              if (entity === "" || !Array.isArray(fieldsRaw) || fieldsRaw.length === 0 || fieldsRaw.length > 3) continue;
-              const fields: Array<{ name: string; encoding: any }> = [];
-              for (const f of fieldsRaw) {
-                const name = typeof f?.name === "string" ? f.name.trim() : "";
-                const encoding = f?.encoding;
-                if (name === "") continue;
-                fields.push({ name, encoding });
-              }
-              if (fields.length !== fieldsRaw.length) continue;
-              templates.push({ entity, fields });
-            }
-            if (templates.length !== templatesRaw.length) return badRequest("activate.templates contains invalid template definitions");
-
-            const limits = {
-              maxActiveTemplatesPerStream: touchCfg.templates?.maxActiveTemplatesPerStream ?? 2048,
-              maxActiveTemplatesPerEntity: touchCfg.templates?.maxActiveTemplatesPerEntity ?? 256,
-            };
-
-            const activeFromTouchOffset = touch.getOrCreateJournal(stream, touchCfg).getCursor();
-
-            const res = touch.activateTemplates({
-              stream,
-              touchCfg,
-              baseStreamNextOffset: srow.next_offset,
-              activeFromTouchOffset,
-              templates,
-              inactivityTtlMs,
-            });
-
-            return json(200, { activated: res.activated, denied: res.denied, limits });
-          }
-
-          if (touchMode.kind === "meta") {
-            if (req.method !== "GET") return badRequest("unsupported method");
-            let activeTemplates = 0;
-            try {
-              const row = db.db.query(`SELECT COUNT(*) as cnt FROM live_templates WHERE stream=? AND state='active';`).get(stream) as any;
-              activeTemplates = Number(row?.cnt ?? 0);
-            } catch {
-              activeTemplates = 0;
-            }
-            const meta = touch.getOrCreateJournal(stream, touchCfg).getMeta();
-            const runtime = touch.getTouchRuntimeSnapshot({ stream, touchCfg });
-            const interp = db.getStreamInterpreter(stream);
-            return json(200, {
-              ...meta,
-              coarseIntervalMs: touchCfg.coarseIntervalMs ?? 100,
-              touchCoalesceWindowMs: touchCfg.touchCoalesceWindowMs ?? 100,
-              activeTemplates,
-              lagSourceOffsets: runtime.lagSourceOffsets,
-              touchMode: runtime.touchMode,
-              walScannedThrough: interp ? encodeOffset(srow.epoch, interp.interpreted_through) : null,
-              bucketMaxSourceOffsetSeq: meta.bucketMaxSourceOffsetSeq,
-              hotFineKeys: runtime.hotFineKeys,
-              hotTemplates: runtime.hotTemplates,
-              hotFineKeysActive: runtime.hotFineKeysActive,
-              hotFineKeysGrace: runtime.hotFineKeysGrace,
-              hotTemplatesActive: runtime.hotTemplatesActive,
-              hotTemplatesGrace: runtime.hotTemplatesGrace,
-              fineWaitersActive: runtime.fineWaitersActive,
-              coarseWaitersActive: runtime.coarseWaitersActive,
-              broadFineWaitersActive: runtime.broadFineWaitersActive,
-              hotKeyFilteringEnabled: runtime.hotKeyFilteringEnabled,
-              hotTemplateFilteringEnabled: runtime.hotTemplateFilteringEnabled,
-              scanRowsTotal: runtime.scanRowsTotal,
-              scanBatchesTotal: runtime.scanBatchesTotal,
-              scannedButEmitted0BatchesTotal: runtime.scannedButEmitted0BatchesTotal,
-              interpretedThroughDeltaTotal: runtime.interpretedThroughDeltaTotal,
-              touchesEmittedTotal: runtime.touchesEmittedTotal,
-              touchesTableTotal: runtime.touchesTableTotal,
-              touchesTemplateTotal: runtime.touchesTemplateTotal,
-              fineTouchesDroppedDueToBudgetTotal: runtime.fineTouchesDroppedDueToBudgetTotal,
-              fineTouchesSkippedColdTemplateTotal: runtime.fineTouchesSkippedColdTemplateTotal,
-              fineTouchesSkippedColdKeyTotal: runtime.fineTouchesSkippedColdKeyTotal,
-              fineTouchesSkippedTemplateBucketTotal: runtime.fineTouchesSkippedTemplateBucketTotal,
-              waitTouchedTotal: runtime.waitTouchedTotal,
-              waitTimeoutTotal: runtime.waitTimeoutTotal,
-              waitStaleTotal: runtime.waitStaleTotal,
-              journalFlushesTotal: runtime.journalFlushesTotal,
-              journalNotifyWakeupsTotal: runtime.journalNotifyWakeupsTotal,
-              journalNotifyWakeMsTotal: runtime.journalNotifyWakeMsTotal,
-              journalNotifyWakeMsMax: runtime.journalNotifyWakeMsMax,
-              journalTimeoutsFiredTotal: runtime.journalTimeoutsFiredTotal,
-              journalTimeoutSweepMsTotal: runtime.journalTimeoutSweepMsTotal,
-            });
-          }
-
-          if (touchMode.kind === "wait") {
-            if (req.method !== "POST") return badRequest("unsupported method");
-            const waitStartMs = Date.now();
-            let body: any;
-            try {
-              body = await req.json();
-            } catch {
-              return badRequest("wait body must be valid JSON");
-            }
-            const keysRaw = body?.keys;
-            const cursorRaw = body?.cursor;
-            const timeoutMsRaw = body?.timeoutMs;
-            if (keysRaw !== undefined && (!Array.isArray(keysRaw) || !keysRaw.every((k: any) => typeof k === "string" && k.trim() !== ""))) {
-              return badRequest("wait.keys must be a non-empty string array when provided");
-            }
-            const keys = Array.isArray(keysRaw) ? Array.from(new Set(keysRaw.map((k: string) => k.trim()))) : [];
-            if (keys.length > 1024) return badRequest("wait.keys too large (max 1024)");
-            const keyIdsRaw = body?.keyIds;
-            const keyIds =
-              Array.isArray(keyIdsRaw) && keyIdsRaw.length > 0
-                ? Array.from(
-                    new Set(
-                      keyIdsRaw.map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n) && Number.isInteger(n) && n >= 0 && n <= 0xffffffff)
-                    )
-                  ).map((n) => n >>> 0)
-                : [];
-            if (Array.isArray(keyIdsRaw) && keyIds.length !== keyIdsRaw.length) {
-              return badRequest("wait.keyIds must be a non-empty uint32 array when provided");
-            }
-            if (keys.length === 0 && keyIds.length === 0) return badRequest("wait requires keys or keyIds");
-            if (keyIds.length > 1024) return badRequest("wait.keyIds too large (max 1024)");
-            if (typeof cursorRaw !== "string" || cursorRaw.trim() === "") return badRequest("wait.cursor must be a non-empty string");
-            const cursor = cursorRaw.trim();
-
-            const timeoutMs =
-              timeoutMsRaw === undefined ? 30_000 : typeof timeoutMsRaw === "number" && Number.isFinite(timeoutMsRaw) ? Math.max(0, Math.min(120_000, timeoutMsRaw)) : null;
-            if (timeoutMs == null) return badRequest("wait.timeoutMs must be a number (ms)");
-
-            const templateIdsUsedRaw = body?.templateIdsUsed;
-            if (Array.isArray(templateIdsUsedRaw) && !templateIdsUsedRaw.every((x: any) => typeof x === "string" && x.trim() !== "")) {
-              return badRequest("wait.templateIdsUsed must be a string array");
-            }
-            const templateIdsUsed =
-              Array.isArray(templateIdsUsedRaw) && templateIdsUsedRaw.length > 0
-                ? Array.from(new Set(templateIdsUsedRaw.map((s: any) => (typeof s === "string" ? s.trim() : "")).filter((s: string) => s !== "")))
-                : [];
-            const interestModeRaw = body?.interestMode;
-            if (interestModeRaw !== undefined && interestModeRaw !== "fine" && interestModeRaw !== "coarse") {
-              return badRequest("wait.interestMode must be 'fine' or 'coarse'");
-            }
-            const interestMode: "fine" | "coarse" = interestModeRaw === "coarse" ? "coarse" : "fine";
-
-            if (interestMode === "fine" && templateIdsUsed.length > 0) {
-              touch.heartbeatTemplates({ stream, touchCfg, templateIdsUsed });
-            }
-
-            const declareTemplatesRaw = body?.declareTemplates;
-            if (Array.isArray(declareTemplatesRaw) && declareTemplatesRaw.length > 0) {
-              if (declareTemplatesRaw.length > 256) return badRequest("wait.declareTemplates too large (max 256)");
-              const ttlRaw = body?.inactivityTtlMs;
-              const inactivityTtlMs =
-                ttlRaw === undefined
-                  ? touchCfg.templates?.defaultInactivityTtlMs ?? 60 * 60 * 1000
-                  : typeof ttlRaw === "number" && Number.isFinite(ttlRaw) && ttlRaw >= 0
-                    ? Math.floor(ttlRaw)
-                    : null;
-              if (inactivityTtlMs == null) return badRequest("wait.inactivityTtlMs must be a non-negative number (ms)");
-
-              const templates: Array<{ entity: string; fields: Array<{ name: string; encoding: any }> }> = [];
-              for (const t of declareTemplatesRaw) {
-                const entity = typeof t?.entity === "string" ? t.entity.trim() : "";
-                const fieldsRaw = t?.fields;
-                if (entity === "" || !Array.isArray(fieldsRaw) || fieldsRaw.length === 0 || fieldsRaw.length > 3) continue;
-                const fields: Array<{ name: string; encoding: any }> = [];
-                for (const f of fieldsRaw) {
-                  const name = typeof f?.name === "string" ? f.name.trim() : "";
-                  const encoding = f?.encoding;
-                  if (name === "") continue;
-                  fields.push({ name, encoding });
-                }
-                if (fields.length !== fieldsRaw.length) continue;
-                templates.push({ entity, fields });
-              }
-              if (templates.length !== declareTemplatesRaw.length) return badRequest("wait.declareTemplates contains invalid template definitions");
-              const activeFromTouchOffset = touch.getOrCreateJournal(stream, touchCfg).getCursor();
-              touch.activateTemplates({
-                stream,
-                touchCfg,
-                baseStreamNextOffset: srow.next_offset,
-                activeFromTouchOffset,
-                templates,
-                inactivityTtlMs,
-              });
-            }
-
-            const j = touch.getOrCreateJournal(stream, touchCfg);
-            const runtime = touch.getTouchRuntimeSnapshot({ stream, touchCfg });
-            let rawFineKeyIds = keyIds;
-            if (keyIds.length === 0) {
-              const parsedKeyIds: number[] = [];
-              for (const key of keys) {
-                const keyIdRes = touchKeyIdFromRoutingKeyResult(key);
-                if (Result.isError(keyIdRes)) return internalError();
-                parsedKeyIds.push(keyIdRes.value);
-              }
-              rawFineKeyIds = parsedKeyIds;
-            }
-            const templateWaitKeyIds =
-              templateIdsUsed.length > 0
-                ? Array.from(new Set(templateIdsUsed.map((templateId) => templateKeyIdFor(templateId) >>> 0)))
-                : [];
-            let waitKeyIds = rawFineKeyIds;
-            let effectiveWaitKind: "fineKey" | "templateKey" | "tableKey" = "fineKey";
-
-            if (interestMode === "coarse") {
-              effectiveWaitKind = "tableKey";
-            } else if (runtime.touchMode === "restricted" && templateIdsUsed.length > 0) {
-              effectiveWaitKind = "templateKey";
-            } else if (runtime.touchMode === "coarseOnly" && templateIdsUsed.length > 0) {
-              effectiveWaitKind = "tableKey";
-            }
-
-            if (effectiveWaitKind === "templateKey") {
-              waitKeyIds = templateWaitKeyIds;
-            } else if (effectiveWaitKind === "tableKey" && templateIdsUsed.length > 0) {
-              const entities = touch.resolveTemplateEntitiesForWait({ stream, templateIdsUsed });
-              waitKeyIds = Array.from(new Set(entities.map((entity) => tableKeyIdFor(entity) >>> 0)));
-            }
-
-            // Keep fine waits resilient to runtime mode flips: include template-key
-            // fallbacks even when the current mode is fine. This avoids starvation
-            // when a long-poll starts in fine mode but DS degrades to restricted
-            // before that waiter naturally re-issues.
-            if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0) {
-              const merged = new Set<number>();
-              for (const keyId of waitKeyIds) merged.add(keyId >>> 0);
-              for (const keyId of templateWaitKeyIds) merged.add(keyId >>> 0);
-              waitKeyIds = Array.from(merged);
-            }
-
-            if (waitKeyIds.length === 0) {
-              waitKeyIds = rawFineKeyIds;
-              effectiveWaitKind = "fineKey";
-            }
-            const hotInterestKeyIds = interestMode === "fine" ? rawFineKeyIds : waitKeyIds;
-            const releaseHotInterest = touch.beginHotWaitInterest({
-              stream,
-              touchCfg,
-              keyIds: hotInterestKeyIds,
-              templateIdsUsed,
-              interestMode,
-            });
-            try {
-              let sinceGen: number;
-              if (cursor === "now") {
-                sinceGen = j.getGeneration();
-              } else {
-                const parsed = parseTouchCursor(cursor);
-                if (!parsed) return badRequest("wait.cursor must be in the form <epochHex>:<generation> or 'now'");
-                if (parsed.epoch !== j.getEpoch()) {
-                  const latencyMs = Date.now() - waitStartMs;
-                  touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "stale", latencyMs });
-                  return json(200, {
-                    stale: true,
-                    cursor: j.getCursor(),
-                    epoch: j.getEpoch(),
-                    generation: j.getGeneration(),
-                    effectiveWaitKind,
-                    bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                    flushAtMs: j.getLastFlushAtMs(),
-                    bucketStartMs: j.getLastBucketStartMs(),
-                    error: { code: "stale", message: "cursor epoch mismatch; rerun/re-subscribe and start from cursor" },
-                  });
-                }
-                sinceGen = parsed.generation;
-              }
-
-              const nowGen = j.getGeneration();
-              if (sinceGen > nowGen) sinceGen = nowGen;
-
-              if (j.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
-                const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
-                return json(200, {
-                  touched: true,
-                  cursor: j.getCursor(),
-                  effectiveWaitKind,
-                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                  flushAtMs: j.getLastFlushAtMs(),
-                  bucketStartMs: j.getLastBucketStartMs(),
-                });
-              }
-
-              const deadline = Date.now() + timeoutMs;
-              const remaining = deadline - Date.now();
-              if (remaining <= 0) {
-                const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
-                return json(200, {
-                  touched: false,
-                  cursor: j.getCursor(),
-                  effectiveWaitKind,
-                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                  flushAtMs: j.getLastFlushAtMs(),
-                  bucketStartMs: j.getLastBucketStartMs(),
-                });
-              }
-
-              const afterGen = j.getGeneration();
-              const hit = await j.waitForAny({ keys: waitKeyIds, afterGeneration: afterGen, timeoutMs: remaining, signal: req.signal });
-              if (req.signal.aborted) return new Response(null, { status: 204 });
-
-              if (hit == null) {
-                const latencyMs = Date.now() - waitStartMs;
-                touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "timeout", latencyMs });
-                return json(200, {
-                  touched: false,
-                  cursor: j.getCursor(),
-                  effectiveWaitKind,
-                  bucketMaxSourceOffsetSeq: j.getLastFlushedSourceOffsetSeq().toString(),
-                  flushAtMs: j.getLastFlushAtMs(),
-                  bucketStartMs: j.getLastBucketStartMs(),
-                });
-              }
-
-              const latencyMs = Date.now() - waitStartMs;
-              touch.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
-              return json(200, {
-                touched: true,
-                cursor: j.getCursor(),
-                effectiveWaitKind,
-                bucketMaxSourceOffsetSeq: hit.bucketMaxSourceOffsetSeq.toString(),
-                flushAtMs: hit.flushAtMs,
-                bucketStartMs: hit.bucketStartMs,
-              });
-            } finally {
-              releaseHotInterest();
-            }
-          }
+          const profileRes = profiles.getProfileResult(stream, srow);
+          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+          const touchCapability = resolveTouchCapability(profileRes.value);
+          if (!touchCapability?.handleRoute) return notFound("touch not enabled");
+          return touchCapability.handleRoute({
+            route: touchMode,
+            req,
+            stream,
+            streamRow: srow,
+            profile: profileRes.value,
+            db,
+            touchManager: touch,
+            respond: { json, badRequest, internalError, notFound },
+          });
         }
 
         // Stream lifecycle.
@@ -1697,6 +1326,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       indexer,
       metrics,
       registry,
+      profiles,
       touch,
       stats,
       backpressure,

@@ -8,12 +8,44 @@ implementation using:
 
 The design prioritizes correctness, bounded memory, and crash safety.
 
+## Stream Model
+
+Every persisted object in the system is still a **stream**: an append-only log
+stored in SQLite WAL, materialized into segments, and read back through Durable
+Streams semantics.
+
+Streams also carry two pieces of control-plane metadata:
+
+- **profile**: stream semantics
+- **schema**: payload structure
+
+Current rule:
+
+- a stream always has a profile
+- if no profile was declared when the stream was created, it is treated as
+  `generic`
+- storage may omit an explicit `generic` declaration and keep only the declared
+  profile metadata when present
+
+Implemented built-ins today:
+
+- `generic`
+- `state-protocol`
+
+`generic` adds no canonical payload envelope and leaves schema management to the
+user. `state-protocol` owns the live `/touch/*` surface and its touch
+configuration.
+
+See [stream-profiles.md](./stream-profiles.md) for the normative model.
+
 ## High-level components
 
 1) HTTP layer (Bun server)
 - Parses requests, enforces protocol semantics, and enqueues work.
 - Performs only small indexed SQLite reads in the request path.
 - Implements long-poll reads without busy loops.
+- Resolves the stream profile definition before handling profile-owned
+  metadata or routes.
 
 2) WAL writer (single-writer loop)
 - Batches append requests from a bounded queue (group commit).
@@ -37,6 +69,50 @@ The design prioritizes correctness, bounded memory, and crash safety.
 6) Object store
 - ObjectStore interface with put/get/head/list plus streaming uploads.
 - MockR2 implements the interface with deterministic fault injection.
+
+## Profile Runtime
+
+Built-in profiles are implemented under `src/profiles/`.
+
+Each profile definition owns:
+
+- profile validation and normalization
+- stored profile parsing and caching
+- persistence side effects on update
+- optional capability hooks for profile-owned runtime behavior
+
+The registry in `src/profiles/index.ts` is the single place where built-in
+profiles are wired into the core engine.
+
+The core engine does not branch on specific profile kinds for supported
+profile-owned behavior. It resolves the profile definition and dispatches
+through its hooks.
+
+Profile-specific logic must live behind a dedicated profile entry module under
+`src/profiles/` and may use a profile-owned subdirectory for its internal
+helpers. The core engine should not grow direct `if (profile.kind === "...")`
+checks for supported stream semantics.
+
+Today, `state-protocol` uses this model to own:
+
+- touch state seeding
+- canonical change derivation for the touch processor
+- the `/touch/*` HTTP surface
+
+## Control-Plane Metadata
+
+Per stream, SQLite stores:
+
+- stream lifecycle and offsets
+- profile metadata
+- schema registry
+- profile-owned processing progress and other rebuildable helper state
+
+In full mode, manifest objects, segment objects, and schema objects in object
+storage are the recovery source for published stream history and metadata.
+SQLite also holds transient local state, including the
+unuploaded WAL tail and runtime helper state, which is not fully mirrored to
+object storage. Profiles and schemas only shape how a stream is interpreted.
 
 ## Data flow
 
@@ -79,11 +155,23 @@ The design prioritizes correctness, bounded memory, and crash safety.
 
 ## SQLite usage and invariants
 
-SQLite is the source of truth for:
+SQLite is the immediate source of truth for local operation:
 - WAL rows (append-only)
 - Stream progress (next_offset, sealed_through, uploaded_through)
 - Segment metadata (local files and upload state)
 - Manifest generation state
+
+In full mode, bootstrap from object storage reconstructs the published durable
+state from:
+- manifest objects
+- segment objects
+- schema objects
+
+SQLite state that is intentionally local-only or transient includes:
+- WAL rows above `uploaded_through`
+- producer dedupe/gap-detection state
+- runtime live/template state
+- rebuildable helper state that is reseeded on restart
 
 Key invariants:
 - uploaded_through <= sealed_through <= next_offset
@@ -113,6 +201,18 @@ Local disk layout (default):
   - resume pending segment uploads
   - resume segmenter from streams with pending_bytes
   - never scan all streams; use indexed queries
+
+## Future Durability Modes
+
+Not implemented today:
+
+- object-store-acked durability: batch writes and acknowledge only after they
+  are durably persisted to object storage
+- cluster quorum durability: acknowledge writes only after a durability quorum
+  in a cluster has accepted them
+
+The current full-mode server does neither. Its ACK point is local SQLite
+commit, and its object-store durability point is manifest publication.
 
 ## Bounded memory and backpressure
 

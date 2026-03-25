@@ -103,13 +103,12 @@ async function ensureStream(baseUrl: string, stream: string): Promise<void> {
   }
 }
 
-async function ensureSourceSchemaAndInterpreter(baseUrl: string, stream: string): Promise<void> {
+async function ensureSourceSchemaAndProfile(baseUrl: string, stream: string): Promise<void> {
   const reg = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, { method: "GET" });
   const currentVersion = typeof reg?.currentVersion === "number" ? reg.currentVersion : 0;
 
-  const interpreter = {
-    apiVersion: "durable.streams/stream-interpreter/v1",
-    format: "durable.streams/state-protocol/v1",
+  const profile = {
+    kind: "state-protocol",
     touch: {
       enabled: true,
       coarseIntervalMs: 20,
@@ -126,16 +125,23 @@ async function ensureSourceSchemaAndInterpreter(baseUrl: string, stream: string)
       body: JSON.stringify({
         schema: { type: "object", additionalProperties: true },
         routingKey,
-        interpreter,
       }),
     });
-    return;
+  } else {
+    await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ routingKey }),
+    });
   }
 
-  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ routingKey, interpreter }),
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile,
+    }),
   });
 }
 
@@ -1074,7 +1080,7 @@ Options:
   }
 
   await ensureStream(baseUrl, args.stream);
-  await ensureSourceSchemaAndInterpreter(baseUrl, args.stream);
+  await ensureSourceSchemaAndProfile(baseUrl, args.stream);
   await activateTemplate(baseUrl, args.stream);
 
   await ensureStream(baseUrl, args.updatesStream);

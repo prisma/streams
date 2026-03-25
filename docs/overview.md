@@ -4,10 +4,44 @@ Prisma Streams is a Bun + TypeScript implementation of the Durable Streams HTTP 
 
 Use [index.md](./index.md) for the full documentation map.
 
+Every stream has a profile.
+
+- If no profile is declared when the stream is created, it is treated as
+  `generic`.
+- `generic` means a plain durable stream with optional user-managed schema
+  validation.
+- `state-protocol` is the built-in live/touch profile for JSON State Protocol
+  streams.
+- Profiles define stream semantics; schemas define payload shape.
+
+See [stream-profiles.md](./stream-profiles.md).
+
 This repository currently contains two server modes:
 
 - `full` mode: a self-hosted server with SQLite WAL storage, segmenting, upload, and index maintenance
 - `local` mode: an embedded single-SQLite server intended for trusted local development workflows, especially `npx prisma dev`
+
+## Current Durability Model
+
+Full mode today has two different durability points:
+
+- append ACK means the write is durable in local SQLite
+- object-store durability happens only after segment upload plus manifest
+  publication
+
+`--bootstrap-from-r2` rebuilds published stream history and metadata from
+object storage. It does not restore transient local SQLite state
+such as the unuploaded WAL tail, producer dedupe state, or runtime live/template
+state.
+
+A stream becomes recoverable from object storage after its first manifest is
+published.
+
+Not implemented today:
+
+- an object-store-acked mode that would only ACK after persistence to R2
+- a cluster quorum mode that would only ACK after a storage quorum accepts the
+  write
 
 ## Status
 
@@ -153,6 +187,7 @@ bun run test:conformance
 - [conformance.md](./conformance.md): test commands and current upstream suite status
 - [auth.md](./auth.md): current authentication and authorization constraints
 - [architecture.md](./architecture.md): system architecture
+- [stream-profiles.md](./stream-profiles.md): stream/profile/schema model
 - [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants
 - [schemas.md](./schemas.md): schema registry and lens behavior
 - [live.md](./live.md): end-to-end live / touch integration guide and API semantics

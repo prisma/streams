@@ -15,10 +15,10 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     rootDir,
     dbPath: `${rootDir}/wal.sqlite`,
     port: 0,
-    interpreterCheckIntervalMs: 0,
-    interpreterWorkers: 1,
-    interpreterMaxBatchRows: 1000,
-    interpreterMaxBatchBytes: 8 * 1024 * 1024,
+    touchCheckIntervalMs: 0,
+    touchWorkers: 1,
+    touchMaxBatchRows: 1000,
+    touchMaxBatchBytes: 8 * 1024 * 1024,
     ...overrides,
   };
 }
@@ -29,6 +29,23 @@ async function fetchJson(url: string, init: RequestInit): Promise<any> {
   if (!r.ok) throw new Error(`HTTP ${r.status} ${url}: ${text}`);
   if (text === "") return null;
   return JSON.parse(text);
+}
+
+async function installStateProtocolProfile(baseUrl: string, stream: string, touch: Record<string, unknown> = {}): Promise<void> {
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: {
+        kind: "state-protocol",
+        touch: {
+          enabled: true,
+          ...touch,
+        },
+      },
+    }),
+  });
 }
 
 describe("touch storage=memory (journal cursors)", () => {
@@ -50,17 +67,7 @@ describe("touch storage=memory (journal cursors)", () => {
         headers: { "content-type": "application/json" },
       });
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true },
-          },
-        }),
-      });
+      await installStateProtocolProfile(baseUrl, stream);
 
       const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
       expect(meta0?.mode).toBe("memory");
@@ -131,17 +138,7 @@ describe("touch storage=memory (journal cursors)", () => {
         method: "PUT",
         headers: { "content-type": "application/json" },
       });
-      await fetchJson(`${baseUrl1}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true },
-          },
-        }),
-      });
+      await installStateProtocolProfile(baseUrl1, stream);
 
       const meta0 = await fetchJson(`${baseUrl1}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
       expect(meta0?.mode).toBe("memory");
@@ -221,17 +218,7 @@ describe("touch storage=memory (journal cursors)", () => {
         headers: { "content-type": "application/json" },
       });
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: { enabled: true },
-          },
-        }),
-      });
+      await installStateProtocolProfile(baseUrl, stream);
 
       const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
       expect(meta0?.mode).toBe("memory");
@@ -299,22 +286,11 @@ describe("touch storage=memory (journal cursors)", () => {
         headers: { "content-type": "application/json" },
       });
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: {
-              enabled: true,
-              memory: {
-                hotKeyTtlMs: 120,
-                hotTemplateTtlMs: 120,
-              },
-            },
-          },
-        }),
+      await installStateProtocolProfile(baseUrl, stream, {
+        memory: {
+          hotKeyTtlMs: 120,
+          hotTemplateTtlMs: 120,
+        },
       });
 
       const tableKey = tableKeyFor("posts");
@@ -390,7 +366,7 @@ describe("touch storage=memory (journal cursors)", () => {
     try {
       app = createApp(
         makeConfig(root, {
-          interpreterMaxBatchRows: 1,
+          touchMaxBatchRows: 1,
         }),
         new MockR2Store()
       );
@@ -406,24 +382,13 @@ describe("touch storage=memory (journal cursors)", () => {
         headers: { "content-type": "application/json" },
       });
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: {
-              enabled: true,
-              lagDegradeFineTouchesAtSourceOffsets: 1,
-              lagRecoverFineTouchesAtSourceOffsets: 0,
-              memory: {
-                hotKeyTtlMs: 1000,
-                hotTemplateTtlMs: 1000,
-              },
-            },
-          },
-        }),
+      await installStateProtocolProfile(baseUrl, stream, {
+        lagDegradeFineTouchesAtSourceOffsets: 1,
+        lagRecoverFineTouchesAtSourceOffsets: 0,
+        memory: {
+          hotKeyTtlMs: 1000,
+          hotTemplateTtlMs: 1000,
+        },
       });
 
       const entity = "public.posts";
@@ -503,7 +468,7 @@ describe("touch storage=memory (journal cursors)", () => {
     try {
       app = createApp(
         makeConfig(root, {
-          interpreterMaxBatchRows: 1,
+          touchMaxBatchRows: 1,
         }),
         new MockR2Store()
       );
@@ -519,24 +484,13 @@ describe("touch storage=memory (journal cursors)", () => {
         headers: { "content-type": "application/json" },
       });
 
-      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          interpreter: {
-            apiVersion: "durable.streams/stream-interpreter/v1",
-            format: "durable.streams/state-protocol/v1",
-            touch: {
-              enabled: true,
-              lagDegradeFineTouchesAtSourceOffsets: 1,
-              lagRecoverFineTouchesAtSourceOffsets: 0,
-              memory: {
-                hotKeyTtlMs: 1000,
-                hotTemplateTtlMs: 1000,
-              },
-            },
-          },
-        }),
+      await installStateProtocolProfile(baseUrl, stream, {
+        lagDegradeFineTouchesAtSourceOffsets: 1,
+        lagRecoverFineTouchesAtSourceOffsets: 0,
+        memory: {
+          hotKeyTtlMs: 1000,
+          hotTemplateTtlMs: 1000,
+        },
       });
 
       const entity = "public.posts";

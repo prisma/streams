@@ -42,10 +42,10 @@ export type Config = {
   expirySweepIntervalMs: number;
   expirySweepBatchLimit: number;
   metricsFlushIntervalMs: number;
-  interpreterWorkers: number;
-  interpreterCheckIntervalMs: number;
-  interpreterMaxBatchRows: number;
-  interpreterMaxBatchBytes: number;
+  touchWorkers: number;
+  touchCheckIntervalMs: number;
+  touchMaxBatchRows: number;
+  touchMaxBatchBytes: number;
   port: number;
 };
 
@@ -95,10 +95,10 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_EXPIRY_SWEEP_MS",
   "DS_EXPIRY_SWEEP_LIMIT",
   "DS_METRICS_FLUSH_MS",
-  "DS_INTERPRETER_WORKERS",
-  "DS_INTERPRETER_CHECK_MS",
-  "DS_INTERPRETER_MAX_BATCH_ROWS",
-  "DS_INTERPRETER_MAX_BATCH_BYTES",
+  "DS_TOUCH_WORKERS",
+  "DS_TOUCH_CHECK_MS",
+  "DS_TOUCH_MAX_BATCH_ROWS",
+  "DS_TOUCH_MAX_BATCH_BYTES",
   "DS_STATS_INTERVAL_MS",
   "DS_BACKPRESSURE_BUDGET_MS",
   "DS_MOCK_R2_MAX_INMEM_BYTES",
@@ -242,10 +242,10 @@ export function loadConfig(): Config {
     expirySweepIntervalMs: envNum("DS_EXPIRY_SWEEP_MS", 60_000),
     expirySweepBatchLimit: envNum("DS_EXPIRY_SWEEP_LIMIT", 100),
     metricsFlushIntervalMs: envNum("DS_METRICS_FLUSH_MS", 10_000),
-    interpreterWorkers: envNum("DS_INTERPRETER_WORKERS", 1),
-    interpreterCheckIntervalMs: envNum("DS_INTERPRETER_CHECK_MS", 250),
-    interpreterMaxBatchRows: envNum("DS_INTERPRETER_MAX_BATCH_ROWS", 500),
-    interpreterMaxBatchBytes: envNum("DS_INTERPRETER_MAX_BATCH_BYTES", 4 * 1024 * 1024),
+    touchWorkers: envNum("DS_TOUCH_WORKERS", 1),
+    touchCheckIntervalMs: envNum("DS_TOUCH_CHECK_MS", 250),
+    touchMaxBatchRows: envNum("DS_TOUCH_MAX_BATCH_ROWS", 500),
+    touchMaxBatchBytes: envNum("DS_TOUCH_MAX_BATCH_BYTES", 4 * 1024 * 1024),
     port: envNum("PORT", 8080),
   };
 }

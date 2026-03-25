@@ -7,12 +7,9 @@ import { DURABLE_LENS_V1_SCHEMA } from "./lens_schema";
 import { compileLensResult, lensFromJson, type CompiledLens, type Lens } from "../lens/lens";
 import { validateLensAgainstSchemasResult, fillLensDefaultsResult } from "./proof";
 import { parseJsonPointerResult } from "../util/json_pointer";
-import {
-  isTouchEnabled,
-  validateStreamInterpreterConfigResult,
-  type StreamInterpreterConfig,
-} from "../touch/spec";
 import { dsError } from "../util/ds_error.ts";
+
+export const SCHEMA_REGISTRY_API_VERSION = "durable.streams/schema-registry/v1" as const;
 
 export type RoutingKeyConfig = {
   jsonPointer: string;
@@ -20,11 +17,10 @@ export type RoutingKeyConfig = {
 };
 
 export type SchemaRegistry = {
-  apiVersion: "durable.streams/schema-registry/v1";
+  apiVersion: typeof SCHEMA_REGISTRY_API_VERSION;
   schema: string;
   currentVersion: number;
   routingKey?: RoutingKeyConfig;
-  interpreter?: StreamInterpreterConfig;
   boundaries: Array<{ offset: number; version: number }>;
   schemas: Record<string, any>;
   lenses: Record<string, any>;
@@ -61,7 +57,7 @@ function sha256Hex(input: string): string {
 
 function defaultRegistry(stream: string): SchemaRegistry {
   return {
-    apiVersion: "durable.streams/schema-registry/v1",
+    apiVersion: SCHEMA_REGISTRY_API_VERSION,
     schema: stream,
     currentVersion: 0,
     boundaries: [],
@@ -85,6 +81,34 @@ function ensureNoRefResult(schema: any): Result<void, { message: string }> {
   return Result.ok(undefined);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function rejectUnknownKeysResult(
+  obj: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string
+): Result<void, { message: string }> {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(obj)) {
+    if (!allowedSet.has(key)) return Result.err({ message: `${path}.${key} is not supported` });
+  }
+  return Result.ok(undefined);
+}
+
+function parseRoutingKeyConfigResult(raw: unknown, path: string): Result<RoutingKeyConfig | null, { message: string }> {
+  if (raw == null) return Result.ok(null);
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object or null` });
+  const keyCheck = rejectUnknownKeysResult(raw, ["jsonPointer", "required"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (typeof raw.jsonPointer !== "string") return Result.err({ message: `${path}.jsonPointer must be a string` });
+  const pointerRes = parseJsonPointerResult(raw.jsonPointer);
+  if (Result.isError(pointerRes)) return Result.err({ message: pointerRes.error.message });
+  if (typeof raw.required !== "boolean") return Result.err({ message: `${path}.required must be boolean` });
+  return Result.ok({ jsonPointer: raw.jsonPointer, required: raw.required });
+}
+
 function validateJsonSchemaResult(schema: any): Result<void, { message: string }> {
   const noRefRes = ensureNoRefResult(schema);
   if (Result.isError(noRefRes)) return noRefRes;
@@ -98,22 +122,49 @@ function validateJsonSchemaResult(schema: any): Result<void, { message: string }
 }
 
 function parseRegistryResult(stream: string, json: string): Result<SchemaRegistry, { message: string }> {
-  let raw: any;
+  let raw: unknown;
   try {
     raw = JSON.parse(json);
   } catch (e: any) {
     return Result.err({ message: String(e?.message ?? e) });
   }
-  if (!raw || typeof raw !== "object") return Result.err({ message: "invalid schema registry" });
-  const reg = raw as SchemaRegistry;
-  if (reg.apiVersion !== "durable.streams/schema-registry/v1") return Result.err({ message: "invalid registry apiVersion" });
-  if (!reg.schema) reg.schema = stream;
-  if (!Array.isArray(reg.boundaries)) reg.boundaries = [];
-  if (!reg.schemas || typeof reg.schemas !== "object") reg.schemas = {};
-  if (!reg.lenses || typeof reg.lenses !== "object") reg.lenses = {};
-  if (typeof reg.currentVersion !== "number") reg.currentVersion = 0;
-  if ((reg as any).interpreter === null) delete (reg as any).interpreter;
-  return Result.ok(reg);
+  if (!isPlainObject(raw)) return Result.err({ message: "invalid schema registry" });
+  const keyCheck = rejectUnknownKeysResult(
+    raw,
+    ["apiVersion", "schema", "currentVersion", "routingKey", "boundaries", "schemas", "lenses"],
+    "registry"
+  );
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (raw.apiVersion !== SCHEMA_REGISTRY_API_VERSION) return Result.err({ message: "invalid registry apiVersion" });
+
+  const routingKeyRes = parseRoutingKeyConfigResult(raw.routingKey, "routingKey");
+  if (Result.isError(routingKeyRes)) return routingKeyRes;
+
+  const boundariesRaw = Array.isArray(raw.boundaries) ? raw.boundaries : [];
+  const boundaries: Array<{ offset: number; version: number }> = [];
+  for (const item of boundariesRaw) {
+    if (!isPlainObject(item)) return Result.err({ message: "invalid boundary entry" });
+    const offset = typeof item.offset === "number" && Number.isFinite(item.offset) ? item.offset : null;
+    const version = typeof item.version === "number" && Number.isFinite(item.version) ? item.version : null;
+    if (offset == null || version == null) return Result.err({ message: "invalid boundary entry" });
+    boundaries.push({ offset, version });
+  }
+
+  const schemas = isPlainObject(raw.schemas) ? raw.schemas : {};
+  const lenses = isPlainObject(raw.lenses) ? raw.lenses : {};
+  const currentVersion =
+    typeof raw.currentVersion === "number" && Number.isFinite(raw.currentVersion) ? raw.currentVersion : 0;
+  const schemaName = typeof raw.schema === "string" && raw.schema.trim() !== "" ? raw.schema : stream;
+
+  return Result.ok({
+    apiVersion: SCHEMA_REGISTRY_API_VERSION,
+    schema: schemaName,
+    currentVersion,
+    routingKey: routingKeyRes.value ?? undefined,
+    boundaries,
+    schemas,
+    lenses,
+  });
 }
 
 function serializeRegistry(reg: SchemaRegistry): string {
@@ -127,6 +178,38 @@ function validateLensResult(raw: any): Result<Lens, { message: string }> {
     return Result.err({ message: `invalid lens: ${msg}` });
   }
   return Result.ok(raw as Lens);
+}
+
+export function parseSchemaUpdateResult(
+  body: unknown
+): Result<{ schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null }, { message: string }> {
+  if (!isPlainObject(body)) return Result.err({ message: "schema update must be a JSON object" });
+  const keyCheck = rejectUnknownKeysResult(body, ["apiVersion", "schema", "lens", "routingKey"], "schemaUpdate");
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (body.apiVersion !== undefined && body.apiVersion !== SCHEMA_REGISTRY_API_VERSION) {
+    return Result.err({ message: "invalid schema apiVersion" });
+  }
+
+  const hasSchema = Object.prototype.hasOwnProperty.call(body, "schema");
+  const hasRoutingKey = Object.prototype.hasOwnProperty.call(body, "routingKey");
+  if (!hasSchema && !hasRoutingKey) {
+    return Result.err({ message: "schema update must include schema or routingKey" });
+  }
+  if (!hasSchema && body.lens !== undefined) {
+    return Result.err({ message: "schema update lens requires schema" });
+  }
+
+  const routingKeyRes = hasRoutingKey ? parseRoutingKeyConfigResult(body.routingKey, "routingKey") : Result.ok(null);
+  if (Result.isError(routingKeyRes)) return routingKeyRes;
+  if (hasSchema && hasRoutingKey && routingKeyRes.value == null) {
+    return Result.err({ message: "schema update routingKey must be an object when schema is provided" });
+  }
+
+  const out: { schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null } = {};
+  if (hasSchema) out.schema = body.schema;
+  if (body.lens !== undefined) out.lens = body.lens;
+  if (hasRoutingKey) out.routingKey = routingKeyRes.value;
+  return Result.ok(out);
 }
 
 function bigintToNumberSafeResult(v: bigint): Result<number, { message: string }> {
@@ -177,7 +260,7 @@ export class SchemaRegistryStore {
   updateRegistry(
     stream: string,
     streamRow: StreamRow,
-    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig; interpreter?: StreamInterpreterConfig | null }
+    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig }
   ): SchemaRegistry {
     const res = this.updateRegistryResult(stream, streamRow, update);
     if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
@@ -187,9 +270,8 @@ export class SchemaRegistryStore {
   updateRegistryResult(
     stream: string,
     streamRow: StreamRow,
-    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig; interpreter?: StreamInterpreterConfig | null }
+    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig }
   ): Result<SchemaRegistry, SchemaRegistryMutationError> {
-    let validatedInterpreter: StreamInterpreterConfig | null | undefined = undefined;
     if (update.routingKey) {
       const pointerRes = parseJsonPointerResult(update.routingKey.jsonPointer);
       if (Result.isError(pointerRes)) {
@@ -197,17 +279,6 @@ export class SchemaRegistryStore {
       }
       if (typeof update.routingKey.required !== "boolean") {
         return Result.err({ kind: "bad_request", message: "routingKey.required must be boolean" });
-      }
-    }
-    if (update.interpreter !== undefined) {
-      if (update.interpreter === null) {
-        validatedInterpreter = null;
-      } else {
-        const interpreterRes = validateStreamInterpreterConfigResult(update.interpreter);
-        if (Result.isError(interpreterRes)) {
-          return Result.err({ kind: "bad_request", message: interpreterRes.error.message });
-        }
-        validatedInterpreter = interpreterRes.value;
       }
     }
     if (update.schema === undefined) return Result.err({ kind: "bad_request", message: "missing schema" });
@@ -238,13 +309,11 @@ export class SchemaRegistryStore {
         schema: stream,
         currentVersion: 1,
         routingKey: update.routingKey,
-        interpreter: update.interpreter === undefined ? reg.interpreter : validatedInterpreter ?? undefined,
         boundaries: [{ offset: 0, version: 1 }],
         schemas: { ...reg.schemas, ["1"]: update.schema },
         lenses: { ...reg.lenses },
       };
       this.persist(stream, nextReg);
-      this.syncInterpreterState(stream, nextReg);
       return Result.ok(nextReg);
     }
 
@@ -277,13 +346,11 @@ export class SchemaRegistryStore {
       schema: reg.schema ?? stream,
       currentVersion: nextVersion,
       routingKey: update.routingKey ?? reg.routingKey,
-      interpreter: update.interpreter === undefined ? reg.interpreter : validatedInterpreter ?? undefined,
       boundaries: [...reg.boundaries, { offset: boundaryRes.value, version: nextVersion }],
       schemas: { ...reg.schemas, [String(nextVersion)]: update.schema },
       lenses: { ...reg.lenses, [String(currentVersion)]: defaultsRes.value },
     };
     this.persist(stream, nextReg);
-    this.syncInterpreterState(stream, nextReg);
     return Result.ok(nextReg);
   }
 
@@ -310,33 +377,6 @@ export class SchemaRegistryStore {
       routingKey: routingKey ?? undefined,
     };
     this.persist(stream, nextReg);
-    this.syncInterpreterState(stream, nextReg);
-    return Result.ok(nextReg);
-  }
-
-  updateInterpreter(stream: string, interpreter: StreamInterpreterConfig | null): SchemaRegistry {
-    const res = this.updateInterpreterResult(stream, interpreter);
-    if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
-    return res.value;
-  }
-
-  updateInterpreterResult(stream: string, interpreter: StreamInterpreterConfig | null): Result<SchemaRegistry, SchemaRegistryMutationError> {
-    let validatedInterpreter: StreamInterpreterConfig | null = interpreter;
-    if (interpreter) {
-      const interpreterRes = validateStreamInterpreterConfigResult(interpreter);
-      if (Result.isError(interpreterRes)) {
-        return Result.err({ kind: "bad_request", message: interpreterRes.error.message });
-      }
-      validatedInterpreter = interpreterRes.value;
-    }
-    const regRes = this.getRegistryResult(stream);
-    if (Result.isError(regRes)) return Result.err({ kind: "bad_request", message: regRes.error.message, code: regRes.error.code });
-    const nextReg: SchemaRegistry = {
-      ...regRes.value,
-      interpreter: validatedInterpreter ?? undefined,
-    };
-    this.persist(stream, nextReg);
-    this.syncInterpreterState(stream, nextReg);
     return Result.ok(nextReg);
   }
 
@@ -344,14 +384,6 @@ export class SchemaRegistryStore {
     const json = serializeRegistry(reg);
     this.db.upsertSchemaRegistry(stream, json);
     this.registryCache.set(stream, { reg, updatedAtMs: this.db.nowMs() });
-  }
-
-  private syncInterpreterState(stream: string, reg: SchemaRegistry): void {
-    if (isTouchEnabled(reg.interpreter)) {
-      this.db.ensureStreamInterpreter(stream);
-    } else {
-      this.db.deleteStreamInterpreter(stream);
-    }
   }
 
   getValidatorForVersion(reg: SchemaRegistry, version: number): Validator | null {

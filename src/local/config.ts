@@ -18,6 +18,6 @@ export function buildLocalConfig(args: { name?: string; port?: number }): Config
     segmentCacheMaxBytes: 0,
     segmenterWorkers: 0,
     // Local dev mode prioritizes responsiveness over throughput.
-    interpreterCheckIntervalMs: Math.min(base.interpreterCheckIntervalMs, 5),
+    touchCheckIntervalMs: Math.min(base.touchCheckIntervalMs, 5),
   };
 }

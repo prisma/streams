@@ -121,7 +121,7 @@ Files:
 - `src/lens/lens.ts`
 - `src/touch/spec.ts`
 - `src/touch/manager.ts`
-- `src/touch/interpreter_worker.ts`
+- `src/touch/processor_worker.ts`
 - `src/touch/worker_pool.ts`
 - `src/touch/live_metrics.ts`
 
@@ -199,7 +199,7 @@ Files:
 - `test/chaos_restart_bootstrap.test.ts`
 - `test/ingest_queue_drain.test.ts`
 - `test/segmenter_throughput.test.ts`
-- `test/touch_interpreter.test.ts`
+- `test/touch_processor.test.ts`
 - `test/touch_memory_journal.test.ts`
 - `test/touch_wait_timeout_reliability.test.ts`
 
@@ -255,7 +255,7 @@ The following files currently contain `throw new Error` and/or `catch (...)` and
 - `src/segment/format.ts`
 - `src/segment/segmenter.ts`
 - `src/sqlite/adapter.ts`
-- `src/touch/interpreter_worker.ts`
+- `src/touch/processor_worker.ts`
 - `src/touch/live_metrics.ts`
 - `src/touch/manager.ts`
 - `src/touch/spec.ts`
@@ -272,7 +272,7 @@ The following files currently contain `throw new Error` and/or `catch (...)` and
 - `test/chaos_restart_bootstrap.test.ts`
 - `test/ingest_queue_drain.test.ts`
 - `test/segmenter_throughput.test.ts`
-- `test/touch_interpreter.test.ts`
+- `test/touch_processor.test.ts`
 - `test/touch_memory_journal.test.ts`
 - `test/touch_wait_timeout_reliability.test.ts`
 

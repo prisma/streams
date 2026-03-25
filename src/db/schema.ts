@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 14;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS streams (
   updated_at_ms INTEGER NOT NULL,
 
   content_type TEXT NOT NULL,
+  profile TEXT NULL,
   stream_seq TEXT NULL,
   closed INTEGER NOT NULL DEFAULT 0,
   closed_producer_id TEXT NULL,
@@ -117,6 +118,12 @@ CREATE TABLE IF NOT EXISTS schemas (
   updated_at_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stream_profiles (
+  stream TEXT PRIMARY KEY,
+  profile_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS producer_state (
   stream TEXT NOT NULL,
   producer_id TEXT NOT NULL,
@@ -126,9 +133,9 @@ CREATE TABLE IF NOT EXISTS producer_state (
   PRIMARY KEY (stream, producer_id)
 );
 
-CREATE TABLE IF NOT EXISTS stream_interpreters (
+CREATE TABLE IF NOT EXISTS stream_touch_state (
   stream TEXT PRIMARY KEY,
-  interpreted_through INTEGER NOT NULL,
+  processed_through INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 
@@ -325,6 +332,12 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV9ToV10(db);
     } else if (version === 10) {
       migrateV10ToV11(db);
+    } else if (version === 11) {
+      migrateV11ToV12(db);
+    } else if (version === 12) {
+      migrateV12ToV13(db);
+    } else if (version === 13) {
+      migrateV13ToV14(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -541,9 +554,9 @@ function migrateV5ToV6(db: SqliteDatabase): void {
 function migrateV6ToV7(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(`
-      CREATE TABLE IF NOT EXISTS stream_interpreters (
+      CREATE TABLE IF NOT EXISTS stream_touch_state (
         stream TEXT PRIMARY KEY,
-        interpreted_through INTEGER NOT NULL,
+        processed_through INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL
       );
     `);
@@ -619,6 +632,55 @@ function migrateV9ToV10(db: SqliteDatabase): void {
 function migrateV10ToV11(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(`DROP INDEX IF EXISTS wal_touch_stream_rk_offset_idx;`);
+    db.exec(`UPDATE schema_version SET version = 11;`);
+  });
+  tx();
+}
+
+function migrateV11ToV12(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN profile TEXT NULL;`);
+    db.exec(`UPDATE schema_version SET version = 12;`);
+  });
+  tx();
+}
+
+function migrateV12ToV13(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_profiles (
+        stream TEXT PRIMARY KEY,
+        profile_json TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+    db.exec(`UPDATE schema_version SET version = 13;`);
+  });
+  tx();
+}
+
+function migrateV13ToV14(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_touch_state (
+        stream TEXT PRIMARY KEY,
+        processed_through INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+
+    const hasLegacy = !!db
+      .query(`SELECT name FROM sqlite_master WHERE type='table' AND name='stream_interpreters' LIMIT 1;`)
+      .get();
+    if (hasLegacy) {
+      db.exec(`
+        INSERT OR REPLACE INTO stream_touch_state(stream, processed_through, updated_at_ms)
+        SELECT stream, interpreted_through, updated_at_ms
+        FROM stream_interpreters;
+      `);
+      db.exec(`DROP TABLE stream_interpreters;`);
+    }
+
     db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION};`);
   });
   tx();

@@ -59,7 +59,7 @@ This produces:
 
 - `dist/README.md`
 - `dist/local/*.js`
-- `dist/touch/interpreter_worker.js`
+- `dist/touch/processor_worker.js`
 - `dist/types/local/*.d.ts`
 - `dist/npm/streams-local/**`
 - `dist/npm/streams-server/**`

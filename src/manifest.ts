@@ -22,6 +22,7 @@ function invalidManifest<T = never>(message: string): Result<T, ManifestBuildErr
 type BuildManifestArgs = {
   streamName: string;
   streamRow: StreamRow;
+  profileJson?: Record<string, any> | null;
   segmentMeta: SegmentMetaRow;
   uploadedPrefixCount: number;
   generation: number;
@@ -31,7 +32,7 @@ type BuildManifestArgs = {
 };
 
 export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJson, ManifestBuildError> {
-  const { streamName, streamRow, segmentMeta, uploadedPrefixCount, generation, indexState, indexRuns, retiredRuns } = args;
+  const { streamName, streamRow, profileJson, segmentMeta, uploadedPrefixCount, generation, indexState, indexRuns, retiredRuns } = args;
 
   const createdAt = new Date(Number(streamRow.created_at_ms)).toISOString();
   const expiresAt = streamRow.expires_at_ms == null ? null : new Date(Number(streamRow.expires_at_ms)).toISOString();
@@ -81,6 +82,8 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     created_at: createdAt,
     expires_at: expiresAt,
     content_type: streamRow.content_type,
+    profile: streamRow.profile ?? "generic",
+    profile_json: profileJson ?? null,
     stream_seq: streamRow.stream_seq ?? null,
     closed: streamRow.closed,
     closed_producer_id: streamRow.closed_producer_id ?? null,

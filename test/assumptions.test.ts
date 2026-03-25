@@ -115,7 +115,7 @@ describe("assumptions", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("schema update accepts registry-shaped payload", async () => {
+  test("schema update rejects registry-shaped payload", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
     const cfg = makeConfig(root);
     const app = createApp(cfg, new MockR2Store());
@@ -141,7 +141,7 @@ describe("assumptions", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    expect(schemaRes.status).toBe(200);
+    expect(schemaRes.status).toBe(400);
 
     server.stop();
     app.close();
@@ -168,6 +168,32 @@ describe("assumptions", () => {
       body: JSON.stringify(payload),
     });
     expect(schemaRes.status).toBe(200);
+
+    server.stop();
+    app.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("schema update rejects legacy routing-key aliases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
+    const cfg = makeConfig(root);
+    const app = createApp(cfg, new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const streamName = "record/app.bsky.feed.like";
+    const putRes = await fetch(`${baseUrl}/v1/stream/${streamName}`, { method: "PUT" });
+    expect([200, 201]).toContain(putRes.status);
+
+    const schemaRes = await fetch(`${baseUrl}/v1/stream/${streamName}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schema: { type: "object", additionalProperties: true },
+        routing_key: "/subject/uri",
+      }),
+    });
+    expect(schemaRes.status).toBe(400);
 
     server.stop();
     app.close();

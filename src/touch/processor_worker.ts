@@ -2,13 +2,12 @@ import { parentPort, workerData } from "node:worker_threads";
 import { Result } from "better-result";
 import type { Config } from "../config.ts";
 import { SqliteDurableStore } from "../db/db.ts";
+import { resolveEnabledTouchCapability } from "../profiles/index.ts";
 import type { HostRuntime } from "../runtime/host_runtime.ts";
 import { setSqliteRuntimeOverride } from "../sqlite/adapter.ts";
 import { initConsoleLogging } from "../util/log.ts";
 import type { ProcessRequest } from "./worker_protocol.ts";
-import { interpretRecordToChanges } from "./engine.ts";
 import { encodeTemplateArg, tableKeyIdFor, templateKeyIdFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
-import { isTouchEnabled } from "./spec.ts";
 
 initConsoleLogging();
 
@@ -31,12 +30,12 @@ type ActiveTemplate = {
   activeFromSourceOffset: bigint;
 };
 
-type InterpreterWorkerError = { kind: "missing_old_value"; message: string };
+type TouchProcessorWorkerError = { kind: "missing_old_value"; message: string };
 
 async function handleProcess(msg: ProcessRequest): Promise<void> {
-  const { stream, fromOffset, toOffset, interpreter, maxRows, maxBytes } = msg;
+  const { stream, fromOffset, toOffset, profile, maxRows, maxBytes } = msg;
   const failProcess = (message: string): void => {
-    const err = Result.err<never, InterpreterWorkerError>({ kind: "missing_old_value", message });
+    const err = Result.err<never, TouchProcessorWorkerError>({ kind: "missing_old_value", message });
     parentPort?.postMessage({
       type: "error",
       id: msg.id,
@@ -44,22 +43,23 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
       message: err.error.message,
     });
   };
-  if (!isTouchEnabled(interpreter)) {
+  const enabledTouch = resolveEnabledTouchCapability(profile);
+  if (!enabledTouch) {
     parentPort?.postMessage({
       type: "error",
       id: msg.id,
       stream,
-      message: "touch not enabled for interpreter",
+      message: "touch not enabled for profile",
     });
     return;
   }
-  const touch = interpreter.touch;
+  const { capability: touchCapability, touchCfg: touch } = enabledTouch;
 
   const fineBudgetRaw = msg.fineTouchBudget ?? touch.fineTouchBudgetPerBatch;
   const fineBudget = fineBudgetRaw == null ? null : Math.max(0, Math.floor(fineBudgetRaw));
   const fineGranularity = msg.fineGranularity === "template" ? "template" : "key";
-  const interpretMode = msg.interpretMode === "hotTemplatesOnly" ? "hotTemplatesOnly" : "full";
-  const hotTemplatesOnly = fineGranularity === "template" && interpretMode === "hotTemplatesOnly";
+  const processingMode = msg.processingMode === "hotTemplatesOnly" ? "hotTemplatesOnly" : "full";
+  const hotTemplatesOnly = fineGranularity === "template" && processingMode === "hotTemplatesOnly";
 
   const emitFineTouches = msg.emitFineTouches !== false && fineBudget !== 0;
   let fineBudgetExhausted = fineBudget != null && fineBudget <= 0;
@@ -222,7 +222,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
       continue;
     }
 
-    const canonical = interpretRecordToChanges(value, interpreter);
+    const canonical = touchCapability.deriveCanonicalChanges(value, profile);
     changes += canonical.length;
     if (canonical.length === 0) continue;
     const watermark = offset.toString();
@@ -304,7 +304,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           // Policy for missing/insufficient before image:
           // - coarse: emit no fine touches (table touch already guarantees correctness)
           // - skipBefore: emit after-only touch
-          // - error: fail the interpreter batch
+          // - error: fail the processing batch
           const kAfter = compute(afterObj);
           const kBefore = compute(beforeObj);
 

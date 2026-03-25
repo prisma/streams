@@ -18,7 +18,7 @@ for you.
 To use Live correctly, wire up all four pieces:
 
 - A base Durable Stream containing State Protocol change records.
-- A stream interpreter with `touch.enabled=true`.
+- A `state-protocol` profile with `touch.enabled=true`.
 - Application code that computes the table/template/watch keys for each query.
 - A wait loop that carries a cursor forward and re-runs the real query on
   `touched` or `stale`.
@@ -36,20 +36,21 @@ Important design choices:
 
 This section is the recommended integration pattern.
 
-### 1) Create the base stream and install the interpreter
+### 1) Create the base stream and set the state-protocol profile
 
-The touch APIs only exist when the stream interpreter has `touch.enabled=true`.
+The touch APIs only exist when the stream profile is `state-protocol` and
+`touch.enabled=true`.
 
 ```bash
 curl -X PUT http://127.0.0.1:8080/v1/stream/app.wal \
   -H 'content-type: application/json'
 
-curl -X POST http://127.0.0.1:8080/v1/stream/app.wal/_schema \
+curl -X POST http://127.0.0.1:8080/v1/stream/app.wal/_profile \
   -H 'content-type: application/json' \
   -d '{
-    "interpreter": {
-      "apiVersion": "durable.streams/stream-interpreter/v1",
-      "format": "durable.streams/state-protocol/v1",
+    "apiVersion": "durable.streams/profile/v1",
+    "profile": {
+      "kind": "state-protocol",
       "touch": {
         "enabled": true,
         "onMissingBefore": "coarse"
@@ -87,8 +88,6 @@ Rules:
 5. `oldValue` is optional but strongly recommended for precise invalidation on
    updates.
 6. Control messages are ignored for touch derivation.
-
-Compatibility note: both `oldValue` and `old_value` are accepted.
 
 ### 3) Decide whether the query is coarse-only or template-eligible
 
@@ -658,12 +657,13 @@ Design implication:
 For updates that move rows across partitions, precise fine invalidation needs
 before-images.
 
-`interpreter.touch.onMissingBefore`:
+`touch.onMissingBefore`:
 
 - `coarse` (default): suppress fine invalidation when `oldValue` is missing,
   but still emit coarse table touches
 - `skipBefore`: best-effort after-only fine invalidation
-- `error`: treat missing or insufficient before-images as an interpreter error
+- `error`: treat missing or insufficient before-images as a state-protocol
+  processing error
 
 Guidance:
 
@@ -698,9 +698,9 @@ overload.
 The current Live system does not support:
 
 - sqlite touch storage
-- `interpreter.touch.storage`
-- `interpreter.touch.derivedStream`
-- `interpreter.touch.retention`
+- `touch.storage`
+- `touch.derivedStream`
+- `touch.retention`
 - `/v1/stream/<stream>/touch` read endpoints
 - `/v1/stream/<stream>/touch/pk/...` read endpoints
 - `sinceTouchOffset`
@@ -716,13 +716,13 @@ Use:
 
 ## Config Reference
 
-Example interpreter config:
+Example state-protocol profile config:
 
 ```json
 {
-  "interpreter": {
-    "apiVersion": "durable.streams/stream-interpreter/v1",
-    "format": "durable.streams/state-protocol/v1",
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "state-protocol",
     "touch": {
       "enabled": true,
       "coarseIntervalMs": 100,
@@ -760,8 +760,9 @@ Example interpreter config:
 
 Notes:
 
-- State Protocol is the only supported interpreter format.
+- State Protocol is the only supported live/touch input format.
 - Cursor staleness is epoch-based.
+- The profile is applied by `POST /v1/stream/<stream>/_profile`.
 
 ## Postgres Adapter Guidance
 
