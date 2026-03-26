@@ -143,6 +143,47 @@ describe("http behavior", () => {
     });
   });
 
+  test("details endpoint combines stream, profile, schema, and index status", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const r = await fetch(`${baseUrl}/v1/stream/details/_details`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.stream).toMatchObject({
+        name: "details",
+        content_type: "text/plain",
+        profile: "generic",
+        next_offset: "0",
+        sealed_through: "-1",
+        uploaded_through: "-1",
+        segment_count: 0,
+        uploaded_segment_count: 0,
+      });
+      expect(body.profile).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+      expect(body.schema).toMatchObject({
+        apiVersion: "durable.streams/schema-registry/v1",
+        schema: "details",
+        currentVersion: 0,
+        boundaries: [],
+      });
+      expect(body.index_status).toMatchObject({
+        stream: "details",
+        profile: "generic",
+        segments: {
+          total_count: 0,
+          uploaded_count: 0,
+        },
+      });
+      expect(body.index_status.routing_key_index?.configured).toBe(false);
+      expect(body.index_status.exact_indexes).toEqual([]);
+      expect(body.index_status.search_families).toEqual([]);
+    });
+  });
+
   test("profile subresource rejects unsupported profiles", async () => {
     await withServer({}, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
@@ -285,6 +326,254 @@ describe("http behavior", () => {
         body: JSON.stringify({ k: "k3", z: 3 }),
       });
       expect(r.status).toBe(400);
+    });
+  });
+
+  test("read filter applies indexed predicates on the main read path", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filterable`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filterable/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+              status: { type: "integer" },
+              message: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+              status: {
+                kind: "integer",
+                bindings: [{ version: 1, jsonPointer: "/status" }],
+                exact: true,
+                column: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filterable`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([
+          { service: "api", status: 200, message: "ok" },
+          { service: "worker", status: 503, message: "retry" },
+          { service: "api", status: 503, message: "boom" },
+        ]),
+      });
+      expect(r.status).toBe(204);
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "service:api status:>=500",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filterable?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ service: "api", status: 503, message: "boom" }]);
+      expect(nextOffset(r)).toBe(2n);
+    });
+  });
+
+  test("read filter advances the stream cursor when no entries match", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-empty`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-empty/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filter-empty`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ service: "api" }, { service: "api" }]),
+      });
+      expect(r.status).toBe(204);
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "service:worker",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filter-empty?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([]);
+      expect(nextOffset(r)).toBe(1n);
+    });
+  });
+
+  test("read filter rejects non-json streams and non-indexed fields", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-raw`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-raw?offset=-1&filter=service:api`);
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("application/json");
+
+      await fetch(`${baseUrl}/v1/stream/filter-bad-field`, { method: "PUT", headers: { "content-type": "application/json" } });
+      r = await fetch(`${baseUrl}/v1/stream/filter-bad-field/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filter-bad-field?offset=-1&format=json&filter=status:500`);
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("not indexed");
+    });
+  });
+
+  test("read filter reports the 100MB scan limit on unsealed tail scans", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-limit`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-limit/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              status: { type: "integer" },
+              message: { type: "string" },
+              seq: { type: "integer" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              status: {
+                kind: "integer",
+                bindings: [{ version: 1, jsonPointer: "/status" }],
+                exact: true,
+                column: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      const largeMessage = "x".repeat(4 * 1024 * 1024);
+      for (let i = 0; i < 30; i++) {
+        r = await fetch(`${baseUrl}/v1/stream/filter-limit`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify([{ status: 200, message: largeMessage, seq: i }]),
+        });
+        expect(r.status).toBe(204);
+      }
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "status:>=500",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filter-limit?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([]);
+      expect(r.headers.get("stream-filter-scan-limit-reached")).toBe("true");
+      expect(r.headers.get("stream-filter-scan-limit-bytes")).toBe(String(100 * 1024 * 1024));
+      expect(Number(r.headers.get("stream-filter-scanned-bytes"))).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+      expect(nextOffset(r)).toBeLessThan(29n);
     });
   });
 

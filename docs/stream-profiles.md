@@ -75,6 +75,8 @@ It means:
 - the stream content type must be `application/json`
 - JSON appends are normalized into a canonical evlog envelope
 - redaction happens before durable append
+- installing the profile auto-installs the canonical evlog schema registry and
+  default search fields
 - the default routing key is `requestId`, with `traceId` fallback
 - reads continue to use the normal stream API
 
@@ -257,6 +259,24 @@ To switch a stream back to the baseline behavior, set `profile` to
 - `profile`: the stream profile kind
 
 The full typed profile object is returned by `GET /_profile`.
+
+For GUI-oriented stream management, the current per-stream inspection endpoints
+are:
+
+- `GET /v1/stream/{name}/_schema`
+- `GET /v1/stream/{name}/_profile`
+- `GET /v1/stream/{name}/_index_status`
+- `GET /v1/stream/{name}/_details`
+
+`/_details` is the combined descriptor endpoint. It returns:
+
+- the current stream summary
+- the full `/_profile` resource
+- the full `/_schema` registry
+- the current `/_index_status` payload
+
+That lets a UI inspect and edit streams without inventing its own metadata
+cache.
 
 ## Storage Model
 

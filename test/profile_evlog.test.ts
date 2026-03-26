@@ -5,6 +5,41 @@ import { join } from "node:path";
 import { bootstrapFromR2 } from "../src/bootstrap";
 import { createProfileTestApp, fetchJsonApp, makeProfileTestConfig } from "./profile_test_utils";
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForEvlogIndexing(
+  app: ReturnType<typeof createProfileTestApp>["app"],
+  stream: string,
+  timeoutMs: number
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = app.deps.db.getStream(stream);
+    const uploadedSegments = app.deps.db.countUploadedSegments(stream);
+    const fullySealed =
+      !!row &&
+      row.next_offset > 0n &&
+      row.sealed_through === row.next_offset - 1n &&
+      row.pending_bytes === 0n &&
+      row.pending_rows === 0n;
+    const exactStates = app.deps.db.listSecondaryIndexStates(stream);
+    const exactReady = exactStates.length > 0 && exactStates.every((state) => state.indexed_through >= uploadedSegments);
+    const colState = app.deps.db.getSearchFamilyState(stream, "col");
+    const ftsState = app.deps.db.getSearchFamilyState(stream, "fts");
+    const searchReady =
+      (colState?.uploaded_through ?? 0) >= uploadedSegments &&
+      (ftsState?.uploaded_through ?? 0) >= uploadedSegments &&
+      app.deps.db.listSearchFamilySegments(stream, "col").length >= uploadedSegments &&
+      app.deps.db.listSearchFamilySegments(stream, "fts").length >= uploadedSegments;
+    if (fullySealed && uploadedSegments > 0 && exactReady && searchReady) return;
+    app.deps.indexer?.enqueue(stream);
+    await sleep(50);
+  }
+  throw new Error("timeout waiting for evlog segments and indexes");
+}
+
 describe("evlog profile", () => {
   test("installs on json streams and is visible in profile resource and listing", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-profile-evlog-install-"));
@@ -48,6 +83,18 @@ describe("evlog profile", () => {
 
       expect(app.deps.db.getStream("evlog-install")?.profile).toBe("evlog");
       expect(app.deps.db.getStreamProfile("evlog-install")).not.toBeNull();
+
+      const schemaRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-install/_schema", { method: "GET" });
+      expect(schemaRes.status).toBe(200);
+      expect(schemaRes.body?.currentVersion).toBe(1);
+      expect(schemaRes.body?.boundaries).toEqual([{ offset: 0, version: 1 }]);
+      expect(schemaRes.body?.search?.profile).toBe("evlog");
+      expect(schemaRes.body?.search?.primaryTimestampField).toBe("timestamp");
+      expect(schemaRes.body?.search?.fields?.service?.kind).toBe("keyword");
+      expect(schemaRes.body?.search?.fields?.status?.kind).toBe("integer");
+      expect(schemaRes.body?.search?.fields?.message?.kind).toBe("text");
+      expect(schemaRes.body?.schemas?.["1"]).toBeDefined();
+      expect(app.deps.db.getSchemaRegistry("evlog-install")).not.toBeNull();
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });
@@ -211,6 +258,35 @@ describe("evlog profile", () => {
       expect(byRequestIdRes.body).toHaveLength(1);
       expect(byRequestIdRes.body[0]?.requestId).toBe("req_123");
 
+      const filteredRes = await fetchJsonApp(
+        app,
+        "http://local/v1/stream/evlog-write?format=json&filter=service:checkout%20status:>=400%20requestId:req_123",
+        { method: "GET" }
+      );
+      expect(filteredRes.status).toBe(200);
+      expect(filteredRes.body).toHaveLength(1);
+      expect(filteredRes.body[0]?.requestId).toBe("req_123");
+
+      const searchRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-write/_search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          q: 'service:checkout status:>=400 req:req_123 why:"card declined"',
+          sort: ["timestamp:desc", "offset:desc"],
+        }),
+      });
+      expect(searchRes.status).toBe(200);
+      expect(searchRes.body?.total).toEqual({ value: 1, relation: "eq" });
+      expect(searchRes.body?.coverage?.index_families_used).toEqual([]);
+      expect(searchRes.body?.hits).toHaveLength(1);
+      expect(searchRes.body?.hits?.[0]?.fields).toMatchObject({
+        service: "checkout",
+        requestId: "req_123",
+        status: 402,
+        message: "Payment failed",
+        why: "Card declined by issuer",
+      });
+
       const invalidRes = await app.fetch(
         new Request("http://local/v1/stream/evlog-write", {
           method: "POST",
@@ -270,6 +346,119 @@ describe("evlog profile", () => {
     }
   });
 
+  test(
+    "details and index status expose evlog schema, profile, and async index progress",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-profile-evlog-details-"));
+      const { app } = createProfileTestApp(root, {
+        segmentMaxBytes: 256,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        indexCheckIntervalMs: 10,
+        indexL0SpanSegments: 1,
+      });
+      try {
+        await app.fetch(
+          new Request("http://local/v1/stream/evlog-details", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+
+        const profileRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-details/_profile", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            apiVersion: "durable.streams/profile/v1",
+            profile: { kind: "evlog" },
+          }),
+        });
+        expect(profileRes.status).toBe(200);
+
+        const appendRes = await app.fetch(
+          new Request("http://local/v1/stream/evlog-details", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              timestamp: "2026-03-26T10:00:00.000Z",
+              requestId: "req_details",
+              traceId: "trace_details",
+              spanId: "span_details",
+              service: "checkout",
+              environment: "prod",
+              method: "POST",
+              path: "/api/checkout",
+              status: 402,
+              duration: 123.5,
+              message: "Payment failed during authorization",
+              why: "Card declined by issuer",
+              fix: "Retry with another card",
+              context: {
+                error: { message: "issuer-declined" },
+                pad: "x".repeat(1024),
+              },
+            }),
+          })
+        );
+        expect([200, 204]).toContain(appendRes.status);
+
+        await waitForEvlogIndexing(app, "evlog-details", 10_000);
+
+        const indexStatusRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-details/_index_status", { method: "GET" });
+        expect(indexStatusRes.status).toBe(200);
+        expect(indexStatusRes.body).toMatchObject({
+          stream: "evlog-details",
+          profile: "evlog",
+          routing_key_index: {
+            configured: false,
+          },
+        });
+        expect(indexStatusRes.body?.segments?.total_count).toBeGreaterThan(0);
+        expect(indexStatusRes.body?.segments?.uploaded_count).toBeGreaterThan(0);
+        expect(indexStatusRes.body?.exact_indexes.map((entry: any) => entry.name)).toEqual(
+          expect.arrayContaining(["timestamp", "service", "status", "duration", "requestId"])
+        );
+        expect(indexStatusRes.body?.exact_indexes.every((entry: any) => entry.fully_indexed_uploaded_segments === true)).toBe(true);
+        expect(indexStatusRes.body?.search_families).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              family: "col",
+              fields: expect.arrayContaining(["timestamp", "status", "duration"]),
+              fully_indexed_uploaded_segments: true,
+            }),
+            expect.objectContaining({
+              family: "fts",
+              fields: expect.arrayContaining(["service", "message", "why", "fix", "error.message"]),
+              fully_indexed_uploaded_segments: true,
+            }),
+          ])
+        );
+
+        const detailsRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-details/_details", { method: "GET" });
+        expect(detailsRes.status).toBe(200);
+        expect(detailsRes.body?.stream).toMatchObject({
+          name: "evlog-details",
+          content_type: "application/json",
+          profile: "evlog",
+        });
+        expect(detailsRes.body?.profile?.profile?.kind).toBe("evlog");
+        expect(detailsRes.body?.schema?.search?.profile).toBe("evlog");
+        expect(detailsRes.body?.schema?.search?.primaryTimestampField).toBe("timestamp");
+        expect(detailsRes.body?.index_status).toMatchObject({
+          stream: "evlog-details",
+          profile: "evlog",
+        });
+        expect(detailsRes.body?.index_status?.segments?.uploaded_count).toBe(indexStatusRes.body?.segments?.uploaded_count);
+        expect(detailsRes.body?.index_status?.exact_indexes).toEqual(indexStatusRes.body?.exact_indexes);
+        expect(detailsRes.body?.index_status?.search_families).toEqual(indexStatusRes.body?.search_families);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
   test("evlog survives bootstrap with config", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-profile-evlog-bootstrap-src-"));
     const root2 = mkdtempSync(join(tmpdir(), "ds-profile-evlog-bootstrap-dst-"));
@@ -313,6 +502,12 @@ describe("evlog profile", () => {
           apiVersion: "durable.streams/profile/v1",
           profile: installedProfile,
         });
+
+        const schemaRes = await fetchJsonApp(app2, "http://local/v1/stream/evlog-bootstrap/_schema", { method: "GET" });
+        expect(schemaRes.status).toBe(200);
+        expect(schemaRes.body?.currentVersion).toBe(1);
+        expect(schemaRes.body?.search?.profile).toBe("evlog");
+        expect(schemaRes.body?.search?.primaryTimestampField).toBe("timestamp");
 
         const listRes = await fetchJsonApp(app2, "http://local/v1/streams", { method: "GET" });
         expect(listRes.status).toBe(200);

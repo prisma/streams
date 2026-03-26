@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import type { Config } from "./config";
-import { SqliteDurableStore } from "./db/db";
+import { SqliteDurableStore, type StreamRow } from "./db/db";
 import { IngestQueue, type ProducerInfo, type AppendRow } from "./ingest";
 import type { ObjectStore } from "./objectstore/interface";
 import type { StreamReader, ReadBatch, ReaderError } from "./reader";
@@ -15,11 +15,12 @@ import {
   SchemaRegistryStore,
   parseSchemaUpdateResult,
   type SchemaRegistry,
+  type SearchConfig,
   type SchemaRegistryMutationError,
   type SchemaRegistryReadError,
 } from "./schema/registry";
+import { decodeJsonPayloadResult } from "./schema/read_json";
 import { resolvePointerResult } from "./util/json_pointer";
-import { applyLensChainResult } from "./lens/lens";
 import { ExpirySweeper } from "./expiry_sweeper";
 import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
@@ -27,8 +28,10 @@ import { MemoryGuard } from "./memory";
 import { TouchProcessorManager } from "./touch/manager";
 import type { SegmenterController } from "./segment/segmenter_workers";
 import type { UploaderController } from "./uploader";
-import type { IndexManager } from "./index/indexer";
+import type { StreamIndexLookup } from "./index/indexer";
 import { Result } from "better-result";
+import { parseReadFilterResult } from "./read_filter";
+import { parseSearchRequestBodyResult, parseSearchRequestQueryResult } from "./search/query";
 import {
   StreamProfileStore,
   parseProfileUpdateResult,
@@ -192,15 +195,32 @@ function extractRoutingKey(reg: SchemaRegistry, value: any): Result<Uint8Array |
   return Result.ok(keyBytesFromString(resolved.value));
 }
 
-function schemaVersionForOffset(reg: SchemaRegistry, offset: bigint): number {
-  if (!reg.boundaries || reg.boundaries.length === 0) return 0;
-  const off = Number(offset);
-  let version = 0;
-  for (const b of reg.boundaries) {
-    if (b.offset <= off) version = b.version;
-    else break;
-  }
-  return version;
+function timestampToIsoString(value: bigint | null): string | null {
+  return value == null ? null : new Date(Number(value)).toISOString();
+}
+
+function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name: string; kind: string }> {
+  if (!search) return [];
+  return Object.entries(search.fields)
+    .filter(([, field]) => field.exact === true && field.kind !== "text")
+    .map(([name, field]) => ({ name, kind: field.kind }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts"; fields: string[] }> {
+  if (!search) return [];
+  const out: Array<{ family: "col" | "fts"; fields: string[] }> = [];
+  const colFields = Object.entries(search.fields)
+    .filter(([, field]) => field.column === true)
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+  if (colFields.length > 0) out.push({ family: "col", fields: colFields });
+  const ftsFields = Object.entries(search.fields)
+    .filter(([, field]) => field.kind === "keyword" || field.kind === "text")
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+  if (ftsFields.length > 0) out.push({ family: "fts", fields: ftsFields });
+  return out;
 }
 
 export type App = {
@@ -215,7 +235,7 @@ export type App = {
     reader: StreamReader;
     segmenter: SegmenterController;
     uploader: UploaderController;
-    indexer?: IndexManager;
+    indexer?: StreamIndexLookup;
     metrics: Metrics;
     registry: SchemaRegistryStore;
     profiles: StreamProfileStore;
@@ -245,7 +265,7 @@ type AppRuntimeDeps = {
   reader: StreamReader;
   segmenter: SegmenterController;
   uploader: UploaderController;
-  indexer?: IndexManager;
+  indexer?: StreamIndexLookup;
   uploadSchemaRegistry: (stream: string, registry: SchemaRegistry) => Promise<void>;
   start(): void;
 };
@@ -278,7 +298,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   const ingest = new IngestQueue(cfg, db, stats, backpressure, memory, metrics);
   const notifier = new StreamNotifier();
   const registry = new SchemaRegistryStore(db);
-  const profiles = new StreamProfileStore(db);
+  const profiles = new StreamProfileStore(db, registry);
   const touch = new TouchProcessorManager(cfg, db, ingest, notifier, profiles, backpressure);
   const runtime = opts.createRuntime({
     config: cfg,
@@ -433,31 +453,98 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     stream: string,
     records: Array<{ offset: bigint; payload: Uint8Array }>
   ): Result<{ values: any[] }, { status: 400 | 500; message: string }> => {
-    const regRes = registry.getRegistryResult(stream);
-    if (Result.isError(regRes)) return Result.err({ status: 500, message: regRes.error.message });
-    const reg = regRes.value;
     const values: any[] = [];
     for (const r of records) {
-      try {
-        const s = new TextDecoder().decode(r.payload);
-        let value: any = JSON.parse(s);
-        if (reg.currentVersion > 0) {
-          const version = schemaVersionForOffset(reg, r.offset);
-          if (version < reg.currentVersion) {
-            const chainRes = registry.getLensChainResult(reg, version, reg.currentVersion);
-            if (Result.isError(chainRes)) return Result.err({ status: 500, message: chainRes.error.message });
-            const chain = chainRes.value;
-            const transformedRes = applyLensChainResult(chain, value);
-            if (Result.isError(transformedRes)) return Result.err({ status: 400, message: transformedRes.error.message });
-            value = transformedRes.value;
-          }
-        }
-        values.push(value);
-      } catch (e: any) {
-        return Result.err({ status: 400, message: String(e?.message ?? e) });
-      }
+      const valueRes = decodeJsonPayloadResult(registry, stream, r.offset, r.payload);
+      if (Result.isError(valueRes)) return valueRes;
+      values.push(valueRes.value);
     }
     return Result.ok({ values });
+  };
+
+  const buildStreamSummary = (stream: string, row: StreamRow, profileKind: string) => ({
+    name: stream,
+    content_type: normalizeContentType(row.content_type) ?? row.content_type,
+    profile: profileKind,
+    created_at: timestampToIsoString(row.created_at_ms),
+    updated_at: timestampToIsoString(row.updated_at_ms),
+    expires_at: timestampToIsoString(row.expires_at_ms),
+    ttl_seconds: row.ttl_seconds,
+    stream_seq: row.stream_seq,
+    closed: row.closed !== 0,
+    epoch: row.epoch,
+    next_offset: row.next_offset.toString(),
+    sealed_through: row.sealed_through.toString(),
+    uploaded_through: row.uploaded_through.toString(),
+    segment_count: db.countSegmentsForStream(stream),
+    uploaded_segment_count: db.countUploadedSegments(stream),
+    pending_rows: row.pending_rows.toString(),
+    pending_bytes: row.pending_bytes.toString(),
+    wal_rows: row.wal_rows.toString(),
+    wal_bytes: row.wal_bytes.toString(),
+    last_append_at: timestampToIsoString(row.last_append_ms),
+    last_segment_cut_at: timestampToIsoString(row.last_segment_cut_ms),
+  });
+
+  const buildIndexStatus = (stream: string, reg: SchemaRegistry, profileKind: string) => {
+    const segmentCount = db.countSegmentsForStream(stream);
+    const uploadedSegmentCount = db.countUploadedSegments(stream);
+    const manifest = db.getManifestRow(stream);
+
+    const routingState = db.getIndexState(stream);
+    const routingRuns = db.listIndexRuns(stream);
+    const retiredRoutingRuns = db.listRetiredIndexRuns(stream);
+
+    const exactIndexes = configuredExactIndexes(reg.search).map(({ name, kind }) => {
+      const state = db.getSecondaryIndexState(stream, name);
+      return {
+        name,
+        kind,
+        indexed_segment_count: state?.indexed_through ?? 0,
+        active_run_count: db.listSecondaryIndexRuns(stream, name).length,
+        retired_run_count: db.listRetiredSecondaryIndexRuns(stream, name).length,
+        fully_indexed_uploaded_segments: (state?.indexed_through ?? 0) >= uploadedSegmentCount,
+        updated_at: timestampToIsoString(state?.updated_at_ms ?? null),
+      };
+    });
+
+    const searchFamilies = configuredSearchFamilies(reg.search).map(({ family, fields }) => {
+      const state = db.getSearchFamilyState(stream, family);
+      const objectCount = db.listSearchFamilySegments(stream, family).length;
+      return {
+        family,
+        fields,
+        covered_segment_count: state?.uploaded_through ?? 0,
+        object_count: objectCount,
+        fully_indexed_uploaded_segments: (state?.uploaded_through ?? 0) >= uploadedSegmentCount,
+        updated_at: timestampToIsoString(state?.updated_at_ms ?? null),
+      };
+    });
+
+    return {
+      stream,
+      profile: profileKind,
+      segments: {
+        total_count: segmentCount,
+        uploaded_count: uploadedSegmentCount,
+      },
+      manifest: {
+        generation: manifest.generation,
+        uploaded_generation: manifest.uploaded_generation,
+        last_uploaded_at: timestampToIsoString(manifest.last_uploaded_at_ms),
+        last_uploaded_etag: manifest.last_uploaded_etag,
+      },
+      routing_key_index: {
+        configured: reg.routingKey != null,
+        indexed_segment_count: routingState?.indexed_through ?? 0,
+        active_run_count: routingRuns.length,
+        retired_run_count: retiredRoutingRuns.length,
+        fully_indexed_uploaded_segments: reg.routingKey == null ? true : (routingState?.indexed_through ?? 0) >= uploadedSegmentCount,
+        updated_at: timestampToIsoString(routingState?.updated_at_ms ?? null),
+      },
+      exact_indexes: exactIndexes,
+      search_families: searchFamilies,
+    };
   };
 
   let closing = false;
@@ -513,7 +600,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         return json(200, out);
       }
 
-      // /v1/stream/:name[/_schema|/_profile] (accept encoded or raw slashes in name)
+      // /v1/stream/:name[/_schema|/_profile|/_details|/_index_status] (accept encoded or raw slashes in name)
       const streamPrefix = "/v1/stream/";
       if (path.startsWith(streamPrefix)) {
         const rawRest = path.slice(streamPrefix.length);
@@ -522,6 +609,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         const segments = rest.split("/");
         let isSchema = false;
         let isProfile = false;
+        let isSearch = false;
+        let isDetails = false;
+        let isIndexStatus = false;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
@@ -529,6 +619,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           segments.pop();
         } else if (segments[segments.length - 1] === "_profile") {
           isProfile = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_search") {
+          isSearch = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_details") {
+          isDetails = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_index_status") {
+          isIndexStatus = true;
           segments.pop();
         } else if (
           segments.length >= 3 &&
@@ -572,8 +671,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const updateRes = parseSchemaUpdateResult(body);
             if (Result.isError(updateRes)) return badRequest(updateRes.error.message);
             const update = updateRes.value;
-            if (update.schema === undefined && update.routingKey !== undefined) {
+            if (update.schema === undefined && update.routingKey !== undefined && update.search === undefined) {
               const regRes = registry.updateRoutingKeyResult(stream, update.routingKey ?? null);
+              if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
+              try {
+                await uploadSchemaRegistry(stream, regRes.value);
+              } catch {
+                return json(500, { error: { code: "internal", message: "schema upload failed" } });
+              }
+              return json(200, regRes.value);
+            }
+            if (update.schema === undefined && update.search !== undefined && update.routingKey === undefined) {
+              const regRes = registry.updateSearchResult(stream, update.search ?? null);
               if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
               try {
                 await uploadSchemaRegistry(stream, regRes.value);
@@ -586,6 +695,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               schema: update.schema,
               lens: update.lens,
               routingKey: update.routingKey ?? undefined,
+              search: update.search,
             });
             if (Result.isError(regRes)) return schemaMutationErrorResponse(regRes.error);
             try {
@@ -621,11 +731,85 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const profileRes = profiles.updateProfileResult(stream, srow, nextProfileRes.value);
             if (Result.isError(profileRes)) return badRequest(profileRes.error.message);
             try {
+              if (profileRes.value.schemaRegistry) {
+                await uploadSchemaRegistry(stream, profileRes.value.schemaRegistry);
+              }
               await uploader.publishManifest(stream);
             } catch {
               return json(500, { error: { code: "internal", message: "profile upload failed" } });
             }
-            return json(200, profileRes.value);
+            return json(200, profileRes.value.resource);
+          }
+
+          return badRequest("unsupported method");
+        }
+
+        if (isDetails || isIndexStatus) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+          if (req.method !== "GET") return badRequest("unsupported method");
+
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return schemaReadErrorResponse(regRes.error);
+          const profileRes = profiles.getProfileResourceResult(stream, srow);
+          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+
+          const profileKind = profileRes.value.profile.kind;
+          const indexStatus = buildIndexStatus(stream, regRes.value, profileKind);
+          if (isIndexStatus) return json(200, indexStatus);
+
+          return json(200, {
+            stream: buildStreamSummary(stream, srow, profileKind),
+            profile: profileRes.value,
+            schema: regRes.value,
+            index_status: indexStatus,
+          });
+        }
+
+        if (isSearch) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return internalError();
+
+          const respondSearch = async (requestBody: unknown, fromQuery: boolean): Promise<Response> => {
+            const requestRes = fromQuery
+              ? parseSearchRequestQueryResult(regRes.value, url.searchParams)
+              : parseSearchRequestBodyResult(regRes.value, requestBody);
+            if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
+            const searchRes = await reader.searchResult({ stream, request: requestRes.value });
+            if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
+            return json(200, {
+              stream,
+              snapshot_end_offset: searchRes.value.snapshotEndOffset,
+              took_ms: searchRes.value.tookMs,
+              coverage: {
+                indexed_segments: searchRes.value.coverage.indexedSegments,
+                scanned_segments: searchRes.value.coverage.scannedSegments,
+                scanned_tail_docs: searchRes.value.coverage.scannedTailDocs,
+                index_families_used: searchRes.value.coverage.indexFamiliesUsed,
+              },
+              total: searchRes.value.total,
+              hits: searchRes.value.hits,
+              next_search_after: searchRes.value.nextSearchAfter,
+            });
+          };
+
+          if (req.method === "GET") {
+            return respondSearch(null, true);
+          }
+
+          if (req.method === "POST") {
+            let body: unknown;
+            try {
+              body = await req.json();
+            } catch {
+              return badRequest("search request must be valid JSON");
+            }
+            return respondSearch(body, false);
           }
 
           return badRequest("unsupported method");
@@ -956,6 +1140,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
           const pathKey = pathKeyParam ?? null;
           const key = pathKey ?? url.searchParams.get("key");
+          const rawFilter = url.searchParams.get("filter");
+          let filterInput: string | null = null;
+          let filter = null;
+          if (rawFilter != null) {
+            if (!isJsonStream) return badRequest("filter requires application/json stream content-type");
+            filterInput = rawFilter.trim();
+            const regRes = registry.getRegistryResult(stream);
+            if (Result.isError(regRes)) return internalError();
+            const filterRes = parseReadFilterResult(regRes.value, filterInput);
+            if (Result.isError(filterRes)) return badRequest(filterRes.error.message);
+            filter = filterRes.value;
+          }
 
           const liveParam = url.searchParams.get("live") ?? "";
           const cursorParam = url.searchParams.get("cursor");
@@ -964,6 +1160,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           else if (liveParam === "long-poll" || liveParam === "true" || liveParam === "1") mode = "long-poll";
           else if (liveParam === "sse") mode = "sse";
           else return badRequest("invalid live mode");
+          if (filter && mode === "sse") return badRequest("filter does not support live=sse");
 
           const timeout = url.searchParams.get("timeout") ?? url.searchParams.get("timeout_ms");
           let timeoutMs: number | null = null;
@@ -1007,7 +1204,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const upToDate = batch.nextOffsetSeq === batch.endOffsetSeq;
             const closedAtTail = srow.closed !== 0 && upToDate;
             const etag = includeEtag
-              ? `W/\"slice:${canonicalizeOffset(offset!)}:${batch.nextOffset}:key=${key ?? ""}:fmt=${format}\"`
+              ? `W/\"slice:${canonicalizeOffset(offset!)}:${batch.nextOffset}:key=${key ?? ""}:fmt=${format}:filter=${filterInput ? encodeURIComponent(filterInput) : ""}\"`
               : null;
             const baseHeaders: Record<string, string> = {
               "stream-next-offset": batch.nextOffset,
@@ -1019,6 +1216,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             if (cacheControl) baseHeaders["cache-control"] = cacheControl;
             if (etag) baseHeaders["etag"] = etag;
             if (srow.expires_at_ms != null) baseHeaders["stream-expires-at"] = new Date(Number(srow.expires_at_ms)).toISOString();
+            if (batch.filterScanLimitReached) {
+              baseHeaders["stream-filter-scan-limit-reached"] = "true";
+              baseHeaders["stream-filter-scan-limit-bytes"] = String(batch.filterScanLimitBytes ?? 0);
+              baseHeaders["stream-filter-scanned-bytes"] = String(batch.filterScannedBytes ?? 0);
+            }
 
             if (etag && ifNoneMatch && ifNoneMatch === etag) {
               return new Response(null, { status: 304, headers: withNosniff(baseHeaders) });
@@ -1086,7 +1288,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                         records: [],
                       };
                     } else {
-                      const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format });
+                      const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
                       if (Result.isError(batchRes)) {
                         fail(batchRes.error.message);
                         return;
@@ -1191,10 +1393,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               const deadline = Date.now() + (timeoutMs ?? defaultLongPollTimeoutMs);
               let currentOffset = tailOffset;
               while (true) {
-                const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format });
+                const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
                 if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
                 const batch = batchRes.value;
-                if (batch.records.length > 0) {
+                if (batch.records.length > 0 || batch.filterScanLimitReached) {
                   const cursor = computeCursor(Date.now(), cursorParam);
                   const resp = await sendBatch(batch, "no-store", false);
                   const headers = new Headers(resp.headers);
@@ -1250,10 +1452,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const deadline = Date.now() + (timeoutMs ?? defaultLongPollTimeoutMs);
             let currentOffset = offset;
             while (true) {
-              const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format });
+              const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
               if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
               const batch = batchRes.value;
-              if (batch.records.length > 0) {
+              if (batch.records.length > 0 || batch.filterScanLimitReached) {
                 const cursor = computeCursor(Date.now(), cursorParam);
                 const resp = await sendBatch(batch, "no-store", false);
                 const headers = new Headers(resp.headers);
@@ -1293,7 +1495,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             return new Response(null, { status: 204, headers: withNosniff(headers) });
           }
 
-          const batchRes = await reader.readResult({ stream, offset, key: key ?? null, format });
+          const batchRes = await reader.readResult({ stream, offset, key: key ?? null, format, filter });
           if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
           const batch = batchRes.value;
           const cacheControl = "immutable, max-age=31536000";

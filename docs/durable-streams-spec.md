@@ -51,7 +51,14 @@ implementation.
 - `GET  /v1/stream/{name}/_profile` get stream profile metadata
 - `POST /v1/stream/{name}/_profile` update stream profile
 
-### 2.4 Streams collection
+### 2.4 Search and inspection subresources
+
+- `GET  /v1/stream/{name}/_search?q=...` search
+- `POST /v1/stream/{name}/_search` search
+- `GET  /v1/stream/{name}/_index_status` get per-stream index status
+- `GET  /v1/stream/{name}/_details` get combined stream details
+
+### 2.5 Streams collection
 
 - `GET /v1/streams` list streams
 
@@ -112,11 +119,17 @@ Reads should also include:
 Caching headers:
 
 - For non-live reads with bounded responses, return
-  - `ETag: W/"slice:<start>:<next>:key=<keyOrEmpty>:fmt=<fmt>"`
+  - `ETag: W/"slice:<start>:<next>:key=<keyOrEmpty>:fmt=<fmt>:filter=<filterOrEmpty>"`
   - `Cache-Control: immutable, max-age=31536000`
 
 - For live reads (`live=true` or `live=long-poll`), return
   - `Cache-Control: no-store`
+
+If a filtered read hits the scan cap, it must also include:
+
+- `Stream-Filter-Scan-Limit-Reached: true`
+- `Stream-Filter-Scan-Limit-Bytes: 104857600`
+- `Stream-Filter-Scanned-Bytes: <bytes examined>`
 
 ---
 
@@ -146,6 +159,18 @@ Caching headers:
 
 - `key=<string>` (optional)
   - Routing-key filtered read.
+
+- `filter=<expr>` (optional)
+  - Predicate filter for JSON streams.
+  - Only schema `search.fields` may appear in the filter.
+  - Supported clause forms in the current implementation:
+    - exact match: `field:value`
+    - comparisons: `field:>=value`, `field:>value`, `field:<=value`, `field:<value`
+    - exists: `has:field`
+    - boolean composition with `AND`, `OR`, `NOT`, `-`, and `(...)`
+  - Exact-equality clauses may use the internal exact family to prune sealed segments.
+  - Typed equality/range clauses may use `.col` companions to prune segment-local docs.
+  - Remaining verification happens against the source stream.
 
 Path form (equivalent to `key=`):
 - `GET /v1/stream/{name}/pk/{url-escaped-key}?offset=...`
@@ -300,10 +325,58 @@ Rules:
 - `evlog` normalizes JSON appends into a canonical request-log envelope and
   derives a routing key from `requestId` or `traceId` when the schema does not
   own routing-key extraction
+- installing `evlog` also installs the canonical evlog schema version `1` and
+  default `search` registry for that stream
 - `state-protocol` requires an `application/json` stream content type
 - `state-protocol.touch.enabled=true` enables the `/touch/*` routes
 - set `profile` to `{ "kind": "generic" }` to use the baseline durable stream
   behavior
+
+## 7B. Stream inspection resources
+
+### Index status
+
+`GET /v1/stream/{name}/_index_status`
+
+Response fields:
+
+- `stream`
+- `profile`
+- `segments`
+- `manifest`
+- `routing_key_index`
+- `exact_indexes`
+- `search_families`
+
+Rules:
+
+- this endpoint is read-only
+- it reports current per-stream segment and manifest state
+- it reports async index/search-family progress for the current stream
+- `routing_key_index` covers the routing-key tiered index
+- `exact_indexes` covers the internal exact-match secondary family derived from
+  schema `search.fields`
+- `search_families` covers object-store-native search companions such as `.col`
+  and `.fts`
+
+### Combined details
+
+`GET /v1/stream/{name}/_details`
+
+Response fields:
+
+- `stream`
+- `profile`
+- `schema`
+- `index_status`
+
+Rules:
+
+- this endpoint is read-only
+- `profile` matches `GET /_profile`
+- `schema` matches `GET /_schema`
+- `index_status` matches `GET /_index_status`
+- this is the supported combined descriptor endpoint for stream-management UIs
 
 ---
 
@@ -315,6 +388,8 @@ Rules:
 
 - Returns a bounded batch.
 - Must include `Stream-Next-Offset`.
+- If `filter=` is present, `Stream-Next-Offset` still advances past scanned
+  non-matching records.
 
 ### 8.2 Live reads (long-poll)
 
@@ -323,6 +398,8 @@ Rules:
 - If data exists after `off`, return immediately.
 - Otherwise, wait for new data or timeout.
 - On timeout, return an empty batch with `Stream-Next-Offset` unchanged.
+- `filter=` is supported for long-poll reads.
+- `live=sse` is not supported together with `filter=`.
 
 ### 8.3 Formats
 
@@ -335,6 +412,60 @@ Rules:
 
 Correctness requirement:
 - Key-filtering is exact: false positives from bloom/index must still validate actual key matches.
+
+### 8.5 Filtered reads
+
+- `filter=` is only supported on `application/json` streams.
+- The server may use schema-owned exact and `.col` search families to prune
+  sealed segments and segment-local docs.
+- The server must still scan the local WAL tail so unsealed data remains
+  visible to filtered reads.
+- The current implementation stops after examining 100 MB of payload bytes for
+  one filtered response and returns the filter scan headers above.
+
+### 8.6 Search
+
+Current endpoints:
+
+- `POST /v1/stream/{name}/_search`
+- `GET /v1/stream/{name}/_search?q=...`
+
+Current request fields:
+
+- `q`
+- `size`
+- `search_after`
+- `sort`
+- `track_total_hits`
+- `timeout_ms`
+
+Current response fields:
+
+- `stream`
+- `snapshot_end_offset`
+- `took_ms`
+- `coverage`
+- `total`
+- `hits`
+- `next_search_after`
+
+Current query support:
+
+- fielded exact keyword queries
+- fielded keyword prefix queries
+- typed equality and range queries
+- `has:field`
+- bare terms over `search.defaultFields`
+- fielded text queries
+- quoted phrase queries on text fields with `positions=true`
+- alias resolution from `search.aliases`
+
+Current non-support:
+
+- `contains:`
+- snippets
+- aggregations
+- multi-stream search
 
 ---
 
@@ -393,6 +524,8 @@ Minimum behavior required:
 - Appends validate against current schema.
 - Reads promote older events through the lens chain to the current schema.
 - `POST /_schema` accepts only the supported update fields: `schema`, `lens`,
-  and `routingKey` (plus optional `apiVersion`).
+  `routingKey`, and `search` (plus optional `apiVersion`).
+- `search` is the only supported public search/indexing model.
+- `search`-only updates require an already-installed schema version.
 - `POST /_schema` rejects registry-shaped compatibility writes, alias field
-  names, and profile-owned live/touch configuration.
+  names, legacy `indexes[]`, and profile-owned live/touch configuration.

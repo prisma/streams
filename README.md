@@ -84,10 +84,13 @@ It means:
 - the stream content type must be `application/json`
 - JSON appends are normalized into a canonical evlog envelope
 - sensitive context keys are redacted before durable append
+- installing the profile also installs the canonical evlog schema registry and
+  default search fields
 - the default routing key is `requestId`, with `traceId` fallback
 
 V1 evlog uses the normal stream append and read APIs. It does not add a local
-SQLite observability index.
+SQLite observability index, and it does not require a separate manual
+`/_schema` call for the default search-ready setup.
 
 ### `generic`
 
@@ -136,6 +139,8 @@ What belongs in a schema:
 - version boundaries
 - lens-based read promotion
 - routing-key extraction rules
+- schema-owned `search` field declarations used by `GET ...?filter=...` and
+  `POST .../_search`
 
 What does **not** belong in `/_schema`:
 
@@ -146,6 +151,44 @@ What does **not** belong in `/_schema`:
 
 The supported model is strict: `/_profile` manages profile semantics,
 `/_schema` manages schema evolution.
+
+Indexed JSON streams can also use the main read path with `filter=...`.
+Filters are limited to schema `search.fields`, use the internal exact family
+and `.col` companions to prune sealed history where possible, and still scan
+the local unsealed tail for correctness. One filtered response stops after
+100 MB of examined payload bytes and reports that cap in response headers.
+
+JSON streams with `search` configured also support `_search`:
+
+- `POST /v1/stream/{name}/_search`
+- `GET /v1/stream/{name}/_search?q=...`
+
+The current `_search` surface supports fielded exact keyword queries, keyword
+prefix, typed equality/range, `has:field`, bare terms over
+`search.defaultFields`, and quoted phrase queries on text fields with
+`positions=true`.
+
+## Management And Introspection API
+
+For stream management UIs, the current per-stream inspection surface is:
+
+- `GET /v1/streams`
+  Summary list view with name, offsets, expiry, and profile kind.
+- `GET /v1/stream/{name}/_profile`
+  Full typed profile resource.
+- `GET /v1/stream/{name}/_schema`
+  Full schema registry, including profile-owned canonical registries such as
+  the auto-installed evlog schema.
+- `GET /v1/stream/{name}/_index_status`
+  Current manifest, segment, and async index/search-family status for that
+  stream.
+- `GET /v1/stream/{name}/_details`
+  Combined stream summary, full profile resource, full schema registry, and
+  nested index status in one response.
+
+That means a GUI can create streams, inspect the active profile and schema,
+show current indexing progress, and edit profile/schema configuration through
+the normal API surface.
 
 ## Profile API
 
