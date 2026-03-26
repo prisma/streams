@@ -7,6 +7,7 @@ import { DURABLE_LENS_V1_SCHEMA } from "./lens_schema";
 import { compileLensResult, lensFromJson, type CompiledLens, type Lens } from "../lens/lens";
 import { validateLensAgainstSchemasResult, fillLensDefaultsResult } from "./proof";
 import { parseJsonPointerResult } from "../util/json_pointer";
+import { parseDurationMsResult } from "../util/duration";
 import { dsError } from "../util/ds_error.ts";
 
 export const SCHEMA_REGISTRY_API_VERSION = "durable.streams/schema-registry/v1" as const;
@@ -16,11 +17,68 @@ export type RoutingKeyConfig = {
   required: boolean;
 };
 
+export type SearchFieldKind = "keyword" | "text" | "integer" | "float" | "date" | "bool";
+
+export type SearchFieldBinding = {
+  version: number;
+  jsonPointer: string;
+};
+
+export type SearchDefaultField = {
+  field: string;
+  boost?: number;
+};
+
+export type SearchFieldConfig = {
+  kind: SearchFieldKind;
+  bindings: SearchFieldBinding[];
+  normalizer?: "identity_v1" | "lowercase_v1";
+  analyzer?: "unicode_word_v1";
+  exact?: boolean;
+  prefix?: boolean;
+  column?: boolean;
+  exists?: boolean;
+  sortable?: boolean;
+  aggregatable?: boolean;
+  contains?: boolean;
+  positions?: boolean;
+};
+
+export type SearchRollupMeasureConfig =
+  | { kind: "count" }
+  | { kind: "summary"; field: string; histogram?: "log2_v1" }
+  | {
+      kind: "summary_parts";
+      countJsonPointer: string;
+      sumJsonPointer: string;
+      minJsonPointer: string;
+      maxJsonPointer: string;
+      histogramJsonPointer?: string;
+    };
+
+export type SearchRollupConfig = {
+  timestampField?: string;
+  dimensions?: string[];
+  intervals: string[];
+  measures: Record<string, SearchRollupMeasureConfig>;
+};
+
+export type SearchConfig = {
+  profile?: string;
+  primaryTimestampField: string;
+  defaultFields?: SearchDefaultField[];
+  containsDefaultFields?: string[];
+  aliases?: Record<string, string>;
+  fields: Record<string, SearchFieldConfig>;
+  rollups?: Record<string, SearchRollupConfig>;
+};
+
 export type SchemaRegistry = {
   apiVersion: typeof SCHEMA_REGISTRY_API_VERSION;
   schema: string;
   currentVersion: number;
   routingKey?: RoutingKeyConfig;
+  search?: SearchConfig;
   boundaries: Array<{ offset: number; version: number }>;
   schemas: Record<string, any>;
   lenses: Record<string, any>;
@@ -109,6 +167,360 @@ function parseRoutingKeyConfigResult(raw: unknown, path: string): Result<Routing
   return Result.ok({ jsonPointer: raw.jsonPointer, required: raw.required });
 }
 
+function validateSearchFieldNameResult(name: string, path: string): Result<string, { message: string }> {
+  const trimmed = name.trim();
+  if (trimmed === "") return Result.err({ message: `${path} must not be empty` });
+  if (trimmed.length > 64) return Result.err({ message: `${path} too long (max 64)` });
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(trimmed)) {
+    return Result.err({ message: `${path} must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$` });
+  }
+  return Result.ok(trimmed);
+}
+
+function parseSearchFieldBindingResult(raw: unknown, path: string): Result<SearchFieldBinding, { message: string }> {
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  const keyCheck = rejectUnknownKeysResult(raw, ["version", "jsonPointer"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (typeof raw.version !== "number" || !Number.isFinite(raw.version) || raw.version <= 0 || !Number.isInteger(raw.version)) {
+    return Result.err({ message: `${path}.version must be a positive integer` });
+  }
+  if (typeof raw.jsonPointer !== "string") return Result.err({ message: `${path}.jsonPointer must be a string` });
+  const pointerRes = parseJsonPointerResult(raw.jsonPointer);
+  if (Result.isError(pointerRes)) return Result.err({ message: pointerRes.error.message });
+  return Result.ok({
+    version: raw.version,
+    jsonPointer: raw.jsonPointer,
+  });
+}
+
+function parseSearchDefaultFieldResult(raw: unknown, path: string): Result<SearchDefaultField, { message: string }> {
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  const keyCheck = rejectUnknownKeysResult(raw, ["field", "boost"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (typeof raw.field !== "string") return Result.err({ message: `${path}.field must be a string` });
+  const fieldRes = validateSearchFieldNameResult(raw.field, `${path}.field`);
+  if (Result.isError(fieldRes)) return fieldRes;
+  if (raw.boost !== undefined && (typeof raw.boost !== "number" || !Number.isFinite(raw.boost) || raw.boost <= 0)) {
+    return Result.err({ message: `${path}.boost must be a positive number` });
+  }
+  return Result.ok({
+    field: fieldRes.value,
+    boost: typeof raw.boost === "number" ? raw.boost : undefined,
+  });
+}
+
+function parseSearchFieldConfigResult(raw: unknown, path: string): Result<SearchFieldConfig, { message: string }> {
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  const keyCheck = rejectUnknownKeysResult(
+    raw,
+    ["kind", "bindings", "normalizer", "analyzer", "exact", "prefix", "column", "exists", "sortable", "aggregatable", "contains", "positions"],
+    path
+  );
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (
+    raw.kind !== "keyword" &&
+    raw.kind !== "text" &&
+    raw.kind !== "integer" &&
+    raw.kind !== "float" &&
+    raw.kind !== "date" &&
+    raw.kind !== "bool"
+  ) {
+    return Result.err({ message: `${path}.kind must be keyword, text, integer, float, date, or bool` });
+  }
+  if (!Array.isArray(raw.bindings) || raw.bindings.length === 0) {
+    return Result.err({ message: `${path}.bindings must be a non-empty array` });
+  }
+  const bindings: SearchFieldBinding[] = [];
+  const seenVersions = new Set<number>();
+  for (let i = 0; i < raw.bindings.length; i++) {
+    const bindingRes = parseSearchFieldBindingResult(raw.bindings[i], `${path}.bindings[${i}]`);
+    if (Result.isError(bindingRes)) return bindingRes;
+    if (seenVersions.has(bindingRes.value.version)) {
+      return Result.err({ message: `${path}.bindings[${i}].version duplicates ${bindingRes.value.version}` });
+    }
+    seenVersions.add(bindingRes.value.version);
+    bindings.push(bindingRes.value);
+  }
+  if (raw.normalizer !== undefined && raw.normalizer !== "identity_v1" && raw.normalizer !== "lowercase_v1") {
+    return Result.err({ message: `${path}.normalizer must be identity_v1 or lowercase_v1` });
+  }
+  if (raw.analyzer !== undefined && raw.analyzer !== "unicode_word_v1") {
+    return Result.err({ message: `${path}.analyzer must be unicode_word_v1` });
+  }
+  const out: SearchFieldConfig = {
+    kind: raw.kind,
+    bindings,
+    normalizer: raw.normalizer as SearchFieldConfig["normalizer"] | undefined,
+    analyzer: raw.analyzer as SearchFieldConfig["analyzer"] | undefined,
+    exact: raw.exact === true ? true : undefined,
+    prefix: raw.prefix === true ? true : undefined,
+    column: raw.column === true ? true : undefined,
+    exists: raw.exists === true ? true : undefined,
+    sortable: raw.sortable === true ? true : undefined,
+    aggregatable: raw.aggregatable === true ? true : undefined,
+    contains: raw.contains === true ? true : undefined,
+    positions: raw.positions === true ? true : undefined,
+  };
+  if (out.kind === "text") {
+    if (!out.analyzer) return Result.err({ message: `${path}.analyzer is required for text fields` });
+    if (out.column) return Result.err({ message: `${path}.column is not supported for text fields` });
+    if (out.sortable) return Result.err({ message: `${path}.sortable is not supported for text fields` });
+    if (out.aggregatable) return Result.err({ message: `${path}.aggregatable is not supported for text fields` });
+  } else {
+    if (out.positions) return Result.err({ message: `${path}.positions is only supported for text fields` });
+  }
+  if (out.kind === "keyword") {
+    if (out.analyzer) return Result.err({ message: `${path}.analyzer is not supported for keyword fields` });
+  }
+  if (out.kind === "integer" || out.kind === "float" || out.kind === "date" || out.kind === "bool") {
+    if (out.prefix) return Result.err({ message: `${path}.prefix is not supported for typed fields` });
+    if (out.contains) return Result.err({ message: `${path}.contains is not supported for typed fields` });
+    if (out.normalizer) return Result.err({ message: `${path}.normalizer is not supported for typed fields` });
+  }
+  return Result.ok(out);
+}
+
+function parseSearchRollupMeasureResult(
+  raw: unknown,
+  path: string,
+  fields: Record<string, SearchFieldConfig>
+): Result<SearchRollupMeasureConfig, { message: string }> {
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  if (raw.kind === "count") {
+    const keyCheck = rejectUnknownKeysResult(raw, ["kind"], path);
+    if (Result.isError(keyCheck)) return keyCheck;
+    return Result.ok({ kind: "count" });
+  }
+  if (raw.kind === "summary") {
+    const keyCheck = rejectUnknownKeysResult(raw, ["kind", "field", "histogram"], path);
+    if (Result.isError(keyCheck)) return keyCheck;
+    if (typeof raw.field !== "string") return Result.err({ message: `${path}.field must be a string` });
+    const fieldRes = validateSearchFieldNameResult(raw.field, `${path}.field`);
+    if (Result.isError(fieldRes)) return fieldRes;
+    const field = fields[fieldRes.value];
+    if (!field) return Result.err({ message: `${path}.field must reference a declared search field` });
+    if (!field.aggregatable) return Result.err({ message: `${path}.field must reference an aggregatable search field` });
+    if (field.kind !== "integer" && field.kind !== "float") {
+      return Result.err({ message: `${path}.field must reference an integer or float field` });
+    }
+    if (raw.histogram !== undefined && raw.histogram !== "log2_v1") {
+      return Result.err({ message: `${path}.histogram must be log2_v1` });
+    }
+    return Result.ok({
+      kind: "summary",
+      field: fieldRes.value,
+      histogram: raw.histogram === "log2_v1" ? "log2_v1" : undefined,
+    });
+  }
+  if (raw.kind === "summary_parts") {
+    const keyCheck = rejectUnknownKeysResult(
+      raw,
+      ["kind", "countJsonPointer", "sumJsonPointer", "minJsonPointer", "maxJsonPointer", "histogramJsonPointer"],
+      path
+    );
+    if (Result.isError(keyCheck)) return keyCheck;
+    for (const key of ["countJsonPointer", "sumJsonPointer", "minJsonPointer", "maxJsonPointer"] as const) {
+      if (typeof raw[key] !== "string") return Result.err({ message: `${path}.${key} must be a string` });
+      const pointerRes = parseJsonPointerResult(raw[key]);
+      if (Result.isError(pointerRes)) return Result.err({ message: pointerRes.error.message });
+    }
+    if (raw.histogramJsonPointer !== undefined) {
+      if (typeof raw.histogramJsonPointer !== "string") return Result.err({ message: `${path}.histogramJsonPointer must be a string` });
+      const pointerRes = parseJsonPointerResult(raw.histogramJsonPointer);
+      if (Result.isError(pointerRes)) return Result.err({ message: pointerRes.error.message });
+    }
+    return Result.ok({
+      kind: "summary_parts",
+      countJsonPointer: raw.countJsonPointer as string,
+      sumJsonPointer: raw.sumJsonPointer as string,
+      minJsonPointer: raw.minJsonPointer as string,
+      maxJsonPointer: raw.maxJsonPointer as string,
+      histogramJsonPointer: typeof raw.histogramJsonPointer === "string" ? raw.histogramJsonPointer : undefined,
+    });
+  }
+  return Result.err({ message: `${path}.kind must be count, summary, or summary_parts` });
+}
+
+function parseSearchRollupConfigResult(
+  raw: unknown,
+  path: string,
+  fields: Record<string, SearchFieldConfig>,
+  primaryTimestampField: string
+): Result<SearchRollupConfig, { message: string }> {
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  const keyCheck = rejectUnknownKeysResult(raw, ["timestampField", "dimensions", "intervals", "measures"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+
+  const timestampFieldRaw = raw.timestampField === undefined ? primaryTimestampField : raw.timestampField;
+  if (typeof timestampFieldRaw !== "string") return Result.err({ message: `${path}.timestampField must be a string` });
+  const timestampFieldRes = validateSearchFieldNameResult(timestampFieldRaw, `${path}.timestampField`);
+  if (Result.isError(timestampFieldRes)) return timestampFieldRes;
+  const timestampField = fields[timestampFieldRes.value];
+  if (!timestampField) return Result.err({ message: `${path}.timestampField must reference a declared field` });
+  if (timestampField.kind !== "date") return Result.err({ message: `${path}.timestampField must reference a date field` });
+
+  let dimensions: string[] | undefined;
+  if (raw.dimensions !== undefined) {
+    if (!Array.isArray(raw.dimensions)) return Result.err({ message: `${path}.dimensions must be an array` });
+    dimensions = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < raw.dimensions.length; i++) {
+      if (typeof raw.dimensions[i] !== "string") return Result.err({ message: `${path}.dimensions[${i}] must be a string` });
+      const dimRes = validateSearchFieldNameResult(raw.dimensions[i], `${path}.dimensions[${i}]`);
+      if (Result.isError(dimRes)) return dimRes;
+      if (seen.has(dimRes.value)) return Result.err({ message: `${path}.dimensions[${i}] duplicates ${dimRes.value}` });
+      const field = fields[dimRes.value];
+      if (!field) return Result.err({ message: `${path}.dimensions[${i}] must reference a declared field` });
+      if (!field.exact) return Result.err({ message: `${path}.dimensions[${i}] must reference an exact-capable field` });
+      seen.add(dimRes.value);
+      dimensions.push(dimRes.value);
+    }
+  }
+
+  if (!Array.isArray(raw.intervals) || raw.intervals.length === 0) {
+    return Result.err({ message: `${path}.intervals must be a non-empty array` });
+  }
+  const intervals: string[] = [];
+  const seenIntervals = new Set<string>();
+  for (let i = 0; i < raw.intervals.length; i++) {
+    if (typeof raw.intervals[i] !== "string") return Result.err({ message: `${path}.intervals[${i}] must be a string` });
+    const parsedRes = parseDurationMsResult(raw.intervals[i]);
+    if (Result.isError(parsedRes) || parsedRes.value <= 0) {
+      return Result.err({ message: `${path}.intervals[${i}] must be a positive duration string` });
+    }
+    if (seenIntervals.has(raw.intervals[i])) {
+      return Result.err({ message: `${path}.intervals[${i}] duplicates ${raw.intervals[i]}` });
+    }
+    seenIntervals.add(raw.intervals[i]);
+    intervals.push(raw.intervals[i]);
+  }
+
+  if (!isPlainObject(raw.measures) || Object.keys(raw.measures).length === 0) {
+    return Result.err({ message: `${path}.measures must be a non-empty object` });
+  }
+  const measures: Record<string, SearchRollupMeasureConfig> = {};
+  for (const [measureName, measureRaw] of Object.entries(raw.measures)) {
+    const nameRes = validateSearchFieldNameResult(measureName, `${path}.measures`);
+    if (Result.isError(nameRes)) return nameRes;
+    const measureRes = parseSearchRollupMeasureResult(measureRaw, `${path}.measures.${measureName}`, fields);
+    if (Result.isError(measureRes)) return measureRes;
+    measures[nameRes.value] = measureRes.value;
+  }
+
+  return Result.ok({
+    timestampField: timestampFieldRes.value,
+    dimensions,
+    intervals,
+    measures,
+  });
+}
+
+function parseSearchConfigResult(raw: unknown, path: string): Result<SearchConfig | null, { message: string }> {
+  if (raw == null) return Result.ok(null);
+  if (!isPlainObject(raw)) return Result.err({ message: `${path} must be an object` });
+  const keyCheck = rejectUnknownKeysResult(
+    raw,
+    ["profile", "primaryTimestampField", "defaultFields", "containsDefaultFields", "aliases", "fields", "rollups"],
+    path
+  );
+  if (Result.isError(keyCheck)) return keyCheck;
+  if (typeof raw.primaryTimestampField !== "string") {
+    return Result.err({ message: `${path}.primaryTimestampField must be a string` });
+  }
+  const primaryFieldRes = validateSearchFieldNameResult(raw.primaryTimestampField, `${path}.primaryTimestampField`);
+  if (Result.isError(primaryFieldRes)) return primaryFieldRes;
+  if (!isPlainObject(raw.fields) || Object.keys(raw.fields).length === 0) {
+    return Result.err({ message: `${path}.fields must be a non-empty object` });
+  }
+  const fields: Record<string, SearchFieldConfig> = {};
+  for (const [fieldName, fieldRaw] of Object.entries(raw.fields)) {
+    const nameRes = validateSearchFieldNameResult(fieldName, `${path}.fields`);
+    if (Result.isError(nameRes)) return nameRes;
+    const fieldRes = parseSearchFieldConfigResult(fieldRaw, `${path}.fields.${fieldName}`);
+    if (Result.isError(fieldRes)) return fieldRes;
+    fields[nameRes.value] = fieldRes.value;
+  }
+  if (!fields[primaryFieldRes.value]) {
+    return Result.err({ message: `${path}.primaryTimestampField must reference a declared field` });
+  }
+  if (fields[primaryFieldRes.value].kind !== "date") {
+    return Result.err({ message: `${path}.primaryTimestampField must reference a date field` });
+  }
+  let defaultFields: SearchDefaultField[] | undefined;
+  if (raw.defaultFields !== undefined) {
+    if (!Array.isArray(raw.defaultFields)) return Result.err({ message: `${path}.defaultFields must be an array` });
+    defaultFields = [];
+    for (let i = 0; i < raw.defaultFields.length; i++) {
+      const fieldRes = parseSearchDefaultFieldResult(raw.defaultFields[i], `${path}.defaultFields[${i}]`);
+      if (Result.isError(fieldRes)) return fieldRes;
+      if (!fields[fieldRes.value.field]) {
+        return Result.err({ message: `${path}.defaultFields[${i}].field must reference a declared field` });
+      }
+      defaultFields.push(fieldRes.value);
+    }
+  }
+  let containsDefaultFields: string[] | undefined;
+  if (raw.containsDefaultFields !== undefined) {
+    if (!Array.isArray(raw.containsDefaultFields)) {
+      return Result.err({ message: `${path}.containsDefaultFields must be an array` });
+    }
+    containsDefaultFields = [];
+    for (let i = 0; i < raw.containsDefaultFields.length; i++) {
+      if (typeof raw.containsDefaultFields[i] !== "string") {
+        return Result.err({ message: `${path}.containsDefaultFields[${i}] must be a string` });
+      }
+      const nameRes = validateSearchFieldNameResult(raw.containsDefaultFields[i], `${path}.containsDefaultFields[${i}]`);
+      if (Result.isError(nameRes)) return nameRes;
+      if (!fields[nameRes.value]) {
+        return Result.err({ message: `${path}.containsDefaultFields[${i}] must reference a declared field` });
+      }
+      containsDefaultFields.push(nameRes.value);
+    }
+  }
+  let aliases: Record<string, string> | undefined;
+  if (raw.aliases !== undefined) {
+    if (!isPlainObject(raw.aliases)) return Result.err({ message: `${path}.aliases must be an object` });
+    aliases = {};
+    for (const [aliasRaw, targetRaw] of Object.entries(raw.aliases)) {
+      const aliasRes = validateSearchFieldNameResult(aliasRaw, `${path}.aliases`);
+      if (Result.isError(aliasRes)) return aliasRes;
+      if (typeof targetRaw !== "string") return Result.err({ message: `${path}.aliases.${aliasRaw} must be a string` });
+      const targetRes = validateSearchFieldNameResult(targetRaw, `${path}.aliases.${aliasRaw}`);
+      if (Result.isError(targetRes)) return targetRes;
+      if (!fields[targetRes.value]) {
+        return Result.err({ message: `${path}.aliases.${aliasRaw} must reference a declared field` });
+      }
+      aliases[aliasRes.value] = targetRes.value;
+    }
+  }
+  let rollups: Record<string, SearchRollupConfig> | undefined;
+  if (raw.rollups !== undefined) {
+    if (!isPlainObject(raw.rollups)) return Result.err({ message: `${path}.rollups must be an object` });
+    rollups = {};
+    for (const [rollupName, rollupRaw] of Object.entries(raw.rollups)) {
+      const nameRes = validateSearchFieldNameResult(rollupName, `${path}.rollups`);
+      if (Result.isError(nameRes)) return nameRes;
+      const rollupRes = parseSearchRollupConfigResult(
+        rollupRaw,
+        `${path}.rollups.${rollupName}`,
+        fields,
+        primaryFieldRes.value
+      );
+      if (Result.isError(rollupRes)) return rollupRes;
+      rollups[nameRes.value] = rollupRes.value;
+    }
+  }
+  return Result.ok({
+    profile: typeof raw.profile === "string" ? raw.profile : undefined,
+    primaryTimestampField: primaryFieldRes.value,
+    defaultFields,
+    containsDefaultFields,
+    aliases,
+    fields,
+    rollups,
+  });
+}
+
 function validateJsonSchemaResult(schema: any): Result<void, { message: string }> {
   const noRefRes = ensureNoRefResult(schema);
   if (Result.isError(noRefRes)) return noRefRes;
@@ -131,7 +543,7 @@ function parseRegistryResult(stream: string, json: string): Result<SchemaRegistr
   if (!isPlainObject(raw)) return Result.err({ message: "invalid schema registry" });
   const keyCheck = rejectUnknownKeysResult(
     raw,
-    ["apiVersion", "schema", "currentVersion", "routingKey", "boundaries", "schemas", "lenses"],
+    ["apiVersion", "schema", "currentVersion", "routingKey", "search", "boundaries", "schemas", "lenses"],
     "registry"
   );
   if (Result.isError(keyCheck)) return keyCheck;
@@ -139,6 +551,8 @@ function parseRegistryResult(stream: string, json: string): Result<SchemaRegistr
 
   const routingKeyRes = parseRoutingKeyConfigResult(raw.routingKey, "routingKey");
   if (Result.isError(routingKeyRes)) return routingKeyRes;
+  const searchRes = parseSearchConfigResult(raw.search, "search");
+  if (Result.isError(searchRes)) return searchRes;
 
   const boundariesRaw = Array.isArray(raw.boundaries) ? raw.boundaries : [];
   const boundaries: Array<{ offset: number; version: number }> = [];
@@ -161,6 +575,7 @@ function parseRegistryResult(stream: string, json: string): Result<SchemaRegistr
     schema: schemaName,
     currentVersion,
     routingKey: routingKeyRes.value ?? undefined,
+    search: searchRes.value ?? undefined,
     boundaries,
     schemas,
     lenses,
@@ -182,9 +597,9 @@ function validateLensResult(raw: any): Result<Lens, { message: string }> {
 
 export function parseSchemaUpdateResult(
   body: unknown
-): Result<{ schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null }, { message: string }> {
+): Result<{ schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null; search?: SearchConfig | null }, { message: string }> {
   if (!isPlainObject(body)) return Result.err({ message: "schema update must be a JSON object" });
-  const keyCheck = rejectUnknownKeysResult(body, ["apiVersion", "schema", "lens", "routingKey"], "schemaUpdate");
+  const keyCheck = rejectUnknownKeysResult(body, ["apiVersion", "schema", "lens", "routingKey", "search"], "schemaUpdate");
   if (Result.isError(keyCheck)) return keyCheck;
   if (body.apiVersion !== undefined && body.apiVersion !== SCHEMA_REGISTRY_API_VERSION) {
     return Result.err({ message: "invalid schema apiVersion" });
@@ -192,8 +607,9 @@ export function parseSchemaUpdateResult(
 
   const hasSchema = Object.prototype.hasOwnProperty.call(body, "schema");
   const hasRoutingKey = Object.prototype.hasOwnProperty.call(body, "routingKey");
-  if (!hasSchema && !hasRoutingKey) {
-    return Result.err({ message: "schema update must include schema or routingKey" });
+  const hasSearch = Object.prototype.hasOwnProperty.call(body, "search");
+  if (!hasSchema && !hasRoutingKey && !hasSearch) {
+    return Result.err({ message: "schema update must include schema, routingKey, or search" });
   }
   if (!hasSchema && body.lens !== undefined) {
     return Result.err({ message: "schema update lens requires schema" });
@@ -205,10 +621,14 @@ export function parseSchemaUpdateResult(
     return Result.err({ message: "schema update routingKey must be an object when schema is provided" });
   }
 
-  const out: { schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null } = {};
+  const searchRes = hasSearch ? parseSearchConfigResult(body.search, "search") : Result.ok(null);
+  if (Result.isError(searchRes)) return searchRes;
+
+  const out: { schema?: any; lens?: any; routingKey?: RoutingKeyConfig | null; search?: SearchConfig | null } = {};
   if (hasSchema) out.schema = body.schema;
   if (body.lens !== undefined) out.lens = body.lens;
   if (hasRoutingKey) out.routingKey = routingKeyRes.value;
+  if (hasSearch) out.search = searchRes.value;
   return Result.ok(out);
 }
 
@@ -260,7 +680,7 @@ export class SchemaRegistryStore {
   updateRegistry(
     stream: string,
     streamRow: StreamRow,
-    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig }
+    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig; search?: SearchConfig | null }
   ): SchemaRegistry {
     const res = this.updateRegistryResult(stream, streamRow, update);
     if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
@@ -270,7 +690,7 @@ export class SchemaRegistryStore {
   updateRegistryResult(
     stream: string,
     streamRow: StreamRow,
-    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig }
+    update: { schema: any; lens?: any; routingKey?: RoutingKeyConfig; search?: SearchConfig | null }
   ): Result<SchemaRegistry, SchemaRegistryMutationError> {
     if (update.routingKey) {
       const pointerRes = parseJsonPointerResult(update.routingKey.jsonPointer);
@@ -309,6 +729,7 @@ export class SchemaRegistryStore {
         schema: stream,
         currentVersion: 1,
         routingKey: update.routingKey,
+        search: update.search === undefined ? reg.search : update.search ?? undefined,
         boundaries: [{ offset: 0, version: 1 }],
         schemas: { ...reg.schemas, ["1"]: update.schema },
         lenses: { ...reg.lenses },
@@ -346,6 +767,7 @@ export class SchemaRegistryStore {
       schema: reg.schema ?? stream,
       currentVersion: nextVersion,
       routingKey: update.routingKey ?? reg.routingKey,
+      search: update.search === undefined ? reg.search : update.search ?? undefined,
       boundaries: [...reg.boundaries, { offset: boundaryRes.value, version: nextVersion }],
       schemas: { ...reg.schemas, [String(nextVersion)]: update.schema },
       lenses: { ...reg.lenses, [String(currentVersion)]: defaultsRes.value },
@@ -378,6 +800,44 @@ export class SchemaRegistryStore {
     };
     this.persist(stream, nextReg);
     return Result.ok(nextReg);
+  }
+
+  updateSearch(stream: string, search: SearchConfig | null): SchemaRegistry {
+    const res = this.updateSearchResult(stream, search);
+    if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
+    return res.value;
+  }
+
+  updateSearchResult(stream: string, search: SearchConfig | null): Result<SchemaRegistry, SchemaRegistryMutationError> {
+    const searchRes = parseSearchConfigResult(search, "search");
+    if (Result.isError(searchRes)) return Result.err({ kind: "bad_request", message: searchRes.error.message });
+    const regRes = this.getRegistryResult(stream);
+    if (Result.isError(regRes)) return Result.err({ kind: "bad_request", message: regRes.error.message, code: regRes.error.code });
+    if (searchRes.value && (regRes.value.currentVersion <= 0 || regRes.value.boundaries.length === 0)) {
+      return Result.err({
+        kind: "bad_request",
+        message: "search config requires an installed schema version",
+      });
+    }
+    const nextReg: SchemaRegistry = {
+      ...regRes.value,
+      search: searchRes.value ?? undefined,
+    };
+    this.persist(stream, nextReg);
+    return Result.ok(nextReg);
+  }
+
+  replaceRegistry(stream: string, registry: SchemaRegistry): SchemaRegistry {
+    const res = this.replaceRegistryResult(stream, registry);
+    if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
+    return res.value;
+  }
+
+  replaceRegistryResult(stream: string, registry: SchemaRegistry): Result<SchemaRegistry, SchemaRegistryMutationError> {
+    const parseRes = parseRegistryResult(stream, JSON.stringify(registry));
+    if (Result.isError(parseRes)) return Result.err({ kind: "bad_request", message: parseRes.error.message });
+    this.persist(stream, parseRes.value);
+    return Result.ok(parseRes.value);
   }
 
   private persist(stream: string, reg: SchemaRegistry): void {

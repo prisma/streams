@@ -94,6 +94,7 @@ export const STATE_PROTOCOL_STREAM_PROFILE_DEFINITION: StreamProfileDefinition =
         profile: persistedProfile,
         updatedAtMs: row?.updated_at_ms ?? db.nowMs(),
       },
+      schemaRegistry: null,
     });
   },
 };

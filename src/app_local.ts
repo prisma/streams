@@ -29,9 +29,9 @@ export type CreateLocalAppOptions = {
 export function createLocalApp(cfg: Config, os?: ObjectStore, opts: CreateLocalAppOptions = {}): App {
   return createAppCore(cfg, {
     stats: opts.stats,
-    createRuntime: ({ config, db }) => {
+    createRuntime: ({ config, db, registry }) => {
       const store = os ?? new NullObjectStore();
-      const reader = new StreamReader(config, db, store);
+      const reader = new StreamReader(config, db, store, registry);
 
       return {
         store,

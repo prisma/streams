@@ -55,6 +55,7 @@ implementation.
 
 - `GET  /v1/stream/{name}/_search?q=...` search
 - `POST /v1/stream/{name}/_search` search
+- `POST /v1/stream/{name}/_aggregate` aggregate
 - `GET  /v1/stream/{name}/_index_status` get per-stream index status
 - `GET  /v1/stream/{name}/_details` get combined stream details
 
@@ -182,6 +183,23 @@ Path form (equivalent to `key=`):
   - Must be efficient up to ~1,000,000 streams.
   - Each descriptor should expose the stream profile. The current
     implementation returns a single `profile` field in the list response.
+
+### 4.3 Aggregate parameters
+
+`POST /v1/stream/{name}/_aggregate` uses a JSON request body.
+
+Required fields:
+
+- `rollup`
+- `from`
+- `to`
+- `interval`
+
+Optional fields:
+
+- `q`
+- `group_by`
+- `measures`
 
 ---
 
@@ -464,8 +482,41 @@ Current non-support:
 
 - `contains:`
 - snippets
-- aggregations
 - multi-stream search
+
+### 8.7 Aggregate
+
+Current endpoint:
+
+- `POST /v1/stream/{name}/_aggregate`
+
+Current request fields:
+
+- `rollup`
+- `from`
+- `to`
+- `interval`
+- `q`
+- `group_by`
+- `measures`
+
+Current response fields:
+
+- `stream`
+- `rollup`
+- `from`
+- `to`
+- `interval`
+- `coverage`
+- `buckets`
+
+Current behavior:
+
+- rollups are schema-owned under `search.rollups`
+- aligned middle windows may use `.agg` companions
+- partial edge windows must still scan source segments
+- uncovered or stale ranges must still scan source segments
+- the WAL tail must always be evaluated directly
 
 ---
 

@@ -168,6 +168,14 @@ prefix, typed equality/range, `has:field`, bare terms over
 `search.defaultFields`, and quoted phrase queries on text fields with
 `positions=true`.
 
+Schema-owned rollups are also available through:
+
+- `POST /v1/stream/{name}/_aggregate`
+
+Rollups are configured under `search.rollups`, stored as object-store-native
+`.agg` companions, and used for aligned time windows with raw source scans for
+partial edges and uncovered ranges.
+
 ## Management And Introspection API
 
 For stream management UIs, the current per-stream inspection surface is:
@@ -188,7 +196,8 @@ For stream management UIs, the current per-stream inspection surface is:
 
 That means a GUI can create streams, inspect the active profile and schema,
 show current indexing progress, and edit profile/schema configuration through
-the normal API surface.
+the normal API surface. A charting UI can additionally use `/_aggregate` for
+time-window summaries driven by schema `search.rollups`.
 
 ## Profile API
 

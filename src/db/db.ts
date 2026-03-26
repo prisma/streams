@@ -85,6 +85,43 @@ export type IndexRunRow = {
   retired_at_ms: bigint | null;
 };
 
+export type SecondaryIndexStateRow = {
+  stream: string;
+  index_name: string;
+  index_secret: Uint8Array;
+  indexed_through: number;
+  updated_at_ms: bigint;
+};
+
+export type SecondaryIndexRunRow = {
+  run_id: string;
+  stream: string;
+  index_name: string;
+  level: number;
+  start_segment: number;
+  end_segment: number;
+  object_key: string;
+  filter_len: number;
+  record_count: number;
+  retired_gen: number | null;
+  retired_at_ms: bigint | null;
+};
+
+export type SearchFamilyStateRow = {
+  stream: string;
+  family: string;
+  uploaded_through: number;
+  updated_at_ms: bigint;
+};
+
+export type SearchFamilySegmentRow = {
+  stream: string;
+  family: string;
+  segment_index: number;
+  object_key: string;
+  updated_at_ms: bigint;
+};
+
 export class SqliteDurableStore {
   public readonly db: SqliteDatabase;
   private dbstatReady: boolean | null = null;
@@ -132,6 +169,23 @@ export class SqliteDurableStore {
     insertIndexRun: SqliteStatement;
     retireIndexRun: SqliteStatement;
     deleteIndexRun: SqliteStatement;
+    getSecondaryIndexState: SqliteStatement;
+    listSecondaryIndexStates: SqliteStatement;
+    upsertSecondaryIndexState: SqliteStatement;
+    updateSecondaryIndexedThrough: SqliteStatement;
+    listSecondaryIndexRuns: SqliteStatement;
+    listSecondaryIndexRunsAll: SqliteStatement;
+    listRetiredSecondaryIndexRuns: SqliteStatement;
+    insertSecondaryIndexRun: SqliteStatement;
+    retireSecondaryIndexRun: SqliteStatement;
+    deleteSecondaryIndexRun: SqliteStatement;
+    getSearchFamilyState: SqliteStatement;
+    listSearchFamilyStates: SqliteStatement;
+    upsertSearchFamilyState: SqliteStatement;
+    listSearchFamilySegments: SqliteStatement;
+    getSearchFamilySegment: SqliteStatement;
+    upsertSearchFamilySegment: SqliteStatement;
+    deleteSearchFamilySegments: SqliteStatement;
     countUploadedSegments: SqliteStatement;
     getSegmentMeta: SqliteStatement;
     ensureSegmentMeta: SqliteStatement;
@@ -355,6 +409,93 @@ export class SqliteDurableStore {
       ),
       deleteIndexRun: this.db.query(
         `DELETE FROM index_runs WHERE run_id=?;`
+      ),
+      getSecondaryIndexState: this.db.query(
+        `SELECT stream, index_name, index_secret, indexed_through, updated_at_ms
+         FROM secondary_index_state WHERE stream=? AND index_name=? LIMIT 1;`
+      ),
+      listSecondaryIndexStates: this.db.query(
+        `SELECT stream, index_name, index_secret, indexed_through, updated_at_ms
+         FROM secondary_index_state WHERE stream=?
+         ORDER BY index_name ASC;`
+      ),
+      upsertSecondaryIndexState: this.db.query(
+        `INSERT INTO secondary_index_state(stream, index_name, index_secret, indexed_through, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(stream, index_name) DO UPDATE SET
+           index_secret=excluded.index_secret,
+           indexed_through=excluded.indexed_through,
+           updated_at_ms=excluded.updated_at_ms;`
+      ),
+      updateSecondaryIndexedThrough: this.db.query(
+        `UPDATE secondary_index_state
+         SET indexed_through=?, updated_at_ms=?
+         WHERE stream=? AND index_name=?;`
+      ),
+      listSecondaryIndexRuns: this.db.query(
+        `SELECT run_id, stream, index_name, level, start_segment, end_segment, object_key, filter_len, record_count, retired_gen, retired_at_ms
+         FROM secondary_index_runs
+         WHERE stream=? AND index_name=? AND retired_gen IS NULL
+         ORDER BY start_segment ASC, level ASC;`
+      ),
+      listSecondaryIndexRunsAll: this.db.query(
+        `SELECT run_id, stream, index_name, level, start_segment, end_segment, object_key, filter_len, record_count, retired_gen, retired_at_ms
+         FROM secondary_index_runs
+         WHERE stream=? AND index_name=?
+         ORDER BY start_segment ASC, level ASC;`
+      ),
+      listRetiredSecondaryIndexRuns: this.db.query(
+        `SELECT run_id, stream, index_name, level, start_segment, end_segment, object_key, filter_len, record_count, retired_gen, retired_at_ms
+         FROM secondary_index_runs
+         WHERE stream=? AND index_name=? AND retired_gen IS NOT NULL
+         ORDER BY retired_at_ms ASC;`
+      ),
+      insertSecondaryIndexRun: this.db.query(
+        `INSERT OR IGNORE INTO secondary_index_runs(run_id, stream, index_name, level, start_segment, end_segment, object_key, filter_len, record_count, retired_gen, retired_at_ms)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL);`
+      ),
+      retireSecondaryIndexRun: this.db.query(
+        `UPDATE secondary_index_runs SET retired_gen=?, retired_at_ms=? WHERE run_id=?;`
+      ),
+      deleteSecondaryIndexRun: this.db.query(
+        `DELETE FROM secondary_index_runs WHERE run_id=?;`
+      ),
+      getSearchFamilyState: this.db.query(
+        `SELECT stream, family, uploaded_through, updated_at_ms
+         FROM search_family_state WHERE stream=? AND family=? LIMIT 1;`
+      ),
+      listSearchFamilyStates: this.db.query(
+        `SELECT stream, family, uploaded_through, updated_at_ms
+         FROM search_family_state WHERE stream=?
+         ORDER BY family ASC;`
+      ),
+      upsertSearchFamilyState: this.db.query(
+        `INSERT INTO search_family_state(stream, family, uploaded_through, updated_at_ms)
+         VALUES(?, ?, ?, ?)
+         ON CONFLICT(stream, family) DO UPDATE SET
+           uploaded_through=excluded.uploaded_through,
+           updated_at_ms=excluded.updated_at_ms;`
+      ),
+      listSearchFamilySegments: this.db.query(
+        `SELECT stream, family, segment_index, object_key, updated_at_ms
+         FROM search_family_segments
+         WHERE stream=? AND family=?
+         ORDER BY segment_index ASC;`
+      ),
+      getSearchFamilySegment: this.db.query(
+        `SELECT stream, family, segment_index, object_key, updated_at_ms
+         FROM search_family_segments
+         WHERE stream=? AND family=? AND segment_index=? LIMIT 1;`
+      ),
+      upsertSearchFamilySegment: this.db.query(
+        `INSERT INTO search_family_segments(stream, family, segment_index, object_key, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(stream, family, segment_index) DO UPDATE SET
+           object_key=excluded.object_key,
+           updated_at_ms=excluded.updated_at_ms;`
+      ),
+      deleteSearchFamilySegments: this.db.query(
+        `DELETE FROM search_family_segments WHERE stream=? AND family=? AND segment_index >= ?;`
       ),
       countUploadedSegments: this.db.query(
         `SELECT COALESCE(MAX(segment_index), -1) as max_idx
@@ -658,6 +799,10 @@ export class SqliteDurableStore {
       this.db.query(`DELETE FROM producer_state WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM index_state WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM index_runs WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM secondary_index_state WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM secondary_index_runs WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM search_family_state WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM search_family_segments WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM stream_segment_meta WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM streams WHERE stream=?;`).run(stream);
       return true;
@@ -1367,6 +1512,178 @@ export class SqliteDurableStore {
     const row = this.stmts.countUploadedSegments.get(stream) as any;
     const maxIdx = row ? Number(row.max_idx) : -1;
     return maxIdx >= 0 ? maxIdx + 1 : 0;
+  }
+
+  getSecondaryIndexState(stream: string, indexName: string): SecondaryIndexStateRow | null {
+    const row = this.stmts.getSecondaryIndexState.get(stream, indexName) as any;
+    if (!row) return null;
+    return {
+      stream: String(row.stream),
+      index_name: String(row.index_name),
+      index_secret: row.index_secret instanceof Uint8Array ? row.index_secret : new Uint8Array(row.index_secret),
+      indexed_through: Number(row.indexed_through),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    };
+  }
+
+  listSecondaryIndexStates(stream: string): SecondaryIndexStateRow[] {
+    const rows = this.stmts.listSecondaryIndexStates.all(stream) as any[];
+    return rows.map((row) => ({
+      stream: String(row.stream),
+      index_name: String(row.index_name),
+      index_secret: row.index_secret instanceof Uint8Array ? row.index_secret : new Uint8Array(row.index_secret),
+      indexed_through: Number(row.indexed_through),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    }));
+  }
+
+  upsertSecondaryIndexState(stream: string, indexName: string, indexSecret: Uint8Array, indexedThrough: number): void {
+    this.stmts.upsertSecondaryIndexState.run(stream, indexName, indexSecret, indexedThrough, this.nowMs());
+  }
+
+  updateSecondaryIndexedThrough(stream: string, indexName: string, indexedThrough: number): void {
+    this.stmts.updateSecondaryIndexedThrough.run(indexedThrough, this.nowMs(), stream, indexName);
+  }
+
+  listSecondaryIndexRuns(stream: string, indexName: string): SecondaryIndexRunRow[] {
+    const rows = this.stmts.listSecondaryIndexRuns.all(stream, indexName) as any[];
+    return rows.map((r) => ({
+      run_id: String(r.run_id),
+      stream: String(r.stream),
+      index_name: String(r.index_name),
+      level: Number(r.level),
+      start_segment: Number(r.start_segment),
+      end_segment: Number(r.end_segment),
+      object_key: String(r.object_key),
+      filter_len: Number(r.filter_len),
+      record_count: Number(r.record_count),
+      retired_gen: r.retired_gen == null ? null : Number(r.retired_gen),
+      retired_at_ms: r.retired_at_ms == null ? null : this.toBigInt(r.retired_at_ms),
+    }));
+  }
+
+  listSecondaryIndexRunsAll(stream: string, indexName: string): SecondaryIndexRunRow[] {
+    const rows = this.stmts.listSecondaryIndexRunsAll.all(stream, indexName) as any[];
+    return rows.map((r) => ({
+      run_id: String(r.run_id),
+      stream: String(r.stream),
+      index_name: String(r.index_name),
+      level: Number(r.level),
+      start_segment: Number(r.start_segment),
+      end_segment: Number(r.end_segment),
+      object_key: String(r.object_key),
+      filter_len: Number(r.filter_len),
+      record_count: Number(r.record_count),
+      retired_gen: r.retired_gen == null ? null : Number(r.retired_gen),
+      retired_at_ms: r.retired_at_ms == null ? null : this.toBigInt(r.retired_at_ms),
+    }));
+  }
+
+  listRetiredSecondaryIndexRuns(stream: string, indexName: string): SecondaryIndexRunRow[] {
+    const rows = this.stmts.listRetiredSecondaryIndexRuns.all(stream, indexName) as any[];
+    return rows.map((r) => ({
+      run_id: String(r.run_id),
+      stream: String(r.stream),
+      index_name: String(r.index_name),
+      level: Number(r.level),
+      start_segment: Number(r.start_segment),
+      end_segment: Number(r.end_segment),
+      object_key: String(r.object_key),
+      filter_len: Number(r.filter_len),
+      record_count: Number(r.record_count),
+      retired_gen: r.retired_gen == null ? null : Number(r.retired_gen),
+      retired_at_ms: r.retired_at_ms == null ? null : this.toBigInt(r.retired_at_ms),
+    }));
+  }
+
+  insertSecondaryIndexRun(row: Omit<SecondaryIndexRunRow, "retired_gen" | "retired_at_ms">): void {
+    this.stmts.insertSecondaryIndexRun.run(
+      row.run_id,
+      row.stream,
+      row.index_name,
+      row.level,
+      row.start_segment,
+      row.end_segment,
+      row.object_key,
+      row.filter_len,
+      row.record_count
+    );
+  }
+
+  retireSecondaryIndexRuns(runIds: string[], retiredGen: number, retiredAtMs: bigint): void {
+    if (runIds.length === 0) return;
+    const tx = this.db.transaction(() => {
+      for (const runId of runIds) {
+        this.stmts.retireSecondaryIndexRun.run(retiredGen, retiredAtMs, runId);
+      }
+    });
+    tx();
+  }
+
+  deleteSecondaryIndexRuns(runIds: string[]): void {
+    if (runIds.length === 0) return;
+    const tx = this.db.transaction(() => {
+      for (const runId of runIds) {
+        this.stmts.deleteSecondaryIndexRun.run(runId);
+      }
+    });
+    tx();
+  }
+
+  getSearchFamilyState(stream: string, family: string): SearchFamilyStateRow | null {
+    const row = this.stmts.getSearchFamilyState.get(stream, family) as any;
+    if (!row) return null;
+    return {
+      stream: String(row.stream),
+      family: String(row.family),
+      uploaded_through: Number(row.uploaded_through),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    };
+  }
+
+  listSearchFamilyStates(stream: string): SearchFamilyStateRow[] {
+    const rows = this.stmts.listSearchFamilyStates.all(stream) as any[];
+    return rows.map((row) => ({
+      stream: String(row.stream),
+      family: String(row.family),
+      uploaded_through: Number(row.uploaded_through),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    }));
+  }
+
+  upsertSearchFamilyState(stream: string, family: string, uploadedThrough: number): void {
+    this.stmts.upsertSearchFamilyState.run(stream, family, uploadedThrough, this.nowMs());
+  }
+
+  listSearchFamilySegments(stream: string, family: string): SearchFamilySegmentRow[] {
+    const rows = this.stmts.listSearchFamilySegments.all(stream, family) as any[];
+    return rows.map((row) => ({
+      stream: String(row.stream),
+      family: String(row.family),
+      segment_index: Number(row.segment_index),
+      object_key: String(row.object_key),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    }));
+  }
+
+  getSearchFamilySegment(stream: string, family: string, segmentIndex: number): SearchFamilySegmentRow | null {
+    const row = this.stmts.getSearchFamilySegment.get(stream, family, segmentIndex) as any;
+    if (!row) return null;
+    return {
+      stream: String(row.stream),
+      family: String(row.family),
+      segment_index: Number(row.segment_index),
+      object_key: String(row.object_key),
+      updated_at_ms: this.toBigInt(row.updated_at_ms),
+    };
+  }
+
+  upsertSearchFamilySegment(stream: string, family: string, segmentIndex: number, objectKey: string): void {
+    this.stmts.upsertSearchFamilySegment.run(stream, family, segmentIndex, objectKey, this.nowMs());
+  }
+
+  deleteSearchFamilySegmentsFrom(stream: string, family: string, segmentIndex: number): void {
+    this.stmts.deleteSearchFamilySegments.run(stream, family, segmentIndex);
   }
 
   commitManifest(stream: string, generation: number, etag: string, uploadedAtMs: bigint, uploadedThrough: bigint): void {

@@ -15,6 +15,7 @@ import {
   parseStoredProfileJsonResult,
   rejectUnknownKeysResult,
 } from "./profile";
+import { buildEvlogDefaultRegistry } from "./evlog/schema";
 
 export type EvlogStreamProfile = {
   kind: "evlog";
@@ -120,6 +121,15 @@ function normalizeOptionalNumber(value: unknown): number | null {
   return null;
 }
 
+function normalizeOptionalInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n) && Number.isInteger(n)) return n;
+  }
+  return null;
+}
+
 function deriveLevel(input: Record<string, unknown>, status: number | null): string {
   const direct = normalizeString(input.level)?.toLowerCase();
   if (direct === "debug" || direct === "info" || direct === "warn" || direct === "error") {
@@ -174,7 +184,7 @@ function normalizeEvlogRecordResult(profile: EvlogStreamProfile, value: unknown)
   if (Result.isError(objRes)) return objRes;
   const input = objRes.value;
 
-  const status = normalizeOptionalNumber(input.status);
+  const status = normalizeOptionalInteger(input.status);
   const duration = normalizeOptionalNumber(input.duration);
   const timestamp = normalizeString(input.timestamp) ?? new Date().toISOString();
   const requestId = normalizeString(input.requestId);
@@ -243,7 +253,7 @@ export const EVLOG_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     });
   },
 
-  persistProfileResult({ db, stream, streamRow, profile }): Result<StreamProfilePersistResult, { kind: "bad_request"; message: string; code?: string }> {
+  persistProfileResult({ db, registry, stream, streamRow, profile }): Result<StreamProfilePersistResult, { kind: "bad_request"; message: string; code?: string }> {
     if (!isEvlogProfile(profile)) {
       return Result.err({ kind: "bad_request", message: "invalid evlog profile" });
     }
@@ -262,8 +272,13 @@ export const EVLOG_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     }
 
     const persistedProfile = cloneEvlogProfile(profile);
+    const registryRes = registry.replaceRegistryResult(stream, buildEvlogDefaultRegistry(stream));
+    if (Result.isError(registryRes)) {
+      return Result.err({ kind: "bad_request", message: registryRes.error.message });
+    }
     db.updateStreamProfile(stream, persistedProfile.kind);
     db.upsertStreamProfile(stream, JSON.stringify(persistedProfile));
+    db.deleteStreamTouchState(stream);
     const row = db.getStreamProfile(stream);
     return Result.ok({
       profile: cloneEvlogProfile(persistedProfile),
@@ -271,6 +286,7 @@ export const EVLOG_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
         profile: persistedProfile,
         updatedAtMs: row?.updated_at_ms ?? db.nowMs(),
       },
+      schemaRegistry: registryRes.value,
     });
   },
 

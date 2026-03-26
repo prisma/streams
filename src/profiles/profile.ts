@@ -1,5 +1,6 @@
 import { Result } from "better-result";
 import type { SqliteDurableStore, StreamRow } from "../db/db";
+import type { SchemaRegistry, SchemaRegistryStore } from "../schema/registry";
 import type { TouchProcessorManager } from "../touch/manager";
 import type { CanonicalChange } from "../touch/canonical_change";
 import type { TouchConfig } from "../touch/spec";
@@ -54,10 +55,12 @@ export type StreamProfileReadResult = {
 export type StreamProfilePersistResult = {
   profile: StreamProfileSpec;
   cache: CachedStreamProfile | null;
+  schemaRegistry?: SchemaRegistry | null;
 };
 
 export type PersistProfileArgs = {
   db: SqliteDurableStore;
+  registry: SchemaRegistryStore;
   stream: string;
   streamRow: StreamRow;
   profile: StreamProfileSpec;

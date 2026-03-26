@@ -76,7 +76,7 @@ It means:
 - JSON appends are normalized into a canonical evlog envelope
 - redaction happens before durable append
 - installing the profile auto-installs the canonical evlog schema registry and
-  default search fields
+  default search fields and rollups
 - the default routing key is `requestId`, with `traceId` fallback
 - reads continue to use the normal stream API
 

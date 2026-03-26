@@ -38,12 +38,20 @@ bun run check:result-policy
 bun test
 bun run test:conformance:local
 bun run test:conformance
+bun run test:large-index-filter
 ```
 
 Notes:
 
 - `bun test` is the current fast repository baseline.
 - `test:conformance:local` and `test:conformance` run the upstream black-box suite against local and full server modes.
+- `test:large-index-filter` is an opt-in full-mode integration/performance test
+  that writes 1 GiB of indexed JSON data into a MockR2-backed stream and
+  measures filtered read time. The packaged script pins `16 MiB` segments to
+  match the production default. Use `DS_LARGE_INDEX_FILTER=1 bun test
+  test/large_index_filter.test.ts` directly only when you intentionally want to
+  override the segment size or other large-test settings. It is intentionally
+  excluded from the fast baseline.
 - The current upstream conformance status is tracked in [conformance.md](./conformance.md).
 
 ## Development Expectations

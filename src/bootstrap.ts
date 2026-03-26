@@ -197,6 +197,64 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         db.retireIndexRuns([runId], retiredGen, BigInt(retiredAtUnix) * 1000n);
       }
 
+      const secondaryIndexes = manifest.secondary_indexes && typeof manifest.secondary_indexes === "object" ? manifest.secondary_indexes : {};
+      for (const [indexName, rawState] of Object.entries(secondaryIndexes)) {
+        if (!rawState || typeof rawState !== "object") continue;
+        const indexSecretB64 = typeof (rawState as any).index_secret === "string" ? (rawState as any).index_secret : "";
+        if (!indexSecretB64) continue;
+        const secret = new Uint8Array(Buffer.from(indexSecretB64, "base64"));
+        const indexedThrough =
+          typeof (rawState as any).indexed_through === "number" ? Number((rawState as any).indexed_through) : 0;
+        db.upsertSecondaryIndexState(stream, indexName, secret, indexedThrough);
+
+        const activeSecondaryRuns = Array.isArray((rawState as any).active_runs) ? (rawState as any).active_runs : [];
+        const retiredSecondaryRuns = Array.isArray((rawState as any).retired_runs) ? (rawState as any).retired_runs : [];
+        for (const run of activeSecondaryRuns) {
+          db.insertSecondaryIndexRun({
+            run_id: String(run.run_id),
+            stream,
+            index_name: indexName,
+            level: Number(run.level),
+            start_segment: Number(run.start_segment),
+            end_segment: Number(run.end_segment),
+            object_key: String(run.object_key),
+            filter_len: Number(run.filter_len ?? 0),
+            record_count: Number(run.record_count ?? 0),
+          });
+        }
+        for (const run of retiredSecondaryRuns) {
+          const runId = String(run.run_id);
+          db.insertSecondaryIndexRun({
+            run_id: runId,
+            stream,
+            index_name: indexName,
+            level: Number(run.level),
+            start_segment: Number(run.start_segment),
+            end_segment: Number(run.end_segment),
+            object_key: String(run.object_key),
+            filter_len: Number(run.filter_len ?? 0),
+            record_count: Number(run.record_count ?? 0),
+          });
+          const retiredGen = typeof run.retired_gen === "number" ? run.retired_gen : Number(manifest.generation ?? 0);
+          const retiredAtUnix = typeof run.retired_at_unix === "number" ? run.retired_at_unix : Math.floor(Number(nowMs) / 1000);
+          db.retireSecondaryIndexRuns([runId], retiredGen, BigInt(retiredAtUnix) * 1000n);
+        }
+      }
+
+      const searchFamilies = manifest.search_families && typeof manifest.search_families === "object" ? manifest.search_families : {};
+      for (const [family, rawState] of Object.entries(searchFamilies)) {
+        if (!rawState || typeof rawState !== "object") continue;
+        const uploadedThrough =
+          typeof (rawState as any).uploaded_through === "number" ? Number((rawState as any).uploaded_through) : 0;
+        db.upsertSearchFamilyState(stream, family, uploadedThrough);
+        const segments = Array.isArray((rawState as any).segments) ? (rawState as any).segments : [];
+        for (const segment of segments) {
+          if (!segment || typeof segment !== "object") continue;
+          if (typeof (segment as any).segment_index !== "number" || typeof (segment as any).object_key !== "string") continue;
+          db.upsertSearchFamilySegment(stream, family, Number((segment as any).segment_index), String((segment as any).object_key));
+        }
+      }
+
       const schemaKey = schemaObjectKey(shash);
       const schemaBytes = await retry(async () => {
         const data = await store.get(schemaKey);

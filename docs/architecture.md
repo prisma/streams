@@ -34,9 +34,9 @@ Implemented built-ins today:
 - `state-protocol`
 
 `generic` adds no canonical payload envelope and leaves schema management to the
-user. `evlog` owns canonical wide-event normalization and redaction on JSON
-append. `state-protocol` owns the live `/touch/*` surface and its touch
-configuration.
+user. `evlog` owns canonical wide-event normalization, redaction, and its
+default schema/search/rollup registry on JSON append. `state-protocol` owns the
+live `/touch/*` surface and its touch configuration.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
@@ -64,11 +64,26 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Uploads segments first, then publishes a new manifest generation.
 - Advances uploaded_through only after manifest upload succeeds, then GC WAL rows.
 
-5) Reader
+5) Index managers
+- The full server starts five in-process indexing managers:
+  - routing-key
+  - exact secondary
+  - `.col`
+  - `.fts`
+  - `.agg`
+- They run on a timer (`DS_INDEX_CHECK_MS`) inside the main server process.
+- They are asynchronous background loops, not dedicated worker threads or
+  separate processes.
+- `DS_INDEX_BUILD_CONCURRENCY` controls parallel segment-processing tasks
+  inside one exact-family run build.
+- `DS_INDEX_COMPACT_CONCURRENCY` controls parallel run-loading tasks inside
+  one exact-family compaction job.
+
+6) Reader
 - Merges historical data from segments (local cache or R2) with tail data in SQLite.
 - Supports key-filtered reads and long-poll semantics.
 
-6) Object store
+7) Object store
 - ObjectStore interface with put/get/head/list plus streaming uploads.
 - MockR2 implements the interface with deterministic fault injection.
 
@@ -107,6 +122,7 @@ Today, `evlog` uses the same model to own:
 - canonical wide-event normalization on JSON append
 - pre-append redaction of sensitive context fields
 - routing-key defaults from `requestId` or `traceId`
+- default schema-owned `search` and `search.rollups` installation
 
 ## Control-Plane Metadata
 
@@ -175,6 +191,7 @@ state from:
 - manifest objects
 - segment objects
 - schema objects
+- published routing-key and secondary-index run objects
 
 SQLite state that is intentionally local-only or transient includes:
 - WAL rows above `uploaded_through`

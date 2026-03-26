@@ -1,0 +1,134 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createApp } from "../src/app";
+import { loadConfig, type Config } from "../src/config";
+import { SecondaryIndexManager } from "../src/index/secondary_indexer";
+import { MockR2Store } from "../src/objectstore/mock_r2";
+
+function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
+  const base = loadConfig();
+  return {
+    ...base,
+    rootDir,
+    dbPath: `${rootDir}/wal.sqlite`,
+    port: 0,
+    ...overrides,
+  };
+}
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+describe("secondary indexer", () => {
+  test("builds exact-match runs for schema-owned indexes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-index-"));
+    const cfg = makeConfig(root, {
+      segmentMaxBytes: 60,
+      segmentCheckIntervalMs: 25,
+      uploadIntervalMs: 25,
+      uploadConcurrency: 2,
+      indexL0SpanSegments: 2,
+      indexCheckIntervalMs: 25,
+      segmentCacheMaxBytes: 0,
+      segmentFooterCacheEntries: 0,
+    });
+    const store = new MockR2Store();
+    const app = createApp(cfg, store);
+    try {
+      const createRes = await app.fetch(
+        new Request("http://local/v1/stream/evlog", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        })
+      );
+      expect([201, 204]).toContain(createRes.status);
+
+      const schemaRes = await app.fetch(
+        new Request("http://local/v1/stream/evlog/_schema", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            schema: {
+              type: "object",
+              properties: {
+                eventTime: { type: "string" },
+                service: { type: "string" },
+                level: { type: "string" },
+              },
+              required: ["service", "level"],
+            },
+            search: {
+              primaryTimestampField: "eventTime",
+              fields: {
+                eventTime: {
+                  kind: "date",
+                  bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                  exact: true,
+                  column: true,
+                  exists: true,
+                  sortable: true,
+                },
+                service: {
+                  kind: "keyword",
+                  bindings: [{ version: 1, jsonPointer: "/service" }],
+                  normalizer: "lowercase_v1",
+                  exact: true,
+                  prefix: true,
+                  exists: true,
+                },
+              },
+            },
+          }),
+        })
+      );
+      expect(schemaRes.status).toBe(200);
+
+      for (const event of [
+        { service: "api", level: "info" },
+        { service: "api", level: "error" },
+        { service: "worker", level: "info" },
+        { service: "worker", level: "error" },
+      ]) {
+        const appendRes = await app.fetch(
+          new Request("http://local/v1/stream/evlog", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(event),
+          })
+        );
+        expect(appendRes.status).toBe(204);
+      }
+
+      app.deps.indexer?.enqueue("evlog");
+      const deadline = Date.now() + 10_000;
+      let stateCount = 0;
+      let runCount = 0;
+      while (Date.now() < deadline) {
+        const segs = app.deps.db.listSegmentsForStream("evlog");
+        const srow = app.deps.db.getStream("evlog");
+        stateCount = app.deps.db.listSecondaryIndexStates("evlog").length;
+        runCount = app.deps.db.listSecondaryIndexRuns("evlog", "service").length;
+        const uploadedOk = !!srow && srow.uploaded_segment_count >= 2;
+        if (segs.length >= 2 && uploadedOk && stateCount > 0 && runCount > 0) break;
+        await sleep(50);
+      }
+      expect(stateCount).toBeGreaterThan(0);
+      expect(runCount).toBeGreaterThan(0);
+
+      const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
+      const apiSegments = await manager.candidateSegmentsForSecondaryIndex("evlog", "service", new TextEncoder().encode("api"));
+      const workerSegments = await manager.candidateSegmentsForSecondaryIndex("evlog", "service", new TextEncoder().encode("worker"));
+
+      expect(apiSegments).not.toBeNull();
+      expect(workerSegments).not.toBeNull();
+      expect(Array.from(apiSegments!.segments).sort((a, b) => a - b)).toEqual([0]);
+      expect(Array.from(workerSegments!.segments).sort((a, b) => a - b)).toEqual([1]);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});

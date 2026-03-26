@@ -24,17 +24,22 @@
   field IDs, per-version bindings, aliases, and capabilities such as `exact`,
   `prefix`, `column`, `exists`, and `sortable`.
 - Full mode builds three search/indexing layers from that schema:
+- Full mode builds four search/indexing layers from that schema:
   - the internal exact-match secondary index family
   - `.col` per-segment companions for typed equality/range
   - `.fts` per-segment companions for keyword exact/prefix and text search
+  - `.agg` per-segment companions for schema-owned rollups
 - `POST /v1/stream/{name}/_search` and `GET /v1/stream/{name}/_search?q=...`
   are implemented for fielded exact/prefix/range/text queries with
   search-after pagination.
+- `POST /v1/stream/{name}/_aggregate` is implemented for schema-owned
+  time-window rollups with aligned-window `.agg` usage and raw-scan fallback
+  for partial edges and uncovered ranges.
 - The main `GET /v1/stream/{name}` path supports `filter=` for schema
   `search.fields` and still covers the local unsealed tail with a bounded
   100 MB scan cap per response.
-- Published exact, `.col`, and `.fts` state survives manifest publication and
-  bootstrap-from-R2 recovery.
+- Published exact, `.col`, `.fts`, and `.agg` state survives manifest
+  publication and bootstrap-from-R2 recovery.
 - `GET /v1/stream/{name}/_index_status` exposes per-stream segment, manifest,
   routing-index, exact-index, and search-family progress for UIs and
   diagnostics.

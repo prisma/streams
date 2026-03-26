@@ -27,6 +27,8 @@ and tooling.
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations
 - [architecture.md](./architecture.md) — system architecture and data flow
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
+- [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
+- [aggregation-rollups.md](./aggregation-rollups.md) — `.agg` rollup family and aggregation query model
 - [metrics.md](./metrics.md) — emitted metrics and stream formats
 
 ## Operations

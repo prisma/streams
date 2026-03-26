@@ -225,6 +225,13 @@ export class Uploader {
       const indexState = this.db.getIndexState(stream);
       const indexRuns = this.db.listIndexRuns(stream);
       const retiredRuns = this.db.listRetiredIndexRuns(stream);
+      const secondaryIndexStates = this.db.listSecondaryIndexStates(stream);
+      const secondaryIndexRuns = secondaryIndexStates.flatMap((state) => this.db.listSecondaryIndexRuns(stream, state.index_name));
+      const retiredSecondaryIndexRuns = secondaryIndexStates.flatMap((state) =>
+        this.db.listRetiredSecondaryIndexRuns(stream, state.index_name)
+      );
+      const searchFamilyStates = this.db.listSearchFamilyStates(stream);
+      const searchFamilySegments = searchFamilyStates.flatMap((state) => this.db.listSearchFamilySegments(stream, state.family));
       let profileJson: Record<string, any> | null = null;
       const profileRow = this.db.getStreamProfile(stream);
       if (profileRow) {
@@ -245,6 +252,11 @@ export class Uploader {
         indexState,
         indexRuns,
         retiredRuns,
+        secondaryIndexStates,
+        secondaryIndexRuns,
+        retiredSecondaryIndexRuns,
+        searchFamilyStates,
+        searchFamilySegments,
       });
       if (Result.isError(manifestRes)) {
         this.failures.recordFailure(stream);

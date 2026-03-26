@@ -22,6 +22,8 @@ describe("sqlite schema", () => {
       expect(tables).toContain("stream_segment_meta");
       expect(tables).toContain("index_state");
       expect(tables).toContain("index_runs");
+      expect(tables).toContain("secondary_index_state");
+      expect(tables).toContain("secondary_index_runs");
       expect(tables).toContain("schemas");
       expect(tables).toContain("stream_profiles");
       expect(tables).toContain("stream_touch_state");

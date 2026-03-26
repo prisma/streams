@@ -1,6 +1,15 @@
 import { zstdCompressSync } from "node:zlib";
 import { Result } from "better-result";
-import type { IndexRunRow, IndexStateRow, SegmentMetaRow, StreamRow } from "./db/db";
+import type {
+  IndexRunRow,
+  IndexStateRow,
+  SearchFamilySegmentRow,
+  SearchFamilyStateRow,
+  SecondaryIndexRunRow,
+  SecondaryIndexStateRow,
+  SegmentMetaRow,
+  StreamRow,
+} from "./db/db";
 import { encodeOffsetResult } from "./offset";
 import { dsError } from "./util/ds_error.ts";
 
@@ -29,6 +38,11 @@ type BuildManifestArgs = {
   indexState?: IndexStateRow | null;
   indexRuns?: IndexRunRow[];
   retiredRuns?: IndexRunRow[];
+  secondaryIndexStates?: SecondaryIndexStateRow[];
+  secondaryIndexRuns?: SecondaryIndexRunRow[];
+  retiredSecondaryIndexRuns?: SecondaryIndexRunRow[];
+  searchFamilyStates?: SearchFamilyStateRow[];
+  searchFamilySegments?: SearchFamilySegmentRow[];
 };
 
 export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJson, ManifestBuildError> {
@@ -76,6 +90,55 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
   })) ?? [];
   const indexSecret = indexState?.index_secret ? b64(indexState.index_secret) : "";
   const indexedThrough = indexState?.indexed_through ?? 0;
+  const secondaryIndexes: Record<string, any> = {};
+  const secondaryStates = args.secondaryIndexStates ?? [];
+  const secondaryRuns = args.secondaryIndexRuns ?? [];
+  const retiredSecondaryRuns = args.retiredSecondaryIndexRuns ?? [];
+  for (const state of secondaryStates) {
+    secondaryIndexes[state.index_name] = {
+      index_secret: b64(state.index_secret),
+      indexed_through: state.indexed_through,
+      active_runs: secondaryRuns
+        .filter((run) => run.index_name === state.index_name)
+        .map((run) => ({
+          run_id: run.run_id,
+          level: run.level,
+          start_segment: run.start_segment,
+          end_segment: run.end_segment,
+          object_key: run.object_key,
+          filter_len: run.filter_len,
+          record_count: run.record_count,
+        })),
+      retired_runs: retiredSecondaryRuns
+        .filter((run) => run.index_name === state.index_name)
+        .map((run) => ({
+          run_id: run.run_id,
+          level: run.level,
+          start_segment: run.start_segment,
+          end_segment: run.end_segment,
+          object_key: run.object_key,
+          filter_len: run.filter_len,
+          record_count: run.record_count,
+          retired_gen: run.retired_gen ?? undefined,
+          retired_at_unix: run.retired_at_ms != null ? Number(run.retired_at_ms / 1000n) : undefined,
+        })),
+      };
+  }
+  const searchFamilies: Record<string, any> = {};
+  const searchFamilyStates = args.searchFamilyStates ?? [];
+  const searchFamilySegments = args.searchFamilySegments ?? [];
+  for (const state of searchFamilyStates) {
+    const uploadedThrough = Math.max(0, Math.min(state.uploaded_through, prefix));
+    searchFamilies[state.family] = {
+      uploaded_through: uploadedThrough,
+      segments: searchFamilySegments
+        .filter((segment) => segment.family === state.family && segment.segment_index < uploadedThrough)
+        .map((segment) => ({
+          segment_index: segment.segment_index,
+          object_key: segment.object_key,
+        })),
+    };
+  }
 
   return Result.ok({
     name: streamName,
@@ -107,6 +170,8 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     index_secret: indexSecret,
     active_runs: activeRuns,
     retired_runs: retired,
+    secondary_indexes: secondaryIndexes,
+    search_families: searchFamilies,
   });
 }
 

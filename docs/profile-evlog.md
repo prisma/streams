@@ -12,7 +12,8 @@ The v1 profile:
 
 - keep evlog data in ordinary durable streams
 - store one canonical JSON event per appended record
-- install a canonical schema registry and default search fields automatically
+- install a canonical schema registry, default search fields, and default
+  rollups automatically
 - avoid unbounded local SQLite indexing
 - preserve exact append-only durability semantics
 - support request-centric lookup through the existing routing-key path
@@ -27,7 +28,7 @@ The v1 profile does not introduce a separate observability storage engine.
 - the profile must be installed before the stream has appended data
 - appended JSON records are normalized into an evlog canonical envelope
 - installing the profile also installs the canonical evlog schema registry and
-  default `search` config
+  default `search` and `search.rollups` config
 - the profile provides a default routing key from `requestId`, with `traceId`
   fallback
 - reads continue to use the normal durable stream APIs
@@ -85,6 +86,7 @@ installs:
 
 - the canonical evlog JSON schema as schema version `1`
 - the default evlog `search` field registry
+- the default evlog `search.rollups` registry
 - the schema-registry object in object storage before manifest publication
 
 ## Redaction
@@ -161,6 +163,7 @@ Those fields are declared in the schema registry and built asynchronously into:
 - the internal exact-match family for exact keyword/typed equality pruning
 - `.col` per-segment companions for typed equality/range
 - `.fts` per-segment companions for keyword exact/prefix and text search
+- `.agg` per-segment companions for time-window rollups
 
 The required properties stay the same:
 
@@ -178,6 +181,7 @@ That registry provides:
 
 - schema version `1` for the canonical evlog envelope
 - the default evlog `search` config
+- the default evlog `search.rollups` config
 
 The profile still owns:
 
@@ -191,11 +195,13 @@ Current evlog query surfaces:
 - `GET /v1/stream/{name}?filter=...`
 - `POST /v1/stream/{name}/_search`
 - `GET /v1/stream/{name}/_search?q=...`
+- `POST /v1/stream/{name}/_aggregate`
 
 ## UI Integration
 
-An evlog UI should treat `/_search` as the primary list/query surface and the
-stream read APIs as the record/detail surface.
+An evlog UI should treat `/_search` as the primary list/query surface,
+`/_aggregate` as the charting/KPI surface, and the stream read APIs as the
+record/detail surface.
 
 Recommended integration flow:
 
@@ -207,8 +213,24 @@ Recommended integration flow:
    and freshness state.
 5. Start appending evlog JSON records through the normal stream write path.
 6. Use `POST /v1/stream/{name}/_search` for the main event list.
+7. Use `POST /v1/stream/{name}/_aggregate` for time-series charts and grouped
+   summaries.
 
 No manual `/_schema` call is required for the default evlog UI path.
+
+### Charts And Rollups
+
+Use `POST /v1/stream/{name}/_aggregate` with:
+
+- `rollup` for the configured evlog rollup name
+- `from` / `to` for the chart time range
+- `interval` for the bucket size
+- `q` for optional dimension-compatible filtering
+- `group_by` for grouped breakdowns such as `service` or `level`
+
+The response `coverage` tells the UI whether aligned middle windows came from
+`.agg` (`used_rollups=true`) and whether the server also had to scan source
+segments or the WAL tail for partial edges or uncovered ranges.
 
 ### Main List View
 

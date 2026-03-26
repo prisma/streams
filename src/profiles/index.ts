@@ -1,5 +1,6 @@
 import { Result } from "better-result";
 import type { SqliteDurableStore, StreamRow } from "../db/db";
+import type { SchemaRegistry, SchemaRegistryStore } from "../schema/registry";
 import { LruCache } from "../util/lru";
 import { dsError } from "../util/ds_error.ts";
 import { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
@@ -106,12 +107,19 @@ export function listTouchCapableProfileKinds(): string[] {
     .map((definition) => definition.kind);
 }
 
+export type StreamProfileUpdateResult = {
+  resource: StreamProfileResource;
+  schemaRegistry: SchemaRegistry | null;
+};
+
 export class StreamProfileStore {
   private readonly db: SqliteDurableStore;
+  private readonly registry: SchemaRegistryStore;
   private readonly cache: LruCache<string, CachedStreamProfile>;
 
-  constructor(db: SqliteDurableStore, opts?: { cacheEntries?: number }) {
+  constructor(db: SqliteDurableStore, registry: SchemaRegistryStore, opts?: { cacheEntries?: number }) {
     this.db = db;
+    this.registry = registry;
     this.cache = new LruCache(opts?.cacheEntries ?? 1024);
   }
 
@@ -162,24 +170,27 @@ export class StreamProfileStore {
   updateProfile(stream: string, streamRow: StreamRow, profile: StreamProfileSpec): StreamProfileResource {
     const res = this.updateProfileResult(stream, streamRow, profile);
     if (Result.isError(res)) throw dsError(res.error.message, { code: res.error.code });
-    return res.value;
+    return res.value.resource;
   }
 
   updateProfileResult(
     stream: string,
     streamRow: StreamRow,
     profile: StreamProfileSpec
-  ): Result<StreamProfileResource, StreamProfileMutationError> {
+  ): Result<StreamProfileUpdateResult, StreamProfileMutationError> {
     const definition = resolveStreamProfileDefinition(profile.kind);
     if (!definition) {
       return Result.err({ kind: "bad_request", message: `profile.kind must be ${supportedProfileKindsMessage()}` });
     }
 
-    const persistRes = definition.persistProfileResult({ db: this.db, stream, streamRow, profile });
+    const persistRes = definition.persistProfileResult({ db: this.db, registry: this.registry, stream, streamRow, profile });
     if (Result.isError(persistRes)) return persistRes;
 
     if (persistRes.value.cache) this.cache.set(stream, cloneCachedProfile(persistRes.value.cache)!);
     else this.cache.delete(stream);
-    return Result.ok(buildStreamProfileResource(cloneStreamProfileSpec(persistRes.value.profile)));
+    return Result.ok({
+      resource: buildStreamProfileResource(cloneStreamProfileSpec(persistRes.value.profile)),
+      schemaRegistry: persistRes.value.schemaRegistry ?? null,
+    });
   }
 }

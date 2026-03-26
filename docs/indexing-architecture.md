@@ -15,6 +15,7 @@ Prisma Streams now ships four indexing layers:
   accelerator derived from schema `search.fields`
 - a per-segment `.col` family for typed equality, range, and existence
 - a per-segment `.fts` family for keyword exact/prefix and text search
+- a per-segment `.agg` family for time-window rollups and aggregation serving
 
 The public schema model is **`search`**, not `indexes[]`.
 
@@ -30,6 +31,12 @@ The public query surfaces are:
   - fielded search over the same stream data
   - keyword exact/prefix, typed equality/range, bare text, and phrase queries
   - `_search` is the primary evlog/UI query surface
+- `POST /v1/stream/{name}/_aggregate`
+  - schema-owned rollup queries over JSON streams
+  - uses `.agg` companions for aligned windows when coverage and query shape
+    allow it
+  - scans source segments and the WAL tail for partial edges and uncovered
+    ranges
 
 The source of truth remains the stream itself. Search families are accelerators
 and remote serving structures, not durable record stores.
@@ -129,7 +136,9 @@ Supported capability bits:
 Current support notes:
 
 - `contains` is reserved in schema, but `.sub` is not implemented yet
-- `aggregatable` is accepted in schema, but aggregation APIs are not shipped yet
+- `aggregatable` is used by `search.rollups` `summary` measures
+- schema-owned `search.rollups` drive the shipped `_aggregate` API and `.agg`
+  family
 - `indexes[]` is rejected; the supported public model is `search`
 - a `search`-only update requires an already-installed schema version
 - if you are installing the first schema for a stream, install `schema` and
@@ -202,6 +211,30 @@ Current responsibilities:
 - phrase queries on fields with `positions=true`
 - `has:` on keyword/text fields
 
+### `.agg` family
+
+The `.agg` family is the shipped aggregation rollup family.
+
+Current implementation:
+
+- immutable **per-segment companion objects**
+- no `.agg` compaction yet
+- local SQLite stores only family progress and companion object keys
+- companion objects are uploaded under `streams/<hash>/agg/segments/...`
+
+Current responsibilities:
+
+- rollup serving for `POST /v1/stream/{name}/_aggregate`
+- precomputed aligned-window summaries for configured `search.rollups`
+- metrics-style `count` / `summary` / `summary_parts` state
+
+Current usage rules:
+
+- only aligned middle windows use `.agg`
+- partial edge windows still scan the source stream
+- uncovered or stale ranges still scan the source stream
+- WAL tail records are always evaluated directly
+
 ## SQLite Catalog
 
 Current local catalog tables:
@@ -214,7 +247,8 @@ Current local catalog tables:
 Interpretation:
 
 - `secondary_*` tables catalog the compacted exact-match family
-- `search_family_state` tracks per-family uploaded coverage (`col`, `fts`)
+- `search_family_state` tracks per-family uploaded coverage (`col`, `fts`,
+  `agg`)
 - `search_family_segments` maps each covered segment to its uploaded companion
   object key
 
@@ -238,6 +272,7 @@ Bootstrap restores:
 - exact secondary index state and runs
 - `.col` family state and segment companions
 - `.fts` family state and segment companions
+- `.agg` family state and segment companions
 
 This means a node can be deleted and cold-restored from published R2 state
 without rebuilding the already-published search catalogs locally first.
@@ -253,6 +288,7 @@ The full server starts these background managers:
 - `SecondaryIndexManager` for exact secondary runs
 - `SearchColManager` for `.col` per-segment companions
 - `SearchFtsManager` for `.fts` per-segment companions
+- `SearchAggManager` for `.agg` per-segment companions
 
 These wake on `DS_INDEX_CHECK_MS`.
 
@@ -322,8 +358,37 @@ Current non-support:
 
 - `contains:` / `.sub`
 - snippets
-- aggregations
 - multi-stream search
+
+### `_aggregate`
+
+Current request shape:
+
+- `rollup`
+- `from`
+- `to`
+- `interval`
+- `q`
+- `group_by`
+- `measures`
+
+Current response shape:
+
+- `stream`
+- `rollup`
+- `from`
+- `to`
+- `interval`
+- `coverage`
+- `buckets`
+
+Current coverage fields:
+
+- `used_rollups`
+- `indexed_segments`
+- `scanned_segments`
+- `scanned_tail_docs`
+- `index_families_used`
 
 ## Inspection Endpoints
 
@@ -339,7 +404,7 @@ endpoints:
 - manifest generation/upload state
 - routing-key index status
 - internal exact-index status
-- `.col` and `.fts` family progress
+- `.col`, `.fts`, and `.agg` family progress
 
 `/_details` is the combined stream-management descriptor. It nests:
 
@@ -377,15 +442,18 @@ The built-in `evlog` profile auto-installs these `search.fields`:
   - `fix`
   - `error.message`
 
+It also auto-installs default `search.rollups` so UIs can use `_aggregate`
+without a separate manual schema step.
+
 ## Deliberate Gaps Versus The Aspirational Design
 
 The long-term design doc is still directionally correct, but the current system
 ships a smaller subset:
 
 - `.col` and `.fts` are per-segment companions only; there are no compacted
-  `.col` or `.fts` runs yet
+  `.col`, `.fts`, or `.agg` runs yet
 - `.sub` is not implemented
-- `_search` does not ship snippets or aggregations yet
+- `_search` does not ship snippets
 - current text scoring is query-time text scoring over the source records; it is
   not a full global BM25 implementation yet
 - primary timestamp fallback to append time for missing source fields is not

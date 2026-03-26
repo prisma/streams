@@ -32,6 +32,7 @@ import type { StreamIndexLookup } from "./index/indexer";
 import { Result } from "better-result";
 import { parseReadFilterResult } from "./read_filter";
 import { parseSearchRequestBodyResult, parseSearchRequestQueryResult } from "./search/query";
+import { parseAggregateRequestBodyResult } from "./search/aggregate";
 import {
   StreamProfileStore,
   parseProfileUpdateResult,
@@ -207,9 +208,9 @@ function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name:
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts"; fields: string[] }> {
+function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts" | "agg"; fields: string[] }> {
   if (!search) return [];
-  const out: Array<{ family: "col" | "fts"; fields: string[] }> = [];
+  const out: Array<{ family: "col" | "fts" | "agg"; fields: string[] }> = [];
   const colFields = Object.entries(search.fields)
     .filter(([, field]) => field.column === true)
     .map(([name]) => name)
@@ -220,6 +221,8 @@ function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ fam
     .map(([name]) => name)
     .sort((a, b) => a.localeCompare(b));
   if (ftsFields.length > 0) out.push({ family: "fts", fields: ftsFields });
+  const aggRollups = Object.keys(search.rollups ?? {}).sort((a, b) => a.localeCompare(b));
+  if (aggRollups.length > 0) out.push({ family: "agg", fields: aggRollups });
   return out;
 }
 
@@ -610,6 +613,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isSchema = false;
         let isProfile = false;
         let isSearch = false;
+        let isAggregate = false;
         let isDetails = false;
         let isIndexStatus = false;
         let pathKeyParam: string | null = null;
@@ -622,6 +626,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           segments.pop();
         } else if (segments[segments.length - 1] === "_search") {
           isSearch = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_aggregate") {
+          isAggregate = true;
           segments.pop();
         } else if (segments[segments.length - 1] === "_details") {
           isDetails = true;
@@ -813,6 +820,43 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           }
 
           return badRequest("unsupported method");
+        }
+
+        if (isAggregate) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+          if (req.method !== "POST") return badRequest("unsupported method");
+
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return internalError();
+
+          let body: unknown;
+          try {
+            body = await req.json();
+          } catch {
+            return badRequest("aggregate request must be valid JSON");
+          }
+
+          const requestRes = parseAggregateRequestBodyResult(regRes.value, body);
+          if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
+          const aggregateRes = await reader.aggregateResult({ stream, request: requestRes.value });
+          if (Result.isError(aggregateRes)) return readerErrorResponse(aggregateRes.error);
+          return json(200, {
+            stream,
+            rollup: aggregateRes.value.rollup,
+            from: aggregateRes.value.from,
+            to: aggregateRes.value.to,
+            interval: aggregateRes.value.interval,
+            coverage: {
+              used_rollups: aggregateRes.value.coverage.usedRollups,
+              indexed_segments: aggregateRes.value.coverage.indexedSegments,
+              scanned_segments: aggregateRes.value.coverage.scannedSegments,
+              scanned_tail_docs: aggregateRes.value.coverage.scannedTailDocs,
+              index_families_used: aggregateRes.value.coverage.indexFamiliesUsed,
+            },
+            buckets: aggregateRes.value.buckets,
+          });
         }
 
         if (touchMode) {

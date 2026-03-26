@@ -19,12 +19,12 @@ runtime overview and command surface, see `overview.md`.
 - `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4)
 - `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
-- `DS_INDEX_BUILD_CONCURRENCY`: concurrent index run builds (default 4)
-- `DS_INDEX_CHECK_MS`: index manager tick interval (default 1000ms)
+- `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads)
+- `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_INDEX_COMPACTION_FANOUT`: compaction fanout (default 16)
-- `DS_INDEX_COMPACT_CONCURRENCY`: concurrent compaction jobs (default 4)
+- `DS_INDEX_COMPACT_CONCURRENCY`: max parallel async run-loading tasks inside one exact-family compaction job (default 4; in-process, not worker threads)
 - `DS_READ_MAX_BYTES`: read response byte cap (default 1 MiB)
 - `DS_READ_MAX_RECORDS`: read response record cap (default 1000)
 - `DS_APPEND_MAX_BODY_BYTES`: max append body size (default 10 MiB)
@@ -50,6 +50,10 @@ runtime overview and command surface, see `overview.md`.
 MockR2 env vars (only when using `--object-store local`):
 - `DS_MOCK_R2_MAX_INMEM_BYTES` / `DS_MOCK_R2_MAX_INMEM_MB`
 - `DS_MOCK_R2_SPILL_DIR`
+
+Indexing note:
+- Full mode runs indexing in the server process via background timer loops.
+- There is no separate indexing daemon or worker-thread pool today.
 
 ## SQLite PRAGMAs
 

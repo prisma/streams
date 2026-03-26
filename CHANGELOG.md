@@ -23,3 +23,6 @@
 - Add `/_index_status` and `/_details` so stream-management UIs can inspect
   per-stream indexing progress together with current stream, schema, and
   profile state.
+- Add schema-owned `search.rollups`, object-store-native `.agg` companions,
+  and `POST /v1/stream/{name}/_aggregate` for rollup-backed time-range
+  summaries with raw-scan edge correctness.

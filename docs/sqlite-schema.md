@@ -221,7 +221,45 @@ Indexes:
 
 ---
 
-### 2.9 `schemas`
+### 2.9 `secondary_index_state`
+Local cache of the internal exact-match secondary index family.
+**Rebuildable from manifest**.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `index_name TEXT NOT NULL`
+- `index_secret BLOB NOT NULL`
+- `indexed_through INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream, index_name)`
+
+---
+
+### 2.10 `secondary_index_runs`
+Local catalog of the internal exact-match secondary index family runs.
+**Rebuildable from manifest**.
+
+Columns:
+- `run_id TEXT PRIMARY KEY`
+- `stream TEXT NOT NULL`
+- `index_name TEXT NOT NULL`
+- `level INTEGER NOT NULL`
+- `start_segment INTEGER NOT NULL`
+- `end_segment INTEGER NOT NULL`
+- `object_key TEXT NOT NULL`
+- `filter_len INTEGER NOT NULL`
+- `record_count INTEGER NOT NULL`
+- `retired_gen INTEGER NULL`
+- `retired_at_ms INTEGER NULL`
+
+Indexes:
+- `CREATE INDEX secondary_index_runs_stream_idx ON secondary_index_runs(stream, index_name, level, start_segment);`
+
+---
+
+### 2.11 `schemas`
 Current implementation table (see `src/db/schema.ts`):
 
 - `stream TEXT PRIMARY KEY`
@@ -229,11 +267,53 @@ Current implementation table (see `src/db/schema.ts`):
 - `updated_at_ms INTEGER NOT NULL`
 
 `schema_json` stores the serialized per-stream schema registry JSON (schema versions,
-lenses, and routingKey config).
+lenses, routingKey config, and schema-owned `search` declarations).
 
 ---
 
-### 2.10 `stream_profiles`
+### 2.12 `search_family_state`
+Local cache of `.col`, `.fts`, and `.agg` family uploaded coverage. **Rebuildable from
+manifest**.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `family TEXT NOT NULL`
+- `uploaded_through INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream, family)`
+
+Current family names:
+- `col`
+- `fts`
+- `agg`
+
+---
+
+### 2.13 `search_family_segments`
+Local catalog of uploaded per-segment `.col` / `.fts` / `.agg` companion objects.
+**Rebuildable from manifest**.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `family TEXT NOT NULL`
+- `segment_index INTEGER NOT NULL`
+- `object_key TEXT NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream, family, segment_index)`
+
+Notes:
+- this is a local object catalog, not a row-level search projection
+- each row points at one immutable remote companion object
+- current companions are per-segment only; there are no compacted `.col`,
+  `.fts`, or `.agg` runs yet
+
+---
+
+### 2.14 `stream_profiles`
 Stores non-generic profile configuration.
 
 Columns:
@@ -249,7 +329,7 @@ Notes:
 
 ---
 
-### 2.11 `stream_touch_state`
+### 2.15 `stream_touch_state`
 Rebuildable helper state for touch-enabled `state-protocol` streams.
 
 Columns:
@@ -267,7 +347,7 @@ Notes:
 
 ---
 
-### 2.12 `producer_state`
+### 2.16 `producer_state`
 Local idempotence and gap-detection state for producer-aware appends.
 
 Columns:

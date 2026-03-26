@@ -42,6 +42,6 @@ export const GENERIC_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     db.deleteStreamProfile(stream);
     db.deleteStreamTouchState(stream);
     const profile: StreamProfileSpec = cloneStreamProfileSpec(cloneGenericProfile());
-    return Result.ok({ profile, cache: null });
+    return Result.ok({ profile, cache: null, schemaRegistry: null });
   },
 };

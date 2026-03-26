@@ -14,9 +14,23 @@ import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_P
 import { IndexRunCache } from "./run_cache";
 import type { Metrics } from "../metrics";
 import { dsError } from "../util/ds_error.ts";
+import type { AggSegmentCompanion } from "../search/agg_format";
+import type { ColSegmentCompanion } from "../search/col_format";
+import type { FtsSegmentCompanion } from "../search/fts_format";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
+
+export type StreamIndexLookup = {
+  start(): void;
+  stop(): void;
+  enqueue(stream: string): void;
+  candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
+  candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
+  getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSegmentCompanion | null>;
+  getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSegmentCompanion | null>;
+  getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSegmentCompanion | null>;
+};
 
 function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildError> {
   return Result.err({ kind: "invalid_index_build", message });
@@ -98,7 +112,7 @@ export class IndexManager {
     this.queue.add(stream);
   }
 
-  async candidateSegments(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
+  async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
     if (this.span <= 0) return null;
     const state = this.db.getIndexState(stream);
     if (!state) return null;
@@ -129,6 +143,22 @@ export class IndexManager {
       }
     }
     return { segments, indexedThrough: state.indexed_through };
+  }
+
+  async candidateSegmentsForSecondaryIndex(_stream: string, _indexName: string, _keyBytes: Uint8Array): Promise<IndexCandidate | null> {
+    return null;
+  }
+
+  async getColSegmentCompanion(_stream: string, _segmentIndex: number): Promise<ColSegmentCompanion | null> {
+    return null;
+  }
+
+  async getAggSegmentCompanion(_stream: string, _segmentIndex: number): Promise<AggSegmentCompanion | null> {
+    return null;
+  }
+
+  async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<FtsSegmentCompanion | null> {
+    return null;
   }
 
   private async tick(): Promise<void> {

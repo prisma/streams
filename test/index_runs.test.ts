@@ -112,7 +112,7 @@ describe("index runs", () => {
 
       const indexer = app.deps.indexer;
       expect(indexer).toBeTruthy();
-      const res = await indexer!.candidateSegments(stream, new TextEncoder().encode(hotKey));
+      const res = await indexer!.candidateSegmentsForRoutingKey(stream, new TextEncoder().encode(hotKey));
       expect(res).not.toBeNull();
       expect(res!.indexedThrough).toBe(2);
       expect(res!.segments.has(1)).toBe(true);

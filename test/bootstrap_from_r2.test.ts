@@ -56,7 +56,57 @@ describe("bootstrap from R2", () => {
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_schema`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ schema: { type: "object", properties: { x: { type: "number" } }, required: ["x"] } }),
+            body: JSON.stringify({
+              schema: {
+                type: "object",
+                properties: {
+                  eventTime: { type: "string" },
+                  x: { type: "number" },
+                  service: { type: "string" },
+                },
+                required: ["x", "service"],
+              },
+              search: {
+                primaryTimestampField: "eventTime",
+                fields: {
+                  eventTime: {
+                    kind: "date",
+                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    exact: true,
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                  },
+                  service: {
+                    kind: "keyword",
+                    bindings: [{ version: 1, jsonPointer: "/service" }],
+                    normalizer: "lowercase_v1",
+                    exact: true,
+                    prefix: true,
+                    exists: true,
+                  },
+                  duration: {
+                    kind: "float",
+                    bindings: [{ version: 1, jsonPointer: "/duration" }],
+                    exact: true,
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                    aggregatable: true,
+                  },
+                },
+                rollups: {
+                  requests: {
+                    dimensions: ["service"],
+                    intervals: ["1m"],
+                    measures: {
+                      requests: { kind: "count" },
+                      latency: { kind: "summary", field: "duration", histogram: "log2_v1" },
+                    },
+                  },
+                },
+              },
+            }),
           })
         );
         expect(schemaRes.status).toBe(200);
@@ -81,7 +131,12 @@ describe("bootstrap from R2", () => {
             new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: payload,
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:0${i}:00.000Z`,
+                x: i,
+                service: i % 2 === 0 ? "api" : "worker",
+                duration: 100 + i * 10,
+              }),
             })
           );
           expect(r.status).toBe(204);
@@ -93,12 +148,27 @@ describe("bootstrap from R2", () => {
           const pending = app.deps.db.countPendingSegments();
           const srow = app.deps.db.getStream(stream);
           const uploadedOk = srow ? srow.uploaded_through >= srow.sealed_through : false;
-          if (segs.length >= 2 && pending === 0 && uploadedOk) break;
+          const secondaryStates = app.deps.db.listSecondaryIndexStates(stream);
+          const secondaryRuns = secondaryStates.flatMap((state) => app.deps.db.listSecondaryIndexRuns(stream, state.index_name));
+          const searchFamilies = app.deps.db.listSearchFamilyStates(stream);
+          const colSegments = app.deps.db.listSearchFamilySegments(stream, "col");
+          const ftsSegments = app.deps.db.listSearchFamilySegments(stream, "fts");
+          const aggSegments = app.deps.db.listSearchFamilySegments(stream, "agg");
+          if (
+            segs.length >= 2 &&
+            pending === 0 &&
+            uploadedOk &&
+            secondaryStates.length > 0 &&
+            secondaryRuns.length > 0 &&
+            searchFamilies.length >= 3 &&
+            colSegments.length > 0 &&
+            ftsSegments.length > 0 &&
+            aggSegments.length > 0
+          ) {
+            break;
+          }
           await sleep(50);
         }
-
-        app.deps.indexer?.enqueue(stream);
-        await (app.deps.indexer as any)?.tick?.();
       } finally {
         app.close();
       }
@@ -126,6 +196,47 @@ describe("bootstrap from R2", () => {
 
         const schemaRow = app2.deps.db.getSchemaRegistry(stream);
         expect(schemaRow).not.toBeNull();
+        expect(JSON.parse(schemaRow!.registry_json).search).toEqual({
+          primaryTimestampField: "eventTime",
+          fields: {
+            eventTime: {
+              kind: "date",
+              bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+              exact: true,
+              column: true,
+              exists: true,
+              sortable: true,
+            },
+            service: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/service" }],
+              normalizer: "lowercase_v1",
+              exact: true,
+              prefix: true,
+              exists: true,
+            },
+            duration: {
+              kind: "float",
+              bindings: [{ version: 1, jsonPointer: "/duration" }],
+              exact: true,
+              column: true,
+              exists: true,
+              sortable: true,
+              aggregatable: true,
+            },
+          },
+          rollups: {
+            requests: {
+              timestampField: "eventTime",
+              dimensions: ["service"],
+              intervals: ["1m"],
+              measures: {
+                requests: { kind: "count" },
+                latency: { kind: "summary", field: "duration", histogram: "log2_v1" },
+              },
+            },
+          },
+        });
 
         const segs = app2.deps.db.listSegmentsForStream(stream);
         expect(segs.length).toBeGreaterThan(0);
@@ -138,6 +249,18 @@ describe("bootstrap from R2", () => {
         expect(srow).not.toBeNull();
         expect(srow!.uploaded_segment_count).toBe(segs.length);
 
+        const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
+        expect(secondaryStates.length).toBe(3);
+        expect(secondaryStates.map((state) => state.index_name).sort()).toEqual(["duration", "eventTime", "service"]);
+        const secondaryRuns = app2.deps.db.listSecondaryIndexRuns(stream, "service");
+        expect(secondaryRuns.length).toBeGreaterThan(0);
+
+        const searchFamilies = app2.deps.db.listSearchFamilyStates(stream);
+        expect(searchFamilies.map((family) => family.family).sort()).toEqual(["agg", "col", "fts"]);
+        expect(app2.deps.db.listSearchFamilySegments(stream, "agg").length).toBeGreaterThan(0);
+        expect(app2.deps.db.listSearchFamilySegments(stream, "col").length).toBeGreaterThan(0);
+        expect(app2.deps.db.listSearchFamilySegments(stream, "fts").length).toBeGreaterThan(0);
+
         const readRes = await app2.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}?offset=-1`, { method: "GET" })
         );
@@ -147,6 +270,36 @@ describe("bootstrap from R2", () => {
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" })
         );
         expect(touchMetaRes.status).toBe(200);
+
+        const searchRes = await app2.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ q: "service:api" }),
+          })
+        );
+        expect(searchRes.status).toBe(200);
+        const searchBody = await searchRes.json();
+        expect(searchBody.total.value).toBe(2);
+
+        const aggregateRes = await app2.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_aggregate`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              rollup: "requests",
+              from: "2026-03-25T10:00:00.000Z",
+              to: "2026-03-25T10:04:00.000Z",
+              interval: "1m",
+              q: "service:api",
+              group_by: ["service"],
+            }),
+          })
+        );
+        expect(aggregateRes.status).toBe(200);
+        const aggregateBody = await aggregateRes.json();
+        expect(aggregateBody.coverage.index_families_used).toEqual(["agg"]);
+        expect(aggregateBody.buckets).toHaveLength(2);
       } finally {
         app2.close();
         rmSync(root, { recursive: true, force: true });

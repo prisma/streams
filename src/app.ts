@@ -10,8 +10,12 @@ import { Uploader } from "./uploader";
 import { retry } from "./util/retry";
 import { schemaObjectKey, streamHash16Hex } from "./util/stream_paths";
 import type { StatsCollector } from "./stats";
-import { IndexManager } from "./index/indexer";
+import { IndexManager, type StreamIndexLookup } from "./index/indexer";
+import { SecondaryIndexManager } from "./index/secondary_indexer";
 import type { SchemaRegistry } from "./schema/registry";
+import { SearchColManager } from "./search/col_manager";
+import { SearchFtsManager } from "./search/fts_manager";
+import { SearchAggManager } from "./search/agg_manager";
 
 export type { App } from "./app_core";
 
@@ -19,10 +23,64 @@ export type CreateAppOptions = {
   stats?: StatsCollector;
 };
 
+class CombinedIndexController implements StreamIndexLookup {
+  constructor(
+    private readonly routingIndex: IndexManager,
+    private readonly secondaryIndex: SecondaryIndexManager,
+    private readonly aggIndex: SearchAggManager,
+    private readonly colIndex: SearchColManager,
+    private readonly ftsIndex: SearchFtsManager
+  ) {}
+
+  start(): void {
+    this.routingIndex.start();
+    this.secondaryIndex.start();
+    this.aggIndex.start();
+    this.colIndex.start();
+    this.ftsIndex.start();
+  }
+
+  stop(): void {
+    this.routingIndex.stop();
+    this.secondaryIndex.stop();
+    this.aggIndex.stop();
+    this.colIndex.stop();
+    this.ftsIndex.stop();
+  }
+
+  enqueue(stream: string): void {
+    this.routingIndex.enqueue(stream);
+    this.secondaryIndex.enqueue(stream);
+    this.aggIndex.enqueue(stream);
+    this.colIndex.enqueue(stream);
+    this.ftsIndex.enqueue(stream);
+  }
+
+  candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array) {
+    return this.routingIndex.candidateSegmentsForRoutingKey(stream, keyBytes);
+  }
+
+  candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array) {
+    return this.secondaryIndex.candidateSegmentsForSecondaryIndex(stream, indexName, keyBytes);
+  }
+
+  getAggSegmentCompanion(stream: string, segmentIndex: number) {
+    return this.aggIndex.getSegmentCompanion(stream, segmentIndex);
+  }
+
+  getColSegmentCompanion(stream: string, segmentIndex: number) {
+    return this.colIndex.getSegmentCompanion(stream, segmentIndex);
+  }
+
+  getFtsSegmentCompanion(stream: string, segmentIndex: number) {
+    return this.ftsIndex.getSegmentCompanion(stream, segmentIndex);
+  }
+}
+
 export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions = {}): App {
   return createAppCore(cfg, {
     stats: opts.stats,
-    createRuntime: ({ config, db, stats, backpressure, metrics }) => {
+    createRuntime: ({ config, db, registry, stats, backpressure, metrics }) => {
       const store = os ?? new MockR2Store();
       const segmenterHooks: SegmenterHooks | undefined =
         stats || backpressure
@@ -35,9 +93,14 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
           : undefined;
       const diskCache = new SegmentDiskCache(`${config.rootDir}/cache`, config.segmentCacheMaxBytes);
       const uploader = new Uploader(config, db, store, diskCache, stats, backpressure);
-      const indexer = new IndexManager(config, db, store, diskCache, (stream) => uploader.publishManifest(stream), metrics);
+      const routingIndexer = new IndexManager(config, db, store, diskCache, (stream) => uploader.publishManifest(stream), metrics);
+      const secondaryIndexer = new SecondaryIndexManager(config, db, store, registry, (stream) => uploader.publishManifest(stream));
+      const aggIndexer = new SearchAggManager(config, db, store, registry, (stream) => uploader.publishManifest(stream));
+      const colIndexer = new SearchColManager(config, db, store, registry, (stream) => uploader.publishManifest(stream));
+      const ftsIndexer = new SearchFtsManager(config, db, store, registry, (stream) => uploader.publishManifest(stream));
+      const indexer = new CombinedIndexController(routingIndexer, secondaryIndexer, aggIndexer, colIndexer, ftsIndexer);
       uploader.setHooks({ onSegmentsUploaded: (stream) => indexer.enqueue(stream) });
-      const reader = new StreamReader(config, db, store, diskCache, indexer);
+      const reader = new StreamReader(config, db, store, registry, diskCache, indexer);
       const segmenter =
         config.segmenterWorkers > 0
           ? new SegmenterWorkerPool(config, config.segmenterWorkers, {}, segmenterHooks)
