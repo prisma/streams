@@ -41,7 +41,7 @@ class Histogram {
     if (value < this.min) this.min = value;
     if (value > this.max) this.max = value;
     const bucket = Math.floor(Math.log2(Math.max(1, value)));
-    const key = String(1 << bucket);
+    const key = String(2 ** bucket);
     this.buckets[key] = (this.buckets[key] ?? 0) + 1;
     if (this.samples.length < this.maxSamples) {
       this.samples.push(value);
