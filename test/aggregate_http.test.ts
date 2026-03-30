@@ -95,14 +95,14 @@ async function waitForAggFamily(app: ReturnType<typeof createApp>, timeoutMs = 1
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
-    const aggState = app.deps.db.getSearchFamilyState(STREAM, "agg");
-    const aggSegments = app.deps.db.listSearchFamilySegments(STREAM, "agg");
+    const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
     if (
       srow &&
+      srow.uploaded_segment_count > 0 &&
       srow.uploaded_through >= srow.sealed_through &&
-      aggState &&
-      aggState.uploaded_through >= srow.uploaded_segment_count &&
-      aggSegments.length >= srow.uploaded_segment_count
+      companionPlan &&
+      companionSegments.length >= srow.uploaded_segment_count
     ) {
       return;
     }

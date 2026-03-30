@@ -3,8 +3,8 @@ import { Result } from "better-result";
 import type {
   IndexRunRow,
   IndexStateRow,
-  SearchFamilySegmentRow,
-  SearchFamilyStateRow,
+  SearchCompanionPlanRow,
+  SearchSegmentCompanionRow,
   SecondaryIndexRunRow,
   SecondaryIndexStateRow,
   SegmentMetaRow,
@@ -19,6 +19,15 @@ function b64(bytes: Uint8Array): string {
 
 function compressB64(bytes: Uint8Array): string {
   return b64(new Uint8Array(zstdCompressSync(bytes)));
+}
+
+function parseSectionsJson(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export type ManifestJson = Record<string, any>;
@@ -42,8 +51,8 @@ type BuildManifestArgs = {
   secondaryIndexStates?: SecondaryIndexStateRow[];
   secondaryIndexRuns?: SecondaryIndexRunRow[];
   retiredSecondaryIndexRuns?: SecondaryIndexRunRow[];
-  searchFamilyStates?: SearchFamilyStateRow[];
-  searchFamilySegments?: SearchFamilySegmentRow[];
+  searchCompanionPlan?: SearchCompanionPlanRow | null;
+  searchSegmentCompanions?: SearchSegmentCompanionRow[];
 };
 
 export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJson, ManifestBuildError> {
@@ -109,6 +118,7 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
   for (const state of secondaryStates) {
     secondaryIndexes[state.index_name] = {
       index_secret: b64(state.index_secret),
+      config_hash: state.config_hash,
       indexed_through: state.indexed_through,
       active_runs: secondaryRuns
         .filter((run) => run.index_name === state.index_name)
@@ -136,21 +146,15 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
         })),
       };
   }
-  const searchFamilies: Record<string, any> = {};
-  const searchFamilyStates = args.searchFamilyStates ?? [];
-  const searchFamilySegments = args.searchFamilySegments ?? [];
-  for (const state of searchFamilyStates) {
-    const uploadedThrough = Math.max(0, Math.min(state.uploaded_through, prefix));
-    searchFamilies[state.family] = {
-      uploaded_through: uploadedThrough,
-      segments: searchFamilySegments
-        .filter((segment) => segment.family === state.family && segment.segment_index < uploadedThrough)
-        .map((segment) => ({
-          segment_index: segment.segment_index,
-          object_key: segment.object_key,
-        })),
-    };
-  }
+  const searchCompanionPlan = args.searchCompanionPlan ?? null;
+  const searchCompanionSegments = (args.searchSegmentCompanions ?? [])
+    .filter((segment) => segment.segment_index < prefix)
+    .map((segment) => ({
+      segment_index: segment.segment_index,
+      object_key: segment.object_key,
+      plan_generation: segment.plan_generation,
+      sections: parseSectionsJson(segment.sections_json),
+    }));
 
   return Result.ok({
     name: streamName,
@@ -184,7 +188,14 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     active_runs: activeRuns,
     retired_runs: retired,
     secondary_indexes: secondaryIndexes,
-    search_families: searchFamilies,
+    search_companions: searchCompanionPlan
+      ? {
+          generation: searchCompanionPlan.generation,
+          plan_hash: searchCompanionPlan.plan_hash,
+          plan_json: JSON.parse(searchCompanionPlan.plan_json),
+          segments: searchCompanionSegments,
+        }
+      : null,
   });
 }
 

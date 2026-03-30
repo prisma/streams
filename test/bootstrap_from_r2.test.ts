@@ -153,20 +153,16 @@ describe("bootstrap from R2", () => {
           const uploadedOk = srow ? srow.uploaded_through >= srow.sealed_through : false;
           const secondaryStates = app.deps.db.listSecondaryIndexStates(stream);
           const secondaryRuns = secondaryStates.flatMap((state) => app.deps.db.listSecondaryIndexRuns(stream, state.index_name));
-          const searchFamilies = app.deps.db.listSearchFamilyStates(stream);
-          const colSegments = app.deps.db.listSearchFamilySegments(stream, "col");
-          const ftsSegments = app.deps.db.listSearchFamilySegments(stream, "fts");
-          const aggSegments = app.deps.db.listSearchFamilySegments(stream, "agg");
+          const companionPlan = app.deps.db.getSearchCompanionPlan(stream);
+          const companionSegments = app.deps.db.listSearchSegmentCompanions(stream);
           if (
             segs.length >= 2 &&
             pending === 0 &&
             uploadedOk &&
             secondaryStates.length > 0 &&
             secondaryRuns.length > 0 &&
-            searchFamilies.length >= 3 &&
-            colSegments.length > 0 &&
-            ftsSegments.length > 0 &&
-            aggSegments.length > 0
+            !!companionPlan &&
+            companionSegments.length >= segs.length
           ) {
             break;
           }
@@ -264,11 +260,10 @@ describe("bootstrap from R2", () => {
         const secondaryRuns = app2.deps.db.listSecondaryIndexRuns(stream, "service");
         expect(secondaryRuns.length).toBeGreaterThan(0);
 
-        const searchFamilies = app2.deps.db.listSearchFamilyStates(stream);
-        expect(searchFamilies.map((family) => family.family).sort()).toEqual(["agg", "col", "fts"]);
-        expect(app2.deps.db.listSearchFamilySegments(stream, "agg").length).toBeGreaterThan(0);
-        expect(app2.deps.db.listSearchFamilySegments(stream, "col").length).toBeGreaterThan(0);
-        expect(app2.deps.db.listSearchFamilySegments(stream, "fts").length).toBeGreaterThan(0);
+        const companionPlan = app2.deps.db.getSearchCompanionPlan(stream);
+        expect(companionPlan).not.toBeNull();
+        const companionSegments = app2.deps.db.listSearchSegmentCompanions(stream);
+        expect(companionSegments.length).toBeGreaterThan(0);
 
         const readRes = await app2.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}?offset=-1`, { method: "GET" })

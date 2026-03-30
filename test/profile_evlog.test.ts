@@ -26,13 +26,11 @@ async function waitForEvlogIndexing(
       row.pending_rows === 0n;
     const exactStates = app.deps.db.listSecondaryIndexStates(stream);
     const exactReady = exactStates.length > 0 && exactStates.every((state) => state.indexed_through >= uploadedSegments);
-    const colState = app.deps.db.getSearchFamilyState(stream, "col");
-    const ftsState = app.deps.db.getSearchFamilyState(stream, "fts");
+    const companionPlan = app.deps.db.getSearchCompanionPlan(stream);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(stream);
     const searchReady =
-      (colState?.uploaded_through ?? 0) >= uploadedSegments &&
-      (ftsState?.uploaded_through ?? 0) >= uploadedSegments &&
-      app.deps.db.listSearchFamilySegments(stream, "col").length >= uploadedSegments &&
-      app.deps.db.listSearchFamilySegments(stream, "fts").length >= uploadedSegments;
+      !!companionPlan &&
+      companionSegments.length >= uploadedSegments;
     if (fullySealed && uploadedSegments > 0 && exactReady && searchReady) return;
     app.deps.indexer?.enqueue(stream);
     await sleep(50);

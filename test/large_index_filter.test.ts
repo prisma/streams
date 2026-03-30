@@ -302,20 +302,16 @@ async function waitForUploadAndIndexing(
     const runsOk =
       statesOk &&
       expectedIndexNames.every((name) => app.deps.db.listSecondaryIndexRuns(STREAM, name).length > 0);
-    const colState = app.deps.db.getSearchFamilyState(STREAM, "col");
-    const ftsState = app.deps.db.getSearchFamilyState(STREAM, "fts");
-    const colSegments = app.deps.db.listSearchFamilySegments(STREAM, "col");
-    const ftsSegments = app.deps.db.listSearchFamilySegments(STREAM, "fts");
+    const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
     const searchFamiliesOk =
-      colState?.uploaded_through === expectedSegments &&
-      ftsState?.uploaded_through === expectedSegments &&
-      colSegments.length === expectedSegments &&
-      ftsSegments.length === expectedSegments;
+      !!companionPlan &&
+      companionSegments.length === expectedSegments;
     if (uploadedOk && statesOk && runsOk && searchFamiliesOk) return;
     app.deps.indexer?.enqueue(STREAM);
     await sleep(250);
   }
-  throw new Error("timeout waiting for uploaded segments and all search index families");
+  throw new Error("timeout waiting for uploaded segments and bundled search companions");
 }
 
 async function fetchFilteredJson(
@@ -458,8 +454,7 @@ describe("large indexed filter integration", () => {
         const streamHash = streamHash16Hex(STREAM);
         const segmentKeys = (await store.list(`streams/${streamHash}/segments/`)).filter((key) => key.endsWith(".bin"));
         const exactIndexKeys = (await store.list(`streams/${streamHash}/secondary-index/`)).filter((key) => key.endsWith(".idx"));
-        const colKeys = (await store.list(`streams/${streamHash}/col/segments/`)).filter((key) => key.endsWith(".col"));
-        const ftsKeys = (await store.list(`streams/${streamHash}/fts/segments/`)).filter((key) => key.endsWith(".fts"));
+        const companionKeys = (await store.list(`streams/${streamHash}/segments/`)).filter((key) => key.endsWith(".cix"));
 
         const segmentRows = app.deps.db.listSegmentsForStream(STREAM);
         const uploadedSegments = app.deps.db.countUploadedSegments(STREAM);
@@ -480,16 +475,11 @@ describe("large indexed filter integration", () => {
         }
         expect(exactIndexKeys.length).toBe(expectedIndexFileCount);
 
-        const colState = app.deps.db.getSearchFamilyState(STREAM, "col");
-        const ftsState = app.deps.db.getSearchFamilyState(STREAM, "fts");
-        const colSegments = app.deps.db.listSearchFamilySegments(STREAM, "col");
-        const ftsSegments = app.deps.db.listSearchFamilySegments(STREAM, "fts");
-        expect(colState?.uploaded_through).toBe(expectedSegments);
-        expect(ftsState?.uploaded_through).toBe(expectedSegments);
-        expect(colSegments.length).toBe(expectedSegments);
-        expect(ftsSegments.length).toBe(expectedSegments);
-        expect(colKeys.length).toBe(expectedSegments);
-        expect(ftsKeys.length).toBe(expectedSegments);
+        const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
+        const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
+        expect(companionPlan).not.toBeNull();
+        expect(companionSegments.length).toBe(expectedSegments);
+        expect(companionKeys.length).toBe(expectedSegments);
 
         const serviceQuery = await fetchFilteredJson(app, "service:needle-service");
         const statusQuery = await fetchFilteredJson(app, "status:>=700");
@@ -603,7 +593,7 @@ describe("large indexed filter integration", () => {
         // eslint-disable-next-line no-console
         console.log(
           `[large-index-filter] bytes=${totalPayloadBytes} rows=${rowCount} segmentBytes=${SEGMENT_MAX_BYTES} expectedSegments=${expectedSegments} ` +
-            `segments=${segmentKeys.length} exactIndexFiles=${exactIndexKeys.length} colFiles=${colKeys.length} ftsFiles=${ftsKeys.length} ` +
+            `segments=${segmentKeys.length} exactIndexFiles=${exactIndexKeys.length} companionFiles=${companionKeys.length} ` +
             `filterQueryMs=${JSON.stringify(exactQueryTimings)} searchQueryMs=${JSON.stringify(searchQueryTimings)} fullScanMs=${fullScan.durationMs.toFixed(2)} ` +
             `fullScanMBps=${scanThroughputMBps.toFixed(2)} batches=${fullScan.batches} limitHits=${fullScan.limitHitBatches}`
         );

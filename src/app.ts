@@ -13,10 +13,7 @@ import type { StatsCollector } from "./stats";
 import { IndexManager, type StreamIndexLookup } from "./index/indexer";
 import { SecondaryIndexManager } from "./index/secondary_indexer";
 import type { SchemaRegistry } from "./schema/registry";
-import { SearchColManager } from "./search/col_manager";
-import { SearchFtsManager } from "./search/fts_manager";
-import { SearchAggManager } from "./search/agg_manager";
-import { MetricsBlockManager } from "./profiles/metrics/block_manager";
+import { SearchCompanionManager } from "./search/companion_manager";
 
 export type { App } from "./app_core";
 
@@ -28,37 +25,25 @@ class CombinedIndexController implements StreamIndexLookup {
   constructor(
     private readonly routingIndex: IndexManager,
     private readonly secondaryIndex: SecondaryIndexManager,
-    private readonly aggIndex: SearchAggManager,
-    private readonly colIndex: SearchColManager,
-    private readonly ftsIndex: SearchFtsManager,
-    private readonly metricsBlockIndex: MetricsBlockManager
+    private readonly companionIndex: SearchCompanionManager
   ) {}
 
   start(): void {
     this.routingIndex.start();
     this.secondaryIndex.start();
-    this.aggIndex.start();
-    this.colIndex.start();
-    this.ftsIndex.start();
-    this.metricsBlockIndex.start();
+    this.companionIndex.start();
   }
 
   stop(): void {
     this.routingIndex.stop();
     this.secondaryIndex.stop();
-    this.aggIndex.stop();
-    this.colIndex.stop();
-    this.ftsIndex.stop();
-    this.metricsBlockIndex.stop();
+    this.companionIndex.stop();
   }
 
   enqueue(stream: string): void {
     this.routingIndex.enqueue(stream);
     this.secondaryIndex.enqueue(stream);
-    this.aggIndex.enqueue(stream);
-    this.colIndex.enqueue(stream);
-    this.ftsIndex.enqueue(stream);
-    this.metricsBlockIndex.enqueue(stream);
+    this.companionIndex.enqueue(stream);
   }
 
   candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array) {
@@ -70,19 +55,19 @@ class CombinedIndexController implements StreamIndexLookup {
   }
 
   getAggSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.aggIndex.getSegmentCompanion(stream, segmentIndex);
+    return this.companionIndex.getAggSegmentCompanion(stream, segmentIndex);
   }
 
   getColSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.colIndex.getSegmentCompanion(stream, segmentIndex);
+    return this.companionIndex.getColSegmentCompanion(stream, segmentIndex);
   }
 
   getFtsSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.ftsIndex.getSegmentCompanion(stream, segmentIndex);
+    return this.companionIndex.getFtsSegmentCompanion(stream, segmentIndex);
   }
 
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.metricsBlockIndex.getSegmentCompanion(stream, segmentIndex);
+    return this.companionIndex.getMetricsBlockSegmentCompanion(stream, segmentIndex);
   }
 }
 
@@ -117,31 +102,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         (stream) => uploader.publishManifest(stream),
         (stream) => notifier.notifyDetailsChanged(stream)
       );
-      const aggIndexer = new SearchAggManager(
-        config,
-        db,
-        store,
-        registry,
-        (stream) => uploader.publishManifest(stream),
-        (stream) => notifier.notifyDetailsChanged(stream)
-      );
-      const colIndexer = new SearchColManager(
-        config,
-        db,
-        store,
-        registry,
-        (stream) => uploader.publishManifest(stream),
-        (stream) => notifier.notifyDetailsChanged(stream)
-      );
-      const ftsIndexer = new SearchFtsManager(
-        config,
-        db,
-        store,
-        registry,
-        (stream) => uploader.publishManifest(stream),
-        (stream) => notifier.notifyDetailsChanged(stream)
-      );
-      const metricsBlockIndexer = new MetricsBlockManager(
+      const companionIndexer = new SearchCompanionManager(
         config,
         db,
         store,
@@ -152,10 +113,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       const indexer = new CombinedIndexController(
         routingIndexer,
         secondaryIndexer,
-        aggIndexer,
-        colIndexer,
-        ftsIndexer,
-        metricsBlockIndexer
+        companionIndexer
       );
       uploader.setHooks({
         onSegmentsUploaded: (stream) => indexer.enqueue(stream),
@@ -191,6 +149,20 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
           segmenter.start();
           uploader.start();
           indexer.start();
+          setTimeout(() => {
+            try {
+              let offset = 0;
+              const pageSize = 1000;
+              for (;;) {
+                const streams = db.listStreams(pageSize, offset);
+                for (const row of streams) indexer.enqueue(row.stream);
+                if (streams.length < pageSize) break;
+                offset += streams.length;
+              }
+            } catch {
+              // App may have been closed before the startup catch-up kickoff ran.
+            }
+          }, 0);
         },
       };
     },

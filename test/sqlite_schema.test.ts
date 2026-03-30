@@ -24,10 +24,14 @@ describe("sqlite schema", () => {
       expect(tables).toContain("index_runs");
       expect(tables).toContain("secondary_index_state");
       expect(tables).toContain("secondary_index_runs");
+      expect(tables).toContain("search_companion_plans");
+      expect(tables).toContain("search_segment_companions");
       expect(tables).toContain("schemas");
       expect(tables).toContain("stream_profiles");
       expect(tables).toContain("stream_touch_state");
       expect(tables).toContain("schema_version");
+      expect(tables).not.toContain("search_family_state");
+      expect(tables).not.toContain("search_family_segments");
 
       const streamCols = db.db
         .query(`PRAGMA table_info(streams);`)

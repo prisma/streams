@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Result } from "better-result";
 import type { SchemaRegistry, SearchFieldConfig } from "../schema/registry";
 import { canonicalizeExactValue, extractSearchExactTermsResult, extractSearchExactValuesResult } from "../search/schema";
@@ -19,6 +20,21 @@ export function getConfiguredSecondaryIndexes(registry: SchemaRegistry): Seconda
   return Object.entries(search.fields)
     .filter(([, config]) => config.exact === true)
     .map(([name, config]) => ({ name, config }));
+}
+
+export function hashSecondaryIndexField(index: SecondaryIndexField): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        name: index.name,
+        kind: index.config.kind,
+        bindings: index.config.bindings,
+        normalizer: index.config.normalizer ?? null,
+        analyzer: index.config.analyzer ?? null,
+        exact: index.config.exact === true,
+      })
+    )
+    .digest("hex");
 }
 
 export function canonicalizeSecondaryIndexValue(config: SearchFieldConfig, value: unknown): string | null {

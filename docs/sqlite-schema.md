@@ -275,45 +275,48 @@ lenses, routingKey config, and schema-owned `search` declarations).
 
 ---
 
-### 2.12 `search_family_state`
-Local cache of `.col`, `.fts`, and `.agg` family uploaded coverage. **Rebuildable from
-manifest**.
+### 2.12 `search_companion_plans`
+Per-stream desired bundled companion plan. **Rebuildable from manifest**.
 
 Columns:
-- `stream TEXT NOT NULL`
-- `family TEXT NOT NULL`
-- `uploaded_through INTEGER NOT NULL`
+- `stream TEXT PRIMARY KEY`
+- `generation INTEGER NOT NULL`
+- `plan_hash TEXT NOT NULL`
+- `plan_json TEXT NOT NULL`
 - `updated_at_ms INTEGER NOT NULL`
 
-Primary key:
-- `(stream, family)`
-
-Current family names:
-- `col`
-- `fts`
-- `agg`
+Notes:
+- this is the durable local record of which bundled companion generation the
+  stream currently wants
+- schema or profile changes that affect bundled sections increment the desired
+  generation
 
 ---
 
-### 2.13 `search_family_segments`
-Local catalog of uploaded per-segment `.col` / `.fts` / `.agg` companion objects.
+### 2.13 `search_segment_companions`
+Local catalog of current uploaded bundled `.cix` companion objects.
 **Rebuildable from manifest**.
 
 Columns:
 - `stream TEXT NOT NULL`
-- `family TEXT NOT NULL`
 - `segment_index INTEGER NOT NULL`
 - `object_key TEXT NOT NULL`
+- `plan_generation INTEGER NOT NULL`
+- `sections_json TEXT NOT NULL`
 - `updated_at_ms INTEGER NOT NULL`
 
 Primary key:
-- `(stream, family, segment_index)`
+- `(stream, segment_index)`
+
+Indexes:
+- `CREATE INDEX search_segment_companions_stream_plan_idx ON search_segment_companions(stream, plan_generation, segment_index);`
 
 Notes:
 - this is a local object catalog, not a row-level search projection
-- each row points at one immutable remote companion object
-- current companions are per-segment only; there are no compacted `.col`,
-  `.fts`, or `.agg` runs yet
+- each row points at one immutable bundled companion object
+- `sections_json` records which bundled sections are present, such as `col`,
+  `fts`, `agg`, and `mblk`
+- companions are published under `streams/<hash>/segments/...cix`
 
 ---
 

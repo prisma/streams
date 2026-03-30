@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 19;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS secondary_index_state (
   stream TEXT NOT NULL,
   index_name TEXT NOT NULL,
   index_secret BLOB NOT NULL,
+  config_hash TEXT NOT NULL,
   indexed_through INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (stream, index_name)
@@ -219,26 +220,27 @@ CREATE INDEX IF NOT EXISTS secondary_index_runs_stream_idx
   ON secondary_index_runs(stream, index_name, level, start_segment);
 `;
 
-const CREATE_SEARCH_INDEX_TABLES_SQL = `
-CREATE TABLE IF NOT EXISTS search_family_state (
-  stream TEXT NOT NULL,
-  family TEXT NOT NULL,
-  uploaded_through INTEGER NOT NULL,
-  updated_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (stream, family)
+const CREATE_SEARCH_COMPANION_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS search_companion_plans (
+  stream TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  plan_hash TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS search_family_segments (
+CREATE TABLE IF NOT EXISTS search_segment_companions (
   stream TEXT NOT NULL,
-  family TEXT NOT NULL,
   segment_index INTEGER NOT NULL,
   object_key TEXT NOT NULL,
+  plan_generation INTEGER NOT NULL,
+  sections_json TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (stream, family, segment_index)
+  PRIMARY KEY (stream, segment_index)
 );
 
-CREATE INDEX IF NOT EXISTS search_family_segments_stream_idx
-  ON search_family_segments(stream, family, segment_index);
+CREATE INDEX IF NOT EXISTS search_segment_companions_stream_plan_idx
+  ON search_segment_companions(stream, plan_generation, segment_index);
 `;
 
 const CREATE_TABLES_V4_SUFFIX_SQL = (suffix: string): string => `
@@ -361,7 +363,7 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
     db.exec(CREATE_TABLES_V4_SQL);
     db.exec(CREATE_INDEX_TABLES_SQL);
     db.exec(CREATE_SECONDARY_INDEX_TABLES_SQL);
-    db.exec(CREATE_SEARCH_INDEX_TABLES_SQL);
+    db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
     db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
     return;
   }
@@ -402,6 +404,10 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV15ToV16(db);
     } else if (version === 16) {
       migrateV16ToV17(db);
+    } else if (version === 17) {
+      migrateV17ToV18(db);
+    } else if (version === 18) {
+      migrateV18ToV19(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -760,7 +766,6 @@ function migrateV14ToV15(db: SqliteDatabase): void {
 
 function migrateV15ToV16(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
-    db.exec(CREATE_SEARCH_INDEX_TABLES_SQL);
     db.exec(`UPDATE schema_version SET version = 16;`);
   });
   tx();
@@ -780,6 +785,25 @@ function migrateV16ToV17(db: SqliteDatabase): void {
     `);
 
     db.exec(`UPDATE schema_version SET version = 17;`);
+  });
+  tx();
+}
+
+function migrateV17ToV18(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 18;`);
+  });
+  tx();
+}
+
+function migrateV18ToV19(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE secondary_index_state ADD COLUMN config_hash TEXT NOT NULL DEFAULT '';`);
+    db.exec(`DROP INDEX IF EXISTS search_family_segments_stream_idx;`);
+    db.exec(`DROP TABLE IF EXISTS search_family_segments;`);
+    db.exec(`DROP TABLE IF EXISTS search_family_state;`);
+    db.exec(`UPDATE schema_version SET version = 19;`);
   });
   tx();
 }

@@ -171,9 +171,12 @@ The supported model is strict: `/_profile` manages profile semantics,
 
 Indexed JSON streams can also use the main read path with `filter=...`.
 Filters are limited to schema `search.fields`, use the internal exact family
-and `.col` companions to prune sealed history where possible, and still scan
-the local unsealed tail for correctness. One filtered response stops after
-100 MB of examined payload bytes and reports that cap in response headers.
+and bundled `.cix` companion sections to prune sealed history where possible,
+and still scan the local unsealed tail for correctness. If an exact field
+definition changes on an existing stream, the old exact state is treated as
+stale and the read path falls back cleanly until async rebuild catches up. One
+filtered response stops after 100 MB of examined payload bytes and reports that
+cap in response headers.
 
 JSON streams with `search` configured also support `_search`:
 
@@ -190,8 +193,8 @@ Schema-owned rollups are also available through:
 - `POST /v1/stream/{name}/_aggregate`
 
 Rollups are configured under `search.rollups`, stored as object-store-native
-`.agg` companions, and used for aligned time windows with raw source scans for
-partial edges and uncovered ranges.
+bundled companion sections, and used for aligned time windows with raw source
+scans for partial edges and uncovered ranges.
 
 ## Management And Introspection API
 

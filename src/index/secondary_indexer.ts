@@ -20,7 +20,12 @@ import {
   RUN_TYPE_POSTINGS,
   type IndexRun,
 } from "./run_format";
-import { extractSecondaryIndexTermsResult, getConfiguredSecondaryIndexes, type SecondaryIndexField } from "./secondary_schema";
+import {
+  extractSecondaryIndexTermsResult,
+  getConfiguredSecondaryIndexes,
+  hashSecondaryIndexField,
+  type SecondaryIndexField,
+} from "./secondary_schema";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 
@@ -115,8 +120,13 @@ export class SecondaryIndexManager {
     keyBytes: Uint8Array
   ): Promise<{ segments: Set<number>; indexedThrough: number } | null> {
     if (this.span <= 0) return null;
+    const regRes = this.registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return null;
+    const configured = getConfiguredSecondaryIndexes(regRes.value).find((entry) => entry.name === indexName);
+    if (!configured) return null;
     const state = this.db.getSecondaryIndexState(stream, indexName);
     if (!state) return null;
+    if (state.config_hash !== hashSecondaryIndexField(configured)) return null;
     const runs = this.db.listSecondaryIndexRuns(stream, indexName);
     if (runs.length === 0 && state.indexed_through === 0) return null;
 
@@ -156,6 +166,24 @@ export class SecondaryIndexManager {
         const regRes = this.registry.getRegistryResult(stream);
         if (Result.isError(regRes)) continue;
         const configured = getConfiguredSecondaryIndexes(regRes.value);
+        const configuredNames = new Set(configured.map((entry) => entry.name));
+        const existing = this.db.listSecondaryIndexStates(stream);
+        let removedAny = false;
+        for (const state of existing) {
+          if (configuredNames.has(state.index_name)) continue;
+          this.db.deleteSecondaryIndex(stream, state.index_name);
+          removedAny = true;
+        }
+        if (removedAny) {
+          this.onMetadataChanged?.(stream);
+          if (this.publishManifest) {
+            try {
+              await this.publishManifest(stream);
+            } catch {
+              // ignore and retry on next enqueue
+            }
+          }
+        }
         for (const index of configured) {
           try {
             const buildRes = await this.maybeBuildRuns(stream, index);
@@ -189,10 +217,23 @@ export class SecondaryIndexManager {
     if (this.building.has(key)) return Result.ok(undefined);
     this.building.add(key);
     try {
+      const configHash = hashSecondaryIndexField(index);
       let state = this.db.getSecondaryIndexState(stream, index.name);
       if (!state) {
-        this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), 0);
+        this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
         state = this.db.getSecondaryIndexState(stream, index.name);
+      } else if (state.config_hash !== configHash) {
+        this.db.deleteSecondaryIndex(stream, index.name);
+        this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
+        state = this.db.getSecondaryIndexState(stream, index.name);
+        this.onMetadataChanged?.(stream);
+        if (this.publishManifest) {
+          try {
+            await this.publishManifest(stream);
+          } catch {
+            // ignore and retry later
+          }
+        }
       }
       if (!state) return Result.ok(undefined);
 

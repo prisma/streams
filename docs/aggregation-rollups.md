@@ -148,22 +148,23 @@ Rollups are stored in a new `.agg` search family.
 
 The first implementation uses **per-segment companions**:
 
-- one immutable `.agg` object per uploaded segment
-- each object contains all configured rollups for that segment
+- one immutable bundled `.cix` per uploaded segment
+- each current `.cix` may include an `agg` section with all configured rollups
+  for that segment
 - each rollup contains one or more configured intervals
 - each interval contains sparse time-window buckets
 - each bucket contains one or more dimension groups and measure states
 
 SQLite stores only:
 
-- `search_family_state` for family `agg`
-- `search_family_segments` rows pointing to uploaded `.agg` objects
+- `search_companion_plans`
+- `search_segment_companions` rows whose `sections_json` includes `agg`
 
 This means:
 
 - object store is the durable rollup store
 - SQLite only tracks local catalog state
-- bootstrap-from-R2 restores `.agg` catalog state from manifests
+- bootstrap-from-R2 restores bundled companion catalog state from manifests
 
 ## Query Surface
 

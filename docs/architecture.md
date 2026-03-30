@@ -133,6 +133,7 @@ Today, `metrics` uses the same model to own:
 - canonical metrics interval normalization
 - default schema-owned `search` and `search.rollups` installation
 - the `.mblk` metrics-block companion family
+- bundled per-segment `.cix` search companions for metrics-serving state
 
 ## Control-Plane Metadata
 
@@ -142,6 +143,8 @@ Per stream, SQLite stores:
 - logical payload-byte size for management lookups such as `/_details`
 - profile metadata
 - schema registry
+- desired bundled companion plan state and current per-segment companion object
+  catalog
 - profile-owned processing progress and other rebuildable helper state
 
 In full mode, manifest objects, segment objects, and schema objects in object

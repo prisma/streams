@@ -29,6 +29,7 @@ and tooling.
 - [architecture.md](./architecture.md) — system architecture and data flow
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
 - [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
+- [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md) — bundled `.cix` companions and async backfill for existing streams
 - [ui-search-integration.md](./ui-search-integration.md) — how to build a filtered, chronologically ordered stream UI with `/_search` and `/_details`
 - [aggregation-rollups.md](./aggregation-rollups.md) — `.agg` rollup family and aggregation query model
 - [alternative-metrics-approach.md](./alternative-metrics-approach.md) — comparison of Axiom MetricsDB with the current Prisma Streams metrics design

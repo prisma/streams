@@ -33,6 +33,8 @@ import type { UploaderController } from "./uploader";
 import type { StreamIndexLookup } from "./index/indexer";
 import { Result } from "better-result";
 import { parseReadFilterResult } from "./read_filter";
+import { hashSecondaryIndexField } from "./index/secondary_schema";
+import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
 import { parseSearchRequestBodyResult, parseSearchRequestQueryResult } from "./search/query";
 import { parseAggregateRequestBodyResult } from "./search/aggregate";
 import {
@@ -208,11 +210,15 @@ function weakEtag(namespace: string, body: string): string {
   return `W/"${namespace}:${hash}"`;
 }
 
-function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name: string; kind: string }> {
+function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name: string; kind: string; configHash: string }> {
   if (!search) return [];
   return Object.entries(search.fields)
     .filter(([, field]) => field.exact === true && field.kind !== "text")
-    .map(([name, field]) => ({ name, kind: field.kind }))
+    .map(([name, field]) => ({
+      name,
+      kind: field.kind,
+      configHash: hashSecondaryIndexField({ name, config: field }),
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -233,6 +239,15 @@ function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ fam
   if (aggRollups.length > 0) out.push({ family: "agg", fields: aggRollups });
   if (search.profile === "metrics") out.push({ family: "mblk", fields: ["metrics"] });
   return out;
+}
+
+function parseCompanionSections(value: string): Set<string> {
+  try {
+    const parsed = JSON.parse(value);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 export type App = {
@@ -533,35 +548,52 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     const routingRuns = db.listIndexRuns(stream);
     const retiredRoutingRuns = db.listRetiredIndexRuns(stream);
 
-    const exactIndexes = configuredExactIndexes(reg.search).map(({ name, kind }) => {
+    const exactIndexes = configuredExactIndexes(reg.search).map(({ name, kind, configHash }) => {
       const state = db.getSecondaryIndexState(stream, name);
+      const configMatches = state?.config_hash === configHash;
       return {
         name,
         kind,
-        indexed_segment_count: state?.indexed_through ?? 0,
+        indexed_segment_count: configMatches ? (state?.indexed_through ?? 0) : 0,
         active_run_count: db.listSecondaryIndexRuns(stream, name).length,
         retired_run_count: db.listRetiredSecondaryIndexRuns(stream, name).length,
-        fully_indexed_uploaded_segments: (state?.indexed_through ?? 0) >= uploadedSegmentCount,
+        fully_indexed_uploaded_segments: configMatches && (state?.indexed_through ?? 0) >= uploadedSegmentCount,
+        stale_configuration: !configMatches,
         updated_at: timestampToIsoString(state?.updated_at_ms ?? null),
       };
     });
 
+    const desiredCompanionPlan = buildDesiredSearchCompanionPlan(reg);
+    const desiredCompanionHash = hashSearchCompanionPlan(desiredCompanionPlan);
+    const companionPlanRow = db.getSearchCompanionPlan(stream);
+    const desiredIndexPlanGeneration =
+      Object.values(desiredCompanionPlan.families).some(Boolean)
+        ? companionPlanRow
+          ? companionPlanRow.plan_hash === desiredCompanionHash
+            ? companionPlanRow.generation
+            : companionPlanRow.generation + 1
+          : 1
+        : 0;
+    const companionRows = db.listSearchSegmentCompanions(stream);
+    const currentCompanionRows = companionRows.filter((row) => row.plan_generation === desiredIndexPlanGeneration);
     const searchFamilies = configuredSearchFamilies(reg.search).map(({ family, fields }) => {
-      const state = db.getSearchFamilyState(stream, family);
-      const objectCount = db.listSearchFamilySegments(stream, family).length;
+      const coveredSegmentCount = currentCompanionRows.filter((row) => parseCompanionSections(row.sections_json).has(family)).length;
       return {
         family,
         fields,
-        covered_segment_count: state?.uploaded_through ?? 0,
-        object_count: objectCount,
-        fully_indexed_uploaded_segments: (state?.uploaded_through ?? 0) >= uploadedSegmentCount,
-        updated_at: timestampToIsoString(state?.updated_at_ms ?? null),
+        plan_generation: desiredIndexPlanGeneration,
+        covered_segment_count: coveredSegmentCount,
+        stale_segment_count: Math.max(0, uploadedSegmentCount - coveredSegmentCount),
+        object_count: currentCompanionRows.length,
+        fully_indexed_uploaded_segments: coveredSegmentCount >= uploadedSegmentCount,
+        updated_at: timestampToIsoString(companionPlanRow?.updated_at_ms ?? null),
       };
     });
 
     return {
       stream,
       profile: profileKind,
+      desired_index_plan_generation: desiredIndexPlanGeneration,
       segments: {
         total_count: segmentCount,
         uploaded_count: uploadedSegmentCount,
@@ -581,6 +613,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         updated_at: timestampToIsoString(routingState?.updated_at_ms ?? null),
       },
       exact_indexes: exactIndexes,
+      bundled_companions: {
+        object_count: currentCompanionRows.length,
+        fully_indexed_uploaded_segments: currentCompanionRows.length >= uploadedSegmentCount,
+      },
       search_families: searchFamilies,
     };
   };
@@ -763,6 +799,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               } catch {
                 return json(500, { error: { code: "internal", message: "schema upload failed" } });
               }
+              indexer?.enqueue(stream);
               notifier.notifyDetailsChanged(stream);
               return json(200, regRes.value);
             }
@@ -774,6 +811,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               } catch {
                 return json(500, { error: { code: "internal", message: "schema upload failed" } });
               }
+              indexer?.enqueue(stream);
               notifier.notifyDetailsChanged(stream);
               return json(200, regRes.value);
             }
@@ -789,6 +827,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             } catch {
               return json(500, { error: { code: "internal", message: "schema upload failed" } });
             }
+            indexer?.enqueue(stream);
             notifier.notifyDetailsChanged(stream);
             return json(200, regRes.value);
           }
@@ -825,6 +864,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             } catch {
               return json(500, { error: { code: "internal", message: "profile upload failed" } });
             }
+            indexer?.enqueue(stream);
             notifier.notifyDetailsChanged(stream);
             return json(200, profileRes.value.resource);
           }

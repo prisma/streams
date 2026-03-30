@@ -100,18 +100,14 @@ async function waitForSearchFamilies(app: ReturnType<typeof createApp>, timeoutM
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
     const secondaryStates = app.deps.db.listSecondaryIndexStates(STREAM);
-    const colState = app.deps.db.getSearchFamilyState(STREAM, "col");
-    const ftsState = app.deps.db.getSearchFamilyState(STREAM, "fts");
-    const colSegments = app.deps.db.listSearchFamilySegments(STREAM, "col");
-    const ftsSegments = app.deps.db.listSearchFamilySegments(STREAM, "fts");
+    const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
     if (
       srow &&
       srow.uploaded_through >= srow.sealed_through &&
       secondaryStates.length >= 4 &&
-      colState &&
-      ftsState &&
-      colSegments.length > 0 &&
-      ftsSegments.length > 0
+      companionPlan &&
+      companionSegments.length > 0
     ) {
       return;
     }

@@ -181,10 +181,11 @@ This is ideal for charts, KPI tiles, and repeated dashboard queries.
 
 Current properties:
 
-- immutable per-segment companion objects
-- stored in object storage under `streams/<hash>/mblk/segments/...`
-- local SQLite stores only family coverage and object keys
-- companion objects carry canonical metric interval summaries plus time-range
+- immutable `mblk` sections inside bundled per-segment `.cix` companions
+- bundled companions are stored in object storage under
+  `streams/<hash>/segments/...cix`
+- local SQLite stores only bundled companion plan state and object keys
+- `mblk` sections carry canonical metric interval summaries plus time-range
   metadata
 
 Use it when:
@@ -323,4 +324,3 @@ The next natural expansion points are:
 - use `.mblk` more aggressively for series discovery and non-rollup aggregate
   planning
 - reduce ingest-path active-series memory pressure in the internal emitter
-

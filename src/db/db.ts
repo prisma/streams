@@ -90,6 +90,7 @@ export type SecondaryIndexStateRow = {
   stream: string;
   index_name: string;
   index_secret: Uint8Array;
+  config_hash: string;
   indexed_through: number;
   updated_at_ms: bigint;
 };
@@ -108,18 +109,20 @@ export type SecondaryIndexRunRow = {
   retired_at_ms: bigint | null;
 };
 
-export type SearchFamilyStateRow = {
+export type SearchCompanionPlanRow = {
   stream: string;
-  family: string;
-  uploaded_through: number;
+  generation: number;
+  plan_hash: string;
+  plan_json: string;
   updated_at_ms: bigint;
 };
 
-export type SearchFamilySegmentRow = {
+export type SearchSegmentCompanionRow = {
   stream: string;
-  family: string;
   segment_index: number;
   object_key: string;
+  plan_generation: number;
+  sections_json: string;
   updated_at_ms: bigint;
 };
 
@@ -180,13 +183,17 @@ export class SqliteDurableStore {
     insertSecondaryIndexRun: SqliteStatement;
     retireSecondaryIndexRun: SqliteStatement;
     deleteSecondaryIndexRun: SqliteStatement;
-    getSearchFamilyState: SqliteStatement;
-    listSearchFamilyStates: SqliteStatement;
-    upsertSearchFamilyState: SqliteStatement;
-    listSearchFamilySegments: SqliteStatement;
-    getSearchFamilySegment: SqliteStatement;
-    upsertSearchFamilySegment: SqliteStatement;
-    deleteSearchFamilySegments: SqliteStatement;
+    deleteSecondaryIndexState: SqliteStatement;
+    deleteSecondaryIndexRunsForIndex: SqliteStatement;
+    getSearchCompanionPlan: SqliteStatement;
+    upsertSearchCompanionPlan: SqliteStatement;
+    deleteSearchCompanionPlan: SqliteStatement;
+    listSearchSegmentCompanions: SqliteStatement;
+    getSearchSegmentCompanion: SqliteStatement;
+    upsertSearchSegmentCompanion: SqliteStatement;
+    deleteSearchSegmentCompanionsFromGeneration: SqliteStatement;
+    deleteSearchSegmentCompanionsFromIndex: SqliteStatement;
+    deleteSearchSegmentCompanions: SqliteStatement;
     countUploadedSegments: SqliteStatement;
     getSegmentMeta: SqliteStatement;
     ensureSegmentMeta: SqliteStatement;
@@ -414,19 +421,20 @@ export class SqliteDurableStore {
         `DELETE FROM index_runs WHERE run_id=?;`
       ),
       getSecondaryIndexState: this.db.query(
-        `SELECT stream, index_name, index_secret, indexed_through, updated_at_ms
+        `SELECT stream, index_name, index_secret, config_hash, indexed_through, updated_at_ms
          FROM secondary_index_state WHERE stream=? AND index_name=? LIMIT 1;`
       ),
       listSecondaryIndexStates: this.db.query(
-        `SELECT stream, index_name, index_secret, indexed_through, updated_at_ms
+        `SELECT stream, index_name, index_secret, config_hash, indexed_through, updated_at_ms
          FROM secondary_index_state WHERE stream=?
          ORDER BY index_name ASC;`
       ),
       upsertSecondaryIndexState: this.db.query(
-        `INSERT INTO secondary_index_state(stream, index_name, index_secret, indexed_through, updated_at_ms)
-         VALUES(?, ?, ?, ?, ?)
+        `INSERT INTO secondary_index_state(stream, index_name, index_secret, config_hash, indexed_through, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?, ?)
          ON CONFLICT(stream, index_name) DO UPDATE SET
            index_secret=excluded.index_secret,
+           config_hash=excluded.config_hash,
            indexed_through=excluded.indexed_through,
            updated_at_ms=excluded.updated_at_ms;`
       ),
@@ -463,43 +471,49 @@ export class SqliteDurableStore {
       deleteSecondaryIndexRun: this.db.query(
         `DELETE FROM secondary_index_runs WHERE run_id=?;`
       ),
-      getSearchFamilyState: this.db.query(
-        `SELECT stream, family, uploaded_through, updated_at_ms
-         FROM search_family_state WHERE stream=? AND family=? LIMIT 1;`
+      deleteSecondaryIndexState: this.db.query(`DELETE FROM secondary_index_state WHERE stream=? AND index_name=?;`),
+      deleteSecondaryIndexRunsForIndex: this.db.query(`DELETE FROM secondary_index_runs WHERE stream=? AND index_name=?;`),
+      getSearchCompanionPlan: this.db.query(
+        `SELECT stream, generation, plan_hash, plan_json, updated_at_ms
+         FROM search_companion_plans WHERE stream=? LIMIT 1;`
       ),
-      listSearchFamilyStates: this.db.query(
-        `SELECT stream, family, uploaded_through, updated_at_ms
-         FROM search_family_state WHERE stream=?
-         ORDER BY family ASC;`
-      ),
-      upsertSearchFamilyState: this.db.query(
-        `INSERT INTO search_family_state(stream, family, uploaded_through, updated_at_ms)
-         VALUES(?, ?, ?, ?)
-         ON CONFLICT(stream, family) DO UPDATE SET
-           uploaded_through=excluded.uploaded_through,
+      upsertSearchCompanionPlan: this.db.query(
+        `INSERT INTO search_companion_plans(stream, generation, plan_hash, plan_json, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?)
+         ON CONFLICT(stream) DO UPDATE SET
+           generation=excluded.generation,
+           plan_hash=excluded.plan_hash,
+           plan_json=excluded.plan_json,
            updated_at_ms=excluded.updated_at_ms;`
       ),
-      listSearchFamilySegments: this.db.query(
-        `SELECT stream, family, segment_index, object_key, updated_at_ms
-         FROM search_family_segments
-         WHERE stream=? AND family=?
+      deleteSearchCompanionPlan: this.db.query(`DELETE FROM search_companion_plans WHERE stream=?;`),
+      listSearchSegmentCompanions: this.db.query(
+        `SELECT stream, segment_index, object_key, plan_generation, sections_json, updated_at_ms
+         FROM search_segment_companions
+         WHERE stream=?
          ORDER BY segment_index ASC;`
       ),
-      getSearchFamilySegment: this.db.query(
-        `SELECT stream, family, segment_index, object_key, updated_at_ms
-         FROM search_family_segments
-         WHERE stream=? AND family=? AND segment_index=? LIMIT 1;`
+      getSearchSegmentCompanion: this.db.query(
+        `SELECT stream, segment_index, object_key, plan_generation, sections_json, updated_at_ms
+         FROM search_segment_companions
+         WHERE stream=? AND segment_index=? LIMIT 1;`
       ),
-      upsertSearchFamilySegment: this.db.query(
-        `INSERT INTO search_family_segments(stream, family, segment_index, object_key, updated_at_ms)
-         VALUES(?, ?, ?, ?, ?)
-         ON CONFLICT(stream, family, segment_index) DO UPDATE SET
+      upsertSearchSegmentCompanion: this.db.query(
+        `INSERT INTO search_segment_companions(stream, segment_index, object_key, plan_generation, sections_json, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(stream, segment_index) DO UPDATE SET
            object_key=excluded.object_key,
+           plan_generation=excluded.plan_generation,
+           sections_json=excluded.sections_json,
            updated_at_ms=excluded.updated_at_ms;`
       ),
-      deleteSearchFamilySegments: this.db.query(
-        `DELETE FROM search_family_segments WHERE stream=? AND family=? AND segment_index >= ?;`
+      deleteSearchSegmentCompanionsFromGeneration: this.db.query(
+        `DELETE FROM search_segment_companions WHERE stream=? AND plan_generation < ?;`
       ),
+      deleteSearchSegmentCompanionsFromIndex: this.db.query(
+        `DELETE FROM search_segment_companions WHERE stream=? AND segment_index >= ?;`
+      ),
+      deleteSearchSegmentCompanions: this.db.query(`DELETE FROM search_segment_companions WHERE stream=?;`),
       countUploadedSegments: this.db.query(
         `SELECT COALESCE(MAX(segment_index), -1) as max_idx
          FROM segments WHERE stream=? AND r2_etag IS NOT NULL;`
@@ -841,8 +855,8 @@ export class SqliteDurableStore {
       this.db.query(`DELETE FROM index_runs WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM secondary_index_state WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM secondary_index_runs WHERE stream=?;`).run(stream);
-      this.db.query(`DELETE FROM search_family_state WHERE stream=?;`).run(stream);
-      this.db.query(`DELETE FROM search_family_segments WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM search_companion_plans WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM search_segment_companions WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM stream_segment_meta WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM streams WHERE stream=?;`).run(stream);
       return true;
@@ -1594,6 +1608,7 @@ export class SqliteDurableStore {
       stream: String(row.stream),
       index_name: String(row.index_name),
       index_secret: row.index_secret instanceof Uint8Array ? row.index_secret : new Uint8Array(row.index_secret),
+      config_hash: String(row.config_hash ?? ""),
       indexed_through: Number(row.indexed_through),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     };
@@ -1605,13 +1620,20 @@ export class SqliteDurableStore {
       stream: String(row.stream),
       index_name: String(row.index_name),
       index_secret: row.index_secret instanceof Uint8Array ? row.index_secret : new Uint8Array(row.index_secret),
+      config_hash: String(row.config_hash ?? ""),
       indexed_through: Number(row.indexed_through),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     }));
   }
 
-  upsertSecondaryIndexState(stream: string, indexName: string, indexSecret: Uint8Array, indexedThrough: number): void {
-    this.stmts.upsertSecondaryIndexState.run(stream, indexName, indexSecret, indexedThrough, this.nowMs());
+  upsertSecondaryIndexState(
+    stream: string,
+    indexName: string,
+    indexSecret: Uint8Array,
+    configHash: string,
+    indexedThrough: number
+  ): void {
+    this.stmts.upsertSecondaryIndexState.run(stream, indexName, indexSecret, configHash, indexedThrough, this.nowMs());
   }
 
   updateSecondaryIndexedThrough(stream: string, indexName: string, indexedThrough: number): void {
@@ -1703,60 +1725,79 @@ export class SqliteDurableStore {
     tx();
   }
 
-  getSearchFamilyState(stream: string, family: string): SearchFamilyStateRow | null {
-    const row = this.stmts.getSearchFamilyState.get(stream, family) as any;
+  deleteSecondaryIndex(stream: string, indexName: string): void {
+    const tx = this.db.transaction(() => {
+      this.stmts.deleteSecondaryIndexRunsForIndex.run(stream, indexName);
+      this.stmts.deleteSecondaryIndexState.run(stream, indexName);
+    });
+    tx();
+  }
+
+  getSearchCompanionPlan(stream: string): SearchCompanionPlanRow | null {
+    const row = this.stmts.getSearchCompanionPlan.get(stream) as any;
     if (!row) return null;
     return {
       stream: String(row.stream),
-      family: String(row.family),
-      uploaded_through: Number(row.uploaded_through),
+      generation: Number(row.generation),
+      plan_hash: String(row.plan_hash),
+      plan_json: String(row.plan_json),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     };
   }
 
-  listSearchFamilyStates(stream: string): SearchFamilyStateRow[] {
-    const rows = this.stmts.listSearchFamilyStates.all(stream) as any[];
-    return rows.map((row) => ({
-      stream: String(row.stream),
-      family: String(row.family),
-      uploaded_through: Number(row.uploaded_through),
-      updated_at_ms: this.toBigInt(row.updated_at_ms),
-    }));
+  upsertSearchCompanionPlan(stream: string, generation: number, planHash: string, planJson: string): void {
+    this.stmts.upsertSearchCompanionPlan.run(stream, generation, planHash, planJson, this.nowMs());
   }
 
-  upsertSearchFamilyState(stream: string, family: string, uploadedThrough: number): void {
-    this.stmts.upsertSearchFamilyState.run(stream, family, uploadedThrough, this.nowMs());
+  deleteSearchCompanionPlan(stream: string): void {
+    this.stmts.deleteSearchCompanionPlan.run(stream);
   }
 
-  listSearchFamilySegments(stream: string, family: string): SearchFamilySegmentRow[] {
-    const rows = this.stmts.listSearchFamilySegments.all(stream, family) as any[];
+  listSearchSegmentCompanions(stream: string): SearchSegmentCompanionRow[] {
+    const rows = this.stmts.listSearchSegmentCompanions.all(stream) as any[];
     return rows.map((row) => ({
       stream: String(row.stream),
-      family: String(row.family),
       segment_index: Number(row.segment_index),
       object_key: String(row.object_key),
+      plan_generation: Number(row.plan_generation),
+      sections_json: String(row.sections_json),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     }));
   }
 
-  getSearchFamilySegment(stream: string, family: string, segmentIndex: number): SearchFamilySegmentRow | null {
-    const row = this.stmts.getSearchFamilySegment.get(stream, family, segmentIndex) as any;
+  getSearchSegmentCompanion(stream: string, segmentIndex: number): SearchSegmentCompanionRow | null {
+    const row = this.stmts.getSearchSegmentCompanion.get(stream, segmentIndex) as any;
     if (!row) return null;
     return {
       stream: String(row.stream),
-      family: String(row.family),
       segment_index: Number(row.segment_index),
       object_key: String(row.object_key),
+      plan_generation: Number(row.plan_generation),
+      sections_json: String(row.sections_json),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     };
   }
 
-  upsertSearchFamilySegment(stream: string, family: string, segmentIndex: number, objectKey: string): void {
-    this.stmts.upsertSearchFamilySegment.run(stream, family, segmentIndex, objectKey, this.nowMs());
+  upsertSearchSegmentCompanion(
+    stream: string,
+    segmentIndex: number,
+    objectKey: string,
+    planGeneration: number,
+    sectionsJson: string
+  ): void {
+    this.stmts.upsertSearchSegmentCompanion.run(stream, segmentIndex, objectKey, planGeneration, sectionsJson, this.nowMs());
   }
 
-  deleteSearchFamilySegmentsFrom(stream: string, family: string, segmentIndex: number): void {
-    this.stmts.deleteSearchFamilySegments.run(stream, family, segmentIndex);
+  deleteSearchSegmentCompanionsBeforeGeneration(stream: string, generation: number): void {
+    this.stmts.deleteSearchSegmentCompanionsFromGeneration.run(stream, generation);
+  }
+
+  deleteSearchSegmentCompanionsFrom(stream: string, segmentIndex: number): void {
+    this.stmts.deleteSearchSegmentCompanionsFromIndex.run(stream, segmentIndex);
+  }
+
+  deleteSearchSegmentCompanions(stream: string): void {
+    this.stmts.deleteSearchSegmentCompanions.run(stream);
   }
 
   commitManifest(stream: string, generation: number, etag: string, uploadedAtMs: bigint, uploadedThrough: bigint): void {

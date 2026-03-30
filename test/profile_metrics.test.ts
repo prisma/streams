@@ -34,15 +34,13 @@ async function waitForMetricsFamilies(
       srow.uploaded_through >= srow.sealed_through &&
       srow.pending_bytes === 0n &&
       srow.pending_rows === 0n;
-    const aggState = app.deps.db.getSearchFamilyState(stream, "agg");
-    const mblkState = app.deps.db.getSearchFamilyState(stream, "mblk");
+    const companionPlan = app.deps.db.getSearchCompanionPlan(stream);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(stream);
     const ready =
       fullySealed &&
       uploadedSegments > 0 &&
-      (aggState?.uploaded_through ?? 0) >= uploadedSegments &&
-      (mblkState?.uploaded_through ?? 0) >= uploadedSegments &&
-      app.deps.db.listSearchFamilySegments(stream, "agg").length >= uploadedSegments &&
-      app.deps.db.listSearchFamilySegments(stream, "mblk").length >= uploadedSegments;
+      !!companionPlan &&
+      companionSegments.length >= uploadedSegments;
     if (ready) return;
     app.deps.indexer?.enqueue(stream);
     await sleep(50);

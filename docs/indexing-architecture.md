@@ -13,10 +13,14 @@ Prisma Streams now ships six indexing layers:
 - the existing routing-key tiered index
 - the existing exact-match secondary index family, now treated as an internal
   accelerator derived from schema `search.fields`
-- a per-segment `.col` family for typed equality, range, and existence
-- a per-segment `.fts` family for keyword exact/prefix and text search
-- a per-segment `.agg` family for time-window rollups and aggregation serving
-- a per-segment `.mblk` family for metrics-profile aggregate serving
+- a bundled per-segment companion container (`.cix`)
+- a `col` section family inside `.cix` for typed equality, range, and
+  existence
+- an `fts` section family inside `.cix` for keyword exact/prefix and text
+  search
+- an `agg` section family inside `.cix` for time-window rollups and
+  aggregation serving
+- an `mblk` section family inside `.cix` for metrics-profile aggregate serving
 
 The public schema model is **`search`**, not `indexes[]`.
 
@@ -168,16 +172,24 @@ Properties:
 
 It is no longer the public schema model.
 
+Exact-index rebuild is now config-aware:
+
+- each configured exact field has a stable config hash
+- if the schema changes that exact field on an existing stream, the current
+  exact state is treated as stale
+- exact queries fall back to raw scans until background rebuild catches up
+
 ### `.col` family
 
 The `.col` family is the typed range/equality family.
 
 Current implementation:
 
-- immutable **per-segment companion objects**
+- immutable per-segment sections inside bundled `.cix` companions
 - no `.col` run compaction yet
-- local SQLite stores only family progress and companion object keys
-- companion objects are uploaded under `streams/<hash>/col/segments/...`
+- local SQLite stores only the bundled companion plan and per-segment companion
+  object keys
+- published companion objects live under `streams/<hash>/segments/...cix`
 
 Current responsibilities:
 
@@ -199,10 +211,11 @@ The `.fts` family is the keyword/text family.
 
 Current implementation:
 
-- immutable **per-segment companion objects**
+- immutable per-segment sections inside bundled `.cix` companions
 - no `.fts` run compaction yet
-- local SQLite stores only family progress and companion object keys
-- companion objects are uploaded under `streams/<hash>/fts/segments/...`
+- local SQLite stores only the bundled companion plan and per-segment companion
+  object keys
+- published companion objects live under `streams/<hash>/segments/...cix`
 
 Current responsibilities:
 
@@ -218,10 +231,11 @@ The `.agg` family is the shipped aggregation rollup family.
 
 Current implementation:
 
-- immutable **per-segment companion objects**
+- immutable per-segment sections inside bundled `.cix` companions
 - no `.agg` compaction yet
-- local SQLite stores only family progress and companion object keys
-- companion objects are uploaded under `streams/<hash>/agg/segments/...`
+- local SQLite stores only the bundled companion plan and per-segment companion
+  object keys
+- published companion objects live under `streams/<hash>/segments/...cix`
 
 Current responsibilities:
 
@@ -242,10 +256,11 @@ The `.mblk` family is the metrics-specific aggregate-serving family.
 
 Current implementation:
 
-- immutable **per-segment companion objects**
+- immutable per-segment sections inside bundled `.cix` companions
 - no `.mblk` compaction yet
-- local SQLite stores only family progress and companion object keys
-- companion objects are uploaded under `streams/<hash>/mblk/segments/...`
+- local SQLite stores only the bundled companion plan and per-segment companion
+  object keys
+- published companion objects live under `streams/<hash>/segments/...cix`
 
 Current responsibilities:
 
@@ -259,16 +274,15 @@ Current local catalog tables:
 
 - `secondary_index_state`
 - `secondary_index_runs`
-- `search_family_state`
-- `search_family_segments`
+- `search_companion_plans`
+- `search_segment_companions`
 
 Interpretation:
 
 - `secondary_*` tables catalog the compacted exact-match family
-- `search_family_state` tracks per-family uploaded coverage (`col`, `fts`,
-  `agg`, `mblk`)
-- `search_family_segments` maps each covered segment to its uploaded companion
-  object key
+- `search_companion_plans` stores the current desired bundled companion plan
+- `search_segment_companions` maps each covered segment to its current bundled
+  companion object key, generation, and section inventory
 
 These tables are rebuildable from manifest state and remote objects. They are
 not durable source-of-truth data stores.
@@ -278,20 +292,19 @@ not durable source-of-truth data stores.
 Manifest state now includes:
 
 - `secondary_indexes`
-- `search_families`
+- `search_companions`
 
-`search_families` is keyed by family name and currently stores:
+`search_companions` currently stores:
 
-- `uploaded_through`
-- per-segment companion object keys
+- the current bundled companion plan generation and hash
+- the desired plan JSON summary
+- per-segment current companion object keys and section inventories
 
 Bootstrap restores:
 
 - exact secondary index state and runs
-- `.col` family state and segment companions
-- `.fts` family state and segment companions
-- `.agg` family state and segment companions
-- `.mblk` family state and segment companions
+- bundled companion plan state
+- current per-segment bundled companions
 
 This means a node can be deleted and cold-restored from published R2 state
 without rebuilding the already-published search catalogs locally first.
@@ -305,10 +318,8 @@ The full server starts these background managers:
 
 - `IndexManager` for routing-key runs
 - `SecondaryIndexManager` for exact secondary runs
-- `SearchColManager` for `.col` per-segment companions
-- `SearchFtsManager` for `.fts` per-segment companions
-- `SearchAggManager` for `.agg` per-segment companions
-- `MetricsBlockManager` for `.mblk` per-segment companions
+- `SearchCompanionManager` for bundled `.cix` companions and historical
+  backfill
 
 These wake on `DS_INDEX_CHECK_MS`.
 
@@ -319,6 +330,25 @@ Relevant concurrency knobs:
 - `DS_INDEX_CHECK_MS`
 
 These are in-process async concurrency limits, not separate OS workers.
+
+On startup, the full server enqueues all streams into the index controller so
+existing streams can catch up automatically after bootstrap, schema changes, or
+bundled companion plan changes.
+
+## Bundled Companions And Backfill
+
+Current bundled-companion rules:
+
+- each uploaded segment may have one current `.cix`
+- the `.cix` may contain any subset of `col`, `fts`, `agg`, and `mblk`
+- the desired bundled companion plan is hashed and versioned per stream
+- a plan change puts the stream into mixed coverage until historical companions
+  are rebuilt
+- queries use current bundled sections where present and raw-scan missing or
+  stale ranges otherwise
+
+See [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md)
+for the dedicated architecture document.
 
 ## Query Surfaces
 
@@ -423,8 +453,10 @@ endpoints:
 - segment counts
 - manifest generation/upload state
 - routing-key index status
-- internal exact-index status
-- `.col`, `.fts`, `.agg`, and `.mblk` family progress
+- internal exact-index status, including stale-config detection
+- bundled companion object coverage
+- `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
+  companion sections
 
 `/_details` is the combined stream-management descriptor. It nests:
 

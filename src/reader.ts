@@ -404,7 +404,6 @@ export class StreamReader {
       const candidateSegments = candidateInfo.segments;
       const indexedThrough = candidateInfo.indexedThrough;
       const columnClauses = filter ? collectPositiveColumnFilterClauses(filter) : [];
-      const columnIndexedThrough = filter && columnClauses.length > 0 ? this.db.getSearchFamilyState(stream, "col")?.uploaded_through ?? 0 : 0;
       const filterRegistryRes = filter ? this.registry.getRegistryResult(stream) : Result.ok(null);
       if (Result.isError(filterRegistryRes)) return Result.err({ kind: "internal", message: filterRegistryRes.error.message });
       const filterRegistry = filterRegistryRes.value;
@@ -496,7 +495,7 @@ export class StreamReader {
           continue;
         }
         let allowedDocIds: Set<number> | null = null;
-        if (columnClauses.length > 0 && seg.segment_index < columnIndexedThrough) {
+        if (columnClauses.length > 0) {
           const docIdsRes = await this.resolveColumnCandidateDocIdsResult(stream, seg.segment_index, columnClauses);
           if (Result.isError(docIdsRes)) return Result.err({ kind: "internal", message: docIdsRes.error.message });
           if (docIdsRes.value) {
@@ -700,9 +699,7 @@ export class StreamReader {
       const snapshotEndOffset = encodeOffset(srow.epoch, snapshotEndSeq);
       const exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
-      const columnIndexedThrough = columnClauses.length > 0 ? this.db.getSearchFamilyState(stream, "col")?.uploaded_through ?? 0 : 0;
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
-      const ftsIndexedThrough = ftsClauses.length > 0 ? this.db.getSearchFamilyState(stream, "fts")?.uploaded_through ?? 0 : 0;
       const deadline = request.timeoutMs == null ? null : Date.now() + request.timeoutMs;
       const leadingSort = request.sort[0] ?? null;
       const offsetSearchAfter =
@@ -801,9 +798,7 @@ export class StreamReader {
           stream,
           seg.segment_index,
           columnClauses,
-          columnIndexedThrough,
-          ftsClauses,
-          ftsIndexedThrough
+          ftsClauses
         );
         if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
         const familyCandidates = familyCandidatesRes.value;
@@ -872,9 +867,7 @@ export class StreamReader {
                     exactCandidateInfo,
                     cursorFieldBound,
                     columnClauses,
-                    columnIndexedThrough,
                     ftsClauses,
-                    ftsIndexedThrough,
                     rangeStartSeq,
                     sealedEnd,
                     {
@@ -1038,7 +1031,6 @@ export class StreamReader {
       const hasFullWindows = fullEndMs > fullStartMs;
       const dimensions = new Set(rollup.dimensions ?? []);
       const eligibility = extractRollupEligibility(request.q, dimensions);
-      const aggIndexedThrough = eligibility.eligible ? Math.min(this.db.getSearchFamilyState(stream, "agg")?.uploaded_through ?? 0, this.db.countUploadedSegments(stream)) : 0;
       const selectedMeasures = new Set(request.measures ?? Object.keys(rollup.measures));
 
       const buckets = new Map<number, Map<string, AggregateGroupInternal>>();
@@ -1047,6 +1039,7 @@ export class StreamReader {
       let scannedTailDocs = 0;
       const indexFamiliesUsed = new Set<string>();
       const metricsProfile = registry.search.profile === "metrics";
+      let usedRollups = false;
 
       const mergeBucketMeasures = (bucketStartMs: number, dimensionsKey: Record<string, string | null>, measures: Record<string, AggMeasureState>): void => {
         let groups = buckets.get(bucketStartMs);
@@ -1080,31 +1073,8 @@ export class StreamReader {
         return true;
       };
 
-      if (eligibility.eligible && this.index && hasFullWindows && aggIndexedThrough > 0) {
-        const segments = this.db.listSegmentsForStream(stream);
-        for (const seg of segments) {
-          if (seg.segment_index >= aggIndexedThrough) break;
-          const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
-          const intervalCompanion = companion?.rollups?.[request.rollup]?.intervals?.[String(intervalMs)];
-          if (!intervalCompanion) continue;
-          let usedSegment = false;
-          for (const window of intervalCompanion.windows) {
-            if (window.start_ms < fullStartMs || window.start_ms >= fullEndMs) continue;
-            for (const group of window.groups) {
-              if (!matchesExactFilters(group.dimensions)) continue;
-              mergeBucketMeasures(window.start_ms, group.dimensions, group.measures);
-              usedSegment = true;
-            }
-          }
-          if (usedSegment) {
-            indexedSegmentSet.add(seg.segment_index);
-            indexFamiliesUsed.add("agg");
-          }
-        }
-      }
-
       const partialRanges: Array<{ startMs: number; endMs: number }> = [];
-      if (!eligibility.eligible || aggIndexedThrough <= 0 || !hasFullWindows) {
+      if (!eligibility.eligible || !hasFullWindows) {
         partialRanges.push({ startMs: fromMs, endMs: toMs });
       } else {
         if (fromMs < fullStartMs) partialRanges.push({ startMs: fromMs, endMs: fullStartMs });
@@ -1181,10 +1151,31 @@ export class StreamReader {
 
       const timestampField = rollup.timestampField ?? registry.search.primaryTimestampField;
       for (const seg of this.db.listSegmentsForStream(stream)) {
+        let coveredAlignedWindows = false;
+        if (eligibility.eligible && this.index && hasFullWindows) {
+          const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
+          const intervalCompanion = companion?.rollups?.[request.rollup]?.intervals?.[String(intervalMs)];
+          if (intervalCompanion) {
+            coveredAlignedWindows = true;
+            indexedSegmentSet.add(seg.segment_index);
+            indexFamiliesUsed.add("agg");
+            usedRollups = true;
+            for (const window of intervalCompanion.windows) {
+              if (window.start_ms < fullStartMs || window.start_ms >= fullEndMs) continue;
+              for (const group of window.groups) {
+                if (!matchesExactFilters(group.dimensions)) continue;
+                mergeBucketMeasures(window.start_ms, group.dimensions, group.measures);
+              }
+            }
+          }
+        }
+
         const scanRanges =
-          eligibility.eligible && aggIndexedThrough > 0 && hasFullWindows && seg.segment_index < aggIndexedThrough
-            ? partialRanges
-            : [{ startMs: fromMs, endMs: toMs }];
+          !eligibility.eligible || !hasFullWindows
+            ? [{ startMs: fromMs, endMs: toMs }]
+            : coveredAlignedWindows
+              ? partialRanges
+              : [{ startMs: fromMs, endMs: toMs }];
         if (scanRanges.length === 0) continue;
         let overlaps = false;
         for (const range of scanRanges) {
@@ -1195,8 +1186,7 @@ export class StreamReader {
         }
         if (!overlaps) continue;
         let scanRes: Result<void, ReaderError>;
-        const metricsBlockState = metricsProfile ? this.db.getSearchFamilyState(stream, "mblk")?.uploaded_through ?? 0 : 0;
-        if (metricsProfile && this.index && seg.segment_index < metricsBlockState) {
+        if (metricsProfile && this.index) {
           const companion = await this.index.getMetricsBlockSegmentCompanion(stream, seg.segment_index);
           if (companion) {
             scanRes = await scanMetricsBlockForAggregateResult(seg, companion, scanRanges);
@@ -1254,7 +1244,7 @@ export class StreamReader {
         to: new Date(toMs).toISOString(),
         interval: request.interval,
         coverage: {
-          usedRollups: eligibility.eligible && aggIndexedThrough > 0 && hasFullWindows,
+          usedRollups,
           indexedSegments: indexedSegmentSet.size,
           scannedSegments: scannedSegmentSet.size,
           scannedTailDocs,
@@ -1279,9 +1269,7 @@ export class StreamReader {
     exactCandidateInfo: SegmentCandidateInfo,
     cursorFieldBound: SearchCursorFieldBound | null,
     columnClauses: SearchColumnClause[],
-    columnIndexedThrough: number,
     ftsClauses: SearchFtsClause[],
-    ftsIndexedThrough: number,
     rangeStartSeq: bigint,
     rangeEndSeq: bigint,
     state: {
@@ -1315,9 +1303,7 @@ export class StreamReader {
       stream,
       seg.segment_index,
       columnClauses,
-      columnIndexedThrough,
-      ftsClauses,
-      ftsIndexedThrough
+      ftsClauses
     );
     if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
     const familyCandidates = familyCandidatesRes.value;
@@ -1582,14 +1568,12 @@ export class StreamReader {
     stream: string,
     segmentIndex: number,
     columnClauses: SearchColumnClause[],
-    columnIndexedThrough: number,
-    ftsClauses: SearchFtsClause[],
-    ftsIndexedThrough: number
+    ftsClauses: SearchFtsClause[]
   ): Promise<Result<SearchFamilyCandidateInfo, { message: string }>> {
     let intersection: Set<number> | null = null;
     const usedFamilies = new Set<string>();
 
-    if (columnClauses.length > 0 && segmentIndex < columnIndexedThrough) {
+    if (columnClauses.length > 0) {
       const columnRes = await this.resolveSearchColumnCandidateDocIdsResult(stream, segmentIndex, columnClauses);
       if (Result.isError(columnRes)) return columnRes;
       if (columnRes.value) {
@@ -1598,7 +1582,7 @@ export class StreamReader {
       }
     }
 
-    if (ftsClauses.length > 0 && segmentIndex < ftsIndexedThrough) {
+    if (ftsClauses.length > 0) {
       const ftsRes = await this.resolveSearchFtsCandidateDocIdsResult(stream, segmentIndex, ftsClauses);
       if (Result.isError(ftsRes)) return ftsRes;
       if (ftsRes.value) {

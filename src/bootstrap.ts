@@ -205,9 +205,10 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         const indexSecretB64 = typeof (rawState as any).index_secret === "string" ? (rawState as any).index_secret : "";
         if (!indexSecretB64) continue;
         const secret = new Uint8Array(Buffer.from(indexSecretB64, "base64"));
+        const configHash = typeof (rawState as any).config_hash === "string" ? (rawState as any).config_hash : "";
         const indexedThrough =
           typeof (rawState as any).indexed_through === "number" ? Number((rawState as any).indexed_through) : 0;
-        db.upsertSecondaryIndexState(stream, indexName, secret, indexedThrough);
+        db.upsertSecondaryIndexState(stream, indexName, secret, configHash, indexedThrough);
 
         const activeSecondaryRuns = Array.isArray((rawState as any).active_runs) ? (rawState as any).active_runs : [];
         const retiredSecondaryRuns = Array.isArray((rawState as any).retired_runs) ? (rawState as any).retired_runs : [];
@@ -243,17 +244,36 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         }
       }
 
-      const searchFamilies = manifest.search_families && typeof manifest.search_families === "object" ? manifest.search_families : {};
-      for (const [family, rawState] of Object.entries(searchFamilies)) {
-        if (!rawState || typeof rawState !== "object") continue;
-        const uploadedThrough =
-          typeof (rawState as any).uploaded_through === "number" ? Number((rawState as any).uploaded_through) : 0;
-        db.upsertSearchFamilyState(stream, family, uploadedThrough);
-        const segments = Array.isArray((rawState as any).segments) ? (rawState as any).segments : [];
+      const searchCompanions =
+        manifest.search_companions && typeof manifest.search_companions === "object" ? manifest.search_companions : null;
+      if (searchCompanions) {
+        const generation = typeof searchCompanions.generation === "number" ? searchCompanions.generation : 0;
+        const planHash = typeof searchCompanions.plan_hash === "string" ? searchCompanions.plan_hash : "";
+        const planJson =
+          searchCompanions.plan_json && typeof searchCompanions.plan_json === "object"
+            ? JSON.stringify(searchCompanions.plan_json)
+            : JSON.stringify({ families: {}, summary: {} });
+        if (generation > 0 && planHash) {
+          db.upsertSearchCompanionPlan(stream, generation, planHash, planJson);
+        }
+        const segments = Array.isArray(searchCompanions.segments) ? searchCompanions.segments : [];
         for (const segment of segments) {
           if (!segment || typeof segment !== "object") continue;
-          if (typeof (segment as any).segment_index !== "number" || typeof (segment as any).object_key !== "string") continue;
-          db.upsertSearchFamilySegment(stream, family, Number((segment as any).segment_index), String((segment as any).object_key));
+          if (
+            typeof (segment as any).segment_index !== "number" ||
+            typeof (segment as any).object_key !== "string" ||
+            typeof (segment as any).plan_generation !== "number"
+          ) {
+            continue;
+          }
+          const sections = Array.isArray((segment as any).sections) ? (segment as any).sections : [];
+          db.upsertSearchSegmentCompanion(
+            stream,
+            Number((segment as any).segment_index),
+            String((segment as any).object_key),
+            Number((segment as any).plan_generation),
+            JSON.stringify(sections)
+          );
         }
       }
 

@@ -370,6 +370,7 @@ Response fields:
 - `manifest`
 - `routing_key_index`
 - `exact_indexes`
+- `bundled_companions`
 - `search_families`
 
 Rules:
@@ -380,8 +381,12 @@ Rules:
 - `routing_key_index` covers the routing-key tiered index
 - `exact_indexes` covers the internal exact-match secondary family derived from
   schema `search.fields`
-- `search_families` covers object-store-native search companions such as `.col`
-  and `.fts`
+- `exact_indexes[*].stale_configuration` is true when a configured exact field
+  changed and the exact family has not rebuilt for that config yet
+- `bundled_companions` reports current `.cix` coverage for the desired
+  companion plan generation
+- `search_families` covers bundled companion sections such as `col`, `fts`,
+  `agg`, and `mblk`
 
 ### Combined details
 
