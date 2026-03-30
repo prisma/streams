@@ -338,13 +338,19 @@ Request:
 
 Rules:
 
-- supported built-ins are `evlog`, `generic`, and `state-protocol`
+- supported built-ins are `evlog`, `generic`, `metrics`, and `state-protocol`
 - `evlog` requires an `application/json` stream content type
 - `evlog` normalizes JSON appends into a canonical request-log envelope and
   derives a routing key from `requestId` or `traceId` when the schema does not
   own routing-key extraction
 - installing `evlog` also installs the canonical evlog schema version `1` and
   default `search` registry for that stream
+- `metrics` requires an `application/json` stream content type
+- `metrics` normalizes JSON appends into the canonical metrics interval
+  envelope and derives a routing key from `seriesKey` when the schema does not
+  own routing-key extraction
+- installing `metrics` also installs the canonical metrics schema version `1`,
+  default `search` registry, and default rollups for that stream
 - `state-protocol` requires an `application/json` stream content type
 - `state-protocol.touch.enabled=true` enables the `/touch/*` routes
 - set `profile` to `{ "kind": "generic" }` to use the baseline durable stream
@@ -391,10 +397,35 @@ Response fields:
 Rules:
 
 - this endpoint is read-only
+- `stream` is the full stream summary object, not a reduced descriptor
 - `profile` matches `GET /_profile`
 - `schema` matches `GET /_schema`
 - `index_status` matches `GET /_index_status`
+- `stream` includes the head/lifecycle fields needed by an active stream page,
+  including `created_at`, `expires_at`, `epoch`, `next_offset`,
+  `sealed_through`, and `uploaded_through`
+- `stream.total_size_bytes` is the logical payload-byte size of the stream on
+  this node, returned as a string
 - this is the supported combined descriptor endpoint for stream-management UIs
+
+Conditional and long-poll behavior:
+
+- responses include `ETag`
+- `If-None-Match` may be used for a normal conditional `GET`
+- if `If-None-Match` matches the current descriptor, return `304 Not Modified`
+- `live=true` or `live=long-poll` enables long-poll mode
+- in long-poll mode, if `If-None-Match` matches the current descriptor, wait
+  until:
+  - the stream head changes because new events are appended
+  - descriptor-visible metadata changes, including schema/profile changes,
+    segment/upload progress, or async index progress
+  - the timeout expires
+- `timeout=<duration>` or `timeout_ms=<ms>` controls the long-poll deadline;
+  default `3000ms`
+- on long-poll timeout with no visible change, return `304 Not Modified`
+
+The same conditional-long-poll contract also applies to
+`GET /v1/stream/{name}/_index_status`.
 
 ---
 

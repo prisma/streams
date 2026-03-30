@@ -39,7 +39,8 @@ export class SearchColManager {
     private readonly db: SqliteDurableStore,
     private readonly os: ObjectStore,
     private readonly registry: SchemaRegistryStore,
-    private readonly publishManifest?: (stream: string) => Promise<void>
+    private readonly publishManifest?: (stream: string) => Promise<void>,
+    private readonly onMetadataChanged?: (stream: string) => void
   ) {}
 
   start(): void {
@@ -147,6 +148,7 @@ export class SearchColManager {
         this.cache.set(objectKey, companionRes.value);
         changed = true;
       }
+      if (changed) this.onMetadataChanged?.(stream);
       if (changed && this.publishManifest) {
         try {
           await this.publishManifest(stream);

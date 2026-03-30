@@ -18,8 +18,13 @@ export type UploaderController = {
   start(): void;
   stop(hard?: boolean): void;
   countSegmentsWaiting(): number;
-  setHooks(hooks: { onSegmentsUploaded?: (stream: string) => void } | undefined): void;
+  setHooks(hooks: UploaderHooks | undefined): void;
   publishManifest(stream: string): Promise<void>;
+};
+
+export type UploaderHooks = {
+  onSegmentsUploaded?: (stream: string) => void;
+  onMetadataChanged?: (stream: string) => void;
 };
 
 export class Uploader {
@@ -34,7 +39,7 @@ export class Uploader {
   private stopping = false;
   private readonly inflight = new Set<string>();
   private readonly failures = new FailureTracker(1024);
-  private hooks?: { onSegmentsUploaded?: (stream: string) => void };
+  private hooks?: UploaderHooks;
   private readonly manifestInflight = new Set<string>();
 
   constructor(
@@ -44,7 +49,7 @@ export class Uploader {
     diskCache?: SegmentDiskCache,
     stats?: StatsCollector,
     gate?: BackpressureGate,
-    hooks?: { onSegmentsUploaded?: (stream: string) => void }
+    hooks?: UploaderHooks
   ) {
     this.config = config;
     this.db = db;
@@ -55,7 +60,7 @@ export class Uploader {
     this.hooks = hooks;
   }
 
-  setHooks(hooks: { onSegmentsUploaded?: (stream: string) => void } | undefined): void {
+  setHooks(hooks: UploaderHooks | undefined): void {
     this.hooks = hooks;
   }
 
@@ -180,6 +185,7 @@ export class Uploader {
         }
       );
       this.db.markSegmentUploaded(seg.segment_id, res.etag, this.db.nowMs());
+      this.hooks?.onMetadataChanged?.(seg.stream);
       if (this.stats) this.stats.recordUploadedBytes(seg.size_bytes);
       if (this.gate) this.gate.adjustOnUpload(seg.size_bytes);
     } catch (e) {
@@ -218,6 +224,9 @@ export class Uploader {
 
       const uploadedThrough =
         uploadedPrefix === 0 ? -1n : readU64LE(meta.segment_offsets, (uploadedPrefix - 1) * 8) - 1n;
+      const unpublishedWalBytes = this.db.getWalBytesAfterOffset(stream, uploadedThrough);
+      const publishedLogicalSizeBytes =
+        srow.logical_size_bytes > unpublishedWalBytes ? srow.logical_size_bytes - unpublishedWalBytes : 0n;
 
       const manifestRow = this.db.getManifestRow(stream);
       const generation = manifestRow.generation + 1;
@@ -245,6 +254,7 @@ export class Uploader {
       const manifestRes = buildManifestResult({
         streamName: stream,
         streamRow: srow,
+        publishedLogicalSizeBytes,
         profileJson,
         segmentMeta: meta,
         uploadedPrefixCount: uploadedPrefix,
@@ -285,6 +295,7 @@ export class Uploader {
 
       // Commit point: advance uploaded_through and delete WAL prefix.
       this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough);
+      this.hooks?.onMetadataChanged?.(stream);
 
       // Local disk cleanup: delete newly uploaded segment files.
       if (uploadedPrefix > prevPrefix) {

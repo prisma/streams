@@ -5,7 +5,9 @@ import { describe, expect, test } from "bun:test";
 import { createApp } from "../src/app";
 import { bootstrapFromR2 } from "../src/bootstrap";
 import { loadConfig, type Config } from "../src/config";
+import { SqliteDurableStore } from "../src/db/db";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import { manifestObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 
 function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
   const base = loadConfig();
@@ -30,6 +32,7 @@ describe("bootstrap from R2", () => {
       const root2 = mkdtempSync(join(tmpdir(), "ds-bootstrap-dst-"));
       const stream = "boot";
       const payload = new TextEncoder().encode(JSON.stringify({ x: 1 }));
+      let expectedPublishedLogicalSize = 0n;
 
       const cfg = makeConfig(root, {
         segmentMaxBytes: payload.byteLength * 2,
@@ -169,6 +172,11 @@ describe("bootstrap from R2", () => {
           }
           await sleep(50);
         }
+
+        const sourceRow = app.deps.db.getStream(stream);
+        const unpublishedTailBytes = sourceRow ? app.deps.db.getWalBytesAfterOffset(stream, sourceRow.uploaded_through) : 0n;
+        expectedPublishedLogicalSize =
+          sourceRow && sourceRow.logical_size_bytes > unpublishedTailBytes ? sourceRow.logical_size_bytes - unpublishedTailBytes : 0n;
       } finally {
         app.close();
       }
@@ -248,6 +256,7 @@ describe("bootstrap from R2", () => {
         const srow = app2.deps.db.getStream(stream);
         expect(srow).not.toBeNull();
         expect(srow!.uploaded_segment_count).toBe(segs.length);
+        expect(srow!.logical_size_bytes).toBe(expectedPublishedLogicalSize);
 
         const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
         expect(secondaryStates.length).toBe(3);
@@ -300,6 +309,13 @@ describe("bootstrap from R2", () => {
         const aggregateBody = await aggregateRes.json();
         expect(aggregateBody.coverage.index_families_used).toEqual(["agg"]);
         expect(aggregateBody.buckets).toHaveLength(2);
+
+        const detailsRes = await app2.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_details`, { method: "GET" })
+        );
+        expect(detailsRes.status).toBe(200);
+        const detailsBody = await detailsRes.json();
+        expect(detailsBody.stream.total_size_bytes).toBe(expectedPublishedLogicalSize.toString());
       } finally {
         app2.close();
         rmSync(root, { recursive: true, force: true });
@@ -362,6 +378,109 @@ describe("bootstrap from R2", () => {
         expect(listRes.status).toBe(200);
         const list = (await listRes.json()) as Array<{ name: string }>;
         expect(list.find((x) => x.name === stream)).toBeUndefined();
+      } finally {
+        app2.close();
+        rmSync(root, { recursive: true, force: true });
+        rmSync(root2, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "reconciles missing logical_size_bytes asynchronously after bootstrap",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-bootstrap-size-src-"));
+      const root2 = mkdtempSync(join(tmpdir(), "ds-bootstrap-size-dst-"));
+      const stream = "size-reconcile";
+      const store = new MockR2Store();
+      let expectedPublishedLogicalSize = 0n;
+
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 128,
+        segmentCheckIntervalMs: 25,
+        uploadIntervalMs: 25,
+        uploadConcurrency: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg, store);
+      try {
+        const createRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([201, 204]).toContain(createRes.status);
+
+        for (let i = 0; i < 4; i++) {
+          const appendRes = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ i, pad: "x".repeat(48) }),
+            })
+          );
+          expect(appendRes.status).toBe(204);
+        }
+
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const row = app.deps.db.getStream(stream);
+          if (row && row.uploaded_through >= row.sealed_through && app.deps.db.countSegmentsForStream(stream) > 0) {
+            break;
+          }
+          await sleep(50);
+        }
+        const sourceRow = app.deps.db.getStream(stream);
+        const unpublishedTailBytes = sourceRow ? app.deps.db.getWalBytesAfterOffset(stream, sourceRow.uploaded_through) : 0n;
+        expectedPublishedLogicalSize =
+          sourceRow && sourceRow.logical_size_bytes > unpublishedTailBytes ? sourceRow.logical_size_bytes - unpublishedTailBytes : 0n;
+        expect(expectedPublishedLogicalSize).toBeGreaterThan(0n);
+      } finally {
+        app.close();
+      }
+
+      const manifestKey = manifestObjectKey(streamHash16Hex(stream));
+      const manifestBytes = await store.get(manifestKey);
+      expect(manifestBytes).not.toBeNull();
+      const manifestJson = JSON.parse(new TextDecoder().decode(manifestBytes!));
+      delete manifestJson.logical_size_bytes;
+      const rewrittenManifest = new TextEncoder().encode(JSON.stringify(manifestJson));
+      await store.put(manifestKey, rewrittenManifest, {
+        contentType: "application/json",
+        contentLength: rewrittenManifest.byteLength,
+      });
+
+      const cfg2 = makeConfig(root2, {
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      await bootstrapFromR2(cfg2, store, { clearLocal: true });
+
+      const bootDb = new SqliteDurableStore(cfg2.dbPath);
+      try {
+        expect(bootDb.getStream(stream)?.logical_size_bytes).toBe(0n);
+      } finally {
+        bootDb.close();
+      }
+
+      const app2 = createApp(cfg2, store);
+      try {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const size = app2.deps.db.getStream(stream)?.logical_size_bytes ?? 0n;
+          if (size === expectedPublishedLogicalSize) break;
+          await sleep(50);
+        }
+
+        const detailsRes = await app2.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_details`, { method: "GET" })
+        );
+        expect(detailsRes.status).toBe(200);
+        const detailsBody = await detailsRes.json();
+        expect(detailsBody.stream.total_size_bytes).toBe(expectedPublishedLogicalSize.toString());
       } finally {
         app2.close();
         rmSync(root, { recursive: true, force: true });

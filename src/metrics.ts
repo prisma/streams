@@ -1,26 +1,6 @@
-type Tags = Record<string, string>;
+import { buildInternalMetricsRecord } from "./profiles/metrics/normalize";
 
-type MetricEvent = {
-  apiVersion: "durable.streams/metrics/v1";
-  kind: "interval";
-  metric: string;
-  unit: "ns" | "bytes" | "count";
-  windowStart: number;
-  windowEnd: number;
-  intervalMs: number;
-  instance: string;
-  stream?: string;
-  tags?: Tags;
-  count: number;
-  sum: number;
-  min: number;
-  max: number;
-  avg: number;
-  p50: number;
-  p95: number;
-  p99: number;
-  buckets: Record<string, number>;
-};
+type Tags = Record<string, string>;
 
 class Histogram {
   private readonly maxSamples: number;
@@ -134,16 +114,14 @@ export class Metrics {
     };
   }
 
-  flushInterval(): MetricEvent[] {
+  flushInterval(): Record<string, unknown>[] {
     const windowEnd = Date.now();
     const intervalMs = windowEnd - this.windowStartMs;
-    const events: MetricEvent[] = [];
+    const events: Record<string, unknown>[] = [];
     for (const s of this.series.values()) {
       const snap = s.hist.snapshotAndReset();
       if (snap.count === 0) continue;
-      events.push({
-        apiVersion: "durable.streams/metrics/v1",
-        kind: "interval",
+      events.push(buildInternalMetricsRecord({
         metric: s.metric,
         unit: s.unit,
         windowStart: this.windowStartMs,
@@ -153,7 +131,7 @@ export class Metrics {
         stream: s.stream,
         tags: s.tags,
         ...snap,
-      });
+      }));
     }
     this.windowStartMs = windowEnd;
     return events;

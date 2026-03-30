@@ -16,8 +16,8 @@ setSqliteRuntimeOverride(data.hostRuntime ?? null);
 const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes, skipMigrations: true });
 
 const hooks: SegmenterHooks = {
-  onSegmentSealed: (payloadBytes, segmentBytes) => {
-    parentPort?.postMessage({ type: "sealed", payloadBytes, segmentBytes });
+  onSegmentSealed: (stream, payloadBytes, segmentBytes) => {
+    parentPort?.postMessage({ type: "sealed", stream, payloadBytes, segmentBytes });
   },
 };
 

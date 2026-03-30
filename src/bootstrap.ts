@@ -59,6 +59,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
       const epoch = typeof manifest.epoch === "number" ? manifest.epoch : 0;
       const nextOffsetNum = typeof manifest.next_offset === "number" ? manifest.next_offset : 0;
       const nextOffset = BigInt(nextOffsetNum);
+      const logicalSizeBytes = parseManifestBigInt(manifest.logical_size_bytes) ?? 0n;
 
       const contentType = typeof manifest.content_type === "string" ? manifest.content_type : "application/octet-stream";
       const profile = typeof manifest.profile === "string" && manifest.profile !== "" ? manifest.profile : "generic";
@@ -108,6 +109,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         uploaded_segment_count: uploadedPrefix,
         pending_rows: 0n,
         pending_bytes: 0n,
+        logical_size_bytes: logicalSizeBytes,
         wal_rows: 0n,
         wal_bytes: 0n,
         last_append_ms: lastAppendMs,
@@ -268,6 +270,13 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
   } finally {
     db.close();
   }
+}
+
+function parseManifestBigInt(value: unknown): bigint | null {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return BigInt(Math.trunc(value));
+  if (typeof value === "string" && /^-?[0-9]+$/.test(value)) return BigInt(value);
+  return null;
 }
 
 function decodeZstdBase64(value: string): Uint8Array {

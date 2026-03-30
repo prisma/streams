@@ -25,6 +25,7 @@ describe("wal append", () => {
       expect(s.next_offset).toBe(2n);
       expect(s.pending_rows).toBe(2n);
       expect(s.pending_bytes).toBe(3n);
+      expect(s.logical_size_bytes).toBe(3n);
       expect(s.wal_rows).toBe(2n);
       expect(s.wal_bytes).toBe(3n);
       db.close();

@@ -4,6 +4,7 @@ import type { SchemaRegistry, SchemaRegistryStore } from "../schema/registry";
 import type { TouchProcessorManager } from "../touch/manager";
 import type { CanonicalChange } from "../touch/canonical_change";
 import type { TouchConfig } from "../touch/spec";
+import type { AggSummaryState } from "../search/agg_format";
 
 export const STREAM_PROFILE_API_VERSION = "durable.streams/profile/v1" as const;
 export const DEFAULT_STREAM_PROFILE = "generic" as const;
@@ -71,6 +72,28 @@ export type PreparedJsonRecord = {
   routingKey: string | null;
 };
 
+export type MetricsCompanionRecord = {
+  metric: string;
+  unit: string;
+  metricKind: string;
+  temporality: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  intervalMs: number;
+  stream: string | null;
+  instance: string | null;
+  attributes: Record<string, string>;
+  dimensionPairs: string[];
+  dimensionKey: string | null;
+  seriesKey: string;
+  summary: AggSummaryState;
+};
+
+export type NormalizedMetricsRecord = PreparedJsonRecord & {
+  value: Record<string, unknown>;
+  companion: MetricsCompanionRecord;
+};
+
 export type StreamTouchRoute =
   | { kind: "meta" }
   | { kind: "wait" }
@@ -105,6 +128,14 @@ export interface StreamProfileJsonIngestCapability {
   prepareRecordResult(args: { stream: string; profile: StreamProfileSpec; value: unknown }): Result<PreparedJsonRecord, StreamProfileValidationError>;
 }
 
+export interface StreamProfileMetricsCapability {
+  normalizeRecordResult(args: {
+    stream: string;
+    profile: StreamProfileSpec;
+    value: unknown;
+  }): Result<NormalizedMetricsRecord, StreamProfileValidationError>;
+}
+
 export interface StreamProfileDefinition {
   kind: StreamProfileKind;
   usesStoredProfileRow: boolean;
@@ -114,6 +145,7 @@ export interface StreamProfileDefinition {
   persistProfileResult(args: PersistProfileArgs): Result<StreamProfilePersistResult, StreamProfileMutationError>;
   touch?: StreamTouchCapability;
   jsonIngest?: StreamProfileJsonIngestCapability;
+  metrics?: StreamProfileMetricsCapability;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {

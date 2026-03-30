@@ -4,7 +4,7 @@ import type { ObjectStore } from "./objectstore/interface";
 import { NullObjectStore } from "./objectstore/null";
 import { StreamReader } from "./reader";
 import type { StatsCollector } from "./stats";
-import type { UploaderController } from "./uploader";
+import type { UploaderController, UploaderHooks } from "./uploader";
 import type { SegmenterController } from "./segment/segmenter_workers";
 
 class NoopUploader implements UploaderController {
@@ -13,7 +13,7 @@ class NoopUploader implements UploaderController {
   countSegmentsWaiting(): number {
     return 0;
   }
-  setHooks(_hooks: { onSegmentsUploaded?: (stream: string) => void } | undefined): void {}
+  setHooks(_hooks: UploaderHooks | undefined): void {}
   async publishManifest(_stream: string): Promise<void> {}
 }
 

@@ -95,6 +95,7 @@ export class IngestQueue {
         `UPDATE streams
          SET next_offset=?, updated_at_ms=?, last_append_ms=?,
              pending_rows=pending_rows+?, pending_bytes=pending_bytes+?,
+             logical_size_bytes=logical_size_bytes+?,
              wal_rows=wal_rows+?, wal_bytes=wal_bytes+?,
              stream_seq=?,
              closed=CASE WHEN ? THEN 1 ELSE closed END,
@@ -559,6 +560,7 @@ export class IngestQueue {
           nowMs,
           st.lastAppendMs,
           BigInt(task.rows.length),
+          totalBytes,
           totalBytes,
           BigInt(task.rows.length),
           totalBytes,

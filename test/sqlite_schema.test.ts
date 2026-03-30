@@ -35,6 +35,7 @@ describe("sqlite schema", () => {
         .map((r: any) => r.name);
       expect(streamCols).toContain("uploaded_segment_count");
       expect(streamCols).toContain("profile");
+      expect(streamCols).toContain("logical_size_bytes");
       db.close();
     } finally {
       rmSync(root, { recursive: true, force: true });

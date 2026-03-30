@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import type { Config } from "./config";
 import { SqliteDurableStore, type StreamRow } from "./db/db";
 import { IngestQueue, type ProducerInfo, type AppendRow } from "./ingest";
@@ -26,6 +27,7 @@ import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
 import { MemoryGuard } from "./memory";
 import { TouchProcessorManager } from "./touch/manager";
+import { StreamSizeReconciler } from "./stream_size_reconciler";
 import type { SegmenterController } from "./segment/segmenter_workers";
 import type { UploaderController } from "./uploader";
 import type { StreamIndexLookup } from "./index/indexer";
@@ -40,6 +42,7 @@ import {
   resolveTouchCapability,
   type StreamTouchRoute,
 } from "./profiles";
+import { dsError } from "./util/ds_error.ts";
 
 function withNosniff(headers: HeadersInit = {}): HeadersInit {
   return {
@@ -200,6 +203,11 @@ function timestampToIsoString(value: bigint | null): string | null {
   return value == null ? null : new Date(Number(value)).toISOString();
 }
 
+function weakEtag(namespace: string, body: string): string {
+  const hash = createHash("sha1").update(body).digest("hex");
+  return `W/"${namespace}:${hash}"`;
+}
+
 function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name: string; kind: string }> {
   if (!search) return [];
   return Object.entries(search.fields)
@@ -208,9 +216,9 @@ function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name:
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts" | "agg"; fields: string[] }> {
+function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> {
   if (!search) return [];
-  const out: Array<{ family: "col" | "fts" | "agg"; fields: string[] }> = [];
+  const out: Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> = [];
   const colFields = Object.entries(search.fields)
     .filter(([, field]) => field.column === true)
     .map(([name]) => name)
@@ -223,6 +231,7 @@ function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ fam
   if (ftsFields.length > 0) out.push({ family: "fts", fields: ftsFields });
   const aggRollups = Object.keys(search.rollups ?? {}).sort((a, b) => a.localeCompare(b));
   if (aggRollups.length > 0) out.push({ family: "agg", fields: aggRollups });
+  if (search.profile === "metrics") out.push({ family: "mblk", fields: ["metrics"] });
   return out;
 }
 
@@ -317,14 +326,35 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     metrics,
   });
   const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry } = runtime;
-  const metricsEmitter = new MetricsEmitter(metrics, ingest, cfg.metricsFlushIntervalMs);
+  const metricsEmitter = new MetricsEmitter(metrics, ingest, cfg.metricsFlushIntervalMs, {
+    onAppended: ({ lastOffset, stream }) => {
+      notifier.notify(stream, lastOffset);
+      notifier.notifyDetailsChanged(stream);
+    },
+  });
   const expirySweeper = new ExpirySweeper(cfg, db);
+  const streamSizeReconciler = new StreamSizeReconciler(db, store, (stream) => notifier.notifyDetailsChanged(stream));
 
-  db.ensureStream("__stream_metrics__", { contentType: "application/json" });
+  const metricsStreamRow = db.ensureStream("__stream_metrics__", { contentType: "application/json", profile: "metrics" });
+  const metricsProfileRes = profiles.updateProfileResult("__stream_metrics__", metricsStreamRow, { kind: "metrics" });
+  if (Result.isError(metricsProfileRes)) {
+    throw dsError(`failed to initialize __stream_metrics__ profile: ${metricsProfileRes.error.message}`);
+  }
   runtime.start();
+  if (metricsProfileRes.value.schemaRegistry) {
+    void (async () => {
+      try {
+        await uploadSchemaRegistry("__stream_metrics__", metricsProfileRes.value.schemaRegistry!);
+        await uploader.publishManifest("__stream_metrics__");
+      } catch {
+        // background best-effort; next manifest publication will reconcile
+      }
+    })();
+  }
   metricsEmitter.start();
   expirySweeper.start();
   touch.start();
+  streamSizeReconciler.start();
 
   const buildJsonRows = (
     stream: string,
@@ -443,13 +473,17 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     if (args.appendedRows > 0) {
       metrics.recordAppend(args.metricsBytes, args.appendedRows);
       notifier.notify(args.stream, args.lastOffset);
+      notifier.notifyDetailsChanged(args.stream);
       touch.notify(args.stream);
     }
     if (stats) {
       if (args.touched) stats.recordStreamTouched(args.stream);
       if (args.appendedRows > 0) stats.recordIngested(args.ingestedBytes);
     }
-    if (args.closed) notifier.notifyClose(args.stream);
+    if (args.closed) {
+      notifier.notifyDetailsChanged(args.stream);
+      notifier.notifyClose(args.stream);
+    }
   };
 
   const decodeJsonRecords = (
@@ -483,6 +517,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     uploaded_segment_count: db.countUploadedSegments(stream),
     pending_rows: row.pending_rows.toString(),
     pending_bytes: row.pending_bytes.toString(),
+    total_size_bytes: row.logical_size_bytes.toString(),
     wal_rows: row.wal_rows.toString(),
     wal_bytes: row.wal_bytes.toString(),
     last_append_at: timestampToIsoString(row.last_append_ms),
@@ -548,6 +583,48 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       exact_indexes: exactIndexes,
       search_families: searchFamilies,
     };
+  };
+
+  type DetailsSnapshot = { etag: string; body: string; version: bigint };
+
+  const buildDetailsSnapshotResult = (
+    stream: string,
+    mode: "details" | "index_status"
+  ): Result<DetailsSnapshot, { status: 404 | 500; message: string }> => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const beforeVersion = notifier.currentDetailsVersion(stream);
+      const srow = db.getStream(stream);
+      if (!srow || db.isDeleted(srow)) return Result.err({ status: 404, message: "not_found" });
+      if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return Result.err({ status: 404, message: "stream expired" });
+
+      const regRes = registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) return Result.err({ status: 500, message: regRes.error.message });
+      const profileRes = profiles.getProfileResourceResult(stream, srow);
+      if (Result.isError(profileRes)) return Result.err({ status: 500, message: profileRes.error.message });
+
+      const profileKind = profileRes.value.profile.kind;
+      const indexStatus = buildIndexStatus(stream, regRes.value, profileKind);
+      const payload =
+        mode === "index_status"
+          ? indexStatus
+          : {
+              stream: buildStreamSummary(stream, srow, profileKind),
+              profile: profileRes.value,
+              schema: regRes.value,
+              index_status: indexStatus,
+            };
+      const body = JSON.stringify(payload);
+      const afterVersion = notifier.currentDetailsVersion(stream);
+      if (beforeVersion === afterVersion) {
+        return Result.ok({
+          etag: weakEtag(mode, body),
+          body,
+          version: afterVersion,
+        });
+      }
+    }
+
+    return Result.err({ status: 500, message: "details changed too quickly" });
   };
 
   let closing = false;
@@ -686,6 +763,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               } catch {
                 return json(500, { error: { code: "internal", message: "schema upload failed" } });
               }
+              notifier.notifyDetailsChanged(stream);
               return json(200, regRes.value);
             }
             if (update.schema === undefined && update.search !== undefined && update.routingKey === undefined) {
@@ -696,6 +774,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               } catch {
                 return json(500, { error: { code: "internal", message: "schema upload failed" } });
               }
+              notifier.notifyDetailsChanged(stream);
               return json(200, regRes.value);
             }
             const regRes = registry.updateRegistryResult(stream, srow, {
@@ -710,6 +789,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             } catch {
               return json(500, { error: { code: "internal", message: "schema upload failed" } });
             }
+            notifier.notifyDetailsChanged(stream);
             return json(200, regRes.value);
           }
           return badRequest("unsupported method");
@@ -745,6 +825,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             } catch {
               return json(500, { error: { code: "internal", message: "profile upload failed" } });
             }
+            notifier.notifyDetailsChanged(stream);
             return json(200, profileRes.value.resource);
           }
 
@@ -752,25 +833,92 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isDetails || isIndexStatus) {
-          const srow = db.getStream(stream);
-          if (!srow || db.isDeleted(srow)) return notFound();
-          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
           if (req.method !== "GET") return badRequest("unsupported method");
+          const liveParam = url.searchParams.get("live") ?? "";
+          let longPoll = false;
+          if (liveParam === "" || liveParam === "false" || liveParam === "0") longPoll = false;
+          else if (liveParam === "long-poll" || liveParam === "true" || liveParam === "1") longPoll = true;
+          else return badRequest("invalid live mode");
 
-          const regRes = registry.getRegistryResult(stream);
-          if (Result.isError(regRes)) return schemaReadErrorResponse(regRes.error);
-          const profileRes = profiles.getProfileResourceResult(stream, srow);
-          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+          const timeout = url.searchParams.get("timeout") ?? url.searchParams.get("timeout_ms");
+          let timeoutMs: number | null = null;
+          if (timeout) {
+            if (/^[0-9]+$/.test(timeout)) {
+              timeoutMs = Number(timeout);
+            } else {
+              const timeoutRes = parseDurationMsResult(timeout);
+              if (Result.isError(timeoutRes)) return badRequest("invalid timeout");
+              timeoutMs = timeoutRes.value;
+            }
+          }
 
-          const profileKind = profileRes.value.profile.kind;
-          const indexStatus = buildIndexStatus(stream, regRes.value, profileKind);
-          if (isIndexStatus) return json(200, indexStatus);
+          const loadSnapshot = (): Response | DetailsSnapshot => {
+            const snapshotRes = buildDetailsSnapshotResult(stream, isIndexStatus ? "index_status" : "details");
+            if (Result.isError(snapshotRes)) {
+              if (snapshotRes.error.status === 404) {
+                return snapshotRes.error.message === "stream expired" ? notFound("stream expired") : notFound();
+              }
+              return internalError(snapshotRes.error.message);
+            }
+            return snapshotRes.value;
+          };
 
-          return json(200, {
-            stream: buildStreamSummary(stream, srow, profileKind),
-            profile: profileRes.value,
-            schema: regRes.value,
-            index_status: indexStatus,
+          let snapshotOrResponse = loadSnapshot();
+          if (snapshotOrResponse instanceof Response) return snapshotOrResponse;
+          let snapshot = snapshotOrResponse;
+          const ifNoneMatch = req.headers.get("if-none-match");
+
+          if (!longPoll) {
+            if (ifNoneMatch && ifNoneMatch === snapshot.etag) {
+              return new Response(null, {
+                status: 304,
+                headers: withNosniff({ "cache-control": "no-store", etag: snapshot.etag }),
+              });
+            }
+            return new Response(snapshot.body, {
+              status: 200,
+              headers: withNosniff({
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": "no-store",
+                etag: snapshot.etag,
+              }),
+            });
+          }
+
+          if (!ifNoneMatch || ifNoneMatch !== snapshot.etag) {
+            return new Response(snapshot.body, {
+              status: 200,
+              headers: withNosniff({
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": "no-store",
+                etag: snapshot.etag,
+              }),
+            });
+          }
+
+          const deadline = Date.now() + (timeoutMs ?? 3000);
+          while (ifNoneMatch === snapshot.etag) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+              return new Response(null, {
+                status: 304,
+                headers: withNosniff({ "cache-control": "no-store", etag: snapshot.etag }),
+              });
+            }
+            await notifier.waitForDetailsChange(stream, snapshot.version, remaining, req.signal);
+            if (req.signal.aborted) return new Response(null, { status: 204 });
+            snapshotOrResponse = loadSnapshot();
+            if (snapshotOrResponse instanceof Response) return snapshotOrResponse;
+            snapshot = snapshotOrResponse;
+          }
+
+          return new Response(snapshot.body, {
+            status: 200,
+            headers: withNosniff({
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store",
+              etag: snapshot.etag,
+            }),
           });
         }
 
@@ -943,6 +1091,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           }
 
           db.ensureStream(stream, { contentType, expiresAtMs, ttlSeconds, closed: false });
+          notifier.notifyDetailsChanged(stream);
           let lastOffset = -1n;
           let appendedRows = 0;
           let closedNow = false;
@@ -1011,6 +1160,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         if (req.method === "DELETE") {
           const deleted = db.deleteStream(stream);
           if (!deleted) return notFound();
+          notifier.notifyDetailsChanged(stream);
+          notifier.notifyClose(stream);
           await uploader.publishManifest(stream);
           return new Response(null, { status: 204, headers: withNosniff() });
         }
@@ -1568,6 +1719,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     segmenter.stop(true);
     metricsEmitter.stop();
     expirySweeper.stop();
+    streamSizeReconciler.stop();
     ingest.stop();
     memory.stop();
     db.close();

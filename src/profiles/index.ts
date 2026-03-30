@@ -5,6 +5,7 @@ import { LruCache } from "../util/lru";
 import { dsError } from "../util/ds_error.ts";
 import { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
 import { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
+import { METRICS_STREAM_PROFILE_DEFINITION } from "./metrics";
 import {
   buildStreamProfileResource,
   cloneStreamProfileSpec,
@@ -15,6 +16,7 @@ import {
   type StoredProfileRow,
   type StreamProfileJsonIngestCapability,
   type StreamProfileDefinition,
+  type StreamProfileMetricsCapability,
   type StreamProfileReadError,
   type StreamProfileResource,
   type StreamProfileSpec,
@@ -26,11 +28,13 @@ import { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 export * from "./profile";
 export { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
 export { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
+export { METRICS_STREAM_PROFILE_DEFINITION } from "./metrics";
 export { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 
 const STREAM_PROFILE_DEFINITIONS: Record<string, StreamProfileDefinition> = {
   [EVLOG_STREAM_PROFILE_DEFINITION.kind]: EVLOG_STREAM_PROFILE_DEFINITION,
   [GENERIC_STREAM_PROFILE_DEFINITION.kind]: GENERIC_STREAM_PROFILE_DEFINITION,
+  [METRICS_STREAM_PROFILE_DEFINITION.kind]: METRICS_STREAM_PROFILE_DEFINITION,
   [STATE_PROTOCOL_STREAM_PROFILE_DEFINITION.kind]: STATE_PROTOCOL_STREAM_PROFILE_DEFINITION,
 };
 // New built-in profiles are wired here. Core runtime paths must resolve the
@@ -89,6 +93,11 @@ export function resolveTouchCapability(profile: StreamProfileSpec | null | undef
 export function resolveJsonIngestCapability(profile: StreamProfileSpec | null | undefined): StreamProfileJsonIngestCapability | null {
   if (!profile) return null;
   return resolveStreamProfileDefinition(profile.kind)?.jsonIngest ?? null;
+}
+
+export function resolveMetricsCapability(profile: StreamProfileSpec | null | undefined): StreamProfileMetricsCapability | null {
+  if (!profile) return null;
+  return resolveStreamProfileDefinition(profile.kind)?.metrics ?? null;
 }
 
 export function resolveEnabledTouchCapability(

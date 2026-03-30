@@ -42,6 +42,10 @@ export function searchAggSegmentObjectKey(streamHash: string, segmentIndex: numb
   return `streams/${streamHash}/agg/segments/${pad16(segmentIndex)}-${objectId}.agg`;
 }
 
+export function searchMetricsBlockSegmentObjectKey(streamHash: string, segmentIndex: number, objectId: string): string {
+  return `streams/${streamHash}/mblk/segments/${pad16(segmentIndex)}-${objectId}.mblk`;
+}
+
 export function localSegmentPath(rootDir: string, streamHash: string, segmentIndex: number): string {
   return `${rootDir}/local/streams/${streamHash}/segments/${pad16(segmentIndex)}.bin`;
 }

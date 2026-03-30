@@ -10,7 +10,7 @@ export type SegmenterController = {
 };
 
 type WorkerMessage =
-  | { type: "sealed"; payloadBytes: number; segmentBytes: number }
+  | { type: "sealed"; stream: string; payloadBytes: number; segmentBytes: number }
   | { type: "stopped" };
 
 export class SegmenterWorkerPool implements SegmenterController {
@@ -64,7 +64,7 @@ export class SegmenterWorkerPool implements SegmenterController {
 
     worker.on("message", (msg: WorkerMessage) => {
       if (msg?.type === "sealed") {
-        this.hooks?.onSegmentSealed?.(msg.payloadBytes, msg.segmentBytes);
+        this.hooks?.onSegmentSealed?.(msg.stream, msg.payloadBytes, msg.segmentBytes);
       }
     });
 

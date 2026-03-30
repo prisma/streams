@@ -79,6 +79,7 @@ Additional columns present in the current implementation:
   - `expires_at_ms`
   - `stream_flags`
 - WAL accounting:
+  - `logical_size_bytes`
   - `wal_rows`
   - `wal_bytes`
 
@@ -94,6 +95,9 @@ Invariants:
 - `profile IS NULL` means the stream has no explicit declaration and is treated
   as a `generic` stream
 - `pending_bytes` and `pending_rows` reflect WAL rows with `offset >= sealed_through` (or `>= uploaded_through`, depending on design); pick one and enforce consistently.
+- `logical_size_bytes` is the logical payload-byte size exposed by `/_details`;
+  it is updated on append, restored from manifests for published history, and
+  can be repaired asynchronously after bootstrap if missing.
 - `segment_in_progress` must be 0/1.
 
 ---

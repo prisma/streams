@@ -1,3 +1,4 @@
+import { Result } from "better-result";
 import type { IngestQueue } from "./ingest";
 import type { Metrics } from "./metrics";
 
@@ -5,12 +6,24 @@ export class MetricsEmitter {
   private readonly metrics: Metrics;
   private readonly ingest: IngestQueue;
   private readonly intervalMs: number;
+  private readonly onAppended?: (args: {
+    lastOffset: bigint;
+    stream: string;
+  }) => void;
   private timer: any | null = null;
 
-  constructor(metrics: Metrics, ingest: IngestQueue, intervalMs: number) {
+  constructor(
+    metrics: Metrics,
+    ingest: IngestQueue,
+    intervalMs: number,
+    opts?: {
+      onAppended?: (args: { lastOffset: bigint; stream: string }) => void;
+    },
+  ) {
     this.metrics = metrics;
     this.ingest = ingest;
     this.intervalMs = intervalMs;
+    this.onAppended = opts?.onAppended;
   }
 
   start(): void {
@@ -32,17 +45,23 @@ export class MetricsEmitter {
     const events = this.metrics.flushInterval();
     if (events.length === 0) return;
     const rows = events.map((e) => ({
-      routingKey: e.stream ? new TextEncoder().encode(e.stream) : null,
+      routingKey: typeof e.seriesKey === "string" ? new TextEncoder().encode(e.seriesKey) : null,
       contentType: "application/json",
       payload: new TextEncoder().encode(JSON.stringify(e)),
     }));
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: "__stream_metrics__",
         baseAppendMs: BigInt(Date.now()),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: "__stream_metrics__",
+        });
+      }
     } catch {
       // best-effort; drop on failure
     }

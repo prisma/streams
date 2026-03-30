@@ -20,6 +20,7 @@ and tooling.
   implementation
 - [stream-profiles.md](./stream-profiles.md) — stream/profile/schema model and profile subresource
 - [profile-generic.md](./profile-generic.md) — reference for the baseline `generic` profile
+- [profile-metrics.md](./profile-metrics.md) — reference for the built-in `metrics` profile
 - [profile-state-protocol.md](./profile-state-protocol.md) — reference for the `state-protocol` profile
 - [profile-evlog.md](./profile-evlog.md) — design and reference for the `evlog` profile
 - [schemas.md](./schemas.md) — schema registry and lens behavior
@@ -28,8 +29,10 @@ and tooling.
 - [architecture.md](./architecture.md) — system architecture and data flow
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
 - [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
+- [ui-search-integration.md](./ui-search-integration.md) — how to build a filtered, chronologically ordered stream UI with `/_search` and `/_details`
 - [aggregation-rollups.md](./aggregation-rollups.md) — `.agg` rollup family and aggregation query model
-- [metrics.md](./metrics.md) — emitted metrics and stream formats
+- [alternative-metrics-approach.md](./alternative-metrics-approach.md) — comparison of Axiom MetricsDB with the current Prisma Streams metrics design
+- [metrics.md](./metrics.md) — shipped metrics profile, canonical metrics stream shape, and query architecture
 
 ## Operations
 

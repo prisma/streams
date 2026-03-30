@@ -33,6 +33,7 @@ export type StreamRow = {
   uploaded_segment_count: number;
   pending_rows: bigint;
   pending_bytes: bigint;
+  logical_size_bytes: bigint;
   wal_rows: bigint;
   wal_bytes: bigint;
   last_append_ms: bigint;
@@ -224,7 +225,7 @@ export class SqliteDurableStore {
         `SELECT stream, created_at_ms, updated_at_ms,
                 content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                 epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
-                pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
+                pending_rows, pending_bytes, logical_size_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                 expires_at_ms, stream_flags
          FROM streams WHERE stream = ? LIMIT 1;`
       ),
@@ -232,9 +233,9 @@ export class SqliteDurableStore {
         `INSERT INTO streams(stream, created_at_ms, updated_at_ms,
                              content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                              epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
-                             pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
+                             pending_rows, pending_bytes, logical_size_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                              expires_at_ms, stream_flags)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(stream) DO UPDATE SET
            updated_at_ms=excluded.updated_at_ms,
            expires_at_ms=excluded.expires_at_ms,
@@ -247,7 +248,7 @@ export class SqliteDurableStore {
         `SELECT stream, created_at_ms, updated_at_ms,
                 content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
                 epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
-                pending_rows, pending_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
+                pending_rows, pending_bytes, logical_size_bytes, wal_rows, wal_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
                 expires_at_ms, stream_flags
          FROM streams
          WHERE (stream_flags & ?) = 0
@@ -267,6 +268,7 @@ export class SqliteDurableStore {
         `UPDATE streams
          SET next_offset = ?, updated_at_ms = ?, last_append_ms = ?,
              pending_rows = pending_rows + ?, pending_bytes = pending_bytes + ?,
+             logical_size_bytes = logical_size_bytes + ?,
              wal_rows = wal_rows + ?, wal_bytes = wal_bytes + ?
          WHERE stream = ? AND (stream_flags & ?) = 0;`
       ),
@@ -274,6 +276,7 @@ export class SqliteDurableStore {
         `UPDATE streams
          SET next_offset = ?, updated_at_ms = ?, last_append_ms = ?,
              pending_rows = pending_rows + ?, pending_bytes = pending_bytes + ?,
+             logical_size_bytes = logical_size_bytes + ?,
              wal_rows = wal_rows + ?, wal_bytes = wal_bytes + ?
          WHERE stream = ? AND (stream_flags & ?) = 0 AND next_offset = ?;`
       ),
@@ -618,6 +621,7 @@ export class SqliteDurableStore {
       uploaded_segment_count: Number(row.uploaded_segment_count ?? 0),
       pending_rows: this.toBigInt(row.pending_rows),
       pending_bytes: this.toBigInt(row.pending_bytes),
+      logical_size_bytes: this.toBigInt(row.logical_size_bytes ?? 0),
       wal_rows: this.toBigInt(row.wal_rows ?? 0),
       wal_bytes: this.toBigInt(row.wal_bytes ?? 0),
       last_append_ms: this.toBigInt(row.last_append_ms),
@@ -662,6 +666,40 @@ export class SqliteDurableStore {
     return row ? this.coerceStreamRow(row) : null;
   }
 
+  setStreamLogicalSizeBytes(stream: string, logicalSizeBytes: bigint): void {
+    this.db
+      .query(`UPDATE streams SET logical_size_bytes=?, updated_at_ms=? WHERE stream=?;`)
+      .run(this.bindInt(logicalSizeBytes), this.nowMs(), stream);
+  }
+
+  listStreamsMissingLogicalSize(limit: number): string[] {
+    const now = this.nowMs();
+    const rows = this.db
+      .query(
+        `SELECT stream
+         FROM streams
+         WHERE (stream_flags & ?) = 0
+           AND (expires_at_ms IS NULL OR expires_at_ms > ?)
+           AND next_offset > 0
+           AND logical_size_bytes = 0
+         ORDER BY updated_at_ms ASC
+         LIMIT ?;`
+      )
+      .all(STREAM_FLAG_DELETED | STREAM_FLAG_TOUCH, now, limit) as any[];
+    return rows.map((row) => String(row.stream));
+  }
+
+  getWalBytesAfterOffset(stream: string, offset: bigint): bigint {
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(payload_len), 0) as bytes
+         FROM wal
+         WHERE stream=? AND offset > ?;`
+      )
+      .get(stream, this.bindInt(offset)) as any;
+    return this.toBigInt(row?.bytes ?? 0);
+  }
+
   ensureStream(
     stream: string,
     opts?: {
@@ -694,10 +732,10 @@ export class SqliteDurableStore {
           stream, created_at_ms, updated_at_ms,
           content_type, profile, stream_seq, closed, closed_producer_id, closed_producer_epoch, closed_producer_seq, ttl_seconds,
           epoch, next_offset, sealed_through, uploaded_through, uploaded_segment_count,
-          pending_rows, pending_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
+          pending_rows, pending_bytes, logical_size_bytes, last_append_ms, last_segment_cut_ms, segment_in_progress,
           expires_at_ms, stream_flags
         )
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`
       )
       .run(
         stream,
@@ -716,6 +754,7 @@ export class SqliteDurableStore {
         -1n,
         -1n,
         0,
+        0n,
         0n,
         0n,
         now,
@@ -750,6 +789,7 @@ export class SqliteDurableStore {
       row.uploaded_segment_count,
       row.pending_rows,
       row.pending_bytes,
+      row.logical_size_bytes,
       row.wal_rows,
       row.wal_bytes,
       row.last_append_ms,
@@ -1116,6 +1156,7 @@ export class SqliteDurableStore {
         lastAppend,
         pendingRows,
         totalBytes,
+        totalBytes,
         pendingRows,
         totalBytes,
         stream,
@@ -1141,6 +1182,38 @@ export class SqliteDurableStore {
         )
       : this.db.query(
           `SELECT offset, ts_ms, routing_key, content_type, payload\n           FROM wal\n           WHERE stream = ? AND offset >= ? AND offset <= ?\n           ORDER BY offset ASC;`
+        );
+    try {
+      const it = routingKey
+        ? (stmt.iterate(stream, start, end, routingKey) as any)
+        : (stmt.iterate(stream, start, end) as any);
+      for (const row of it) {
+        yield row;
+      }
+    } finally {
+      try {
+        stmt.finalize?.();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  *iterWalRangeDesc(stream: string, startOffset: bigint, endOffset: bigint, routingKey?: Uint8Array): Generator<any, void, void> {
+    const start = this.bindInt(startOffset);
+    const end = this.bindInt(endOffset);
+    const stmt = routingKey
+      ? this.db.query(
+          `SELECT offset, ts_ms, routing_key, content_type, payload
+           FROM wal
+           WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
+           ORDER BY offset DESC;`
+        )
+      : this.db.query(
+          `SELECT offset, ts_ms, routing_key, content_type, payload
+           FROM wal
+           WHERE stream = ? AND offset >= ? AND offset <= ?
+           ORDER BY offset DESC;`
         );
     try {
       const it = routingKey

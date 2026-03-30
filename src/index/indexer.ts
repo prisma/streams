@@ -17,6 +17,7 @@ import { dsError } from "../util/ds_error.ts";
 import type { AggSegmentCompanion } from "../search/agg_format";
 import type { ColSegmentCompanion } from "../search/col_format";
 import type { FtsSegmentCompanion } from "../search/fts_format";
+import type { MetricsBlockSegmentCompanion } from "../profiles/metrics/block_format";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
@@ -30,6 +31,7 @@ export type StreamIndexLookup = {
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSegmentCompanion | null>;
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSegmentCompanion | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSegmentCompanion | null>;
+  getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null>;
 };
 
 function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildError> {
@@ -68,6 +70,7 @@ export class IndexManager {
   private timer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
+  private readonly onMetadataChanged?: (stream: string) => void;
 
   constructor(
     cfg: Config,
@@ -75,7 +78,8 @@ export class IndexManager {
     os: ObjectStore,
     segmentCache: SegmentDiskCache | undefined,
     publishManifest?: (stream: string) => Promise<void>,
-    metrics?: Metrics
+    metrics?: Metrics,
+    onMetadataChanged?: (stream: string) => void
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -90,6 +94,7 @@ export class IndexManager {
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
     this.retireMinMs = Math.max(0, cfg.indexRetireMinMs);
     this.metrics = metrics;
+    this.onMetadataChanged = onMetadataChanged;
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
   }
@@ -158,6 +163,10 @@ export class IndexManager {
   }
 
   async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<FtsSegmentCompanion | null> {
+    return null;
+  }
+
+  async getMetricsBlockSegmentCompanion(_stream: string, _segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null> {
     return null;
   }
 
@@ -262,6 +271,7 @@ export class IndexManager {
         indexedThrough = end + 1;
         this.db.updateIndexedThrough(stream, indexedThrough);
         state.indexed_through = indexedThrough;
+        this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
             await this.publishManifest(stream);
@@ -318,6 +328,7 @@ export class IndexManager {
           retiredGen,
           nowMs
         );
+        this.onMetadataChanged?.(stream);
         if (this.metrics) {
           this.metrics.record("tieredstore.index.compact.latency", Number(elapsedNs), "ns", { level: String(run.meta.level) }, stream);
           this.metrics.record("tieredstore.index.runs.compacted", 1, "count", { level: String(run.meta.level) }, stream);

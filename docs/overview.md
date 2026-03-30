@@ -13,6 +13,8 @@ Every stream has a profile.
   schema/search/rollup installation.
 - `generic` means a plain durable stream with optional user-managed schema
   validation.
+- `metrics` is the built-in metrics profile for canonical interval summaries,
+  default search/rollups, and object-store-native metrics companions.
 - `state-protocol` is the built-in live/touch profile for JSON State Protocol
   streams.
 - Profiles define stream semantics; schemas define payload shape.
@@ -192,17 +194,18 @@ bun run test:conformance
 - [architecture.md](./architecture.md): system architecture
 - [stream-profiles.md](./stream-profiles.md): stream/profile/schema model
 - [profile-generic.md](./profile-generic.md): `generic` profile reference
+- [profile-metrics.md](./profile-metrics.md): `metrics` profile reference
 - [profile-state-protocol.md](./profile-state-protocol.md): `state-protocol`
   profile reference
 - [profile-evlog.md](./profile-evlog.md): `evlog` profile reference
 - [indexing-architecture.md](./indexing-architecture.md): current exact +
-  `.col` + `.fts` + `.agg` indexing model
+  `.col` + `.fts` + `.agg` + `.mblk` indexing model
 - [aggregation-rollups.md](./aggregation-rollups.md): schema-owned rollup and
   `_aggregate` model
 - [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants
 - [schemas.md](./schemas.md): schema registry and lens behavior
 - [live.md](./live.md): end-to-end live / touch integration guide and API semantics
-- [metrics.md](./metrics.md): emitted metrics
+- [metrics.md](./metrics.md): shipped metrics profile and metrics query model
 - [recovery-integrity-runbook.md](./recovery-integrity-runbook.md): recovery and operational runbook
 
 ## Open Source Baseline

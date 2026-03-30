@@ -31,12 +31,15 @@ Implemented built-ins today:
 
 - `evlog`
 - `generic`
+- `metrics`
 - `state-protocol`
 
 `generic` adds no canonical payload envelope and leaves schema management to the
 user. `evlog` owns canonical wide-event normalization, redaction, and its
-default schema/search/rollup registry on JSON append. `state-protocol` owns the
-live `/touch/*` surface and its touch configuration.
+default schema/search/rollup registry on JSON append. `metrics` owns canonical
+metrics interval normalization, its default schema/search/rollup registry, and
+the metrics-block companion family. `state-protocol` owns the live `/touch/*`
+surface and its touch configuration.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
@@ -65,12 +68,13 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Advances uploaded_through only after manifest upload succeeds, then GC WAL rows.
 
 5) Index managers
-- The full server starts five in-process indexing managers:
+- The full server starts six in-process indexing managers:
   - routing-key
   - exact secondary
   - `.col`
   - `.fts`
   - `.agg`
+  - `.mblk`
 - They run on a timer (`DS_INDEX_CHECK_MS`) inside the main server process.
 - They are asynchronous background loops, not dedicated worker threads or
   separate processes.
@@ -124,11 +128,18 @@ Today, `evlog` uses the same model to own:
 - routing-key defaults from `requestId` or `traceId`
 - default schema-owned `search` and `search.rollups` installation
 
+Today, `metrics` uses the same model to own:
+
+- canonical metrics interval normalization
+- default schema-owned `search` and `search.rollups` installation
+- the `.mblk` metrics-block companion family
+
 ## Control-Plane Metadata
 
 Per stream, SQLite stores:
 
 - stream lifecycle and offsets
+- logical payload-byte size for management lookups such as `/_details`
 - profile metadata
 - schema registry
 - profile-owned processing progress and other rebuildable helper state
@@ -137,7 +148,10 @@ In full mode, manifest objects, segment objects, and schema objects in object
 storage are the recovery source for published stream history and metadata.
 SQLite also holds transient local state, including the
 unuploaded WAL tail and runtime helper state, which is not fully mirrored to
-object storage. Profiles and schemas only shape how a stream is interpreted.
+object storage. Published logical stream size is restored from the manifest,
+and if it is missing a background reconciliation pass can rebuild it from
+published segments plus retained WAL. Profiles and schemas only shape how a
+stream is interpreted.
 
 ## Data flow
 
@@ -254,5 +268,6 @@ active streams.
 
 ## Observability
 
-- Interval metrics are appended to the `__stream_metrics__` stream.
+- Interval metrics are appended to the `__stream_metrics__` stream using the
+  built-in `metrics` profile.
 - Optional `--stats` log line provides ingest/stored/uploaded throughput plus WAL/meta sizes and backpressure.

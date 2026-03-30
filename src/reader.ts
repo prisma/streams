@@ -46,8 +46,11 @@ import {
 } from "./search/query";
 import { filterDocIdsByFtsClauseResult } from "./search/fts_runtime";
 import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema";
+import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./search/column_encoding";
 import type { SearchRollupConfig } from "./schema/registry";
 import type { AggMeasureState } from "./search/agg_format";
+import type { MetricsBlockSegmentCompanion } from "./profiles/metrics/block_format";
+import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
 
 export type ReadFormat = "raw" | "json";
 
@@ -137,6 +140,12 @@ type SearchHitInternal = {
 type AggregateGroupInternal = {
   key: Record<string, string | null>;
   measures: Record<string, AggMeasureState>;
+};
+type SearchCursorFieldBound = {
+  kind: "field";
+  sort: Extract<SearchSortSpec, { kind: "field" }>;
+  after: bigint | number | string | boolean | null;
+  encoded: Uint8Array | null;
 };
 
 function errorMessage(e: unknown): string {
@@ -695,6 +704,10 @@ export class StreamReader {
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       const ftsIndexedThrough = ftsClauses.length > 0 ? this.db.getSearchFamilyState(stream, "fts")?.uploaded_through ?? 0 : 0;
       const deadline = request.timeoutMs == null ? null : Date.now() + request.timeoutMs;
+      const leadingSort = request.sort[0] ?? null;
+      const offsetSearchAfter =
+        request.searchAfter && leadingSort?.kind === "offset" ? normalizeSearchAfterValue(leadingSort, request.searchAfter[0]) : null;
+      const cursorFieldBound = resolveSearchCursorFieldBound(request);
 
       const hits: SearchHitInternal[] = [];
       let totalHits = 0;
@@ -715,8 +728,11 @@ export class StreamReader {
         if (!evalRes.value.matched) return Result.ok(undefined);
         const fieldsRes = extractSearchHitFieldsResult(registry, offsetSeq, parsedRes.value);
         if (Result.isError(fieldsRes)) return Result.err({ kind: "internal", message: fieldsRes.error.message });
-        totalHits += 1;
+        if (request.trackTotalHits) totalHits += 1;
         const sortInternal = buildSearchSortInternalValues(request.sort, fieldsRes.value, evalRes.value, offsetSeq);
+        if (request.searchAfter && compareSearchAfterValues(sortInternal, request.sort, request.searchAfter) <= 0) {
+          return Result.ok(undefined);
+        }
         hits.push({
           offsetSeq,
           offset: encodeOffset(srow.epoch, offsetSeq),
@@ -731,14 +747,20 @@ export class StreamReader {
 
       const scanSegmentForSearchResult = async (
         seg: SegmentRow,
-        allowedDocIds: Set<number> | null
+        allowedDocIds: Set<number> | null,
+        rangeStartSeq: bigint,
+        rangeEndSeq: bigint
       ): Promise<Result<void, ReaderError>> => {
         const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
         let curOffset = seg.start_offset;
         for (const blockRes of iterateBlocksResult(segBytes)) {
           if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
           for (const record of blockRes.value.decoded.records) {
-            if (curOffset > snapshotEndSeq) return Result.ok(undefined);
+            if (curOffset > rangeEndSeq) return Result.ok(undefined);
+            if (curOffset < rangeStartSeq) {
+              curOffset += 1n;
+              continue;
+            }
             const localDocId = Number(curOffset - seg.start_offset);
             if (!allowedDocIds || allowedDocIds.has(localDocId)) {
               const matchRes = collectSearchMatchResult(curOffset, record.payload);
@@ -754,17 +776,25 @@ export class StreamReader {
         return Result.ok(undefined);
       };
 
-      let seq = 0n;
-      while (seq <= snapshotEndSeq && seq <= srow.sealed_through) {
-        const seg = this.db.findSegmentForOffset(stream, seq);
-        if (!seg) break;
+      const scanSegmentWithFamiliesResult = async (
+        seg: SegmentRow,
+        rangeStartSeq: bigint,
+        rangeEndSeq: bigint
+      ): Promise<Result<void, ReaderError>> => {
         if (
           exactCandidateInfo.segments &&
           seg.segment_index < exactCandidateInfo.indexedThrough &&
           !exactCandidateInfo.segments.has(seg.segment_index)
         ) {
-          seq = seg.end_offset + 1n;
-          continue;
+          return Result.ok(undefined);
+        }
+        if (cursorFieldBound) {
+          const overlapsCursor = await this.segmentMayOverlapSearchCursor(stream, seg.segment_index, cursorFieldBound);
+          if (!overlapsCursor) {
+            indexFamiliesUsed.add("col");
+            indexedSegments += 1;
+            return Result.ok(undefined);
+          }
         }
 
         const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
@@ -780,8 +810,7 @@ export class StreamReader {
         if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
           indexedSegments += familyCandidates.usedFamilies.size > 0 ? 1 : 0;
           for (const family of familyCandidates.usedFamilies) indexFamiliesUsed.add(family);
-          seq = seg.end_offset + 1n;
-          continue;
+          return Result.ok(undefined);
         }
         if (familyCandidates.usedFamilies.size > 0) {
           indexedSegments += 1;
@@ -790,7 +819,144 @@ export class StreamReader {
           scannedSegments += 1;
         }
 
-        const scanRes = await scanSegmentForSearchResult(seg, familyCandidates.docIds);
+        const scanRes = await scanSegmentForSearchResult(seg, familyCandidates.docIds, rangeStartSeq, rangeEndSeq);
+        if (Result.isError(scanRes)) return scanRes;
+        return Result.ok(undefined);
+      };
+
+      const stopIfPageComplete = (): boolean => !request.trackTotalHits && hits.length >= request.size;
+
+      if (leadingSort?.kind === "offset") {
+        const descending = leadingSort.direction === "desc";
+        const rangeStartSeq = descending ? 0n : typeof offsetSearchAfter === "bigint" ? offsetSearchAfter + 1n : 0n;
+        const rangeEndSeq = descending ? (typeof offsetSearchAfter === "bigint" ? offsetSearchAfter - 1n : snapshotEndSeq) : snapshotEndSeq;
+
+        if (rangeStartSeq <= rangeEndSeq) {
+          if (descending) {
+            const tailStart = srow.sealed_through + 1n;
+            if (tailStart <= rangeEndSeq) {
+              const walStart = rangeStartSeq > tailStart ? rangeStartSeq : tailStart;
+              const walEnd = rangeEndSeq;
+              if (walStart <= walEnd) {
+                for (const record of this.db.iterWalRangeDesc(stream, walStart, walEnd)) {
+                  scannedTailDocs += 1;
+                  const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
+                  if (Result.isError(matchRes)) return matchRes;
+                  if (deadline != null && Date.now() >= deadline) {
+                    timedOut = true;
+                    break;
+                  }
+                  if (stopIfPageComplete()) break;
+                }
+              }
+            }
+            if (!timedOut && !stopIfPageComplete()) {
+              const sealedEnd = rangeEndSeq < srow.sealed_through ? rangeEndSeq : srow.sealed_through;
+              if (sealedEnd >= rangeStartSeq) {
+                const startSeg = this.db.findSegmentForOffset(stream, sealedEnd);
+                let segmentIndex = startSeg?.segment_index ?? this.db.countSegmentsForStream(stream) - 1;
+                while (segmentIndex >= 0) {
+                  const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+                  if (!seg) {
+                    segmentIndex -= 1;
+                    continue;
+                  }
+                  if (seg.end_offset < rangeStartSeq) break;
+                  if (seg.start_offset > sealedEnd) {
+                    segmentIndex -= 1;
+                    continue;
+                  }
+                  const scanRes = await this.scanSegmentReverseForSearchResult(
+                    stream,
+                    seg,
+                    exactCandidateInfo,
+                    cursorFieldBound,
+                    columnClauses,
+                    columnIndexedThrough,
+                    ftsClauses,
+                    ftsIndexedThrough,
+                    rangeStartSeq,
+                    sealedEnd,
+                    {
+                      indexFamiliesUsed,
+                      collectSearchMatchResult,
+                      deadline,
+                      isTimedOut: () => timedOut,
+                      setTimedOut: (next) => {
+                        timedOut = next;
+                      },
+                      stopIfPageComplete,
+                      addIndexedSegment: () => {
+                        indexedSegments += 1;
+                      },
+                      addScannedSegment: () => {
+                        scannedSegments += 1;
+                      },
+                    }
+                  );
+                  if (Result.isError(scanRes)) return scanRes;
+                  if (timedOut || stopIfPageComplete()) break;
+                  segmentIndex -= 1;
+                }
+              }
+            }
+          } else {
+            let seq = rangeStartSeq;
+            while (seq <= rangeEndSeq && seq <= srow.sealed_through) {
+              const seg = this.db.findSegmentForOffset(stream, seq);
+              if (!seg) break;
+              const scanRes = await scanSegmentWithFamiliesResult(seg, rangeStartSeq, rangeEndSeq);
+              if (Result.isError(scanRes)) return scanRes;
+              seq = seg.end_offset + 1n;
+              if (timedOut || stopIfPageComplete()) break;
+            }
+            if (!timedOut && !stopIfPageComplete() && seq <= rangeEndSeq) {
+              for (const record of this.db.iterWalRange(stream, seq, rangeEndSeq)) {
+                scannedTailDocs += 1;
+                const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
+                if (Result.isError(matchRes)) return matchRes;
+                if (deadline != null && Date.now() >= deadline) {
+                  timedOut = true;
+                  break;
+                }
+                if (stopIfPageComplete()) break;
+              }
+            }
+          }
+        }
+
+        const pageHits = hits.slice(0, request.size);
+        const nextSearchAfter = pageHits.length === request.size ? pageHits[pageHits.length - 1].sortResponse : null;
+        return Result.ok({
+          stream,
+          snapshotEndOffset,
+          tookMs: Date.now() - startedAt,
+          coverage: {
+            indexedSegments,
+            scannedSegments,
+            scannedTailDocs,
+            indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
+          },
+          total: {
+            value: request.trackTotalHits ? totalHits : pageHits.length,
+            relation: timedOut ? "gte" : "eq",
+          },
+          hits: pageHits.map((hit) => ({
+            offset: hit.offset,
+            score: hit.score,
+            sort: hit.sortResponse,
+            fields: hit.fields,
+            source: hit.source,
+          })),
+          nextSearchAfter,
+        });
+      }
+
+      let seq = 0n;
+      while (seq <= snapshotEndSeq && seq <= srow.sealed_through) {
+        const seg = this.db.findSegmentForOffset(stream, seq);
+        if (!seg) break;
+        const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
         if (Result.isError(scanRes)) return scanRes;
         seq = seg.end_offset + 1n;
         if (timedOut) break;
@@ -809,8 +975,7 @@ export class StreamReader {
       }
 
       hits.sort((left, right) => compareSearchHits(left, right, request.sort));
-      const filteredHits = request.searchAfter ? hits.filter((hit) => compareSearchAfter(hit, request.sort, request.searchAfter!) > 0) : hits;
-      const pageHits = filteredHits.slice(0, request.size);
+      const pageHits = hits.slice(0, request.size);
       const nextSearchAfter = pageHits.length === request.size ? pageHits[pageHits.length - 1].sortResponse : null;
 
       return Result.ok({
@@ -824,7 +989,7 @@ export class StreamReader {
           indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
         },
         total: {
-          value: request.trackTotalHits ? filteredHits.length : pageHits.length,
+          value: request.trackTotalHits ? totalHits : pageHits.length,
           relation: timedOut ? "gte" : "eq",
         },
         hits: pageHits.map((hit) => ({
@@ -877,10 +1042,11 @@ export class StreamReader {
       const selectedMeasures = new Set(request.measures ?? Object.keys(rollup.measures));
 
       const buckets = new Map<number, Map<string, AggregateGroupInternal>>();
-      let indexedSegments = 0;
-      let scannedSegments = 0;
+      const indexedSegmentSet = new Set<number>();
+      const scannedSegmentSet = new Set<number>();
       let scannedTailDocs = 0;
       const indexFamiliesUsed = new Set<string>();
+      const metricsProfile = registry.search.profile === "metrics";
 
       const mergeBucketMeasures = (bucketStartMs: number, dimensionsKey: Record<string, string | null>, measures: Record<string, AggMeasureState>): void => {
         let groups = buckets.get(bucketStartMs);
@@ -931,7 +1097,7 @@ export class StreamReader {
             }
           }
           if (usedSegment) {
-            indexedSegments += 1;
+            indexedSegmentSet.add(seg.segment_index);
             indexFamiliesUsed.add("agg");
           }
         }
@@ -981,7 +1147,35 @@ export class StreamReader {
             curOffset += 1n;
           }
         }
-        scannedSegments += 1;
+        scannedSegmentSet.add(seg.segment_index);
+        return Result.ok(undefined);
+      };
+
+      const scanMetricsBlockForAggregateResult = async (
+        seg: SegmentRow,
+        companion: MetricsBlockSegmentCompanion,
+        scanRanges: Array<{ startMs: number; endMs: number }>
+      ): Promise<Result<void, ReaderError>> => {
+        for (const record of companion.records) {
+          const offsetSeq = seg.start_offset + BigInt(record.doc_id);
+          const timestampMs = record.windowStartMs;
+          const inRange = scanRanges.some((range) => timestampMs >= range.startMs && timestampMs < range.endMs);
+          if (!inRange) continue;
+          const materialized = materializeMetricsBlockRecord(record);
+          if (request.q) {
+            const evalRes = evaluateSearchQueryResult(registry, offsetSeq, request.q, materialized);
+            if (Result.isError(evalRes)) return Result.err({ kind: "internal", message: evalRes.error.message });
+            if (!evalRes.value.matched) continue;
+          }
+          const contributionRes = extractRollupContributionResult(registry, rollup, offsetSeq, materialized);
+          if (Result.isError(contributionRes)) return Result.err({ kind: "internal", message: contributionRes.error.message });
+          const contribution = contributionRes.value;
+          if (!contribution) continue;
+          const bucketStartMs = Math.floor(contribution.timestampMs / intervalMs) * intervalMs;
+          mergeBucketMeasures(bucketStartMs, contribution.dimensions, contribution.measures);
+        }
+        indexedSegmentSet.add(seg.segment_index);
+        indexFamiliesUsed.add("mblk");
         return Result.ok(undefined);
       };
 
@@ -1000,7 +1194,18 @@ export class StreamReader {
           }
         }
         if (!overlaps) continue;
-        const scanRes = await scanSegmentForAggregateResult(seg, scanRanges);
+        let scanRes: Result<void, ReaderError>;
+        const metricsBlockState = metricsProfile ? this.db.getSearchFamilyState(stream, "mblk")?.uploaded_through ?? 0 : 0;
+        if (metricsProfile && this.index && seg.segment_index < metricsBlockState) {
+          const companion = await this.index.getMetricsBlockSegmentCompanion(stream, seg.segment_index);
+          if (companion) {
+            scanRes = await scanMetricsBlockForAggregateResult(seg, companion, scanRanges);
+          } else {
+            scanRes = await scanSegmentForAggregateResult(seg, scanRanges);
+          }
+        } else {
+          scanRes = await scanSegmentForAggregateResult(seg, scanRanges);
+        }
         if (Result.isError(scanRes)) return scanRes;
       }
 
@@ -1050,8 +1255,8 @@ export class StreamReader {
         interval: request.interval,
         coverage: {
           usedRollups: eligibility.eligible && aggIndexedThrough > 0 && hasFullWindows,
-          indexedSegments,
-          scannedSegments,
+          indexedSegments: indexedSegmentSet.size,
+          scannedSegments: scannedSegmentSet.size,
           scannedTailDocs,
           indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
         },
@@ -1068,6 +1273,124 @@ export class StreamReader {
     return res.value;
   }
 
+  private async scanSegmentReverseForSearchResult(
+    stream: string,
+    seg: SegmentRow,
+    exactCandidateInfo: SegmentCandidateInfo,
+    cursorFieldBound: SearchCursorFieldBound | null,
+    columnClauses: SearchColumnClause[],
+    columnIndexedThrough: number,
+    ftsClauses: SearchFtsClause[],
+    ftsIndexedThrough: number,
+    rangeStartSeq: bigint,
+    rangeEndSeq: bigint,
+    state: {
+      indexFamiliesUsed: Set<string>;
+      collectSearchMatchResult: (offsetSeq: bigint, payload: Uint8Array) => Result<void, ReaderError>;
+      deadline: number | null;
+      isTimedOut: () => boolean;
+      setTimedOut: (next: boolean) => void;
+      stopIfPageComplete: () => boolean;
+      addIndexedSegment: () => void;
+      addScannedSegment: () => void;
+    }
+  ): Promise<Result<void, ReaderError>> {
+    if (
+      exactCandidateInfo.segments &&
+      seg.segment_index < exactCandidateInfo.indexedThrough &&
+      !exactCandidateInfo.segments.has(seg.segment_index)
+    ) {
+      return Result.ok(undefined);
+    }
+    if (cursorFieldBound) {
+      const overlapsCursor = await this.segmentMayOverlapSearchCursor(stream, seg.segment_index, cursorFieldBound);
+      if (!overlapsCursor) {
+        state.indexFamiliesUsed.add("col");
+        state.addIndexedSegment();
+        return Result.ok(undefined);
+      }
+    }
+
+    const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
+      stream,
+      seg.segment_index,
+      columnClauses,
+      columnIndexedThrough,
+      ftsClauses,
+      ftsIndexedThrough
+    );
+    if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
+    const familyCandidates = familyCandidatesRes.value;
+    if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
+      if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegment();
+      for (const family of familyCandidates.usedFamilies) state.indexFamiliesUsed.add(family);
+      return Result.ok(undefined);
+    }
+    if (familyCandidates.usedFamilies.size > 0) {
+      state.addIndexedSegment();
+      for (const family of familyCandidates.usedFamilies) state.indexFamiliesUsed.add(family);
+    } else {
+      state.addScannedSegment();
+    }
+
+    const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+    const decodedBlocks: Array<{ records: Array<{ payload: Uint8Array }> }> = [];
+    for (const blockRes of iterateBlocksResult(segBytes)) {
+      if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
+      decodedBlocks.push({ records: blockRes.value.decoded.records });
+    }
+
+    let blockEndOffset = seg.end_offset;
+    for (let blockIndex = decodedBlocks.length - 1; blockIndex >= 0; blockIndex--) {
+      const decoded = decodedBlocks[blockIndex]!;
+      const blockStartOffset = blockEndOffset - BigInt(decoded.records.length) + 1n;
+      for (let recordIndex = decoded.records.length - 1; recordIndex >= 0; recordIndex--) {
+        const offsetSeq = blockStartOffset + BigInt(recordIndex);
+        if (offsetSeq > rangeEndSeq) continue;
+        if (offsetSeq < rangeStartSeq) return Result.ok(undefined);
+        const localDocId = Number(offsetSeq - seg.start_offset);
+        if (!familyCandidates.docIds || familyCandidates.docIds.has(localDocId)) {
+          const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
+          if (Result.isError(matchRes)) return matchRes;
+        }
+        if (state.deadline != null && Date.now() >= state.deadline) {
+          state.setTimedOut(true);
+          return Result.ok(undefined);
+        }
+        if (state.stopIfPageComplete()) return Result.ok(undefined);
+      }
+      blockEndOffset = blockStartOffset - 1n;
+    }
+
+    return Result.ok(undefined);
+  }
+
+  private async segmentMayOverlapSearchCursor(
+    stream: string,
+    segmentIndex: number,
+    bound: SearchCursorFieldBound
+  ): Promise<boolean> {
+    if (!this.index || bound.encoded == null) return true;
+    const companion = await this.index.getColSegmentCompanion(stream, segmentIndex);
+    if (!companion) return true;
+
+    if (companion.primary_timestamp_field === bound.sort.field && companion.min_timestamp_ms != null && companion.max_timestamp_ms != null) {
+      const target = bound.after;
+      if (typeof target !== "bigint") return true;
+      const minMs = BigInt(companion.min_timestamp_ms);
+      const maxMs = BigInt(companion.max_timestamp_ms);
+      return bound.sort.direction === "desc" ? minMs <= target : maxMs >= target;
+    }
+
+    const field = companion.fields[bound.sort.field];
+    if (!field?.min_b64 || !field.max_b64) return true;
+    const minEncoded = Uint8Array.from(Buffer.from(field.min_b64, "base64"));
+    const maxEncoded = Uint8Array.from(Buffer.from(field.max_b64, "base64"));
+    return bound.sort.direction === "desc"
+      ? compareEncodedValues(minEncoded, bound.encoded) <= 0
+      : compareEncodedValues(maxEncoded, bound.encoded) >= 0;
+  }
+
   private async segmentMayOverlapTimeRange(
     stream: string,
     segmentIndex: number,
@@ -1077,10 +1400,17 @@ export class StreamReader {
   ): Promise<boolean> {
     if (!this.index) return true;
     const companion = await this.index.getColSegmentCompanion(stream, segmentIndex);
-    if (!companion) return true;
-    if (companion.primary_timestamp_field !== timestampField) return true;
-    const minMs = companion.min_timestamp_ms == null ? null : Number(companion.min_timestamp_ms);
-    const maxMs = companion.max_timestamp_ms == null ? null : Number(companion.max_timestamp_ms);
+    if (companion && companion.primary_timestamp_field === timestampField) {
+      const minMs = companion.min_timestamp_ms == null ? null : Number(companion.min_timestamp_ms);
+      const maxMs = companion.max_timestamp_ms == null ? null : Number(companion.max_timestamp_ms);
+      if (Number.isFinite(minMs) && Number.isFinite(maxMs)) {
+        return (maxMs as number) >= startMs && (minMs as number) < endMs;
+      }
+    }
+    const metricsBlock = await this.index.getMetricsBlockSegmentCompanion(stream, segmentIndex);
+    if (!metricsBlock) return true;
+    const minMs = metricsBlock.min_window_start_ms;
+    const maxMs = metricsBlock.max_window_end_ms;
     if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return true;
     return (maxMs as number) >= startMs && (minMs as number) < endMs;
   }
@@ -1345,6 +1675,65 @@ function compareSearchHits(left: SearchHitInternal, right: SearchHitInternal, so
   return 0;
 }
 
+function compareSearchAfterValues(
+  sortInternal: Array<bigint | number | string | boolean | null>,
+  sorts: SearchSortSpec[],
+  searchAfter: unknown[]
+): number {
+  for (let i = 0; i < sorts.length; i++) {
+    const after = normalizeSearchAfterValue(sorts[i], searchAfter[i]);
+    const cmp = compareComparableValues(sortInternal[i] ?? null, after);
+    if (cmp === 0) continue;
+    return sorts[i].direction === "asc" ? cmp : -cmp;
+  }
+  return 0;
+}
+
+function compareEncodedValues(left: Uint8Array, right: Uint8Array): number {
+  const length = Math.min(left.byteLength, right.byteLength);
+  for (let i = 0; i < length; i++) {
+    if (left[i] === right[i]) continue;
+    return left[i]! < right[i]! ? -1 : 1;
+  }
+  if (left.byteLength === right.byteLength) return 0;
+  return left.byteLength < right.byteLength ? -1 : 1;
+}
+
+function encodeSearchCursorValue(sort: Extract<SearchSortSpec, { kind: "field" }>, value: bigint | number | string | boolean | null): Uint8Array | null {
+  if (value == null) return null;
+  if (sort.config.kind === "integer" || sort.config.kind === "date") {
+    return typeof value === "bigint" ? encodeSortableInt64(value) : null;
+  }
+  if (sort.config.kind === "float") {
+    return typeof value === "number" ? encodeSortableFloat64(value) : null;
+  }
+  if (sort.config.kind === "bool") {
+    return typeof value === "boolean" ? encodeSortableBool(value) : null;
+  }
+  return null;
+}
+
+function resolveSearchCursorFieldBound(request: SearchRequest): SearchCursorFieldBound | null {
+  if (!request.searchAfter || request.searchAfter.length === 0) return null;
+  const leadingSort = request.sort[0];
+  if (!leadingSort || leadingSort.kind !== "field") return null;
+  if (
+    leadingSort.config.kind !== "integer" &&
+    leadingSort.config.kind !== "float" &&
+    leadingSort.config.kind !== "date" &&
+    leadingSort.config.kind !== "bool"
+  ) {
+    return null;
+  }
+  const after = normalizeSearchAfterValue(leadingSort, request.searchAfter[0]);
+  return {
+    kind: "field",
+    sort: leadingSort,
+    after,
+    encoded: encodeSearchCursorValue(leadingSort, after),
+  };
+}
+
 function normalizeSearchAfterValue(sort: SearchSortSpec, raw: unknown): bigint | number | string | boolean | null {
   if (raw == null) return null;
   if (sort.kind === "offset") {
@@ -1373,11 +1762,5 @@ function normalizeSearchAfterValue(sort: SearchSortSpec, raw: unknown): bigint |
 }
 
 function compareSearchAfter(hit: SearchHitInternal, sorts: SearchSortSpec[], searchAfter: unknown[]): number {
-  for (let i = 0; i < sorts.length; i++) {
-    const after = normalizeSearchAfterValue(sorts[i], searchAfter[i]);
-    const cmp = compareComparableValues(hit.sortInternal[i] ?? null, after);
-    if (cmp === 0) continue;
-    return sorts[i].direction === "asc" ? cmp : -cmp;
-  }
-  return 0;
+  return compareSearchAfterValues(hit.sortInternal, sorts, searchAfter);
 }

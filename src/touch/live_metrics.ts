@@ -209,6 +209,10 @@ export class LiveMetricsV2 {
   private readonly snapshotChunkSize: number;
   private readonly retentionMs: number;
   private readonly getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+  private readonly onAppended?: (args: {
+    lastOffset: bigint;
+    stream: string;
+  }) => void;
   private timer: any | null = null;
   private snapshotTimer: any | null = null;
   private retentionTimer: any | null = null;
@@ -236,6 +240,7 @@ export class LiveMetricsV2 {
       snapshotChunkSize?: number;
       retentionMs?: number;
       getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+      onAppended?: (args: { lastOffset: bigint; stream: string }) => void;
     }
   ) {
     this.db = db;
@@ -248,6 +253,7 @@ export class LiveMetricsV2 {
     this.snapshotChunkSize = opts?.snapshotChunkSize ?? 200;
     this.retentionMs = opts?.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
     this.getTouchJournal = opts?.getTouchJournal;
+    this.onAppended = opts?.onAppended;
   }
 
   start(): void {
@@ -463,12 +469,18 @@ export class LiveMetricsV2 {
     }
 
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(Date.now()),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }
@@ -702,12 +714,18 @@ export class LiveMetricsV2 {
 
     if (rows.length === 0) return;
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(nowMs),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }
@@ -812,12 +830,18 @@ export class LiveMetricsV2 {
 
     if (rows.length === 0) return;
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(nowMs),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }

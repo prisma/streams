@@ -61,19 +61,22 @@ export class SecondaryIndexManager {
   private timer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
+  private readonly onMetadataChanged?: (stream: string) => void;
 
   constructor(
     cfg: Config,
     db: SqliteDurableStore,
     os: ObjectStore,
     registry: SchemaRegistryStore,
-    publishManifest?: (stream: string) => Promise<void>
+    publishManifest?: (stream: string) => Promise<void>,
+    onMetadataChanged?: (stream: string) => void
   ) {
     this.cfg = cfg;
     this.db = db;
     this.os = os;
     this.registry = registry;
     this.publishManifest = publishManifest;
+    this.onMetadataChanged = onMetadataChanged;
     this.span = cfg.indexL0SpanSegments;
     this.buildConcurrency = Math.max(1, cfg.indexBuildConcurrency);
     this.compactionFanout = cfg.indexCompactionFanout;
@@ -230,6 +233,7 @@ export class SecondaryIndexManager {
         indexedThrough = end + 1;
         this.db.updateSecondaryIndexedThrough(stream, index.name, indexedThrough);
         state.indexed_through = indexedThrough;
+        this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
             await this.publishManifest(stream);
@@ -283,6 +287,7 @@ export class SecondaryIndexManager {
           manifestRow.generation + 1,
           this.db.nowMs()
         );
+        this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
             await this.publishManifest(stream);

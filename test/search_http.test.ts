@@ -300,4 +300,104 @@ describe("_search http", () => {
     },
     30_000
   );
+
+  test(
+    "uses offset-desc search_after for efficient append-order pagination",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-offset-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 120,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 8; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: "billing-api",
+                status: 500 + i,
+                duration: 100 + i,
+                requestId: `req_${i}`,
+                message: `event ${i}`,
+                why: "all docs match",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSearchFamilies(app);
+        expect(app.deps.db.countSegmentsForStream(STREAM)).toBeGreaterThan(1);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "has:message",
+              size: 1,
+              sort: ["offset:desc"],
+              track_total_hits: false,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        let body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe("req_7");
+        expect(body.coverage.indexed_segments + body.coverage.scanned_segments + Math.min(body.coverage.scanned_tail_docs, 1)).toBe(1);
+        expect(body.next_search_after).not.toBeNull();
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "has:message",
+              size: 1,
+              sort: ["offset:desc"],
+              track_total_hits: false,
+              search_after: body.next_search_after,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe("req_6");
+        expect(body.coverage.indexed_segments + body.coverage.scanned_segments + Math.min(body.coverage.scanned_tail_docs, 1)).toBe(1);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
 });

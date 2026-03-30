@@ -17,7 +17,7 @@ export type SegmenterOptions = {
 };
 
 export type SegmenterHooks = {
-  onSegmentSealed?: (payloadBytes: number, segmentBytes: number) => void;
+  onSegmentSealed?: (stream: string, payloadBytes: number, segmentBytes: number) => void;
 };
 
 export class Segmenter {
@@ -267,7 +267,7 @@ export class Segmenter {
                 rowsSealed,
               });
             });
-            if (this.hooks?.onSegmentSealed) this.hooks.onSegmentSealed(Number(payloadBytes), fileBytes);
+            if (this.hooks?.onSegmentSealed) this.hooks.onSegmentSealed(stream, Number(payloadBytes), fileBytes);
           } catch (e) {
             try {
               if (existsSync(localPath)) unlinkSync(localPath);

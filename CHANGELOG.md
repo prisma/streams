@@ -23,6 +23,12 @@
 - Add `/_index_status` and `/_details` so stream-management UIs can inspect
   per-stream indexing progress together with current stream, schema, and
   profile state.
+- Add `stream.total_size_bytes` to `/_details` as a constant-time logical size
+  lookup, with manifest restore and background repair after bootstrap when
+  needed.
 - Add schema-owned `search.rollups`, object-store-native `.agg` companions,
   and `POST /v1/stream/{name}/_aggregate` for rollup-backed time-range
   summaries with raw-scan edge correctness.
+- Add a built-in `metrics` profile, auto-wire `__stream_metrics__` to it, and
+  ship object-store-native `.mblk` companions so metrics queries can use
+  rollups first and metrics blocks before raw segment scans.

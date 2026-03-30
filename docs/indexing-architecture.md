@@ -8,7 +8,7 @@ The long-term target still lives in
 
 ## Summary
 
-Prisma Streams now ships four indexing layers:
+Prisma Streams now ships six indexing layers:
 
 - the existing routing-key tiered index
 - the existing exact-match secondary index family, now treated as an internal
@@ -16,6 +16,7 @@ Prisma Streams now ships four indexing layers:
 - a per-segment `.col` family for typed equality, range, and existence
 - a per-segment `.fts` family for keyword exact/prefix and text search
 - a per-segment `.agg` family for time-window rollups and aggregation serving
+- a per-segment `.mblk` family for metrics-profile aggregate serving
 
 The public schema model is **`search`**, not `indexes[]`.
 
@@ -235,6 +236,23 @@ Current usage rules:
 - uncovered or stale ranges still scan the source stream
 - WAL tail records are always evaluated directly
 
+### `.mblk` family
+
+The `.mblk` family is the metrics-specific aggregate-serving family.
+
+Current implementation:
+
+- immutable **per-segment companion objects**
+- no `.mblk` compaction yet
+- local SQLite stores only family progress and companion object keys
+- companion objects are uploaded under `streams/<hash>/mblk/segments/...`
+
+Current responsibilities:
+
+- canonical metrics interval serving for non-rollup-eligible aggregate queries
+- aligned-window edge serving when `.agg` cannot fully answer the query
+- metrics-profile aggregate serving without decoding full JSON segments
+
 ## SQLite Catalog
 
 Current local catalog tables:
@@ -248,7 +266,7 @@ Interpretation:
 
 - `secondary_*` tables catalog the compacted exact-match family
 - `search_family_state` tracks per-family uploaded coverage (`col`, `fts`,
-  `agg`)
+  `agg`, `mblk`)
 - `search_family_segments` maps each covered segment to its uploaded companion
   object key
 
@@ -273,6 +291,7 @@ Bootstrap restores:
 - `.col` family state and segment companions
 - `.fts` family state and segment companions
 - `.agg` family state and segment companions
+- `.mblk` family state and segment companions
 
 This means a node can be deleted and cold-restored from published R2 state
 without rebuilding the already-published search catalogs locally first.
@@ -289,6 +308,7 @@ The full server starts these background managers:
 - `SearchColManager` for `.col` per-segment companions
 - `SearchFtsManager` for `.fts` per-segment companions
 - `SearchAggManager` for `.agg` per-segment companions
+- `MetricsBlockManager` for `.mblk` per-segment companions
 
 These wake on `DS_INDEX_CHECK_MS`.
 
@@ -404,7 +424,7 @@ endpoints:
 - manifest generation/upload state
 - routing-key index status
 - internal exact-index status
-- `.col`, `.fts`, and `.agg` family progress
+- `.col`, `.fts`, `.agg`, and `.mblk` family progress
 
 `/_details` is the combined stream-management descriptor. It nests:
 
@@ -444,6 +464,21 @@ The built-in `evlog` profile auto-installs these `search.fields`:
 
 It also auto-installs default `search.rollups` so UIs can use `_aggregate`
 without a separate manual schema step.
+
+## Current Metrics Shape
+
+The `metrics` profile auto-installs:
+
+- a canonical metrics schema
+- default `search.fields`
+- default `search.rollups`
+- the `.mblk` family alongside `.agg`
+
+The intended planner order for metrics streams is:
+
+- `.agg` for aligned rollup-eligible windows
+- `.mblk` for non-aligned or non-rollup-eligible aggregate serving
+- raw source scan only when published coverage is missing
 
 ## Deliberate Gaps Versus The Aspirational Design
 

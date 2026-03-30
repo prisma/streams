@@ -44,6 +44,7 @@ Current built-ins:
 
 - `evlog`
 - `generic`
+- `metrics`
 - `state-protocol`
 
 Planned next built-ins:
@@ -82,6 +83,23 @@ It means:
 
 See [profile-evlog.md](./profile-evlog.md) for the detailed contract.
 
+## `metrics`
+
+`metrics` is the built-in profile for canonical metric interval streams.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into the canonical metrics interval envelope
+- installing the profile auto-installs the canonical metrics schema registry,
+  search fields, and default rollups
+- the canonical routing key is `seriesKey`
+- metrics streams enable the `.mblk` metrics-block family in addition to the
+  generic search families
+
+See [profile-metrics.md](./profile-metrics.md) and [metrics.md](./metrics.md)
+for the detailed contract.
+
 ## `state-protocol`
 
 `state-protocol` is the built-in profile for streams that carry State Protocol
@@ -111,6 +129,7 @@ Examples:
 - append/read ordering: stream
 - `/touch/*` availability: profile
 - touch configuration: profile
+- metrics canonicalization and `.mblk` enablement: profile
 - JSON validation: schema
 - version boundaries and lenses: schema
 - routing-key extraction: schema
@@ -173,6 +192,7 @@ What does **not** belong in `/_schema`:
 - touch configuration
 - State Protocol runtime behavior
 - evlog envelope normalization or redaction
+- metrics interval normalization and `.mblk` enablement
 
 ## Supported API Rules
 
@@ -251,6 +271,17 @@ Evlog uses the same resource:
 }
 ```
 
+Metrics uses the same resource:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "metrics"
+  }
+}
+```
+
 To switch a stream back to the baseline behavior, set `profile` to
 `{ "kind": "generic" }`.
 
@@ -270,13 +301,22 @@ are:
 
 `/_details` is the combined descriptor endpoint. It returns:
 
-- the current stream summary
+- the current full stream summary, including head/lifecycle fields such as
+  `epoch`, `next_offset`, `created_at`, `expires_at`, `sealed_through`,
+  `uploaded_through`, and `total_size_bytes`
 - the full `/_profile` resource
 - the full `/_schema` registry
 - the current `/_index_status` payload
 
 That lets a UI inspect and edit streams without inventing its own metadata
 cache.
+
+`/_details` and `/_index_status` both support conditional long-polling:
+
+- responses include `ETag`
+- send `If-None-Match` with the last seen `ETag`
+- add `live=long-poll&timeout=30s` to wait for the next visible change
+- the server returns `200` when the descriptor changes and `304` on timeout
 
 ## Storage Model
 

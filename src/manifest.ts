@@ -31,6 +31,7 @@ function invalidManifest<T = never>(message: string): Result<T, ManifestBuildErr
 type BuildManifestArgs = {
   streamName: string;
   streamRow: StreamRow;
+  publishedLogicalSizeBytes: bigint;
   profileJson?: Record<string, any> | null;
   segmentMeta: SegmentMetaRow;
   uploadedPrefixCount: number;
@@ -46,7 +47,18 @@ type BuildManifestArgs = {
 };
 
 export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJson, ManifestBuildError> {
-  const { streamName, streamRow, profileJson, segmentMeta, uploadedPrefixCount, generation, indexState, indexRuns, retiredRuns } = args;
+  const {
+    streamName,
+    streamRow,
+    publishedLogicalSizeBytes,
+    profileJson,
+    segmentMeta,
+    uploadedPrefixCount,
+    generation,
+    indexState,
+    indexRuns,
+    retiredRuns,
+  } = args;
 
   const createdAt = new Date(Number(streamRow.created_at_ms)).toISOString();
   const expiresAt = streamRow.expires_at_ms == null ? null : new Date(Number(streamRow.expires_at_ms)).toISOString();
@@ -158,6 +170,7 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     epoch: streamRow.epoch,
     next_offset: nextOffsetNum,
     next_offset_encoded: nextOffsetEncoded,
+    logical_size_bytes: publishedLogicalSizeBytes.toString(),
     segment_count: prefix,
     uploaded_through: prefix,
     active_file_offset: nextOffsetNum,

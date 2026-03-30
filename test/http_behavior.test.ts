@@ -154,11 +154,16 @@ describe("http behavior", () => {
         name: "details",
         content_type: "text/plain",
         profile: "generic",
+        created_at: expect.any(String),
+        updated_at: expect.any(String),
+        expires_at: null,
+        epoch: 0,
         next_offset: "0",
         sealed_through: "-1",
         uploaded_through: "-1",
         segment_count: 0,
         uploaded_segment_count: 0,
+        total_size_bytes: "0",
       });
       expect(body.profile).toEqual({
         apiVersion: "durable.streams/profile/v1",
@@ -181,6 +186,149 @@ describe("http behavior", () => {
       expect(body.index_status.routing_key_index?.configured).toBe(false);
       expect(body.index_status.exact_indexes).toEqual([]);
       expect(body.index_status.search_families).toEqual([]);
+    });
+  });
+
+  test("details endpoint reports total_size_bytes with simple lookup", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/size`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      await fetch(`${baseUrl}/v1/stream/size`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "abc",
+      });
+
+      const r = await fetch(`${baseUrl}/v1/stream/size/_details`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.stream).toMatchObject({
+        name: "size",
+        next_offset: "1",
+        total_size_bytes: "3",
+        pending_bytes: "3",
+        wal_bytes: "3",
+      });
+    });
+  });
+
+  test("details endpoint returns etag and supports conditional get", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-etag`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-etag/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const second = await fetch(`${baseUrl}/v1/stream/details-etag/_details`, {
+        headers: { "if-none-match": etag! },
+      });
+      expect(second.status).toBe(304);
+      expect(second.headers.get("etag")).toBe(etag);
+    });
+  });
+
+  test("details long-poll wakes on append", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-live`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-live/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const detailsPromise = fetch(`${baseUrl}/v1/stream/details-live/_details?live=long-poll&timeout=2s`, {
+        headers: { "if-none-match": etag! },
+      });
+      await sleep(100);
+      await fetch(`${baseUrl}/v1/stream/details-live`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "a",
+      });
+
+      const next = await detailsPromise;
+      expect(next.status).toBe(200);
+      expect(next.headers.get("etag")).not.toBe(etag);
+      const body = await next.json();
+      expect(body.stream).toMatchObject({
+        name: "details-live",
+        next_offset: "1",
+        total_size_bytes: "1",
+      });
+    });
+  });
+
+  test("__stream_metrics__ details long-poll wakes on internal metrics emission", async () => {
+    await withServer({ metricsFlushIntervalMs: 100 }, async ({ baseUrl }) => {
+      const first = await fetch(`${baseUrl}/v1/stream/__stream_metrics__/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const next = await fetch(
+        `${baseUrl}/v1/stream/__stream_metrics__/_details?live=long-poll&timeout=2s`,
+        {
+          headers: { "if-none-match": etag! },
+        },
+      );
+
+      expect(next.status).toBe(200);
+      expect(Date.now() - start).toBeLessThan(1800);
+      expect(next.headers.get("etag")).not.toBe(etag);
+
+      const body = await next.json();
+      expect(body.stream?.name).toBe("__stream_metrics__");
+      expect(Number(body.stream?.next_offset ?? "0")).toBeGreaterThan(0);
+    });
+  });
+
+  test("details long-poll wakes on metadata changes", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-meta`, { method: "PUT", headers: { "content-type": "application/json" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-meta/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const detailsPromise = fetch(`${baseUrl}/v1/stream/details-meta/_details?live=long-poll&timeout=2s`, {
+        headers: { "if-none-match": etag! },
+      });
+      await sleep(100);
+      const update = await fetch(`${baseUrl}/v1/stream/details-meta/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "evlog" },
+        }),
+      });
+      expect(update.status).toBe(200);
+
+      const next = await detailsPromise;
+      expect(next.status).toBe(200);
+      expect(next.headers.get("etag")).not.toBe(etag);
+      const body = await next.json();
+      expect(body.stream?.profile).toBe("evlog");
+      expect(body.profile?.profile).toEqual({ kind: "evlog" });
+    });
+  });
+
+  test("details long-poll times out with 304 when unchanged", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-timeout`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-timeout/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const timedOut = await fetch(`${baseUrl}/v1/stream/details-timeout/_details?live=long-poll&timeout=200ms`, {
+        headers: { "if-none-match": etag! },
+      });
+      expect(timedOut.status).toBe(304);
+      expect(Date.now() - start).toBeGreaterThan(150);
+      expect(timedOut.headers.get("etag")).toBe(etag);
     });
   });
 

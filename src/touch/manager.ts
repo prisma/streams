@@ -145,6 +145,10 @@ export class TouchProcessorManager {
         if (!j) return null;
         return { meta: j.getMeta(), interval: j.snapshotAndResetIntervalStats() };
       },
+      onAppended: ({ lastOffset, stream }) => {
+        notifier.notify(stream, lastOffset);
+        notifier.notifyDetailsChanged(stream);
+      },
     });
   }
 

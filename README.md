@@ -69,6 +69,7 @@ Current built-ins:
 
 - `evlog`
 - `generic`
+- `metrics`
 - `state-protocol`
 
 Planned next built-ins:
@@ -122,6 +123,22 @@ the JSON payload shape, but they do not own live/touch behavior.
 
 State Protocol is a profile, not a schema feature, because it defines stream
 semantics and profile-owned endpoints, not just JSON shape.
+
+### `metrics`
+
+`metrics` is the built-in profile for canonical metric interval streams.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into the canonical metrics interval envelope
+- installing the profile also installs the canonical metrics schema/search and
+  default rollups
+- the canonical routing key is `seriesKey`
+- metrics streams use the `.mblk` metrics-block family in addition to `.agg`
+
+The internal `__stream_metrics__` stream is created with this profile
+automatically.
 
 ## Profile Versus Schema
 
@@ -191,13 +208,41 @@ For stream management UIs, the current per-stream inspection surface is:
   Current manifest, segment, and async index/search-family status for that
   stream.
 - `GET /v1/stream/{name}/_details`
-  Combined stream summary, full profile resource, full schema registry, and
-  nested index status in one response.
+  Combined stream summary, including `stream.total_size_bytes`, full profile
+  resource, full schema registry, and nested index status in one response.
+  This endpoint also supports conditional long-polling with
+  `If-None-Match`, `live=long-poll`, and `timeout=...`, and only wakes when
+  the stream head or descriptor-visible metadata changes.
+
+`/_details.stream` is the full per-stream summary shape. In practice that means
+it includes the stream head and lifecycle fields a UI usually needs for an
+active stream page, including:
+
+- `created_at`
+- `expires_at`
+- `epoch`
+- `next_offset`
+- `sealed_through`
+- `uploaded_through`
+- `total_size_bytes`
 
 That means a GUI can create streams, inspect the active profile and schema,
 show current indexing progress, and edit profile/schema configuration through
 the normal API surface. A charting UI can additionally use `/_aggregate` for
 time-window summaries driven by schema `search.rollups`.
+
+For an active stream page, the recommended pattern is:
+
+- fetch `GET /v1/stream/{name}/_details`
+- keep the returned `ETag`
+- reissue `GET /v1/stream/{name}/_details?live=long-poll&timeout=30s` with
+  `If-None-Match: <etag>`
+
+The server returns:
+
+- `200` with a new body and new `ETag` when events or descriptor metadata have
+  changed
+- `304` when the timeout expires without a visible change
 
 ## Profile API
 

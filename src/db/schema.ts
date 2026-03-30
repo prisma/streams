@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS streams (
 
   pending_rows INTEGER NOT NULL,
   pending_bytes INTEGER NOT NULL,
+
+  -- Logical payload bytes ever appended to this stream and still part of its
+  -- visible history on this node. This is the constant-time source for
+  -- management endpoints such as /_details.
+  logical_size_bytes INTEGER NOT NULL DEFAULT 0,
 
   -- Logical size of retained rows in the wal table for this stream (payload-only bytes).
   -- This is explicitly tracked because SQLite file size is high-water and does not shrink
@@ -258,6 +263,7 @@ CREATE TABLE streams_${suffix} (
 
   pending_rows INTEGER NOT NULL,
   pending_bytes INTEGER NOT NULL,
+  logical_size_bytes INTEGER NOT NULL DEFAULT 0,
 
   last_append_ms INTEGER NOT NULL,
   last_segment_cut_ms INTEGER NOT NULL,
@@ -394,6 +400,8 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV14ToV15(db);
     } else if (version === 15) {
       migrateV15ToV16(db);
+    } else if (version === 16) {
+      migrateV16ToV17(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -754,6 +762,24 @@ function migrateV15ToV16(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(CREATE_SEARCH_INDEX_TABLES_SQL);
     db.exec(`UPDATE schema_version SET version = 16;`);
+  });
+  tx();
+}
+
+function migrateV16ToV17(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN logical_size_bytes INTEGER NOT NULL DEFAULT 0;`);
+
+    // Streams that still live entirely in the retained WAL can be backfilled
+    // cheaply here. Streams with published segments are repaired asynchronously
+    // at runtime from segment objects if this value is still missing.
+    db.exec(`
+      UPDATE streams
+      SET logical_size_bytes = wal_bytes
+      WHERE next_offset = wal_rows;
+    `);
+
+    db.exec(`UPDATE schema_version SET version = 17;`);
   });
   tx();
 }
