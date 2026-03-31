@@ -6,6 +6,7 @@ import { encodeBlock, encodeFooter, type BlockIndexEntry, type SegmentRecord } f
 import { readU32BE } from "../util/endian";
 import { localSegmentPath, streamHash16Hex } from "../util/stream_paths";
 import { LruCache } from "../util/lru";
+import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { yieldToEventLoop } from "../util/yield";
 
 export type SegmenterOptions = {
@@ -25,12 +26,19 @@ export class Segmenter {
   private readonly db: SqliteDurableStore;
   private readonly opts: Required<SegmenterOptions>;
   private readonly hooks?: SegmenterHooks;
+  private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
   private running = false;
   private stopping = false;
   private readonly failures = new FailureTracker(1024);
 
-  constructor(config: Config, db: SqliteDurableStore, opts: SegmenterOptions = {}, hooks?: SegmenterHooks) {
+  constructor(
+    config: Config,
+    db: SqliteDurableStore,
+    opts: SegmenterOptions = {},
+    hooks?: SegmenterHooks,
+    memorySampler?: RuntimeMemorySampler
+  ) {
     this.config = config;
     this.db = db;
     this.opts = {
@@ -41,6 +49,7 @@ export class Segmenter {
       maxRowsPerSegment: opts.maxRowsPerSegment ?? 250_000,
     };
     this.hooks = hooks;
+    this.memorySampler = memorySampler;
   }
 
   start(): void {
@@ -147,6 +156,10 @@ export class Segmenter {
       const shash = streamHash16Hex(stream);
       const localPath = localSegmentPath(this.config.rootDir, shash, segmentIndex);
       const tmpPath = `${localPath}.tmp`;
+      const leaveCutPhase = this.memorySampler?.enter("cut", {
+        stream,
+        segment_index: segmentIndex,
+      });
       mkdirSync(dirname(localPath), { recursive: true });
 
       // Build blocks and stream-write to temp file.
@@ -280,6 +293,7 @@ export class Segmenter {
       } finally {
         closeSync(fd);
         this.cleanupTmp(tmpPath);
+        leaveCutPhase?.();
       }
     } finally {
       // Release claim.

@@ -1,0 +1,342 @@
+[2026-03-31T07:36:05.149Z] [INFO] Auto-tuning for memory preset 256, 512, 1024, 2048, [4096], 8192
+[2026-03-31T07:36:05.150Z] [INFO] DS_MEMORY_LIMIT_MB presets: 300, 512, 1024, 2048, [4096], 8192
+[2026-03-31T07:36:05.150Z] [INFO] DS_SQLITE_CACHE_MB presets: 16, 32, 64, 128, [256], 512
+[2026-03-31T07:36:05.150Z] [INFO] DS_WORKER_SQLITE_CACHE_MB presets: 8, 8, 8, 16, [32], 32
+[2026-03-31T07:36:05.150Z] [INFO] DS_INDEX_RUN_MEM_CACHE_MB presets: 4, 8, 16, 32, [64], 128
+[2026-03-31T07:36:05.150Z] [INFO] DS_INGEST_MAX_BATCH_MB presets: 2, 4, 8, 16, [32], 64
+[2026-03-31T07:36:05.150Z] [INFO] DS_INGEST_MAX_QUEUE_MB presets: 8, 16, 32, 64, [128], 256
+[2026-03-31T07:36:05.150Z] [INFO] DS_INDEX_BUILD_CONCURRENCY presets: 1, 1, 2, 2, [4], 8
+[2026-03-31T07:36:05.150Z] [INFO] DS_INDEX_COMPACT_CONCURRENCY presets: 1, 1, 2, 2, [4], 4
+[2026-03-31T07:36:05.150Z] [INFO] DS_SEGMENTER_WORKERS presets: 1, 1, 2, 2, [4], 8
+[2026-03-31T07:36:05.150Z] [INFO] DS_UPLOAD_CONCURRENCY presets: 2, 2, 4, 4, [8], 16
+[2026-03-31T07:36:05.185Z] [INFO] prisma-streams server listening on 127.0.0.1:8787
+[2026-03-31T07:36:09.642Z] [WARN] [gc] forced GC (memory sample) rss 4.6gb -> 4.6gb
+[2026-03-31T07:36:19.843Z] [WARN] [gc] forced GC (memory limit) rss 11.7gb -> 11.7gb
+[2026-03-31T07:36:49.608Z] [WARN] [gc] forced GC (memory sample) rss 13.4gb -> 13.4gb
+[2026-03-31T07:37:06.584Z] [WARN] [gc] forced GC (memory sample) rss 15.0gb -> 15.0gb
+[2026-03-31T07:37:33.527Z] [WARN] [gc] forced GC (memory sample) rss 17.3gb -> 17.3gb
+[2026-03-31T07:37:43.972Z] [WARN] [gc] forced GC (memory limit) rss 17.4gb -> 17.4gb
+[2026-03-31T07:42:18.425Z] [WARN] [gc] forced GC (memory sample) rss 22.1gb -> 22.1gb
+[2026-03-31T07:43:16.253Z] [WARN] [gc] forced GC (memory sample) rss 23.2gb -> 23.2gb
+[2026-03-31T07:43:26.217Z] [WARN] [gc] forced GC (memory sample) rss 23.2gb -> 23.2gb
+[2026-03-31T07:43:36.582Z] [WARN] [gc] forced GC (memory sample) rss 23.3gb -> 23.3gb
+[2026-03-31T07:43:47.331Z] [WARN] [gc] forced GC (memory limit) rss 23.4gb -> 23.4gb
+[2026-03-31T07:43:57.634Z] [WARN] [gc] forced GC (memory limit) rss 23.4gb -> 23.4gb
+[2026-03-31T07:44:08.727Z] [WARN] [gc] forced GC (memory sample) rss 23.4gb -> 23.5gb
+[2026-03-31T07:44:19.530Z] [WARN] [gc] forced GC (memory sample) rss 23.5gb -> 23.5gb
+[2026-03-31T07:44:29.777Z] [WARN] [gc] forced GC (memory sample) rss 23.6gb -> 23.6gb
+[2026-03-31T07:44:39.945Z] [WARN] [gc] forced GC (memory sample) rss 23.6gb -> 23.6gb
+[2026-03-31T07:44:50.308Z] [WARN] [gc] forced GC (memory sample) rss 23.7gb -> 23.7gb
+[2026-03-31T07:45:01.264Z] [WARN] [gc] forced GC (memory sample) rss 23.7gb -> 23.7gb
+[2026-03-31T07:45:12.161Z] [WARN] [gc] forced GC (memory sample) rss 23.8gb -> 23.8gb
+[2026-03-31T07:45:23.246Z] [WARN] [gc] forced GC (memory sample) rss 23.8gb -> 23.8gb
+[2026-03-31T07:45:34.735Z] [WARN] [gc] forced GC (memory sample) rss 23.9gb -> 23.9gb
+[2026-03-31T07:45:46.380Z] [WARN] [gc] forced GC (memory sample) rss 23.9gb -> 23.9gb
+[2026-03-31T07:45:57.529Z] [WARN] [gc] forced GC (memory sample) rss 24.0gb -> 24.0gb
+[2026-03-31T07:46:07.970Z] [WARN] [gc] forced GC (memory limit) rss 24.1gb -> 24.1gb
+[2026-03-31T07:46:18.084Z] [WARN] [gc] forced GC (memory limit) rss 24.2gb -> 24.2gb
+[2026-03-31T07:46:28.096Z] [WARN] [gc] forced GC (memory limit) rss 24.2gb -> 24.2gb
+[2026-03-31T07:46:38.097Z] [WARN] [gc] forced GC (memory limit) rss 24.2gb -> 24.2gb
+[2026-03-31T07:46:48.459Z] [WARN] [gc] forced GC (memory sample) rss 24.3gb -> 24.3gb
+[2026-03-31T07:46:59.115Z] [WARN] [gc] forced GC (memory sample) rss 24.3gb -> 24.3gb
+[2026-03-31T07:47:09.520Z] [WARN] [gc] forced GC (memory limit) rss 24.4gb -> 24.4gb
+[2026-03-31T07:47:19.404Z] [WARN] [gc] forced GC (memory limit) rss 24.5gb -> 24.5gb
+[2026-03-31T07:47:29.478Z] [WARN] [gc] forced GC (memory limit) rss 24.5gb -> 24.5gb
+[2026-03-31T07:47:39.772Z] [WARN] [gc] forced GC (memory limit) rss 24.6gb -> 24.6gb
+[2026-03-31T07:47:49.909Z] [WARN] [gc] forced GC (memory sample) rss 24.6gb -> 24.6gb
+[2026-03-31T07:48:01.209Z] [WARN] [gc] forced GC (memory sample) rss 24.7gb -> 24.7gb
+[2026-03-31T07:48:11.770Z] [WARN] [gc] forced GC (memory limit) rss 24.7gb -> 24.7gb
+[2026-03-31T07:48:22.054Z] [WARN] [gc] forced GC (memory limit) rss 24.8gb -> 24.8gb
+[2026-03-31T07:48:32.078Z] [WARN] [gc] forced GC (memory limit) rss 24.8gb -> 24.8gb
+[2026-03-31T07:48:42.044Z] [WARN] [gc] forced GC (memory sample) rss 24.9gb -> 24.9gb
+[2026-03-31T07:48:52.807Z] [WARN] [gc] forced GC (memory limit) rss 25.0gb -> 25.0gb
+[2026-03-31T07:49:02.829Z] [WARN] [gc] forced GC (memory sample) rss 25.0gb -> 25.0gb
+[2026-03-31T07:49:13.092Z] [WARN] [gc] forced GC (memory limit) rss 25.1gb -> 25.1gb
+[2026-03-31T07:49:23.216Z] [WARN] [gc] forced GC (memory limit) rss 25.1gb -> 25.1gb
+[2026-03-31T07:49:33.585Z] [WARN] [gc] forced GC (memory sample) rss 25.2gb -> 25.2gb
+[2026-03-31T07:49:45.129Z] [WARN] [gc] forced GC (memory sample) rss 25.2gb -> 25.2gb
+[2026-03-31T07:49:55.825Z] [WARN] [gc] forced GC (memory limit) rss 25.3gb -> 25.3gb
+[2026-03-31T07:50:05.923Z] [WARN] [gc] forced GC (memory limit) rss 25.3gb -> 25.3gb
+[2026-03-31T07:50:15.990Z] [WARN] [gc] forced GC (memory limit) rss 25.4gb -> 25.4gb
+[2026-03-31T07:50:25.896Z] [WARN] [gc] forced GC (memory limit) rss 25.4gb -> 25.4gb
+[2026-03-31T07:50:36.208Z] [WARN] [gc] forced GC (memory limit) rss 25.5gb -> 25.5gb
+[2026-03-31T07:50:46.591Z] [WARN] [gc] forced GC (memory sample) rss 25.5gb -> 25.5gb
+[2026-03-31T07:50:57.321Z] [WARN] [gc] forced GC (memory sample) rss 25.6gb -> 25.6gb
+[2026-03-31T07:51:07.645Z] [WARN] [gc] forced GC (memory sample) rss 25.6gb -> 25.6gb
+[2026-03-31T07:51:18.642Z] [WARN] [gc] forced GC (memory sample) rss 25.7gb -> 25.7gb
+[2026-03-31T07:51:29.403Z] [WARN] [gc] forced GC (memory limit) rss 25.7gb -> 25.8gb
+[2026-03-31T07:51:39.464Z] [WARN] [gc] forced GC (memory limit) rss 25.8gb -> 25.8gb
+[2026-03-31T07:51:49.686Z] [WARN] [gc] forced GC (memory limit) rss 25.9gb -> 25.9gb
+[2026-03-31T07:51:59.559Z] [WARN] [gc] forced GC (memory limit) rss 25.9gb -> 25.9gb
+[2026-03-31T07:52:09.703Z] [WARN] [gc] forced GC (memory limit) rss 26.0gb -> 26.0gb
+[2026-03-31T07:52:20.034Z] [WARN] [gc] forced GC (memory sample) rss 26.0gb -> 26.0gb
+[2026-03-31T07:52:31.061Z] [WARN] [gc] forced GC (memory sample) rss 26.1gb -> 26.1gb
+[2026-03-31T07:52:41.381Z] [WARN] [gc] forced GC (memory limit) rss 26.1gb -> 26.1gb
+[2026-03-31T07:52:51.746Z] [WARN] [gc] forced GC (memory sample) rss 26.2gb -> 26.2gb
+[2026-03-31T07:53:01.736Z] [WARN] [gc] forced GC (memory sample) rss 26.2gb -> 26.2gb
+[2026-03-31T07:53:12.108Z] [WARN] [gc] forced GC (memory limit) rss 26.3gb -> 26.3gb
+[2026-03-31T07:53:22.339Z] [WARN] [gc] forced GC (memory sample) rss 26.3gb -> 26.3gb
+[2026-03-31T07:53:32.687Z] [WARN] [gc] forced GC (memory limit) rss 26.4gb -> 26.4gb
+[2026-03-31T07:53:43.046Z] [WARN] [gc] forced GC (memory limit) rss 26.4gb -> 26.4gb
+[2026-03-31T07:53:53.217Z] [WARN] [gc] forced GC (memory limit) rss 26.5gb -> 26.5gb
+[2026-03-31T07:54:03.354Z] [WARN] [gc] forced GC (memory limit) rss 26.6gb -> 26.6gb
+[2026-03-31T07:54:13.174Z] [WARN] [gc] forced GC (memory limit) rss 26.6gb -> 26.6gb
+[2026-03-31T07:54:23.805Z] [WARN] [gc] forced GC (memory sample) rss 26.7gb -> 26.7gb
+[2026-03-31T07:54:34.600Z] [WARN] [gc] forced GC (memory limit) rss 26.7gb -> 26.7gb
+[2026-03-31T07:54:44.686Z] [WARN] [gc] forced GC (memory sample) rss 26.8gb -> 26.8gb
+[2026-03-31T07:54:55.044Z] [WARN] [gc] forced GC (memory limit) rss 26.8gb -> 26.8gb
+[2026-03-31T07:55:05.242Z] [WARN] [gc] forced GC (memory limit) rss 26.9gb -> 26.9gb
+[2026-03-31T07:55:15.276Z] [WARN] [gc] forced GC (memory limit) rss 26.9gb -> 26.9gb
+[2026-03-31T07:55:25.901Z] [WARN] [gc] forced GC (memory sample) rss 27.0gb -> 27.0gb
+[2026-03-31T07:55:36.460Z] [WARN] [gc] forced GC (memory limit) rss 27.0gb -> 27.0gb
+[2026-03-31T07:55:46.654Z] [WARN] [gc] forced GC (memory limit) rss 27.1gb -> 27.1gb
+[2026-03-31T07:55:56.650Z] [WARN] [gc] forced GC (memory limit) rss 27.1gb -> 27.1gb
+[2026-03-31T07:56:06.811Z] [WARN] [gc] forced GC (memory sample) rss 27.2gb -> 27.2gb
+[2026-03-31T07:56:16.848Z] [WARN] [gc] forced GC (memory sample) rss 27.2gb -> 27.2gb
+[2026-03-31T07:56:27.876Z] [WARN] [gc] forced GC (memory sample) rss 27.3gb -> 27.3gb
+[2026-03-31T07:56:38.180Z] [WARN] [gc] forced GC (memory limit) rss 27.3gb -> 27.3gb
+[2026-03-31T07:56:48.355Z] [WARN] [gc] forced GC (memory sample) rss 27.4gb -> 27.4gb
+[2026-03-31T07:56:58.879Z] [WARN] [gc] forced GC (memory sample) rss 27.5gb -> 27.5gb
+[2026-03-31T07:57:09.415Z] [WARN] [gc] forced GC (memory limit) rss 27.5gb -> 27.5gb
+[2026-03-31T07:57:19.438Z] [WARN] [gc] forced GC (memory sample) rss 27.5gb -> 27.5gb
+[2026-03-31T07:57:29.766Z] [WARN] [gc] forced GC (memory limit) rss 27.6gb -> 27.6gb
+[2026-03-31T07:57:39.735Z] [WARN] [gc] forced GC (memory limit) rss 27.6gb -> 27.6gb
+[2026-03-31T07:57:50.193Z] [WARN] [gc] forced GC (memory sample) rss 27.7gb -> 27.7gb
+[2026-03-31T07:58:00.188Z] [WARN] [gc] forced GC (memory sample) rss 27.8gb -> 27.8gb
+[2026-03-31T07:58:11.036Z] [WARN] [gc] forced GC (memory limit) rss 27.8gb -> 27.8gb
+[2026-03-31T07:58:21.359Z] [WARN] [gc] forced GC (memory limit) rss 27.9gb -> 27.9gb
+[2026-03-31T07:58:31.411Z] [WARN] [gc] forced GC (memory limit) rss 27.9gb -> 27.9gb
+[2026-03-31T07:58:41.808Z] [WARN] [gc] forced GC (memory limit) rss 28.0gb -> 28.0gb
+[2026-03-31T07:58:51.563Z] [WARN] [gc] forced GC (memory limit) rss 28.0gb -> 28.0gb
+[2026-03-31T07:59:01.995Z] [WARN] [gc] forced GC (memory sample) rss 28.1gb -> 28.1gb
+[2026-03-31T07:59:12.307Z] [WARN] [gc] forced GC (memory limit) rss 28.1gb -> 28.1gb
+[2026-03-31T07:59:22.497Z] [WARN] [gc] forced GC (memory limit) rss 28.2gb -> 28.2gb
+[2026-03-31T07:59:32.329Z] [WARN] [gc] forced GC (memory limit) rss 28.2gb -> 28.2gb
+[2026-03-31T07:59:42.299Z] [WARN] [gc] forced GC (memory limit) rss 28.3gb -> 28.3gb
+[2026-03-31T07:59:52.339Z] [WARN] [gc] forced GC (memory limit) rss 28.3gb -> 28.3gb
+[2026-03-31T08:00:02.263Z] [WARN] [gc] forced GC (memory limit) rss 28.4gb -> 28.4gb
+[2026-03-31T08:00:12.454Z] [WARN] [gc] forced GC (memory sample) rss 28.4gb -> 28.4gb
+[2026-03-31T08:00:22.822Z] [WARN] [gc] forced GC (memory limit) rss 28.5gb -> 28.5gb
+[2026-03-31T08:00:32.872Z] [WARN] [gc] forced GC (memory sample) rss 28.5gb -> 28.5gb
+[2026-03-31T08:00:43.548Z] [WARN] [gc] forced GC (memory limit) rss 28.6gb -> 28.6gb
+[2026-03-31T08:00:53.978Z] [WARN] [gc] forced GC (memory limit) rss 28.7gb -> 28.7gb
+[2026-03-31T08:01:04.097Z] [WARN] [gc] forced GC (memory limit) rss 28.7gb -> 28.7gb
+[2026-03-31T08:01:14.081Z] [WARN] [gc] forced GC (memory limit) rss 28.8gb -> 28.8gb
+[2026-03-31T08:01:24.484Z] [WARN] [gc] forced GC (memory limit) rss 28.8gb -> 28.8gb
+[2026-03-31T08:01:34.797Z] [WARN] [gc] forced GC (memory sample) rss 28.8gb -> 28.8gb
+[2026-03-31T08:01:45.405Z] [WARN] [gc] forced GC (memory sample) rss 28.9gb -> 28.9gb
+[2026-03-31T08:01:55.941Z] [WARN] [gc] forced GC (memory sample) rss 29.0gb -> 29.0gb
+[2026-03-31T08:02:06.442Z] [WARN] [gc] forced GC (memory sample) rss 29.0gb -> 29.0gb
+[2026-03-31T08:02:17.646Z] [WARN] [gc] forced GC (memory sample) rss 29.1gb -> 29.1gb
+[2026-03-31T08:02:28.663Z] [WARN] [gc] forced GC (memory sample) rss 29.2gb -> 29.2gb
+[2026-03-31T08:02:39.558Z] [WARN] [gc] forced GC (memory sample) rss 29.3gb -> 29.3gb
+[2026-03-31T08:02:51.125Z] [WARN] [gc] forced GC (memory sample) rss 29.4gb -> 29.4gb
+[2026-03-31T08:03:02.214Z] [WARN] [gc] forced GC (memory sample) rss 29.5gb -> 29.5gb
+[2026-03-31T08:03:12.922Z] [WARN] [gc] forced GC (memory sample) rss 29.6gb -> 29.6gb
+[2026-03-31T08:03:24.027Z] [WARN] [gc] forced GC (memory sample) rss 29.6gb -> 29.6gb
+[2026-03-31T08:03:34.574Z] [WARN] [gc] forced GC (memory sample) rss 29.7gb -> 29.7gb
+[2026-03-31T08:03:45.822Z] [WARN] [gc] forced GC (memory sample) rss 29.8gb -> 29.8gb
+[2026-03-31T08:03:57.823Z] [WARN] [gc] forced GC (memory sample) rss 30.1gb -> 30.1gb
+[2026-03-31T08:04:09.744Z] [WARN] [gc] forced GC (memory sample) rss 30.2gb -> 30.2gb
+[2026-03-31T08:04:20.670Z] [WARN] [gc] forced GC (memory sample) rss 30.3gb -> 30.3gb
+[2026-03-31T08:04:31.758Z] [WARN] [gc] forced GC (memory sample) rss 30.4gb -> 30.4gb
+[2026-03-31T08:04:43.003Z] [WARN] [gc] forced GC (memory sample) rss 30.4gb -> 30.4gb
+[2026-03-31T08:04:53.970Z] [WARN] [gc] forced GC (memory limit) rss 30.5gb -> 30.5gb
+[2026-03-31T08:05:03.903Z] [WARN] [gc] forced GC (memory limit) rss 30.6gb -> 30.6gb
+[2026-03-31T08:05:14.693Z] [WARN] [gc] forced GC (memory limit) rss 30.7gb -> 30.7gb
+[2026-03-31T08:05:24.509Z] [WARN] [gc] forced GC (memory limit) rss 30.8gb -> 30.8gb
+[2026-03-31T08:05:34.792Z] [WARN] [gc] forced GC (memory sample) rss 30.9gb -> 30.9gb
+[2026-03-31T08:05:46.030Z] [WARN] [gc] forced GC (memory sample) rss 31.0gb -> 31.0gb
+[2026-03-31T08:05:56.977Z] [WARN] [gc] forced GC (memory sample) rss 31.0gb -> 31.0gb
+[2026-03-31T08:06:07.996Z] [WARN] [gc] forced GC (memory sample) rss 31.1gb -> 31.1gb
+[2026-03-31T08:06:18.980Z] [WARN] [gc] forced GC (memory sample) rss 31.2gb -> 31.2gb
+[2026-03-31T08:06:30.443Z] [WARN] [gc] forced GC (memory sample) rss 31.3gb -> 31.3gb
+[2026-03-31T08:06:41.658Z] [WARN] [gc] forced GC (memory sample) rss 31.4gb -> 31.4gb
+[2026-03-31T08:06:52.763Z] [WARN] [gc] forced GC (memory sample) rss 31.5gb -> 31.5gb
+[2026-03-31T08:07:03.763Z] [WARN] [gc] forced GC (memory sample) rss 31.6gb -> 31.6gb
+[2026-03-31T08:07:14.606Z] [WARN] [gc] forced GC (memory sample) rss 31.6gb -> 31.6gb
+[2026-03-31T08:07:25.962Z] [WARN] [gc] forced GC (memory sample) rss 31.7gb -> 31.7gb
+[2026-03-31T08:07:36.261Z] [WARN] [gc] forced GC (memory sample) rss 31.8gb -> 31.8gb
+[2026-03-31T08:07:47.410Z] [WARN] [gc] forced GC (memory sample) rss 31.9gb -> 31.9gb
+[2026-03-31T08:07:58.249Z] [WARN] [gc] forced GC (memory sample) rss 32.0gb -> 32.0gb
+[2026-03-31T08:08:09.159Z] [WARN] [gc] forced GC (memory sample) rss 32.0gb -> 32.0gb
+[2026-03-31T08:08:20.256Z] [WARN] [gc] forced GC (memory sample) rss 32.1gb -> 32.1gb
+[2026-03-31T08:08:31.513Z] [WARN] [gc] forced GC (memory sample) rss 32.2gb -> 32.2gb
+[2026-03-31T08:08:43.751Z] [WARN] [gc] forced GC (memory sample) rss 32.2gb -> 32.2gb
+[2026-03-31T08:08:54.812Z] [WARN] [gc] forced GC (memory sample) rss 32.3gb -> 32.3gb
+[2026-03-31T08:09:05.949Z] [WARN] [gc] forced GC (memory sample) rss 32.4gb -> 32.4gb
+[2026-03-31T08:09:17.234Z] [WARN] [gc] forced GC (memory sample) rss 32.5gb -> 32.5gb
+[2026-03-31T08:09:28.634Z] [WARN] [gc] forced GC (memory sample) rss 32.6gb -> 32.6gb
+[2026-03-31T08:09:40.439Z] [WARN] [gc] forced GC (memory sample) rss 32.7gb -> 32.7gb
+[2026-03-31T08:09:51.147Z] [WARN] [gc] forced GC (memory sample) rss 32.8gb -> 32.8gb
+[2026-03-31T08:10:02.800Z] [WARN] [gc] forced GC (memory sample) rss 32.9gb -> 32.9gb
+[2026-03-31T08:10:14.826Z] [WARN] [gc] forced GC (memory sample) rss 33.0gb -> 33.0gb
+[2026-03-31T08:10:26.021Z] [WARN] [gc] forced GC (memory sample) rss 33.1gb -> 33.1gb
+[2026-03-31T08:10:36.398Z] [WARN] [gc] forced GC (memory sample) rss 33.2gb -> 33.2gb
+[2026-03-31T08:10:46.407Z] [WARN] [gc] forced GC (memory sample) rss 33.3gb -> 33.3gb
+[2026-03-31T08:10:57.072Z] [WARN] [gc] forced GC (memory sample) rss 33.3gb -> 33.3gb
+[2026-03-31T08:11:07.660Z] [WARN] [gc] forced GC (memory sample) rss 33.4gb -> 33.4gb
+[2026-03-31T08:11:18.630Z] [WARN] [gc] forced GC (memory sample) rss 33.5gb -> 33.5gb
+[2026-03-31T08:11:28.774Z] [WARN] [gc] forced GC (memory sample) rss 33.6gb -> 33.6gb
+[2026-03-31T08:11:39.823Z] [WARN] [gc] forced GC (memory sample) rss 33.7gb -> 33.7gb
+[2026-03-31T08:11:50.755Z] [WARN] [gc] forced GC (memory sample) rss 33.8gb -> 33.8gb
+[2026-03-31T08:12:01.922Z] [WARN] [gc] forced GC (memory sample) rss 33.8gb -> 33.8gb
+[2026-03-31T08:12:12.867Z] [WARN] [gc] forced GC (memory sample) rss 33.7gb -> 33.7gb
+[2026-03-31T08:12:23.124Z] [WARN] [gc] forced GC (memory sample) rss 33.8gb -> 33.8gb
+[2026-03-31T08:12:33.844Z] [WARN] [gc] forced GC (memory sample) rss 33.9gb -> 33.9gb
+[2026-03-31T08:12:44.818Z] [WARN] [gc] forced GC (memory sample) rss 33.9gb -> 33.9gb
+[2026-03-31T08:12:55.668Z] [WARN] [gc] forced GC (memory sample) rss 33.9gb -> 33.9gb
+[2026-03-31T08:13:06.902Z] [WARN] [gc] forced GC (memory sample) rss 34.0gb -> 34.0gb
+[2026-03-31T08:13:18.242Z] [WARN] [gc] forced GC (memory sample) rss 34.1gb -> 34.1gb
+[2026-03-31T08:13:30.164Z] [WARN] [gc] forced GC (memory sample) rss 33.8gb -> 33.8gb
+[2026-03-31T08:13:42.560Z] [WARN] [gc] forced GC (memory sample) rss 33.5gb -> 33.5gb
+[2026-03-31T08:13:53.246Z] [WARN] [gc] forced GC (memory limit) rss 33.6gb -> 33.6gb
+[2026-03-31T08:14:04.031Z] [WARN] [gc] forced GC (memory limit) rss 33.5gb -> 33.5gb
+[2026-03-31T08:14:14.412Z] [WARN] [gc] forced GC (memory sample) rss 33.6gb -> 33.6gb
+[2026-03-31T08:14:24.507Z] [WARN] [gc] forced GC (memory sample) rss 33.6gb -> 33.6gb
+[2026-03-31T08:14:35.140Z] [WARN] [gc] forced GC (memory sample) rss 33.5gb -> 33.5gb
+[2026-03-31T08:14:45.574Z] [WARN] [gc] forced GC (memory sample) rss 33.5gb -> 33.5gb
+[2026-03-31T08:14:56.226Z] [WARN] [gc] forced GC (memory sample) rss 32.8gb -> 32.8gb
+[2026-03-31T08:15:06.991Z] [WARN] [gc] forced GC (memory sample) rss 31.9gb -> 31.9gb
+[2026-03-31T08:15:17.827Z] [WARN] [gc] forced GC (memory sample) rss 32.1gb -> 32.1gb
+[2026-03-31T08:15:28.861Z] [WARN] [gc] forced GC (memory sample) rss 32.3gb -> 32.3gb
+[2026-03-31T08:15:39.601Z] [WARN] [gc] forced GC (memory sample) rss 32.3gb -> 32.3gb
+[2026-03-31T08:15:51.062Z] [WARN] [gc] forced GC (memory sample) rss 32.4gb -> 32.2gb
+[2026-03-31T08:16:02.923Z] [WARN] [gc] forced GC (memory sample) rss 32.0gb -> 32.0gb
+[2026-03-31T08:16:14.035Z] [WARN] [gc] forced GC (memory sample) rss 31.8gb -> 31.8gb
+[2026-03-31T08:16:25.743Z] [WARN] [gc] forced GC (memory sample) rss 31.9gb -> 31.9gb
+[2026-03-31T08:16:36.699Z] [WARN] [gc] forced GC (memory sample) rss 31.5gb -> 31.4gb
+[2026-03-31T08:16:48.091Z] [WARN] [gc] forced GC (memory sample) rss 30.3gb -> 30.3gb
+[2026-03-31T08:16:58.653Z] [WARN] [gc] forced GC (memory sample) rss 28.4gb -> 28.4gb
+[2026-03-31T08:17:09.780Z] [WARN] [gc] forced GC (memory sample) rss 28.5gb -> 28.5gb
+[2026-03-31T08:17:20.801Z] [WARN] [gc] forced GC (memory sample) rss 28.7gb -> 28.7gb
+[2026-03-31T08:17:32.370Z] [WARN] [gc] forced GC (memory sample) rss 28.8gb -> 28.8gb
+[2026-03-31T08:17:42.853Z] [WARN] [gc] forced GC (memory sample) rss 28.9gb -> 28.9gb
+[2026-03-31T08:17:54.162Z] [WARN] [gc] forced GC (memory sample) rss 28.7gb -> 28.7gb
+[2026-03-31T08:18:06.051Z] [WARN] [gc] forced GC (memory sample) rss 27.9gb -> 27.9gb
+[2026-03-31T08:18:16.079Z] [WARN] [gc] forced GC (memory sample) rss 27.6gb -> 27.6gb
+[2026-03-31T08:18:26.952Z] [WARN] [gc] forced GC (memory sample) rss 27.5gb -> 27.5gb
+[2026-03-31T08:18:37.967Z] [WARN] [gc] forced GC (memory sample) rss 27.7gb -> 27.6gb
+[2026-03-31T08:18:48.616Z] [WARN] [gc] forced GC (memory sample) rss 26.0gb -> 26.0gb
+[2026-03-31T08:19:00.266Z] [WARN] [gc] forced GC (memory sample) rss 26.2gb -> 26.2gb
+[2026-03-31T08:19:10.998Z] [WARN] [gc] forced GC (memory limit) rss 26.3gb -> 26.3gb
+[2026-03-31T08:19:21.730Z] [WARN] [gc] forced GC (memory limit) rss 26.4gb -> 26.4gb
+[2026-03-31T08:19:32.765Z] [WARN] [gc] forced GC (memory limit) rss 26.5gb -> 26.5gb
+[2026-03-31T08:19:42.864Z] [WARN] [gc] forced GC (memory sample) rss 26.6gb -> 26.6gb
+[2026-03-31T08:19:53.278Z] [WARN] [gc] forced GC (memory limit) rss 26.6gb -> 26.6gb
+[2026-03-31T08:20:03.764Z] [WARN] [gc] forced GC (memory limit) rss 26.6gb -> 26.6gb
+[2026-03-31T08:20:14.023Z] [WARN] [gc] forced GC (memory limit) rss 26.6gb -> 26.6gb
+[2026-03-31T08:20:24.658Z] [WARN] [gc] forced GC (memory sample) rss 26.5gb -> 26.5gb
+[2026-03-31T08:20:34.850Z] [WARN] [gc] forced GC (memory sample) rss 26.1gb -> 26.1gb
+[2026-03-31T08:20:45.887Z] [WARN] [gc] forced GC (memory sample) rss 26.0gb -> 26.0gb
+[2026-03-31T08:20:56.921Z] [WARN] [gc] forced GC (memory sample) rss 26.1gb -> 26.1gb
+[2026-03-31T08:21:08.261Z] [WARN] [gc] forced GC (memory sample) rss 26.3gb -> 26.3gb
+[2026-03-31T08:21:19.592Z] [WARN] [gc] forced GC (memory sample) rss 26.4gb -> 26.4gb
+[2026-03-31T08:21:29.945Z] [WARN] [gc] forced GC (memory sample) rss 26.1gb -> 26.1gb
+[2026-03-31T08:21:41.095Z] [WARN] [gc] forced GC (memory sample) rss 26.5gb -> 26.5gb
+[2026-03-31T08:21:52.319Z] [WARN] [gc] forced GC (memory sample) rss 26.6gb -> 26.6gb
+[2026-03-31T08:22:03.711Z] [WARN] [gc] forced GC (memory sample) rss 26.7gb -> 26.7gb
+[2026-03-31T08:22:14.801Z] [WARN] [gc] forced GC (memory sample) rss 26.6gb -> 26.6gb
+[2026-03-31T08:22:26.457Z] [WARN] [gc] forced GC (memory sample) rss 26.8gb -> 26.8gb
+[2026-03-31T08:22:36.630Z] [WARN] [gc] forced GC (memory sample) rss 26.9gb -> 26.9gb
+[2026-03-31T08:22:46.774Z] [WARN] [gc] forced GC (memory sample) rss 27.0gb -> 27.0gb
+[2026-03-31T08:22:57.203Z] [WARN] [gc] forced GC (memory sample) rss 27.1gb -> 27.1gb
+[2026-03-31T08:23:08.037Z] [WARN] [gc] forced GC (memory sample) rss 27.1gb -> 27.1gb
+[2026-03-31T08:23:19.366Z] [WARN] [gc] forced GC (memory sample) rss 27.2gb -> 27.2gb
+[2026-03-31T08:23:30.609Z] [WARN] [gc] forced GC (memory sample) rss 27.1gb -> 27.1gb
+[2026-03-31T08:23:42.410Z] [WARN] [gc] forced GC (memory sample) rss 26.4gb -> 26.2gb
+[2026-03-31T08:23:53.757Z] [WARN] [gc] forced GC (memory sample) rss 25.5gb -> 25.6gb
+[2026-03-31T08:24:04.579Z] [WARN] [gc] forced GC (memory sample) rss 25.4gb -> 25.4gb
+[2026-03-31T08:24:15.834Z] [WARN] [gc] forced GC (memory sample) rss 24.0gb -> 24.0gb
+[2026-03-31T08:24:27.430Z] [WARN] [gc] forced GC (memory sample) rss 24.1gb -> 24.1gb
+[2026-03-31T08:24:38.834Z] [WARN] [gc] forced GC (memory sample) rss 21.9gb -> 21.9gb
+[2026-03-31T08:24:49.251Z] [WARN] [gc] forced GC (memory sample) rss 21.7gb -> 21.7gb
+[2026-03-31T08:25:00.031Z] [WARN] [gc] forced GC (memory sample) rss 21.5gb -> 21.5gb
+[2026-03-31T08:25:10.865Z] [WARN] [gc] forced GC (memory sample) rss 20.9gb -> 20.8gb
+[2026-03-31T08:25:21.807Z] [WARN] [gc] forced GC (memory sample) rss 19.8gb -> 19.8gb
+[2026-03-31T08:25:31.944Z] [WARN] [gc] forced GC (memory sample) rss 19.3gb -> 19.3gb
+[2026-03-31T08:25:42.538Z] [WARN] [gc] forced GC (memory sample) rss 19.3gb -> 19.3gb
+[2026-03-31T08:25:53.515Z] [WARN] [gc] forced GC (memory sample) rss 19.1gb -> 19.1gb
+[2026-03-31T08:26:04.393Z] [WARN] [gc] forced GC (memory sample) rss 19.4gb -> 19.4gb
+[2026-03-31T08:26:15.159Z] [WARN] [gc] forced GC (memory sample) rss 19.6gb -> 19.6gb
+[2026-03-31T08:26:27.291Z] [WARN] [gc] forced GC (memory sample) rss 19.7gb -> 19.7gb
+[2026-03-31T08:26:37.661Z] [WARN] [gc] forced GC (memory sample) rss 19.8gb -> 19.8gb
+[2026-03-31T08:26:47.693Z] [WARN] [gc] forced GC (memory sample) rss 19.4gb -> 19.3gb
+[2026-03-31T08:26:57.883Z] [WARN] [gc] forced GC (memory sample) rss 19.4gb -> 19.4gb
+[2026-03-31T08:27:08.929Z] [WARN] [gc] forced GC (memory sample) rss 19.6gb -> 19.6gb
+[2026-03-31T08:27:20.080Z] [WARN] [gc] forced GC (memory sample) rss 19.0gb -> 19.0gb
+[2026-03-31T08:27:31.256Z] [WARN] [gc] forced GC (memory sample) rss 19.0gb -> 19.0gb
+[2026-03-31T08:27:42.219Z] [WARN] [gc] forced GC (memory sample) rss 19.0gb -> 19.0gb
+[2026-03-31T08:27:53.289Z] [WARN] [gc] forced GC (memory sample) rss 19.1gb -> 19.2gb
+[2026-03-31T08:28:04.553Z] [WARN] [gc] forced GC (memory sample) rss 18.9gb -> 18.9gb
+[2026-03-31T08:28:16.063Z] [WARN] [gc] forced GC (memory sample) rss 18.7gb -> 18.7gb
+[2026-03-31T08:28:27.455Z] [WARN] [gc] forced GC (memory sample) rss 18.8gb -> 18.8gb
+[2026-03-31T08:28:38.529Z] [WARN] [gc] forced GC (memory sample) rss 18.9gb -> 18.9gb
+[2026-03-31T08:28:49.573Z] [WARN] [gc] forced GC (memory sample) rss 18.5gb -> 18.5gb
+[2026-03-31T08:29:00.568Z] [WARN] [gc] forced GC (memory sample) rss 18.6gb -> 18.6gb
+[2026-03-31T08:29:11.992Z] [WARN] [gc] forced GC (memory sample) rss 19.1gb -> 19.1gb
+[2026-03-31T08:29:23.253Z] [WARN] [gc] forced GC (memory sample) rss 18.3gb -> 18.2gb
+[2026-03-31T08:29:33.617Z] [WARN] [gc] forced GC (memory sample) rss 18.6gb -> 18.6gb
+[2026-03-31T08:29:44.467Z] [WARN] [gc] forced GC (memory sample) rss 18.5gb -> 18.5gb
+[2026-03-31T08:29:56.349Z] [WARN] [gc] forced GC (memory sample) rss 18.5gb -> 18.5gb
+[2026-03-31T08:30:07.229Z] [WARN] [gc] forced GC (memory sample) rss 17.7gb -> 17.7gb
+[2026-03-31T08:30:17.919Z] [WARN] [gc] forced GC (memory limit) rss 18.1gb -> 18.1gb
+[2026-03-31T08:30:28.269Z] [WARN] [gc] forced GC (memory limit) rss 17.9gb -> 17.9gb
+[2026-03-31T08:30:38.580Z] [WARN] [gc] forced GC (memory limit) rss 18.0gb -> 18.0gb
+[2026-03-31T08:30:49.742Z] [WARN] [gc] forced GC (memory sample) rss 17.6gb -> 17.6gb
+[2026-03-31T08:31:01.076Z] [WARN] [gc] forced GC (memory sample) rss 17.5gb -> 17.3gb
+[2026-03-31T08:31:13.010Z] [WARN] [gc] forced GC (memory sample) rss 17.3gb -> 17.6gb
+[2026-03-31T08:31:24.246Z] [WARN] [gc] forced GC (memory sample) rss 17.8gb -> 17.9gb
+[2026-03-31T08:31:35.473Z] [WARN] [gc] forced GC (memory sample) rss 18.0gb -> 18.0gb
+[2026-03-31T08:31:46.498Z] [WARN] [gc] forced GC (memory sample) rss 18.0gb -> 18.0gb
+[2026-03-31T08:31:58.330Z] [WARN] [gc] forced GC (memory sample) rss 17.6gb -> 17.7gb
+[2026-03-31T08:32:09.724Z] [WARN] [gc] forced GC (memory sample) rss 16.6gb -> 16.5gb
+[2026-03-31T08:32:20.871Z] [WARN] [gc] forced GC (memory sample) rss 16.4gb -> 16.4gb
+[2026-03-31T08:32:31.628Z] [WARN] [gc] forced GC (memory sample) rss 17.3gb -> 17.3gb
+[2026-03-31T08:32:42.830Z] [WARN] [gc] forced GC (memory sample) rss 16.8gb -> 16.7gb
+[2026-03-31T08:32:54.854Z] [WARN] [gc] forced GC (memory sample) rss 17.7gb -> 17.4gb
+[2026-03-31T08:33:05.145Z] [WARN] [gc] forced GC (memory sample) rss 17.3gb -> 17.4gb
+[2026-03-31T08:33:16.674Z] [WARN] [gc] forced GC (memory sample) rss 17.1gb -> 17.0gb
+[2026-03-31T08:33:27.707Z] [WARN] [gc] forced GC (memory sample) rss 17.2gb -> 17.1gb
+[2026-03-31T08:33:38.527Z] [WARN] [gc] forced GC (memory sample) rss 16.5gb -> 16.7gb
+[2026-03-31T08:33:49.621Z] [WARN] [gc] forced GC (memory sample) rss 16.3gb -> 16.5gb
+[2026-03-31T08:34:00.695Z] [WARN] [gc] forced GC (memory sample) rss 17.4gb -> 17.5gb
+[2026-03-31T08:34:11.460Z] [WARN] [gc] forced GC (memory sample) rss 17.0gb -> 17.0gb
+[2026-03-31T08:34:22.787Z] [WARN] [gc] forced GC (memory limit) rss 16.8gb -> 16.8gb
+[2026-03-31T08:34:32.636Z] [WARN] [gc] forced GC (memory limit) rss 17.3gb -> 17.2gb
+[2026-03-31T08:34:43.026Z] [WARN] [gc] forced GC (memory limit) rss 16.5gb -> 16.5gb
+[2026-03-31T08:34:53.986Z] [WARN] [gc] forced GC (memory sample) rss 16.2gb -> 16.1gb
+[2026-03-31T08:35:04.041Z] [WARN] [gc] forced GC (memory sample) rss 16.0gb -> 16.1gb
+[2026-03-31T08:35:15.374Z] [WARN] [gc] forced GC (memory sample) rss 16.8gb -> 16.8gb
+[2026-03-31T08:35:27.094Z] [WARN] [gc] forced GC (memory sample) rss 16.5gb -> 16.7gb
+[2026-03-31T08:35:37.168Z] [WARN] [gc] forced GC (memory sample) rss 16.3gb -> 16.3gb
+[2026-03-31T08:35:47.569Z] [WARN] [gc] forced GC (memory sample) rss 16.4gb -> 16.5gb
+[2026-03-31T08:35:58.114Z] [WARN] [gc] forced GC (memory sample) rss 16.2gb -> 16.5gb
+[2026-03-31T08:36:09.239Z] [WARN] [gc] forced GC (memory sample) rss 16.1gb -> 16.0gb
+[2026-03-31T08:36:19.812Z] [WARN] [gc] forced GC (memory sample) rss 16.0gb -> 16.1gb
+[2026-03-31T08:36:28.632Z] [INFO] received SIGTERM, shutting down prisma-streams server
+heap stats:     peak       total       freed     current        unit       count   
+  reserved:    32.0 GiB    32.0 GiB     0          32.0 GiB                          
+ committed:     1.0 GiB    32.0 GiB    67.1 GiB   -35.1 GiB                          ok
+     reset:     0      
+    purged:    44.9 GiB
+   touched:   321.2 KiB    83.1 MiB    58.8 GiB   -58.7 GiB                          ok
+  segments:    15           1.3 Ki      1.3 Ki      4                                not all freed
+-abandoned:     4           8           4           4                                not all freed
+   -cached:     0           0           0           0                                ok
+     pages:     0           0           7.7 Ki     -7.7 Ki                           ok
+-abandoned:    31          58          31          27                                not all freed
+ -extended:     0      
+ -noretire:     0      
+    arenas:    18      
+-crossover:     0      
+ -rollback:     0      
+     mmaps:     0      
+   commits:     0      
+    resets:     0      
+    purges:     4.0 Ki 
+   threads:    20          24           8          16                                not all freed
+  searches:     0.0 avg
+numa nodes:     1
+   elapsed:  3629.929 s
+   process: user: 3136.911 s, system: 410.291 s, faults: 69, rss: 34.1 GiB, commit: 1.0 GiB

@@ -5,7 +5,7 @@ import type { Config } from "../config";
 import type { IndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
 import { SegmentDiskCache } from "../segment/cache";
-import { iterateBlocksResult } from "../segment/format";
+import { iterateBlockRecordsResult } from "../segment/format";
 import { siphash24 } from "../util/siphash";
 import { retry } from "../util/retry";
 import { indexRunObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
@@ -14,6 +14,8 @@ import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_P
 import { IndexRunCache } from "./run_cache";
 import type { Metrics } from "../metrics";
 import { dsError } from "../util/ds_error.ts";
+import { yieldToEventLoop } from "../util/yield";
+import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import type { AggSegmentCompanion } from "../search/agg_format";
 import type { ColSegmentCompanion } from "../search/col_format";
 import type { FtsSegmentCompanion } from "../search/fts_format";
@@ -32,6 +34,7 @@ export type StreamIndexLookup = {
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSegmentCompanion | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSegmentCompanion | null>;
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null>;
+  getLocalStorageUsage?(stream: string): { routing_index_cache_bytes: number; exact_index_cache_bytes: number };
 };
 
 function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildError> {
@@ -71,6 +74,7 @@ export class IndexManager {
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
+  private readonly memorySampler?: RuntimeMemorySampler;
 
   constructor(
     cfg: Config,
@@ -79,7 +83,8 @@ export class IndexManager {
     segmentCache: SegmentDiskCache | undefined,
     publishManifest?: (stream: string) => Promise<void>,
     metrics?: Metrics,
-    onMetadataChanged?: (stream: string) => void
+    onMetadataChanged?: (stream: string) => void,
+    memorySampler?: RuntimeMemorySampler
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -95,6 +100,7 @@ export class IndexManager {
     this.retireMinMs = Math.max(0, cfg.indexRetireMinMs);
     this.metrics = metrics;
     this.onMetadataChanged = onMetadataChanged;
+    this.memorySampler = memorySampler;
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
   }
@@ -168,6 +174,11 @@ export class IndexManager {
 
   async getMetricsBlockSegmentCompanion(_stream: string, _segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null> {
     return null;
+  }
+
+  getLocalCacheBytes(stream: string): number {
+    if (!this.runDiskCache) return 0;
+    return this.runDiskCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/index/`);
   }
 
   private async tick(): Promise<void> {
@@ -247,12 +258,19 @@ export class IndexManager {
         }
         if (!ok) return Result.ok(undefined);
         const t0 = Date.now();
-        const runRes = await this.buildL0RunResult(stream, start, segments, state.index_secret);
+        const runRes = this.memorySampler
+          ? await this.memorySampler.track(
+              "routing_l0",
+              { stream, start_segment: start, end_segment: end },
+              () => this.buildL0RunResult(stream, start, segments, state.index_secret)
+            )
+          : await this.buildL0RunResult(stream, start, segments, state.index_secret);
         if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
         if (Result.isError(persistRes)) return persistRes;
+        const sizeBytes = persistRes.value;
         this.db.insertIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -260,6 +278,7 @@ export class IndexManager {
           start_segment: run.meta.startSegment,
           end_segment: run.meta.endSegment,
           object_key: run.meta.objectKey,
+          size_bytes: sizeBytes,
           filter_len: run.meta.filterLen,
           record_count: run.meta.recordCount,
         });
@@ -305,6 +324,7 @@ export class IndexManager {
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
         if (Result.isError(persistRes)) return persistRes;
+        const sizeBytes = persistRes.value;
         this.db.insertIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -312,6 +332,7 @@ export class IndexManager {
           start_segment: run.meta.startSegment,
           end_segment: run.meta.endSegment,
           object_key: run.meta.objectKey,
+          size_bytes: sizeBytes,
           filter_len: run.meta.filterLen,
           record_count: run.meta.recordCount,
         });
@@ -394,18 +415,39 @@ export class IndexManager {
     inputs: IndexRunRow[]
   ): Promise<Result<IndexRun, IndexBuildError>> {
     if (inputs.length === 0) return invalidIndexBuild("compact: missing inputs");
-    const segments = new Map<bigint, Set<number>>();
+    const segments = new Map<bigint, number[]>();
     const addSegment = (fp: bigint, seg: number) => {
-      let set = segments.get(fp);
-      if (!set) {
-        set = new Set<number>();
-        segments.set(fp, set);
+      let list = segments.get(fp);
+      if (!list) {
+        list = [];
+        segments.set(fp, list);
       }
-      set.add(seg);
+      list.push(seg);
+    };
+    const mergeRun = (meta: IndexRunRow, run: IndexRun): void => {
+      if (run.runType === RUN_TYPE_MASK16 && run.masks) {
+        for (let i = 0; i < run.fingerprints.length; i++) {
+          const fp = run.fingerprints[i];
+          const mask = run.masks[i];
+          for (let bit = 0; bit < 16; bit++) {
+            if ((mask & (1 << bit)) === 0) continue;
+            addSegment(fp, meta.start_segment + bit);
+          }
+        }
+        return;
+      }
+      if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
+        for (let i = 0; i < run.fingerprints.length; i++) {
+          const fp = run.fingerprints[i];
+          const postings = run.postings[i];
+          for (const rel of postings) addSegment(fp, meta.start_segment + rel);
+        }
+        return;
+      }
+      throw dsError(`unknown run type ${run.runType}`);
     };
 
     const pending = inputs.slice();
-    const results: Array<{ meta: IndexRunRow; run: IndexRun }> = [];
     const workers = Math.min(this.compactionConcurrency, pending.length);
     let buildError: string | null = null;
     const workerTasks: Promise<void>[] = [];
@@ -426,7 +468,13 @@ export class IndexManager {
               buildError = `missing run ${meta.run_id}`;
               return;
             }
-            results.push({ meta, run });
+            try {
+              mergeRun(meta, run);
+            } catch (e: unknown) {
+              buildError = errorMessage(e);
+              return;
+            }
+            await yieldToEventLoop();
           }
         })()
       );
@@ -434,45 +482,22 @@ export class IndexManager {
     await Promise.all(workerTasks);
     if (buildError) return invalidIndexBuild(buildError);
 
-    for (const res of results) {
-      const run = res.run;
-      const meta = res.meta;
-      if (run.runType === RUN_TYPE_MASK16 && run.masks) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          const mask = run.masks[i];
-          for (let bit = 0; bit < 16; bit++) {
-            if ((mask & (1 << bit)) === 0) continue;
-            addSegment(fp, meta.start_segment + bit);
-          }
-        }
-      } else if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          const postings = run.postings[i];
-          for (const rel of postings) addSegment(fp, meta.start_segment + rel);
-        }
-      } else {
-        return invalidIndexBuild(`unknown run type ${run.runType}`);
-      }
-    }
-
     const startSegment = inputs[0].start_segment;
     const endSegment = inputs[inputs.length - 1].end_segment;
-    const pairs = Array.from(segments.entries())
-      .map(([fp, set]) => {
-        const list = Array.from(set);
-        list.sort((a, b) => a - b);
-        const rel = list.map((seg) => seg - startSegment);
-        return { fp, rel };
-      })
-      .sort((a, b) => (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0));
-
-    const fingerprints: bigint[] = [];
-    const postings: number[][] = [];
-    for (const p of pairs) {
-      fingerprints.push(p.fp);
-      postings.push(p.rel);
+    const fingerprints = Array.from(segments.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const postings: number[][] = new Array(fingerprints.length);
+    for (let i = 0; i < fingerprints.length; i++) {
+      const fp = fingerprints[i]!;
+      const list = segments.get(fp) ?? [];
+      list.sort((a, b) => a - b);
+      const rel: number[] = [];
+      let lastSeg = Number.NaN;
+      for (const seg of list) {
+        if (seg === lastSeg) continue;
+        rel.push(seg - startSegment);
+        lastSeg = seg;
+      }
+      postings[i] = rel;
     }
 
     const fuseRes = buildBinaryFuseResult(fingerprints);
@@ -533,7 +558,6 @@ export class IndexManager {
     const maskByFp = new Map<bigint, number>();
     const pending = segments.slice();
     const concurrency = Math.max(1, Math.min(this.buildConcurrency, pending.length));
-    const results: Array<Map<bigint, number>> = [];
     let buildError: string | null = null;
     const workers: Promise<void>[] = [];
     for (let i = 0; i < concurrency; i++) {
@@ -552,35 +576,30 @@ export class IndexManager {
             const bit = seg.segment_index - startSegment;
             const maskBit = 1 << bit;
             const local = new Map<bigint, number>();
-            for (const blockRes of iterateBlocksResult(segBytes)) {
-              if (Result.isError(blockRes)) {
-                buildError = blockRes.error.message;
+            for (const recRes of iterateBlockRecordsResult(segBytes)) {
+              if (Result.isError(recRes)) {
+                buildError = recRes.error.message;
                 return;
               }
-              const { decoded } = blockRes.value;
-              for (const rec of decoded.records) {
-                if (rec.routingKey.byteLength === 0) continue;
-                const fp = siphash24(secret, rec.routingKey);
-                const prev = local.get(fp) ?? 0;
-                local.set(fp, prev | maskBit);
-              }
+              if (recRes.value.routingKey.byteLength === 0) continue;
+              const fp = siphash24(secret, recRes.value.routingKey);
+              const prev = local.get(fp) ?? 0;
+              local.set(fp, prev | maskBit);
             }
-            results.push(local);
+            for (const [fp, mask] of local.entries()) {
+              const prev = maskByFp.get(fp) ?? 0;
+              maskByFp.set(fp, prev | mask);
+            }
+            local.clear();
+            await yieldToEventLoop();
           }
         })()
       );
     }
     await Promise.all(workers);
     if (buildError) return invalidIndexBuild(buildError);
-    for (const local of results) {
-      for (const [fp, mask] of local.entries()) {
-        const prev = maskByFp.get(fp) ?? 0;
-        maskByFp.set(fp, prev | mask);
-      }
-    }
-    const entries = Array.from(maskByFp.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    const fingerprints = entries.map(([fp]) => fp);
-    const masks = entries.map(([, mask]) => mask);
+    const fingerprints = Array.from(maskByFp.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const masks = fingerprints.map((fp) => maskByFp.get(fp) ?? 0);
     const fuseRes = buildBinaryFuseResult(fingerprints);
     if (Result.isError(fuseRes)) return invalidIndexBuild(fuseRes.error.message);
     const { filter, bytes } = fuseRes.value;
@@ -607,7 +626,7 @@ export class IndexManager {
     return Result.ok(run);
   }
 
-  private async persistRunResult(run: IndexRun, stream?: string): Promise<Result<void, IndexBuildError>> {
+  private async persistRunResult(run: IndexRun, stream?: string): Promise<Result<number, IndexBuildError>> {
     const payloadRes = encodeIndexRunResult(run);
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
     const payload = payloadRes.value;
@@ -629,7 +648,7 @@ export class IndexManager {
     }
     this.runDiskCache?.put(run.meta.objectKey, payload);
     this.runCache.put(run.meta.objectKey, run);
-    return Result.ok(undefined);
+    return Result.ok(payload.byteLength);
   }
 
   private async loadRunResult(meta: IndexRunRow): Promise<Result<IndexRun | null, IndexBuildError>> {
@@ -686,7 +705,7 @@ export class IndexManager {
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, IndexBuildError>> {
     if (seg.local_path && seg.local_path.length > 0) {
       try {
-        return Result.ok(new Uint8Array(readFileSync(seg.local_path)));
+        return Result.ok(readFileSync(seg.local_path));
       } catch {
         // fall through
       }
@@ -697,7 +716,7 @@ export class IndexManager {
       diskCache.recordHit();
       diskCache.touch(key);
       try {
-        return Result.ok(new Uint8Array(readFileSync(diskCache.getPath(key))));
+        return Result.ok(readFileSync(diskCache.getPath(key)));
       } catch {
         diskCache.remove(key);
       }

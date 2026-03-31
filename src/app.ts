@@ -1,6 +1,7 @@
 import type { Config } from "./config";
 import { createAppCore, type App } from "./app_core";
 import type { ObjectStore } from "./objectstore/interface";
+import { AccountingObjectStore } from "./objectstore/accounting";
 import { MockR2Store } from "./objectstore/mock_r2";
 import { StreamReader } from "./reader";
 import { SegmentDiskCache } from "./segment/cache";
@@ -69,13 +70,20 @@ class CombinedIndexController implements StreamIndexLookup {
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number) {
     return this.companionIndex.getMetricsBlockSegmentCompanion(stream, segmentIndex);
   }
+
+  getLocalStorageUsage(stream: string) {
+    return {
+      routing_index_cache_bytes: this.routingIndex.getLocalCacheBytes(stream),
+      exact_index_cache_bytes: this.secondaryIndex.getLocalCacheBytes(stream),
+    };
+  }
 }
 
 export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions = {}): App {
   return createAppCore(cfg, {
     stats: opts.stats,
-    createRuntime: ({ config, db, registry, notifier, stats, backpressure, metrics }) => {
-      const store = os ?? new MockR2Store();
+    createRuntime: ({ config, db, registry, notifier, stats, backpressure, metrics, memorySampler }) => {
+      const store = new AccountingObjectStore(os ?? new MockR2Store(), db);
       const segmenterHooks: SegmenterHooks = {
         onSegmentSealed: (stream, payloadBytes, segmentBytes) => {
           if (stats) stats.recordSegmentSealed(payloadBytes, segmentBytes);
@@ -84,7 +92,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         },
       };
       const diskCache = new SegmentDiskCache(`${config.rootDir}/cache`, config.segmentCacheMaxBytes);
-      const uploader = new Uploader(config, db, store, diskCache, stats, backpressure);
+      const uploader = new Uploader(config, db, store, diskCache, stats, backpressure, undefined, memorySampler);
       const routingIndexer = new IndexManager(
         config,
         db,
@@ -92,7 +100,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         diskCache,
         (stream) => uploader.publishManifest(stream),
         metrics,
-        (stream) => notifier.notifyDetailsChanged(stream)
+        (stream) => notifier.notifyDetailsChanged(stream),
+        memorySampler
       );
       const secondaryIndexer = new SecondaryIndexManager(
         config,
@@ -100,7 +109,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         store,
         registry,
         (stream) => uploader.publishManifest(stream),
-        (stream) => notifier.notifyDetailsChanged(stream)
+        (stream) => notifier.notifyDetailsChanged(stream),
+        memorySampler
       );
       const companionIndexer = new SearchCompanionManager(
         config,
@@ -108,7 +118,9 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         store,
         registry,
         (stream) => uploader.publishManifest(stream),
-        (stream) => notifier.notifyDetailsChanged(stream)
+        (stream) => notifier.notifyDetailsChanged(stream),
+        metrics,
+        memorySampler
       );
       const indexer = new CombinedIndexController(
         routingIndexer,
@@ -123,7 +135,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       const segmenter =
         config.segmenterWorkers > 0
           ? new SegmenterWorkerPool(config, config.segmenterWorkers, {}, segmenterHooks)
-          : new Segmenter(config, db, {}, segmenterHooks);
+          : new Segmenter(config, db, {}, segmenterHooks, memorySampler);
 
       return {
         store,
@@ -144,7 +156,12 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
               timeoutMs: config.objectStoreTimeoutMs,
             }
           );
+          db.setSchemaUploadedSizeBytes(stream, body.byteLength);
         },
+        getLocalStorageUsage: (stream: string) => ({
+          segment_cache_bytes: diskCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/segments/`),
+          ...indexer.getLocalStorageUsage?.(stream),
+        }),
         start: () => {
           segmenter.start();
           uploader.start();

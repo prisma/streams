@@ -49,6 +49,40 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+const DETAILS_SEARCH_SCHEMA = {
+  schema: {
+    type: "object",
+    additionalProperties: true,
+  },
+  search: {
+    primaryTimestampField: "eventTime",
+    fields: {
+      eventTime: {
+        kind: "date",
+        bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+        column: true,
+        exists: true,
+        sortable: true,
+      },
+      service: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/service" }],
+        exact: true,
+        prefix: true,
+        exists: true,
+        sortable: true,
+      },
+      message: {
+        kind: "text",
+        bindings: [{ version: 1, jsonPointer: "/message" }],
+        analyzer: "unicode_word_v1",
+        exists: true,
+        positions: true,
+      },
+    },
+  },
+};
+
 describe("http behavior", () => {
   test("create/append/read raw and end offset", async () => {
     await withServer({}, async ({ baseUrl }) => {
@@ -209,6 +243,114 @@ describe("http behavior", () => {
         wal_bytes: "3",
       });
     });
+  });
+
+  test("details endpoint reports storage usage and object-store request accounting", async () => {
+    await withServer(
+      {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        indexCheckIntervalMs: 10,
+        indexL0SpanSegments: 2,
+        searchCompanionBuildBatchSegments: 2,
+      },
+      async ({ baseUrl }) => {
+        let r = await fetch(`${baseUrl}/v1/stream/details-storage`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        });
+        expect([200, 201]).toContain(r.status);
+
+        r = await fetch(`${baseUrl}/v1/stream/details-storage/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(DETAILS_SEARCH_SCHEMA),
+        });
+        expect(r.status).toBe(200);
+
+        for (let i = 0; i < 12; i++) {
+          const event = {
+            eventTime: `2026-03-31T12:${String(i).padStart(2, "0")}:00.000Z`,
+            service: i % 2 === 0 ? "billing-api" : "worker-api",
+            message: `record ${i} constructor push`,
+          };
+          const appendRes = await fetch(`${baseUrl}/v1/stream/details-storage`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(event),
+          });
+          expect(appendRes.status).toBe(204);
+        }
+
+        let body: any = null;
+        const deadline = Date.now() + 10_000;
+        let ready = false;
+        while (Date.now() < deadline) {
+          const detailsRes = await fetch(`${baseUrl}/v1/stream/details-storage/_details`);
+          expect(detailsRes.status).toBe(200);
+          body = await detailsRes.json();
+          const exactReady = body.index_status?.exact_indexes?.some((entry: any) => Number(entry.object_count ?? 0) > 0);
+          if (
+            Number(body.stream?.uploaded_segment_count ?? 0) > 0 &&
+            Number(body.index_status?.bundled_companions?.object_count ?? 0) > 0 &&
+            exactReady
+          ) {
+            ready = true;
+            break;
+          }
+          await sleep(50);
+        }
+
+        expect(body).not.toBeNull();
+        expect(ready).toBe(true);
+        expect(Number(body.stream.uploaded_segment_count)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.total_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.segments_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.indexes_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.manifest_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.schema_registry_bytes)).toBeGreaterThan(0);
+        expect(body.storage.object_storage.segment_object_count).toBe(Number(body.stream.uploaded_segment_count));
+        expect(body.storage.object_storage.bundled_companion_object_count).toBeGreaterThan(0);
+
+        expect(Number(body.storage.local_storage.wal_retained_bytes)).toBeGreaterThanOrEqual(0);
+        expect(Number(body.storage.local_storage.sqlite_shared_total_bytes)).toBeGreaterThan(0);
+
+        expect(Number(body.object_store_requests.puts)).toBeGreaterThan(0);
+        expect(Number(body.object_store_requests.reads)).toBeGreaterThanOrEqual(0);
+        expect(body.object_store_requests.by_artifact).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              artifact: "segment",
+            }),
+            expect.objectContaining({
+              artifact: "manifest",
+            }),
+            expect.objectContaining({
+              artifact: "schema_registry",
+            }),
+          ])
+        );
+
+        const routingIndex = body.index_status.routing_key_index;
+        expect(routingIndex).toMatchObject({
+          configured: false,
+        });
+        expect(Number(routingIndex.bytes_at_rest)).toBeGreaterThanOrEqual(0);
+        expect(routingIndex.object_count).toBeGreaterThanOrEqual(0);
+
+        const exactIndex = body.index_status.exact_indexes.find((entry: any) => entry.name === "service");
+        expect(exactIndex).toBeDefined();
+        expect(Number(exactIndex.bytes_at_rest)).toBeGreaterThan(0);
+        expect(exactIndex.object_count).toBeGreaterThan(0);
+        expect(exactIndex.lag_segments).toBeGreaterThanOrEqual(0);
+
+        const ftsFamily = body.index_status.search_families.find((entry: any) => entry.family === "fts");
+        expect(ftsFamily).toBeDefined();
+        expect(Number(ftsFamily.bytes_at_rest)).toBeGreaterThan(0);
+        expect(ftsFamily.object_count).toBeGreaterThan(0);
+      }
+    );
   });
 
   test("details endpoint returns etag and supports conditional get", async () => {
@@ -416,6 +558,43 @@ describe("http behavior", () => {
     });
   });
 
+  test("overload responses include retry-after", async () => {
+    await withServer({ ingestMaxQueueBytes: 1, ingestMaxQueueRequests: 1 }, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/overloaded`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+
+      const r = await fetch(`${baseUrl}/v1/stream/overloaded`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "ab",
+      });
+
+      expect(r.status).toBe(429);
+      expect(r.headers.get("retry-after")).toBe("1");
+      expect(await r.json()).toEqual({
+        error: { code: "overloaded", message: "ingest queue full" },
+      });
+    });
+  });
+
+  test("shutdown responses include retry-after", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-close-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    try {
+      app.close();
+      const r = await app.fetch(new Request("http://local/health"));
+      expect(r.status).toBe(503);
+      expect(r.headers.get("retry-after")).toBe("5");
+      expect(await r.json()).toEqual({
+        error: { code: "unavailable", message: "server shutting down" },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("append max body bytes enforced", async () => {
     await withServer({ appendMaxBodyBytes: 4 }, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/limit`, { method: "PUT", headers: { "content-type": "text/plain" } });
@@ -474,6 +653,46 @@ describe("http behavior", () => {
         body: JSON.stringify({ k: "k3", z: 3 }),
       });
       expect(r.status).toBe(400);
+    });
+  });
+
+  test("json schema date-time format is enforced on append", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+
+      let r = await fetch(`${baseUrl}/v1/stream/date-format/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string", format: "date-time" },
+            },
+            required: ["eventTime"],
+            additionalProperties: false,
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ eventTime: "not-a-timestamp" }]),
+      });
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("must match format");
+
+      r = await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ eventTime: "2026-03-30T12:59:05.983Z" }]),
+      });
+      expect(r.status).toBe(204);
     });
   });
 

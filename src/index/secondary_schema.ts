@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { Result } from "better-result";
 import type { SchemaRegistry, SearchFieldConfig } from "../schema/registry";
-import { canonicalizeExactValue, extractSearchExactTermsResult, extractSearchExactValuesResult } from "../search/schema";
+import { canonicalizeExactValue, extractSearchExactTermsResult, extractSearchExactValuesResult, getSearchFieldBinding } from "../search/schema";
+import { schemaVersionForOffset } from "../schema/read_json";
+import { resolvePointerResult } from "../util/json_pointer";
 
 export type SecondaryIndexField = {
   name: string;
@@ -13,6 +15,14 @@ export type SecondaryIndexTerm = {
   canonical: string;
   bytes: Uint8Array;
 };
+
+function addRawValues(out: unknown[], value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) addRawValues(out, item);
+    return;
+  }
+  out.push(value);
+}
 
 export function getConfiguredSecondaryIndexes(registry: SchemaRegistry): SecondaryIndexField[] {
   const search = registry.search;
@@ -63,4 +73,33 @@ export function extractSecondaryIndexValuesResult(
   value: unknown
 ): Result<Map<string, string[]>, { message: string }> {
   return extractSearchExactValuesResult(registry, offset, value);
+}
+
+export function extractSecondaryIndexValuesForFieldResult(
+  registry: SchemaRegistry,
+  offset: bigint,
+  value: unknown,
+  index: SecondaryIndexField
+): Result<string[], { message: string }> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return Result.err({ message: "search fields require JSON object records" });
+  }
+  const version = schemaVersionForOffset(registry, offset);
+  const binding = getSearchFieldBinding(index.config, version);
+  if (!binding) return Result.ok([]);
+  const resolvedRes = resolvePointerResult(value, binding.jsonPointer);
+  if (Result.isError(resolvedRes)) return Result.err({ message: resolvedRes.error.message });
+  if (!resolvedRes.value.exists) return Result.ok([]);
+
+  const rawValues: unknown[] = [];
+  addRawValues(rawValues, resolvedRes.value.value);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const rawValue of rawValues) {
+    const canonical = canonicalizeExactValue(index.config, rawValue);
+    if (canonical == null || seen.has(canonical)) continue;
+    seen.add(canonical);
+    out.push(canonical);
+  }
+  return Result.ok(out);
 }

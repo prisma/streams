@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Result } from "better-result";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
 import { streamHash16Hex } from "../src/util/stream_paths";
 
 const STREAM = "backfill";
@@ -109,6 +111,20 @@ async function waitForCompanionGeneration(
   throw new Error(`timeout waiting for companion generation ${generation}`);
 }
 
+async function waitForSegment(
+  app: ReturnType<typeof createApp>,
+  segmentIndex: number,
+  timeoutMs = 10_000
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const seg = app.deps.db.getSegmentByIndex(STREAM, segmentIndex);
+    if (seg) return seg;
+    await sleep(25);
+  }
+  throw new Error(`timeout waiting for segment ${segmentIndex}`);
+}
+
 describe("bundled companions and backfill", () => {
   test(
     "stores one .cix per sealed segment and backfills existing streams after search config changes",
@@ -179,6 +195,7 @@ describe("bundled companions and backfill", () => {
       const pausedCfg = makeConfig(root, {
         ...buildCfg,
         indexCheckIntervalMs: 60_000,
+        searchCompanionBuildBatchSegments: 1,
       });
       app = createApp(pausedCfg, store);
       try {
@@ -203,6 +220,35 @@ describe("bundled companions and backfill", () => {
           ])
         );
 
+        app.deps.indexer?.enqueue(STREAM);
+        await (app.deps.indexer as any).companionIndex.tick();
+        const afterOneTickRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`, { method: "GET" })
+        );
+        expect(afterOneTickRes.status).toBe(200);
+        const afterOneTick = await afterOneTickRes.json();
+        expect(afterOneTick.index_status.bundled_companions.object_count).toBe(1);
+        expect(afterOneTick.index_status.search_families).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ family: "col", covered_segment_count: 1 }),
+            expect.objectContaining({ family: "fts", covered_segment_count: 1 }),
+          ])
+        );
+
+        await (app.deps.indexer as any).companionIndex.tick();
+        const afterSecondTickRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`, { method: "GET" })
+        );
+        expect(afterSecondTickRes.status).toBe(200);
+        const afterSecondTick = await afterSecondTickRes.json();
+        expect(afterSecondTick.index_status.bundled_companions.object_count).toBe(2);
+        expect(afterSecondTick.index_status.search_families).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ family: "col", covered_segment_count: 2 }),
+            expect.objectContaining({ family: "fts", covered_segment_count: 2 }),
+          ])
+        );
+
         const searchRes = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
             method: "POST",
@@ -218,8 +264,7 @@ describe("bundled companions and backfill", () => {
         expect(searchRes.status).toBe(200);
         const searchBody = await searchRes.json();
         expect(searchBody.hits.length).toBeGreaterThan(0);
-        expect(searchBody.coverage.index_families_used).toEqual([]);
-        expect(searchBody.coverage.scanned_segments).toBeGreaterThan(0);
+        expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
 
         const filterRes = await app.fetch(
           new Request(
@@ -266,6 +311,348 @@ describe("bundled companions and backfill", () => {
         const searchBody = await searchRes.json();
         expect(searchBody.hits.length).toBeGreaterThan(0);
         expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "batched companion backfill fills the oldest missing uploaded segments contiguously",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-companion-batch-"));
+      const store = new MockR2Store();
+      const buildCfg = makeConfig(root, {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        searchCompanionBuildBatchSegments: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+
+      let app = createApp(buildCfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SCHEMA_V1),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 6; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:1${i}:00.000Z`,
+                service: i % 2 === 0 ? "api" : "worker",
+                status: 500 + i,
+                why: i % 2 === 0 ? "retry later" : "issuer timeout",
+                pad: "x".repeat(256),
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForCompanionGeneration(app, 1);
+      } finally {
+        app.close();
+      }
+
+      const pausedCfg = makeConfig(root, {
+        ...buildCfg,
+        indexCheckIntervalMs: 60_000,
+        searchCompanionBuildBatchSegments: 2,
+      });
+      app = createApp(pausedCfg, store);
+      try {
+        const updateRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ search: SEARCH_V2 }),
+          })
+        );
+        expect(updateRes.status).toBe(200);
+
+        await (app.deps.indexer as any).companionIndex.tick();
+        const generationTwoRowsAfterOneTick = app.deps.db
+          .listSearchSegmentCompanions(STREAM)
+          .filter((row) => row.plan_generation === 2)
+          .map((row) => row.segment_index)
+          .sort((a, b) => a - b);
+        expect(generationTwoRowsAfterOneTick).toEqual([0, 1]);
+
+        await (app.deps.indexer as any).companionIndex.tick();
+        const generationTwoRowsAfterTwoTicks = app.deps.db
+          .listSearchSegmentCompanions(STREAM)
+          .filter((row) => row.plan_generation === 2)
+          .map((row) => row.segment_index)
+          .sort((a, b) => a - b);
+        expect(generationTwoRowsAfterTwoTicks).toEqual([0, 1, 2, 3]);
+
+        const detailsRes = await app.fetch(new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`, { method: "GET" }));
+        expect(detailsRes.status).toBe(200);
+        const details = await detailsRes.json();
+        expect(details.index_status.bundled_companions.object_count).toBe(4);
+        expect(details.index_status.search_families).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ family: "col", covered_segment_count: 4 }),
+            expect.objectContaining({ family: "fts", covered_segment_count: 4 }),
+          ])
+        );
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "bundled fts companions handle prototype-like tokens such as constructor and push",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-companion-fts-proto-"));
+      const store = new MockR2Store();
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        searchCompanionBuildBatchSegments: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+
+      const app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              schema: {
+                type: "object",
+                additionalProperties: true,
+              },
+              search: {
+                primaryTimestampField: "eventTime",
+                fields: {
+                  eventTime: {
+                    kind: "date",
+                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                  },
+                  title: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/title" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                },
+                defaultFields: [{ field: "title", boost: 1 }],
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              eventTime: "2026-03-25T11:00:00.000Z",
+              title: "constructor push keeps building",
+              pad: "x".repeat(256),
+            }),
+          })
+        );
+        expect(res.status).toBe(204);
+
+        const uploadedSegments = await waitForCompanionGeneration(app, 1, { manualKick: false });
+        expect(uploadedSegments).toBeGreaterThan(0);
+
+        const detailsRes = await app.fetch(new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`, { method: "GET" }));
+        expect(detailsRes.status).toBe(200);
+        const details = await detailsRes.json();
+        expect(details.index_status.bundled_companions.object_count).toBe(uploadedSegments);
+        expect(details.index_status.search_families).toEqual(
+          expect.arrayContaining([expect.objectContaining({ family: "fts", fully_indexed_uploaded_segments: true })])
+        );
+
+        const searchRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "constructor",
+              sort: ["offset:desc"],
+              size: 10,
+              track_total_hits: false,
+            }),
+          })
+        );
+        expect(searchRes.status).toBe(200);
+        const searchBody = await searchRes.json();
+        expect(searchBody.hits).toHaveLength(1);
+        expect(searchBody.hits[0]?.source?.title).toBe("constructor push keeps building");
+        expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "bundled companion builds yield to the event loop for large FTS-heavy segments",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-companion-yield-"));
+      const store = new MockR2Store();
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 256 * 1024,
+        blockMaxBytes: 4 * 1024,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 60_000,
+        uploadConcurrency: 1,
+        indexCheckIntervalMs: 60_000,
+        searchCompanionBuildBatchSegments: 1,
+        searchCompanionYieldBlocks: 1,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+
+      const app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              schema: {
+                type: "object",
+                additionalProperties: true,
+              },
+              search: {
+                primaryTimestampField: "eventTime",
+                fields: {
+                  eventTime: {
+                    kind: "date",
+                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                  },
+                  title: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/title" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                  message: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/message" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                  body: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/body" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                },
+                defaultFields: [
+                  { field: "title", boost: 1.5 },
+                  { field: "message", boost: 1.25 },
+                  { field: "body", boost: 0.9 },
+                ],
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        const largeMessage = "message ".repeat(1024);
+        const largeBody = "body ".repeat(4096);
+        const rows = Array.from({ length: 24 }, (_, i) => ({
+          eventTime: `2026-03-25T12:${String(i).padStart(2, "0")}:00.000Z`,
+          title: `Large issue ${i}`,
+          message: `${largeMessage}${i}`,
+          body: `${largeBody}${i}`,
+        }));
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(rows),
+          })
+        );
+        expect(res.status).toBe(204);
+
+        const segment = await waitForSegment(app, 0);
+        const registryRes = app.deps.registry.getRegistryResult(STREAM);
+        expect(Result.isError(registryRes)).toBeFalse();
+        const registry = registryRes.value;
+        const plan = buildDesiredSearchCompanionPlan(registry);
+        const companionIndex = (app.deps.indexer as any).companionIndex;
+
+        let timerFiredAt = 0;
+        const startedAt = Date.now();
+        setTimeout(() => {
+          timerFiredAt = Date.now() - startedAt;
+        }, 0);
+
+        const buildRes = await companionIndex.buildBundledCompanionResult(registry, plan, 1, segment);
+        const finishedAt = Date.now() - startedAt;
+
+        expect(Result.isError(buildRes)).toBeFalse();
+        expect(timerFiredAt).toBeGreaterThan(0);
+        expect(timerFiredAt).toBeLessThan(finishedAt);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

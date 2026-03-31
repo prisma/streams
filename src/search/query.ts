@@ -665,11 +665,13 @@ export function collectPositiveSearchFtsClauses(query: CompiledSearchQuery): Sea
     }
     if (negated) return;
     if (node.kind === "has") {
-      if (node.config.kind === "text" || node.config.kind === "keyword") out.push({ kind: "has", field: node.field });
+      if (node.config.kind === "text" || (node.config.kind === "keyword" && node.config.prefix === true)) {
+        out.push({ kind: "has", field: node.field });
+      }
       return;
     }
     if (node.kind === "keyword") {
-      out.push({ kind: "keyword", field: node.field, canonicalValue: node.canonicalValue, prefix: node.prefix });
+      if (node.prefix) out.push({ kind: "keyword", field: node.field, canonicalValue: node.canonicalValue, prefix: true });
       return;
     }
     if (node.kind === "text") {

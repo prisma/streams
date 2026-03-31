@@ -1,0 +1,38 @@
+[2026-03-31T07:18:40.010Z] [INFO] Auto-tuning for memory preset 256, 512, 1024, 2048, [4096], 8192
+[2026-03-31T07:18:40.010Z] [INFO] DS_MEMORY_LIMIT_MB presets: 300, 512, 1024, 2048, [4096], 8192
+[2026-03-31T07:18:40.010Z] [INFO] DS_SQLITE_CACHE_MB presets: 16, 32, 64, 128, [256], 512
+[2026-03-31T07:18:40.010Z] [INFO] DS_WORKER_SQLITE_CACHE_MB presets: 8, 8, 8, 16, [32], 32
+[2026-03-31T07:18:40.010Z] [INFO] DS_INDEX_RUN_MEM_CACHE_MB presets: 4, 8, 16, 32, [64], 128
+[2026-03-31T07:18:40.010Z] [INFO] DS_INGEST_MAX_BATCH_MB presets: 2, 4, 8, 16, [32], 64
+[2026-03-31T07:18:40.010Z] [INFO] DS_INGEST_MAX_QUEUE_MB presets: 8, 16, 32, 64, [128], 256
+[2026-03-31T07:18:40.010Z] [INFO] DS_INDEX_BUILD_CONCURRENCY presets: 1, 1, 2, 2, [4], 8
+[2026-03-31T07:18:40.010Z] [INFO] DS_INDEX_COMPACT_CONCURRENCY presets: 1, 1, 2, 2, [4], 4
+[2026-03-31T07:18:40.010Z] [INFO] DS_SEGMENTER_WORKERS presets: 1, 1, 2, 2, [4], 8
+[2026-03-31T07:18:40.010Z] [INFO] DS_UPLOAD_CONCURRENCY presets: 2, 2, 4, 4, [8], 16
+[2026-03-31T07:18:40.067Z] [INFO] prisma-streams server listening on 127.0.0.1:8787
+[2026-03-31T07:35:39.420Z] [INFO] received SIGTERM, shutting down prisma-streams server
+heap stats:     peak       total       freed     current        unit       count   
+  reserved:    10.0 GiB    10.0 GiB     0          10.0 GiB                          
+ committed:     1.0 GiB    10.0 GiB    21.3 GiB   -11.3 GiB                          ok
+     reset:     0      
+    purged:    12.7 GiB
+   touched:   321.2 KiB    11.8 MiB    16.2 GiB   -16.2 GiB                          ok
+  segments:    15         194         188           6                                not all freed
+-abandoned:     4           8           4           4                                not all freed
+   -cached:     0           0           0           0                                ok
+     pages:     0           0           4.7 Ki     -4.7 Ki                           ok
+-abandoned:    31          58          31          27                                not all freed
+ -extended:     0      
+ -noretire:     0      
+    arenas:     9      
+-crossover:     0      
+ -rollback:     0      
+     mmaps:     0      
+   commits:     0      
+    resets:     0      
+    purges:     2.7 Ki 
+   threads:    21          25           8          17                                not all freed
+  searches:     0.0 avg
+numa nodes:     1
+   elapsed:  1026.808 s
+   process: user: 853.119 s, system: 64.960 s, faults: 143, rss: 29.7 GiB, commit: 1.0 GiB

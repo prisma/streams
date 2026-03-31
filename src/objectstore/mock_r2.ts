@@ -180,7 +180,7 @@ export class MockR2Store implements ObjectStore {
       out = entry.bytes.slice(start, start + length);
     } else if (entry.path) {
       if (length === total) {
-        out = new Uint8Array(readFileSync(entry.path));
+        out = readFileSync(entry.path);
       } else {
         const fd = openSync(entry.path, "r");
         try {

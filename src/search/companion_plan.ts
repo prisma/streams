@@ -30,7 +30,7 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const ftsFields = Object.entries(search.fields)
-    .filter(([, field]) => field.kind === "keyword" || field.kind === "text")
+    .filter(([, field]) => field.kind === "text" || (field.kind === "keyword" && field.prefix === true))
     .map(([name, field]) => ({
       name,
       kind: field.kind,
@@ -70,4 +70,3 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
 export function hashSearchCompanionPlan(plan: SearchCompanionPlan): string {
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
 }
-

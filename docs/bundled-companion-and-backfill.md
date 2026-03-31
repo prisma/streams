@@ -198,9 +198,20 @@ Bundled companion backfill runs when:
 The current runtime implementation:
 
 - is in-process and timer-driven
-- schedules newest-first by default
+- batches a bounded number of uploaded stale segments per tick
+- backfills the oldest missing uploaded segments first, so coverage grows
+  contiguously instead of sparsely
+- builds all enabled bundled sections in a single segment pass, so `.col`,
+  `.fts`, `.agg`, and `.mblk` reuse the same decoded records instead of
+  reparsing the segment separately per family
+- yields cooperatively every bounded number of segment blocks while building,
+  so large `.fts` sections do not monopolize the main event loop
 - rebuilds the full desired section set for each affected segment
 - writes one replacement `.cix` per stale segment
+- publishes one manifest after each successful batch instead of once per
+  replacement object
+- periodically sweeps streams that already have companion plans, so backfill
+  continues even if a specific enqueue edge is missed
 
 No request path performs synchronous historical rebuild.
 
@@ -255,6 +266,15 @@ The current implementation does not yet provide:
 - bundled-companion range reads from object storage
 - background GC of orphaned old `.cix` generations
 
+Operational tuning:
+
+- `DS_SEARCH_COMPANION_BATCH_SEGMENTS` controls how many stale uploaded
+  segments one companion-manager pass will rebuild for a stream before it yields
+  back to the main loop
+- `DS_SEARCH_COMPANION_YIELD_BLOCKS` controls how many decoded segment blocks a
+  bundled companion build processes before it yields cooperatively back to the
+  event loop (default 4)
+
 Those are future optimizations, not required for correctness.
 
 ## Bottom Line
@@ -264,7 +284,8 @@ The current supported shape is:
 - one raw segment object per sealed segment
 - one bundled `.cix` per sealed segment
 - separate exact secondary runs for exact-match cross-segment pruning
-- async newest-first backfill for existing streams
+- async oldest-missing-first backfill for existing streams
+- single-pass cooperative bundled companion builds for background fairness
 - raw fallback whenever companion or exact coverage is stale or missing
 
 This gives Prisma Streams richer per-segment indexing without turning local

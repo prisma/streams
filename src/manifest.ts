@@ -95,18 +95,20 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
       start_segment: r.start_segment,
       end_segment: r.end_segment,
       object_key: r.object_key,
+      size_bytes: r.size_bytes,
       filter_len: r.filter_len,
       record_count: r.record_count,
     })) ?? [];
   const retired = retiredRuns?.map((r) => ({
     run_id: r.run_id,
     level: r.level,
-    start_segment: r.start_segment,
-    end_segment: r.end_segment,
-    object_key: r.object_key,
-    filter_len: r.filter_len,
-    record_count: r.record_count,
-    retired_gen: r.retired_gen ?? undefined,
+      start_segment: r.start_segment,
+      end_segment: r.end_segment,
+      object_key: r.object_key,
+      size_bytes: r.size_bytes,
+      filter_len: r.filter_len,
+      record_count: r.record_count,
+      retired_gen: r.retired_gen ?? undefined,
     retired_at_unix: r.retired_at_ms != null ? Number(r.retired_at_ms / 1000n) : undefined,
   })) ?? [];
   const indexSecret = indexState?.index_secret ? b64(indexState.index_secret) : "";
@@ -128,6 +130,7 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
           start_segment: run.start_segment,
           end_segment: run.end_segment,
           object_key: run.object_key,
+          size_bytes: run.size_bytes,
           filter_len: run.filter_len,
           record_count: run.record_count,
         })),
@@ -139,6 +142,7 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
           start_segment: run.start_segment,
           end_segment: run.end_segment,
           object_key: run.object_key,
+          size_bytes: run.size_bytes,
           filter_len: run.filter_len,
           record_count: run.record_count,
           retired_gen: run.retired_gen ?? undefined,
@@ -152,8 +156,10 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     .map((segment) => ({
       segment_index: segment.segment_index,
       object_key: segment.object_key,
+      size_bytes: segment.size_bytes,
       plan_generation: segment.plan_generation,
       sections: parseSectionsJson(segment.sections_json),
+      section_sizes: JSON.parse(segment.section_sizes_json || "{}"),
     }));
 
   return Result.ok({

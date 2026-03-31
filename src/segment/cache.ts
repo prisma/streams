@@ -87,7 +87,7 @@ export class SegmentDiskCache {
     this.recordHit();
     this.touch(objectKey);
     const path = this.getPath(objectKey);
-    return new Uint8Array(readFileSync(path));
+    return readFileSync(path);
   }
 
   put(objectKey: string, bytes: Uint8Array): boolean {
@@ -175,5 +175,13 @@ export class SegmentDiskCache {
       maxBytes: this.maxBytes,
       entryCount: this.entries.size,
     };
+  }
+
+  bytesForObjectKeyPrefix(prefix: string): number {
+    let total = 0;
+    for (const [objectKey, entry] of this.entries.entries()) {
+      if (objectKey.startsWith(prefix)) total += entry.size;
+    }
+    return total;
   }
 }

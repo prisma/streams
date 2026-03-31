@@ -30,10 +30,14 @@ and tooling.
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
 - [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
 - [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md) — bundled `.cix` companions and async backfill for existing streams
+- [low-latency-reads-under-ingest.md](./low-latency-reads-under-ingest.md) — future architecture for stable `/_search` and `/_aggregate` latency under heavy ingest
 - [ui-search-integration.md](./ui-search-integration.md) — how to build a filtered, chronologically ordered stream UI with `/_search` and `/_details`
 - [aggregation-rollups.md](./aggregation-rollups.md) — `.agg` rollup family and aggregation query model
 - [alternative-metrics-approach.md](./alternative-metrics-approach.md) — comparison of Axiom MetricsDB with the current Prisma Streams metrics design
 - [metrics.md](./metrics.md) — shipped metrics profile, canonical metrics stream shape, and query architecture
+- [gharchive-demo.md](./gharchive-demo.md) — self-contained GH Archive demo stream with search fields and Studio-friendly rollups
+- [daily-ingest-report-with-more-fts.md](./daily-ingest-report-with-more-fts.md) — completed `gharchive-demo day` ingest report with `title`, `message`, and `body` back on the `.fts` path
+- [week-ingest-report.md](./week-ingest-report.md) — completed `gharchive-demo week` ingest report against R2-backed full mode
 
 ## Operations
 

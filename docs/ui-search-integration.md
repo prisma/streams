@@ -129,6 +129,37 @@ Current performance note:
 - `/_search` is still not the right mechanism for the unfiltered default event
   list
 
+## Coverage And Freshness
+
+Under active ingest, `/_search` and `/_aggregate` may intentionally omit the
+newest suffix instead of scanning it on the request path.
+
+Use the response `coverage` object to drive the UI:
+
+- `complete`
+  - `true` means the response includes everything visible at the current stream
+    head
+  - `false` means the newest suffix was intentionally omitted
+- `visible_through_offset`
+  - the newest append-order offset included in the response
+- `possible_missing_events_upper_bound`
+  - an upper bound on newest events that may be omitted
+- `possible_missing_uploaded_segments`
+  - newest published segments omitted because bundled companions are still
+    catching up
+- `possible_missing_sealed_rows`
+  - newest sealed but not yet published rows omitted from the response
+- `possible_missing_wal_rows`
+  - newest unsealed WAL rows omitted from the response
+
+Recommended UI treatment:
+
+- render results immediately
+- if `coverage.complete === false`, show a subtle freshness banner such as:
+  - `Results may exclude up to 26,394 of the newest events while indexing catches up.`
+- treat `total.relation === "gte"` on `/_search` as a lower bound, not an exact
+  total
+
 ## Query Syntax
 
 The current `q` syntax supports:
@@ -182,6 +213,8 @@ It returns:
 - `profile`
 - `schema`
 - `index_status`
+- `storage`
+- `object_store_requests`
 
 That is enough for the UI to decide whether to show filter/search controls and
 which controls to render.
@@ -213,6 +246,28 @@ The server responds:
 
 This lets a stream page follow `next_offset`, `epoch`, `total_size_bytes`, and
 indexing progress without polling the full `/v1/streams` list.
+
+For a stream health or cost popover, the same `/_details` response is also the
+supported source of truth:
+
+- `storage.object_storage`
+  Uploaded bytes and object counts for segments, indexes, and manifest/schema
+  metadata.
+- `storage.local_storage`
+  Current retained bytes for WAL, pending sealed segments, caches, and the
+  shared SQLite footprint.
+- `storage.companion_families`
+  Bundled companion byte breakdown for `col`, `fts`, `agg`, and `mblk`.
+- `index_status.routing_key_index`, `index_status.exact_indexes[*]`, and
+  `index_status.search_families[*]`
+  Per-family progress, lag, and bytes-at-rest for index surfaces.
+- `object_store_requests`
+  Node-local per-stream object-store request counters, including a per-artifact
+  breakdown.
+
+The current contract reports lag in `lag_ms`, so a UI can render seconds or
+minutes directly. `sqlite_shared_total_bytes` is shared process-local state, so
+it should be labeled as shared rather than attributed as fully stream-owned.
 
 ## When To Show The Filter UI
 

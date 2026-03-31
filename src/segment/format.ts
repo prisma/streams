@@ -59,6 +59,14 @@ export type IterateBlockEntry = {
   decoded: DecodedBlock;
 };
 
+export type IterateBlockRecordEntry = {
+  blockOffset: number;
+  recordIndex: number;
+  appendNs: bigint;
+  routingKey: Uint8Array;
+  payload: Uint8Array;
+};
+
 function invalidSegment<T = never>(message: string): Result<T, SegmentFormatError> {
   return Result.err({ kind: "invalid_segment_format", message });
 }
@@ -125,59 +133,39 @@ export function decodeBlock(blockBytes: Uint8Array): DecodedBlock {
 }
 
 export function decodeBlockResult(blockBytes: Uint8Array): Result<DecodedBlock, SegmentFormatError> {
-  if (blockBytes.byteLength < DSB3_HEADER_BYTES) return invalidSegment("block too small");
-  if (
-    blockBytes[0] !== "D".charCodeAt(0) ||
-    blockBytes[1] !== "S".charCodeAt(0) ||
-    blockBytes[2] !== "B".charCodeAt(0) ||
-    blockBytes[3] !== "3".charCodeAt(0)
-  ) {
-    return invalidSegment("bad block magic");
-  }
-
-  const uncompressedLen = readU32BE(blockBytes, 4);
-  const compressedLen = readU32BE(blockBytes, 8);
-  const recordCount = readU32BE(blockBytes, 12);
-  const bloom = blockBytes.slice(16, 48);
-  const firstAppendNs = readU64BE(blockBytes, 48);
-  const lastAppendNs = readU64BE(blockBytes, 56);
-  const expectedCrc = readU32BE(blockBytes, 64);
-
-  const payload = blockBytes.slice(DSB3_HEADER_BYTES, DSB3_HEADER_BYTES + compressedLen);
-  if (payload.byteLength !== compressedLen) return invalidSegment("truncated block");
-  const actualCrc = crc32c(payload);
-  if (actualCrc !== expectedCrc) return invalidSegment("crc mismatch");
-
-  let uncompressed: Uint8Array;
-  try {
-    uncompressed = new Uint8Array(zstdDecompressSync(payload));
-  } catch (e: any) {
-    return invalidSegment(String(e?.message ?? e));
-  }
-  if (uncompressed.byteLength !== uncompressedLen) {
-    return invalidSegment(`bad uncompressed len: got=${uncompressed.byteLength} expected=${uncompressedLen}`);
-  }
+  const headerRes = parseBlockHeaderResult(blockBytes);
+  if (Result.isError(headerRes)) return headerRes;
+  const header = headerRes.value;
+  const uncompressedRes = decompressBlockPayloadResult(blockBytes, header);
+  if (Result.isError(uncompressedRes)) return uncompressedRes;
+  const uncompressed = uncompressedRes.value;
 
   const records: SegmentRecord[] = [];
   let off = 0;
-  for (let i = 0; i < recordCount; i++) {
+  for (let i = 0; i < header.recordCount; i++) {
     if (off + 8 + 4 > uncompressed.byteLength) return invalidSegment("truncated record");
     const appendNs = readU64BE(uncompressed, off);
     off += 8;
     const keyLen = readU32BE(uncompressed, off);
     off += 4;
     if (off + keyLen + 4 > uncompressed.byteLength) return invalidSegment("truncated key");
-    const routingKey = uncompressed.slice(off, off + keyLen);
+    const routingKey = uncompressed.subarray(off, off + keyLen);
     off += keyLen;
     const dataLen = readU32BE(uncompressed, off);
     off += 4;
     if (off + dataLen > uncompressed.byteLength) return invalidSegment("truncated payload");
-    const payload = uncompressed.slice(off, off + dataLen);
+    const payload = uncompressed.subarray(off, off + dataLen);
     off += dataLen;
     records.push({ appendNs, routingKey, payload });
   }
 
-  return Result.ok({ recordCount, firstAppendNs, lastAppendNs, bloom, records });
+  return Result.ok({
+    recordCount: header.recordCount,
+    firstAppendNs: header.firstAppendNs,
+    lastAppendNs: header.lastAppendNs,
+    bloom: header.bloom.slice(),
+    records,
+  });
 }
 
 export function encodeFooter(entries: BlockIndexEntry[]): Uint8Array {
@@ -261,8 +249,74 @@ export function* iterateBlocksResult(
   }
 }
 
+export function* iterateBlockRecordsResult(
+  segmentBytes: Uint8Array
+): Generator<Result<IterateBlockRecordEntry, SegmentFormatError>, void, void> {
+  const parsed = parseFooter(segmentBytes);
+  const limit = parsed ? parsed.footerStart : segmentBytes.byteLength;
+  let off = 0;
+  while (off < limit) {
+    if (off + DSB3_HEADER_BYTES > limit) {
+      yield invalidSegment("truncated segment (block header)");
+      return;
+    }
+    const headerRes = parseBlockHeaderResult(segmentBytes.subarray(off, off + DSB3_HEADER_BYTES));
+    if (Result.isError(headerRes)) {
+      yield headerRes;
+      return;
+    }
+    const header = headerRes.value;
+    const totalLen = DSB3_HEADER_BYTES + header.compressedLen;
+    if (off + totalLen > limit) {
+      yield invalidSegment("truncated segment (block payload)");
+      return;
+    }
+    const blockBytes = segmentBytes.subarray(off, off + totalLen);
+    const uncompressedRes = decompressBlockPayloadResult(blockBytes, header);
+    if (Result.isError(uncompressedRes)) {
+      yield uncompressedRes;
+      return;
+    }
+    const uncompressed = uncompressedRes.value;
+    let recOff = 0;
+    for (let recordIndex = 0; recordIndex < header.recordCount; recordIndex++) {
+      if (recOff + 8 + 4 > uncompressed.byteLength) {
+        yield invalidSegment("truncated record");
+        return;
+      }
+      const appendNs = readU64BE(uncompressed, recOff);
+      recOff += 8;
+      const keyLen = readU32BE(uncompressed, recOff);
+      recOff += 4;
+      if (recOff + keyLen + 4 > uncompressed.byteLength) {
+        yield invalidSegment("truncated key");
+        return;
+      }
+      const routingKey = uncompressed.subarray(recOff, recOff + keyLen);
+      recOff += keyLen;
+      const dataLen = readU32BE(uncompressed, recOff);
+      recOff += 4;
+      if (recOff + dataLen > uncompressed.byteLength) {
+        yield invalidSegment("truncated payload");
+        return;
+      }
+      const payload = uncompressed.subarray(recOff, recOff + dataLen);
+      recOff += dataLen;
+      yield Result.ok({ blockOffset: off, recordIndex, appendNs, routingKey, payload });
+    }
+    off += totalLen;
+  }
+}
+
 export function* iterateBlocks(segmentBytes: Uint8Array): Generator<IterateBlockEntry, void, void> {
   for (const itemRes of iterateBlocksResult(segmentBytes)) {
+    if (Result.isError(itemRes)) throw dsError(itemRes.error.message);
+    yield itemRes.value;
+  }
+}
+
+export function* iterateBlockRecords(segmentBytes: Uint8Array): Generator<IterateBlockRecordEntry, void, void> {
+  for (const itemRes of iterateBlockRecordsResult(segmentBytes)) {
     if (Result.isError(itemRes)) throw dsError(itemRes.error.message);
     yield itemRes.value;
   }
@@ -328,4 +382,22 @@ export function parseBlockHeaderResult(header: Uint8Array): Result<BlockHeader, 
     lastAppendNs,
     crc32c: crc32cVal,
   });
+}
+
+function decompressBlockPayloadResult(blockBytes: Uint8Array, header: BlockHeader): Result<Uint8Array, SegmentFormatError> {
+  const payload = blockBytes.subarray(DSB3_HEADER_BYTES, DSB3_HEADER_BYTES + header.compressedLen);
+  if (payload.byteLength !== header.compressedLen) return invalidSegment("truncated block");
+  const actualCrc = crc32c(payload);
+  if (actualCrc !== header.crc32c) return invalidSegment("crc mismatch");
+
+  let uncompressed: Uint8Array;
+  try {
+    uncompressed = new Uint8Array(zstdDecompressSync(payload));
+  } catch (e: any) {
+    return invalidSegment(String(e?.message ?? e));
+  }
+  if (uncompressed.byteLength !== header.uncompressedLen) {
+    return invalidSegment(`bad uncompressed len: got=${uncompressed.byteLength} expected=${header.uncompressedLen}`);
+  }
+  return Result.ok(uncompressed);
 }

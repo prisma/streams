@@ -307,6 +307,10 @@ are:
 - the full `/_profile` resource
 - the full `/_schema` registry
 - the current `/_index_status` payload
+- storage accounting split into uploaded object-storage bytes, local retained
+  bytes, and bundled companion family bytes
+- node-local per-stream object-store request counters, including a per-artifact
+  breakdown
 
 That lets a UI inspect and edit streams without inventing its own metadata
 cache.

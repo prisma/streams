@@ -18,6 +18,8 @@ export type Config = {
   indexL0SpanSegments: number;
   indexBuildConcurrency: number;
   indexCheckIntervalMs: number;
+  searchCompanionBuildBatchSegments: number;
+  searchCompanionYieldBlocks: number;
   indexCompactionFanout: number;
   indexMaxLevel: number;
   indexCompactionConcurrency: number;
@@ -35,6 +37,10 @@ export type Config = {
   localBacklogMaxBytes: number;
   memoryLimitBytes: number;
   sqliteCacheBytes: number;
+  workerSqliteCacheBytes: number;
+  heapSnapshotPath: string | null;
+  memorySamplerPath: string | null;
+  memorySamplerIntervalMs: number;
   objectStoreTimeoutMs: number;
   objectStoreRetries: number;
   objectStoreBaseDelayMs: number;
@@ -68,6 +74,8 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_INDEX_L0_SPAN",
   "DS_INDEX_BUILD_CONCURRENCY",
   "DS_INDEX_CHECK_MS",
+  "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
+  "DS_SEARCH_COMPANION_YIELD_BLOCKS",
   "DS_INDEX_COMPACTION_FANOUT",
   "DS_INDEX_MAX_LEVEL",
   "DS_INDEX_COMPACT_CONCURRENCY",
@@ -87,6 +95,11 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_MEMORY_LIMIT_MB",
   "DS_SQLITE_CACHE_BYTES",
   "DS_SQLITE_CACHE_MB",
+  "DS_WORKER_SQLITE_CACHE_BYTES",
+  "DS_WORKER_SQLITE_CACHE_MB",
+  "DS_HEAP_SNAPSHOT_PATH",
+  "DS_MEMORY_SAMPLER_PATH",
+  "DS_MEMORY_SAMPLER_INTERVAL_MS",
   "DS_OBJECTSTORE_TIMEOUT_MS",
   "DS_OBJECTSTORE_RETRIES",
   "DS_OBJECTSTORE_RETRY_BASE_MS",
@@ -192,6 +205,8 @@ export function loadConfig(): Config {
   const backlogOverride = envBytes("DS_LOCAL_BACKLOG_MAX_BYTES");
   const sqliteCacheBytesOverride = envBytes("DS_SQLITE_CACHE_BYTES");
   const sqliteCacheMbOverride = envBytes("DS_SQLITE_CACHE_MB");
+  const workerSqliteCacheBytesOverride = envBytes("DS_WORKER_SQLITE_CACHE_BYTES");
+  const workerSqliteCacheMbOverride = envBytes("DS_WORKER_SQLITE_CACHE_MB");
   const indexMemOverride = envBytes("DS_INDEX_RUN_MEM_CACHE_BYTES");
   const indexDiskOverride = envBytes("DS_INDEX_RUN_CACHE_MAX_BYTES");
   const localBacklogMaxBytes = backlogOverride ?? 10 * 1024 * 1024 * 1024;
@@ -201,6 +216,13 @@ export function loadConfig(): Config {
       ? sqliteCacheMbOverride * 1024 * 1024
       : memoryLimitBytes > 0
         ? Math.floor(memoryLimitBytes * 0.25)
+        : 0);
+  const workerSqliteCacheBytes =
+    workerSqliteCacheBytesOverride ??
+    (workerSqliteCacheMbOverride != null
+      ? workerSqliteCacheMbOverride * 1024 * 1024
+      : sqliteCacheBytes > 0
+        ? clampBytes(Math.floor(sqliteCacheBytes / 8), 8 * 1024 * 1024, 32 * 1024 * 1024)
         : 0);
   const tunedIndexMem =
     indexMemOverride ??
@@ -226,6 +248,8 @@ export function loadConfig(): Config {
     indexL0SpanSegments: envNum("DS_INDEX_L0_SPAN", 16),
     indexBuildConcurrency: envNum("DS_INDEX_BUILD_CONCURRENCY", 4),
     indexCheckIntervalMs: envNum("DS_INDEX_CHECK_MS", 1000),
+    searchCompanionBuildBatchSegments: envNum("DS_SEARCH_COMPANION_BATCH_SEGMENTS", 4),
+    searchCompanionYieldBlocks: envNum("DS_SEARCH_COMPANION_YIELD_BLOCKS", 4),
     indexCompactionFanout: envNum("DS_INDEX_COMPACTION_FANOUT", 16),
     indexMaxLevel: envNum("DS_INDEX_MAX_LEVEL", 4),
     indexCompactionConcurrency: envNum("DS_INDEX_COMPACT_CONCURRENCY", 4),
@@ -243,6 +267,10 @@ export function loadConfig(): Config {
     localBacklogMaxBytes,
     memoryLimitBytes,
     sqliteCacheBytes,
+    workerSqliteCacheBytes,
+    heapSnapshotPath: process.env.DS_HEAP_SNAPSHOT_PATH?.trim() || null,
+    memorySamplerPath: process.env.DS_MEMORY_SAMPLER_PATH?.trim() || null,
+    memorySamplerIntervalMs: envNum("DS_MEMORY_SAMPLER_INTERVAL_MS", 1_000),
     objectStoreTimeoutMs: envNum("DS_OBJECTSTORE_TIMEOUT_MS", 5000),
     objectStoreRetries: envNum("DS_OBJECTSTORE_RETRIES", 3),
     objectStoreBaseDelayMs: envNum("DS_OBJECTSTORE_RETRY_BASE_MS", 50),

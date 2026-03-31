@@ -131,7 +131,14 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         if (!head) throw dsError(`missing manifest head ${mkey}`);
         return head;
       }, retryOpts);
-      db.upsertManifestRow(stream, Number(manifest.generation ?? 0), Number(manifest.generation ?? 0), nowMs, manifestHead?.etag ?? null);
+      db.upsertManifestRow(
+        stream,
+        Number(manifest.generation ?? 0),
+        Number(manifest.generation ?? 0),
+        nowMs,
+        manifestHead?.etag ?? null,
+        manifestHead?.size ?? null
+      );
 
       for (let i = 0; i < segmentCount; i++) {
         const startOffset = i === 0 ? 0n : segmentOffsets[i - 1];
@@ -178,6 +185,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
           start_segment: Number(r.start_segment),
           end_segment: Number(r.end_segment),
           object_key: String(r.object_key),
+          size_bytes: Number(r.size_bytes ?? 0),
           filter_len: Number(r.filter_len ?? 0),
           record_count: Number(r.record_count ?? 0),
         });
@@ -191,6 +199,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
           start_segment: Number(r.start_segment),
           end_segment: Number(r.end_segment),
           object_key: String(r.object_key),
+          size_bytes: Number(r.size_bytes ?? 0),
           filter_len: Number(r.filter_len ?? 0),
           record_count: Number(r.record_count ?? 0),
         });
@@ -221,6 +230,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
             start_segment: Number(run.start_segment),
             end_segment: Number(run.end_segment),
             object_key: String(run.object_key),
+            size_bytes: Number(run.size_bytes ?? 0),
             filter_len: Number(run.filter_len ?? 0),
             record_count: Number(run.record_count ?? 0),
           });
@@ -235,6 +245,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
             start_segment: Number(run.start_segment),
             end_segment: Number(run.end_segment),
             object_key: String(run.object_key),
+            size_bytes: Number(run.size_bytes ?? 0),
             filter_len: Number(run.filter_len ?? 0),
             record_count: Number(run.record_count ?? 0),
           });
@@ -272,7 +283,9 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
             Number((segment as any).segment_index),
             String((segment as any).object_key),
             Number((segment as any).plan_generation),
-            JSON.stringify(sections)
+            JSON.stringify(sections),
+            JSON.stringify((segment as any).section_sizes ?? {}),
+            Number((segment as any).size_bytes ?? 0)
           );
         }
       }
@@ -285,6 +298,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
       }, retryOpts);
       if (schemaBytes) {
         db.upsertSchemaRegistry(stream, new TextDecoder().decode(schemaBytes));
+        db.setSchemaUploadedSizeBytes(stream, schemaBytes.byteLength);
       }
     }
   } finally {

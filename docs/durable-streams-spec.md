@@ -387,6 +387,14 @@ Rules:
   companion plan generation
 - `search_families` covers bundled companion sections such as `col`, `fts`,
   `agg`, and `mblk`
+- `manifest.last_uploaded_size_bytes` is the uploaded manifest object size as a
+  string when known
+- `routing_key_index`, each `exact_indexes[*]`, `bundled_companions`, and each
+  `search_families[*]` report `bytes_at_rest`
+- `routing_key_index`, each `exact_indexes[*]`, and each `search_families[*]`
+  report `lag_segments` and `lag_ms`
+- `search_families[*].contiguous_covered_segment_count` is the contiguous
+  uploaded prefix covered by that bundled section
 
 ### Combined details
 
@@ -398,6 +406,8 @@ Response fields:
 - `profile`
 - `schema`
 - `index_status`
+- `storage`
+- `object_store_requests`
 
 Rules:
 
@@ -411,6 +421,14 @@ Rules:
   `sealed_through`, and `uploaded_through`
 - `stream.total_size_bytes` is the logical payload-byte size of the stream on
   this node, returned as a string
+- `storage.object_storage` reports current uploaded bytes and object counts for:
+  segments, indexes, and manifest/schema metadata
+- `storage.local_storage` reports current local retained bytes for:
+  WAL, pending sealed segments, caches, and the shared SQLite footprint
+- `storage.companion_families` splits bundled companion bytes by section family
+  (`col`, `fts`, `agg`, `mblk`)
+- `object_store_requests` reports node-local per-stream object-store request
+  counters, split into puts and reads, plus a per-artifact breakdown
 - this is the supported combined descriptor endpoint for stream-management UIs
 
 Conditional and long-poll behavior:
@@ -503,6 +521,20 @@ Current response fields:
 - `hits`
 - `next_search_after`
 
+Current search coverage fields:
+
+- `mode`
+- `complete`
+- `visible_through_offset`
+- `possible_missing_events_upper_bound`
+- `possible_missing_uploaded_segments`
+- `possible_missing_sealed_rows`
+- `possible_missing_wal_rows`
+- `indexed_segments`
+- `scanned_segments`
+- `scanned_tail_docs`
+- `index_families_used`
+
 Current query support:
 
 - fielded exact keyword queries
@@ -519,6 +551,19 @@ Current non-support:
 - `contains:`
 - snippets
 - multi-stream search
+
+Current request-path behavior under active ingest:
+
+- `/_search` always reports against the current stream head via
+  `snapshot_end_offset`
+- while sealed segments are still unpublished or bundled companions are still
+  catching up, `/_search` may intentionally omit the newest suffix instead of
+  scanning it on the request path
+- in that case `coverage.complete=false` and the `possible_missing_*` fields
+  report an upper bound on omitted newest events
+- if there is no outstanding segment publish or companion work, `/_search` may
+  search the current WAL tail locally as a bounded overlay
+- if the newest suffix is omitted, `total.relation` is `gte`
 
 ### 8.7 Aggregate
 
@@ -546,13 +591,33 @@ Current response fields:
 - `coverage`
 - `buckets`
 
+Current aggregate coverage fields:
+
+- `mode`
+- `complete`
+- `visible_through_offset`
+- `possible_missing_events_upper_bound`
+- `possible_missing_uploaded_segments`
+- `possible_missing_sealed_rows`
+- `possible_missing_wal_rows`
+- `used_rollups`
+- `indexed_segments`
+- `scanned_segments`
+- `scanned_tail_docs`
+- `index_families_used`
+
 Current behavior:
 
 - rollups are schema-owned under `search.rollups`
 - aligned middle windows may use `.agg` companions
 - partial edge windows must still scan source segments
-- uncovered or stale ranges must still scan source segments
-- the WAL tail must always be evaluated directly
+- while sealed segments are still unpublished or bundled companions are still
+  catching up, `/_aggregate` may intentionally omit the newest suffix instead
+  of scanning it on the request path
+- in that case `coverage.complete=false` and the `possible_missing_*` fields
+  report an upper bound on omitted newest events
+- if there is no outstanding segment publish or companion work, `/_aggregate`
+  may evaluate the current WAL tail locally as a bounded overlay
 
 ---
 
@@ -589,7 +654,8 @@ Recommended status codes:
 - `409 Conflict`: `Stream-Seq` mismatch
 - `410 Gone`: expired stream (or `404` if you prefer hiding existence; choose one and keep it consistent)
 - `413 Payload Too Large`: append body too large
-- `429 Too Many Requests` or `503 Service Unavailable`: backpressure / memory budget exhausted
+- `429 Too Many Requests`: transient backpressure / memory budget exhausted
+- `503 Service Unavailable`: transient server unavailability, such as shutdown
 - `500 Internal Server Error`: unexpected errors
 
 Errors should be JSON:
@@ -597,6 +663,9 @@ Errors should be JSON:
 ```json
 {"error": {"code": "...", "message": "..."}}
 ```
+
+Transient `429` and `503` responses should include `Retry-After` so clients can
+apply server-guided backoff.
 
 ---
 

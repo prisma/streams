@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 export class MemoryGuard {
   private readonly limitBytes: number;
   private readonly resumeBytes: number;
@@ -11,6 +13,8 @@ export class MemoryGuard {
   private lastRssBytes = 0;
   private lastGcMs = 0;
   private lastSnapshotMs = 0;
+  private lastDarwinPhysicalBytes = 0;
+  private lastDarwinPhysicalAtMs = 0;
 
   constructor(
     limitBytes: number,
@@ -46,10 +50,11 @@ export class MemoryGuard {
 
   private sample(): void {
     const rss = process.memoryUsage().rss;
+    const effectiveBytes = this.effectiveBytesForGuard(rss);
     this.lastRssBytes = rss;
     if (rss > this.maxRssBytes) this.maxRssBytes = rss;
+    const overLimit = this.limitBytes > 0 && effectiveBytes > this.limitBytes;
     if (this.onSample) {
-      const overLimit = this.limitBytes > 0 && rss > this.limitBytes;
       try {
         this.onSample(rss, overLimit, this.limitBytes);
       } catch {
@@ -57,11 +62,33 @@ export class MemoryGuard {
       }
     }
     if (this.limitBytes <= 0) return;
+    if (overLimit) {
+      this.maybeGc("memory sample");
+      this.maybeHeapSnapshot("memory sample");
+    }
     if (this.overLimit) {
-      if (rss <= this.resumeBytes) this.overLimit = false;
-    } else if (rss > this.limitBytes) {
+      if (effectiveBytes <= this.resumeBytes) this.overLimit = false;
+    } else if (effectiveBytes > this.limitBytes) {
       this.overLimit = true;
     }
+  }
+
+  private effectiveBytesForGuard(rssBytes: number): number {
+    if (this.limitBytes <= 0 || rssBytes <= this.limitBytes) return rssBytes;
+    if (process.platform !== "darwin") return rssBytes;
+    const now = Date.now();
+    if (this.lastDarwinPhysicalAtMs !== 0 && now - this.lastDarwinPhysicalAtMs < 5_000) {
+      return this.lastDarwinPhysicalBytes > 0 ? this.lastDarwinPhysicalBytes : this.limitBytes;
+    }
+    this.lastDarwinPhysicalAtMs = now;
+    const physicalBytes = readDarwinTopMemBytes(process.pid);
+    if (physicalBytes != null) {
+      this.lastDarwinPhysicalBytes = physicalBytes;
+      return physicalBytes;
+    }
+    if (this.lastDarwinPhysicalBytes > 0) return this.lastDarwinPhysicalBytes;
+    this.lastDarwinPhysicalBytes = this.limitBytes;
+    return this.lastDarwinPhysicalBytes;
   }
 
   shouldAllow(): boolean {
@@ -139,6 +166,53 @@ export class MemoryGuard {
       // eslint-disable-next-line no-console
       console.warn(`[heap] snapshot failed (${reason}): ${String(err)}`);
     }
+  }
+}
+
+export function parseDarwinTopMemBytes(output: string, pid: number): number | null {
+  const line = output
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => new RegExp(`^${pid}\\s+`).test(entry));
+  if (!line) return null;
+  const match = line.match(new RegExp(`^${pid}\\s+([0-9]+(?:\\.[0-9]+)?)([BKMGTP])\\+?\\b`, "i"));
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+  const unit = match[2]!.toUpperCase();
+  const power =
+    unit === "B"
+      ? 0
+      : unit === "K"
+        ? 1
+        : unit === "M"
+          ? 2
+          : unit === "G"
+            ? 3
+            : unit === "T"
+              ? 4
+              : unit === "P"
+                ? 5
+                : -1;
+  if (power < 0) return null;
+  return Math.round(value * 1024 ** power);
+}
+
+export function darwinTopMemArgs(pid: number): string[] {
+  return ["-l", "1", "-pid", String(pid), "-stats", "pid,mem"];
+}
+
+function readDarwinTopMemBytes(pid: number): number | null {
+  try {
+    const output = execFileSync("/usr/bin/top", darwinTopMemArgs(pid), {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+      maxBuffer: 256 * 1024,
+    });
+    return parseDarwinTopMemBytes(output, pid);
+  } catch {
+    return null;
   }
 }
 

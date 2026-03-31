@@ -1,0 +1,82 @@
+$ bun run experiments/demo/gharchive_demo.ts all --url "http://127.0.0.1:8787" --stream-prefix gharchive-guardfix --debug-progress --debug-progress-interval-ms "5000"
+ 5 |   cause?: unknown;
+ 6 |   code?: string;
+ 7 | }>() {}
+ 8 | 
+ 9 | export function dsError(message: string, opts?: { cause?: unknown; code?: string }): DurableStreamsError {
+10 |   return new DurableStreamsError({
+                  ^
+DurableStreamsError: append failed for gharchive-guardfix-all
+ _tag: "DurableStreamsError",
+
+      at dsError (/Users/sorenschmidt/code/streams/src/util/ds_error.ts:10:14)
+      at appendBatch (/Users/sorenschmidt/code/streams/experiments/demo/gharchive_demo.ts:867:5)
+      at /Users/sorenschmidt/code/streams/experiments/demo/gharchive_demo.ts:780:11
+      at runGhArchiveDemo (/Users/sorenschmidt/code/streams/experiments/demo/gharchive_demo.ts:814:17)
+      at main (unknown:1:1)
+      at processTicksAndRejections (native:7:39)
+
+291 | 			if (result.ok) return result;
+292 | 			const err = await FetchError.fromResponse(result, url.toString());
+293 | 			throw err;
+294 | 		} catch (e) {
+295 | 			onFailedAttempt?.();
+296 | 			if (options?.signal?.aborted) throw new FetchBackoffAbortError();
+                                             ^
+FetchBackoffAbortError: Fetch with backoff aborted
+      at /Users/sorenschmidt/code/streams/node_modules/@durable-streams/client/dist/index.js:296:40
+      at /Users/sorenschmidt/code/streams/node_modules/@durable-streams/client/dist/index.js:512:8
+      at #appendDirect (/Users/sorenschmidt/code/streams/node_modules/@durable-streams/client/dist/index.js:2443:31)
+      at processTicksAndRejections (native:7:39)
+
+heap stats:     peak       total       freed     current        unit       count   
+  reserved:     1.0 GiB     1.0 GiB     0           1.0 GiB                          
+ committed:     1.0 GiB     1.0 GiB     7.4 GiB    -6.4 GiB                          ok
+     reset:     0      
+    purged:     6.9 GiB
+   touched:    64.2 KiB    64.2 KiB     1.7 GiB    -1.7 GiB                          ok
+  segments:     1           1           0           1                                not all freed
+-abandoned:     0           0           0           0                                ok
+   -cached:     0           0           0           0                                ok
+     pages:     0           0          26.5 Ki    -26.5 Ki                           ok
+-abandoned:     0           0           0           0                                ok
+ -extended:     0      
+ -noretire:     0      
+    arenas:     1      
+-crossover:     0      
+ -rollback:     0      
+     mmaps:     0      
+   commits:     0      
+    resets:     0      
+    purges:     7.4 Ki 
+   threads:     4           4           0           4                                not all freed
+  searches:     0.0 avg
+numa nodes:     1
+   elapsed:  1401.024 s
+   process: user: 21.082 s, system: 5.097 s, faults: 68, rss: 187.4 MiB, commit: 1.0 GiB
+error: script "demo:gharchive" exited with code 1
+heap stats:     peak       total       freed     current        unit       count   
+  reserved:     1.0 GiB     1.0 GiB     0           1.0 GiB                          
+ committed:     1.0 GiB     1.0 GiB     0           1.0 GiB                          
+     reset:     0      
+    purged:     0      
+   touched:    64.2 KiB    64.2 KiB     0          64.2 KiB                          not all freed
+  segments:     1           1           0           1                                not all freed
+-abandoned:     0           0           0           0                                ok
+   -cached:     0           0           0           0                                ok
+     pages:     0           0           0           0                                ok
+-abandoned:     0           0           0           0                                ok
+ -extended:     0      
+ -noretire:     0      
+    arenas:     1      
+-crossover:     0      
+ -rollback:     0      
+     mmaps:     0      
+   commits:     0      
+    resets:     0      
+    purges:     0      
+   threads:     0           0           0           0                                ok
+  searches:     0.0 avg
+numa nodes:     1
+   elapsed:  1401.033 s
+   process: user: 0.002 s, system: 0.002 s, faults: 15, rss: 4.9 MiB, commit: 1.0 GiB

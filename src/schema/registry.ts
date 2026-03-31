@@ -107,6 +107,18 @@ const AJV = new Ajv({
   validateSchema: false,
 });
 
+function isDateTimeString(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}
+
+AJV.addFormat("date-time", {
+  type: "string",
+  validate: isDateTimeString,
+});
+
 const LENS_VALIDATOR = AJV.compile(DURABLE_LENS_V1_SCHEMA);
 
 function sha256Hex(input: string): string {

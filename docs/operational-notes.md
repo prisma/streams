@@ -21,6 +21,8 @@ runtime overview and command surface, see `overview.md`.
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
 - `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads)
 - `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
+- `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4)
+- `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_INDEX_COMPACTION_FANOUT`: compaction fanout (default 16)
@@ -35,7 +37,13 @@ runtime overview and command surface, see `overview.md`.
 - `DS_INGEST_MAX_QUEUE_BYTES`: max queued append bytes (default 64 MiB)
 - `DS_LOCAL_BACKLOG_MAX_BYTES`: backpressure when unuploaded backlog exceeds this (default 10 GiB; 0 disables).
 - `DS_SQLITE_CACHE_BYTES` / `DS_SQLITE_CACHE_MB`: SQLite page cache budget (defaults to 25% of `DS_MEMORY_LIMIT_*` when set)
+- `DS_WORKER_SQLITE_CACHE_BYTES` / `DS_WORKER_SQLITE_CACHE_MB`: SQLite page cache budget for worker threads like segmenters and touch processors (defaults to a much smaller fraction of the main cache, capped at 32 MiB)
 - `DS_MEMORY_LIMIT_MB` / `DS_MEMORY_LIMIT_BYTES`: RSS guard for backpressure (default disabled)
+- `DS_HEAP_SNAPSHOT_PATH`: optional heap snapshot path to write when the memory guard is over limit; unset by default
+
+Memory-guard note:
+- On macOS, the guard confirms high RSS with the process `top` physical-memory value (`top -stats pid,mem`) before it flips into overload mode. This avoids false positives from Bun/JavaScriptCore virtual-memory accounting where RSS can read much higher than the process's actual physical footprint.
+- While over the limit, the guard rate-limits forced `Bun.gc()` calls from its own sampling loop, so idle servers can recover without waiting for a fresh request to hit the overload path.
 - `DS_OBJECTSTORE_TIMEOUT_MS`: object store request timeout (default 5s)
 - `DS_OBJECTSTORE_RETRIES`: object store retry count (default 3)
 - `DS_OBJECTSTORE_RETRY_BASE_MS`: base backoff for retries (default 50ms)
@@ -54,6 +62,8 @@ MockR2 env vars (only when using `--object-store local`):
 Indexing note:
 - Full mode runs indexing in the server process via background timer loops.
 - There is no separate indexing daemon or worker-thread pool today.
+- Bundled companion builds are cooperative and single-pass, so large `.fts`
+  backfills should still let lightweight HTTP endpoints continue to respond.
 
 ## SQLite PRAGMAs
 
@@ -83,6 +93,7 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 - `DS_INGEST_MAX_BATCH_BYTES=8–16MiB`
 - `DS_READ_MAX_BYTES=1–4MiB`
 - SQLite `cache_size` around 128–256 MiB
+- Worker SQLite caches around 16–32 MiB each
 
 ## Diagnosing stalls
 
@@ -98,9 +109,22 @@ When throughput drops, check in this order:
 - Increase `DS_UPLOAD_CONCURRENCY` if network allows.
 - Check object store latency and error rates.
 
-4) SQLite write stalls
+4) Bundled companion lag (search coverage behind uploads)
+- Check `/_details` or `/_index_status` for bundled companion coverage.
+- Watch `tieredstore.companion.lag.segments` and
+  `tieredstore.companion.build.latency` in `__stream_metrics__`.
+- Reduce `DS_SEARCH_COMPANION_BATCH_SEGMENTS` or
+  `DS_SEARCH_COMPANION_YIELD_BLOCKS` if backfill is making the server feel
+  sluggish under large `.fts` fields.
+
+5) SQLite write stalls
 - Ensure the DB is on fast local SSD.
 - Keep `synchronous=FULL` for correctness; `NORMAL` only for benchmarks.
+
+6) RSS keeps climbing above the memory limit
+- Check worker-thread fanout and keep `DS_WORKER_SQLITE_CACHE_MB` much smaller than the main SQLite cache.
+- Confirm the process is actually making forward progress and that the fixed-span exact indexes are not just waiting for the next full span.
+- Leave `DS_HEAP_SNAPSHOT_PATH` unset unless you are actively debugging memory, since heap snapshots increase peak RSS while they are being written.
 
 ## Recovery tips
 

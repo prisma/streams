@@ -18,7 +18,7 @@ const cfg = data.config;
 setSqliteRuntimeOverride(data.hostRuntime ?? null);
 // The main server process initializes/migrates schema; workers should avoid
 // concurrent migrations on the same sqlite file.
-const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes, skipMigrations: true });
+const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.workerSqliteCacheBytes, skipMigrations: true });
 
 const decoder = new TextDecoder();
 

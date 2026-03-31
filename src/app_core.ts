@@ -26,6 +26,7 @@ import { ExpirySweeper } from "./expiry_sweeper";
 import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
 import { MemoryGuard } from "./memory";
+import { RuntimeMemorySampler } from "./runtime_memory_sampler";
 import { TouchProcessorManager } from "./touch/manager";
 import { StreamSizeReconciler } from "./stream_size_reconciler";
 import type { SegmenterController } from "./segment/segmenter_workers";
@@ -45,6 +46,7 @@ import {
   type StreamTouchRoute,
 } from "./profiles";
 import { dsError } from "./util/ds_error.ts";
+import { streamHash16Hex } from "./util/stream_paths";
 
 function withNosniff(headers: HeadersInit = {}): HeadersInit {
   return {
@@ -62,6 +64,16 @@ function json(status: number, body: any, headers: HeadersInit = {}): Response {
       ...withNosniff(headers),
     },
   });
+}
+
+const OVERLOAD_RETRY_AFTER_SECONDS = "1";
+const UNAVAILABLE_RETRY_AFTER_SECONDS = "5";
+
+function retryAfterHeaders(seconds: string, headers: HeadersInit = {}): HeadersInit {
+  return {
+    "retry-after": seconds,
+    ...headers,
+  };
 }
 
 function internalError(message = "internal server error"): Response {
@@ -98,6 +110,14 @@ function conflict(msg: string, headers: HeadersInit = {}): Response {
 
 function tooLarge(msg: string): Response {
   return json(413, { error: { code: "payload_too_large", message: msg } });
+}
+
+function unavailable(msg = "server shutting down"): Response {
+  return json(503, { error: { code: "unavailable", message: msg } }, retryAfterHeaders(UNAVAILABLE_RETRY_AFTER_SECONDS));
+}
+
+function overloaded(msg = "ingest queue full"): Response {
+  return json(429, { error: { code: "overloaded", message: msg } }, retryAfterHeaders(OVERLOAD_RETRY_AFTER_SECONDS));
 }
 
 function normalizeContentType(value: string | null): string | null {
@@ -231,7 +251,7 @@ function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ fam
     .sort((a, b) => a.localeCompare(b));
   if (colFields.length > 0) out.push({ family: "col", fields: colFields });
   const ftsFields = Object.entries(search.fields)
-    .filter(([, field]) => field.kind === "keyword" || field.kind === "text")
+    .filter(([, field]) => field.kind === "text" || (field.kind === "keyword" && field.prefix === true))
     .map(([name]) => name)
     .sort((a, b) => a.localeCompare(b));
   if (ftsFields.length > 0) out.push({ family: "fts", fields: ftsFields });
@@ -248,6 +268,31 @@ function parseCompanionSections(value: string): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function parseCompanionSectionSizes(value: string): Record<string, number> {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(parsed)) {
+      if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) out[key] = raw;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function contiguousCoveredSegmentCount(rows: Array<{ segment_index: number; sections_json: string }>, family: string): number {
+  let expected = 0;
+  for (const row of rows) {
+    if (row.segment_index < expected) continue;
+    if (row.segment_index > expected) break;
+    if (!parseCompanionSections(row.sections_json).has(family)) break;
+    expected += 1;
+  }
+  return expected;
 }
 
 export type App = {
@@ -270,6 +315,7 @@ export type App = {
     stats?: StatsCollector;
     backpressure?: BackpressureGate;
     memory?: MemoryGuard;
+    memorySampler?: RuntimeMemorySampler;
   };
 };
 
@@ -285,6 +331,7 @@ export type CreateAppRuntimeArgs = {
   backpressure?: BackpressureGate;
   memory: MemoryGuard;
   metrics: Metrics;
+  memorySampler?: RuntimeMemorySampler;
 };
 
 type AppRuntimeDeps = {
@@ -294,6 +341,11 @@ type AppRuntimeDeps = {
   uploader: UploaderController;
   indexer?: StreamIndexLookup;
   uploadSchemaRegistry: (stream: string, registry: SchemaRegistry) => Promise<void>;
+  getLocalStorageUsage?: (stream: string) => {
+    segment_cache_bytes: number;
+    routing_index_cache_bytes: number;
+    exact_index_cache_bytes: number;
+  };
   start(): void;
 };
 
@@ -309,19 +361,27 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes });
   db.resetSegmentInProgress();
   const stats = opts.stats;
+  const metrics = new Metrics();
   const backpressure =
     cfg.localBacklogMaxBytes > 0
       ? new BackpressureGate(cfg.localBacklogMaxBytes, db.sumPendingBytes() + db.sumPendingSegmentBytes())
       : undefined;
+  const memorySampler =
+    cfg.memorySamplerPath != null
+      ? new RuntimeMemorySampler(cfg.memorySamplerPath, {
+          intervalMs: cfg.memorySamplerIntervalMs,
+          scope: "main",
+        })
+      : undefined;
+  memorySampler?.start();
   const memory = new MemoryGuard(cfg.memoryLimitBytes, {
     onSample: (rss, overLimit) => {
       metrics.record("process.rss.bytes", rss, "bytes");
       if (overLimit) metrics.record("process.rss.over_limit", 1, "count");
     },
-    heapSnapshotPath: `${cfg.rootDir}/heap.heapsnapshot`,
+    heapSnapshotPath: cfg.heapSnapshotPath ?? undefined,
   });
   memory.start();
-  const metrics = new Metrics();
   const ingest = new IngestQueue(cfg, db, stats, backpressure, memory, metrics);
   const notifier = new StreamNotifier();
   const registry = new SchemaRegistryStore(db);
@@ -339,8 +399,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     backpressure,
     memory,
     metrics,
+    memorySampler,
   });
-  const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry } = runtime;
+  const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry, getLocalStorageUsage } = runtime;
   const metricsEmitter = new MetricsEmitter(metrics, ingest, cfg.metricsFlushIntervalMs, {
     onAppended: ({ lastOffset, stream }) => {
       notifier.notify(stream, lastOffset);
@@ -539,7 +600,112 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     last_segment_cut_at: timestampToIsoString(row.last_segment_cut_ms),
   });
 
-  const buildIndexStatus = (stream: string, reg: SchemaRegistry, profileKind: string) => {
+  const buildIndexLagMs = (stream: string, headRow: StreamRow, coveredSegmentCount: number): string | null => {
+    if (coveredSegmentCount <= 0) return null;
+    const coveredLastAppendMs = db.getSegmentLastAppendMsFromMeta(stream, coveredSegmentCount - 1);
+    if (coveredLastAppendMs == null) return null;
+    const lagMs = headRow.last_append_ms > coveredLastAppendMs ? headRow.last_append_ms - coveredLastAppendMs : 0n;
+    return lagMs.toString();
+  };
+
+  const buildStorageBreakdown = (
+    stream: string,
+    row: StreamRow,
+    currentCompanionRows: Array<{
+      sections_json: string;
+      section_sizes_json: string;
+      size_bytes: number;
+    }>,
+    indexStatus: any
+  ) => {
+    const manifest = db.getManifestRow(stream);
+    const schemaRow = db.getSchemaRegistry(stream);
+    const uploadedSegmentBytes = db.getUploadedSegmentBytes(stream);
+    const pendingSealedSegmentBytes = db.getPendingSealedSegmentBytes(stream);
+    const routingIndexStorage = db.getRoutingIndexStorage(stream);
+    const secondaryIndexStorage = new Map(db.getSecondaryIndexStorage(stream).map((entry) => [entry.index_name, entry]));
+    const companionStorage = db.getBundledCompanionStorage(stream);
+    const localStorageUsage = getLocalStorageUsage?.(stream) ?? {
+      segment_cache_bytes: 0,
+      routing_index_cache_bytes: 0,
+      exact_index_cache_bytes: 0,
+    };
+    const sqliteSharedBytes = BigInt(db.getWalDbSizeBytes() + db.getMetaDbSizeBytes());
+    const exactIndexBytes = indexStatus.exact_indexes.reduce((sum: bigint, entry: any) => sum + BigInt(entry.bytes_at_rest ?? 0), 0n);
+    const familyBytes = new Map<string, bigint>();
+    for (const row of currentCompanionRows) {
+      const sizes = parseCompanionSectionSizes(row.section_sizes_json);
+      for (const [kind, size] of Object.entries(sizes)) {
+        familyBytes.set(kind, (familyBytes.get(kind) ?? 0n) + BigInt(size));
+      }
+    }
+    return {
+      object_storage: {
+        total_bytes: (
+          uploadedSegmentBytes +
+          routingIndexStorage.bytes +
+          exactIndexBytes +
+          companionStorage.bytes +
+          (manifest.last_uploaded_size_bytes ?? 0n) +
+          (schemaRow?.uploaded_size_bytes ?? 0n)
+        ).toString(),
+        segments_bytes: uploadedSegmentBytes.toString(),
+        indexes_bytes: (routingIndexStorage.bytes + exactIndexBytes + companionStorage.bytes).toString(),
+        manifest_and_meta_bytes: ((manifest.last_uploaded_size_bytes ?? 0n) + (schemaRow?.uploaded_size_bytes ?? 0n)).toString(),
+        manifest_bytes: (manifest.last_uploaded_size_bytes ?? 0n).toString(),
+        schema_registry_bytes: (schemaRow?.uploaded_size_bytes ?? 0n).toString(),
+        segment_object_count: indexStatus.segments.uploaded_count,
+        routing_index_object_count: routingIndexStorage.object_count,
+        exact_index_object_count: indexStatus.exact_indexes.reduce((sum: number, entry: any) => sum + Number(entry.object_count ?? 0), 0),
+        bundled_companion_object_count: companionStorage.object_count,
+      },
+      local_storage: {
+        total_bytes: (
+          row.wal_bytes +
+          pendingSealedSegmentBytes +
+          BigInt(localStorageUsage.segment_cache_bytes) +
+          BigInt(localStorageUsage.routing_index_cache_bytes) +
+          BigInt(localStorageUsage.exact_index_cache_bytes)
+        ).toString(),
+        wal_retained_bytes: row.wal_bytes.toString(),
+        pending_tail_bytes: row.pending_bytes.toString(),
+        pending_sealed_segment_bytes: pendingSealedSegmentBytes.toString(),
+        segment_cache_bytes: String(localStorageUsage.segment_cache_bytes),
+        routing_index_cache_bytes: String(localStorageUsage.routing_index_cache_bytes),
+        exact_index_cache_bytes: String(localStorageUsage.exact_index_cache_bytes),
+        sqlite_shared_total_bytes: sqliteSharedBytes.toString(),
+      },
+      companion_families: {
+        col_bytes: String(familyBytes.get("col") ?? 0n),
+        fts_bytes: String(familyBytes.get("fts") ?? 0n),
+        agg_bytes: String(familyBytes.get("agg") ?? 0n),
+        mblk_bytes: String(familyBytes.get("mblk") ?? 0n),
+      },
+    };
+  };
+
+  const buildObjectStoreRequestSummary = (stream: string) => {
+    const summary = db.getObjectStoreRequestSummaryByHash(streamHash16Hex(stream));
+    return {
+      puts: summary.puts.toString(),
+      reads: summary.reads.toString(),
+      gets: summary.gets.toString(),
+      heads: summary.heads.toString(),
+      lists: summary.lists.toString(),
+      deletes: summary.deletes.toString(),
+      by_artifact: summary.by_artifact.map((entry) => ({
+        artifact: entry.artifact,
+        puts: entry.puts.toString(),
+        gets: entry.gets.toString(),
+        heads: entry.heads.toString(),
+        lists: entry.lists.toString(),
+        deletes: entry.deletes.toString(),
+        reads: entry.reads.toString(),
+      })),
+    };
+  };
+
+  const buildIndexStatus = (stream: string, row: StreamRow, reg: SchemaRegistry, profileKind: string) => {
     const segmentCount = db.countSegmentsForStream(stream);
     const uploadedSegmentCount = db.countUploadedSegments(stream);
     const manifest = db.getManifestRow(stream);
@@ -547,17 +713,25 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     const routingState = db.getIndexState(stream);
     const routingRuns = db.listIndexRuns(stream);
     const retiredRoutingRuns = db.listRetiredIndexRuns(stream);
+    const routingStorage = db.getRoutingIndexStorage(stream);
+    const secondaryIndexStorage = new Map(db.getSecondaryIndexStorage(stream).map((entry) => [entry.index_name, entry]));
 
     const exactIndexes = configuredExactIndexes(reg.search).map(({ name, kind, configHash }) => {
       const state = db.getSecondaryIndexState(stream, name);
       const configMatches = state?.config_hash === configHash;
+      const indexedSegmentCount = configMatches ? (state?.indexed_through ?? 0) : 0;
+      const storage = secondaryIndexStorage.get(name);
       return {
         name,
         kind,
-        indexed_segment_count: configMatches ? (state?.indexed_through ?? 0) : 0,
+        indexed_segment_count: indexedSegmentCount,
+        lag_segments: Math.max(0, uploadedSegmentCount - indexedSegmentCount),
+        lag_ms: buildIndexLagMs(stream, row, indexedSegmentCount),
+        bytes_at_rest: String(storage?.bytes ?? 0n),
+        object_count: storage?.object_count ?? 0,
         active_run_count: db.listSecondaryIndexRuns(stream, name).length,
         retired_run_count: db.listRetiredSecondaryIndexRuns(stream, name).length,
-        fully_indexed_uploaded_segments: configMatches && (state?.indexed_through ?? 0) >= uploadedSegmentCount,
+        fully_indexed_uploaded_segments: configMatches && indexedSegmentCount >= uploadedSegmentCount,
         stale_configuration: !configMatches,
         updated_at: timestampToIsoString(state?.updated_at_ms ?? null),
       };
@@ -576,15 +750,29 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         : 0;
     const companionRows = db.listSearchSegmentCompanions(stream);
     const currentCompanionRows = companionRows.filter((row) => row.plan_generation === desiredIndexPlanGeneration);
+    const currentCompanionBytes = currentCompanionRows.reduce((sum, entry) => sum + BigInt(entry.size_bytes), 0n);
     const searchFamilies = configuredSearchFamilies(reg.search).map(({ family, fields }) => {
       const coveredSegmentCount = currentCompanionRows.filter((row) => parseCompanionSections(row.sections_json).has(family)).length;
+      const contiguousCoveredCount = contiguousCoveredSegmentCount(currentCompanionRows, family);
+      let familyBytes = 0n;
+      let familyObjectCount = 0;
+      for (const row of currentCompanionRows) {
+        const size = parseCompanionSectionSizes(row.section_sizes_json)[family];
+        if (size == null) continue;
+        familyBytes += BigInt(size);
+        familyObjectCount += 1;
+      }
       return {
         family,
         fields,
         plan_generation: desiredIndexPlanGeneration,
         covered_segment_count: coveredSegmentCount,
+        contiguous_covered_segment_count: contiguousCoveredCount,
+        lag_segments: Math.max(0, uploadedSegmentCount - contiguousCoveredCount),
+        lag_ms: buildIndexLagMs(stream, row, contiguousCoveredCount),
+        bytes_at_rest: familyBytes.toString(),
+        object_count: familyObjectCount,
         stale_segment_count: Math.max(0, uploadedSegmentCount - coveredSegmentCount),
-        object_count: currentCompanionRows.length,
         fully_indexed_uploaded_segments: coveredSegmentCount >= uploadedSegmentCount,
         updated_at: timestampToIsoString(companionPlanRow?.updated_at_ms ?? null),
       };
@@ -603,10 +791,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         uploaded_generation: manifest.uploaded_generation,
         last_uploaded_at: timestampToIsoString(manifest.last_uploaded_at_ms),
         last_uploaded_etag: manifest.last_uploaded_etag,
+        last_uploaded_size_bytes: manifest.last_uploaded_size_bytes?.toString() ?? null,
       },
       routing_key_index: {
         configured: reg.routingKey != null,
         indexed_segment_count: routingState?.indexed_through ?? 0,
+        lag_segments: Math.max(0, uploadedSegmentCount - (routingState?.indexed_through ?? 0)),
+        lag_ms: buildIndexLagMs(stream, row, routingState?.indexed_through ?? 0),
+        bytes_at_rest: routingStorage.bytes.toString(),
+        object_count: routingStorage.object_count,
         active_run_count: routingRuns.length,
         retired_run_count: retiredRoutingRuns.length,
         fully_indexed_uploaded_segments: reg.routingKey == null ? true : (routingState?.indexed_through ?? 0) >= uploadedSegmentCount,
@@ -615,9 +808,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       exact_indexes: exactIndexes,
       bundled_companions: {
         object_count: currentCompanionRows.length,
+        bytes_at_rest: currentCompanionBytes.toString(),
         fully_indexed_uploaded_segments: currentCompanionRows.length >= uploadedSegmentCount,
       },
       search_families: searchFamilies,
+      current_companion_rows: currentCompanionRows,
     };
   };
 
@@ -639,7 +834,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       if (Result.isError(profileRes)) return Result.err({ status: 500, message: profileRes.error.message });
 
       const profileKind = profileRes.value.profile.kind;
-      const indexStatus = buildIndexStatus(stream, regRes.value, profileKind);
+      const indexStatus = buildIndexStatus(stream, srow, regRes.value, profileKind);
+      const storage = buildStorageBreakdown(stream, srow, indexStatus.current_companion_rows, indexStatus);
+      const objectStoreRequests = buildObjectStoreRequestSummary(stream);
+      delete (indexStatus as any).current_companion_rows;
       const payload =
         mode === "index_status"
           ? indexStatus
@@ -648,6 +846,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               profile: profileRes.value,
               schema: regRes.value,
               index_status: indexStatus,
+              storage,
+              object_store_requests: objectStoreRequests,
             };
       const body = JSON.stringify(payload);
       const afterVersion = notifier.currentDetailsVersion(stream);
@@ -666,7 +866,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   let closing = false;
   const fetch = async (req: Request): Promise<Response> => {
     if (closing) {
-      return json(503, { error: { code: "unavailable", message: "server shutting down" } });
+      return unavailable();
     }
     try {
       let url: URL;
@@ -689,7 +889,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         memory.maybeGc("memory limit");
         memory.maybeHeapSnapshot("memory limit");
         metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "memory" });
-        return json(429, { error: { code: "overloaded", message: "ingest queue full" } });
+        return overloaded();
       };
 
       // /v1/streams
@@ -982,6 +1182,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               snapshot_end_offset: searchRes.value.snapshotEndOffset,
               took_ms: searchRes.value.tookMs,
               coverage: {
+                mode: searchRes.value.coverage.mode,
+                complete: searchRes.value.coverage.complete,
+                visible_through_offset: searchRes.value.coverage.visibleThroughOffset,
+                possible_missing_events_upper_bound: searchRes.value.coverage.possibleMissingEventsUpperBound,
+                possible_missing_uploaded_segments: searchRes.value.coverage.possibleMissingUploadedSegments,
+                possible_missing_sealed_rows: searchRes.value.coverage.possibleMissingSealedRows,
+                possible_missing_wal_rows: searchRes.value.coverage.possibleMissingWalRows,
                 indexed_segments: searchRes.value.coverage.indexedSegments,
                 scanned_segments: searchRes.value.coverage.scannedSegments,
                 scanned_tail_docs: searchRes.value.coverage.scannedTailDocs,
@@ -1037,6 +1244,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             to: aggregateRes.value.to,
             interval: aggregateRes.value.interval,
             coverage: {
+              mode: aggregateRes.value.coverage.mode,
+              complete: aggregateRes.value.coverage.complete,
+              visible_through_offset: aggregateRes.value.coverage.visibleThroughOffset,
+              possible_missing_events_upper_bound: aggregateRes.value.coverage.possibleMissingEventsUpperBound,
+              possible_missing_uploaded_segments: aggregateRes.value.coverage.possibleMissingUploadedSegments,
+              possible_missing_sealed_rows: aggregateRes.value.coverage.possibleMissingSealedRows,
+              possible_missing_wal_rows: aggregateRes.value.coverage.possibleMissingWalRows,
               used_rollups: aggregateRes.value.coverage.usedRollups,
               indexed_segments: aggregateRes.value.coverage.indexedSegments,
               scanned_segments: aggregateRes.value.coverage.scannedSegments,
@@ -1090,22 +1304,27 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
           const contentType = normalizeContentType(req.headers.get("content-type")) ?? "application/octet-stream";
           const routingKeyHeader = req.headers.get("stream-key");
+          const leaveAppendPhase = memorySampler?.enter("append", {
+            route: "put",
+            stream,
+            content_type: contentType,
+          });
+          try {
+            const memReject = rejectIfMemoryLimited();
+            if (memReject) return memReject;
+            const ab = await req.arrayBuffer();
+            if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
+            const bodyBytes = new Uint8Array(ab);
 
-          const memReject = rejectIfMemoryLimited();
-          if (memReject) return memReject;
-          const ab = await req.arrayBuffer();
-          if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
-          const bodyBytes = new Uint8Array(ab);
-
-          let srow = db.getStream(stream);
-          if (srow && db.isDeleted(srow)) {
-            db.hardDeleteStream(stream);
-            srow = null;
-          }
-          if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
-            db.hardDeleteStream(stream);
-            srow = null;
-          }
+            let srow = db.getStream(stream);
+            if (srow && db.isDeleted(srow)) {
+              db.hardDeleteStream(stream);
+              srow = null;
+            }
+            if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
+              db.hardDeleteStream(stream);
+              srow = null;
+            }
 
           if (srow) {
             const existingClosed = srow.closed !== 0;
@@ -1153,7 +1372,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                 close: streamClosed,
               });
               if (Result.isError(appendRes)) {
-                if (appendRes.error.kind === "overloaded") return json(429, { error: { code: "overloaded", message: "ingest queue full" } });
+                if (appendRes.error.kind === "overloaded") return overloaded();
                 return json(500, { error: { code: "internal", message: "append failed" } });
               }
               lastOffset = appendRes.value.lastOffset;
@@ -1168,7 +1387,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               close: true,
             });
             if (Result.isError(appendRes)) {
-              if (appendRes.error.kind === "overloaded") return json(429, { error: { code: "overloaded", message: "ingest queue full" } });
+              if (appendRes.error.kind === "overloaded") return overloaded();
               return json(500, { error: { code: "internal", message: "close failed" } });
             }
             lastOffset = appendRes.value.lastOffset;
@@ -1185,16 +1404,19 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             closed: closedNow,
           });
 
-          const createdRow = db.getStream(stream)!;
-          const tailOffset = encodeOffset(createdRow.epoch, createdRow.next_offset - 1n);
-          const headers: Record<string, string> = {
-            "content-type": contentType,
-            "stream-next-offset": appendedRows > 0 || streamClosed ? encodeOffset(createdRow.epoch, lastOffset) : tailOffset,
-            location: req.url,
-          };
-          if (streamClosed || closedNow) headers["stream-closed"] = "true";
-          if (createdRow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(createdRow.expires_at_ms)).toISOString();
-          return new Response(null, { status: 201, headers: withNosniff(headers) });
+            const createdRow = db.getStream(stream)!;
+            const tailOffset = encodeOffset(createdRow.epoch, createdRow.next_offset - 1n);
+            const headers: Record<string, string> = {
+              "content-type": contentType,
+              "stream-next-offset": appendedRows > 0 || streamClosed ? encodeOffset(createdRow.epoch, lastOffset) : tailOffset,
+              location: req.url,
+            };
+            if (streamClosed || closedNow) headers["stream-closed"] = "true";
+            if (createdRow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(createdRow.expires_at_ms)).toISOString();
+            return new Response(null, { status: 201, headers: withNosniff(headers) });
+          } finally {
+            leaveAppendPhase?.();
+          }
         }
 
         if (req.method === "DELETE") {
@@ -1261,100 +1483,109 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             baseAppendMs = tsRes.value;
           }
 
-          const memReject = rejectIfMemoryLimited();
-          if (memReject) return memReject;
-          const ab = await req.arrayBuffer();
-          if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
-          const bodyBytes = new Uint8Array(ab);
-
-          const isCloseOnly = streamClosed && bodyBytes.byteLength === 0;
-          if (bodyBytes.byteLength === 0 && !streamClosed) return badRequest("empty body");
-
-          let reqContentType = normalizeContentType(req.headers.get("content-type"));
-          if (!isCloseOnly && !reqContentType) return badRequest("missing content-type");
-
-          const routingKeyHeader = req.headers.get("stream-key");
-          let rows: AppendRow[] = [];
-          if (!isCloseOnly) {
-            const rowsRes = buildAppendRowsResult(stream, bodyBytes, reqContentType!, routingKeyHeader, false);
-            if (Result.isError(rowsRes)) {
-              if (rowsRes.error.status === 500) return internalError();
-              return badRequest(rowsRes.error.message);
-            }
-            rows = rowsRes.value.rows;
-          }
-
-          const appendRes = await enqueueAppend({
+          const leaveAppendPhase = memorySampler?.enter("append", {
+            route: "post",
             stream,
-            baseAppendMs,
-            rows,
-            contentType: reqContentType ?? streamContentType,
-            streamSeq,
-            producer,
-            close: streamClosed,
+            stream_content_type: streamContentType,
           });
+          try {
+            const memReject = rejectIfMemoryLimited();
+            if (memReject) return memReject;
+            const ab = await req.arrayBuffer();
+            if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
+            const bodyBytes = new Uint8Array(ab);
 
-          if (Result.isError(appendRes)) {
-            const err = appendRes.error;
-            if (err.kind === "overloaded") return json(429, { error: { code: "overloaded", message: "ingest queue full" } });
-            if (err.kind === "gone") return notFound("stream expired");
-            if (err.kind === "not_found") return notFound();
-            if (err.kind === "content_type_mismatch") return conflict("content-type mismatch");
-            if (err.kind === "stream_seq") {
-              return conflict("sequence mismatch", {
-                "stream-expected-seq": err.expected,
-                "stream-received-seq": err.received,
-              });
+            const isCloseOnly = streamClosed && bodyBytes.byteLength === 0;
+            if (bodyBytes.byteLength === 0 && !streamClosed) return badRequest("empty body");
+
+            let reqContentType = normalizeContentType(req.headers.get("content-type"));
+            if (!isCloseOnly && !reqContentType) return badRequest("missing content-type");
+
+            const routingKeyHeader = req.headers.get("stream-key");
+            let rows: AppendRow[] = [];
+            if (!isCloseOnly) {
+              const rowsRes = buildAppendRowsResult(stream, bodyBytes, reqContentType!, routingKeyHeader, false);
+              if (Result.isError(rowsRes)) {
+                if (rowsRes.error.status === 500) return internalError();
+                return badRequest(rowsRes.error.message);
+              }
+              rows = rowsRes.value.rows;
             }
-            if (err.kind === "closed") {
-              const headers: Record<string, string> = {
-                "stream-next-offset": encodeOffset(srow.epoch, err.lastOffset),
-                "stream-closed": "true",
-              };
-              return new Response(null, { status: 409, headers: withNosniff(headers) });
+
+            const appendRes = await enqueueAppend({
+              stream,
+              baseAppendMs,
+              rows,
+              contentType: reqContentType ?? streamContentType,
+              streamSeq,
+              producer,
+              close: streamClosed,
+            });
+
+            if (Result.isError(appendRes)) {
+              const err = appendRes.error;
+              if (err.kind === "overloaded") return overloaded();
+              if (err.kind === "gone") return notFound("stream expired");
+              if (err.kind === "not_found") return notFound();
+              if (err.kind === "content_type_mismatch") return conflict("content-type mismatch");
+              if (err.kind === "stream_seq") {
+                return conflict("sequence mismatch", {
+                  "stream-expected-seq": err.expected,
+                  "stream-received-seq": err.received,
+                });
+              }
+              if (err.kind === "closed") {
+                const headers: Record<string, string> = {
+                  "stream-next-offset": encodeOffset(srow.epoch, err.lastOffset),
+                  "stream-closed": "true",
+                };
+                return new Response(null, { status: 409, headers: withNosniff(headers) });
+              }
+              if (err.kind === "producer_stale_epoch") {
+                return new Response(null, {
+                  status: 403,
+                  headers: withNosniff({ "producer-epoch": String(err.producerEpoch) }),
+                });
+              }
+              if (err.kind === "producer_gap") {
+                return new Response(null, {
+                  status: 409,
+                  headers: withNosniff({
+                    "producer-expected-seq": String(err.expected),
+                    "producer-received-seq": String(err.received),
+                  }),
+                });
+              }
+              if (err.kind === "producer_epoch_seq") return badRequest("invalid producer sequence");
+              return json(500, { error: { code: "internal", message: "append failed" } });
             }
-            if (err.kind === "producer_stale_epoch") {
-              return new Response(null, {
-                status: 403,
-                headers: withNosniff({ "producer-epoch": String(err.producerEpoch) }),
-              });
+            const res = appendRes.value;
+
+            const appendBytes = rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
+            recordAppendOutcome({
+              stream,
+              lastOffset: res.lastOffset,
+              appendedRows: res.appendedRows,
+              metricsBytes: appendBytes,
+              ingestedBytes: bodyBytes.byteLength,
+              touched: true,
+              closed: res.closed,
+            });
+
+            const headers: Record<string, string> = {
+              "stream-next-offset": encodeOffset(srow.epoch, res.lastOffset),
+            };
+            if (res.closed) headers["stream-closed"] = "true";
+            if (producer && res.producer) {
+              headers["producer-epoch"] = String(res.producer.epoch);
+              headers["producer-seq"] = String(res.producer.seq);
             }
-            if (err.kind === "producer_gap") {
-              return new Response(null, {
-                status: 409,
-                headers: withNosniff({
-                  "producer-expected-seq": String(err.expected),
-                  "producer-received-seq": String(err.received),
-                }),
-              });
-            }
-            if (err.kind === "producer_epoch_seq") return badRequest("invalid producer sequence");
-            return json(500, { error: { code: "internal", message: "append failed" } });
+
+            const status = producer && res.appendedRows > 0 ? 200 : 204;
+            return new Response(null, { status, headers: withNosniff(headers) });
+          } finally {
+            leaveAppendPhase?.();
           }
-          const res = appendRes.value;
-
-          const appendBytes = rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
-          recordAppendOutcome({
-            stream,
-            lastOffset: res.lastOffset,
-            appendedRows: res.appendedRows,
-            metricsBytes: appendBytes,
-            ingestedBytes: bodyBytes.byteLength,
-            touched: true,
-            closed: res.closed,
-          });
-
-          const headers: Record<string, string> = {
-            "stream-next-offset": encodeOffset(srow.epoch, res.lastOffset),
-          };
-          if (res.closed) headers["stream-closed"] = "true";
-          if (producer && res.producer) {
-            headers["producer-epoch"] = String(res.producer.epoch);
-            headers["producer-seq"] = String(res.producer.seq);
-          }
-
-          const status = producer && res.appendedRows > 0 ? 200 : 204;
-          return new Response(null, { status, headers: withNosniff(headers) });
         }
 
         if (req.method === "GET") {
@@ -1761,6 +1992,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     expirySweeper.stop();
     streamSizeReconciler.stop();
     ingest.stop();
+    memorySampler?.stop();
     memory.stop();
     db.close();
   };
@@ -1785,6 +2017,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       stats,
       backpressure,
       memory,
+      memorySampler,
     },
   };
 }

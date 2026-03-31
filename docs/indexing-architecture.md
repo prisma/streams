@@ -5,6 +5,8 @@ Status: implemented baseline
 This document describes the **current shipped search and indexing model**.
 The long-term target still lives in
 [aspirational-indexing-architecture.md](./aspirational-indexing-architecture.md).
+The planned low-latency read model for heavy-ingest periods lives in
+[low-latency-reads-under-ingest.md](./low-latency-reads-under-ingest.md).
 
 ## Summary
 
@@ -190,6 +192,11 @@ Current implementation:
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
 - published companion objects live under `streams/<hash>/segments/...cix`
+- bundled companion backfill is oldest-missing-first and batched, so `.col`
+  coverage grows contiguously across the uploaded segment prefix
+- bundled companion builds are single-pass and cooperative, so `.col`, `.fts`,
+  `.agg`, and `.mblk` share one decoded segment walk and yield periodically
+  while building
 
 Current responsibilities:
 
@@ -216,6 +223,11 @@ Current implementation:
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
 - published companion objects live under `streams/<hash>/segments/...cix`
+- bundled companion backfill is oldest-missing-first and batched, so `.fts`
+  coverage grows contiguously across the uploaded segment prefix
+- `.fts` uses null-prototype term dictionaries, so tokens like `constructor`
+  and `push` behave like ordinary search terms instead of colliding with
+  `Object.prototype`
 
 Current responsibilities:
 
@@ -236,6 +248,8 @@ Current implementation:
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
 - published companion objects live under `streams/<hash>/segments/...cix`
+- bundled companion backfill is oldest-missing-first and batched, so `.agg`
+  coverage grows contiguously across the uploaded segment prefix
 
 Current responsibilities:
 
@@ -331,6 +345,15 @@ Relevant concurrency knobs:
 
 These are in-process async concurrency limits, not separate OS workers.
 
+`SearchCompanionManager` also emits progress metrics so companion lag can be
+observed independently of the exact family:
+
+- `tieredstore.companion.build.queue_len`
+- `tieredstore.companion.builds_inflight`
+- `tieredstore.companion.lag.segments`
+- `tieredstore.companion.build.latency`
+- `tieredstore.companion.objects.built`
+
 On startup, the full server enqueues all streams into the index controller so
 existing streams can catch up automatically after bootstrap, schema changes, or
 bundled companion plan changes.
@@ -342,6 +365,10 @@ Current bundled-companion rules:
 - each uploaded segment may have one current `.cix`
 - the `.cix` may contain any subset of `col`, `fts`, `agg`, and `mblk`
 - the desired bundled companion plan is hashed and versioned per stream
+- each bundled companion build walks the segment once and feeds all enabled
+  families from that shared pass
+- long-running bundled companion builds yield cooperatively every bounded number
+  of segment blocks so the HTTP server stays responsive during backfill
 - a plan change puts the stream into mixed coverage until historical companions
   are rebuilt
 - queries use current bundled sections where present and raw-scan missing or
@@ -392,6 +419,20 @@ Current response shape:
 - `hits`
 - `next_search_after`
 
+Current search coverage fields:
+
+- `mode`
+- `complete`
+- `visible_through_offset`
+- `possible_missing_events_upper_bound`
+- `possible_missing_uploaded_segments`
+- `possible_missing_sealed_rows`
+- `possible_missing_wal_rows`
+- `indexed_segments`
+- `scanned_segments`
+- `scanned_tail_docs`
+- `index_families_used`
+
 Current query support:
 
 - fielded exact keyword queries
@@ -409,6 +450,16 @@ Current non-support:
 - `contains:` / `.sub`
 - snippets
 - multi-stream search
+
+Current newest-suffix behavior:
+
+- while sealed segments are still unpublished or bundled companions are still
+  catching up, `/_search` omits that newest suffix instead of raw-scanning it
+- the omitted range is reported through the `possible_missing_*` coverage
+  fields
+- once publish and bundled-companion work are fully caught up, `/_search` may
+  use the bounded WAL tail as a local overlay so a quiet sub-segment tail still
+  shows up
 
 ### `_aggregate`
 
@@ -434,11 +485,27 @@ Current response shape:
 
 Current coverage fields:
 
+- `mode`
+- `complete`
+- `visible_through_offset`
+- `possible_missing_events_upper_bound`
+- `possible_missing_uploaded_segments`
+- `possible_missing_sealed_rows`
+- `possible_missing_wal_rows`
 - `used_rollups`
 - `indexed_segments`
 - `scanned_segments`
 - `scanned_tail_docs`
 - `index_families_used`
+
+Current newest-suffix behavior:
+
+- while sealed segments are still unpublished or bundled companions are still
+  catching up, `/_aggregate` omits that newest suffix instead of raw-scanning it
+- the omitted range is reported through the `possible_missing_*` coverage
+  fields
+- once publish and bundled-companion work are fully caught up, `/_aggregate`
+  may use the bounded WAL tail as a local overlay
 
 ## Inspection Endpoints
 
@@ -457,6 +524,9 @@ endpoints:
 - bundled companion object coverage
 - `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
   companion sections
+- byte-at-rest and object-count accounting for index families
+- lag in both segments and milliseconds for routing, exact, and bundled-family
+  progress
 
 `/_details` is the combined stream-management descriptor. It nests:
 
@@ -464,6 +534,9 @@ endpoints:
 - the full `/_profile` resource
 - the full `/_schema` registry
 - the current `/_index_status` payload
+- uploaded object-storage byte breakdown
+- local retained byte breakdown
+- node-local per-stream object-store request counters
 
 This is the supported UI inspection path. Clients do not need to infer search
 progress from low-level objects or manifest rows.

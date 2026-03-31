@@ -58,7 +58,8 @@
     "bench:synth": "bun run experiments/bench/synth.ts",
     "demo:ingest": "bun run experiments/demo/wal_demo_ingest.ts",
     "demo:subscribe": "bun run experiments/demo/wal_demo_subscribe.ts",
-    "demo:live-fields": "bun run experiments/demo/live_fields_app.ts"
+    "demo:live-fields": "bun run experiments/demo/live_fields_app.ts",
+    "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts"
   },
   "exports": {
     "./local": {
@@ -79,6 +80,7 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
+    "@durable-streams/client": "^0.2.1",
     "ajv": "^8.12.0",
     "better-result": "^2.7.0",
     "env-paths": "^3.0.0",

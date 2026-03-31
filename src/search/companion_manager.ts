@@ -8,16 +8,19 @@ import type {
   SegmentRow,
   SqliteDurableStore,
 } from "../db/db";
+import type { Metrics } from "../metrics";
 import type { ObjectStore } from "../objectstore/interface";
-import { SchemaRegistryStore, type SchemaRegistry } from "../schema/registry";
-import { iterateBlocksResult } from "../segment/format";
+import { SchemaRegistryStore, type SchemaRegistry, type SearchFieldConfig } from "../schema/registry";
+import { iterateBlockRecordsResult } from "../segment/format";
 import { dsError } from "../util/ds_error.ts";
 import { LruCache } from "../util/lru";
+import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { retry } from "../util/retry";
 import { searchCompanionObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { createBitset, bitsetSet } from "./bitset";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
+  decodeBundledSegmentCompanionTocResult,
   decodeBundledSegmentCompanionResult,
   encodeBundledSegmentCompanion,
   type BundledSegmentCompanion,
@@ -26,8 +29,8 @@ import {
 } from "./companion_format";
 import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./column_encoding";
 import type { ColFieldData, ColSegmentCompanion } from "./col_format";
-import { extractSearchColumnValuesResult, analyzeTextValue, extractSearchTextValuesResult } from "./schema";
-import type { FtsFieldCompanion, FtsSegmentCompanion } from "./fts_format";
+import { analyzeTextValue, canonicalizeColumnValue, extractRawSearchValuesResult, normalizeKeywordValue } from "./schema";
+import type { FtsFieldCompanion, FtsPosting, FtsSegmentCompanion } from "./fts_format";
 import { buildMetricsBlockRecord } from "../profiles/metrics/normalize";
 import type { MetricsBlockSegmentCompanion } from "../profiles/metrics/block_format";
 import { parseDurationMsResult } from "../util/duration";
@@ -45,15 +48,33 @@ function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionB
 }
 
 type ColumnFieldBuilder = {
+  config: SearchFieldConfig;
   kind: ColFieldData["kind"];
   values: Array<bigint | number | boolean | null>;
   invalid: boolean;
+};
+
+type FtsFieldBuilder = {
+  config: SearchFieldConfig;
+  companion: FtsFieldCompanion;
 };
 
 type GroupBuilder = {
   dimensions: Record<string, string | null>;
   measures: Record<string, AggMeasureState>;
 };
+
+type MetricsBlockBuilder = {
+  records: MetricsBlockSegmentCompanion["records"];
+  minWindowStartMs: number | undefined;
+  maxWindowEndMs: number | undefined;
+};
+
+const PAYLOAD_DECODER = new TextDecoder();
+
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
@@ -94,7 +115,11 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
 export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
-  private readonly cache = new LruCache<string, BundledSegmentCompanion>(128);
+  // Bundled companions can contain large decoded FTS/postings structures.
+  // Keep only a tiny hot cache and avoid populating it eagerly during backfill.
+  private readonly cache = new LruCache<string, BundledSegmentCompanion>(4);
+  private readonly yieldBlocks: number;
+  private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
   private running = false;
 
@@ -104,8 +129,13 @@ export class SearchCompanionManager {
     private readonly os: ObjectStore,
     private readonly registry: SchemaRegistryStore,
     private readonly publishManifest?: (stream: string) => Promise<void>,
-    private readonly onMetadataChanged?: (stream: string) => void
-  ) {}
+    private readonly onMetadataChanged?: (stream: string) => void,
+    private readonly metrics?: Metrics,
+    memorySampler?: RuntimeMemorySampler
+  ) {
+    this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
+    this.memorySampler = memorySampler;
+  }
 
   start(): void {
     if (this.timer) return;
@@ -194,13 +224,21 @@ export class SearchCompanionManager {
     if (this.running) return;
     this.running = true;
     try {
-      const streams = Array.from(this.queue);
+      if (this.metrics) {
+        this.metrics.record("tieredstore.companion.build.queue_len", this.queue.size, "count");
+        this.metrics.record("tieredstore.companion.builds_inflight", this.building.size, "count");
+      }
+      const streams = Array.from(new Set([...this.db.listSearchCompanionPlanStreams(), ...this.queue]));
       this.queue.clear();
       for (const stream of streams) {
         try {
           const buildRes = await this.buildPendingSegmentsResult(stream);
-          if (Result.isError(buildRes)) this.queue.add(stream);
-        } catch {
+          if (Result.isError(buildRes)) {
+            console.error("bundled companion build failed", stream, buildRes.error.message);
+            this.queue.add(stream);
+          }
+        } catch (e: unknown) {
+          console.error("bundled companion tick failed", stream, e);
           this.queue.add(stream);
         }
       }
@@ -244,18 +282,30 @@ export class SearchCompanionManager {
       if (!planRow) return Result.ok(undefined);
 
       const uploadedSegments = this.db.countUploadedSegments(stream);
-      const stale = new Set<number>();
-      for (let segmentIndex = uploadedSegments - 1; segmentIndex >= 0; segmentIndex--) {
+      const stale: number[] = [];
+      for (let segmentIndex = 0; segmentIndex < uploadedSegments; segmentIndex++) {
         const current = this.db.getSearchSegmentCompanion(stream, segmentIndex);
-        if (!current || current.plan_generation !== planRow.generation) stale.add(segmentIndex);
+        if (!current || current.plan_generation !== planRow.generation) stale.push(segmentIndex);
       }
-      if (stale.size === 0) return Result.ok(undefined);
+      if (this.metrics) {
+        this.metrics.record("tieredstore.companion.lag.segments", stale.length, "count", undefined, stream);
+      }
+      if (stale.length === 0) return Result.ok(undefined);
 
-      let changed = false;
-      for (const segmentIndex of Array.from(stale).sort((a, b) => b - a)) {
-        const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+      const batchLimit = Math.max(1, this.cfg.searchCompanionBuildBatchSegments);
+      const batch = stale.slice(0, batchLimit);
+      let builtCount = 0;
+      for (const nextSegmentIndex of batch) {
+        const seg = this.db.getSegmentByIndex(stream, nextSegmentIndex);
         if (!seg || !seg.r2_etag) continue;
-        const companionRes = await this.buildBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg);
+        const startedAt = Date.now();
+        const companionRes = this.memorySampler
+          ? await this.memorySampler.track(
+              "companion",
+              { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
+              () => this.buildBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
+            )
+          : await this.buildBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg);
         if (Result.isError(companionRes)) return companionRes;
         const objectId = Buffer.from(randomBytes(8)).toString("hex");
         const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), seg.segment_index, objectId);
@@ -265,6 +315,12 @@ export class SearchCompanionManager {
           plan_generation: planRow.generation,
           sections: companionRes.value.sections,
         });
+        const tocRes = decodeBundledSegmentCompanionTocResult(payload);
+        if (Result.isError(tocRes)) return invalidCompanionBuild(tocRes.error.message);
+        const sectionSizes: Record<string, number> = {};
+        for (const section of tocRes.value.sections) {
+          sectionSizes[section.kind] = section.length;
+        }
         try {
           await retry(
             () => this.os.put(objectKey, payload, { contentLength: payload.byteLength }),
@@ -279,16 +335,32 @@ export class SearchCompanionManager {
           return invalidCompanionBuild(String((e as any)?.message ?? e));
         }
         const sectionKinds = Object.keys(companionRes.value.sections).sort();
-        this.db.upsertSearchSegmentCompanion(stream, seg.segment_index, objectKey, planRow.generation, JSON.stringify(sectionKinds));
-        this.cache.set(objectKey, companionRes.value);
-        changed = true;
+        this.db.upsertSearchSegmentCompanion(
+          stream,
+          seg.segment_index,
+          objectKey,
+          planRow.generation,
+          JSON.stringify(sectionKinds),
+          JSON.stringify(sectionSizes),
+          payload.byteLength
+        );
+        builtCount += 1;
+        if (this.metrics) {
+          const elapsedNs = BigInt(Date.now() - startedAt) * 1_000_000n;
+          this.metrics.record("tieredstore.companion.build.latency", Number(elapsedNs), "ns", undefined, stream);
+          this.metrics.record("tieredstore.companion.objects.built", 1, "count", undefined, stream);
+        }
       }
 
-      if (changed) this.onMetadataChanged?.(stream);
-      if (changed && this.publishManifest) {
+      if (stale.length > builtCount) this.queue.add(stream);
+      if (builtCount === 0) return Result.ok(undefined);
+
+      this.onMetadataChanged?.(stream);
+      if (this.publishManifest) {
         try {
           await this.publishManifest(stream);
-        } catch {
+        } catch (e: unknown) {
+          console.error("bundled companion manifest publish failed", stream, e);
           // background loop will retry
         }
       }
@@ -300,7 +372,7 @@ export class SearchCompanionManager {
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, CompanionBuildError>> {
     try {
-      if (existsSync(seg.local_path)) return Result.ok(new Uint8Array(readFileSync(seg.local_path)));
+      if (existsSync(seg.local_path)) return Result.ok(readFileSync(seg.local_path));
       const bytes = await retry(
         async () => {
           const data = await this.os.get(segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index));
@@ -329,27 +401,182 @@ export class SearchCompanionManager {
     const bytesRes = await this.loadSegmentBytesResult(seg);
     if (Result.isError(bytesRes)) return bytesRes;
     const segmentBytes = bytesRes.value;
+    const colBuilders = plan.families.col ? this.createColBuilders(registry) : null;
+    const ftsBuilders = plan.families.fts ? this.createFtsBuilders(registry) : null;
+    const aggBuilders = plan.families.agg ? new Map<string, Map<number, Map<number, Map<string, GroupBuilder>>>>() : null;
+    const metricsBlockBuilder: MetricsBlockBuilder | null = plan.families.mblk
+      ? { records: [], minWindowStartMs: undefined, maxWindowEndMs: undefined }
+      : null;
+    const needsRawSearchValues = colBuilders != null || ftsBuilders != null;
+
+    let docCount = 0;
+    let offset = seg.start_offset;
+    let processedBlocks = 0;
+    let lastBlockOffset = -1;
+    for (const recRes of iterateBlockRecordsResult(segmentBytes)) {
+      if (Result.isError(recRes)) return invalidCompanionBuild(recRes.error.message);
+      const rec = recRes.value;
+      if (rec.blockOffset !== lastBlockOffset) {
+        processedBlocks += 1;
+        lastBlockOffset = rec.blockOffset;
+        if (processedBlocks % this.yieldBlocks === 0) await yieldToEventLoop();
+      }
+      let parsed: unknown = null;
+      let parsedOk = false;
+      try {
+        parsed = JSON.parse(PAYLOAD_DECODER.decode(rec.payload));
+        parsedOk = true;
+      } catch {
+        parsed = null;
+      }
+
+      let rawSearchValues: Map<string, unknown[]> | null = null;
+      if (parsedOk && needsRawSearchValues) {
+        const rawValuesRes = extractRawSearchValuesResult(registry, offset, parsed);
+        if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
+        rawSearchValues = rawValuesRes.value;
+      }
+
+      if (colBuilders) {
+        for (const [fieldName, builder] of colBuilders) {
+          if (builder.invalid) {
+            builder.values.push(null);
+            continue;
+          }
+          const rawValues = rawSearchValues?.get(fieldName) ?? [];
+          const colValues: Array<bigint | number | boolean> = [];
+          for (const rawValue of rawValues) {
+            const normalized = canonicalizeColumnValue(builder.config, rawValue);
+            if (normalized != null) colValues.push(normalized);
+          }
+          if (colValues.length > 1) {
+            builder.invalid = true;
+            builder.values.push(null);
+            continue;
+          }
+          builder.values.push(colValues.length === 1 ? colValues[0]! : null);
+        }
+      }
+
+      if (ftsBuilders) {
+        for (const [fieldName, builder] of ftsBuilders) {
+          const fieldCompanion = builder.companion;
+          const rawValues = rawSearchValues?.get(fieldName) ?? [];
+          const textValues: string[] = [];
+          for (const rawValue of rawValues) {
+            if (builder.config.kind === "keyword") {
+              const normalized = normalizeKeywordValue(rawValue, builder.config.normalizer);
+              if (normalized != null) textValues.push(normalized);
+            } else if (builder.config.kind === "text" && typeof rawValue === "string") {
+              textValues.push(rawValue);
+            }
+          }
+          if (textValues.length === 0) {
+            if (fieldCompanion.doc_lengths) fieldCompanion.doc_lengths.push(0);
+            continue;
+          }
+          fieldCompanion.exists_docs.push(docCount);
+          if (builder.config.kind === "keyword") {
+            for (const value of textValues) {
+              const postings = fieldCompanion.terms[value] ?? [];
+              if (postings.length === 0 || postings[postings.length - 1]!.d !== docCount) {
+                postings.push({ d: docCount });
+              }
+              fieldCompanion.terms[value] = postings;
+            }
+          } else {
+            let position = 0;
+            let docLength = 0;
+            for (const value of textValues) {
+              const tokens = analyzeTextValue(value, builder.config.analyzer);
+              for (const token of tokens) {
+                const postings = fieldCompanion.terms[token] ?? [];
+                const last = postings[postings.length - 1];
+                if (!last || last.d !== docCount) {
+                  postings.push({ d: docCount, p: fieldCompanion.positions ? [position] : undefined });
+                } else if (fieldCompanion.positions && last.p) {
+                  last.p.push(position);
+                }
+                fieldCompanion.terms[token] = postings;
+                position += 1;
+                docLength += 1;
+              }
+            }
+            fieldCompanion.doc_lengths?.push(docLength);
+          }
+        }
+      }
+
+      if (parsedOk && aggBuilders) {
+        const rollups = registry.search?.rollups ?? {};
+        for (const [rollupName, rollup] of Object.entries(rollups)) {
+          const contributionRes = extractRollupContributionResult(registry, rollup, offset, parsed);
+          if (Result.isError(contributionRes)) return invalidCompanionBuild(contributionRes.error.message);
+          const contribution = contributionRes.value;
+          if (!contribution) continue;
+          let intervalMap = aggBuilders.get(rollupName);
+          if (!intervalMap) {
+            intervalMap = new Map();
+            aggBuilders.set(rollupName, intervalMap);
+          }
+          for (const interval of rollup.intervals) {
+            const intervalMsRes = parseDurationMsResult(interval);
+            if (Result.isError(intervalMsRes) || intervalMsRes.value <= 0) {
+              return invalidCompanionBuild(`invalid rollup interval ${interval}`);
+            }
+            const intervalMs = intervalMsRes.value;
+            let windowMap = intervalMap.get(intervalMs);
+            if (!windowMap) {
+              windowMap = new Map();
+              intervalMap.set(intervalMs, windowMap);
+            }
+            const windowStart = Math.floor(contribution.timestampMs / intervalMs) * intervalMs;
+            let groups = windowMap.get(windowStart);
+            if (!groups) {
+              groups = new Map();
+              windowMap.set(windowStart, groups);
+            }
+            const groupKey = (rollup.dimensions ?? [])
+              .map((dimension) => `${dimension}=${contribution.dimensions[dimension] ?? ""}`)
+              .join("\u0000");
+            let group = groups.get(groupKey);
+            if (!group) {
+              group = { dimensions: { ...contribution.dimensions }, measures: {} };
+              groups.set(groupKey, group);
+            }
+            for (const [measureName, state] of Object.entries(contribution.measures)) {
+              const existing = group.measures[measureName];
+              group.measures[measureName] = existing ? mergeAggMeasureState(existing, state) : cloneAggMeasureState(state);
+            }
+          }
+        }
+      }
+
+      if (parsedOk && metricsBlockBuilder) {
+        const normalizedRes = buildMetricsBlockRecord(docCount, parsed);
+        if (!Result.isError(normalizedRes)) {
+          metricsBlockBuilder.records.push(normalizedRes.value);
+          metricsBlockBuilder.minWindowStartMs =
+            metricsBlockBuilder.minWindowStartMs == null
+              ? normalizedRes.value.windowStartMs
+              : Math.min(metricsBlockBuilder.minWindowStartMs, normalizedRes.value.windowStartMs);
+          metricsBlockBuilder.maxWindowEndMs =
+            metricsBlockBuilder.maxWindowEndMs == null
+              ? normalizedRes.value.windowEndMs
+              : Math.max(metricsBlockBuilder.maxWindowEndMs, normalizedRes.value.windowEndMs);
+        }
+      }
+
+      offset += 1n;
+      docCount += 1;
+    }
+
     const sections: CompanionSectionMap = {};
-    if (plan.families.col) {
-      const colRes = this.buildColSectionResult(registry, segmentBytes, seg);
-      if (Result.isError(colRes)) return colRes;
-      sections.col = colRes.value;
-    }
-    if (plan.families.fts) {
-      const ftsRes = this.buildFtsSectionResult(registry, segmentBytes, seg);
-      if (Result.isError(ftsRes)) return ftsRes;
-      sections.fts = ftsRes.value;
-    }
-    if (plan.families.agg) {
-      const aggRes = this.buildAggSectionResult(registry, segmentBytes, seg);
-      if (Result.isError(aggRes)) return aggRes;
-      sections.agg = aggRes.value;
-    }
-    if (plan.families.mblk) {
-      const mblkRes = this.buildMetricsBlockSectionResult(segmentBytes, seg);
-      if (Result.isError(mblkRes)) return mblkRes;
-      sections.mblk = mblkRes.value;
-    }
+    if (colBuilders) sections.col = this.finalizeColSection(registry, seg, colBuilders, docCount);
+    if (ftsBuilders) sections.fts = this.finalizeFtsSection(seg, ftsBuilders, docCount);
+    if (aggBuilders) sections.agg = this.finalizeAggSection(seg, aggBuilders);
+    if (metricsBlockBuilder) sections.mblk = this.finalizeMetricsBlockSection(seg, metricsBlockBuilder);
+
     return Result.ok({
       toc: {
         version: 1,
@@ -364,50 +591,21 @@ export class SearchCompanionManager {
     });
   }
 
-  private buildColSectionResult(
-    registry: SchemaRegistry,
-    segmentBytes: Uint8Array,
-    seg: SegmentRow
-  ): Result<ColSegmentCompanion, CompanionBuildError> {
+  private createColBuilders(registry: SchemaRegistry): Map<string, ColumnFieldBuilder> {
     const columnFields = Object.entries(registry.search?.fields ?? {}).filter(([, field]) => field.column === true);
     const builders = new Map<string, ColumnFieldBuilder>();
     for (const [fieldName, field] of columnFields) {
-      builders.set(fieldName, { kind: field.kind, values: [], invalid: false });
+      builders.set(fieldName, { config: field, kind: field.kind, values: [], invalid: false });
     }
-    let docCount = 0;
-    let offset = seg.start_offset;
-    for (const blockRes of iterateBlocksResult(segmentBytes)) {
-      if (Result.isError(blockRes)) return invalidCompanionBuild(blockRes.error.message);
-      for (const rec of blockRes.value.decoded.records) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(new TextDecoder().decode(rec.payload));
-        } catch {
-          for (const builder of builders.values()) builder.values.push(null);
-          offset += 1n;
-          docCount += 1;
-          continue;
-        }
-        const valuesRes = extractSearchColumnValuesResult(registry, offset, parsed);
-        if (Result.isError(valuesRes)) return invalidCompanionBuild(valuesRes.error.message);
-        for (const [fieldName, builder] of builders) {
-          if (builder.invalid) {
-            builder.values.push(null);
-            continue;
-          }
-          const values = valuesRes.value.get(fieldName) ?? [];
-          if (values.length > 1) {
-            builder.invalid = true;
-            builder.values.push(null);
-            continue;
-          }
-          builder.values.push(values.length === 1 ? values[0] : null);
-        }
-        offset += 1n;
-        docCount += 1;
-      }
-    }
+    return builders;
+  }
 
+  private finalizeColSection(
+    registry: SchemaRegistry,
+    seg: SegmentRow,
+    builders: Map<string, ColumnFieldBuilder>,
+    docCount: number
+  ): ColSegmentCompanion {
     const fields: Record<string, ColFieldData> = {};
     let minTimestampMs: bigint | null = null;
     let maxTimestampMs: bigint | null = null;
@@ -446,7 +644,7 @@ export class SearchCompanionManager {
       }
     }
 
-    return Result.ok({
+    return {
       version: 1,
       stream: seg.stream,
       segment_index: seg.segment_index,
@@ -455,155 +653,53 @@ export class SearchCompanionManager {
       min_timestamp_ms: minTimestampMs == null ? undefined : minTimestampMs.toString(),
       max_timestamp_ms: maxTimestampMs == null ? undefined : maxTimestampMs.toString(),
       fields,
-    });
+    };
   }
 
-  private buildFtsSectionResult(
-    registry: SchemaRegistry,
-    segmentBytes: Uint8Array,
-    seg: SegmentRow
-  ): Result<FtsSegmentCompanion, CompanionBuildError> {
-    const ftsFieldEntries = Object.entries(registry.search?.fields ?? {}).filter(([, field]) => field.kind === "text" || field.kind === "keyword");
-    const fields = new Map<string, FtsFieldCompanion>();
+  private createFtsBuilders(registry: SchemaRegistry): Map<string, FtsFieldBuilder> {
+    const ftsFieldEntries = Object.entries(registry.search?.fields ?? {}).filter(
+      ([, field]) => field.kind === "text" || (field.kind === "keyword" && field.prefix === true)
+    );
+    const fields = new Map<string, FtsFieldBuilder>();
     for (const [fieldName, field] of ftsFieldEntries) {
       fields.set(fieldName, {
-        kind: field.kind,
-        exact: field.exact === true ? true : undefined,
-        prefix: field.prefix === true ? true : undefined,
-        positions: field.positions === true ? true : undefined,
-        exists_docs: [],
-        doc_lengths: field.kind === "text" ? [] : undefined,
-        terms: {},
+        config: field,
+        companion: {
+          kind: field.kind,
+          exact: field.exact === true ? true : undefined,
+          prefix: field.prefix === true ? true : undefined,
+          positions: field.positions === true ? true : undefined,
+          exists_docs: [],
+          doc_lengths: field.kind === "text" ? [] : undefined,
+          terms: Object.create(null) as Record<string, FtsPosting[]>,
+        },
       });
     }
-    let docCount = 0;
-    let offset = seg.start_offset;
-    for (const blockRes of iterateBlocksResult(segmentBytes)) {
-      if (Result.isError(blockRes)) return invalidCompanionBuild(blockRes.error.message);
-      for (const rec of blockRes.value.decoded.records) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(new TextDecoder().decode(rec.payload));
-        } catch {
-          offset += 1n;
-          docCount += 1;
-          continue;
-        }
-        const valuesRes = extractSearchTextValuesResult(registry, offset, parsed);
-        if (Result.isError(valuesRes)) return invalidCompanionBuild(valuesRes.error.message);
-        for (const [fieldName, fieldCompanion] of fields) {
-          const values = valuesRes.value.get(fieldName) ?? [];
-          if (values.length === 0) {
-            if (fieldCompanion.doc_lengths) fieldCompanion.doc_lengths.push(0);
-            continue;
-          }
-          fieldCompanion.exists_docs.push(docCount);
-          if (fieldCompanion.kind === "keyword") {
-            for (const value of values) {
-              const postings = fieldCompanion.terms[value] ?? [];
-              if (postings.length === 0 || postings[postings.length - 1]!.d !== docCount) postings.push({ d: docCount });
-              fieldCompanion.terms[value] = postings;
-            }
-          } else {
-            let position = 0;
-            let docLength = 0;
-            for (const value of values) {
-              const tokens = analyzeTextValue(value, registry.search?.fields[fieldName].analyzer);
-              for (const token of tokens) {
-                const postings = fieldCompanion.terms[token] ?? [];
-                const last = postings[postings.length - 1];
-                if (!last || last.d !== docCount) {
-                  postings.push({ d: docCount, p: fieldCompanion.positions ? [position] : undefined });
-                } else if (fieldCompanion.positions && last.p) {
-                  last.p.push(position);
-                }
-                fieldCompanion.terms[token] = postings;
-                position += 1;
-                docLength += 1;
-              }
-            }
-            fieldCompanion.doc_lengths?.push(docLength);
-          }
-        }
-        offset += 1n;
-        docCount += 1;
-      }
+    return fields;
+  }
+
+  private finalizeFtsSection(
+    seg: SegmentRow,
+    builders: Map<string, FtsFieldBuilder>,
+    docCount: number
+  ): FtsSegmentCompanion {
+    const orderedFields = Object.create(null) as Record<string, FtsFieldCompanion>;
+    for (const [fieldName, builder] of Array.from(builders.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      orderedFields[fieldName] = builder.companion;
     }
-    return Result.ok({
+    return {
       version: 1,
       stream: seg.stream,
       segment_index: seg.segment_index,
       doc_count: docCount,
-      fields: Object.fromEntries(Array.from(fields.entries()).sort((a, b) => a[0].localeCompare(b[0]))),
-    });
+      fields: orderedFields,
+    };
   }
 
-  private buildAggSectionResult(
-    registry: SchemaRegistry,
-    segmentBytes: Uint8Array,
-    seg: SegmentRow
-  ): Result<AggSegmentCompanion, CompanionBuildError> {
-    const rollups = registry.search?.rollups;
-    if (!rollups || Object.keys(rollups).length === 0) {
-      return Result.ok({ version: 1, stream: seg.stream, segment_index: seg.segment_index, rollups: {} });
-    }
-    const builders = new Map<string, Map<number, Map<number, Map<string, GroupBuilder>>>>();
-    let offset = seg.start_offset;
-    for (const blockRes of iterateBlocksResult(segmentBytes)) {
-      if (Result.isError(blockRes)) return invalidCompanionBuild(blockRes.error.message);
-      for (const rec of blockRes.value.decoded.records) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(new TextDecoder().decode(rec.payload));
-        } catch {
-          offset += 1n;
-          continue;
-        }
-        for (const [rollupName, rollup] of Object.entries(rollups)) {
-          const contributionRes = extractRollupContributionResult(registry, rollup, offset, parsed);
-          if (Result.isError(contributionRes)) return invalidCompanionBuild(contributionRes.error.message);
-          const contribution = contributionRes.value;
-          if (!contribution) continue;
-          let intervalMap = builders.get(rollupName);
-          if (!intervalMap) {
-            intervalMap = new Map();
-            builders.set(rollupName, intervalMap);
-          }
-          for (const interval of rollup.intervals) {
-            const intervalMsRes = parseDurationMsResult(interval);
-            if (Result.isError(intervalMsRes) || intervalMsRes.value <= 0) {
-              return invalidCompanionBuild(`invalid rollup interval ${interval}`);
-            }
-            const intervalMs = intervalMsRes.value;
-            let windowMap = intervalMap.get(intervalMs);
-            if (!windowMap) {
-              windowMap = new Map();
-              intervalMap.set(intervalMs, windowMap);
-            }
-            const windowStart = Math.floor(contribution.timestampMs / intervalMs) * intervalMs;
-            let groups = windowMap.get(windowStart);
-            if (!groups) {
-              groups = new Map();
-              windowMap.set(windowStart, groups);
-            }
-            const groupKey = (rollup.dimensions ?? [])
-              .map((dimension) => `${dimension}=${contribution.dimensions[dimension] ?? ""}`)
-              .join("\u0000");
-            let group = groups.get(groupKey);
-            if (!group) {
-              group = { dimensions: { ...contribution.dimensions }, measures: {} };
-              groups.set(groupKey, group);
-            }
-            for (const [measureName, state] of Object.entries(contribution.measures)) {
-              const existing = group.measures[measureName];
-              group.measures[measureName] = existing ? mergeAggMeasureState(existing, state) : cloneAggMeasureState(state);
-            }
-          }
-        }
-        offset += 1n;
-      }
-    }
-
+  private finalizeAggSection(
+    seg: SegmentRow,
+    builders: Map<string, Map<number, Map<number, Map<string, GroupBuilder>>>>
+  ): AggSegmentCompanion {
     const encodedRollups: AggSegmentCompanion["rollups"] = {};
     for (const [rollupName, intervalMap] of builders) {
       const intervals: AggSegmentCompanion["rollups"][string]["intervals"] = {};
@@ -624,51 +720,26 @@ export class SearchCompanionManager {
       encodedRollups[rollupName] = { intervals };
     }
 
-    return Result.ok({
+    return {
       version: 1,
       stream: seg.stream,
       segment_index: seg.segment_index,
       rollups: encodedRollups,
-    });
+    };
   }
 
-  private buildMetricsBlockSectionResult(
-    segmentBytes: Uint8Array,
-    seg: SegmentRow
-  ): Result<MetricsBlockSegmentCompanion, CompanionBuildError> {
-    const records: MetricsBlockSegmentCompanion["records"] = [];
-    let minWindowStartMs: number | undefined;
-    let maxWindowEndMs: number | undefined;
-    let docId = 0;
-    for (const blockRes of iterateBlocksResult(segmentBytes)) {
-      if (Result.isError(blockRes)) return invalidCompanionBuild(blockRes.error.message);
-      for (const rec of blockRes.value.decoded.records) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(new TextDecoder().decode(rec.payload));
-        } catch {
-          docId += 1;
-          continue;
-        }
-        const normalizedRes = buildMetricsBlockRecord(docId, parsed);
-        if (!Result.isError(normalizedRes)) {
-          records.push(normalizedRes.value);
-          minWindowStartMs =
-            minWindowStartMs == null ? normalizedRes.value.windowStartMs : Math.min(minWindowStartMs, normalizedRes.value.windowStartMs);
-          maxWindowEndMs =
-            maxWindowEndMs == null ? normalizedRes.value.windowEndMs : Math.max(maxWindowEndMs, normalizedRes.value.windowEndMs);
-        }
-        docId += 1;
-      }
-    }
-    return Result.ok({
+  private finalizeMetricsBlockSection(
+    seg: SegmentRow,
+    builder: MetricsBlockBuilder
+  ): MetricsBlockSegmentCompanion {
+    return {
       version: 1,
       stream: seg.stream,
       segment_index: seg.segment_index,
-      record_count: records.length,
-      min_window_start_ms: minWindowStartMs,
-      max_window_end_ms: maxWindowEndMs,
-      records,
-    });
+      record_count: builder.records.length,
+      min_window_start_ms: builder.minWindowStartMs,
+      max_window_end_ms: builder.maxWindowEndMs,
+      records: builder.records,
+    };
   }
 }

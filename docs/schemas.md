@@ -127,6 +127,7 @@ Not supported:
 
 - When `currentVersion > 0`, **JSON appends are validated** against the current schema.
 - External `$ref` is **not** supported.
+- Standard JSON Schema `format: "date-time"` is supported and enforced.
 - If validation fails, the append returns 400.
 
 ## Read path (promotion)

@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -114,13 +114,15 @@ CREATE TABLE IF NOT EXISTS manifests (
   generation INTEGER NOT NULL,
   uploaded_generation INTEGER NOT NULL,
   last_uploaded_at_ms INTEGER NULL,
-  last_uploaded_etag TEXT NULL
+  last_uploaded_etag TEXT NULL,
+  last_uploaded_size_bytes INTEGER NULL
 );
 
 CREATE TABLE IF NOT EXISTS schemas (
   stream TEXT PRIMARY KEY,
   schema_json TEXT NOT NULL,
-  updated_at_ms INTEGER NOT NULL
+  updated_at_ms INTEGER NOT NULL,
+  uploaded_size_bytes INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS stream_profiles (
@@ -182,6 +184,7 @@ CREATE TABLE IF NOT EXISTS index_runs (
   start_segment INTEGER NOT NULL,
   end_segment INTEGER NOT NULL,
   object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
   filter_len INTEGER NOT NULL,
   record_count INTEGER NOT NULL,
   retired_gen INTEGER NULL,
@@ -210,6 +213,7 @@ CREATE TABLE IF NOT EXISTS secondary_index_runs (
   start_segment INTEGER NOT NULL,
   end_segment INTEGER NOT NULL,
   object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
   filter_len INTEGER NOT NULL,
   record_count INTEGER NOT NULL,
   retired_gen INTEGER NULL,
@@ -235,12 +239,29 @@ CREATE TABLE IF NOT EXISTS search_segment_companions (
   object_key TEXT NOT NULL,
   plan_generation INTEGER NOT NULL,
   sections_json TEXT NOT NULL,
+  section_sizes_json TEXT NOT NULL DEFAULT '{}',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (stream, segment_index)
 );
 
 CREATE INDEX IF NOT EXISTS search_segment_companions_stream_plan_idx
   ON search_segment_companions(stream, plan_generation, segment_index);
+`;
+
+const CREATE_OBJECTSTORE_REQUEST_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS objectstore_request_counts (
+  stream_hash TEXT NOT NULL,
+  artifact TEXT NOT NULL,
+  op TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream_hash, artifact, op)
+);
+
+CREATE INDEX IF NOT EXISTS objectstore_request_counts_stream_hash_idx
+  ON objectstore_request_counts(stream_hash, updated_at_ms);
 `;
 
 const CREATE_TABLES_V4_SUFFIX_SQL = (suffix: string): string => `
@@ -364,6 +385,7 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
     db.exec(CREATE_INDEX_TABLES_SQL);
     db.exec(CREATE_SECONDARY_INDEX_TABLES_SQL);
     db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
+    db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
     db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
     return;
   }
@@ -408,6 +430,8 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV17ToV18(db);
     } else if (version === 18) {
       migrateV18ToV19(db);
+    } else if (version === 19) {
+      migrateV19ToV20(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -804,6 +828,20 @@ function migrateV18ToV19(db: SqliteDatabase): void {
     db.exec(`DROP TABLE IF EXISTS search_family_segments;`);
     db.exec(`DROP TABLE IF EXISTS search_family_state;`);
     db.exec(`UPDATE schema_version SET version = 19;`);
+  });
+  tx();
+}
+
+function migrateV19ToV20(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE manifests ADD COLUMN last_uploaded_size_bytes INTEGER NULL;`);
+    db.exec(`ALTER TABLE schemas ADD COLUMN uploaded_size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE index_runs ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE secondary_index_runs ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN section_sizes_json TEXT NOT NULL DEFAULT '{}';`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 20;`);
   });
   tx();
 }

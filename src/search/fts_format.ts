@@ -31,6 +31,13 @@ function invalidFts<T = never>(message: string): Result<T, FtsFormatError> {
   return Result.err({ kind: "invalid_fts_segment", message });
 }
 
+function toNullProtoRecord<T>(value: Record<string, T> | null | undefined): Record<string, T> {
+  const out = Object.create(null) as Record<string, T>;
+  if (!value || typeof value !== "object") return out;
+  for (const [key, entry] of Object.entries(value)) out[key] = entry;
+  return out;
+}
+
 export function encodeFtsSegmentCompanion(companion: FtsSegmentCompanion): Uint8Array {
   const body = new TextEncoder().encode(JSON.stringify(companion));
   return new Uint8Array(zstdCompressSync(body));
@@ -46,7 +53,14 @@ export function decodeFtsSegmentCompanionResult(bytes: Uint8Array): Result<FtsSe
     if (typeof parsed.segment_index !== "number" || typeof parsed.doc_count !== "number" || !parsed.fields || typeof parsed.fields !== "object") {
       return invalidFts("invalid .fts companion");
     }
-    return Result.ok(parsed);
+    const normalizedFields = toNullProtoRecord(parsed.fields);
+    for (const field of Object.values(normalizedFields)) {
+      field.terms = toNullProtoRecord(field.terms);
+    }
+    return Result.ok({
+      ...parsed,
+      fields: normalizedFields,
+    });
   } catch (e: unknown) {
     return invalidFts(String((e as any)?.message ?? e));
   }

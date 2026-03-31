@@ -77,6 +77,13 @@ const SEARCH_SCHEMA = {
         exists: true,
         sortable: true,
       },
+      region: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/region" }],
+        exact: true,
+        exists: true,
+        sortable: true,
+      },
       message: {
         kind: "text",
         bindings: [{ version: 1, jsonPointer: "/message" }],
@@ -102,12 +109,16 @@ async function waitForSearchFamilies(app: ReturnType<typeof createApp>, timeoutM
     const secondaryStates = app.deps.db.listSecondaryIndexStates(STREAM);
     const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
     const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
+    const publishedSegmentCount =
+      srow && srow.uploaded_through >= 0n
+        ? ((app.deps.db.findSegmentForOffset(STREAM, srow.uploaded_through)?.segment_index ?? -1) + 1)
+        : 0;
     if (
       srow &&
       srow.uploaded_through >= srow.sealed_through &&
       secondaryStates.length >= 4 &&
       companionPlan &&
-      companionSegments.length > 0
+      companionSegments.length >= publishedSegmentCount
     ) {
       return;
     }
@@ -115,6 +126,20 @@ async function waitForSearchFamilies(app: ReturnType<typeof createApp>, timeoutM
     await sleep(50);
   }
   throw new Error("timeout waiting for search families");
+}
+
+async function waitForUploadedWithoutCompanions(
+  app: ReturnType<typeof createApp>,
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const srow = app.deps.db.getStream(STREAM);
+    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
+    if (srow && srow.uploaded_through >= 0n && companionSegments.length === 0) return;
+    await sleep(50);
+  }
+  throw new Error("timeout waiting for uploaded uncompanioned prefix");
 }
 
 describe("_search http", () => {
@@ -158,6 +183,7 @@ describe("_search http", () => {
             status: 402,
             duration: 1834,
             requestId: "req_1",
+            region: "ap-southeast-1",
             message: "card declined",
             why: "issuer reported insufficient funds",
           },
@@ -167,6 +193,7 @@ describe("_search http", () => {
             status: 503,
             duration: 2400,
             requestId: "req_2",
+            region: "us-east-1",
             message: "payment retry failed",
             why: "downstream timeout",
           },
@@ -176,6 +203,7 @@ describe("_search http", () => {
             status: 200,
             duration: 100,
             requestId: "job_1",
+            region: "ap-southeast-1",
             message: "retry scheduled",
             why: "background job",
           },
@@ -185,6 +213,7 @@ describe("_search http", () => {
             status: 402,
             duration: 2100,
             requestId: "req_3",
+            region: "eu-west-1",
             message: "card declined again",
             why: "issuer declined card",
           },
@@ -216,9 +245,26 @@ describe("_search http", () => {
         expect(res.status).toBe(200);
         let body = await res.json();
         expect(body.total).toEqual({ value: 1, relation: "eq" });
-        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col", "fts"]));
+        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col"]));
+        expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "region:ap-southeast-1",
+              sort: ["eventTime:desc", "offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        body = await res.json();
+        expect(body.total).toEqual({ value: 2, relation: "eq" });
+        expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["job_1", "req_1"]);
 
         res = await app.fetch(
           new Request(
@@ -389,6 +435,196 @@ describe("_search http", () => {
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_6");
         expect(body.coverage.indexed_segments + body.coverage.scanned_segments + Math.min(body.coverage.scanned_tail_docs, 1)).toBe(1);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "searches the quiet WAL tail once upload and companion work are caught up",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-quiet-tail-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 1_000_000,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (const event of [
+          {
+            eventTime: "2026-03-25T10:15:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2400,
+            requestId: "req_1",
+            region: "us-east-1",
+            message: "payment retry failed",
+            why: "downstream timeout",
+          },
+          {
+            eventTime: "2026-03-25T10:16:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2500,
+            requestId: "req_2",
+            region: "us-east-1",
+            message: "another timeout",
+            why: "quiet tail match",
+          },
+        ]) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(event),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              sort: ["offset:desc"],
+              size: 10,
+              track_total_hits: true,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_2", "req_1"]);
+        expect(body.coverage.complete).toBe(true);
+        expect(body.coverage.mode).toBe("complete");
+        expect(body.coverage.scanned_tail_docs).toBeGreaterThan(0);
+        expect(body.coverage.possible_missing_events_upper_bound).toBe(0);
+        expect(body.coverage.possible_missing_wal_rows).toBe(0);
+        expect(body.total).toEqual({ value: 2, relation: "eq" });
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "omits the newest uploaded and WAL suffix while companions are still catching up",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-omit-suffix-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 140,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 60_000,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (const event of [
+          {
+            eventTime: "2026-03-25T10:15:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2400,
+            requestId: "req_1",
+            region: "us-east-1",
+            message: "segment timeout",
+            why: "uploaded suffix match",
+          },
+          {
+            eventTime: "2026-03-25T10:16:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2500,
+            requestId: "req_2",
+            region: "us-east-1",
+            message: "tail timeout",
+            why: "wal suffix match",
+          },
+        ]) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(event),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForUploadedWithoutCompanions(app);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              sort: ["offset:desc"],
+              size: 10,
+              track_total_hits: true,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits).toEqual([]);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.mode).toBe("published");
+        expect(body.coverage.scanned_segments).toBe(0);
+        expect(body.coverage.scanned_tail_docs).toBe(0);
+        expect(body.coverage.possible_missing_uploaded_segments).toBeGreaterThan(0);
+        expect(body.coverage.possible_missing_wal_rows).toBeGreaterThan(0);
+        expect(body.coverage.possible_missing_events_upper_bound).toBeGreaterThan(0);
+        expect(body.total).toEqual({ value: 0, relation: "gte" });
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

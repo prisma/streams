@@ -51,6 +51,7 @@ import type { SearchRollupConfig } from "./schema/registry";
 import type { AggMeasureState } from "./search/agg_format";
 import type { MetricsBlockSegmentCompanion } from "./profiles/metrics/block_format";
 import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
+import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
 
 export type ReadFormat = "raw" | "json";
 
@@ -82,6 +83,13 @@ export type SearchResultBatch = {
   snapshotEndOffset: string;
   tookMs: number;
   coverage: {
+    mode: "complete" | "published";
+    complete: boolean;
+    visibleThroughOffset: string;
+    possibleMissingEventsUpperBound: number;
+    possibleMissingUploadedSegments: number;
+    possibleMissingSealedRows: number;
+    possibleMissingWalRows: number;
     indexedSegments: number;
     scannedSegments: number;
     scannedTailDocs: number;
@@ -102,6 +110,13 @@ export type AggregateResultBatch = {
   to: string;
   interval: string;
   coverage: {
+    mode: "complete" | "published";
+    complete: boolean;
+    visibleThroughOffset: string;
+    possibleMissingEventsUpperBound: number;
+    possibleMissingUploadedSegments: number;
+    possibleMissingSealedRows: number;
+    possibleMissingWalRows: number;
     usedRollups: boolean;
     indexedSegments: number;
     scannedSegments: number;
@@ -147,6 +162,19 @@ type SearchCursorFieldBound = {
   after: bigint | number | string | boolean | null;
   encoded: Uint8Array | null;
 };
+type PublishedCoverageState = {
+  mode: "complete" | "published";
+  complete: boolean;
+  canSearchWalTail: boolean;
+  publishedSegmentCount: number;
+  visiblePublishedSegmentCount: number;
+  visibleThroughSeq: bigint;
+  visibleThroughOffset: string;
+  possibleMissingEventsUpperBound: number;
+  possibleMissingUploadedSegments: number;
+  possibleMissingSealedRows: number;
+  possibleMissingWalRows: number;
+};
 
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
@@ -154,6 +182,15 @@ function errorMessage(e: unknown): string {
 
 function utf8Bytes(s: string): Uint8Array {
   return new TextEncoder().encode(s);
+}
+
+function parseCompanionSections(value: string): Set<string> {
+  try {
+    const parsed = JSON.parse(value);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 function objectKeyForSegment(seg: SegmentRow): string {
@@ -280,6 +317,74 @@ export class StreamReader {
       baseDelayMs: this.config.objectStoreBaseDelayMs,
       maxDelayMs: this.config.objectStoreMaxDelayMs,
       timeoutMs: this.config.objectStoreTimeoutMs,
+    };
+  }
+
+  private computePublishedCoverageState(stream: string, srow: { epoch: number; next_offset: bigint; sealed_through: bigint; uploaded_through: bigint; pending_rows: bigint }, registry: { search?: { fields: Record<string, unknown> } }): PublishedCoverageState {
+    const totalSegmentCount = this.db.countSegmentsForStream(stream);
+    const publishedSegmentCount =
+      srow.uploaded_through >= 0n
+        ? ((this.db.findSegmentForOffset(stream, srow.uploaded_through)?.segment_index ?? -1) + 1)
+        : 0;
+
+    const desiredPlan = buildDesiredSearchCompanionPlan(registry as any);
+    const planHasFamilies = Object.values(desiredPlan.families).some(Boolean);
+    let visiblePublishedSegmentCount = publishedSegmentCount;
+    if (planHasFamilies) {
+      const desiredHash = hashSearchCompanionPlan(desiredPlan);
+      const companionPlanRow = this.db.getSearchCompanionPlan(stream);
+      const desiredGeneration =
+        companionPlanRow == null
+          ? 1
+          : companionPlanRow.plan_hash === desiredHash
+            ? companionPlanRow.generation
+            : companionPlanRow.generation + 1;
+      const currentCompanions = this.db
+        .listSearchSegmentCompanions(stream)
+        .filter((row) => row.plan_generation === desiredGeneration);
+      const currentSegments = new Set<number>();
+      for (const row of currentCompanions) {
+        const sections = parseCompanionSections(row.sections_json);
+        const hasEnabledFamily = Object.entries(desiredPlan.families).some(([family, enabled]) => enabled && sections.has(family));
+        if (hasEnabledFamily) currentSegments.add(row.segment_index);
+      }
+      visiblePublishedSegmentCount = 0;
+      while (visiblePublishedSegmentCount < publishedSegmentCount && currentSegments.has(visiblePublishedSegmentCount)) {
+        visiblePublishedSegmentCount += 1;
+      }
+    }
+
+    const hasOutstandingPublishedSegments = publishedSegmentCount < totalSegmentCount;
+    const hasOutstandingCompanions = planHasFamilies && visiblePublishedSegmentCount < publishedSegmentCount;
+    const canSearchWalTail = !hasOutstandingPublishedSegments && !hasOutstandingCompanions;
+
+    let visibleThroughSeq = srow.next_offset - 1n;
+    if (!canSearchWalTail) {
+      if (visiblePublishedSegmentCount > 0) {
+        visibleThroughSeq = this.db.getSegmentByIndex(stream, visiblePublishedSegmentCount - 1)?.end_offset ?? -1n;
+      } else {
+        visibleThroughSeq = -1n;
+      }
+    }
+
+    const possibleMissingUploadedSegments = Math.max(0, publishedSegmentCount - visiblePublishedSegmentCount);
+    const possibleMissingUploadedRows = !canSearchWalTail && srow.uploaded_through > visibleThroughSeq ? Number(srow.uploaded_through - visibleThroughSeq) : 0;
+    const possibleMissingSealedRows = !canSearchWalTail && srow.sealed_through > srow.uploaded_through ? Number(srow.sealed_through - srow.uploaded_through) : 0;
+    const possibleMissingWalRows = canSearchWalTail ? 0 : Number(srow.pending_rows);
+    const possibleMissingEventsUpperBound = possibleMissingUploadedRows + possibleMissingSealedRows + possibleMissingWalRows;
+
+    return {
+      mode: possibleMissingEventsUpperBound === 0 ? "complete" : "published",
+      complete: possibleMissingEventsUpperBound === 0,
+      canSearchWalTail,
+      publishedSegmentCount,
+      visiblePublishedSegmentCount,
+      visibleThroughSeq,
+      visibleThroughOffset: encodeOffset(srow.epoch, visibleThroughSeq),
+      possibleMissingEventsUpperBound,
+      possibleMissingUploadedSegments,
+      possibleMissingSealedRows,
+      possibleMissingWalRows,
     };
   }
 
@@ -697,6 +802,13 @@ export class StreamReader {
     try {
       const snapshotEndSeq = srow.next_offset - 1n;
       const snapshotEndOffset = encodeOffset(srow.epoch, snapshotEndSeq);
+      const coverageState = this.computePublishedCoverageState(stream, srow, registry);
+      const visibleSnapshotEndSeq = coverageState.canSearchWalTail
+        ? snapshotEndSeq
+        : (coverageState.visibleThroughSeq < snapshotEndSeq ? coverageState.visibleThroughSeq : snapshotEndSeq);
+      const visibleSealedThrough = coverageState.canSearchWalTail
+        ? srow.sealed_through
+        : (coverageState.visibleThroughSeq < srow.sealed_through ? coverageState.visibleThroughSeq : srow.sealed_through);
       const exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
@@ -824,12 +936,13 @@ export class StreamReader {
       if (leadingSort?.kind === "offset") {
         const descending = leadingSort.direction === "desc";
         const rangeStartSeq = descending ? 0n : typeof offsetSearchAfter === "bigint" ? offsetSearchAfter + 1n : 0n;
-        const rangeEndSeq = descending ? (typeof offsetSearchAfter === "bigint" ? offsetSearchAfter - 1n : snapshotEndSeq) : snapshotEndSeq;
+        const requestedRangeEndSeq = descending ? (typeof offsetSearchAfter === "bigint" ? offsetSearchAfter - 1n : snapshotEndSeq) : snapshotEndSeq;
+        const rangeEndSeq = requestedRangeEndSeq < visibleSnapshotEndSeq ? requestedRangeEndSeq : visibleSnapshotEndSeq;
 
         if (rangeStartSeq <= rangeEndSeq) {
           if (descending) {
             const tailStart = srow.sealed_through + 1n;
-            if (tailStart <= rangeEndSeq) {
+            if (coverageState.canSearchWalTail && tailStart <= rangeEndSeq) {
               const walStart = rangeStartSeq > tailStart ? rangeStartSeq : tailStart;
               const walEnd = rangeEndSeq;
               if (walStart <= walEnd) {
@@ -846,7 +959,7 @@ export class StreamReader {
               }
             }
             if (!timedOut && !stopIfPageComplete()) {
-              const sealedEnd = rangeEndSeq < srow.sealed_through ? rangeEndSeq : srow.sealed_through;
+              const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
               if (sealedEnd >= rangeStartSeq) {
                 const startSeg = this.db.findSegmentForOffset(stream, sealedEnd);
                 let segmentIndex = startSeg?.segment_index ?? this.db.countSegmentsForStream(stream) - 1;
@@ -895,7 +1008,7 @@ export class StreamReader {
             }
           } else {
             let seq = rangeStartSeq;
-            while (seq <= rangeEndSeq && seq <= srow.sealed_through) {
+            while (seq <= rangeEndSeq && seq <= visibleSealedThrough) {
               const seg = this.db.findSegmentForOffset(stream, seq);
               if (!seg) break;
               const scanRes = await scanSegmentWithFamiliesResult(seg, rangeStartSeq, rangeEndSeq);
@@ -903,7 +1016,7 @@ export class StreamReader {
               seq = seg.end_offset + 1n;
               if (timedOut || stopIfPageComplete()) break;
             }
-            if (!timedOut && !stopIfPageComplete() && seq <= rangeEndSeq) {
+            if (!timedOut && !stopIfPageComplete() && coverageState.canSearchWalTail && seq <= rangeEndSeq) {
               for (const record of this.db.iterWalRange(stream, seq, rangeEndSeq)) {
                 scannedTailDocs += 1;
                 const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
@@ -925,6 +1038,13 @@ export class StreamReader {
           snapshotEndOffset,
           tookMs: Date.now() - startedAt,
           coverage: {
+            mode: coverageState.mode,
+            complete: coverageState.complete && !timedOut,
+            visibleThroughOffset: coverageState.visibleThroughOffset,
+            possibleMissingEventsUpperBound: coverageState.possibleMissingEventsUpperBound,
+            possibleMissingUploadedSegments: coverageState.possibleMissingUploadedSegments,
+            possibleMissingSealedRows: coverageState.possibleMissingSealedRows,
+            possibleMissingWalRows: coverageState.possibleMissingWalRows,
             indexedSegments,
             scannedSegments,
             scannedTailDocs,
@@ -932,7 +1052,7 @@ export class StreamReader {
           },
           total: {
             value: request.trackTotalHits ? totalHits : pageHits.length,
-            relation: timedOut ? "gte" : "eq",
+            relation: timedOut || !coverageState.complete ? "gte" : "eq",
           },
           hits: pageHits.map((hit) => ({
             offset: hit.offset,
@@ -946,7 +1066,7 @@ export class StreamReader {
       }
 
       let seq = 0n;
-      while (seq <= snapshotEndSeq && seq <= srow.sealed_through) {
+      while (seq <= visibleSnapshotEndSeq && seq <= visibleSealedThrough) {
         const seg = this.db.findSegmentForOffset(stream, seq);
         if (!seg) break;
         const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
@@ -955,7 +1075,7 @@ export class StreamReader {
         if (timedOut) break;
       }
 
-      if (!timedOut && seq <= snapshotEndSeq) {
+      if (!timedOut && coverageState.canSearchWalTail && seq <= snapshotEndSeq) {
         for (const record of this.db.iterWalRange(stream, seq, snapshotEndSeq)) {
           scannedTailDocs += 1;
           const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
@@ -976,6 +1096,13 @@ export class StreamReader {
         snapshotEndOffset,
         tookMs: Date.now() - startedAt,
         coverage: {
+          mode: coverageState.mode,
+          complete: coverageState.complete && !timedOut,
+          visibleThroughOffset: coverageState.visibleThroughOffset,
+          possibleMissingEventsUpperBound: coverageState.possibleMissingEventsUpperBound,
+          possibleMissingUploadedSegments: coverageState.possibleMissingUploadedSegments,
+          possibleMissingSealedRows: coverageState.possibleMissingSealedRows,
+          possibleMissingWalRows: coverageState.possibleMissingWalRows,
           indexedSegments,
           scannedSegments,
           scannedTailDocs,
@@ -983,7 +1110,7 @@ export class StreamReader {
         },
         total: {
           value: request.trackTotalHits ? totalHits : pageHits.length,
-          relation: timedOut ? "gte" : "eq",
+          relation: timedOut || !coverageState.complete ? "gte" : "eq",
         },
         hits: pageHits.map((hit) => ({
           offset: hit.offset,
@@ -1022,6 +1149,7 @@ export class StreamReader {
     }
 
     try {
+      const coverageState = this.computePublishedCoverageState(stream, srow, registry);
       const intervalMs = request.intervalMs;
       const intervalBig = BigInt(intervalMs);
       const fromMs = Number(request.fromMs);
@@ -1151,6 +1279,7 @@ export class StreamReader {
 
       const timestampField = rollup.timestampField ?? registry.search.primaryTimestampField;
       for (const seg of this.db.listSegmentsForStream(stream)) {
+        if (seg.segment_index >= coverageState.visiblePublishedSegmentCount) break;
         let coveredAlignedWindows = false;
         if (eligibility.eligible && this.index && hasFullWindows) {
           const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
@@ -1201,7 +1330,7 @@ export class StreamReader {
 
       const tailStart = srow.sealed_through + 1n;
       const tailEnd = srow.next_offset - 1n;
-      if (tailStart <= tailEnd) {
+      if (coverageState.canSearchWalTail && tailStart <= tailEnd) {
         for (const record of this.db.iterWalRange(stream, tailStart, tailEnd)) {
           scannedTailDocs += 1;
           const parsedRes = decodeJsonPayloadResult(this.registry, stream, BigInt(record.offset), record.payload);
@@ -1244,6 +1373,13 @@ export class StreamReader {
         to: new Date(toMs).toISOString(),
         interval: request.interval,
         coverage: {
+          mode: coverageState.mode,
+          complete: coverageState.complete,
+          visibleThroughOffset: coverageState.visibleThroughOffset,
+          possibleMissingEventsUpperBound: coverageState.possibleMissingEventsUpperBound,
+          possibleMissingUploadedSegments: coverageState.possibleMissingUploadedSegments,
+          possibleMissingSealedRows: coverageState.possibleMissingSealedRows,
+          possibleMissingWalRows: coverageState.possibleMissingWalRows,
           usedRollups,
           indexedSegments: indexedSegmentSet.size,
           scannedSegments: scannedSegmentSet.size,

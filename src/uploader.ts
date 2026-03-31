@@ -13,6 +13,7 @@ import { LruCache } from "./util/lru";
 import type { StatsCollector } from "./stats";
 import type { BackpressureGate } from "./backpressure";
 import { dsError } from "./util/ds_error.ts";
+import { RuntimeMemorySampler } from "./runtime_memory_sampler";
 
 export type UploaderController = {
   start(): void;
@@ -34,6 +35,7 @@ export class Uploader {
   private readonly diskCache?: SegmentDiskCache;
   private readonly stats?: StatsCollector;
   private readonly gate?: BackpressureGate;
+  private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
   private running = false;
   private stopping = false;
@@ -49,7 +51,8 @@ export class Uploader {
     diskCache?: SegmentDiskCache,
     stats?: StatsCollector,
     gate?: BackpressureGate,
-    hooks?: UploaderHooks
+    hooks?: UploaderHooks,
+    memorySampler?: RuntimeMemorySampler
   ) {
     this.config = config;
     this.db = db;
@@ -58,6 +61,7 @@ export class Uploader {
     this.stats = stats;
     this.gate = gate;
     this.hooks = hooks;
+    this.memorySampler = memorySampler;
   }
 
   setHooks(hooks: UploaderHooks | undefined): void {
@@ -168,6 +172,11 @@ export class Uploader {
     if (this.stopping) return;
     const shash = streamHash16Hex(seg.stream);
     const objectKey = segmentObjectKey(shash, seg.segment_index);
+    const leaveUploadPhase = this.memorySampler?.enter("upload", {
+      stream: seg.stream,
+      segment_index: seg.segment_index,
+      size_bytes: seg.size_bytes,
+    });
     try {
       const res = await retry(
         async () => {
@@ -191,6 +200,8 @@ export class Uploader {
     } catch (e) {
       this.failures.recordFailure(seg.stream);
       throw e;
+    } finally {
+      leaveUploadPhase?.();
     }
   }
 
@@ -294,7 +305,7 @@ export class Uploader {
       }
 
       // Commit point: advance uploaded_through and delete WAL prefix.
-      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough);
+      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough, body.byteLength);
       this.hooks?.onMetadataChanged?.(stream);
 
       // Local disk cleanup: delete newly uploaded segment files.

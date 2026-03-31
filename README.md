@@ -212,8 +212,9 @@ For stream management UIs, the current per-stream inspection surface is:
   stream.
 - `GET /v1/stream/{name}/_details`
   Combined stream summary, including `stream.total_size_bytes`, full profile
-  resource, full schema registry, and nested index status in one response.
-  This endpoint also supports conditional long-polling with
+  resource, full schema registry, nested index status, storage accounting, and
+  node-local object-store request counters in one response. This endpoint also
+  supports conditional long-polling with
   `If-None-Match`, `live=long-poll`, and `timeout=...`, and only wakes when
   the stream head or descriptor-visible metadata changes.
 
@@ -228,6 +229,20 @@ active stream page, including:
 - `sealed_through`
 - `uploaded_through`
 - `total_size_bytes`
+
+For a storage/cost popover, `/_details` also includes:
+
+- `storage.object_storage`
+  Uploaded bytes and object counts split into segments, indexes, and
+  manifest/schema metadata.
+- `storage.local_storage`
+  Current local retained bytes split into WAL, pending sealed segments, caches,
+  and shared SQLite footprint.
+- `storage.companion_families`
+  Bundled companion bytes split into `col`, `fts`, `agg`, and `mblk`.
+- `object_store_requests`
+  Node-local per-stream object-store request counters, split into puts and
+  reads, plus a per-artifact breakdown.
 
 That means a GUI can create streams, inspect the active profile and schema,
 show current indexing progress, and edit profile/schema configuration through

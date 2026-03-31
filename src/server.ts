@@ -38,6 +38,7 @@ function formatPresetList<T>(presets: number[], selected: number, map: (preset: 
 
 type AutoTuneConfig = {
   sqliteCacheMb: number;
+  workerSqliteCacheMb: number;
   indexMemMb: number;
   ingestBatchMb: number;
   ingestQueueMb: number;
@@ -76,6 +77,8 @@ function applyAutoTune(overrideMb: number | null): void {
   const conflictVars = [
     "DS_SQLITE_CACHE_MB",
     "DS_SQLITE_CACHE_BYTES",
+    "DS_WORKER_SQLITE_CACHE_MB",
+    "DS_WORKER_SQLITE_CACHE_BYTES",
     "DS_INDEX_RUN_MEM_CACHE_BYTES",
     "DS_INGEST_MAX_BATCH_BYTES",
     "DS_INGEST_MAX_QUEUE_BYTES",
@@ -95,6 +98,7 @@ function applyAutoTune(overrideMb: number | null): void {
 
   const tuneFor = (p: number): AutoTuneConfig => ({
     sqliteCacheMb: Math.max(8, Math.floor(p / 16)),
+    workerSqliteCacheMb: Math.max(8, Math.min(32, Math.floor(p / 128))),
     indexMemMb: Math.max(4, Math.floor(p / 64)),
     ingestBatchMb: Math.max(2, Math.floor(p / 128)),
     ingestQueueMb: Math.max(8, Math.floor(p / 32)),
@@ -108,6 +112,7 @@ function applyAutoTune(overrideMb: number | null): void {
   const memoryLimitMb = memoryLimitForPreset(preset);
   process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
+  process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
   process.env.DS_INDEX_RUN_MEM_CACHE_BYTES = String(tune.indexMemMb * 1024 * 1024);
   process.env.DS_INGEST_MAX_BATCH_BYTES = String(tune.ingestBatchMb * 1024 * 1024);
   process.env.DS_INGEST_MAX_QUEUE_BYTES = String(tune.ingestQueueMb * 1024 * 1024);
@@ -123,6 +128,14 @@ function applyAutoTune(overrideMb: number | null): void {
   );
   console.log(
     `DS_SQLITE_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).sqliteCacheMb, (v) => String(v))}`
+  );
+  console.log(
+    `DS_WORKER_SQLITE_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneFor(p).workerSqliteCacheMb,
+      (v) => String(v)
+    )}`
   );
   console.log(
     `DS_INDEX_RUN_MEM_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).indexMemMb, (v) => String(v))}`

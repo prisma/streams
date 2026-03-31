@@ -184,6 +184,7 @@ Columns:
 - `uploaded_generation INTEGER NOT NULL`
 - `last_uploaded_at_ms INTEGER NULL`
 - `last_uploaded_etag TEXT NULL`
+- `last_uploaded_size_bytes INTEGER NULL`
 
 Invariants:
 - `uploaded_generation <= generation`
@@ -215,6 +216,7 @@ Columns:
 - `start_segment INTEGER NOT NULL`
 - `end_segment INTEGER NOT NULL`
 - `object_key TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
 - `filter_len INTEGER NOT NULL`
 - `record_count INTEGER NOT NULL`
 - `retired_gen INTEGER NULL`
@@ -253,6 +255,7 @@ Columns:
 - `start_segment INTEGER NOT NULL`
 - `end_segment INTEGER NOT NULL`
 - `object_key TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
 - `filter_len INTEGER NOT NULL`
 - `record_count INTEGER NOT NULL`
 - `retired_gen INTEGER NULL`
@@ -269,6 +272,7 @@ Current implementation table (see `src/db/schema.ts`):
 - `stream TEXT PRIMARY KEY`
 - `schema_json TEXT NOT NULL`
 - `updated_at_ms INTEGER NOT NULL`
+- `uploaded_size_bytes INTEGER NOT NULL`
 
 `schema_json` stores the serialized per-stream schema registry JSON (schema versions,
 lenses, routingKey config, and schema-owned `search` declarations).
@@ -303,6 +307,8 @@ Columns:
 - `object_key TEXT NOT NULL`
 - `plan_generation INTEGER NOT NULL`
 - `sections_json TEXT NOT NULL`
+- `section_sizes_json TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
 - `updated_at_ms INTEGER NOT NULL`
 
 Primary key:
@@ -316,11 +322,39 @@ Notes:
 - each row points at one immutable bundled companion object
 - `sections_json` records which bundled sections are present, such as `col`,
   `fts`, `agg`, and `mblk`
+- `section_sizes_json` records the byte size of each bundled section that is
+  present
 - companions are published under `streams/<hash>/segments/...cix`
 
 ---
 
-### 2.14 `stream_profiles`
+### 2.14 `objectstore_request_counts`
+Node-local per-stream object-store request accounting used by `/_details`.
+
+Columns:
+- `stream_hash TEXT NOT NULL`
+- `artifact TEXT NOT NULL`
+- `op TEXT NOT NULL`
+- `count INTEGER NOT NULL`
+- `bytes INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream_hash, artifact, op)`
+
+Indexes:
+- `CREATE INDEX objectstore_request_counts_stream_idx ON objectstore_request_counts(stream_hash, updated_at_ms);`
+
+Notes:
+- this table is local operational accounting, not durable published stream
+  state
+- counters are node-local and reflect requests observed through the current
+  object-store wrapper
+- request counts are exposed through `GET /v1/stream/{name}/_details`
+
+---
+
+### 2.15 `stream_profiles`
 Stores non-generic profile configuration.
 
 Columns:
