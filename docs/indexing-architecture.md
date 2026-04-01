@@ -465,6 +465,17 @@ Current query support:
 - alias resolution from `search.aliases`
 - filter-only and score-based sorts
 
+Current candidate-planning behavior:
+
+- fielded exact keyword clauses still use the internal exact family first for
+  sealed-history segment pruning when that family is available
+- if a keyword field is also present in bundled `.fts` because it enables
+  `prefix=true`, `_search` also uses the `.fts` term dictionary/postings as a
+  per-segment doc-id fallback for exact clauses
+- positive `.fts` clauses are evaluated in estimated-selectivity order, and
+  later clauses are checked against the current candidate doc-id set instead of
+  materializing every clause against the whole segment
+
 Current non-support:
 
 - `contains:` / `.sub`

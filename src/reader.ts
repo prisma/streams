@@ -45,7 +45,7 @@ import {
   evaluateSearchQueryResult,
   extractSearchHitFieldsResult,
 } from "./search/query";
-import { filterDocIdsByFtsClauseResult } from "./search/fts_runtime";
+import { filterDocIdsByFtsClausesResult } from "./search/fts_runtime";
 import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema";
 import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./search/column_encoding";
 import type { SearchRollupConfig } from "./schema/registry";
@@ -1724,21 +1724,9 @@ export class StreamReader {
     if (!this.index || clauses.length === 0) return Result.ok(null);
     const companion = await this.index.getFtsSegmentCompanion(stream, segmentIndex);
     if (!companion) return Result.ok(null);
-
-    let intersection: Set<number> | null = null;
-    for (const clause of clauses) {
-      const clauseRes = filterDocIdsByFtsClauseResult({ companion, clause });
-      if (Result.isError(clauseRes)) return clauseRes;
-      if (intersection == null) {
-        intersection = clauseRes.value;
-        continue;
-      }
-      for (const docId of Array.from(intersection)) {
-        if (!clauseRes.value.has(docId)) intersection.delete(docId);
-      }
-      if (intersection.size === 0) break;
-    }
-    return Result.ok(intersection ?? new Set<number>());
+    const clausesRes = filterDocIdsByFtsClausesResult({ companion, clauses });
+    if (Result.isError(clausesRes)) return clausesRes;
+    return Result.ok(clausesRes.value);
   }
 
   private async resolveSearchFamilyCandidatesResult(

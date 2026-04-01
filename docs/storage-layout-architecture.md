@@ -129,6 +129,11 @@ uses:
 Queries therefore load only the targeted field, dictionary range, and posting
 blocks needed for the current clause.
 
+Read-time planning also treats prefix-capable keyword fields as exact-term FTS
+fields. That means a query like `type:pushevent owner:prisma*` can still use
+`.fts` doc-id pruning for both clauses even while the internal exact secondary
+family is still catching up.
+
 ### `.agg2`
 
 The `.agg` family now uses a binary `agg2` payload inside `PSCIX2`.
@@ -194,6 +199,11 @@ This is the key runtime cutover. The bundle is the storage container, but the
 fetch and decode units are now the section table plus the requested family
 payload. FTS- or column-only reads do not fetch aggregate bytes unless they
 explicitly need them.
+
+For `_search`, the runtime orders positive FTS clauses by estimated
+selectivity and evaluates later clauses against the current candidate doc-id
+set. This keeps prefix and exact keyword pruning in the binary FTS layer
+instead of falling back to record JSON decode for obviously non-matching docs.
 
 For aligned aggregate queries whose rollup uses the stream's primary timestamp
 field, the reader now checks the persisted per-segment time bounds first and

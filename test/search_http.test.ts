@@ -244,7 +244,7 @@ describe("_search http", () => {
         let body = await res.json();
         expect(body.total).toEqual({ value: 1, relation: "eq" });
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col"]));
-        expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
+        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
 
@@ -315,6 +315,8 @@ describe("_search http", () => {
         body = await res.json();
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_3");
+        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+        expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["col"]));
         expect(body.next_search_after).not.toBeNull();
 
         res = await app.fetch(
