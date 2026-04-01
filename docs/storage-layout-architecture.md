@@ -173,6 +173,8 @@ It now caches:
 
 - a tiny byte-budgeted cache of parsed `PSCIX2` section tables
 - a byte-budgeted cache of hot non-aggregate section payloads
+- local primary-timestamp bounds persisted in `search_segment_companions`
+  rows for published segments
 
 On demand it decodes only the requested family:
 
@@ -192,6 +194,11 @@ This is the key runtime cutover. The bundle is the storage container, but the
 fetch and decode units are now the section table plus the requested family
 payload. FTS- or column-only reads do not fetch aggregate bytes unless they
 explicitly need them.
+
+For aligned aggregate queries whose rollup uses the stream's primary timestamp
+field, the reader now checks the persisted per-segment time bounds first and
+skips non-overlapping published segments locally. That avoids remote `.cix`
+fetches for segments that cannot contribute to the requested window.
 
 ## Build Model
 

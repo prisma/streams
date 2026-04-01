@@ -311,6 +311,8 @@ Columns:
 - `sections_json TEXT NOT NULL`
 - `section_sizes_json TEXT NOT NULL`
 - `size_bytes INTEGER NOT NULL`
+- `primary_timestamp_min_ms INTEGER NULL`
+- `primary_timestamp_max_ms INTEGER NULL`
 - `updated_at_ms INTEGER NOT NULL`
 
 Primary key:
@@ -326,6 +328,10 @@ Notes:
   `fts`, `agg`, and `mblk`
 - `section_sizes_json` records the byte size of each binary bundled section
   payload that is present
+- `primary_timestamp_min_ms` / `primary_timestamp_max_ms` store the bundled
+  companion's covered bounds for the stream's primary timestamp field when that
+  field is available; aggregate queries use these local values to skip
+  non-overlapping published segments without fetching any companion object
 - companions are published under `streams/<hash>/segments/...cix`
 
 ---

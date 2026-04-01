@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS search_segment_companions (
   sections_json TEXT NOT NULL,
   section_sizes_json TEXT NOT NULL DEFAULT '{}',
   size_bytes INTEGER NOT NULL DEFAULT 0,
+  primary_timestamp_min_ms INTEGER NULL,
+  primary_timestamp_max_ms INTEGER NULL,
   updated_at_ms INTEGER NOT NULL,
   PRIMARY KEY (stream, segment_index)
 );
@@ -432,6 +434,8 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV18ToV19(db);
     } else if (version === 19) {
       migrateV19ToV20(db);
+    } else if (version === 20) {
+      migrateV20ToV21(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -842,6 +846,15 @@ function migrateV19ToV20(db: SqliteDatabase): void {
     db.exec(`ALTER TABLE search_segment_companions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
     db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
     db.exec(`UPDATE schema_version SET version = 20;`);
+  });
+  tx();
+}
+
+function migrateV20ToV21(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_min_ms INTEGER NULL;`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_max_ms INTEGER NULL;`);
+    db.exec(`UPDATE schema_version SET version = 21;`);
   });
   tx();
 }

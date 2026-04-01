@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
+import { MockR2Store } from "../src/objectstore/mock_r2";
 
 const STREAM = "aggregates";
 
@@ -124,6 +125,25 @@ async function waitForUploadedWithoutCompanions(
     await sleep(50);
   }
   throw new Error("timeout waiting for uploaded uncompanioned prefix");
+}
+
+function instrumentAggregateCompanionCounters(app: ReturnType<typeof createApp>): { aggCalls: number; colCalls: number } {
+  const counters = { aggCalls: 0, colCalls: 0 };
+  const indexer = app.deps.indexer as {
+    getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<unknown>;
+    getColSegmentCompanion(stream: string, segmentIndex: number): Promise<unknown>;
+  };
+  const originalAgg = indexer.getAggSegmentCompanion.bind(indexer);
+  const originalCol = indexer.getColSegmentCompanion.bind(indexer);
+  indexer.getAggSegmentCompanion = async (stream: string, segmentIndex: number) => {
+    counters.aggCalls += 1;
+    return originalAgg(stream, segmentIndex);
+  };
+  indexer.getColSegmentCompanion = async (stream: string, segmentIndex: number) => {
+    counters.colCalls += 1;
+    return originalCol(stream, segmentIndex);
+  };
+  return counters;
 }
 
 describe("_aggregate http", () => {
@@ -368,6 +388,100 @@ describe("_aggregate http", () => {
             },
           },
         ]);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "uses local companion timestamp bounds to skip non-overlapping rollup segments",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-aggregate-prune-"));
+      const store = new MockR2Store();
+      const buildCfg = makeConfig(root, {
+        segmentMaxBytes: 1_000_000,
+        segmentTargetRows: 8,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexCheckIntervalMs: 10,
+        indexL0SpanSegments: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const queryCfg = makeConfig(root, {
+        segmentMaxBytes: 1_000_000,
+        segmentTargetRows: 8,
+        segmentCheckIntervalMs: 60_000,
+        uploadIntervalMs: 60_000,
+        indexCheckIntervalMs: 60_000,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      let app = createApp(buildCfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(AGG_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        const baseMs = Date.parse("2026-03-25T10:00:00.000Z");
+        for (let segmentIndex = 0; segmentIndex < 4; segmentIndex++) {
+          for (let rowIndex = 0; rowIndex < 8; rowIndex++) {
+            res = await app.fetch(
+              new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  eventTime: new Date(baseMs + segmentIndex * 3_600_000 + rowIndex * 1_000).toISOString(),
+                  service: `svc-${rowIndex}`,
+                  duration: rowIndex + 1,
+                  message: `segment-${segmentIndex}`,
+                }),
+              })
+            );
+            expect(res.status).toBe(204);
+          }
+        }
+
+        await waitForAggFamily(app, 20_000);
+        app.close();
+
+        app = createApp(queryCfg, store);
+        const counters = instrumentAggregateCompanionCounters(app);
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_aggregate`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              rollup: "requests",
+              from: "2026-03-25T10:00:00.000Z",
+              to: "2026-03-25T10:01:00.000Z",
+              interval: "1m",
+              group_by: ["service"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.coverage.used_rollups).toBe(true);
+        expect(counters.aggCalls).toBe(1);
+        expect(counters.colCalls).toBe(0);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

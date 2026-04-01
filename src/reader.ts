@@ -1181,6 +1181,9 @@ export class StreamReader {
       const dimensions = new Set(rollup.dimensions ?? []);
       const eligibility = extractRollupEligibility(request.q, dimensions);
       const selectedMeasures = new Set(request.measures ?? Object.keys(rollup.measures));
+      const timestampField = rollup.timestampField ?? registry.search.primaryTimestampField;
+      const primaryTimestampField = registry.search.primaryTimestampField;
+      const usesPrimaryTimestampBounds = timestampField === primaryTimestampField;
 
       const buckets = new Map<number, Map<string, AggregateGroupInternal>>();
       const indexedSegmentSet = new Set<number>();
@@ -1270,6 +1273,20 @@ export class StreamReader {
         return Result.ok(undefined);
       };
 
+      const segmentMayOverlapAggregateRange = async (
+        seg: SegmentRow,
+        startMs: number,
+        endMs: number
+      ): Promise<boolean> => {
+        if (usesPrimaryTimestampBounds) {
+          const companionRow = this.db.getSearchSegmentCompanion(stream, seg.segment_index);
+          if (companionRow?.primary_timestamp_min_ms != null && companionRow.primary_timestamp_max_ms != null) {
+            return companionRow.primary_timestamp_max_ms >= BigInt(startMs) && companionRow.primary_timestamp_min_ms < BigInt(endMs);
+          }
+        }
+        return this.segmentMayOverlapTimeRange(stream, seg.segment_index, startMs, endMs, timestampField);
+      };
+
       const scanMetricsBlockForAggregateResult = async (
         seg: SegmentRow,
         companion: MetricsBlockSectionView,
@@ -1298,22 +1315,24 @@ export class StreamReader {
         return Result.ok(undefined);
       };
 
-      const timestampField = rollup.timestampField ?? registry.search.primaryTimestampField;
       for (const seg of this.db.listSegmentsForStream(stream)) {
         if (seg.segment_index >= coverageState.visiblePublishedSegmentCount) break;
         let coveredAlignedWindows = false;
         if (eligibility.eligible && this.index && hasFullWindows) {
-          const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
-          const intervalCompanion = companion?.getInterval(request.rollup, intervalMs);
-          if (intervalCompanion) {
-            coveredAlignedWindows = true;
-            indexedSegmentSet.add(seg.segment_index);
-            indexFamiliesUsed.add("agg");
-            usedRollups = true;
-            intervalCompanion.forEachGroupInRange(fullStartMs, fullEndMs, (windowStartMs, group) => {
-              if (!matchesExactFilters(group.dimensions)) return;
-              mergeBucketMeasures(windowStartMs, group.dimensions, group.measures);
-            });
+          const overlapsAlignedWindow = await segmentMayOverlapAggregateRange(seg, fullStartMs, fullEndMs);
+          if (overlapsAlignedWindow) {
+            const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
+            const intervalCompanion = companion?.getInterval(request.rollup, intervalMs);
+            if (intervalCompanion) {
+              coveredAlignedWindows = true;
+              indexedSegmentSet.add(seg.segment_index);
+              indexFamiliesUsed.add("agg");
+              usedRollups = true;
+              intervalCompanion.forEachGroupInRange(fullStartMs, fullEndMs, (windowStartMs, group) => {
+                if (!matchesExactFilters(group.dimensions)) return;
+                mergeBucketMeasures(windowStartMs, group.dimensions, group.measures);
+              });
+            }
           }
         }
 
@@ -1326,7 +1345,7 @@ export class StreamReader {
         if (scanRanges.length === 0) continue;
         let overlaps = false;
         for (const range of scanRanges) {
-          if (await this.segmentMayOverlapTimeRange(stream, seg.segment_index, range.startMs, range.endMs, timestampField)) {
+          if (await segmentMayOverlapAggregateRange(seg, range.startMs, range.endMs)) {
             overlaps = true;
             break;
           }

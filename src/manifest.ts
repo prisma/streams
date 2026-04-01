@@ -158,6 +158,8 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
       object_key: segment.object_key,
       size_bytes: segment.size_bytes,
       plan_generation: segment.plan_generation,
+      primary_timestamp_min_ms: segment.primary_timestamp_min_ms?.toString() ?? undefined,
+      primary_timestamp_max_ms: segment.primary_timestamp_max_ms?.toString() ?? undefined,
       sections: parseSectionsJson(segment.sections_json),
       section_sizes: JSON.parse(segment.section_sizes_json || "{}"),
     }));

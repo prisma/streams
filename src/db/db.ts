@@ -127,6 +127,8 @@ export type SearchSegmentCompanionRow = {
   sections_json: string;
   section_sizes_json: string;
   size_bytes: number;
+  primary_timestamp_min_ms: bigint | null;
+  primary_timestamp_max_ms: bigint | null;
   updated_at_ms: bigint;
 };
 
@@ -502,25 +504,30 @@ export class SqliteDurableStore {
       ),
       deleteSearchCompanionPlan: this.db.query(`DELETE FROM search_companion_plans WHERE stream=?;`),
       listSearchSegmentCompanions: this.db.query(
-        `SELECT stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes, updated_at_ms
+        `SELECT stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes,
+                primary_timestamp_min_ms, primary_timestamp_max_ms, updated_at_ms
          FROM search_segment_companions
          WHERE stream=?
          ORDER BY segment_index ASC;`
       ),
       getSearchSegmentCompanion: this.db.query(
-        `SELECT stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes, updated_at_ms
+        `SELECT stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes,
+                primary_timestamp_min_ms, primary_timestamp_max_ms, updated_at_ms
          FROM search_segment_companions
          WHERE stream=? AND segment_index=? LIMIT 1;`
       ),
       upsertSearchSegmentCompanion: this.db.query(
-        `INSERT INTO search_segment_companions(stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes, updated_at_ms)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO search_segment_companions(stream, segment_index, object_key, plan_generation, sections_json, section_sizes_json, size_bytes,
+                                               primary_timestamp_min_ms, primary_timestamp_max_ms, updated_at_ms)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(stream, segment_index) DO UPDATE SET
            object_key=excluded.object_key,
            plan_generation=excluded.plan_generation,
            sections_json=excluded.sections_json,
            section_sizes_json=excluded.section_sizes_json,
            size_bytes=excluded.size_bytes,
+           primary_timestamp_min_ms=excluded.primary_timestamp_min_ms,
+           primary_timestamp_max_ms=excluded.primary_timestamp_max_ms,
            updated_at_ms=excluded.updated_at_ms;`
       ),
       deleteSearchSegmentCompanionsFromGeneration: this.db.query(
@@ -1834,6 +1841,8 @@ export class SqliteDurableStore {
       sections_json: String(row.sections_json),
       section_sizes_json: String(row.section_sizes_json ?? "{}"),
       size_bytes: Number(row.size_bytes ?? 0),
+      primary_timestamp_min_ms: row.primary_timestamp_min_ms == null ? null : this.toBigInt(row.primary_timestamp_min_ms),
+      primary_timestamp_max_ms: row.primary_timestamp_max_ms == null ? null : this.toBigInt(row.primary_timestamp_max_ms),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     }));
   }
@@ -1849,6 +1858,8 @@ export class SqliteDurableStore {
       sections_json: String(row.sections_json),
       section_sizes_json: String(row.section_sizes_json ?? "{}"),
       size_bytes: Number(row.size_bytes ?? 0),
+      primary_timestamp_min_ms: row.primary_timestamp_min_ms == null ? null : this.toBigInt(row.primary_timestamp_min_ms),
+      primary_timestamp_max_ms: row.primary_timestamp_max_ms == null ? null : this.toBigInt(row.primary_timestamp_max_ms),
       updated_at_ms: this.toBigInt(row.updated_at_ms),
     };
   }
@@ -1860,7 +1871,9 @@ export class SqliteDurableStore {
     planGeneration: number,
     sectionsJson: string,
     sectionSizesJson: string,
-    sizeBytes: number
+    sizeBytes: number,
+    primaryTimestampMinMs: bigint | null,
+    primaryTimestampMaxMs: bigint | null
   ): void {
     this.stmts.upsertSearchSegmentCompanion.run(
       stream,
@@ -1870,6 +1883,8 @@ export class SqliteDurableStore {
       sectionsJson,
       sectionSizesJson,
       sizeBytes,
+      primaryTimestampMinMs,
+      primaryTimestampMaxMs,
       this.nowMs()
     );
   }

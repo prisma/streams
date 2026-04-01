@@ -422,7 +422,9 @@ export class SearchCompanionManager {
           planRow.generation,
           JSON.stringify(sectionKinds),
           JSON.stringify(sectionSizes),
-          payload.byteLength
+          payload.byteLength,
+          companionRes.value.primaryTimestampMinMs,
+          companionRes.value.primaryTimestampMaxMs
         );
         builtCount += 1;
         if (this.metrics) {
@@ -515,7 +517,18 @@ export class SearchCompanionManager {
     plan: SearchCompanionPlan,
     planGeneration: number,
     seg: SegmentRow
-  ): Promise<Result<{ payload: Uint8Array; sectionKinds: CompanionSectionKind[]; sectionSizes: Record<string, number> }, CompanionBuildError>> {
+  ): Promise<
+    Result<
+      {
+        payload: Uint8Array;
+        sectionKinds: CompanionSectionKind[];
+        sectionSizes: Record<string, number>;
+        primaryTimestampMinMs: bigint | null;
+        primaryTimestampMaxMs: bigint | null;
+      },
+      CompanionBuildError
+    >
+  > {
     const bytesRes = await this.loadSegmentBytesResult(seg);
     if (Result.isError(bytesRes)) return bytesRes;
     const segmentBytes = bytesRes.value;
@@ -562,6 +575,8 @@ export class SearchCompanionManager {
     const sectionPayloads: EncodedCompanionSectionPayload[] = [];
     const sectionKinds: CompanionSectionKind[] = [];
     const sectionSizes: Record<string, number> = {};
+    let primaryTimestampMinMs: bigint | null = null;
+    let primaryTimestampMaxMs: bigint | null = null;
     const addSection = (payload: EncodedCompanionSectionPayload): void => {
       sectionPayloads.push(payload);
       const kind = payload.kind;
@@ -570,7 +585,12 @@ export class SearchCompanionManager {
     };
 
     if (plan.families.col) {
-      addSection(encodeCompanionSectionPayload("col", this.finalizeColSection(registry, colBuilders, docCountRes.value), plan));
+      const colSection = this.finalizeColSection(registry, colBuilders, docCountRes.value);
+      const primaryTimestampField = colSection.primary_timestamp_field;
+      const primaryTimestampColumn = primaryTimestampField ? colSection.fields[primaryTimestampField] : undefined;
+      primaryTimestampMinMs = typeof primaryTimestampColumn?.min === "bigint" ? primaryTimestampColumn.min : null;
+      primaryTimestampMaxMs = typeof primaryTimestampColumn?.max === "bigint" ? primaryTimestampColumn.max : null;
+      addSection(encodeCompanionSectionPayload("col", colSection, plan));
     }
     if (plan.families.fts) {
       addSection(encodeCompanionSectionPayload("fts", this.finalizeFtsSection(ftsBuilders, docCountRes.value), plan));
@@ -591,6 +611,8 @@ export class SearchCompanionManager {
       }),
       sectionKinds,
       sectionSizes,
+      primaryTimestampMinMs,
+      primaryTimestampMaxMs,
     });
   }
 

@@ -285,7 +285,9 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
             Number((segment as any).plan_generation),
             JSON.stringify(sections),
             JSON.stringify((segment as any).section_sizes ?? {}),
-            Number((segment as any).size_bytes ?? 0)
+            Number((segment as any).size_bytes ?? 0),
+            parseManifestBigInt((segment as any).primary_timestamp_min_ms),
+            parseManifestBigInt((segment as any).primary_timestamp_max_ms)
           );
         }
       }
