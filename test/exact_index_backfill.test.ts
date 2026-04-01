@@ -24,6 +24,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function markAppendIdle(app: ReturnType<typeof createApp>): void {
+  app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs() - 600_000n, STREAM);
+  app.deps.indexer?.enqueue(STREAM);
+}
+
 const SCHEMA_V1 = {
   schema: {
     type: "object",
@@ -146,6 +151,7 @@ describe("exact secondary index backfill", () => {
           expect(res.status).toBe(204);
         }
 
+        markAppendIdle(app);
         await waitForExactIndex(app, EXACT_HASH_V1);
       } finally {
         app.close();
@@ -194,6 +200,7 @@ describe("exact secondary index backfill", () => {
 
       app = createApp(buildCfg, store);
       try {
+        markAppendIdle(app);
         await waitForExactIndex(app, EXACT_HASH_V2, { manualKick: false });
         const detailsRes = await app.fetch(new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`));
         expect(detailsRes.status).toBe(200);

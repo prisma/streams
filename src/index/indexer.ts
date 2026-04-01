@@ -20,6 +20,8 @@ import type { AggSegmentCompanion } from "../search/agg_format";
 import type { ColSegmentCompanion } from "../search/col_format";
 import type { FtsSegmentCompanion } from "../search/fts_format";
 import type { MetricsBlockSegmentCompanion } from "../profiles/metrics/block_format";
+import type { SchemaRegistryStore } from "../schema/registry";
+import type { MemoryGuard } from "../memory";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
@@ -44,6 +46,8 @@ function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildErro
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
 }
+
+const MEMORY_PRESSURE_PAUSE = "__memory_pressure_pause__";
 
 export class IndexManager {
   private readonly cfg: Config;
@@ -75,6 +79,8 @@ export class IndexManager {
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
+  private readonly registry?: SchemaRegistryStore;
+  private readonly memory?: MemoryGuard;
 
   constructor(
     cfg: Config,
@@ -84,7 +90,9 @@ export class IndexManager {
     publishManifest?: (stream: string) => Promise<void>,
     metrics?: Metrics,
     onMetadataChanged?: (stream: string) => void,
-    memorySampler?: RuntimeMemorySampler
+    memorySampler?: RuntimeMemorySampler,
+    registry?: SchemaRegistryStore,
+    memory?: MemoryGuard
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -101,6 +109,8 @@ export class IndexManager {
     this.metrics = metrics;
     this.onMetadataChanged = onMetadataChanged;
     this.memorySampler = memorySampler;
+    this.registry = registry;
+    this.memory = memory;
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
   }
@@ -125,6 +135,7 @@ export class IndexManager {
 
   async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
     if (this.span <= 0) return null;
+    if (!this.isRoutingConfigured(stream)) return null;
     const state = this.db.getIndexState(stream);
     if (!state) return null;
     const runs = this.db.listIndexRuns(stream);
@@ -192,6 +203,21 @@ export class IndexManager {
       const streams = Array.from(this.queue);
       this.queue.clear();
       for (const stream of streams) {
+        if (!this.isRoutingConfigured(stream)) {
+          const hadRoutingState = !!this.db.getIndexState(stream) || this.db.listIndexRunsAll(stream).length > 0;
+          if (hadRoutingState) {
+            this.db.deleteIndex(stream);
+            this.onMetadataChanged?.(stream);
+            if (this.publishManifest) {
+              try {
+                await this.publishManifest(stream);
+              } catch {
+                // ignore and retry on next enqueue
+              }
+            }
+          }
+          continue;
+        }
         try {
           const buildRes = await this.maybeBuildRuns(stream);
           if (Result.isError(buildRes)) {
@@ -227,6 +253,10 @@ export class IndexManager {
   private async maybeBuildRuns(stream: string): Promise<Result<void, IndexBuildError>> {
     if (this.span <= 0) return Result.ok(undefined);
     if (this.building.has(stream)) return Result.ok(undefined);
+    if (this.memory && !this.memory.shouldAllow()) {
+      this.queue.add(stream);
+      return Result.ok(undefined);
+    }
     this.building.add(stream);
     try {
       let state = this.db.getIndexState(stream);
@@ -242,6 +272,10 @@ export class IndexManager {
       }
       let indexedThrough = state.indexed_through;
       for (;;) {
+        if (this.memory && !this.memory.shouldAllow()) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const start = indexedThrough;
@@ -265,7 +299,13 @@ export class IndexManager {
               () => this.buildL0RunResult(stream, start, segments, state.index_secret)
             )
           : await this.buildL0RunResult(stream, start, segments, state.index_secret);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
+            this.queue.add(stream);
+            return Result.ok(undefined);
+          }
+          return runRes;
+        }
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
@@ -308,9 +348,17 @@ export class IndexManager {
     if (this.span <= 0) return Result.ok(undefined);
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     if (this.compacting.has(stream)) return Result.ok(undefined);
+    if (this.memory && !this.memory.shouldAllow()) {
+      this.queue.add(stream);
+      return Result.ok(undefined);
+    }
     this.compacting.add(stream);
     try {
       for (;;) {
+        if (this.memory && !this.memory.shouldAllow()) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
         const group = this.findCompactionGroup(stream);
         if (!group) {
           await this.gcRetiredRuns(stream);
@@ -319,7 +367,13 @@ export class IndexManager {
         const t0 = Date.now();
         const { level, runs } = group;
         const runRes = await this.buildCompactedRunResult(stream, level + 1, runs);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
+            this.queue.add(stream);
+            return Result.ok(undefined);
+          }
+          return runRes;
+        }
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
@@ -456,6 +510,10 @@ export class IndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
             const meta = pending.shift();
             if (!meta) return;
             const runRes = await this.loadRunResult(meta);
@@ -475,6 +533,10 @@ export class IndexManager {
               return;
             }
             await yieldToEventLoop();
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
           }
         })()
       );
@@ -565,6 +627,10 @@ export class IndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
             const seg = pending.shift();
             if (!seg) return;
             const segBytesRes = await this.loadSegmentBytesResult(seg);
@@ -592,6 +658,10 @@ export class IndexManager {
             }
             local.clear();
             await yieldToEventLoop();
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
           }
         })()
       );
@@ -624,6 +694,16 @@ export class IndexManager {
       masks,
     };
     return Result.ok(run);
+  }
+
+  private isRoutingConfigured(stream: string): boolean {
+    const streamRow = this.db.getStream(stream);
+    const contentType = streamRow?.content_type.split(";")[0]?.trim().toLowerCase() ?? null;
+    if (contentType != null && contentType !== "application/json") return true;
+    if (!this.registry) return false;
+    const regRes = this.registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return false;
+    return !!regRes.value.routingKey;
   }
 
   private async persistRunResult(run: IndexRun, stream?: string): Promise<Result<number, IndexBuildError>> {

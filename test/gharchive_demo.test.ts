@@ -291,7 +291,7 @@ describe("gharchive demo", () => {
         expect(sawOverloadAppend).toBe(true);
         expect(summary.ready).toBe(true);
         expect(summary.uploadedReady).toBe(true);
-        expect(summary.exactIndexesReady).toBe(true);
+        expect(summary.exactIndexesReady).toBe(false);
         expect(summary.searchFamiliesReady).toBe(true);
         expect(summary.avgIngestMiBPerSec).toBeGreaterThan(0);
         expect(summary.downloadMiBPerSec).toBeGreaterThanOrEqual(0);

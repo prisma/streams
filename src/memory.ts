@@ -1,4 +1,15 @@
 import { execFileSync } from "node:child_process";
+import os from "node:os";
+
+const HOST_MEMORY_GUARD_FRACTION = 0.7;
+
+export function deriveMemoryGuardLimitBytes(requestedLimitBytes: number, hostTotalBytes = os.totalmem()): number {
+  const requested = Math.max(0, Math.floor(requestedLimitBytes));
+  if (requested <= 0) return 0;
+  if (!Number.isFinite(hostTotalBytes) || hostTotalBytes <= 0) return requested;
+  const safeHostCap = Math.max(256 * 1024 * 1024, Math.floor(hostTotalBytes * HOST_MEMORY_GUARD_FRACTION));
+  return Math.min(requested, safeHostCap);
+}
 
 export class MemoryGuard {
   private readonly limitBytes: number;
@@ -26,7 +37,14 @@ export class MemoryGuard {
       heapSnapshotMinIntervalMs?: number;
     } = {}
   ) {
-    this.limitBytes = Math.max(0, limitBytes);
+    const requestedLimitBytes = Math.max(0, Math.floor(limitBytes));
+    this.limitBytes = deriveMemoryGuardLimitBytes(requestedLimitBytes);
+    if (requestedLimitBytes > 0 && this.limitBytes < requestedLimitBytes) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[memory] clamped limit from ${formatBytes(requestedLimitBytes)} to ${formatBytes(this.limitBytes)} based on host memory`
+      );
+    }
     // Resume as soon as RSS drops back below the limit by default (no hysteresis),
     // so the server doesn't "deadlock" itself under a stable high-water mark.
     const resumeFraction = Math.min(1.0, Math.max(0.5, opts.resumeFraction ?? 1.0));

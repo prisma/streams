@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config";
+import { deriveMemoryGuardLimitBytes } from "../src/memory";
 
 const KEYS = [
   "DS_MEMORY_LIMIT_MB",
@@ -48,5 +49,14 @@ describe("config memory tuning", () => {
     process.env.DS_HEAP_SNAPSHOT_PATH = "/tmp/streams.heapsnapshot";
     cfg = loadConfig();
     expect(cfg.heapSnapshotPath).toBe("/tmp/streams.heapsnapshot");
+  });
+
+  test("clamps the memory guard to a safe fraction of host memory", () => {
+    const hostTotalBytes = 4 * 1024 * 1024 * 1024;
+    expect(deriveMemoryGuardLimitBytes(0, hostTotalBytes)).toBe(0);
+    expect(deriveMemoryGuardLimitBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(2 * 1024 * 1024 * 1024);
+    expect(deriveMemoryGuardLimitBytes(5 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
+      Math.floor(hostTotalBytes * 0.7)
+    );
   });
 });

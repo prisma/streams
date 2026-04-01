@@ -365,10 +365,16 @@ Current bundled-companion rules:
 - each uploaded segment may have one current `.cix`
 - the `.cix` may contain any subset of `col`, `fts`, `agg`, and `mblk`
 - the desired bundled companion plan is hashed and versioned per stream
-- each bundled companion build walks the segment once and feeds all enabled
-  families from that shared pass
+- each bundled companion build loads one segment and builds enabled families
+  sequentially, so `col`, `fts`, `agg`, and `mblk` do not keep their heaviest
+  in-memory state live at the same time
+- query-time companion reads cache raw `.cix` bytes plus the parsed TOC and
+  decode only the requested section family on demand
 - long-running bundled companion builds yield cooperatively every bounded number
   of segment blocks so the HTTP server stays responsive during backfill
+- bundled companion backfill defers work when the process memory guard is over
+  limit, preferring temporary mixed coverage over driving the main server
+  deeper into memory pressure
 - a plan change puts the stream into mixed coverage until historical companions
   are rebuilt
 - queries use current bundled sections where present and raw-scan missing or
@@ -524,6 +530,15 @@ endpoints:
 - bundled companion object coverage
 - `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
   companion sections
+
+Current exact-index scheduling:
+
+- bundled companions are the first background priority for uploaded segments
+- exact secondary-index build and compaction only run after bundled companions
+  are caught up, the stream has no in-progress segment cut or pending upload
+  segment, and the stream has been append-idle for about ten minutes so exact
+  work does not re-enter the ingest hot path during long but temporary quiet
+  gaps
 - byte-at-rest and object-count accounting for index families
 - lag in both segments and milliseconds for routing, exact, and bundled-family
   progress

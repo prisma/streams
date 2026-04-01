@@ -7,6 +7,7 @@ import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
+import { decodeBundledSegmentCompanionTocResult } from "../src/search/companion_format";
 import { streamHash16Hex } from "../src/util/stream_paths";
 
 const STREAM = "backfill";
@@ -529,6 +530,147 @@ describe("bundled companions and backfill", () => {
         expect(searchBody.hits).toHaveLength(1);
         expect(searchBody.hits[0]?.source?.title).toBe("constructor push keeps building");
         expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "query reads decode only the requested companion section",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-companion-section-read-"));
+      const store = new MockR2Store();
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        searchCompanionBuildBatchSegments: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+
+      const app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              schema: {
+                type: "object",
+                additionalProperties: true,
+              },
+              search: {
+                primaryTimestampField: "eventTime",
+                fields: {
+                  eventTime: {
+                    kind: "date",
+                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                  },
+                  service: {
+                    kind: "keyword",
+                    bindings: [{ version: 1, jsonPointer: "/service" }],
+                    normalizer: "lowercase_v1",
+                    exact: true,
+                    prefix: true,
+                    exists: true,
+                  },
+                  message: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/message" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                },
+                defaultFields: [{ field: "message", boost: 1 }],
+                rollups: {
+                  events: {
+                    dimensions: ["service"],
+                    intervals: ["1m"],
+                    measures: {
+                      events: { kind: "count" },
+                    },
+                  },
+                },
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 4; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T11:0${i}:00.000Z`,
+                service: i % 2 === 0 ? "api" : "worker",
+                message: i % 2 === 0 ? "constructor keeps working" : "push retries later",
+                pad: "x".repeat(256),
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        const uploadedSegments = await waitForCompanionGeneration(app, 1, { manualKick: false });
+        expect(uploadedSegments).toBeGreaterThan(0);
+
+        const row = app.deps.db.getSearchSegmentCompanion(STREAM, 0);
+        expect(row).not.toBeNull();
+        if (!row) return;
+
+        const bytes = await store.get(row.object_key);
+        expect(bytes).not.toBeNull();
+        if (!bytes) return;
+
+        const tocRes = decodeBundledSegmentCompanionTocResult(bytes);
+        expect(Result.isError(tocRes)).toBeFalse();
+        if (Result.isError(tocRes)) return;
+
+        const aggSection = tocRes.value.sections.find((section) => section.kind === "agg");
+        expect(aggSection).toBeDefined();
+        if (!aggSection) return;
+
+        const corrupted = bytes.slice();
+        corrupted[aggSection.offset] = corrupted[aggSection.offset] === 0 ? 1 : 0;
+        await store.put(row.object_key, corrupted);
+
+        store.resetStats();
+        const companionIndex = (app.deps.indexer as any).companionIndex;
+        const ftsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
+        expect(ftsCompanion).not.toBeNull();
+        expect(Object.keys(ftsCompanion.fields)).toContain("message");
+        expect(store.stats().gets).toBe(1);
+
+        let aggError: unknown = null;
+        try {
+          await companionIndex.getAggSegmentCompanion(STREAM, 0);
+        } catch (error) {
+          aggError = error;
+        }
+        expect(aggError).not.toBeNull();
+        expect(String((aggError as { message?: string } | null)?.message ?? aggError).length).toBeGreaterThan(0);
+        expect(store.stats().gets).toBe(1);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

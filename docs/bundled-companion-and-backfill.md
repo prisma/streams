@@ -108,6 +108,11 @@ Section payloads reuse the existing per-family codecs:
 This keeps family-specific encoding independent while still giving the system
 one per-segment companion object.
 
+At query time, the runtime caches the raw `.cix` bytes plus the parsed TOC and
+decodes only the requested section family on demand. An FTS read therefore does
+not inflate unrelated `col`, `agg`, or `mblk` sections unless that query asks
+for them.
+
 ## Desired Companion Plan
 
 The server persists one desired companion plan per stream in SQLite and publishes
@@ -201,11 +206,16 @@ The current runtime implementation:
 - batches a bounded number of uploaded stale segments per tick
 - backfills the oldest missing uploaded segments first, so coverage grows
   contiguously instead of sparsely
-- builds all enabled bundled sections in a single segment pass, so `.col`,
-  `.fts`, `.agg`, and `.mblk` reuse the same decoded records instead of
-  reparsing the segment separately per family
+- loads each segment once, then builds enabled bundled families sequentially so
+  `.col`, `.fts`, `.agg`, and `.mblk` do not all retain their heaviest
+  in-memory state at the same time
+- narrows raw-value extraction per family to the fields that family actually
+  needs, and reuses precomputed rollup field values inside aggregate builds
 - yields cooperatively every bounded number of segment blocks while building,
   so large `.fts` sections do not monopolize the main event loop
+- defers background companion work when the process memory guard is already over
+  limit, preferring temporary mixed coverage over pushing the server deeper
+  into memory pressure
 - rebuilds the full desired section set for each affected segment
 - writes one replacement `.cix` per stale segment
 - publishes one manifest after each successful batch instead of once per
@@ -255,6 +265,11 @@ It now follows the same catch-up principle as bundled companions:
 - a config mismatch marks the current exact state stale
 - exact queries fall back to raw scans until the exact index is rebuilt
 - schema updates enqueue background exact-index rebuild automatically
+- exact build and compaction also wait until bundled companions are caught up,
+  there is no in-progress segment cut or pending upload segment, and the
+  stream has been append-idle for about ten minutes, so active ingest keeps its
+  memory and CPU budget instead of letting exact work jump back in during long
+  but temporary quiet gaps between uploads
 
 ## Current Limits
 

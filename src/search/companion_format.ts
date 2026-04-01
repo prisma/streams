@@ -50,6 +50,11 @@ export type BundledSegmentCompanion = {
   sections: CompanionSectionMap;
 };
 
+export type EncodedCompanionSectionPayload = {
+  kind: CompanionSectionKind;
+  payload: Uint8Array;
+};
+
 type CompanionFormatError = { kind: "invalid_companion"; message: string };
 
 function invalidCompanion<T = never>(message: string): Result<T, CompanionFormatError> {
@@ -84,6 +89,13 @@ function encodeSection(kind: CompanionSectionKind, section: CompanionSectionMap[
   return encodeMetricsBlockSegmentCompanion(section as MetricsBlockSegmentCompanion);
 }
 
+export function encodeCompanionSectionPayload(
+  kind: CompanionSectionKind,
+  section: CompanionSectionMap[CompanionSectionKind]
+): Uint8Array {
+  return encodeSection(kind, section);
+}
+
 function decodeSectionResult(
   kind: CompanionSectionKind,
   bytes: Uint8Array
@@ -114,13 +126,27 @@ export function encodeBundledSegmentCompanion(companion: {
   plan_generation: number;
   sections: CompanionSectionMap;
 }): Uint8Array {
-  const sectionPayloads: Array<{ kind: CompanionSectionKind; payload: Uint8Array }> = [];
+  const sectionPayloads: EncodedCompanionSectionPayload[] = [];
   for (const kind of ["col", "fts", "agg", "mblk"] as CompanionSectionKind[]) {
     const section = companion.sections[kind];
     if (!section) continue;
-    sectionPayloads.push({ kind, payload: encodeSection(kind, section) });
+    sectionPayloads.push({ kind, payload: encodeCompanionSectionPayload(kind, section) });
   }
+  return encodeBundledSegmentCompanionFromPayloads({
+    stream: companion.stream,
+    segment_index: companion.segment_index,
+    plan_generation: companion.plan_generation,
+    sections: sectionPayloads,
+  });
+}
 
+export function encodeBundledSegmentCompanionFromPayloads(companion: {
+  stream: string;
+  segment_index: number;
+  plan_generation: number;
+  sections: EncodedCompanionSectionPayload[];
+}): Uint8Array {
+  const sectionPayloads = companion.sections;
   const headerLen = MAGIC.byteLength + 4;
   let baseOffset = headerLen;
   let tocBytes = new Uint8Array();
@@ -204,7 +230,15 @@ export function decodeBundledSegmentCompanionSectionResult<K extends CompanionSe
 ): Result<CompanionSectionMap[K] | null, CompanionFormatError> {
   const tocRes = decodeBundledSegmentCompanionTocResult(bytes);
   if (Result.isError(tocRes)) return tocRes;
-  const section = tocRes.value.sections.find((entry) => entry.kind === kind);
+  return decodeBundledSegmentCompanionSectionFromTocResult(bytes, tocRes.value, kind);
+}
+
+export function decodeBundledSegmentCompanionSectionFromTocResult<K extends CompanionSectionKind>(
+  bytes: Uint8Array,
+  toc: CompanionToc,
+  kind: K
+): Result<CompanionSectionMap[K] | null, CompanionFormatError> {
+  const section = toc.sections.find((entry) => entry.kind === kind);
   if (!section) return Result.ok(null);
   const sectionEnd = section.offset + section.length;
   if (section.offset < 0 || section.length < 0 || sectionEnd > bytes.byteLength) {
@@ -220,7 +254,7 @@ export function decodeBundledSegmentCompanionResult(bytes: Uint8Array): Result<B
   if (Result.isError(tocRes)) return tocRes;
   const sections: CompanionSectionMap = {};
   for (const entry of tocRes.value.sections) {
-    const decodedRes = decodeBundledSegmentCompanionSectionResult(bytes, entry.kind);
+    const decodedRes = decodeBundledSegmentCompanionSectionFromTocResult(bytes, tocRes.value, entry.kind);
     if (Result.isError(decodedRes)) return decodedRes;
     if (decodedRes.value) (sections as Record<string, unknown>)[entry.kind] = decodedRes.value;
   }

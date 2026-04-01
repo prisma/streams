@@ -113,10 +113,11 @@ function addRawValues(out: unknown[], value: unknown): void {
   out.push(value);
 }
 
-export function extractRawSearchValuesResult(
+export function extractRawSearchValuesForFieldsResult(
   reg: SchemaRegistry,
   offset: bigint,
-  value: unknown
+  value: unknown,
+  fieldNames: Iterable<string>
 ): Result<Map<string, unknown[]>, { message: string }> {
   if (!reg.search) return Result.ok(new Map());
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -124,7 +125,9 @@ export function extractRawSearchValuesResult(
   }
   const version = schemaVersionForOffset(reg, offset);
   const out = new Map<string, unknown[]>();
-  for (const [fieldName, config] of Object.entries(reg.search.fields)) {
+  for (const fieldName of fieldNames) {
+    const config = reg.search.fields[fieldName];
+    if (!config) continue;
     const binding = getSearchFieldBinding(config, version);
     if (!binding) continue;
     const resolvedRes = resolvePointerResult(value, binding.jsonPointer);
@@ -135,6 +138,14 @@ export function extractRawSearchValuesResult(
     if (values.length > 0) out.set(fieldName, values);
   }
   return Result.ok(out);
+}
+
+export function extractRawSearchValuesResult(
+  reg: SchemaRegistry,
+  offset: bigint,
+  value: unknown
+): Result<Map<string, unknown[]>, { message: string }> {
+  return extractRawSearchValuesForFieldsResult(reg, offset, value, Object.keys(reg.search?.fields ?? {}));
 }
 
 export function extractSearchExactTermsResult(

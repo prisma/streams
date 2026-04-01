@@ -3,11 +3,14 @@ import type {
   SchemaRegistry,
   SearchConfig,
   SearchRollupConfig,
-  SearchRollupMeasureConfig,
 } from "../schema/registry";
 import { parseTimestampMsResult } from "../util/time";
 import { resolvePointerResult } from "../util/json_pointer";
-import { canonicalizeColumnValue, canonicalizeExactValue, extractRawSearchValuesResult } from "./schema";
+import {
+  canonicalizeColumnValue,
+  canonicalizeExactValue,
+  extractRawSearchValuesForFieldsResult,
+} from "./schema";
 import {
   collectPositiveSearchExactClauses,
   parseSearchQueryResult,
@@ -275,14 +278,28 @@ export function formatAggMeasureState(state: AggMeasureState): unknown {
   };
 }
 
+export function rollupRequiredFieldNames(registry: SchemaRegistry, rollup: SearchRollupConfig): string[] {
+  const fields = new Set<string>();
+  const timestampField = rollup.timestampField ?? registry.search?.primaryTimestampField;
+  if (timestampField) fields.add(timestampField);
+  for (const dimension of rollup.dimensions ?? []) fields.add(dimension);
+  for (const measure of Object.values(rollup.measures)) {
+    if (measure.kind === "summary") fields.add(measure.field);
+  }
+  return Array.from(fields);
+}
+
 export function extractRollupContributionResult(
   registry: SchemaRegistry,
   rollup: SearchRollupConfig,
   offset: bigint,
-  value: unknown
+  value: unknown,
+  precomputedRawValues?: Map<string, unknown[]>
 ): Result<{ timestampMs: number; dimensions: Record<string, string | null>; measures: Record<string, AggMeasureState> } | null, { message: string }> {
   if (!isPlainObject(value)) return Result.ok(null);
-  const rawValuesRes = extractRawSearchValuesResult(registry, offset, value);
+  const rawValuesRes = precomputedRawValues
+    ? Result.ok(precomputedRawValues)
+    : extractRawSearchValuesForFieldsResult(registry, offset, value, rollupRequiredFieldNames(registry, rollup));
   if (Result.isError(rawValuesRes)) return rawValuesRes;
   const rawValues = rawValuesRes.value;
 

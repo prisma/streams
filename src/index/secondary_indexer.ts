@@ -13,6 +13,7 @@ import { secondaryIndexRunObjectKey, segmentObjectKey, streamHash16Hex } from ".
 import { siphash24 } from "../util/siphash";
 import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
+import type { MemoryGuard } from "../memory";
 import { binaryFuseContains, buildBinaryFuseResult } from "./binary_fuse";
 import { IndexRunCache } from "./run_cache";
 import {
@@ -51,6 +52,8 @@ function binarySearch(values: bigint[], needle: bigint): number {
 
 const PAYLOAD_DECODER = new TextDecoder();
 const TERM_ENCODER = new TextEncoder();
+const MEMORY_PRESSURE_PAUSE = "__memory_pressure_pause__";
+const EXACT_APPEND_QUIET_PERIOD_MS = 600_000n;
 
 export class SecondaryIndexManager {
   private readonly cfg: Config;
@@ -74,6 +77,7 @@ export class SecondaryIndexManager {
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
+  private readonly memory?: MemoryGuard;
 
   constructor(
     cfg: Config,
@@ -82,7 +86,8 @@ export class SecondaryIndexManager {
     registry: SchemaRegistryStore,
     publishManifest?: (stream: string) => Promise<void>,
     onMetadataChanged?: (stream: string) => void,
-    memorySampler?: RuntimeMemorySampler
+    memorySampler?: RuntimeMemorySampler,
+    memory?: MemoryGuard
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -91,6 +96,7 @@ export class SecondaryIndexManager {
     this.publishManifest = publishManifest;
     this.onMetadataChanged = onMetadataChanged;
     this.memorySampler = memorySampler;
+    this.memory = memory;
     this.span = cfg.indexL0SpanSegments;
     this.buildConcurrency = Math.max(1, cfg.indexBuildConcurrency);
     this.compactionFanout = cfg.indexCompactionFanout;
@@ -179,6 +185,10 @@ export class SecondaryIndexManager {
       for (const stream of streams) {
         const regRes = this.registry.getRegistryResult(stream);
         if (Result.isError(regRes)) continue;
+        if (this.shouldPauseExactBackgroundWork(stream)) {
+          this.queue.add(stream);
+          continue;
+        }
         const configured = getConfiguredSecondaryIndexes(regRes.value);
         const configuredNames = new Set(configured.map((entry) => entry.name));
         const existing = this.db.listSecondaryIndexStates(stream);
@@ -229,6 +239,10 @@ export class SecondaryIndexManager {
     if (this.span <= 0) return Result.ok(undefined);
     const key = `${stream}:${index.name}`;
     if (this.building.has(key)) return Result.ok(undefined);
+    if (this.memory && !this.memory.shouldAllow()) {
+      this.queue.add(stream);
+      return Result.ok(undefined);
+    }
     this.building.add(key);
     try {
       const configHash = hashSecondaryIndexField(index);
@@ -253,6 +267,14 @@ export class SecondaryIndexManager {
 
       let indexedThrough = state.indexed_through;
       for (;;) {
+        if (this.shouldPauseExactBackgroundWork(stream)) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
+        if (this.memory && !this.memory.shouldAllow()) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const start = indexedThrough;
@@ -276,7 +298,13 @@ export class SecondaryIndexManager {
               () => this.buildL0RunResult(stream, index, start, segments, state.index_secret)
             )
           : await this.buildL0RunResult(stream, index, start, segments, state.index_secret);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
+            this.queue.add(stream);
+            return Result.ok(undefined);
+          }
+          return runRes;
+        }
         const run = runRes.value;
         const persistRes = await this.persistRunResult(run);
         if (Result.isError(persistRes)) return persistRes;
@@ -315,9 +343,21 @@ export class SecondaryIndexManager {
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     const key = `${stream}:${indexName}`;
     if (this.compacting.has(key)) return Result.ok(undefined);
+    if (this.memory && !this.memory.shouldAllow()) {
+      this.queue.add(stream);
+      return Result.ok(undefined);
+    }
     this.compacting.add(key);
     try {
       for (;;) {
+        if (this.shouldPauseExactBackgroundWork(stream)) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
+        if (this.memory && !this.memory.shouldAllow()) {
+          this.queue.add(stream);
+          return Result.ok(undefined);
+        }
         const group = this.findCompactionGroup(stream, indexName);
         if (!group) {
           await this.gcRetiredRuns(stream, indexName);
@@ -325,7 +365,13 @@ export class SecondaryIndexManager {
         }
         const { level, runs } = group;
         const runRes = await this.buildCompactedRunResult(stream, indexName, level + 1, runs);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
+            this.queue.add(stream);
+            return Result.ok(undefined);
+          }
+          return runRes;
+        }
         const run = runRes.value;
         const persistRes = await this.persistRunResult(run);
         if (Result.isError(persistRes)) return persistRes;
@@ -449,6 +495,10 @@ export class SecondaryIndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
             const meta = pending.shift();
             if (!meta) return;
             const runRes = await this.loadRunResult(meta);
@@ -468,6 +518,10 @@ export class SecondaryIndexManager {
               return;
             }
             await yieldToEventLoop();
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
           }
         })()
       );
@@ -534,6 +588,10 @@ export class SecondaryIndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
             const seg = pending.shift();
             if (!seg) return;
             const segBytesRes = await this.loadSegmentBytesResult(seg);
@@ -574,6 +632,10 @@ export class SecondaryIndexManager {
             }
             local.clear();
             await yieldToEventLoop();
+            if (this.memory && !this.memory.shouldAllow()) {
+              buildError = MEMORY_PRESSURE_PAUSE;
+              return;
+            }
           }
         })()
       );
@@ -631,6 +693,26 @@ export class SecondaryIndexManager {
       this.runDiskCache?.remove(run.object_key);
     }
     this.db.deleteSecondaryIndexRuns(toDelete.map((run) => run.run_id));
+  }
+
+  private hasCompanionBacklog(stream: string): boolean {
+    const plan = this.db.getSearchCompanionPlan(stream);
+    if (!plan) return false;
+    const uploadedCount = this.db.countUploadedSegments(stream);
+    for (let segmentIndex = 0; segmentIndex < uploadedCount; segmentIndex++) {
+      const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
+      if (!row || row.plan_generation !== plan.generation) return true;
+    }
+    return false;
+  }
+
+  private shouldPauseExactBackgroundWork(stream: string): boolean {
+    if (this.hasCompanionBacklog(stream)) return true;
+    const streamRow = this.db.getStream(stream);
+    if (!streamRow) return false;
+    if (streamRow.segment_in_progress !== 0) return true;
+    if (this.db.nowMs() - streamRow.last_append_ms < EXACT_APPEND_QUIET_PERIOD_MS) return true;
+    return this.db.countSegmentsForStream(stream) > this.db.countUploadedSegments(stream);
   }
 
   private async persistRunResult(run: IndexRun): Promise<Result<number, SecondaryIndexBuildError>> {

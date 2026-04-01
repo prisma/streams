@@ -34,6 +34,7 @@ GHARCHIVE_NOINDEX="${GHARCHIVE_NOINDEX:-0}"
 GHARCHIVE_ONLYINDEX="${GHARCHIVE_ONLYINDEX:-}"
 DEBUG_PROGRESS_INTERVAL_MS="${DEBUG_PROGRESS_INTERVAL_MS:-5000}"
 TARGET_UPLOADED_SEGMENTS="${TARGET_UPLOADED_SEGMENTS:-0}"
+TARGET_LOGICAL_SIZE_BYTES="${TARGET_LOGICAL_SIZE_BYTES:-0}"
 MAX_INGEST_SECONDS="${MAX_INGEST_SECONDS:-0}"
 
 COLLECT_SCRIPT="$(cd "$(dirname "$0")" && pwd)/collect-memory-investigation-sample.sh"
@@ -94,6 +95,7 @@ append_note "memory-sampler-experiment-start" \
   "gharchive_noindex=${GHARCHIVE_NOINDEX}" \
   "gharchive_onlyindex=${GHARCHIVE_ONLYINDEX:-none}" \
   "target_uploaded_segments=${TARGET_UPLOADED_SEGMENTS}" \
+  "target_logical_size_bytes=${TARGET_LOGICAL_SIZE_BYTES}" \
   "max_ingest_seconds=${MAX_INGEST_SECONDS}"
 
 (
@@ -137,6 +139,10 @@ current_uploaded_segments() {
   sqlite3 -noheader "${DB_PATH}" "select coalesce(uploaded_segment_count, 0) from streams where stream='${STREAM_NAME}';" 2>/dev/null | tr -d '[:space:]'
 }
 
+current_logical_size_bytes() {
+  sqlite3 -noheader "${DB_PATH}" "select coalesce(logical_size_bytes, 0) from streams where stream='${STREAM_NAME}';" 2>/dev/null | tr -d '[:space:]'
+}
+
 samples_taken=0
 ingest_elapsed_seconds=0
 while (( INGEST_SAMPLES == 0 || samples_taken < INGEST_SAMPLES )); do
@@ -153,6 +159,7 @@ while (( INGEST_SAMPLES == 0 || samples_taken < INGEST_SAMPLES )); do
   fi
 
   uploaded_segments="$(current_uploaded_segments)"
+  logical_size_bytes="$(current_logical_size_bytes)"
   if [[ "${TARGET_UPLOADED_SEGMENTS}" =~ ^[0-9]+$ && "${uploaded_segments}" =~ ^[0-9]+$ ]] && (( TARGET_UPLOADED_SEGMENTS > 0 )) && (( uploaded_segments >= TARGET_UPLOADED_SEGMENTS )); then
     append_note "memory-sampler-stop-condition-met" \
       "reason=uploaded_segment_target" \
@@ -161,9 +168,19 @@ while (( INGEST_SAMPLES == 0 || samples_taken < INGEST_SAMPLES )); do
       "elapsed_seconds=${ingest_elapsed_seconds}"
     break
   fi
+  if [[ "${TARGET_LOGICAL_SIZE_BYTES}" =~ ^[0-9]+$ && "${logical_size_bytes}" =~ ^[0-9]+$ ]] && (( TARGET_LOGICAL_SIZE_BYTES > 0 )) && (( logical_size_bytes >= TARGET_LOGICAL_SIZE_BYTES )); then
+    append_note "memory-sampler-stop-condition-met" \
+      "reason=logical_size_target" \
+      "logical_size_bytes=${logical_size_bytes}" \
+      "target_logical_size_bytes=${TARGET_LOGICAL_SIZE_BYTES}" \
+      "uploaded_segments=${uploaded_segments:-unknown}" \
+      "elapsed_seconds=${ingest_elapsed_seconds}"
+    break
+  fi
   if [[ "${MAX_INGEST_SECONDS}" =~ ^[0-9]+$ ]] && (( MAX_INGEST_SECONDS > 0 )) && (( ingest_elapsed_seconds >= MAX_INGEST_SECONDS )); then
     append_note "memory-sampler-stop-condition-met" \
       "reason=max_ingest_seconds" \
+      "logical_size_bytes=${logical_size_bytes:-unknown}" \
       "uploaded_segments=${uploaded_segments:-unknown}" \
       "elapsed_seconds=${ingest_elapsed_seconds}" \
       "max_ingest_seconds=${MAX_INGEST_SECONDS}"

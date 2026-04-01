@@ -1649,6 +1649,14 @@ export class SqliteDurableStore {
     tx();
   }
 
+  deleteIndex(stream: string): void {
+    const tx = this.db.transaction(() => {
+      this.db.query(`DELETE FROM index_runs WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM index_state WHERE stream=?;`).run(stream);
+    });
+    tx();
+  }
+
   countUploadedSegments(stream: string): number {
     const row = this.stmts.countUploadedSegments.get(stream) as any;
     const maxIdx = row ? Number(row.max_idx) : -1;

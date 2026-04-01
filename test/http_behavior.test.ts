@@ -337,7 +337,8 @@ describe("http behavior", () => {
           configured: false,
         });
         expect(Number(routingIndex.bytes_at_rest)).toBeGreaterThanOrEqual(0);
-        expect(routingIndex.object_count).toBeGreaterThanOrEqual(0);
+        expect(routingIndex.object_count).toBe(0);
+        expect(routingIndex.indexed_segment_count).toBe(0);
 
         const exactIndex = body.index_status.exact_indexes.find((entry: any) => entry.name === "service");
         expect(exactIndex).toBeDefined();

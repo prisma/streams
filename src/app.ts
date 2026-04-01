@@ -82,7 +82,7 @@ class CombinedIndexController implements StreamIndexLookup {
 export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions = {}): App {
   return createAppCore(cfg, {
     stats: opts.stats,
-    createRuntime: ({ config, db, registry, notifier, stats, backpressure, metrics, memorySampler }) => {
+    createRuntime: ({ config, db, registry, notifier, stats, backpressure, metrics, memorySampler, memory }) => {
       const store = new AccountingObjectStore(os ?? new MockR2Store(), db);
       const segmenterHooks: SegmenterHooks = {
         onSegmentSealed: (stream, payloadBytes, segmentBytes) => {
@@ -101,7 +101,9 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         (stream) => uploader.publishManifest(stream),
         metrics,
         (stream) => notifier.notifyDetailsChanged(stream),
-        memorySampler
+        memorySampler,
+        registry,
+        memory
       );
       const secondaryIndexer = new SecondaryIndexManager(
         config,
@@ -110,7 +112,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         registry,
         (stream) => uploader.publishManifest(stream),
         (stream) => notifier.notifyDetailsChanged(stream),
-        memorySampler
+        memorySampler,
+        memory
       );
       const companionIndexer = new SearchCompanionManager(
         config,
@@ -120,7 +123,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         (stream) => uploader.publishManifest(stream),
         (stream) => notifier.notifyDetailsChanged(stream),
         metrics,
-        memorySampler
+        memorySampler,
+        memory
       );
       const indexer = new CombinedIndexController(
         routingIndexer,
