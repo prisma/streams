@@ -23,6 +23,9 @@ runtime overview and command surface, see `overview.md`.
 - `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4)
+- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)
+- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS`: maximum age for cached `.cix` files before startup/admission pruning retires them (default 24h)
+- `DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES`: hot mmap-backed companion bundles retained by the process (default 64)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_INDEX_COMPACTION_FANOUT`: compaction fanout (default 16)
@@ -44,6 +47,11 @@ runtime overview and command surface, see `overview.md`.
 Memory-guard note:
 - On macOS, the guard confirms high RSS with the process `top` physical-memory value (`top -stats pid,mem`) before it flips into overload mode. This avoids false positives from Bun/JavaScriptCore virtual-memory accounting where RSS can read much higher than the process's actual physical footprint.
 - While over the limit, the guard rate-limits forced `Bun.gc()` calls from its own sampling loop, so idle servers can recover without waiting for a fresh request to hit the overload path.
+
+Companion-cache note:
+- Bundled companion reads now fetch the full remote `.cix` object once, store it locally, and mmap the local cached file.
+- Because Bun does not currently expose an explicit unmap primitive, a companion file that has been mmapped by the running process is treated as pinned until process restart.
+- Startup pruning and new cache admissions retire stale or oldest unmmapped companion files first; if the hot mapped set alone exceeds the disk budget, the process may temporarily sit above the configured cache cap until restart.
 - `DS_OBJECTSTORE_TIMEOUT_MS`: object store request timeout (default 5s)
 - `DS_OBJECTSTORE_RETRIES`: object store retry count (default 3)
 - `DS_OBJECTSTORE_RETRY_BASE_MS`: base backoff for retries (default 50ms)

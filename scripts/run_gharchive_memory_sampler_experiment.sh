@@ -46,6 +46,8 @@ if [[ -z "${BUN_BIN}" ]]; then
   exit 1
 fi
 
+export BUN_BIN
+
 server_pid=""
 ingester_pid=""
 

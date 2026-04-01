@@ -72,10 +72,10 @@ def main() -> int:
     prev_bytes: int | None = None
 
     print(
-        "| Timestamp | Phase | Elapsed Min | Logical GB | Delta GB | Ingest MiB/s | Browse ms | Col ms | Exact ms | Agg ms | FTS ms | Index ms | Health ms | RSS GiB | Exact Max | Uploaded Segments |"
+        "| Timestamp | Phase | Elapsed Min | Logical GB | Delta GB | Ingest MiB/s | Browse ms | Browse tail ms | Browse indexed ms | Browse fts get ms | Browse fts decode ms | Browse fts estimate ms | Browse scanned ms | Col ms | Exact ms | Agg ms | FTS ms | Index ms | Health ms | RSS GiB | Exact Max | Uploaded Segments |"
     )
     print(
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
 
     for section in sections:
@@ -91,6 +91,12 @@ def main() -> int:
             delta_gb = f"{delta_bytes / 1_000_000_000:.3f}"
             ingest_mib_s = f"{delta_bytes / delta_secs / (1024 * 1024):.2f}"
         browse_ms = to_float(section.get("search_browse_time_total", "0")) * 1000
+        browse_tail_ms = to_float(section.get("search_browse_scanned_tail_time_ms", "0"))
+        browse_indexed_ms = to_float(section.get("search_browse_indexed_segment_time_ms", "0"))
+        browse_fts_get_ms = to_float(section.get("search_browse_fts_section_get_ms", "0"))
+        browse_fts_decode_ms = to_float(section.get("search_browse_fts_decode_ms", "0"))
+        browse_fts_estimate_ms = to_float(section.get("search_browse_fts_clause_estimate_ms", "0"))
+        browse_scanned_ms = to_float(section.get("search_browse_scanned_segment_time_ms", "0"))
         col_ms = to_float(section.get("search_col_time_total", "0")) * 1000
         exact_ms = to_float(section.get("filter_exact_time_total", "0")) * 1000
         agg_ms = to_float(section.get("aggregate_time_total", "0")) * 1000
@@ -101,7 +107,7 @@ def main() -> int:
         exact_max = section.get("exact_max_indexed_through", "") or "0"
         uploaded_segments = section.get("uploaded_segment_count", "") or "0"
         print(
-            f"| {ts.strftime('%Y-%m-%d %H:%M:%S')} | {section.get('phase', '')} | {elapsed_min:.1f} | {logical_gb:.3f} | {delta_gb} | {ingest_mib_s} | {browse_ms:.1f} | {col_ms:.1f} | {exact_ms:.1f} | {agg_ms:.1f} | {fts_ms:.1f} | {index_ms:.1f} | {health_ms:.1f} | {rss_gib:.2f} | {exact_max} | {uploaded_segments} |"
+            f"| {ts.strftime('%Y-%m-%d %H:%M:%S')} | {section.get('phase', '')} | {elapsed_min:.1f} | {logical_gb:.3f} | {delta_gb} | {ingest_mib_s} | {browse_ms:.1f} | {browse_tail_ms:.1f} | {browse_indexed_ms:.1f} | {browse_fts_get_ms:.1f} | {browse_fts_decode_ms:.1f} | {browse_fts_estimate_ms:.1f} | {browse_scanned_ms:.1f} | {col_ms:.1f} | {exact_ms:.1f} | {agg_ms:.1f} | {fts_ms:.1f} | {index_ms:.1f} | {health_ms:.1f} | {rss_gib:.2f} | {exact_max} | {uploaded_segments} |"
         )
         prev_ts = ts
         prev_bytes = logical_bytes

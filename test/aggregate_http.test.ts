@@ -160,6 +160,7 @@ describe("_aggregate http", () => {
         indexCheckIntervalMs: 10,
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
       try {
@@ -503,6 +504,7 @@ describe("_aggregate http", () => {
         indexCheckIntervalMs: 10,
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
       try {

@@ -525,14 +525,24 @@ Current search coverage fields:
 
 - `mode`
 - `complete`
+- `stream_head_offset`
 - `visible_through_offset`
+- `visible_through_primary_timestamp_max`
+- `oldest_omitted_append_at`
 - `possible_missing_events_upper_bound`
 - `possible_missing_uploaded_segments`
 - `possible_missing_sealed_rows`
 - `possible_missing_wal_rows`
 - `indexed_segments`
+- `indexed_segment_time_ms`
+- `fts_section_get_ms`
+- `fts_decode_ms`
+- `fts_clause_estimate_ms`
 - `scanned_segments`
+- `scanned_segment_time_ms`
 - `scanned_tail_docs`
+- `scanned_tail_time_ms`
+- `exact_candidate_time_ms`
 - `index_families_used`
 
 Current query support:
@@ -561,8 +571,13 @@ Current request-path behavior under active ingest:
   scanning it on the request path
 - in that case `coverage.complete=false` and the `possible_missing_*` fields
   report an upper bound on omitted newest events
-- if there is no outstanding segment publish or companion work, `/_search` may
-  search the current WAL tail locally as a bounded overlay
+- once publish and bundled-companion work are caught up, `/_search` still omits
+  a fresh WAL tail during active ingest
+- `/_search` may search the current WAL tail locally only after the tail is
+  quiet for the configured overlay period and still fits within the overlay
+  budget
+- `visible_through_primary_timestamp_max` and `oldest_omitted_append_at` let
+  clients explain the freshness gap in time terms
 - if the newest suffix is omitted, `total.relation` is `gte`
 
 ### 8.7 Aggregate
@@ -595,7 +610,10 @@ Current aggregate coverage fields:
 
 - `mode`
 - `complete`
+- `stream_head_offset`
 - `visible_through_offset`
+- `visible_through_primary_timestamp_max`
+- `oldest_omitted_append_at`
 - `possible_missing_events_upper_bound`
 - `possible_missing_uploaded_segments`
 - `possible_missing_sealed_rows`
@@ -616,8 +634,11 @@ Current behavior:
   of scanning it on the request path
 - in that case `coverage.complete=false` and the `possible_missing_*` fields
   report an upper bound on omitted newest events
-- if there is no outstanding segment publish or companion work, `/_aggregate`
-  may evaluate the current WAL tail locally as a bounded overlay
+- once publish and bundled-companion work are caught up, `/_aggregate` still
+  omits a fresh WAL tail during active ingest
+- `/_aggregate` may evaluate the current WAL tail locally only after the tail
+  is quiet for the configured overlay period and still fits within the overlay
+  budget
 
 ---
 

@@ -24,6 +24,11 @@ Prisma Streams now ships these indexing layers:
   aggregation serving
 - a binary `mblk` section family inside `.cix` for metrics-profile aggregate serving
 
+Bundled companion reads now use a local immutable `.cix` cache plus
+`Bun.mmap()` over the cached file. The object-store read unit is therefore the
+full bundled companion on first access, while the runtime decode unit remains
+the requested family section.
+
 The public schema model is **`search`**, not `indexes[]`.
 
 The public query surfaces are:
@@ -223,8 +228,12 @@ Current implementation:
 - binary `fts2` field payloads keyed by plan-relative field ordinals
 - restart-string term dictionaries, document-frequency arrays, and block-coded
   posting lists
+- first read downloads the full `.cix` once, stores it under
+  `${DS_ROOT}/cache/companions`, and mmaps the local cached file
 - query-time field views and posting iterators instead of whole-section JSON
   materialization
+- document-frequency and postings-offset tables stay as zero-copy views over
+  the mapped file
 - no `.fts` run compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -443,14 +452,21 @@ Current search coverage fields:
 
 - `mode`
 - `complete`
+- `stream_head_offset`
 - `visible_through_offset`
+- `visible_through_primary_timestamp_max`
+- `oldest_omitted_append_at`
 - `possible_missing_events_upper_bound`
 - `possible_missing_uploaded_segments`
 - `possible_missing_sealed_rows`
 - `possible_missing_wal_rows`
 - `indexed_segments`
+- `indexed_segment_time_ms`
 - `scanned_segments`
+- `scanned_segment_time_ms`
 - `scanned_tail_docs`
+- `scanned_tail_time_ms`
+- `exact_candidate_time_ms`
 - `index_families_used`
 
 Current query support:
@@ -488,9 +504,13 @@ Current newest-suffix behavior:
   catching up, `/_search` omits that newest suffix instead of raw-scanning it
 - the omitted range is reported through the `possible_missing_*` coverage
   fields
-- once publish and bundled-companion work are fully caught up, `/_search` may
-  use the bounded WAL tail as a local overlay so a quiet sub-segment tail still
-  shows up
+- once publish and bundled-companion work are fully caught up, `/_search`
+  still omits a fresh WAL tail during active ingest
+- `/_search` only uses the bounded WAL tail as a local overlay after the tail
+  is quiet for the configured overlay period and still fits within the overlay
+  budget
+- `visible_through_primary_timestamp_max` and `oldest_omitted_append_at` let
+  Studio explain the freshness gap in time terms
 
 ### `_aggregate`
 
@@ -518,7 +538,10 @@ Current coverage fields:
 
 - `mode`
 - `complete`
+- `stream_head_offset`
 - `visible_through_offset`
+- `visible_through_primary_timestamp_max`
+- `oldest_omitted_append_at`
 - `possible_missing_events_upper_bound`
 - `possible_missing_uploaded_segments`
 - `possible_missing_sealed_rows`
@@ -536,7 +559,10 @@ Current newest-suffix behavior:
 - the omitted range is reported through the `possible_missing_*` coverage
   fields
 - once publish and bundled-companion work are fully caught up, `/_aggregate`
-  may use the bounded WAL tail as a local overlay
+  still omits a fresh WAL tail during active ingest
+- `/_aggregate` only uses the bounded WAL tail as a local overlay after the
+  tail is quiet for the configured overlay period and still fits within the
+  overlay budget
 
 ## Inspection Endpoints
 

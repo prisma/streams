@@ -84,6 +84,21 @@ type FieldDirectoryEntry = {
   postingsDataLength: number;
 };
 
+class U32LeView {
+  private readonly view: DataView;
+  readonly length: number;
+
+  constructor(private readonly bytes: Uint8Array) {
+    this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.length = Math.floor(bytes.byteLength / 4);
+  }
+
+  get(index: number): number {
+    if (index < 0 || index >= this.length) return 0;
+    return this.view.getUint32(index * 4, true);
+  }
+}
+
 export class PostingIterator {
   private cursor: BinaryCursor;
   private readonly endOffset: number;
@@ -148,8 +163,8 @@ export class PostingIterator {
 
 export class FtsFieldView {
   private readonly termsView: RestartStringTableView;
-  private readonly docFreqs: Uint32Array;
-  private readonly postingOffsets: Uint32Array;
+  private readonly docFreqs: U32LeView;
+  private readonly postingOffsets: U32LeView;
   private existsDocIdsCache: number[] | null = null;
 
   constructor(
@@ -167,8 +182,8 @@ export class FtsFieldView {
     private readonly postingsPayload: Uint8Array
   ) {
     this.termsView = new RestartStringTableView(dictPayload);
-    this.docFreqs = decodeU32Array(docFreqPayload);
-    this.postingOffsets = decodeU32Array(postingOffsetsPayload);
+    this.docFreqs = new U32LeView(docFreqPayload);
+    this.postingOffsets = new U32LeView(postingOffsetsPayload);
   }
 
   existsDocIds(): number[] {
@@ -191,12 +206,12 @@ export class FtsFieldView {
   }
 
   docFreq(termOrdinal: number): number {
-    return this.docFreqs[termOrdinal] ?? 0;
+    return this.docFreqs.get(termOrdinal);
   }
 
   postings(termOrdinal: number): PostingIterator {
-    const start = this.postingOffsets[termOrdinal] ?? 0;
-    const end = this.postingOffsets[termOrdinal + 1] ?? start;
+    const start = this.postingOffsets.get(termOrdinal);
+    const end = this.postingOffsets.get(termOrdinal + 1) || start;
     return new PostingIterator(this.postingsPayload.subarray(start, end));
   }
 }
@@ -400,10 +415,4 @@ function slicePayload(bytes: Uint8Array, offset: number, length: number, message
     throw new BinaryPayloadError(message);
   }
   return bytes.subarray(offset, offset + length);
-}
-
-function decodeU32Array(bytes: Uint8Array): Uint32Array {
-  const out = new Uint32Array(Math.floor(bytes.byteLength / 4));
-  for (let index = 0; index < out.length; index++) out[index] = readU32(bytes, index * 4);
-  return out;
 }

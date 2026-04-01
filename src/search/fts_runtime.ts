@@ -303,15 +303,18 @@ function estimateDocFreqForFtsClauseResult(args: {
 export function filterDocIdsByFtsClausesResult(args: {
   companion: FtsSectionView;
   clauses: SearchFtsClause[];
+  onEstimateMs?: (deltaMs: number) => void;
 }): Result<Set<number>, { message: string }> {
   if (args.clauses.length === 0) return Result.ok(new Set());
 
   const planned: Array<{ clause: SearchFtsClause; docFreq: number }> = [];
+  const estimateStartedAt = Date.now();
   for (const clause of args.clauses) {
     const docFreqRes = estimateDocFreqForFtsClauseResult({ companion: args.companion, clause });
     if (Result.isError(docFreqRes)) return docFreqRes;
     planned.push({ clause, docFreq: docFreqRes.value });
   }
+  args.onEstimateMs?.(Date.now() - estimateStartedAt);
 
   planned.sort((left, right) => left.docFreq - right.docFreq);
   let intersection: Set<number> | null = null;

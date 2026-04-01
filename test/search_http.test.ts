@@ -114,6 +114,7 @@ async function waitForSearchFamilies(app: ReturnType<typeof createApp>, timeoutM
         : 0;
     if (
       srow &&
+      publishedSegmentCount > 0 &&
       srow.uploaded_through >= srow.sealed_through &&
       companionPlan &&
       companionSegments.length >= publishedSegmentCount
@@ -154,6 +155,7 @@ describe("_search http", () => {
         indexCheckIntervalMs: 10,
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
       try {
@@ -456,6 +458,7 @@ describe("_search http", () => {
         indexCheckIntervalMs: 10,
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
       try {
@@ -537,6 +540,121 @@ describe("_search http", () => {
   );
 
   test(
+    "omits a fresh WAL tail under active ingest even after published coverage catches up",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-active-tail-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 200,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 60_000,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (const event of [
+          {
+            eventTime: "2026-03-25T10:15:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2400,
+            requestId: "req_1",
+            region: "us-east-1",
+            message: "uploaded timeout",
+            why: "uploaded timeout",
+          },
+          {
+            eventTime: "2026-03-25T10:16:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2500,
+            requestId: "req_2",
+            region: "us-east-1",
+            message: "uploaded timeout two",
+            why: "uploaded timeout two",
+          },
+        ]) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(event),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSearchFamilies(app);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              eventTime: "2026-03-25T10:17:23.123Z",
+              service: "billing-api",
+              status: 503,
+              duration: 2600,
+              requestId: "req_tail",
+              region: "us-east-1",
+              message: "fresh wal timeout",
+              why: "fresh wal timeout",
+            }),
+          })
+        );
+        expect(res.status).toBe(204);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              sort: ["offset:desc"],
+              size: 10,
+              track_total_hits: true,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_2", "req_1"]);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.mode).toBe("published");
+        expect(body.coverage.scanned_tail_docs).toBe(0);
+        expect(body.coverage.possible_missing_wal_rows).toBeGreaterThan(0);
+        expect(body.coverage.oldest_omitted_append_at).toEqual(expect.any(String));
+        expect(body.coverage.visible_through_primary_timestamp_max).toEqual(expect.any(String));
+        expect(body.total).toEqual({ value: 2, relation: "gte" });
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
     "omits the newest uploaded and WAL suffix while companions are still catching up",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-omit-suffix-"));
@@ -587,7 +705,7 @@ describe("_search http", () => {
             requestId: "req_2",
             region: "us-east-1",
             message: "tail timeout",
-            why: "wal suffix match",
+            why: "uploaded suffix match",
           },
         ]) {
           res = await app.fetch(
@@ -601,6 +719,24 @@ describe("_search http", () => {
         }
 
         await waitForUploadedWithoutCompanions(app);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              eventTime: "2026-03-25T10:17:23.123Z",
+              service: "billing-api",
+              status: 503,
+              duration: 2600,
+              requestId: "req_tail",
+              region: "us-east-1",
+              message: "fresh wal timeout",
+              why: "wal suffix match",
+            }),
+          })
+        );
+        expect(res.status).toBe(204);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {

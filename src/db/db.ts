@@ -984,6 +984,12 @@ export class SqliteDurableStore {
     return this.toBigInt(row.min_off);
   }
 
+  getWalOldestTimestampMs(stream: string): bigint | null {
+    const row = this.db.query(`SELECT MIN(ts_ms) as min_ts FROM wal WHERE stream=?;`).get(stream) as any;
+    if (!row || row.min_ts == null) return null;
+    return this.toBigInt(row.min_ts);
+  }
+
   /**
    * Trim a WAL-only stream by age (in ms), leaving at least 1 record if the stream is non-empty.
    *

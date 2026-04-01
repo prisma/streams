@@ -140,8 +140,14 @@ Use the response `coverage` object to drive the UI:
   - `true` means the response includes everything visible at the current stream
     head
   - `false` means the newest suffix was intentionally omitted
+- `stream_head_offset`
+  - the current append-order head for the request snapshot
 - `visible_through_offset`
   - the newest append-order offset included in the response
+- `visible_through_primary_timestamp_max`
+  - the newest included primary-timestamp value when the stream defines one
+- `oldest_omitted_append_at`
+  - the append-time watermark where the omitted suffix begins
 - `possible_missing_events_upper_bound`
   - an upper bound on newest events that may be omitted
 - `possible_missing_uploaded_segments`
@@ -157,6 +163,12 @@ Recommended UI treatment:
 - render results immediately
 - if `coverage.complete === false`, show a subtle freshness banner such as:
   - `Results may exclude up to 26,394 of the newest events while indexing catches up.`
+- if `coverage.visible_through_primary_timestamp_max` is present, prefer
+  describing freshness in time terms:
+  - `Results include data through 2011-03-29T16:59:18Z.`
+- if `coverage.oldest_omitted_append_at` is present, show when the omitted
+  suffix began:
+  - `Newest omitted events started arriving at 2026-04-01T12:57:15Z.`
 - treat `total.relation === "gte"` on `/_search` as a lower bound, not an exact
   total
 
@@ -255,7 +267,8 @@ supported source of truth:
   metadata.
 - `storage.local_storage`
   Current retained bytes for WAL, pending sealed segments, caches, and the
-  shared SQLite footprint.
+  shared SQLite footprint. This now includes the local bundled-companion cache
+  under `${DS_ROOT}/cache/companions`.
 - `storage.companion_families`
   Bundled companion byte breakdown for `col`, `fts`, `agg`, and `mblk`.
 - `index_status.routing_key_index`, `index_status.exact_indexes[*]`, and

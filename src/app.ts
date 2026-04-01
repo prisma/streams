@@ -67,6 +67,10 @@ class CombinedIndexController implements StreamIndexLookup {
     return this.companionIndex.getFtsSegmentCompanion(stream, segmentIndex);
   }
 
+  getFtsSegmentCompanionWithStats(stream: string, segmentIndex: number) {
+    return this.companionIndex.getFtsSegmentCompanionWithStats(stream, segmentIndex);
+  }
+
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number) {
     return this.companionIndex.getMetricsBlockSegmentCompanion(stream, segmentIndex);
   }
@@ -75,6 +79,7 @@ class CombinedIndexController implements StreamIndexLookup {
     return {
       routing_index_cache_bytes: this.routingIndex.getLocalCacheBytes(stream),
       exact_index_cache_bytes: this.secondaryIndex.getLocalCacheBytes(stream),
+      companion_cache_bytes: this.companionIndex.getLocalCacheBytes(stream),
     };
   }
 }

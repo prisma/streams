@@ -102,8 +102,26 @@ Key properties:
 - no legacy `PSCIX1` support
 - plan-relative family payloads
 
-Query-time reads range-read the `PSCIX2` header plus section table, cache that
-small TOC, then range-read only the requested family payload.
+Query-time reads no longer range-read companion sections directly from remote
+object storage.
+
+Current read flow:
+
+1. download the full remote `PSCIX2` object once
+2. store it atomically under `${DS_ROOT}/cache/companions`
+3. mmap that local immutable file
+4. resolve the requested section from the mapped section table
+5. decode only the requested family view
+
+This means:
+
+- one remote GET per cold bundled companion, not one GET for the TOC plus
+  another GET per requested section
+- repeated section reads reuse the local cached `.cix`
+- `.fts` field metadata stays as zero-copy views over the mapped file instead
+  of copied heap arrays
+- stale local companion files are retired during startup pruning and before new
+  cache admissions
 
 Examples:
 
@@ -124,7 +142,8 @@ For a newly sealed uploaded segment:
 7. wrap the sections into one `PSCIX2` `.cix`
 8. upload the raw segment
 9. upload the bundled companion
-10. publish the manifest generation that references both
+10. seed the local companion cache with the same immutable `.cix`
+11. publish the manifest generation that references both
 
 No uploaded historical object becomes visible until manifest publication.
 
@@ -144,6 +163,8 @@ Current runtime behavior:
 - oldest-missing-first across the uploaded prefix
 - bounded by `DS_SEARCH_COMPANION_BATCH_SEGMENTS`
 - cooperative via `DS_SEARCH_COMPANION_YIELD_BLOCKS`
+- local companion cache admissions bounded by
+  `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`
 - deferred when the memory guard is already over limit
 - one replacement `.cix` per rebuilt segment
 - one manifest publish after each successful rebuild batch
@@ -159,7 +180,8 @@ Planning rules:
 
 1. use a current bundled section when it is present for the desired plan
 2. otherwise raw-scan the sealed segment
-3. always read the unsealed WAL tail from SQLite directly
+3. read the unsealed WAL tail from SQLite directly only when the published
+   prefix is otherwise caught up and the tail passes the quiet-overlay gate
 
 That means:
 
@@ -217,6 +239,6 @@ The supported model is now:
 - `PSCIX2` bundled companions only
 - one current `.cix` per covered segment
 - one desired plan with plan-relative ordinals per stream
-- query-time lazy family decode
+- query-time lazy family decode over a local mmap-backed companion cache
 - async oldest-missing-first backfill
 - raw fallback whenever bundled coverage is missing or stale

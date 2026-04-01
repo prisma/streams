@@ -20,8 +20,13 @@ export type Config = {
   indexCheckIntervalMs: number;
   searchCompanionBuildBatchSegments: number;
   searchCompanionYieldBlocks: number;
+  searchCompanionFileCacheMaxBytes: number;
+  searchCompanionFileCacheMaxAgeMs: number;
+  searchCompanionMappedCacheEntries: number;
   searchCompanionTocCacheBytes: number;
   searchCompanionSectionCacheBytes: number;
+  searchWalOverlayQuietPeriodMs: number;
+  searchWalOverlayMaxBytes: number;
   indexCompactionFanout: number;
   indexMaxLevel: number;
   indexCompactionConcurrency: number;
@@ -78,8 +83,13 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_INDEX_CHECK_MS",
   "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
   "DS_SEARCH_COMPANION_YIELD_BLOCKS",
+  "DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES",
+  "DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS",
+  "DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES",
   "DS_SEARCH_COMPANION_TOC_CACHE_BYTES",
   "DS_SEARCH_COMPANION_SECTION_CACHE_BYTES",
+  "DS_SEARCH_WAL_OVERLAY_QUIET_MS",
+  "DS_SEARCH_WAL_OVERLAY_MAX_BYTES",
   "DS_INDEX_COMPACTION_FANOUT",
   "DS_INDEX_MAX_LEVEL",
   "DS_INDEX_COMPACT_CONCURRENCY",
@@ -238,11 +248,16 @@ export function loadConfig(): Config {
     (memoryLimitBytes > 0
       ? clampBytes(Math.floor(memoryLimitBytes * 0.02), 8 * 1024 * 1024, 128 * 1024 * 1024)
       : 32 * 1024 * 1024);
+  const companionFileCacheBytes =
+    envBytes("DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES") ??
+    clampBytes(Math.max(512 * 1024 * 1024, Math.floor(localBacklogMaxBytes * 0.1)), 256 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
+  const segmentMaxBytes = envNum("DS_SEGMENT_MAX_BYTES", 16 * 1024 * 1024);
+  const searchWalOverlayMaxBytes = envBytes("DS_SEARCH_WAL_OVERLAY_MAX_BYTES") ?? segmentMaxBytes;
   return {
     host,
     rootDir,
     dbPath: process.env.DS_DB_PATH ?? `${rootDir}/wal.sqlite`,
-    segmentMaxBytes: envNum("DS_SEGMENT_MAX_BYTES", 16 * 1024 * 1024),
+    segmentMaxBytes,
     blockMaxBytes: envNum("DS_BLOCK_MAX_BYTES", 256 * 1024),
     segmentTargetRows: envNum("DS_SEGMENT_TARGET_ROWS", 50_000),
     segmentMaxIntervalMs: envNum("DS_SEGMENT_MAX_INTERVAL_MS", 0),
@@ -259,8 +274,13 @@ export function loadConfig(): Config {
     indexCheckIntervalMs: envNum("DS_INDEX_CHECK_MS", 1000),
     searchCompanionBuildBatchSegments: envNum("DS_SEARCH_COMPANION_BATCH_SEGMENTS", 4),
     searchCompanionYieldBlocks: envNum("DS_SEARCH_COMPANION_YIELD_BLOCKS", 4),
+    searchCompanionFileCacheMaxBytes: companionFileCacheBytes,
+    searchCompanionFileCacheMaxAgeMs: envNum("DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS", 24 * 60 * 60 * 1000),
+    searchCompanionMappedCacheEntries: envNum("DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES", 64),
     searchCompanionTocCacheBytes: envNum("DS_SEARCH_COMPANION_TOC_CACHE_BYTES", 1 * 1024 * 1024),
     searchCompanionSectionCacheBytes: companionSectionCacheBytes,
+    searchWalOverlayQuietPeriodMs: envNum("DS_SEARCH_WAL_OVERLAY_QUIET_MS", 5_000),
+    searchWalOverlayMaxBytes,
     indexCompactionFanout: envNum("DS_INDEX_COMPACTION_FANOUT", 16),
     indexMaxLevel: envNum("DS_INDEX_MAX_LEVEL", 4),
     indexCompactionConcurrency: envNum("DS_INDEX_COMPACT_CONCURRENCY", 4),

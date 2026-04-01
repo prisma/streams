@@ -13,7 +13,6 @@ import type { ObjectStore } from "../objectstore/interface";
 import { SchemaRegistryStore, type SchemaRegistry, type SearchFieldConfig } from "../schema/registry";
 import { iterateBlockRecordsResult } from "../segment/format";
 import { dsError } from "../util/ds_error.ts";
-import { ByteLruCache } from "../util/byte_lru";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import type { MemoryGuard } from "../memory";
 import { retry } from "../util/retry";
@@ -33,6 +32,7 @@ import {
   type CompanionToc,
   type EncodedCompanionSectionPayload,
 } from "./companion_format";
+import { CompanionFileCache } from "./companion_file_cache";
 import type { ColFieldInput, ColScalar, ColSectionInput, ColSectionView } from "./col_format";
 import {
   analyzeTextValue,
@@ -52,6 +52,7 @@ import {
 } from "./aggregate";
 import type { AggMeasureState, AggSectionInput, AggWindowGroup, AggSectionView } from "./agg_format";
 import type { SearchRollupConfig } from "../schema/registry";
+import type { CompanionSectionLookupStats } from "../index/indexer";
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
 
@@ -81,11 +82,6 @@ type MetricsBlockBuilder = {
   records: MetricsBlockSectionInput["records"];
   minWindowStartMs: number | undefined;
   maxWindowEndMs: number | undefined;
-};
-
-type CachedCompanionToc = {
-  toc: CompanionToc;
-  byteLength: number;
 };
 
 type AggRollupBuilder = {
@@ -123,8 +119,7 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
 export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
-  private readonly tocCache: ByteLruCache<string, CachedCompanionToc>;
-  private readonly sectionCache: ByteLruCache<string, Uint8Array>;
+  private readonly fileCache: CompanionFileCache;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
@@ -143,8 +138,12 @@ export class SearchCompanionManager {
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
     this.memorySampler = memorySampler;
-    this.tocCache = new ByteLruCache(cfg.searchCompanionTocCacheBytes, (entry) => entry.byteLength);
-    this.sectionCache = new ByteLruCache(cfg.searchCompanionSectionCacheBytes, (bytes) => bytes.byteLength);
+    this.fileCache = new CompanionFileCache(
+      `${cfg.rootDir}/cache/companions`,
+      cfg.searchCompanionFileCacheMaxBytes,
+      cfg.searchCompanionFileCacheMaxAgeMs,
+      cfg.searchCompanionMappedCacheEntries
+    );
   }
 
   start(): void {
@@ -157,8 +156,7 @@ export class SearchCompanionManager {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.tocCache.clear();
-    this.sectionCache.clear();
+    this.fileCache.clearMapped();
   }
 
   enqueue(stream: string): void {
@@ -170,7 +168,15 @@ export class SearchCompanionManager {
   }
 
   async getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null> {
-    return (await this.getSectionCompanion(stream, segmentIndex, "fts")) ?? null;
+    return (await this.getFtsSegmentCompanionWithStats(stream, segmentIndex)).companion;
+  }
+
+  async getFtsSegmentCompanionWithStats(
+    stream: string,
+    segmentIndex: number
+  ): Promise<{ companion: FtsSectionView | null; stats: CompanionSectionLookupStats }> {
+    const result = await this.getSectionCompanionWithStats(stream, segmentIndex, "fts");
+    return { companion: result.companion ?? null, stats: result.stats };
   }
 
   async getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null> {
@@ -181,28 +187,46 @@ export class SearchCompanionManager {
     return (await this.getSectionCompanion(stream, segmentIndex, "mblk")) ?? null;
   }
 
+  getLocalCacheBytes(stream: string): number {
+    return this.fileCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/segments/`);
+  }
+
   private async getSectionCompanion<K extends CompanionSectionKind>(
     stream: string,
     segmentIndex: number,
     kind: K
   ): Promise<CompanionSectionMap[K] | null> {
+    return (await this.getSectionCompanionWithStats(stream, segmentIndex, kind)).companion;
+  }
+
+  private async getSectionCompanionWithStats<K extends CompanionSectionKind>(
+    stream: string,
+    segmentIndex: number,
+    kind: K
+  ): Promise<{ companion: CompanionSectionMap[K] | null; stats: CompanionSectionLookupStats }> {
     const leave = this.memorySampler?.enter("companion_read", { stream, segment_index: segmentIndex, kind });
     try {
-      if (this.memory?.isOverLimit()) this.sectionCache.clear();
+      let sectionGetMs = 0;
+      let decodeMs = 0;
+      if (this.memory?.isOverLimit()) this.fileCache.clearMapped();
       const planRow = this.getCurrentPlanRow(stream);
-      if (!planRow) return null;
+      if (!planRow) return { companion: null, stats: { sectionGetMs, decodeMs } };
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
-      if (!row || row.plan_generation !== planRow.generation) return null;
-      if (!parseSectionKinds(row).has(kind)) return null;
-      const toc = await this.loadBundleTocResult(row);
-      if (Result.isError(toc)) throw dsError(toc.error.message);
+      if (!row || row.plan_generation !== planRow.generation) return { companion: null, stats: { sectionGetMs, decodeMs } };
+      if (!parseSectionKinds(row).has(kind)) return { companion: null, stats: { sectionGetMs, decodeMs } };
+      const sectionStartedAt = Date.now();
+      const bundle = await this.loadBundleResult(row);
+      if (Result.isError(bundle)) throw dsError(bundle.error.message);
       const plan = this.parsePlanRowResult(planRow);
       if (Result.isError(plan)) throw dsError(plan.error.message);
-      const sectionBytes = await this.loadSectionPayloadResult(row, kind, toc.value);
+      const sectionBytes = this.sectionPayloadResult(bundle.value.bytes, bundle.value.toc, row.object_key, kind);
       if (Result.isError(sectionBytes)) throw dsError(sectionBytes.error.message);
+      sectionGetMs = Date.now() - sectionStartedAt;
+      const decodeStartedAt = Date.now();
       const decoded = decodeCompanionSectionPayloadResult(kind, sectionBytes.value, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
-      return decoded.value ?? null;
+      decodeMs = Date.now() - decodeStartedAt;
+      return { companion: decoded.value ?? null, stats: { sectionGetMs, decodeMs } };
     } finally {
       leave?.();
     }
@@ -230,76 +254,49 @@ export class SearchCompanionManager {
     }
   }
 
-  private async loadBundleTocResult(row: SearchSegmentCompanionRow): Promise<Result<CompanionToc, CompanionBuildError>> {
-    const cached = this.tocCache.get(row.object_key);
-    if (cached) return Result.ok(cached.toc);
+  private async loadBundleResult(
+    row: SearchSegmentCompanionRow
+  ): Promise<Result<{ bytes: Uint8Array; toc: CompanionToc }, CompanionBuildError>> {
     if (row.size_bytes <= 0) return invalidCompanionBuild(`invalid .cix size for ${row.object_key}`);
-    try {
-      const bytes = await retry(
-        async () => {
-          const end = Math.min(row.size_bytes - 1, PSCIX2_MAX_TOC_BYTES - 1);
-          const data = await this.os.get(row.object_key, { range: { start: 0, end } });
-          if (!data) throw dsError(`missing .cix object ${row.object_key}`);
-          return data;
-        },
-        {
-          retries: this.cfg.objectStoreRetries,
-          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-          timeoutMs: this.cfg.objectStoreTimeoutMs,
-        }
-      );
-      const tocRes = decodeBundledSegmentCompanionTocResult(bytes);
-      if (Result.isError(tocRes)) return invalidCompanionBuild(tocRes.error.message);
-      this.tocCache.set(row.object_key, { toc: tocRes.value, byteLength: bytes.byteLength });
-      return Result.ok(tocRes.value);
-    } catch (e: unknown) {
-      return invalidCompanionBuild(String((e as any)?.message ?? e));
-    }
+    const bundleRes = await this.fileCache.loadMappedBundleResult({
+      objectKey: row.object_key,
+      expectedSize: row.size_bytes,
+      loadBytes: async () =>
+        retry(
+          async () => {
+            const data = await this.os.get(row.object_key);
+            if (!data) throw dsError(`missing .cix object ${row.object_key}`);
+            return data;
+          },
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        ),
+      decodeToc: (bytes) => {
+        const tocRes = decodeBundledSegmentCompanionTocResult(bytes.subarray(0, Math.min(bytes.byteLength, PSCIX2_MAX_TOC_BYTES)));
+        if (Result.isError(tocRes)) return Result.err({ message: tocRes.error.message });
+        return Result.ok(tocRes.value);
+      },
+    });
+    if (Result.isError(bundleRes)) return invalidCompanionBuild(bundleRes.error.message);
+    return Result.ok({ bytes: bundleRes.value.bytes, toc: bundleRes.value.toc });
   }
 
-  private async loadSectionPayloadResult(
-    row: SearchSegmentCompanionRow,
-    kind: CompanionSectionKind,
-    toc: CompanionToc
-  ): Promise<Result<Uint8Array, CompanionBuildError>> {
+  private sectionPayloadResult(
+    bytes: Uint8Array,
+    toc: CompanionToc,
+    objectKey: string,
+    kind: CompanionSectionKind
+  ): Result<Uint8Array, CompanionBuildError> {
     const section = toc.sections.find((entry) => entry.kind === kind);
-    if (!section) return invalidCompanionBuild(`missing ${kind} section in ${row.object_key}`);
-    const cacheKey = `${row.object_key}:${kind}`;
-    const cached = this.sectionCache.get(cacheKey);
-    if (cached) return Result.ok(cached);
-    try {
-      const bytes = await retry(
-        async () => {
-          const end = section.offset + section.length - 1;
-          const data = await this.os.get(row.object_key, { range: { start: section.offset, end } });
-          if (!data) throw dsError(`missing ${kind} section payload ${row.object_key}`);
-          return data;
-        },
-        {
-          retries: this.cfg.objectStoreRetries,
-          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-          timeoutMs: this.cfg.objectStoreTimeoutMs,
-        }
-      );
-      if (bytes.byteLength !== section.length) {
-        return invalidCompanionBuild(`truncated ${kind} section payload for ${row.object_key}`);
-      }
-      if (this.shouldCacheSectionPayload(kind, bytes.byteLength)) {
-        this.sectionCache.set(cacheKey, bytes);
-      }
-      return Result.ok(bytes);
-    } catch (e: unknown) {
-      return invalidCompanionBuild(String((e as any)?.message ?? e));
+    if (!section) return invalidCompanionBuild(`missing ${kind} section in ${objectKey}`);
+    if (section.offset < 0 || section.length < 0 || section.offset + section.length > bytes.byteLength) {
+      return invalidCompanionBuild(`invalid ${kind} section bounds in ${objectKey}`);
     }
-  }
-
-  private shouldCacheSectionPayload(kind: CompanionSectionKind, byteLength: number): boolean {
-    if (kind === "agg") return false;
-    const maxBytes = this.sectionCache.maxBytes;
-    if (maxBytes <= 0) return false;
-    return byteLength <= Math.max(1, Math.floor(maxBytes / 4));
+    return Result.ok(bytes.subarray(section.offset, section.offset + section.length));
   }
 
   private async tick(): Promise<void> {
@@ -413,6 +410,10 @@ export class SearchCompanionManager {
           );
         } catch (e: unknown) {
           return invalidCompanionBuild(String((e as any)?.message ?? e));
+        }
+        const cacheRes = this.fileCache.storeBytesResult(objectKey, payload);
+        if (Result.isError(cacheRes)) {
+          console.warn("bundled companion local cache populate failed", objectKey, cacheRes.error.message);
         }
         const sectionKinds = companionRes.value.sectionKinds;
         this.db.upsertSearchSegmentCompanion(

@@ -25,6 +25,10 @@ import type { MemoryGuard } from "../memory";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
+export type CompanionSectionLookupStats = {
+  sectionGetMs: number;
+  decodeMs: number;
+};
 
 export type StreamIndexLookup = {
   start(): void;
@@ -35,8 +39,16 @@ export type StreamIndexLookup = {
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
+  getFtsSegmentCompanionWithStats?(
+    stream: string,
+    segmentIndex: number
+  ): Promise<{ companion: FtsSectionView | null; stats: CompanionSectionLookupStats }>;
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSectionView | null>;
-  getLocalStorageUsage?(stream: string): { routing_index_cache_bytes: number; exact_index_cache_bytes: number };
+  getLocalStorageUsage?(stream: string): {
+    routing_index_cache_bytes: number;
+    exact_index_cache_bytes: number;
+    companion_cache_bytes: number;
+  };
 };
 
 function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildError> {

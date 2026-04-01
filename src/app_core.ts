@@ -625,10 +625,12 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     const routingIndexStorage = db.getRoutingIndexStorage(stream);
     const secondaryIndexStorage = new Map(db.getSecondaryIndexStorage(stream).map((entry) => [entry.index_name, entry]));
     const companionStorage = db.getBundledCompanionStorage(stream);
-    const localStorageUsage = getLocalStorageUsage?.(stream) ?? {
+    const localStorageUsage = {
       segment_cache_bytes: 0,
       routing_index_cache_bytes: 0,
       exact_index_cache_bytes: 0,
+      companion_cache_bytes: 0,
+      ...(getLocalStorageUsage?.(stream) ?? {}),
     };
     const sqliteSharedBytes = BigInt(db.getWalDbSizeBytes() + db.getMetaDbSizeBytes());
     const exactIndexBytes = indexStatus.exact_indexes.reduce((sum: bigint, entry: any) => sum + BigInt(entry.bytes_at_rest ?? 0), 0n);
@@ -665,7 +667,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           pendingSealedSegmentBytes +
           BigInt(localStorageUsage.segment_cache_bytes) +
           BigInt(localStorageUsage.routing_index_cache_bytes) +
-          BigInt(localStorageUsage.exact_index_cache_bytes)
+          BigInt(localStorageUsage.exact_index_cache_bytes) +
+          BigInt(localStorageUsage.companion_cache_bytes)
         ).toString(),
         wal_retained_bytes: row.wal_bytes.toString(),
         pending_tail_bytes: row.pending_bytes.toString(),
@@ -673,6 +676,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         segment_cache_bytes: String(localStorageUsage.segment_cache_bytes),
         routing_index_cache_bytes: String(localStorageUsage.routing_index_cache_bytes),
         exact_index_cache_bytes: String(localStorageUsage.exact_index_cache_bytes),
+        companion_cache_bytes: String(localStorageUsage.companion_cache_bytes),
         sqlite_shared_total_bytes: sqliteSharedBytes.toString(),
       },
       companion_families: {
@@ -1184,14 +1188,24 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               coverage: {
                 mode: searchRes.value.coverage.mode,
                 complete: searchRes.value.coverage.complete,
+                stream_head_offset: searchRes.value.coverage.streamHeadOffset,
                 visible_through_offset: searchRes.value.coverage.visibleThroughOffset,
+                visible_through_primary_timestamp_max: searchRes.value.coverage.visibleThroughPrimaryTimestampMax,
+                oldest_omitted_append_at: searchRes.value.coverage.oldestOmittedAppendAt,
                 possible_missing_events_upper_bound: searchRes.value.coverage.possibleMissingEventsUpperBound,
                 possible_missing_uploaded_segments: searchRes.value.coverage.possibleMissingUploadedSegments,
                 possible_missing_sealed_rows: searchRes.value.coverage.possibleMissingSealedRows,
                 possible_missing_wal_rows: searchRes.value.coverage.possibleMissingWalRows,
                 indexed_segments: searchRes.value.coverage.indexedSegments,
+                indexed_segment_time_ms: searchRes.value.coverage.indexedSegmentTimeMs,
+                fts_section_get_ms: searchRes.value.coverage.ftsSectionGetMs,
+                fts_decode_ms: searchRes.value.coverage.ftsDecodeMs,
+                fts_clause_estimate_ms: searchRes.value.coverage.ftsClauseEstimateMs,
                 scanned_segments: searchRes.value.coverage.scannedSegments,
+                scanned_segment_time_ms: searchRes.value.coverage.scannedSegmentTimeMs,
                 scanned_tail_docs: searchRes.value.coverage.scannedTailDocs,
+                scanned_tail_time_ms: searchRes.value.coverage.scannedTailTimeMs,
+                exact_candidate_time_ms: searchRes.value.coverage.exactCandidateTimeMs,
                 index_families_used: searchRes.value.coverage.indexFamiliesUsed,
               },
               total: searchRes.value.total,
@@ -1243,13 +1257,16 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             from: aggregateRes.value.from,
             to: aggregateRes.value.to,
             interval: aggregateRes.value.interval,
-            coverage: {
-              mode: aggregateRes.value.coverage.mode,
-              complete: aggregateRes.value.coverage.complete,
-              visible_through_offset: aggregateRes.value.coverage.visibleThroughOffset,
-              possible_missing_events_upper_bound: aggregateRes.value.coverage.possibleMissingEventsUpperBound,
-              possible_missing_uploaded_segments: aggregateRes.value.coverage.possibleMissingUploadedSegments,
-              possible_missing_sealed_rows: aggregateRes.value.coverage.possibleMissingSealedRows,
+              coverage: {
+                mode: aggregateRes.value.coverage.mode,
+                complete: aggregateRes.value.coverage.complete,
+                stream_head_offset: aggregateRes.value.coverage.streamHeadOffset,
+                visible_through_offset: aggregateRes.value.coverage.visibleThroughOffset,
+                visible_through_primary_timestamp_max: aggregateRes.value.coverage.visibleThroughPrimaryTimestampMax,
+                oldest_omitted_append_at: aggregateRes.value.coverage.oldestOmittedAppendAt,
+                possible_missing_events_upper_bound: aggregateRes.value.coverage.possibleMissingEventsUpperBound,
+                possible_missing_uploaded_segments: aggregateRes.value.coverage.possibleMissingUploadedSegments,
+                possible_missing_sealed_rows: aggregateRes.value.coverage.possibleMissingSealedRows,
               possible_missing_wal_rows: aggregateRes.value.coverage.possibleMissingWalRows,
               used_rollups: aggregateRes.value.coverage.usedRollups,
               indexed_segments: aggregateRes.value.coverage.indexedSegments,

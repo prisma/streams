@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Result } from "better-result";
@@ -657,12 +657,20 @@ describe("bundled companions and backfill", () => {
         }
         await store.put(row.object_key, corrupted);
 
+        const localCachePath = join(root, "cache/companions", row.object_key);
+        rmSync(localCachePath, { force: true });
+
         store.resetStats();
         const companionIndex = (app.deps.indexer as any).companionIndex;
         const ftsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
         expect(ftsCompanion).not.toBeNull();
         expect(ftsCompanion?.getField("message")).not.toBeNull();
-        expect(store.stats().gets).toBe(2);
+        expect(store.stats().gets).toBe(1);
+        expect(existsSync(localCachePath)).toBeTrue();
+
+        const secondFtsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
+        expect(secondFtsCompanion?.getField("message")).not.toBeNull();
+        expect(store.stats().gets).toBe(1);
 
         let aggError: unknown = null;
         try {
@@ -672,7 +680,107 @@ describe("bundled companions and backfill", () => {
         }
         expect(aggError).not.toBeNull();
         expect(String((aggError as { message?: string } | null)?.message ?? aggError).length).toBeGreaterThan(0);
-        expect(store.stats().gets).toBe(3);
+        expect(store.stats().gets).toBe(1);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "query reads reuse the persisted local companion cache after restart",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-companion-cache-restart-"));
+      const store = new MockR2Store();
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        searchCompanionBuildBatchSegments: 2,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+
+      let app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              schema: {
+                type: "object",
+                additionalProperties: true,
+              },
+              search: {
+                primaryTimestampField: "eventTime",
+                fields: {
+                  eventTime: {
+                    kind: "date",
+                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    column: true,
+                    exists: true,
+                    sortable: true,
+                  },
+                  message: {
+                    kind: "text",
+                    bindings: [{ version: 1, jsonPointer: "/message" }],
+                    analyzer: "unicode_word_v1",
+                    exists: true,
+                    positions: true,
+                  },
+                },
+                defaultFields: [{ field: "message", boost: 1 }],
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 4; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T11:0${i}:00.000Z`,
+                message: i % 2 === 0 ? "constructor keeps working" : "push retries later",
+                pad: "x".repeat(256),
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForCompanionGeneration(app, 1, { manualKick: false });
+        const row = app.deps.db.getSearchSegmentCompanion(STREAM, 0);
+        expect(row).not.toBeNull();
+        if (!row) return;
+
+        const localCachePath = join(root, "cache/companions", row.object_key);
+        expect(existsSync(localCachePath)).toBeTrue();
+
+        app.close();
+        app = createApp(cfg, store);
+        store.resetStats();
+
+        const companionIndex = (app.deps.indexer as any).companionIndex;
+        const ftsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
+        expect(ftsCompanion?.getField("message")).not.toBeNull();
+        expect(store.stats().gets).toBe(0);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

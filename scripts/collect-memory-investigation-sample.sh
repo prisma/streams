@@ -15,6 +15,7 @@ DB_PATH="${6:-${DS_DB_PATH:-${DS_ROOT:+${DS_ROOT}/wal.sqlite}}}"
 if [[ -z "${DB_PATH}" ]]; then
   DB_PATH="/tmp/lib/prisma-streams/wal.sqlite"
 fi
+BUN_BIN="${BUN_BIN:-$(command -v bun || echo bun)}"
 
 timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
 os_name="$(uname -s 2>/dev/null || echo unknown)"
@@ -106,6 +107,47 @@ exact_min="$(printf '%s' "${exact_summary}" | awk -F'|' 'NF >= 1 {print $1; exit
 exact_max="$(printf '%s' "${exact_summary}" | awk -F'|' 'NF >= 2 {print $2; exit}')"
 exact_count="$(printf '%s' "${exact_summary}" | awk -F'|' 'NF >= 3 {print $3; exit}')"
 
+json_extract() {
+  local payload="$1"
+  local path="$2"
+  "${BUN_BIN}" -e '
+    const path = (process.argv[1] ?? "").split(".");
+    const text = require("node:fs").readFileSync(0, "utf8");
+    let obj = null;
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (char !== "{" && char !== "[") continue;
+      try {
+        obj = JSON.parse(text.slice(index));
+        break;
+      } catch {}
+    }
+    if (obj == null) process.exit(0);
+    let current = obj;
+    for (const key of path) {
+      if (!key) continue;
+      if (current == null || typeof current !== "object" || !(key in current)) process.exit(0);
+      current = current[key];
+    }
+    if (current == null) process.exit(0);
+    if (typeof current === "object") process.stdout.write(JSON.stringify(current));
+    else process.stdout.write(String(current));
+  ' "$path" <<<"${payload}"
+}
+
+search_browse_indexed_segments="$(json_extract "${search_browse_output}" "coverage.indexed_segments")"
+search_browse_indexed_segment_time_ms="$(json_extract "${search_browse_output}" "coverage.indexed_segment_time_ms")"
+search_browse_fts_section_get_ms="$(json_extract "${search_browse_output}" "coverage.fts_section_get_ms")"
+search_browse_fts_decode_ms="$(json_extract "${search_browse_output}" "coverage.fts_decode_ms")"
+search_browse_fts_clause_estimate_ms="$(json_extract "${search_browse_output}" "coverage.fts_clause_estimate_ms")"
+search_browse_scanned_segments="$(json_extract "${search_browse_output}" "coverage.scanned_segments")"
+search_browse_scanned_segment_time_ms="$(json_extract "${search_browse_output}" "coverage.scanned_segment_time_ms")"
+search_browse_scanned_tail_docs="$(json_extract "${search_browse_output}" "coverage.scanned_tail_docs")"
+search_browse_scanned_tail_time_ms="$(json_extract "${search_browse_output}" "coverage.scanned_tail_time_ms")"
+search_browse_exact_candidate_time_ms="$(json_extract "${search_browse_output}" "coverage.exact_candidate_time_ms")"
+search_browse_oldest_omitted_append_at="$(json_extract "${search_browse_output}" "coverage.oldest_omitted_append_at")"
+search_browse_visible_through_primary_timestamp_max="$(json_extract "${search_browse_output}" "coverage.visible_through_primary_timestamp_max")"
+
 {
   echo
   echo "### ${timestamp} | ${PHASE}"
@@ -127,6 +169,18 @@ exact_count="$(printf '%s' "${exact_summary}" | awk -F'|' 'NF >= 3 {print $3; ex
   echo "index_time_total=${index_time_total:-}"
   echo "search_browse_http_code=${search_browse_http_code:-}"
   echo "search_browse_time_total=${search_browse_time_total:-}"
+  echo "search_browse_indexed_segments=${search_browse_indexed_segments:-}"
+  echo "search_browse_indexed_segment_time_ms=${search_browse_indexed_segment_time_ms:-}"
+  echo "search_browse_fts_section_get_ms=${search_browse_fts_section_get_ms:-}"
+  echo "search_browse_fts_decode_ms=${search_browse_fts_decode_ms:-}"
+  echo "search_browse_fts_clause_estimate_ms=${search_browse_fts_clause_estimate_ms:-}"
+  echo "search_browse_scanned_segments=${search_browse_scanned_segments:-}"
+  echo "search_browse_scanned_segment_time_ms=${search_browse_scanned_segment_time_ms:-}"
+  echo "search_browse_scanned_tail_docs=${search_browse_scanned_tail_docs:-}"
+  echo "search_browse_scanned_tail_time_ms=${search_browse_scanned_tail_time_ms:-}"
+  echo "search_browse_exact_candidate_time_ms=${search_browse_exact_candidate_time_ms:-}"
+  echo "search_browse_oldest_omitted_append_at=${search_browse_oldest_omitted_append_at:-}"
+  echo "search_browse_visible_through_primary_timestamp_max=${search_browse_visible_through_primary_timestamp_max:-}"
   echo "search_fts_http_code=${search_fts_http_code:-}"
   echo "search_fts_time_total=${search_fts_time_total:-}"
   echo "search_col_http_code=${search_col_http_code:-}"

@@ -174,12 +174,27 @@ container rather than a separate JSON/zstd object.
 
 The runtime no longer caches decoded bundled sections broadly.
 
-It now caches:
+It now uses a local immutable companion-file cache under
+`${DS_ROOT}/cache/companions`:
 
-- a tiny byte-budgeted cache of parsed `PSCIX2` section tables
-- a byte-budgeted cache of hot non-aggregate section payloads
-- local primary-timestamp bounds persisted in `search_segment_companions`
-  rows for published segments
+- on first read, it downloads the full remote `.cix` once
+- it writes that object atomically into the local companion cache
+- it memory-maps the local cached file with `Bun.mmap()`
+- it resolves the requested section from the mapped `PSCIX2` section table
+- it decodes the requested family view directly over the mapped bytes
+
+Current cache rules:
+
+- the cache is bounded by `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`
+- stale entries older than `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS` are
+  retired during startup pruning and before new admissions
+- because Bun does not currently expose an explicit unmap primitive, once a
+  companion file has been mmapped in a running process it is treated as pinned
+  until process restart
+- runtime pruning therefore deletes only files that were never mmapped by the
+  current process
+- local primary-timestamp bounds are still persisted in
+  `search_segment_companions` rows for published segments
 
 On demand it decodes only the requested family:
 
@@ -196,9 +211,11 @@ Examples:
 - `AggSectionView.getInterval(...)`
 
 This is the key runtime cutover. The bundle is the storage container, but the
-fetch and decode units are now the section table plus the requested family
-payload. FTS- or column-only reads do not fetch aggregate bytes unless they
-explicitly need them.
+read path now uses one local cached `.cix` plus one requested section view.
+FTS- or column-only reads no longer issue remote range GETs for every section
+access, and FTS metadata such as document-frequency and postings-offset tables
+stay as zero-copy views over the mapped file instead of being copied into new
+heap arrays.
 
 For `_search`, the runtime orders positive FTS clauses by estimated
 selectivity and evaluates later clauses against the current candidate doc-id
@@ -223,6 +240,7 @@ For one sealed segment it now:
 4. fans those parsed/raw values into the enabled family builders
 5. encodes each family directly into its binary section payload
 6. wraps the section payloads into one `PSCIX2` `.cix`
+7. seeds the local companion-file cache with that same immutable `.cix`
 
 This reduces the previous multi-family fan-out problem where one decoded record
 fed several unrelated long-lived structures at the same time, and it avoids
