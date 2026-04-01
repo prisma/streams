@@ -16,6 +16,8 @@ const MAGIC = new TextEncoder().encode("PSCIX2");
 const MAJOR_VERSION = 2;
 const HEADER_BYTES = 58;
 const SECTION_ENTRY_BYTES = 28;
+export const PSCIX2_MAX_SECTION_COUNT = 4;
+export const PSCIX2_MAX_TOC_BYTES = HEADER_BYTES + SECTION_ENTRY_BYTES * PSCIX2_MAX_SECTION_COUNT;
 
 const SECTION_KIND_CODE = {
   col: 1,
@@ -207,6 +209,12 @@ export function decodeBundledSegmentCompanionTocResult(bytes: Uint8Array): Resul
   const majorVersion = readU16(bytes, MAGIC.byteLength);
   if (majorVersion !== MAJOR_VERSION) return invalidCompanion("unsupported PSCIX2 version");
   const sectionCount = readU16(bytes, MAGIC.byteLength + 4);
+  if (sectionCount < 0 || sectionCount > PSCIX2_MAX_SECTION_COUNT) {
+    return invalidCompanion("invalid PSCIX2 section count");
+  }
+  if (bytes.byteLength < HEADER_BYTES + SECTION_ENTRY_BYTES * sectionCount) {
+    return invalidCompanion("truncated PSCIX2 section table");
+  }
   const planGeneration = readU32(bytes, MAGIC.byteLength + 8);
   const segmentIndex = Number(readU64(bytes, MAGIC.byteLength + 12));
   const streamHash16 = bytesToHex(bytes.subarray(MAGIC.byteLength + 20, MAGIC.byteLength + 36));
@@ -262,6 +270,17 @@ export function decodeBundledSegmentCompanionSectionFromTocResult<K extends Comp
   const decodedRes = decodeSectionResult(kind, bytes.subarray(section.offset, sectionEnd), plan);
   if (Result.isError(decodedRes)) return decodedRes;
   return Result.ok(decodedRes.value as CompanionSectionMap[K]);
+}
+
+export function decodeCompanionSectionPayloadResult<K extends CompanionSectionKind>(
+  kind: K,
+  bytes: Uint8Array,
+  plan: SearchCompanionPlan
+): Result<NonNullable<CompanionSectionMap[K]>, CompanionFormatError> {
+  const decodedRes = decodeSectionResult(kind, bytes, plan);
+  if (Result.isError(decodedRes)) return decodedRes as Result<NonNullable<CompanionSectionMap[K]>, CompanionFormatError>;
+  if (!decodedRes.value) return invalidCompanion(`missing PSCIX2 ${kind} payload`);
+  return Result.ok(decodedRes.value as NonNullable<CompanionSectionMap[K]>);
 }
 
 export function decodeBundledSegmentCompanionResult(

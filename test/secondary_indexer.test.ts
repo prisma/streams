@@ -22,6 +22,13 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+function waitForExactIdleGate(manager: SecondaryIndexManager, stream: string, attempts = 3000): boolean {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (!(manager as any).shouldPauseExactBackgroundWork(stream)) return true;
+  }
+  return false;
+}
+
 describe("secondary indexer", () => {
   test("pauses exact background work while a stream still has local backlog", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-secondary-index-pause-"));
@@ -85,9 +92,9 @@ describe("secondary indexer", () => {
 
       const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
       app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs() - 600_000n, "evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(false);
+      expect(waitForExactIdleGate(manager, "evlog")).toBe(true);
 
-      app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs(), "evlog");
+      app.deps.db.db.query(`UPDATE streams SET logical_size_bytes=logical_size_bytes+1 WHERE stream=?;`).run("evlog");
       expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
 
       app.deps.db.db
@@ -98,7 +105,7 @@ describe("secondary indexer", () => {
       app.deps.db.db
         .query(`UPDATE streams SET pending_rows=1, pending_bytes=1, last_append_ms=?, segment_in_progress=0 WHERE stream=?;`)
         .run(app.deps.db.nowMs() - 600_000n, "evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(false);
+      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
 
       app.deps.db.db.query(`UPDATE streams SET pending_rows=0, pending_bytes=0, segment_in_progress=1 WHERE stream=?;`).run("evlog");
       expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
@@ -195,14 +202,27 @@ describe("secondary indexer", () => {
           new Request("http://local/v1/stream/evlog", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(event),
+          body: JSON.stringify(event),
           })
         );
         expect(appendRes.status).toBe(204);
       }
 
+      const readyDeadline = Date.now() + 10_000;
+      while (Date.now() < readyDeadline) {
+        const srow = app.deps.db.getStream("evlog");
+        const uploadedOk = !!srow && srow.uploaded_segment_count >= 2;
+        const companionPlan = app.deps.db.getSearchCompanionPlan("evlog");
+        const companions = app.deps.db.listSearchSegmentCompanions("evlog");
+        if (uploadedOk && companionPlan && companions.length >= 2) break;
+        await sleep(50);
+      }
+
+      const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
       app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs() - 600_000n, "evlog");
-      app.deps.indexer?.enqueue("evlog");
+      expect(waitForExactIdleGate(manager, "evlog")).toBe(true);
+      manager.enqueue("evlog");
+      await (manager as any).tick?.();
       const deadline = Date.now() + 10_000;
       let stateCount = 0;
       let runCount = 0;
@@ -213,12 +233,13 @@ describe("secondary indexer", () => {
         runCount = app.deps.db.listSecondaryIndexRuns("evlog", "service").length;
         const uploadedOk = !!srow && srow.uploaded_segment_count >= 2;
         if (segs.length >= 2 && uploadedOk && stateCount > 0 && runCount > 0) break;
+        manager.enqueue("evlog");
+        await (manager as any).tick?.();
         await sleep(50);
       }
       expect(stateCount).toBeGreaterThan(0);
       expect(runCount).toBeGreaterThan(0);
 
-      const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
       const apiSegments = await manager.candidateSegmentsForSecondaryIndex("evlog", "service", new TextEncoder().encode("api"));
       const workerSegments = await manager.candidateSegmentsForSecondaryIndex("evlog", "service", new TextEncoder().encode("worker"));
 

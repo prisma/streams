@@ -195,6 +195,8 @@ describe("bootstrap from R2", () => {
       const cfg2 = makeConfig(root2, {
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 25,
       });
       await bootstrapFromR2(cfg2, store, { clearLocal: true });
       const app2 = createApp(cfg2, store);
@@ -268,6 +270,21 @@ describe("bootstrap from R2", () => {
         expect(srow).not.toBeNull();
         expect(srow!.uploaded_segment_count).toBe(segs.length);
         expect(srow!.logical_size_bytes).toBe(expectedPublishedLogicalSize);
+
+        const secondaryIndexer = (app2.deps.indexer as any).secondaryIndex;
+        app2.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app2.deps.db.nowMs() - 11n * 60_000n, stream);
+        for (let attempt = 0; attempt < 3000; attempt++) {
+          if (!(secondaryIndexer as any).shouldPauseExactBackgroundWork(stream)) break;
+        }
+        const exactDeadline = Date.now() + 10_000;
+        while (Date.now() < exactDeadline) {
+          const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
+          const secondaryRuns = app2.deps.db.listSecondaryIndexRuns(stream, "service");
+          if (secondaryStates.length === 3 && secondaryRuns.length > 0) break;
+          (secondaryIndexer as any).enqueue(stream);
+          await (secondaryIndexer as any).tick?.();
+          await sleep(50);
+        }
 
         const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
         expect(secondaryStates.length).toBe(3);

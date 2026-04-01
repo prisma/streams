@@ -29,6 +29,16 @@ function markAppendIdle(app: ReturnType<typeof createApp>): void {
   app.deps.indexer?.enqueue(STREAM);
 }
 
+async function driveExactIndexer(app: ReturnType<typeof createApp>): Promise<void> {
+  const secondaryIndexer = (app.deps.indexer as any).secondaryIndex;
+  if (!secondaryIndexer) return;
+  for (let attempt = 0; attempt < 3000; attempt++) {
+    if (!(secondaryIndexer as any).shouldPauseExactBackgroundWork(STREAM)) break;
+  }
+  secondaryIndexer.enqueue(STREAM);
+  await secondaryIndexer.tick?.();
+}
+
 const SCHEMA_V1 = {
   schema: {
     type: "object",
@@ -93,7 +103,7 @@ async function waitForExactIndex(
     if (fullyUploaded && state?.config_hash === expectedHash && state.indexed_through >= uploadedSegments) {
       return uploadedSegments;
     }
-    if (opts.manualKick !== false) app.deps.indexer?.enqueue(STREAM);
+    if (opts.manualKick !== false) await driveExactIndexer(app);
     await sleep(50);
   }
   throw new Error(`timeout waiting for exact index hash ${expectedHash}`);
@@ -201,7 +211,7 @@ describe("exact secondary index backfill", () => {
       app = createApp(buildCfg, store);
       try {
         markAppendIdle(app);
-        await waitForExactIndex(app, EXACT_HASH_V2, { manualKick: false });
+        await waitForExactIndex(app, EXACT_HASH_V2);
         const detailsRes = await app.fetch(new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_details`));
         expect(detailsRes.status).toBe(200);
         const details = await detailsRes.json();

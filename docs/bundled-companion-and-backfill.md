@@ -102,8 +102,8 @@ Key properties:
 - no legacy `PSCIX1` support
 - plan-relative family payloads
 
-Query-time reads cache raw `.cix` bytes plus the parsed section table and then
-decode only the requested family.
+Query-time reads range-read the `PSCIX2` header plus section table, cache that
+small TOC, then range-read only the requested family payload.
 
 Examples:
 
@@ -117,12 +117,14 @@ For a newly sealed uploaded segment:
 
 1. build the raw `.bin` segment
 2. load that segment’s bytes for companion generation
-3. build each enabled family in a separate family-specific pass
-4. encode each family directly into its binary companion section payload
-5. wrap the sections into one `PSCIX2` `.cix`
-6. upload the raw segment
-7. upload the bundled companion
-8. publish the manifest generation that references both
+3. parse the segment once
+4. extract the union of required search fields once per record
+5. feed the enabled family builders from that shared record pass
+6. encode each family directly into its binary companion section payload
+7. wrap the sections into one `PSCIX2` `.cix`
+8. upload the raw segment
+9. upload the bundled companion
+10. publish the manifest generation that references both
 
 No uploaded historical object becomes visible until manifest publication.
 
@@ -203,7 +205,6 @@ The current implementation does not yet provide:
 - cross-segment `.col` compaction
 - cross-segment `.fts` compaction
 - cross-segment `.agg` compaction
-- bundled companion range reads from object storage
 - background GC for orphaned old companion generations
 
 Those are future optimizations. They are not required for correctness of the

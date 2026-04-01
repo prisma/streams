@@ -13,14 +13,15 @@ import type { ObjectStore } from "../objectstore/interface";
 import { SchemaRegistryStore, type SchemaRegistry, type SearchFieldConfig } from "../schema/registry";
 import { iterateBlockRecordsResult } from "../segment/format";
 import { dsError } from "../util/ds_error.ts";
-import { LruCache } from "../util/lru";
+import { ByteLruCache } from "../util/byte_lru";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import type { MemoryGuard } from "../memory";
 import { retry } from "../util/retry";
 import { searchCompanionObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
-  decodeBundledSegmentCompanionSectionFromTocResult,
+  PSCIX2_MAX_TOC_BYTES,
+  decodeCompanionSectionPayloadResult,
   decodeBundledSegmentCompanionResult,
   decodeBundledSegmentCompanionTocResult,
   encodeBundledSegmentCompanionFromPayloads,
@@ -82,9 +83,16 @@ type MetricsBlockBuilder = {
   maxWindowEndMs: number | undefined;
 };
 
-type CachedCompanionBundle = {
-  bytes: Uint8Array;
+type CachedCompanionToc = {
   toc: CompanionToc;
+  byteLength: number;
+};
+
+type AggRollupBuilder = {
+  rollup: SearchRollupConfig;
+  intervalsMs: number[];
+  intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>;
+  fieldNames: string[];
 };
 
 const PAYLOAD_DECODER = new TextDecoder();
@@ -115,10 +123,8 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
 export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
-  // Keep only a tiny hot cache of compressed bundle bytes plus the parsed TOC.
-  // Query reads decode the requested section on demand instead of inflating the
-  // full bundle into memory.
-  private readonly cache = new LruCache<string, CachedCompanionBundle>(4);
+  private readonly tocCache: ByteLruCache<string, CachedCompanionToc>;
+  private readonly sectionCache: ByteLruCache<string, Uint8Array>;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
@@ -137,6 +143,8 @@ export class SearchCompanionManager {
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
     this.memorySampler = memorySampler;
+    this.tocCache = new ByteLruCache(cfg.searchCompanionTocCacheBytes, (entry) => entry.byteLength);
+    this.sectionCache = new ByteLruCache(cfg.searchCompanionSectionCacheBytes, (bytes) => bytes.byteLength);
   }
 
   start(): void {
@@ -149,6 +157,8 @@ export class SearchCompanionManager {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.tocCache.clear();
+    this.sectionCache.clear();
   }
 
   enqueue(stream: string): void {
@@ -178,16 +188,19 @@ export class SearchCompanionManager {
   ): Promise<CompanionSectionMap[K] | null> {
     const leave = this.memorySampler?.enter("companion_read", { stream, segment_index: segmentIndex, kind });
     try {
+      if (this.memory?.isOverLimit()) this.sectionCache.clear();
       const planRow = this.getCurrentPlanRow(stream);
       if (!planRow) return null;
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
       if (!row || row.plan_generation !== planRow.generation) return null;
       if (!parseSectionKinds(row).has(kind)) return null;
-      const bundle = await this.loadBundleBytesResult(row);
-      if (Result.isError(bundle)) throw dsError(bundle.error.message);
+      const toc = await this.loadBundleTocResult(row);
+      if (Result.isError(toc)) throw dsError(toc.error.message);
       const plan = this.parsePlanRowResult(planRow);
       if (Result.isError(plan)) throw dsError(plan.error.message);
-      const decoded = decodeBundledSegmentCompanionSectionFromTocResult(bundle.value.bytes, bundle.value.toc, kind, plan.value);
+      const sectionBytes = await this.loadSectionPayloadResult(row, kind, toc.value);
+      if (Result.isError(sectionBytes)) throw dsError(sectionBytes.error.message);
+      const decoded = decodeCompanionSectionPayloadResult(kind, sectionBytes.value, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
       return decoded.value ?? null;
     } finally {
@@ -217,13 +230,15 @@ export class SearchCompanionManager {
     }
   }
 
-  private async loadBundleBytesResult(row: SearchSegmentCompanionRow): Promise<Result<CachedCompanionBundle, CompanionBuildError>> {
-    const cached = this.cache.get(row.object_key);
-    if (cached) return Result.ok(cached);
+  private async loadBundleTocResult(row: SearchSegmentCompanionRow): Promise<Result<CompanionToc, CompanionBuildError>> {
+    const cached = this.tocCache.get(row.object_key);
+    if (cached) return Result.ok(cached.toc);
+    if (row.size_bytes <= 0) return invalidCompanionBuild(`invalid .cix size for ${row.object_key}`);
     try {
       const bytes = await retry(
         async () => {
-          const data = await this.os.get(row.object_key);
+          const end = Math.min(row.size_bytes - 1, PSCIX2_MAX_TOC_BYTES - 1);
+          const data = await this.os.get(row.object_key, { range: { start: 0, end } });
           if (!data) throw dsError(`missing .cix object ${row.object_key}`);
           return data;
         },
@@ -236,12 +251,55 @@ export class SearchCompanionManager {
       );
       const tocRes = decodeBundledSegmentCompanionTocResult(bytes);
       if (Result.isError(tocRes)) return invalidCompanionBuild(tocRes.error.message);
-      const entry = { bytes, toc: tocRes.value };
-      this.cache.set(row.object_key, entry);
-      return Result.ok(entry);
+      this.tocCache.set(row.object_key, { toc: tocRes.value, byteLength: bytes.byteLength });
+      return Result.ok(tocRes.value);
     } catch (e: unknown) {
       return invalidCompanionBuild(String((e as any)?.message ?? e));
     }
+  }
+
+  private async loadSectionPayloadResult(
+    row: SearchSegmentCompanionRow,
+    kind: CompanionSectionKind,
+    toc: CompanionToc
+  ): Promise<Result<Uint8Array, CompanionBuildError>> {
+    const section = toc.sections.find((entry) => entry.kind === kind);
+    if (!section) return invalidCompanionBuild(`missing ${kind} section in ${row.object_key}`);
+    const cacheKey = `${row.object_key}:${kind}`;
+    const cached = this.sectionCache.get(cacheKey);
+    if (cached) return Result.ok(cached);
+    try {
+      const bytes = await retry(
+        async () => {
+          const end = section.offset + section.length - 1;
+          const data = await this.os.get(row.object_key, { range: { start: section.offset, end } });
+          if (!data) throw dsError(`missing ${kind} section payload ${row.object_key}`);
+          return data;
+        },
+        {
+          retries: this.cfg.objectStoreRetries,
+          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+          timeoutMs: this.cfg.objectStoreTimeoutMs,
+        }
+      );
+      if (bytes.byteLength !== section.length) {
+        return invalidCompanionBuild(`truncated ${kind} section payload for ${row.object_key}`);
+      }
+      if (this.shouldCacheSectionPayload(kind, bytes.byteLength)) {
+        this.sectionCache.set(cacheKey, bytes);
+      }
+      return Result.ok(bytes);
+    } catch (e: unknown) {
+      return invalidCompanionBuild(String((e as any)?.message ?? e));
+    }
+  }
+
+  private shouldCacheSectionPayload(kind: CompanionSectionKind, byteLength: number): boolean {
+    if (kind === "agg") return false;
+    const maxBytes = this.sectionCache.maxBytes;
+    if (maxBytes <= 0) return false;
+    return byteLength <= Math.max(1, Math.floor(maxBytes / 4));
   }
 
   private async tick(): Promise<void> {
@@ -461,6 +519,46 @@ export class SearchCompanionManager {
     const bytesRes = await this.loadSegmentBytesResult(seg);
     if (Result.isError(bytesRes)) return bytesRes;
     const segmentBytes = bytesRes.value;
+    const colBuilders = plan.families.col ? this.createColBuilders(registry) : new Map<string, ColumnFieldBuilder>();
+    const ftsBuilders = plan.families.fts ? this.createFtsBuilders(registry) : new Map<string, FtsFieldBuilder>();
+    const aggBuildersRes = plan.families.agg ? this.createAggRollupBuildersResult(registry) : Result.ok(new Map<string, AggRollupBuilder>());
+    if (Result.isError(aggBuildersRes)) return aggBuildersRes;
+    const aggBuilders = aggBuildersRes.value;
+    const metricsBuilder: MetricsBlockBuilder | null = plan.families.mblk
+      ? { records: [], minWindowStartMs: undefined, maxWindowEndMs: undefined }
+      : null;
+    const requiredFieldNames = new Set<string>();
+    for (const fieldName of colBuilders.keys()) requiredFieldNames.add(fieldName);
+    for (const fieldName of ftsBuilders.keys()) requiredFieldNames.add(fieldName);
+    for (const builder of aggBuilders.values()) {
+      for (const fieldName of builder.fieldNames) requiredFieldNames.add(fieldName);
+    }
+    const fieldNameList = Array.from(requiredFieldNames).sort((a, b) => a.localeCompare(b));
+    const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, offset, parsed, parsedOk }) => {
+      let rawSearchValues: Map<string, unknown[]> | null = null;
+      if (parsedOk && fieldNameList.length > 0) {
+        const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNameList);
+        if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
+        rawSearchValues = rawValuesRes.value;
+      }
+      if (rawSearchValues) {
+        this.recordColBuilders(colBuilders, rawSearchValues, docCount);
+        this.recordFtsBuilders(ftsBuilders, rawSearchValues, docCount);
+      }
+      if (parsedOk && rawSearchValues) {
+        for (const builder of aggBuilders.values()) {
+          const contributionRes = extractRollupContributionResult(registry, builder.rollup, offset, parsed, rawSearchValues);
+          if (Result.isError(contributionRes)) return invalidCompanionBuild(contributionRes.error.message);
+          if (!contributionRes.value) continue;
+          const recordRes = this.recordAggContributionResult(builder.intervalMap, builder.intervalsMs, contributionRes.value);
+          if (Result.isError(recordRes)) return recordRes;
+        }
+      }
+      if (metricsBuilder && parsedOk) this.recordMetricsBlockBuilder(metricsBuilder, parsed, docCount);
+      return Result.ok(undefined);
+    });
+    if (Result.isError(docCountRes)) return docCountRes;
+
     const sectionPayloads: EncodedCompanionSectionPayload[] = [];
     const sectionKinds: CompanionSectionKind[] = [];
     const sectionSizes: Record<string, number> = {};
@@ -472,24 +570,16 @@ export class SearchCompanionManager {
     };
 
     if (plan.families.col) {
-      const colRes = await this.buildColSectionResult(registry, seg, segmentBytes);
-      if (Result.isError(colRes)) return colRes;
-      addSection(encodeCompanionSectionPayload("col", colRes.value, plan));
+      addSection(encodeCompanionSectionPayload("col", this.finalizeColSection(registry, colBuilders, docCountRes.value), plan));
     }
     if (plan.families.fts) {
-      const ftsRes = await this.buildFtsSectionResult(registry, seg, segmentBytes);
-      if (Result.isError(ftsRes)) return ftsRes;
-      addSection(encodeCompanionSectionPayload("fts", ftsRes.value, plan));
+      addSection(encodeCompanionSectionPayload("fts", this.finalizeFtsSection(ftsBuilders, docCountRes.value), plan));
     }
     if (plan.families.agg) {
-      const aggRes = await this.buildAggSectionResult(registry, seg, segmentBytes);
-      if (Result.isError(aggRes)) return aggRes;
-      addSection(encodeCompanionSectionPayload("agg", aggRes.value, plan));
+      addSection(encodeCompanionSectionPayload("agg", this.finalizeAggSection(aggBuilders), plan));
     }
-    if (plan.families.mblk) {
-      const metricsRes = await this.buildMetricsBlockSectionResult(seg, segmentBytes);
-      if (Result.isError(metricsRes)) return metricsRes;
-      addSection(encodeCompanionSectionPayload("mblk", metricsRes.value, plan));
+    if (plan.families.mblk && metricsBuilder) {
+      addSection(encodeCompanionSectionPayload("mblk", this.finalizeMetricsBlockSection(metricsBuilder), plan));
     }
 
     return Result.ok({
@@ -517,174 +607,6 @@ export class SearchCompanionManager {
     return Result.ok(decodedRes.value);
   }
 
-  private async buildColSectionResult(
-    registry: SchemaRegistry,
-    seg: SegmentRow,
-    segmentBytes: Uint8Array
-  ): Promise<Result<ColSectionInput, CompanionBuildError>> {
-    const colBuilders = this.createColBuilders(registry);
-    const fieldNames = Array.from(colBuilders.keys());
-    const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, offset, parsed, parsedOk }) => {
-      let rawSearchValues: Map<string, unknown[]> | null = null;
-      if (parsedOk) {
-        const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNames);
-        if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
-        rawSearchValues = rawValuesRes.value;
-      }
-      for (const [fieldName, builder] of colBuilders) {
-        if (builder.invalid) continue;
-        const rawValues = rawSearchValues?.get(fieldName) ?? [];
-        const colValues: Array<bigint | number | boolean> = [];
-        for (const rawValue of rawValues) {
-          const normalized = canonicalizeColumnValue(builder.config, rawValue);
-          if (normalized != null) colValues.push(normalized);
-        }
-        if (colValues.length > 1) {
-          builder.invalid = true;
-          continue;
-        }
-        if (colValues.length === 1) {
-          builder.docIds.push(docCount);
-          builder.values.push(colValues[0]!);
-        }
-      }
-      return Result.ok(undefined);
-    });
-    if (Result.isError(docCountRes)) return docCountRes;
-    return Result.ok(this.finalizeColSection(registry, colBuilders, docCountRes.value));
-  }
-
-  private async buildFtsSectionResult(
-    registry: SchemaRegistry,
-    seg: SegmentRow,
-    segmentBytes: Uint8Array
-  ): Promise<Result<FtsSectionInput, CompanionBuildError>> {
-    const ftsFieldEntries = Object.entries(registry.search?.fields ?? {})
-      .filter(([, field]) => field.kind === "text" || (field.kind === "keyword" && field.prefix === true))
-      .sort((a, b) => a[0].localeCompare(b[0]));
-    const builders = new Map<string, FtsFieldBuilder>();
-    let docCount = 0;
-    for (const [fieldName, field] of ftsFieldEntries) {
-      const fieldRes = await this.buildFtsFieldResult(registry, seg, segmentBytes, fieldName, field);
-      if (Result.isError(fieldRes)) return fieldRes;
-      builders.set(fieldName, fieldRes.value.builder);
-      docCount = fieldRes.value.docCount;
-    }
-    return Result.ok(this.finalizeFtsSection(builders, docCount));
-  }
-
-  private async buildFtsFieldResult(
-    registry: SchemaRegistry,
-    seg: SegmentRow,
-    segmentBytes: Uint8Array,
-    fieldName: string,
-    field: SearchFieldConfig
-  ): Promise<Result<{ docCount: number; builder: FtsFieldBuilder }, CompanionBuildError>> {
-    const builder = this.createFtsFieldBuilder(field);
-    const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, offset, parsed, parsedOk }) => {
-      const fieldCompanion = builder.companion;
-      const textValues: string[] = [];
-      if (parsedOk) {
-        const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, [fieldName]);
-        if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
-        for (const rawValue of rawValuesRes.value.get(fieldName) ?? []) {
-          if (builder.config.kind === "keyword") {
-            const normalized = normalizeKeywordValue(rawValue, builder.config.normalizer);
-            if (normalized != null) textValues.push(normalized);
-          } else if (builder.config.kind === "text" && typeof rawValue === "string") {
-            textValues.push(rawValue);
-          }
-        }
-      }
-      if (textValues.length === 0) {
-        return Result.ok(undefined);
-      }
-      fieldCompanion.exists_docs.push(docCount);
-      if (builder.config.kind === "keyword") {
-        for (const value of textValues) {
-          const postings = fieldCompanion.terms[value] ?? [];
-          if (postings.length === 0 || postings[postings.length - 1]!.d !== docCount) {
-            postings.push({ d: docCount });
-          }
-          fieldCompanion.terms[value] = postings;
-        }
-        return Result.ok(undefined);
-      }
-      let position = 0;
-      for (const value of textValues) {
-        const tokens = analyzeTextValue(value, builder.config.analyzer);
-        for (const token of tokens) {
-          const postings = fieldCompanion.terms[token] ?? [];
-          const last = postings[postings.length - 1];
-          if (!last || last.d !== docCount) {
-            postings.push({ d: docCount, p: fieldCompanion.positions ? [position] : undefined });
-          } else if (fieldCompanion.positions && last.p) {
-            last.p.push(position);
-          }
-          fieldCompanion.terms[token] = postings;
-          position += 1;
-        }
-      }
-      return Result.ok(undefined);
-    });
-    if (Result.isError(docCountRes)) return docCountRes;
-    return Result.ok({ docCount: docCountRes.value, builder });
-  }
-
-  private async buildAggSectionResult(
-    registry: SchemaRegistry,
-    seg: SegmentRow,
-    segmentBytes: Uint8Array
-  ): Promise<Result<AggSectionInput, CompanionBuildError>> {
-    const encodedRollups: AggSectionInput["rollups"] = {};
-    for (const [rollupName, rollup] of Object.entries(registry.search?.rollups ?? {}).sort((a, b) => a[0].localeCompare(b[0]))) {
-      const parsedIntervalsRes = this.parseRollupIntervalsResult(rollup);
-      if (Result.isError(parsedIntervalsRes)) return parsedIntervalsRes;
-      const intervalMap = new Map<number, Map<number, Map<string, GroupBuilder>>>();
-      for (const intervalMs of parsedIntervalsRes.value) intervalMap.set(intervalMs, new Map());
-      const fieldNames = rollupRequiredFieldNames(registry, rollup);
-      const buildRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ offset, parsed, parsedOk }) => {
-        if (!parsedOk) return Result.ok(undefined);
-        const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNames);
-        if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
-        const contributionRes = extractRollupContributionResult(registry, rollup, offset, parsed, rawValuesRes.value);
-        if (Result.isError(contributionRes)) return invalidCompanionBuild(contributionRes.error.message);
-        if (!contributionRes.value) return Result.ok(undefined);
-        const recordRes = this.recordAggContributionResult(intervalMap, parsedIntervalsRes.value, contributionRes.value);
-        if (Result.isError(recordRes)) return recordRes;
-        return Result.ok(undefined);
-      });
-      if (Result.isError(buildRes)) return buildRes;
-      encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(intervalMap) };
-    }
-    return Result.ok({ rollups: encodedRollups });
-  }
-
-  private async buildMetricsBlockSectionResult(
-    seg: SegmentRow,
-    segmentBytes: Uint8Array
-  ): Promise<Result<MetricsBlockSectionInput, CompanionBuildError>> {
-    const builder: MetricsBlockBuilder = { records: [], minWindowStartMs: undefined, maxWindowEndMs: undefined };
-    const buildRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, parsed, parsedOk }) => {
-      if (!parsedOk) return Result.ok(undefined);
-      const normalizedRes = buildMetricsBlockRecord(docCount, parsed);
-      if (!Result.isError(normalizedRes)) {
-        builder.records.push(normalizedRes.value);
-        builder.minWindowStartMs =
-          builder.minWindowStartMs == null
-            ? normalizedRes.value.windowStartMs
-            : Math.min(builder.minWindowStartMs, normalizedRes.value.windowStartMs);
-        builder.maxWindowEndMs =
-          builder.maxWindowEndMs == null
-            ? normalizedRes.value.windowEndMs
-            : Math.max(builder.maxWindowEndMs, normalizedRes.value.windowEndMs);
-      }
-      return Result.ok(undefined);
-    });
-    if (Result.isError(buildRes)) return buildRes;
-    return Result.ok(this.finalizeMetricsBlockSection(builder));
-  }
-
   private createColBuilders(registry: SchemaRegistry): Map<string, ColumnFieldBuilder> {
     const columnFields = Object.entries(registry.search?.fields ?? {}).filter(([, field]) => field.column === true);
     const builders = new Map<string, ColumnFieldBuilder>();
@@ -692,6 +614,26 @@ export class SearchCompanionManager {
       builders.set(fieldName, { config: field, kind: field.kind, docIds: [], values: [], invalid: false });
     }
     return builders;
+  }
+
+  private recordColBuilders(builders: Map<string, ColumnFieldBuilder>, rawSearchValues: Map<string, unknown[]>, docCount: number): void {
+    for (const [fieldName, builder] of builders) {
+      if (builder.invalid) continue;
+      const rawValues = rawSearchValues.get(fieldName) ?? [];
+      const colValues: Array<bigint | number | boolean> = [];
+      for (const rawValue of rawValues) {
+        const normalized = canonicalizeColumnValue(builder.config, rawValue);
+        if (normalized != null) colValues.push(normalized);
+      }
+      if (colValues.length > 1) {
+        builder.invalid = true;
+        continue;
+      }
+      if (colValues.length === 1) {
+        builder.docIds.push(docCount);
+        builder.values.push(colValues[0]!);
+      }
+    }
   }
 
   private finalizeColSection(
@@ -740,6 +682,55 @@ export class SearchCompanionManager {
     };
   }
 
+  private createFtsBuilders(registry: SchemaRegistry): Map<string, FtsFieldBuilder> {
+    const builders = new Map<string, FtsFieldBuilder>();
+    for (const [fieldName, field] of Object.entries(registry.search?.fields ?? {}).sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (field.kind !== "text" && !(field.kind === "keyword" && field.prefix === true)) continue;
+      builders.set(fieldName, this.createFtsFieldBuilder(field));
+    }
+    return builders;
+  }
+
+  private recordFtsBuilders(builders: Map<string, FtsFieldBuilder>, rawSearchValues: Map<string, unknown[]>, docCount: number): void {
+    for (const [fieldName, builder] of builders) {
+      const fieldCompanion = builder.companion;
+      const textValues: string[] = [];
+      for (const rawValue of rawSearchValues.get(fieldName) ?? []) {
+        if (builder.config.kind === "keyword") {
+          const normalized = normalizeKeywordValue(rawValue, builder.config.normalizer);
+          if (normalized != null) textValues.push(normalized);
+        } else if (builder.config.kind === "text" && typeof rawValue === "string") {
+          textValues.push(rawValue);
+        }
+      }
+      if (textValues.length === 0) continue;
+      fieldCompanion.exists_docs.push(docCount);
+      if (builder.config.kind === "keyword") {
+        for (const value of textValues) {
+          const postings = fieldCompanion.terms[value] ?? [];
+          if (postings.length === 0 || postings[postings.length - 1]!.d !== docCount) postings.push({ d: docCount });
+          fieldCompanion.terms[value] = postings;
+        }
+        continue;
+      }
+      let position = 0;
+      for (const value of textValues) {
+        const tokens = analyzeTextValue(value, builder.config.analyzer);
+        for (const token of tokens) {
+          const postings = fieldCompanion.terms[token] ?? [];
+          const last = postings[postings.length - 1];
+          if (!last || last.d !== docCount) {
+            postings.push({ d: docCount, p: fieldCompanion.positions ? [position] : undefined });
+          } else if (fieldCompanion.positions && last.p) {
+            last.p.push(position);
+          }
+          fieldCompanion.terms[token] = postings;
+          position += 1;
+        }
+      }
+    }
+  }
+
   private finalizeFtsSection(
     builders: Map<string, FtsFieldBuilder>,
     docCount: number
@@ -754,12 +745,27 @@ export class SearchCompanionManager {
     };
   }
 
-  private finalizeAggSection(
-    builders: Map<string, Map<number, Map<number, Map<string, GroupBuilder>>>>
-  ): AggSectionInput {
+  private createAggRollupBuildersResult(registry: SchemaRegistry): Result<Map<string, AggRollupBuilder>, CompanionBuildError> {
+    const builders = new Map<string, AggRollupBuilder>();
+    for (const [rollupName, rollup] of Object.entries(registry.search?.rollups ?? {}).sort((a, b) => a[0].localeCompare(b[0]))) {
+      const parsedIntervalsRes = this.parseRollupIntervalsResult(rollup);
+      if (Result.isError(parsedIntervalsRes)) return parsedIntervalsRes;
+      const intervalMap = new Map<number, Map<number, Map<string, GroupBuilder>>>();
+      for (const intervalMs of parsedIntervalsRes.value) intervalMap.set(intervalMs, new Map());
+      builders.set(rollupName, {
+        rollup,
+        intervalsMs: parsedIntervalsRes.value,
+        intervalMap,
+        fieldNames: rollupRequiredFieldNames(registry, rollup),
+      });
+    }
+    return Result.ok(builders);
+  }
+
+  private finalizeAggSection(builders: Map<string, AggRollupBuilder>): AggSectionInput {
     const encodedRollups: AggSectionInput["rollups"] = {};
-    for (const [rollupName, intervalMap] of builders) {
-      encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(intervalMap) };
+    for (const [rollupName, builder] of builders) {
+      encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(builder.intervalMap) };
     }
 
     return { rollups: encodedRollups };
@@ -841,5 +847,19 @@ export class SearchCompanionManager {
       max_window_end_ms: builder.maxWindowEndMs,
       records: builder.records,
     };
+  }
+
+  private recordMetricsBlockBuilder(builder: MetricsBlockBuilder, parsed: unknown, docCount: number): void {
+    const normalizedRes = buildMetricsBlockRecord(docCount, parsed);
+    if (Result.isError(normalizedRes)) return;
+    builder.records.push(normalizedRes.value);
+    builder.minWindowStartMs =
+      builder.minWindowStartMs == null
+        ? normalizedRes.value.windowStartMs
+        : Math.min(builder.minWindowStartMs, normalizedRes.value.windowStartMs);
+    builder.maxWindowEndMs =
+      builder.maxWindowEndMs == null
+        ? normalizedRes.value.windowEndMs
+        : Math.max(builder.maxWindowEndMs, normalizedRes.value.windowEndMs);
   }
 }

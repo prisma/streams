@@ -9,6 +9,11 @@ type PostingDoc = {
   positions?: number[];
 };
 
+type ResolvedTermGroup = {
+  ordinals: number[];
+  docFreq: number;
+};
+
 function intersectInto(target: Set<number> | null, next: Set<number>): Set<number> {
   if (target == null) return next;
   for (const docId of Array.from(target)) {
@@ -21,8 +26,8 @@ function unionInto(target: Set<number>, next: Iterable<number>): void {
   for (const docId of next) target.add(docId);
 }
 
-function blockDocSet(block: FtsPostingBlock): Set<number> {
-  return new Set(Array.from(block.docIds));
+function unionDocIdsInto(target: Set<number>, docIds: Uint32Array): void {
+  for (let index = 0; index < docIds.length; index++) target.add(docIds[index]!);
 }
 
 function postingDocs(field: FtsFieldView, termOrdinal: number): Map<number, PostingDoc> {
@@ -54,9 +59,25 @@ function docsForTerm(field: FtsFieldView, termOrdinal: number): Set<number> {
   for (;;) {
     const block = iterator.nextBlock();
     if (!block) break;
-    unionInto(docs, blockDocSet(block));
+    unionDocIdsInto(docs, block.docIds);
   }
   return docs;
+}
+
+function docsForOrdinals(field: FtsFieldView, ordinals: number[]): Set<number> {
+  const docs = new Set<number>();
+  for (const ordinal of ordinals) unionInto(docs, docsForTerm(field, ordinal));
+  return docs;
+}
+
+function totalDocFreq(field: FtsFieldView, ordinals: number[]): number {
+  let total = 0;
+  for (const ordinal of ordinals) total += field.docFreq(ordinal);
+  return total;
+}
+
+function sortBySelectivity(groups: ResolvedTermGroup[]): ResolvedTermGroup[] {
+  return [...groups].sort((left, right) => left.docFreq - right.docFreq);
 }
 
 function phraseDocsForFieldResult(
@@ -67,32 +88,29 @@ function phraseDocsForFieldResult(
   if (!field.positions) return Result.err({ message: "field does not support phrase queries" });
   if (tokens.length === 0) return Result.ok(new Set());
 
-  const expandedTokens: number[][] = [];
+  const expandedTokens: ResolvedTermGroup[] = [];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     const isLast = index === tokens.length - 1;
     if (prefix && isLast) {
       const expansionRes = field.expandPrefixResult(token, SEARCH_PREFIX_TERM_LIMIT);
       if (Result.isError(expansionRes)) return expansionRes;
-      expandedTokens.push(expansionRes.value);
+      expandedTokens.push({ ordinals: expansionRes.value, docFreq: totalDocFreq(field, expansionRes.value) });
       continue;
     }
     const termOrdinal = field.lookupTerm(token);
-    expandedTokens.push(termOrdinal == null ? [] : [termOrdinal]);
+    const ordinals = termOrdinal == null ? [] : [termOrdinal];
+    expandedTokens.push({ ordinals, docFreq: totalDocFreq(field, ordinals) });
   }
 
   let candidateDocs: Set<number> | null = null;
-  const postingsByToken = expandedTokens.map((ordinals) => {
-    const docs = new Set<number>();
-    for (const ordinal of ordinals) unionInto(docs, docsForTerm(field, ordinal));
-    return docs;
-  });
-  for (const docs of postingsByToken) {
+  for (const group of sortBySelectivity(expandedTokens)) {
+    const docs = docsForOrdinals(field, group.ordinals);
     candidateDocs = intersectInto(candidateDocs, docs);
     if (candidateDocs.size === 0) return Result.ok(candidateDocs);
   }
 
-  const positionsByToken = expandedTokens.map((ordinals) => ordinals.map((ordinal) => postingDocs(field, ordinal)));
+  const positionsByToken = expandedTokens.map((group) => group.ordinals.map((ordinal) => postingDocs(field, ordinal)));
   const matches = new Set<number>();
   for (const docId of candidateDocs ?? []) {
     const positionSets: Array<Set<number>[]> = [];
@@ -137,19 +155,24 @@ function docsForTextFieldResult(
   if (phrase) return phraseDocsForFieldResult(field, tokens, prefix);
   if (tokens.length === 0) return Result.ok(new Set());
 
-  let intersection: Set<number> | null = null;
+  const groups: ResolvedTermGroup[] = [];
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     const isLast = index === tokens.length - 1;
-    let docs = new Set<number>();
     if (prefix && isLast) {
       const expansionRes = field.expandPrefixResult(token, SEARCH_PREFIX_TERM_LIMIT);
       if (Result.isError(expansionRes)) return expansionRes;
-      for (const termOrdinal of expansionRes.value) unionInto(docs, docsForTerm(field, termOrdinal));
+      groups.push({ ordinals: expansionRes.value, docFreq: totalDocFreq(field, expansionRes.value) });
     } else {
       const termOrdinal = field.lookupTerm(token);
-      if (termOrdinal != null) docs = docsForTerm(field, termOrdinal);
+      const ordinals = termOrdinal == null ? [] : [termOrdinal];
+      groups.push({ ordinals, docFreq: totalDocFreq(field, ordinals) });
     }
+  }
+
+  let intersection: Set<number> | null = null;
+  for (const group of sortBySelectivity(groups)) {
+    const docs = docsForOrdinals(field, group.ordinals);
     intersection = intersectInto(intersection, docs);
     if (intersection.size === 0) return Result.ok(intersection);
   }

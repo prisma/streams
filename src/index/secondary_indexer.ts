@@ -53,7 +53,6 @@ function binarySearch(values: bigint[], needle: bigint): number {
 const PAYLOAD_DECODER = new TextDecoder();
 const TERM_ENCODER = new TextEncoder();
 const MEMORY_PRESSURE_PAUSE = "__memory_pressure_pause__";
-const EXACT_APPEND_QUIET_PERIOD_MS = 600_000n;
 
 export class SecondaryIndexManager {
   private readonly cfg: Config;
@@ -72,6 +71,7 @@ export class SecondaryIndexManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly compacting = new Set<string>();
+  private readonly streamIdleTicks = new Map<string, { logicalSizeBytes: bigint; nextOffset: bigint; flatTicks: number }>();
   private timer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
@@ -122,6 +122,7 @@ export class SecondaryIndexManager {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.streamIdleTicks.clear();
   }
 
   enqueue(stream: string): void {
@@ -707,12 +708,40 @@ export class SecondaryIndexManager {
   }
 
   private shouldPauseExactBackgroundWork(stream: string): boolean {
-    if (this.hasCompanionBacklog(stream)) return true;
+    if (this.hasCompanionBacklog(stream)) {
+      this.streamIdleTicks.delete(stream);
+      return true;
+    }
     const streamRow = this.db.getStream(stream);
     if (!streamRow) return false;
-    if (streamRow.segment_in_progress !== 0) return true;
-    if (this.db.nowMs() - streamRow.last_append_ms < EXACT_APPEND_QUIET_PERIOD_MS) return true;
-    return this.db.countSegmentsForStream(stream) > this.db.countUploadedSegments(stream);
+    if (streamRow.segment_in_progress !== 0) {
+      this.streamIdleTicks.delete(stream);
+      return true;
+    }
+    if (streamRow.pending_bytes > 0n) {
+      this.streamIdleTicks.delete(stream);
+      return true;
+    }
+    if (this.db.countSegmentsForStream(stream) > this.db.countUploadedSegments(stream)) {
+      this.streamIdleTicks.delete(stream);
+      return true;
+    }
+
+    const requiredFlatTicks = Math.max(3, Math.ceil(60_000 / this.cfg.indexCheckIntervalMs));
+    const previous = this.streamIdleTicks.get(stream) ?? {
+      logicalSizeBytes: -1n,
+      nextOffset: -1n,
+      flatTicks: 0,
+    };
+    if (previous.logicalSizeBytes === streamRow.logical_size_bytes && previous.nextOffset === streamRow.next_offset) {
+      previous.flatTicks += 1;
+    } else {
+      previous.logicalSizeBytes = streamRow.logical_size_bytes;
+      previous.nextOffset = streamRow.next_offset;
+      previous.flatTicks = 0;
+    }
+    this.streamIdleTicks.set(stream, previous);
+    return previous.flatTicks < requiredFlatTicks;
   }
 
   private async persistRunResult(run: IndexRun): Promise<Result<number, SecondaryIndexBuildError>> {

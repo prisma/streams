@@ -25,6 +25,7 @@ import { Result } from "better-result";
 import { filterDocIdsByColumnResult } from "./search/col_runtime";
 import {
   type AggregateRequest,
+  cloneAggMeasureState,
   extractRollupContributionResult,
   extractRollupEligibility,
   formatAggMeasureState,
@@ -52,6 +53,8 @@ import type { AggMeasureState } from "./search/agg_format";
 import type { MetricsBlockSectionView } from "./profiles/metrics/block_format";
 import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
+import { RuntimeMemorySampler } from "./runtime_memory_sampler";
+import type { MemoryGuard } from "./memory";
 
 export type ReadFormat = "raw" | "json";
 
@@ -287,6 +290,8 @@ export class StreamReader {
   private readonly diskCache?: SegmentDiskCache;
   private readonly footerCache?: LruCache<string, FooterCacheEntry>;
   private readonly index?: StreamIndexLookup;
+  private readonly memorySampler?: RuntimeMemorySampler;
+  private readonly memory?: MemoryGuard;
 
   constructor(
     config: Config,
@@ -294,7 +299,9 @@ export class StreamReader {
     os: ObjectStore,
     registry: SchemaRegistryStore,
     diskCache?: SegmentDiskCache,
-    index?: StreamIndexLookup
+    index?: StreamIndexLookup,
+    memorySampler?: RuntimeMemorySampler,
+    memory?: MemoryGuard
   ) {
     this.config = config;
     this.db = db;
@@ -302,6 +309,8 @@ export class StreamReader {
     this.registry = registry;
     this.diskCache = diskCache;
     this.index = index;
+    this.memorySampler = memorySampler;
+    this.memory = memory;
     if (config.segmentFooterCacheEntries > 0) {
       this.footerCache = new LruCache(config.segmentFooterCacheEntries);
     }
@@ -788,18 +797,23 @@ export class StreamReader {
   async searchResult(args: { stream: string; request: SearchRequest }): Promise<Result<SearchResultBatch, ReaderError>> {
     const startedAt = Date.now();
     const { stream, request } = args;
+    const leaveSearchPhase = this.memorySampler?.enter("search", {
+      stream,
+      has_query: request.q != null,
+      over_limit: this.memory?.isOverLimit() === true,
+    });
     const srow = this.db.getStream(stream);
-    if (!srow || this.db.isDeleted(srow)) return Result.err({ kind: "not_found", message: "not_found" });
-    if (srow.expires_at_ms != null && this.db.nowMs() > srow.expires_at_ms) {
-      return Result.err({ kind: "gone", message: "stream expired" });
-    }
-
-    const regRes = this.registry.getRegistryResult(stream);
-    if (Result.isError(regRes)) return Result.err({ kind: "internal", message: regRes.error.message });
-    const registry = regRes.value;
-    if (!registry.search) return Result.err({ kind: "internal", message: "search is not configured for this stream" });
-
     try {
+      if (!srow || this.db.isDeleted(srow)) return Result.err({ kind: "not_found", message: "not_found" });
+      if (srow.expires_at_ms != null && this.db.nowMs() > srow.expires_at_ms) {
+        return Result.err({ kind: "gone", message: "stream expired" });
+      }
+
+      const regRes = this.registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) return Result.err({ kind: "internal", message: regRes.error.message });
+      const registry = regRes.value;
+      if (!registry.search) return Result.err({ kind: "internal", message: "search is not configured for this stream" });
+
       const snapshotEndSeq = srow.next_offset - 1n;
       const snapshotEndOffset = encodeOffset(srow.epoch, snapshotEndSeq);
       const coverageState = this.computePublishedCoverageState(stream, srow, registry);
@@ -1123,6 +1137,8 @@ export class StreamReader {
       });
     } catch (e: unknown) {
       return Result.err({ kind: "internal", message: errorMessage(e) });
+    } finally {
+      leaveSearchPhase?.();
     }
   }
 
@@ -1134,21 +1150,26 @@ export class StreamReader {
 
   async aggregateResult(args: { stream: string; request: AggregateRequest }): Promise<Result<AggregateResultBatch, ReaderError>> {
     const { stream, request } = args;
+    const leaveAggregatePhase = this.memorySampler?.enter("aggregate", {
+      stream,
+      rollup: request.rollup,
+      over_limit: this.memory?.isOverLimit() === true,
+    });
     const srow = this.db.getStream(stream);
-    if (!srow || this.db.isDeleted(srow)) return Result.err({ kind: "not_found", message: "not_found" });
-    if (srow.expires_at_ms != null && this.db.nowMs() > srow.expires_at_ms) {
-      return Result.err({ kind: "gone", message: "stream expired" });
-    }
-
-    const regRes = this.registry.getRegistryResult(stream);
-    if (Result.isError(regRes)) return Result.err({ kind: "internal", message: regRes.error.message });
-    const registry = regRes.value;
-    const rollup = registry.search?.rollups?.[request.rollup];
-    if (!registry.search || !rollup) {
-      return Result.err({ kind: "internal", message: "rollup is not configured for this stream" });
-    }
-
     try {
+      if (!srow || this.db.isDeleted(srow)) return Result.err({ kind: "not_found", message: "not_found" });
+      if (srow.expires_at_ms != null && this.db.nowMs() > srow.expires_at_ms) {
+        return Result.err({ kind: "gone", message: "stream expired" });
+      }
+
+      const regRes = this.registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) return Result.err({ kind: "internal", message: regRes.error.message });
+      const registry = regRes.value;
+      const rollup = registry.search?.rollups?.[request.rollup];
+      if (!registry.search || !rollup) {
+        return Result.err({ kind: "internal", message: "rollup is not configured for this stream" });
+      }
+
       const coverageState = this.computePublishedCoverageState(stream, srow, registry);
       const intervalMs = request.intervalMs;
       const intervalBig = BigInt(intervalMs);
@@ -1187,7 +1208,7 @@ export class StreamReader {
           if (!selectedMeasures.has(measureName)) continue;
           const existing = group.measures[measureName];
           if (!existing) {
-            group.measures[measureName] = structuredClone(state);
+            group.measures[measureName] = cloneAggMeasureState(state);
             continue;
           }
           group.measures[measureName] = mergeAggMeasureState(existing, state);
@@ -1387,6 +1408,8 @@ export class StreamReader {
       });
     } catch (e: unknown) {
       return Result.err({ kind: "internal", message: errorMessage(e) });
+    } finally {
+      leaveAggregatePhase?.();
     }
   }
 

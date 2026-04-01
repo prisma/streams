@@ -102,9 +102,10 @@ export class AggIntervalView {
     visit: (windowStartMs: number, group: AggWindowGroup) => void
   ): void {
     const decoded = this.decode();
-    for (let windowIndex = 0; windowIndex < decoded.windowStarts.length; windowIndex++) {
+    const startIndex = lowerBoundBigint(decoded.windowStarts, BigInt(startMsInclusive));
+    const endIndex = lowerBoundBigint(decoded.windowStarts, BigInt(endMsExclusive));
+    for (let windowIndex = startIndex; windowIndex < endIndex; windowIndex++) {
       const windowStartMs = Number(decoded.windowStarts[windowIndex]!);
-      if (windowStartMs < startMsInclusive || windowStartMs >= endMsExclusive) continue;
       const groupStart = decoded.windowGroupOffsets[windowIndex]!;
       const groupEnd = decoded.windowGroupOffsets[windowIndex + 1]!;
       for (let groupIndex = groupStart; groupIndex < groupEnd; groupIndex++) {
@@ -234,6 +235,17 @@ export class AggIntervalView {
     this.decoded = { windowStarts, windowGroupOffsets, dimensions, measures };
     return this.decoded;
   }
+}
+
+function lowerBoundBigint(values: bigint[], target: bigint): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (values[mid]! < target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
 }
 
 export class AggSectionView {

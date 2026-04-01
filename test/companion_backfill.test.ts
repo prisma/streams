@@ -662,7 +662,7 @@ describe("bundled companions and backfill", () => {
         const ftsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
         expect(ftsCompanion).not.toBeNull();
         expect(ftsCompanion?.getField("message")).not.toBeNull();
-        expect(store.stats().gets).toBe(1);
+        expect(store.stats().gets).toBe(2);
 
         let aggError: unknown = null;
         try {
@@ -672,7 +672,7 @@ describe("bundled companions and backfill", () => {
         }
         expect(aggError).not.toBeNull();
         expect(String((aggError as { message?: string } | null)?.message ?? aggError).length).toBeGreaterThan(0);
-        expect(store.stats().gets).toBe(1);
+        expect(store.stats().gets).toBe(3);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

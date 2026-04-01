@@ -171,8 +171,8 @@ The runtime no longer caches decoded bundled sections broadly.
 
 It now caches:
 
-- raw `.cix` bytes
-- the parsed `PSCIX2` section table
+- a tiny byte-budgeted cache of parsed `PSCIX2` section tables
+- a byte-budgeted cache of hot non-aggregate section payloads
 
 On demand it decodes only the requested family:
 
@@ -189,7 +189,9 @@ Examples:
 - `AggSectionView.getInterval(...)`
 
 This is the key runtime cutover. The bundle is the storage container, but the
-decode unit is now the requested section family.
+fetch and decode units are now the section table plus the requested family
+payload. FTS- or column-only reads do not fetch aggregate bytes unless they
+explicitly need them.
 
 ## Build Model
 
@@ -199,13 +201,15 @@ it no longer builds one shared all-family in-memory structure.
 For one sealed segment it now:
 
 1. loads the segment bytes once
-2. runs separate family-specific passes over the decoded records
-3. extracts only the field subset each family requires
-4. encodes each family directly into its binary section payload
-5. wraps the section payloads into one `PSCIX2` `.cix`
+2. parses each record once
+3. extracts the union of required search fields once per record
+4. fans those parsed/raw values into the enabled family builders
+5. encodes each family directly into its binary section payload
+6. wraps the section payloads into one `PSCIX2` `.cix`
 
 This reduces the previous multi-family fan-out problem where one decoded record
-fed several unrelated long-lived structures at the same time.
+fed several unrelated long-lived structures at the same time, and it avoids
+reparsing the same segment once per family or once per FTS field.
 
 ## Compression Policy
 

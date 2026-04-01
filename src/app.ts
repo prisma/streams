@@ -135,7 +135,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         onSegmentsUploaded: (stream) => indexer.enqueue(stream),
         onMetadataChanged: (stream) => notifier.notifyDetailsChanged(stream),
       });
-      const reader = new StreamReader(config, db, store, registry, diskCache, indexer);
+      const reader = new StreamReader(config, db, store, registry, diskCache, indexer, memorySampler, memory);
       const segmenter =
         config.segmenterWorkers > 0
           ? new SegmenterWorkerPool(config, config.segmenterWorkers, {}, segmenterHooks)
