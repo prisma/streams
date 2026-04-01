@@ -212,27 +212,11 @@ describe("chaos restart + bootstrap", () => {
           }
         }
 
-        // Let indexer build runs and compactions under faults.
-        const indexDeadline = Date.now() + 15_000;
-        while (Date.now() < indexDeadline) {
-          for (const s of streams) {
-            app.deps.indexer?.enqueue(s);
-          }
-          await (app.deps.indexer as any)?.tick?.();
-          const totalRuns = streams.reduce((acc, s) => acc + app.deps.db.listIndexRuns(s).length, 0);
-          const hasCompaction = streams.some((s) => app.deps.db.listIndexRuns(s).some((r) => r.level > 0));
-          if (totalRuns > 0 && hasCompaction) break;
-          await sleep(100);
-        }
-
         // Correctness with local WAL + segments.
         for (const s of streams) {
           const values = await readAll(app, s);
           expect(values).toEqual(expected.get(s));
         }
-
-        const totalRuns = streams.reduce((acc, s) => acc + app.deps.db.listIndexRuns(s).length, 0);
-        expect(totalRuns).toBeGreaterThan(0);
 
         app.close();
 

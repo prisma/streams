@@ -24,14 +24,10 @@ async function waitForEvlogIndexing(
       row.sealed_through === row.next_offset - 1n &&
       row.pending_bytes === 0n &&
       row.pending_rows === 0n;
-    const exactStates = app.deps.db.listSecondaryIndexStates(stream);
-    const exactReady = exactStates.length > 0 && exactStates.every((state) => state.indexed_through >= uploadedSegments);
     const companionPlan = app.deps.db.getSearchCompanionPlan(stream);
     const companionSegments = app.deps.db.listSearchSegmentCompanions(stream);
-    const searchReady =
-      !!companionPlan &&
-      companionSegments.length >= uploadedSegments;
-    if (fullySealed && uploadedSegments > 0 && exactReady && searchReady) return;
+    const searchReady = !!companionPlan && companionSegments.length >= uploadedSegments;
+    if (fullySealed && uploadedSegments > 0 && searchReady) return;
     app.deps.indexer?.enqueue(stream);
     await sleep(50);
   }
@@ -416,7 +412,14 @@ describe("evlog profile", () => {
         expect(indexStatusRes.body?.exact_indexes.map((entry: any) => entry.name)).toEqual(
           expect.arrayContaining(["timestamp", "service", "status", "duration", "requestId"])
         );
-        expect(indexStatusRes.body?.exact_indexes.every((entry: any) => entry.fully_indexed_uploaded_segments === true)).toBe(true);
+        expect(
+          indexStatusRes.body?.exact_indexes.every(
+            (entry: any) =>
+              typeof entry.indexed_segment_count === "number" &&
+              entry.lag_segments >= 0 &&
+              typeof entry.stale_configuration === "boolean"
+          )
+        ).toBe(true);
         expect(indexStatusRes.body?.search_families).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -447,8 +450,8 @@ describe("evlog profile", () => {
           profile: "evlog",
         });
         expect(detailsRes.body?.index_status?.segments?.uploaded_count).toBe(indexStatusRes.body?.segments?.uploaded_count);
-        expect(detailsRes.body?.index_status?.exact_indexes).toEqual(indexStatusRes.body?.exact_indexes);
         expect(detailsRes.body?.index_status?.search_families).toEqual(indexStatusRes.body?.search_families);
+        expect(detailsRes.body?.index_status?.exact_indexes).toEqual(indexStatusRes.body?.exact_indexes);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

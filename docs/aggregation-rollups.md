@@ -151,8 +151,11 @@ The first implementation uses **per-segment companions**:
 - one immutable bundled `.cix` per uploaded segment
 - each current `.cix` may include an `agg` section with all configured rollups
   for that segment
+- the `agg` section is a binary `agg2` payload keyed by plan-relative rollup
+  and interval ordinals
 - each rollup contains one or more configured intervals
-- each interval contains sparse time-window buckets
+- each interval stores sparse time-window buckets in interval-local columnar
+  payloads
 - each bucket contains one or more dimension groups and measure states
 
 SQLite stores only:
@@ -165,6 +168,8 @@ This means:
 - object store is the durable rollup store
 - SQLite only tracks local catalog state
 - bootstrap-from-R2 restores bundled companion catalog state from manifests
+- query reads load only the requested rollup/interval view instead of decoding
+  the whole bundled companion
 
 ## Query Surface
 

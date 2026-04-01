@@ -1,62 +1,56 @@
 import { describe, expect, test } from "bun:test";
 import { Result } from "better-result";
-import { createBitset, bitsetSet } from "../src/search/bitset";
-import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "../src/search/column_encoding";
+import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
+import { decodeColSegmentCompanionResult, encodeColSegmentCompanion, type ColSectionInput } from "../src/search/col_format";
 import { filterDocIdsByColumnResult } from "../src/search/col_runtime";
-import type { ColSegmentCompanion } from "../src/search/col_format";
 
-function b64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
-}
-
-function concat(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
-  }
-  return out;
-}
-
-function buildCompanion(): ColSegmentCompanion {
-  const existsAll = createBitset(4);
-  for (let i = 0; i < 4; i++) bitsetSet(existsAll, i);
-  const existsSome = createBitset(4);
-  bitsetSet(existsSome, 0);
-  bitsetSet(existsSome, 2);
-  return {
-    version: 1,
-    stream: "s",
-    segment_index: 0,
+function buildCompanion() {
+  const input: ColSectionInput = {
     doc_count: 4,
     fields: {
       status: {
         kind: "integer",
-        exists_b64: b64(existsAll),
-        values_b64: b64(concat([encodeSortableInt64(200n), encodeSortableInt64(404n), encodeSortableInt64(500n), encodeSortableInt64(503n)])),
-        min_b64: b64(encodeSortableInt64(200n)),
-        max_b64: b64(encodeSortableInt64(503n)),
+        doc_ids: [0, 1, 2, 3],
+        values: [200n, 404n, 500n, 503n],
+        min: 200n,
+        max: 503n,
       },
       duration: {
         kind: "float",
-        exists_b64: b64(existsAll),
-        values_b64: b64(
-          concat([encodeSortableFloat64(1.5), encodeSortableFloat64(4.5), encodeSortableFloat64(9.75), encodeSortableFloat64(12.25)])
-        ),
-        min_b64: b64(encodeSortableFloat64(1.5)),
-        max_b64: b64(encodeSortableFloat64(12.25)),
+        doc_ids: [0, 1, 2, 3],
+        values: [1.5, 4.5, 9.75, 12.25],
+        min: 1.5,
+        max: 12.25,
       },
       ok: {
         kind: "bool",
-        exists_b64: b64(existsSome),
-        values_b64: b64(concat([encodeSortableBool(true), encodeSortableBool(false)])),
-        min_b64: b64(encodeSortableBool(false)),
-        max_b64: b64(encodeSortableBool(true)),
+        doc_ids: [0, 2],
+        values: [true, false],
+        min: false,
+        max: true,
       },
     },
   };
+  const plan = buildDesiredSearchCompanionPlan({
+    apiVersion: "durable.streams/schema-registry/v1",
+    schema: "s",
+    currentVersion: 1,
+    boundaries: [],
+    schemas: {},
+    lenses: {},
+    search: {
+      primaryTimestampField: "status",
+      fields: {
+        status: { kind: "integer", bindings: [{ version: 1, jsonPointer: "/status" }], column: true },
+        duration: { kind: "float", bindings: [{ version: 1, jsonPointer: "/duration" }], column: true },
+        ok: { kind: "bool", bindings: [{ version: 1, jsonPointer: "/ok" }], column: true },
+      },
+    },
+  });
+  const encoded = encodeColSegmentCompanion(input, plan);
+  const decoded = decodeColSegmentCompanionResult(encoded, plan);
+  if (Result.isError(decoded)) throw new Error(decoded.error.message);
+  return decoded.value;
 }
 
 describe(".col runtime", () => {

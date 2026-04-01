@@ -29,6 +29,7 @@ and tooling.
 - [architecture.md](./architecture.md) — system architecture and data flow
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
 - [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
+- [storage-layout-architecture.md](./storage-layout-architecture.md) — `PSCIX2` bundled companion storage layout and per-family binary section codecs
 - [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md) — bundled `.cix` companions and async backfill for existing streams
 - [low-latency-reads-under-ingest.md](./low-latency-reads-under-ingest.md) — future architecture for stable `/_search` and `/_aggregate` latency under heavy ingest
 - [ui-search-integration.md](./ui-search-integration.md) — how to build a filtered, chronologically ordered stream UI with `/_search` and `/_details`

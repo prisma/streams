@@ -49,7 +49,7 @@ import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema
 import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./search/column_encoding";
 import type { SearchRollupConfig } from "./schema/registry";
 import type { AggMeasureState } from "./search/agg_format";
-import type { MetricsBlockSegmentCompanion } from "./profiles/metrics/block_format";
+import type { MetricsBlockSectionView } from "./profiles/metrics/block_format";
 import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
 
@@ -1251,10 +1251,10 @@ export class StreamReader {
 
       const scanMetricsBlockForAggregateResult = async (
         seg: SegmentRow,
-        companion: MetricsBlockSegmentCompanion,
+        companion: MetricsBlockSectionView,
         scanRanges: Array<{ startMs: number; endMs: number }>
       ): Promise<Result<void, ReaderError>> => {
-        for (const record of companion.records) {
+        for (const record of companion.records()) {
           const offsetSeq = seg.start_offset + BigInt(record.doc_id);
           const timestampMs = record.windowStartMs;
           const inRange = scanRanges.some((range) => timestampMs >= range.startMs && timestampMs < range.endMs);
@@ -1283,19 +1283,16 @@ export class StreamReader {
         let coveredAlignedWindows = false;
         if (eligibility.eligible && this.index && hasFullWindows) {
           const companion = await this.index.getAggSegmentCompanion(stream, seg.segment_index);
-          const intervalCompanion = companion?.rollups?.[request.rollup]?.intervals?.[String(intervalMs)];
+          const intervalCompanion = companion?.getInterval(request.rollup, intervalMs);
           if (intervalCompanion) {
             coveredAlignedWindows = true;
             indexedSegmentSet.add(seg.segment_index);
             indexFamiliesUsed.add("agg");
             usedRollups = true;
-            for (const window of intervalCompanion.windows) {
-              if (window.start_ms < fullStartMs || window.start_ms >= fullEndMs) continue;
-              for (const group of window.groups) {
-                if (!matchesExactFilters(group.dimensions)) continue;
-                mergeBucketMeasures(window.start_ms, group.dimensions, group.measures);
-              }
-            }
+            intervalCompanion.forEachGroupInRange(fullStartMs, fullEndMs, (windowStartMs, group) => {
+              if (!matchesExactFilters(group.dimensions)) return;
+              mergeBucketMeasures(windowStartMs, group.dimensions, group.measures);
+            });
           }
         }
 
@@ -1496,21 +1493,23 @@ export class StreamReader {
     const companion = await this.index.getColSegmentCompanion(stream, segmentIndex);
     if (!companion) return true;
 
-    if (companion.primary_timestamp_field === bound.sort.field && companion.min_timestamp_ms != null && companion.max_timestamp_ms != null) {
+    if (companion.primaryTimestampField === bound.sort.field && companion.minTimestampMs() != null && companion.maxTimestampMs() != null) {
       const target = bound.after;
       if (typeof target !== "bigint") return true;
-      const minMs = BigInt(companion.min_timestamp_ms);
-      const maxMs = BigInt(companion.max_timestamp_ms);
+      const minMs = companion.minTimestampMs()!;
+      const maxMs = companion.maxTimestampMs()!;
       return bound.sort.direction === "desc" ? minMs <= target : maxMs >= target;
     }
 
-    const field = companion.fields[bound.sort.field];
-    if (!field?.min_b64 || !field.max_b64) return true;
-    const minEncoded = Uint8Array.from(Buffer.from(field.min_b64, "base64"));
-    const maxEncoded = Uint8Array.from(Buffer.from(field.max_b64, "base64"));
-    return bound.sort.direction === "desc"
-      ? compareEncodedValues(minEncoded, bound.encoded) <= 0
-      : compareEncodedValues(maxEncoded, bound.encoded) >= 0;
+    const field = companion.getField(bound.sort.field);
+    if (!field) return true;
+    const minValue = field.minValue();
+    const maxValue = field.maxValue();
+    if (minValue == null || maxValue == null) return true;
+    const boundValue = bound.after;
+    const cmpMin = compareComparableValues(minValue, boundValue);
+    const cmpMax = compareComparableValues(maxValue, boundValue);
+    return bound.sort.direction === "desc" ? cmpMin <= 0 : cmpMax >= 0;
   }
 
   private async segmentMayOverlapTimeRange(
@@ -1522,17 +1521,17 @@ export class StreamReader {
   ): Promise<boolean> {
     if (!this.index) return true;
     const companion = await this.index.getColSegmentCompanion(stream, segmentIndex);
-    if (companion && companion.primary_timestamp_field === timestampField) {
-      const minMs = companion.min_timestamp_ms == null ? null : Number(companion.min_timestamp_ms);
-      const maxMs = companion.max_timestamp_ms == null ? null : Number(companion.max_timestamp_ms);
+    if (companion && companion.primaryTimestampField === timestampField) {
+      const minMs = companion.minTimestampMs() == null ? null : Number(companion.minTimestampMs());
+      const maxMs = companion.maxTimestampMs() == null ? null : Number(companion.maxTimestampMs());
       if (Number.isFinite(minMs) && Number.isFinite(maxMs)) {
         return (maxMs as number) >= startMs && (minMs as number) < endMs;
       }
     }
     const metricsBlock = await this.index.getMetricsBlockSegmentCompanion(stream, segmentIndex);
     if (!metricsBlock) return true;
-    const minMs = metricsBlock.min_window_start_ms;
-    const maxMs = metricsBlock.max_window_end_ms;
+    const minMs = metricsBlock.minWindowStartMs;
+    const maxMs = metricsBlock.maxWindowEndMs;
     if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return true;
     return (maxMs as number) >= startMs && (minMs as number) < endMs;
   }

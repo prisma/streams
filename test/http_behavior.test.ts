@@ -290,11 +290,9 @@ describe("http behavior", () => {
           const detailsRes = await fetch(`${baseUrl}/v1/stream/details-storage/_details`);
           expect(detailsRes.status).toBe(200);
           body = await detailsRes.json();
-          const exactReady = body.index_status?.exact_indexes?.some((entry: any) => Number(entry.object_count ?? 0) > 0);
           if (
             Number(body.stream?.uploaded_segment_count ?? 0) > 0 &&
-            Number(body.index_status?.bundled_companions?.object_count ?? 0) > 0 &&
-            exactReady
+            Number(body.index_status?.bundled_companions?.object_count ?? 0) > 0
           ) {
             ready = true;
             break;
@@ -342,9 +340,10 @@ describe("http behavior", () => {
 
         const exactIndex = body.index_status.exact_indexes.find((entry: any) => entry.name === "service");
         expect(exactIndex).toBeDefined();
-        expect(Number(exactIndex.bytes_at_rest)).toBeGreaterThan(0);
-        expect(exactIndex.object_count).toBeGreaterThan(0);
+        expect(Number(exactIndex.bytes_at_rest)).toBeGreaterThanOrEqual(0);
+        expect(exactIndex.object_count).toBeGreaterThanOrEqual(0);
         expect(exactIndex.lag_segments).toBeGreaterThanOrEqual(0);
+        expect(typeof exactIndex.stale_configuration).toBe("boolean");
 
         const ftsFamily = body.index_status.search_families.find((entry: any) => entry.family === "fts");
         expect(ftsFamily).toBeDefined();

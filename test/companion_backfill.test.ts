@@ -652,14 +652,16 @@ describe("bundled companions and backfill", () => {
         if (!aggSection) return;
 
         const corrupted = bytes.slice();
-        corrupted[aggSection.offset] = corrupted[aggSection.offset] === 0 ? 1 : 0;
+        for (let index = 0; index < Math.min(8, aggSection.length); index++) {
+          corrupted[aggSection.offset + index] = 0xff;
+        }
         await store.put(row.object_key, corrupted);
 
         store.resetStats();
         const companionIndex = (app.deps.indexer as any).companionIndex;
         const ftsCompanion = await companionIndex.getFtsSegmentCompanion(STREAM, 0);
         expect(ftsCompanion).not.toBeNull();
-        expect(Object.keys(ftsCompanion.fields)).toContain("message");
+        expect(ftsCompanion?.getField("message")).not.toBeNull();
         expect(store.stats().gets).toBe(1);
 
         let aggError: unknown = null;

@@ -18,7 +18,6 @@ import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import type { MemoryGuard } from "../memory";
 import { retry } from "../util/retry";
 import { searchCompanionObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
-import { createBitset, bitsetSet } from "./bitset";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
   decodeBundledSegmentCompanionSectionFromTocResult,
@@ -28,21 +27,21 @@ import {
   encodeCompanionSectionPayload,
   type BundledSegmentCompanion,
   type CompanionSectionKind,
+  type CompanionSectionInputMap,
   type CompanionSectionMap,
   type CompanionToc,
   type EncodedCompanionSectionPayload,
 } from "./companion_format";
-import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./column_encoding";
-import type { ColFieldData, ColSegmentCompanion } from "./col_format";
+import type { ColFieldInput, ColScalar, ColSectionInput, ColSectionView } from "./col_format";
 import {
   analyzeTextValue,
   canonicalizeColumnValue,
   extractRawSearchValuesForFieldsResult,
   normalizeKeywordValue,
 } from "./schema";
-import type { FtsFieldCompanion, FtsPosting, FtsSegmentCompanion } from "./fts_format";
+import type { FtsFieldInput, FtsPosting, FtsSectionInput, FtsSectionView } from "./fts_format";
 import { buildMetricsBlockRecord } from "../profiles/metrics/normalize";
-import type { MetricsBlockSegmentCompanion } from "../profiles/metrics/block_format";
+import type { MetricsBlockSectionInput, MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import { parseDurationMsResult } from "../util/duration";
 import {
   cloneAggMeasureState,
@@ -50,7 +49,7 @@ import {
   mergeAggMeasureState,
   rollupRequiredFieldNames,
 } from "./aggregate";
-import type { AggMeasureState, AggSegmentCompanion } from "./agg_format";
+import type { AggMeasureState, AggSectionInput, AggWindowGroup, AggSectionView } from "./agg_format";
 import type { SearchRollupConfig } from "../schema/registry";
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
@@ -61,14 +60,15 @@ function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionB
 
 type ColumnFieldBuilder = {
   config: SearchFieldConfig;
-  kind: ColFieldData["kind"];
-  values: Array<bigint | number | boolean | null>;
+  kind: ColFieldInput["kind"];
+  docIds: number[];
+  values: ColScalar[];
   invalid: boolean;
 };
 
 type FtsFieldBuilder = {
   config: SearchFieldConfig;
-  companion: FtsFieldCompanion;
+  companion: FtsFieldInput;
 };
 
 type GroupBuilder = {
@@ -77,7 +77,7 @@ type GroupBuilder = {
 };
 
 type MetricsBlockBuilder = {
-  records: MetricsBlockSegmentCompanion["records"];
+  records: MetricsBlockSectionInput["records"];
   minWindowStartMs: number | undefined;
   maxWindowEndMs: number | undefined;
 };
@@ -93,28 +93,11 @@ async function yieldToEventLoop(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.byteLength;
-  }
-  return out;
-}
-
 function compareValues(left: bigint | number | boolean, right: bigint | number | boolean): number {
   if (typeof left === "bigint" && typeof right === "bigint") return left < right ? -1 : left > right ? 1 : 0;
   if (typeof left === "number" && typeof right === "number") return left < right ? -1 : left > right ? 1 : 0;
   if (typeof left === "boolean" && typeof right === "boolean") return left === right ? 0 : left ? 1 : -1;
   return String(left).localeCompare(String(right));
-}
-
-function encodeColValue(kind: ColFieldData["kind"], value: bigint | number | boolean): Uint8Array {
-  if (kind === "float") return encodeSortableFloat64(value as number);
-  if (kind === "bool") return encodeSortableBool(value as boolean);
-  return encodeSortableInt64(value as bigint);
 }
 
 function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSectionKind> {
@@ -172,19 +155,19 @@ export class SearchCompanionManager {
     this.queue.add(stream);
   }
 
-  async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSegmentCompanion | null> {
+  async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null> {
     return (await this.getSectionCompanion(stream, segmentIndex, "col")) ?? null;
   }
 
-  async getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSegmentCompanion | null> {
+  async getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null> {
     return (await this.getSectionCompanion(stream, segmentIndex, "fts")) ?? null;
   }
 
-  async getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSegmentCompanion | null> {
+  async getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null> {
     return (await this.getSectionCompanion(stream, segmentIndex, "agg")) ?? null;
   }
 
-  async getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null> {
+  async getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSectionView | null> {
     return (await this.getSectionCompanion(stream, segmentIndex, "mblk")) ?? null;
   }
 
@@ -202,7 +185,9 @@ export class SearchCompanionManager {
       if (!parseSectionKinds(row).has(kind)) return null;
       const bundle = await this.loadBundleBytesResult(row);
       if (Result.isError(bundle)) throw dsError(bundle.error.message);
-      const decoded = decodeBundledSegmentCompanionSectionFromTocResult(bundle.value.bytes, bundle.value.toc, kind);
+      const plan = this.parsePlanRowResult(planRow);
+      if (Result.isError(plan)) throw dsError(plan.error.message);
+      const decoded = decodeBundledSegmentCompanionSectionFromTocResult(bundle.value.bytes, bundle.value.toc, kind, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
       return decoded.value ?? null;
     } finally {
@@ -218,6 +203,18 @@ export class SearchCompanionManager {
     const current = this.db.getSearchCompanionPlan(stream);
     if (current && current.plan_hash === desiredHash) return current;
     return null;
+  }
+
+  private parsePlanRowResult(planRow: SearchCompanionPlanRow): Result<SearchCompanionPlan, CompanionBuildError> {
+    try {
+      const parsed = JSON.parse(planRow.plan_json) as SearchCompanionPlan;
+      if (!parsed || !parsed.families || !Array.isArray(parsed.fields) || !Array.isArray(parsed.rollups)) {
+        return invalidCompanionBuild("invalid bundled companion plan json");
+      }
+      return Result.ok(parsed);
+    } catch (e: unknown) {
+      return invalidCompanionBuild(String((e as any)?.message ?? e));
+    }
   }
 
   private async loadBundleBytesResult(row: SearchSegmentCompanionRow): Promise<Result<CachedCompanionBundle, CompanionBuildError>> {
@@ -467,31 +464,32 @@ export class SearchCompanionManager {
     const sectionPayloads: EncodedCompanionSectionPayload[] = [];
     const sectionKinds: CompanionSectionKind[] = [];
     const sectionSizes: Record<string, number> = {};
-    const addSection = (kind: CompanionSectionKind, payload: Uint8Array): void => {
-      sectionPayloads.push({ kind, payload });
+    const addSection = (payload: EncodedCompanionSectionPayload): void => {
+      sectionPayloads.push(payload);
+      const kind = payload.kind;
       sectionKinds.push(kind);
-      sectionSizes[kind] = payload.byteLength;
+      sectionSizes[kind] = payload.payload.byteLength;
     };
 
     if (plan.families.col) {
       const colRes = await this.buildColSectionResult(registry, seg, segmentBytes);
       if (Result.isError(colRes)) return colRes;
-      addSection("col", encodeCompanionSectionPayload("col", colRes.value));
+      addSection(encodeCompanionSectionPayload("col", colRes.value, plan));
     }
     if (plan.families.fts) {
       const ftsRes = await this.buildFtsSectionResult(registry, seg, segmentBytes);
       if (Result.isError(ftsRes)) return ftsRes;
-      addSection("fts", encodeCompanionSectionPayload("fts", ftsRes.value));
+      addSection(encodeCompanionSectionPayload("fts", ftsRes.value, plan));
     }
     if (plan.families.agg) {
       const aggRes = await this.buildAggSectionResult(registry, seg, segmentBytes);
       if (Result.isError(aggRes)) return aggRes;
-      addSection("agg", encodeCompanionSectionPayload("agg", aggRes.value));
+      addSection(encodeCompanionSectionPayload("agg", aggRes.value, plan));
     }
     if (plan.families.mblk) {
       const metricsRes = await this.buildMetricsBlockSectionResult(seg, segmentBytes);
       if (Result.isError(metricsRes)) return metricsRes;
-      addSection("mblk", encodeCompanionSectionPayload("mblk", metricsRes.value));
+      addSection(encodeCompanionSectionPayload("mblk", metricsRes.value, plan));
     }
 
     return Result.ok({
@@ -514,7 +512,7 @@ export class SearchCompanionManager {
   ): Promise<Result<BundledSegmentCompanion, CompanionBuildError>> {
     const encodedRes = await this.buildEncodedBundledCompanionResult(registry, plan, planGeneration, seg);
     if (Result.isError(encodedRes)) return encodedRes;
-    const decodedRes = decodeBundledSegmentCompanionResult(encodedRes.value.payload);
+    const decodedRes = decodeBundledSegmentCompanionResult(encodedRes.value.payload, plan);
     if (Result.isError(decodedRes)) return invalidCompanionBuild(decodedRes.error.message);
     return Result.ok(decodedRes.value);
   }
@@ -523,10 +521,10 @@ export class SearchCompanionManager {
     registry: SchemaRegistry,
     seg: SegmentRow,
     segmentBytes: Uint8Array
-  ): Promise<Result<ColSegmentCompanion, CompanionBuildError>> {
+  ): Promise<Result<ColSectionInput, CompanionBuildError>> {
     const colBuilders = this.createColBuilders(registry);
     const fieldNames = Array.from(colBuilders.keys());
-    const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ offset, parsed, parsedOk }) => {
+    const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, offset, parsed, parsedOk }) => {
       let rawSearchValues: Map<string, unknown[]> | null = null;
       if (parsedOk) {
         const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNames);
@@ -534,10 +532,7 @@ export class SearchCompanionManager {
         rawSearchValues = rawValuesRes.value;
       }
       for (const [fieldName, builder] of colBuilders) {
-        if (builder.invalid) {
-          builder.values.push(null);
-          continue;
-        }
+        if (builder.invalid) continue;
         const rawValues = rawSearchValues?.get(fieldName) ?? [];
         const colValues: Array<bigint | number | boolean> = [];
         for (const rawValue of rawValues) {
@@ -546,22 +541,24 @@ export class SearchCompanionManager {
         }
         if (colValues.length > 1) {
           builder.invalid = true;
-          builder.values.push(null);
           continue;
         }
-        builder.values.push(colValues.length === 1 ? colValues[0]! : null);
+        if (colValues.length === 1) {
+          builder.docIds.push(docCount);
+          builder.values.push(colValues[0]!);
+        }
       }
       return Result.ok(undefined);
     });
     if (Result.isError(docCountRes)) return docCountRes;
-    return Result.ok(this.finalizeColSection(registry, seg, colBuilders, docCountRes.value));
+    return Result.ok(this.finalizeColSection(registry, colBuilders, docCountRes.value));
   }
 
   private async buildFtsSectionResult(
     registry: SchemaRegistry,
     seg: SegmentRow,
     segmentBytes: Uint8Array
-  ): Promise<Result<FtsSegmentCompanion, CompanionBuildError>> {
+  ): Promise<Result<FtsSectionInput, CompanionBuildError>> {
     const ftsFieldEntries = Object.entries(registry.search?.fields ?? {})
       .filter(([, field]) => field.kind === "text" || (field.kind === "keyword" && field.prefix === true))
       .sort((a, b) => a[0].localeCompare(b[0]));
@@ -573,7 +570,7 @@ export class SearchCompanionManager {
       builders.set(fieldName, fieldRes.value.builder);
       docCount = fieldRes.value.docCount;
     }
-    return Result.ok(this.finalizeFtsSection(seg, builders, docCount));
+    return Result.ok(this.finalizeFtsSection(builders, docCount));
   }
 
   private async buildFtsFieldResult(
@@ -600,7 +597,6 @@ export class SearchCompanionManager {
         }
       }
       if (textValues.length === 0) {
-        if (fieldCompanion.doc_lengths) fieldCompanion.doc_lengths.push(0);
         return Result.ok(undefined);
       }
       fieldCompanion.exists_docs.push(docCount);
@@ -615,7 +611,6 @@ export class SearchCompanionManager {
         return Result.ok(undefined);
       }
       let position = 0;
-      let docLength = 0;
       for (const value of textValues) {
         const tokens = analyzeTextValue(value, builder.config.analyzer);
         for (const token of tokens) {
@@ -628,10 +623,8 @@ export class SearchCompanionManager {
           }
           fieldCompanion.terms[token] = postings;
           position += 1;
-          docLength += 1;
         }
       }
-      fieldCompanion.doc_lengths?.push(docLength);
       return Result.ok(undefined);
     });
     if (Result.isError(docCountRes)) return docCountRes;
@@ -642,8 +635,8 @@ export class SearchCompanionManager {
     registry: SchemaRegistry,
     seg: SegmentRow,
     segmentBytes: Uint8Array
-  ): Promise<Result<AggSegmentCompanion, CompanionBuildError>> {
-    const encodedRollups: AggSegmentCompanion["rollups"] = {};
+  ): Promise<Result<AggSectionInput, CompanionBuildError>> {
+    const encodedRollups: AggSectionInput["rollups"] = {};
     for (const [rollupName, rollup] of Object.entries(registry.search?.rollups ?? {}).sort((a, b) => a[0].localeCompare(b[0]))) {
       const parsedIntervalsRes = this.parseRollupIntervalsResult(rollup);
       if (Result.isError(parsedIntervalsRes)) return parsedIntervalsRes;
@@ -664,18 +657,13 @@ export class SearchCompanionManager {
       if (Result.isError(buildRes)) return buildRes;
       encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(intervalMap) };
     }
-    return Result.ok({
-      version: 1,
-      stream: seg.stream,
-      segment_index: seg.segment_index,
-      rollups: encodedRollups,
-    });
+    return Result.ok({ rollups: encodedRollups });
   }
 
   private async buildMetricsBlockSectionResult(
     seg: SegmentRow,
     segmentBytes: Uint8Array
-  ): Promise<Result<MetricsBlockSegmentCompanion, CompanionBuildError>> {
+  ): Promise<Result<MetricsBlockSectionInput, CompanionBuildError>> {
     const builder: MetricsBlockBuilder = { records: [], minWindowStartMs: undefined, maxWindowEndMs: undefined };
     const buildRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, parsed, parsedOk }) => {
       if (!parsedOk) return Result.ok(undefined);
@@ -694,70 +682,46 @@ export class SearchCompanionManager {
       return Result.ok(undefined);
     });
     if (Result.isError(buildRes)) return buildRes;
-    return Result.ok(this.finalizeMetricsBlockSection(seg, builder));
+    return Result.ok(this.finalizeMetricsBlockSection(builder));
   }
 
   private createColBuilders(registry: SchemaRegistry): Map<string, ColumnFieldBuilder> {
     const columnFields = Object.entries(registry.search?.fields ?? {}).filter(([, field]) => field.column === true);
     const builders = new Map<string, ColumnFieldBuilder>();
     for (const [fieldName, field] of columnFields) {
-      builders.set(fieldName, { config: field, kind: field.kind, values: [], invalid: false });
+      builders.set(fieldName, { config: field, kind: field.kind, docIds: [], values: [], invalid: false });
     }
     return builders;
   }
 
   private finalizeColSection(
     registry: SchemaRegistry,
-    seg: SegmentRow,
     builders: Map<string, ColumnFieldBuilder>,
     docCount: number
-  ): ColSegmentCompanion {
-    const fields: Record<string, ColFieldData> = {};
-    let minTimestampMs: bigint | null = null;
-    let maxTimestampMs: bigint | null = null;
+  ): ColSectionInput {
+    const fields: Record<string, ColFieldInput> = {};
     const primaryTimestampField = registry.search?.primaryTimestampField;
     for (const [fieldName, builder] of builders) {
       if (builder.invalid) continue;
-      const exists = createBitset(docCount);
-      const encodedParts: Uint8Array[] = [];
       let minValue: bigint | number | boolean | null = null;
       let maxValue: bigint | number | boolean | null = null;
-      for (let docId = 0; docId < builder.values.length; docId++) {
-        const value = builder.values[docId];
-        if (value == null) continue;
-        bitsetSet(exists, docId);
-        if (builder.kind === "integer" || builder.kind === "date") {
-          encodedParts.push(encodeSortableInt64(value as bigint));
-        } else if (builder.kind === "float") {
-          encodedParts.push(encodeSortableFloat64(value as number));
-        } else if (builder.kind === "bool") {
-          encodedParts.push(encodeSortableBool(value as boolean));
-        }
+      for (const value of builder.values) {
         if (minValue == null || compareValues(value, minValue) < 0) minValue = value;
         if (maxValue == null || compareValues(value, maxValue) > 0) maxValue = value;
       }
-      if (encodedParts.length === 0) continue;
+      if (builder.values.length === 0) continue;
       fields[fieldName] = {
         kind: builder.kind,
-        exists_b64: Buffer.from(exists).toString("base64"),
-        values_b64: Buffer.from(concatBytes(encodedParts)).toString("base64"),
-        min_b64: minValue == null ? undefined : Buffer.from(encodeColValue(builder.kind, minValue)).toString("base64"),
-        max_b64: maxValue == null ? undefined : Buffer.from(encodeColValue(builder.kind, maxValue)).toString("base64"),
+        doc_ids: [...builder.docIds],
+        values: [...builder.values],
+        min: minValue,
+        max: maxValue,
       };
-      if (primaryTimestampField === fieldName && builder.kind === "date") {
-        minTimestampMs = minValue as bigint | null;
-        maxTimestampMs = maxValue as bigint | null;
-      }
     }
 
     return {
-      version: 1,
-      stream: seg.stream,
-      segment_index: seg.segment_index,
       doc_count: docCount,
       primary_timestamp_field: primaryTimestampField ?? undefined,
-      min_timestamp_ms: minTimestampMs == null ? undefined : minTimestampMs.toString(),
-      max_timestamp_ms: maxTimestampMs == null ? undefined : maxTimestampMs.toString(),
       fields,
     };
   }
@@ -771,45 +735,34 @@ export class SearchCompanionManager {
         prefix: field.prefix === true ? true : undefined,
         positions: field.positions === true ? true : undefined,
         exists_docs: [],
-        doc_lengths: field.kind === "text" ? [] : undefined,
         terms: Object.create(null) as Record<string, FtsPosting[]>,
       },
     };
   }
 
   private finalizeFtsSection(
-    seg: SegmentRow,
     builders: Map<string, FtsFieldBuilder>,
     docCount: number
-  ): FtsSegmentCompanion {
-    const orderedFields = Object.create(null) as Record<string, FtsFieldCompanion>;
+  ): FtsSectionInput {
+    const orderedFields = Object.create(null) as Record<string, FtsFieldInput>;
     for (const [fieldName, builder] of Array.from(builders.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
       orderedFields[fieldName] = builder.companion;
     }
     return {
-      version: 1,
-      stream: seg.stream,
-      segment_index: seg.segment_index,
       doc_count: docCount,
       fields: orderedFields,
     };
   }
 
   private finalizeAggSection(
-    seg: SegmentRow,
     builders: Map<string, Map<number, Map<number, Map<string, GroupBuilder>>>>
-  ): AggSegmentCompanion {
-    const encodedRollups: AggSegmentCompanion["rollups"] = {};
+  ): AggSectionInput {
+    const encodedRollups: AggSectionInput["rollups"] = {};
     for (const [rollupName, intervalMap] of builders) {
       encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(intervalMap) };
     }
 
-    return {
-      version: 1,
-      stream: seg.stream,
-      segment_index: seg.segment_index,
-      rollups: encodedRollups,
-    };
+    return { rollups: encodedRollups };
   }
 
   private parseRollupIntervalsResult(rollup: SearchRollupConfig): Result<number[], CompanionBuildError> {
@@ -862,8 +815,8 @@ export class SearchCompanionManager {
 
   private finalizeAggIntervals(
     intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>
-  ): AggSegmentCompanion["rollups"][string]["intervals"] {
-    const intervals: AggSegmentCompanion["rollups"][string]["intervals"] = {};
+  ): AggSectionInput["rollups"][string]["intervals"] {
+    const intervals: AggSectionInput["rollups"][string]["intervals"] = {};
     for (const [intervalMs, windowMap] of Array.from(intervalMap.entries()).sort((a, b) => a[0] - b[0])) {
       intervals[String(intervalMs)] = {
         interval_ms: intervalMs,
@@ -881,14 +834,8 @@ export class SearchCompanionManager {
     return intervals;
   }
 
-  private finalizeMetricsBlockSection(
-    seg: SegmentRow,
-    builder: MetricsBlockBuilder
-  ): MetricsBlockSegmentCompanion {
+  private finalizeMetricsBlockSection(builder: MetricsBlockBuilder): MetricsBlockSectionInput {
     return {
-      version: 1,
-      stream: seg.stream,
-      segment_index: seg.segment_index,
       record_count: builder.records.length,
       min_window_start_ms: builder.minWindowStartMs,
       max_window_end_ms: builder.maxWindowEndMs,

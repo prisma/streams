@@ -47,6 +47,7 @@ describe("bootstrap from R2", () => {
       const store = new MockR2Store();
       const app = createApp(cfg, store);
       try {
+        let forcedExactIdle = false;
         const createRes = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
             method: "PUT",
@@ -155,6 +156,20 @@ describe("bootstrap from R2", () => {
           const secondaryRuns = secondaryStates.flatMap((state) => app.deps.db.listSecondaryIndexRuns(stream, state.index_name));
           const companionPlan = app.deps.db.getSearchCompanionPlan(stream);
           const companionSegments = app.deps.db.listSearchSegmentCompanions(stream);
+          if (
+            !forcedExactIdle &&
+            segs.length >= 2 &&
+            pending === 0 &&
+            uploadedOk &&
+            !!companionPlan &&
+            companionSegments.length >= segs.length
+          ) {
+            app.deps.db.db
+              .query(`UPDATE streams SET last_append_ms=? WHERE stream=?`)
+              .run(Date.now() - 11 * 60 * 1000, stream);
+            app.deps.indexer.enqueue(stream);
+            forcedExactIdle = true;
+          }
           if (
             segs.length >= 2 &&
             pending === 0 &&

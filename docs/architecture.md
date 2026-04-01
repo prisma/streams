@@ -68,13 +68,10 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Advances uploaded_through only after manifest upload succeeds, then GC WAL rows.
 
 5) Index managers
-- The full server starts six in-process indexing managers:
+- The full server starts three in-process indexing managers:
   - routing-key
   - exact secondary
-  - `.col`
-  - `.fts`
-  - `.agg`
-  - `.mblk`
+  - bundled companions (`.col`, `.fts`, `.agg`, `.mblk`) via `SearchCompanionManager`
 - They run on a timer (`DS_INDEX_CHECK_MS`) inside the main server process.
 - They are asynchronous background loops, not dedicated worker threads or
   separate processes.
@@ -133,7 +130,8 @@ Today, `metrics` uses the same model to own:
 - canonical metrics interval normalization
 - default schema-owned `search` and `search.rollups` installation
 - the `.mblk` metrics-block companion family
-- bundled per-segment `.cix` search companions for metrics-serving state
+- bundled per-segment `PSCIX2` `.cix` search companions for metrics-serving
+  state
 
 ## Control-Plane Metadata
 
@@ -145,6 +143,8 @@ Per stream, SQLite stores:
 - schema registry
 - desired bundled companion plan state and current per-segment companion object
   catalog
+- plan-relative bundled companion ordinals resolved through the current desired
+  plan generation
 - profile-owned processing progress and other rebuildable helper state
 
 In full mode, manifest objects, segment objects, and schema objects in object
@@ -226,6 +226,7 @@ Key invariants:
 
 - Stream hash: first 16 bytes of SHA-256, hex-encoded (32 chars)
 - Segment object key: streams/<hash>/segments/<segment_index>.bin (16‑digit zero‑padded)
+- Bundled companion object key: streams/<hash>/segments/<segment_index>-<id>.cix
 - Manifest object key: streams/<hash>/manifest.json
 
 Local disk layout (default):

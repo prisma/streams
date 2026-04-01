@@ -1,12 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Result } from "better-result";
+import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
+import { decodeFtsSegmentCompanionResult, encodeFtsSegmentCompanion, type FtsSectionInput } from "../src/search/fts_format";
 import { SEARCH_PREFIX_TERM_LIMIT, filterDocIdsByFtsClauseResult } from "../src/search/fts_runtime";
-import type { FtsSegmentCompanion } from "../src/search/fts_format";
-
-const companion: FtsSegmentCompanion = {
-  version: 1,
-  stream: "s",
-  segment_index: 0,
+const input: FtsSectionInput = {
   doc_count: 3,
   fields: {
     service: {
@@ -37,6 +34,38 @@ const companion: FtsSegmentCompanion = {
     },
   },
 };
+
+const plan = buildDesiredSearchCompanionPlan({
+  apiVersion: "durable.streams/schema-registry/v1",
+  schema: "s",
+  currentVersion: 1,
+  boundaries: [],
+  schemas: {},
+  lenses: {},
+  search: {
+    primaryTimestampField: "service",
+    fields: {
+      service: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/service" }],
+        prefix: true,
+      },
+      message: {
+        kind: "text",
+        bindings: [{ version: 1, jsonPointer: "/message" }],
+        analyzer: "unicode_word_v1",
+        positions: true,
+      },
+    },
+  },
+});
+
+const companion = (() => {
+  const encoded = encodeFtsSegmentCompanion(input, plan);
+  const decoded = decodeFtsSegmentCompanionResult(encoded, plan);
+  if (Result.isError(decoded)) throw new Error(decoded.error.message);
+  return decoded.value;
+})();
 
 describe(".fts runtime", () => {
   test("supports exact, prefix, term, and phrase candidate extraction", () => {
@@ -90,10 +119,10 @@ describe(".fts runtime", () => {
     for (let i = 0; i < SEARCH_PREFIX_TERM_LIMIT + 1; i++) {
       manyTerms[`req-${i}`] = [{ d: 0 }];
     }
-    const overloaded: FtsSegmentCompanion = {
-      ...companion,
+    const overloadedInput: FtsSectionInput = {
+      ...input,
       fields: {
-        ...companion.fields,
+        ...input.fields,
         requestId: {
           kind: "keyword",
           exact: true,
@@ -103,8 +132,40 @@ describe(".fts runtime", () => {
         },
       },
     };
+    const overloadedPlan = buildDesiredSearchCompanionPlan({
+      apiVersion: "durable.streams/schema-registry/v1",
+      schema: "s",
+      currentVersion: 1,
+      boundaries: [],
+      schemas: {},
+      lenses: {},
+      search: {
+        primaryTimestampField: "service",
+        fields: {
+          service: {
+            kind: "keyword",
+            bindings: [{ version: 1, jsonPointer: "/service" }],
+            prefix: true,
+          },
+          message: {
+            kind: "text",
+            bindings: [{ version: 1, jsonPointer: "/message" }],
+            analyzer: "unicode_word_v1",
+            positions: true,
+          },
+          requestId: {
+            kind: "keyword",
+            bindings: [{ version: 1, jsonPointer: "/requestId" }],
+            prefix: true,
+          },
+        },
+      },
+    });
+    const overloadedRes = decodeFtsSegmentCompanionResult(encodeFtsSegmentCompanion(overloadedInput, overloadedPlan), overloadedPlan);
+    expect(Result.isOk(overloadedRes)).toBe(true);
+    if (Result.isError(overloadedRes)) return;
     const res = filterDocIdsByFtsClauseResult({
-      companion: overloaded,
+      companion: overloadedRes.value,
       clause: { kind: "keyword", field: "requestId", canonicalValue: "req-", prefix: true },
     });
     expect(Result.isError(res)).toBe(true);

@@ -10,19 +10,19 @@ The planned low-latency read model for heavy-ingest periods lives in
 
 ## Summary
 
-Prisma Streams now ships six indexing layers:
+Prisma Streams now ships these indexing layers:
 
 - the existing routing-key tiered index
 - the existing exact-match secondary index family, now treated as an internal
   accelerator derived from schema `search.fields`
-- a bundled per-segment companion container (`.cix`)
-- a `col` section family inside `.cix` for typed equality, range, and
+- a bundled per-segment `PSCIX2` companion container (`.cix`)
+- a plan-relative binary `col` section family inside `.cix` for typed equality, range, and
   existence
-- an `fts` section family inside `.cix` for keyword exact/prefix and text
+- a plan-relative binary `fts` section family inside `.cix` for keyword exact/prefix and text
   search
-- an `agg` section family inside `.cix` for time-window rollups and
+- a plan-relative binary `agg` section family inside `.cix` for time-window rollups and
   aggregation serving
-- an `mblk` section family inside `.cix` for metrics-profile aggregate serving
+- a binary `mblk` section family inside `.cix` for metrics-profile aggregate serving
 
 The public schema model is **`search`**, not `indexes[]`.
 
@@ -188,15 +188,16 @@ The `.col` family is the typed range/equality family.
 Current implementation:
 
 - immutable per-segment sections inside bundled `.cix` companions
+- binary `col2` field payloads keyed by plan-relative field ordinals
+- presence docsets, typed value streams, min/max values, and optional page
+  indexes
 - no `.col` run compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
 - published companion objects live under `streams/<hash>/segments/...cix`
 - bundled companion backfill is oldest-missing-first and batched, so `.col`
   coverage grows contiguously across the uploaded segment prefix
-- bundled companion builds are single-pass and cooperative, so `.col`, `.fts`,
-  `.agg`, and `.mblk` share one decoded segment walk and yield periodically
-  while building
+- query-time `.col` reads decode only the requested bundled section
 
 Current responsibilities:
 
@@ -219,6 +220,11 @@ The `.fts` family is the keyword/text family.
 Current implementation:
 
 - immutable per-segment sections inside bundled `.cix` companions
+- binary `fts2` field payloads keyed by plan-relative field ordinals
+- restart-string term dictionaries, document-frequency arrays, and block-coded
+  posting lists
+- query-time field views and posting iterators instead of whole-section JSON
+  materialization
 - no `.fts` run compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -244,6 +250,9 @@ The `.agg` family is the shipped aggregation rollup family.
 Current implementation:
 
 - immutable per-segment sections inside bundled `.cix` companions
+- binary `agg2` rollup and interval directories keyed by plan-relative
+  ordinals
+- interval-local dimension dictionaries, ordinal columns, and measure columns
 - no `.agg` compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -271,6 +280,7 @@ The `.mblk` family is the metrics-specific aggregate-serving family.
 Current implementation:
 
 - immutable per-segment sections inside bundled `.cix` companions
+- binary `mblk2` payloads used only by metrics-profile aggregate paths
 - no `.mblk` compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -311,7 +321,7 @@ Manifest state now includes:
 `search_companions` currently stores:
 
 - the current bundled companion plan generation and hash
-- the desired plan JSON summary
+- the desired plan JSON, including plan-relative field and rollup ordinals
 - per-segment current companion object keys and section inventories
 
 Bootstrap restores:
@@ -365,11 +375,14 @@ Current bundled-companion rules:
 - each uploaded segment may have one current `.cix`
 - the `.cix` may contain any subset of `col`, `fts`, `agg`, and `mblk`
 - the desired bundled companion plan is hashed and versioned per stream
+- bundled companions use the binary `PSCIX2` container with a fixed header and
+  fixed section table
 - each bundled companion build loads one segment and builds enabled families
   sequentially, so `col`, `fts`, `agg`, and `mblk` do not keep their heaviest
   in-memory state live at the same time
-- query-time companion reads cache raw `.cix` bytes plus the parsed TOC and
-  decode only the requested section family on demand
+- family payloads are plan-relative and do not repeat field or rollup names
+- query-time companion reads cache raw `.cix` bytes plus the parsed section
+  table and decode only the requested section family on demand
 - long-running bundled companion builds yield cooperatively every bounded number
   of segment blocks so the HTTP server stays responsive during backfill
 - bundled companion backfill defers work when the process memory guard is over
@@ -381,7 +394,8 @@ Current bundled-companion rules:
   stale ranges otherwise
 
 See [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md)
-for the dedicated architecture document.
+and [storage-layout-architecture.md](./storage-layout-architecture.md) for the
+dedicated bundled-companion and binary storage documents.
 
 ## Query Surfaces
 

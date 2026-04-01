@@ -292,6 +292,8 @@ Columns:
 Notes:
 - this is the durable local record of which bundled companion generation the
   stream currently wants
+- `plan_json` stores the enabled families plus plan-relative field, rollup,
+  interval, and measure ordinals used by the current `PSCIX2` companion format
 - schema or profile changes that affect bundled sections increment the desired
   generation
 
@@ -319,11 +321,11 @@ Indexes:
 
 Notes:
 - this is a local object catalog, not a row-level search projection
-- each row points at one immutable bundled companion object
+- each row points at one immutable bundled `PSCIX2` companion object
 - `sections_json` records which bundled sections are present, such as `col`,
   `fts`, `agg`, and `mblk`
-- `section_sizes_json` records the byte size of each bundled section that is
-  present
+- `section_sizes_json` records the byte size of each binary bundled section
+  payload that is present
 - companions are published under `streams/<hash>/segments/...cix`
 
 ---

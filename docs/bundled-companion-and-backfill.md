@@ -2,34 +2,26 @@
 
 Status: implemented
 
-This document defines the current per-segment search companion architecture.
+This document defines the current bundled companion model for Prisma Streams.
 
-Prisma Streams now uses one immutable bundled companion object per sealed
-segment instead of separate per-family `.col`, `.fts`, `.agg`, and `.mblk`
-objects.
+The supported shape is:
 
-It also treats companion rebuild for existing streams as a normal background
-operation:
+- one immutable raw segment object per sealed segment
+- one immutable bundled companion `.cix` per covered segment
+- one desired companion plan per stream
+- async oldest-missing-first backfill when the desired plan changes
 
-- schema or profile changes can change the desired companion plan
-- historical segments can temporarily have mixed coverage
-- query correctness is preserved by falling back to raw segment and WAL scans
-
-This design is aligned with the current stream/profile/schema model:
-
-- the stream is the durable source of truth
-- the profile owns semantics and profile-specific behavior
-- the schema owns payload shape, field extraction, and schema-owned search
-  configuration
+The storage layout for the `.cix` object itself is defined in
+[storage-layout-architecture.md](./storage-layout-architecture.md).
 
 ## Summary
 
-For a sealed historical segment, the normal published object shape is now:
+For a sealed uploaded segment, the steady-state published objects are:
 
-- one raw segment object: `streams/<hash>/segments/<segment>.bin`
-- one bundled companion object: `streams/<hash>/segments/<segment>-<id>.cix`
+- raw segment object: `streams/<hash>/segments/<segment>.bin`
+- bundled companion object: `streams/<hash>/segments/<segment>-<id>.cix`
 
-The bundled companion may contain any combination of:
+The `.cix` may contain any subset of:
 
 - `col`
 - `fts`
@@ -39,154 +31,98 @@ The bundled companion may contain any combination of:
 The exact secondary index family remains separate because it is a compacted
 cross-segment accelerator, not a per-segment section family.
 
-When the desired companion plan changes for an existing stream, the server:
-
-1. records the new desired plan generation
-2. marks older companions as stale for planning purposes
-3. backfills the affected segments asynchronously
-4. keeps queries correct by using raw fallback where fresh companion coverage is
-   missing
-
 ## Why Bundle Companions
 
-Without bundling, every new per-segment family adds another object-store PUT and
-another per-segment catalog surface.
+Bundling keeps the object model small while still allowing family-specific
+section codecs.
 
-Bundling keeps the steady-state physical layout small:
+Benefits:
 
-- fewer object-store writes per sealed segment
-- simpler manifest bookkeeping
-- one per-segment object to fetch for search-family planning
-- room for future profile-owned section families without multiplying PUT count
+- one companion PUT per segment instead of one PUT per family
+- one per-segment catalog row in SQLite
+- one remote object to account for in manifests and `/_details`
+- one lazy container that can still decode only the requested family at query
+  time
 
-This change does not alter the source-of-truth rule. Raw segments remain
-authoritative.
-
-## Design Rules
-
-1. Raw segments remain authoritative for historical records.
-2. Heavy per-segment derived state is bundled into one immutable `.cix`.
-3. Cross-segment accelerators remain separate objects.
-4. Companion rebuild is asynchronous and additive.
-5. Queries must tolerate mixed coverage.
-6. Backfill applies only to derived state that can be recomputed from durable
-   stream history.
-
-## Bundled Companion Container
-
-The bundled companion format lives in
-[src/search/companion_format.ts](/Users/sorenschmidt/code/streams/src/search/companion_format.ts).
-
-Current structure:
-
-- magic: `PSCIX1`
-- TOC length
-- JSON TOC near the start of the object
-- concatenated section payloads
-
-Current TOC fields:
-
-- `version`
-- `stream`
-- `segment_index`
-- `plan_generation`
-- `sections[]`
-
-Each section entry currently carries:
-
-- `kind`
-- `offset`
-- `length`
-
-Section payloads reuse the existing per-family codecs:
-
-- `.col`
-- `.fts`
-- `.agg`
-- `.mblk`
-
-This keeps family-specific encoding independent while still giving the system
-one per-segment companion object.
-
-At query time, the runtime caches the raw `.cix` bytes plus the parsed TOC and
-decodes only the requested section family on demand. An FTS read therefore does
-not inflate unrelated `col`, `agg`, or `mblk` sections unless that query asks
-for them.
+Bundling does not change the source-of-truth rule. Raw segments remain
+authoritative and every bundled family is rebuildable from the stream history.
 
 ## Desired Companion Plan
 
-The server persists one desired companion plan per stream in SQLite and publishes
-it in the manifest.
+Each stream persists one desired bundled companion plan in
+`search_companion_plans`.
 
-The current plan captures:
+The desired plan now includes:
 
-- which bundled families are enabled
-- the schema-owned field and rollup configuration that affects those families
-- profile-specific inclusion such as metrics `mblk`
+- enabled family bits
+- stable field ordinals
+- stable rollup ordinals
+- stable interval ordinals
+- stable measure ordinals
 
-The current persisted fields are:
+The plan is versioned by:
 
 - `generation`
 - `plan_hash`
 - `plan_json`
 
-Whenever the computed desired plan hash changes, the stream enters a mixed
-coverage state until historical companions are rebuilt for the new generation.
+When schema or profile changes alter the desired plan, the stream enters mixed
+coverage until historical bundled companions are rebuilt for the new
+generation.
 
 ## Local Catalog
 
-SQLite keeps only small rebuildable catalog state:
+SQLite stores only rebuildable catalog state:
 
 - `search_companion_plans`
 - `search_segment_companions`
 
-`search_segment_companions` stores:
+`search_segment_companions` records:
 
 - `stream`
 - `segment_index`
 - `object_key`
 - `plan_generation`
 - `sections_json`
+- `section_sizes_json`
+- `size_bytes`
 - `updated_at_ms`
 
 This is an object catalog, not a local search projection.
 
-The old per-family companion catalog tables are no longer part of the supported
-runtime.
+## Container
 
-## Manifest And Bootstrap
+The bundled companion object is now a binary `PSCIX2` container.
 
-Published manifest state now includes:
+Key properties:
 
-- `search_companions.generation`
-- `search_companions.plan_hash`
-- `search_companions.plan_json`
-- `search_companions.segments[]`
+- fixed binary header
+- fixed section table
+- no JSON TOC
+- no legacy `PSCIX1` support
+- plan-relative family payloads
 
-Each segment entry currently includes:
+Query-time reads cache raw `.cix` bytes plus the parsed section table and then
+decode only the requested family.
 
-- `segment_index`
-- `object_key`
-- `plan_generation`
-- `sections`
+Examples:
 
-Bootstrap restores:
-
-- the desired companion plan
-- the current per-segment companion object catalog
-
-That means a cold-restored node can immediately reuse already-published bundled
-companions without rebuilding them locally first.
+- an FTS query decodes only the `fts` section
+- a typed filter decodes only the `col` section
+- an aggregate query loads only the target `agg` interval view
 
 ## Build And Publish Flow
 
 For a newly sealed uploaded segment:
 
-1. build the raw segment
-2. build any enabled bundled companion sections from that segment
-3. upload the raw segment
-4. upload the `.cix`
-5. publish the manifest generation that references both
+1. build the raw `.bin` segment
+2. load that segment’s bytes for companion generation
+3. build each enabled family in a separate family-specific pass
+4. encode each family directly into its binary companion section payload
+5. wrap the sections into one `PSCIX2` `.cix`
+6. upload the raw segment
+7. upload the bundled companion
+8. publish the manifest generation that references both
 
 No uploaded historical object becomes visible until manifest publication.
 
@@ -195,50 +131,42 @@ No uploaded historical object becomes visible until manifest publication.
 Bundled companion backfill runs when:
 
 - a bundled family is newly enabled
-- bundled-family field configuration changes
+- schema-owned field configuration changes
 - rollup definitions change
 - the metrics profile toggles `mblk`
 - companion generation metadata is missing or stale
 
-The current runtime implementation:
+Current runtime behavior:
 
-- is in-process and timer-driven
-- batches a bounded number of uploaded stale segments per tick
-- backfills the oldest missing uploaded segments first, so coverage grows
-  contiguously instead of sparsely
-- loads each segment once, then builds enabled bundled families sequentially so
-  `.col`, `.fts`, `.agg`, and `.mblk` do not all retain their heaviest
-  in-memory state at the same time
-- narrows raw-value extraction per family to the fields that family actually
-  needs, and reuses precomputed rollup field values inside aggregate builds
-- yields cooperatively every bounded number of segment blocks while building,
-  so large `.fts` sections do not monopolize the main event loop
-- defers background companion work when the process memory guard is already over
-  limit, preferring temporary mixed coverage over pushing the server deeper
-  into memory pressure
-- rebuilds the full desired section set for each affected segment
-- writes one replacement `.cix` per stale segment
-- publishes one manifest after each successful batch instead of once per
-  replacement object
-- periodically sweeps streams that already have companion plans, so backfill
-  continues even if a specific enqueue edge is missed
+- in-process and timer-driven
+- oldest-missing-first across the uploaded prefix
+- bounded by `DS_SEARCH_COMPANION_BATCH_SEGMENTS`
+- cooperative via `DS_SEARCH_COMPANION_YIELD_BLOCKS`
+- deferred when the memory guard is already over limit
+- one replacement `.cix` per rebuilt segment
+- one manifest publish after each successful rebuild batch
 
-No request path performs synchronous historical rebuild.
+Queries remain correct during backfill because uncovered or stale historical
+ranges fall back to raw segment and WAL-tail scans.
 
-## Query Planning With Mixed Coverage
+## Mixed Coverage Rules
 
 Queries treat bundled sections as optional accelerators.
 
 Planning rules:
 
-1. use a compatible section from the current `.cix` when present
+1. use a current bundled section when it is present for the desired plan
 2. otherwise raw-scan the sealed segment
-3. always scan the unsealed WAL tail directly
+3. always read the unsealed WAL tail from SQLite directly
 
-This means a stream can adopt new search fields or rollups immediately, before
-historical backfill is finished.
+That means:
 
-The current management surface exposes this state through:
+- new search fields become queryable immediately
+- new rollups become queryable immediately
+- exactness comes from fallback, not from waiting for historical rebuild to
+  finish
+
+The management endpoints that surface this state are:
 
 - `GET /v1/stream/{name}/_index_status`
 - `GET /v1/stream/{name}/_details`
@@ -251,25 +179,22 @@ Relevant fields include:
 
 ## Exact Secondary Indexes
 
-The exact secondary index family is intentionally not bundled into `.cix`.
+The exact secondary family is intentionally not part of `.cix`.
 
 It remains:
 
 - schema-driven
-- compacted across segments
-- stored as separate run objects
+- cross-segment
+- compacted into separate run objects
 
-It now follows the same catch-up principle as bundled companions:
+Exact build is lower priority than bundled companions:
 
-- exact index config is hashed
-- a config mismatch marks the current exact state stale
-- exact queries fall back to raw scans until the exact index is rebuilt
-- schema updates enqueue background exact-index rebuild automatically
-- exact build and compaction also wait until bundled companions are caught up,
-  there is no in-progress segment cut or pending upload segment, and the
-  stream has been append-idle for about ten minutes, so active ingest keeps its
-  memory and CPU budget instead of letting exact work jump back in during long
-  but temporary quiet gaps between uploads
+- bundled companions must catch up first
+- the stream must not have an in-progress cut or pending upload segment
+- the stream must be append-idle before exact build or compaction is allowed to
+  resume
+
+This keeps active ingest focused on raw publish plus bundled-family coverage.
 
 ## Current Limits
 
@@ -277,32 +202,20 @@ The current implementation does not yet provide:
 
 - cross-segment `.col` compaction
 - cross-segment `.fts` compaction
-- patch overlays for partial companion rewrites
-- bundled-companion range reads from object storage
-- background GC of orphaned old `.cix` generations
+- cross-segment `.agg` compaction
+- bundled companion range reads from object storage
+- background GC for orphaned old companion generations
 
-Operational tuning:
-
-- `DS_SEARCH_COMPANION_BATCH_SEGMENTS` controls how many stale uploaded
-  segments one companion-manager pass will rebuild for a stream before it yields
-  back to the main loop
-- `DS_SEARCH_COMPANION_YIELD_BLOCKS` controls how many decoded segment blocks a
-  bundled companion build processes before it yields cooperatively back to the
-  event loop (default 4)
-
-Those are future optimizations, not required for correctness.
+Those are future optimizations. They are not required for correctness of the
+current bundled companion model.
 
 ## Bottom Line
 
-The current supported shape is:
+The supported model is now:
 
-- one raw segment object per sealed segment
-- one bundled `.cix` per sealed segment
-- separate exact secondary runs for exact-match cross-segment pruning
-- async oldest-missing-first backfill for existing streams
-- single-pass cooperative bundled companion builds for background fairness
-- raw fallback whenever companion or exact coverage is stale or missing
-
-This gives Prisma Streams richer per-segment indexing without turning local
-SQLite into a large search store or multiplying object-store PUTs per segment
-forever.
+- `PSCIX2` bundled companions only
+- one current `.cix` per covered segment
+- one desired plan with plan-relative ordinals per stream
+- query-time lazy family decode
+- async oldest-missing-first backfill
+- raw fallback whenever bundled coverage is missing or stale

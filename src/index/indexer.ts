@@ -16,10 +16,10 @@ import type { Metrics } from "../metrics";
 import { dsError } from "../util/ds_error.ts";
 import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
-import type { AggSegmentCompanion } from "../search/agg_format";
-import type { ColSegmentCompanion } from "../search/col_format";
-import type { FtsSegmentCompanion } from "../search/fts_format";
-import type { MetricsBlockSegmentCompanion } from "../profiles/metrics/block_format";
+import type { AggSectionView } from "../search/agg_format";
+import type { ColSectionView } from "../search/col_format";
+import type { FtsSectionView } from "../search/fts_format";
+import type { MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import type { SchemaRegistryStore } from "../schema/registry";
 import type { MemoryGuard } from "../memory";
 
@@ -32,10 +32,10 @@ export type StreamIndexLookup = {
   enqueue(stream: string): void;
   candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
   candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
-  getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSegmentCompanion | null>;
-  getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSegmentCompanion | null>;
-  getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSegmentCompanion | null>;
-  getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null>;
+  getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
+  getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
+  getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
+  getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSectionView | null>;
   getLocalStorageUsage?(stream: string): { routing_index_cache_bytes: number; exact_index_cache_bytes: number };
 };
 
@@ -171,19 +171,19 @@ export class IndexManager {
     return null;
   }
 
-  async getColSegmentCompanion(_stream: string, _segmentIndex: number): Promise<ColSegmentCompanion | null> {
+  async getColSegmentCompanion(_stream: string, _segmentIndex: number): Promise<ColSectionView | null> {
     return null;
   }
 
-  async getAggSegmentCompanion(_stream: string, _segmentIndex: number): Promise<AggSegmentCompanion | null> {
+  async getAggSegmentCompanion(_stream: string, _segmentIndex: number): Promise<AggSectionView | null> {
     return null;
   }
 
-  async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<FtsSegmentCompanion | null> {
+  async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<FtsSectionView | null> {
     return null;
   }
 
-  async getMetricsBlockSegmentCompanion(_stream: string, _segmentIndex: number): Promise<MetricsBlockSegmentCompanion | null> {
+  async getMetricsBlockSegmentCompanion(_stream: string, _segmentIndex: number): Promise<MetricsBlockSectionView | null> {
     return null;
   }
 

@@ -182,6 +182,7 @@ This is ideal for charts, KPI tiles, and repeated dashboard queries.
 Current properties:
 
 - immutable `mblk` sections inside bundled per-segment `.cix` companions
+- binary `mblk2` section payloads loaded on demand from the bundled container
 - bundled companions are stored in object storage under
   `streams/<hash>/segments/...cix`
 - local SQLite stores only bundled companion plan state and object keys
