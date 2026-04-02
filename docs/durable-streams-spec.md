@@ -279,6 +279,16 @@ Headers:
 
 - `201 Created` if created
 - `200 OK` if already exists (idempotent)
+- `429 Too Many Requests` if the server is under memory backpressure, with:
+
+```json
+{
+  "error": {
+    "code": "memory_backpressure",
+    "message": "server memory backpressure"
+  }
+}
+```
 
 Profile rule:
 
@@ -325,6 +335,21 @@ If `Stream-Seq` is provided:
 
 - `200 OK`
 - Must include `Stream-Next-Offset` (the offset of the last appended entry).
+- `429 Too Many Requests` may be returned before request-body decode when the
+  server is under memory backpressure, with:
+
+```json
+{
+  "error": {
+    "code": "memory_backpressure",
+    "message": "server memory backpressure"
+  }
+}
+```
+
+- when the server rejects an append early for memory backpressure, it cancels
+  the request body so clients do not remain stuck uploading a body that the
+  server has already decided not to process
 
 Current implementation timeout behavior:
 

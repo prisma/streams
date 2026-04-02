@@ -580,6 +580,56 @@ describe("http behavior", () => {
     });
   });
 
+  test("memory backpressure rejects streaming request bodies promptly", { timeout: 5_000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-memory-backpressure-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+    try {
+      let res = await fetch(`${baseUrl}/v1/stream/memory-backpressure`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+      expect(res.status).toBe(201);
+
+      const originalShouldAllow = app.deps.memory.shouldAllow.bind(app.deps.memory);
+      (app.deps.memory as any).shouldAllow = () => false;
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+        },
+      });
+
+      const start = Date.now();
+      res = await Promise.race([
+        fetch(`${baseUrl}/v1/stream/memory-backpressure`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body,
+          duplex: "half",
+        }),
+        sleep(1_500).then(() => {
+          throw new Error("memory backpressure response hung");
+        }),
+      ]);
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(429);
+      expect(elapsed).toBeLessThan(1_500);
+      expect(res.headers.get("retry-after")).toBe("1");
+      expect(await res.json()).toEqual({
+        error: { code: "memory_backpressure", message: "server memory backpressure" },
+      });
+
+      (app.deps.memory as any).shouldAllow = originalShouldAllow;
+    } finally {
+      server.stop();
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("append requests time out after 3s with an append-specific error", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-http-append-timeout-"));
     const app = createApp(makeConfig(root), new MockR2Store());

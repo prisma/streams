@@ -161,8 +161,8 @@ function unavailable(msg = "server shutting down"): Response {
   return json(503, { error: { code: "unavailable", message: msg } }, retryAfterHeaders(UNAVAILABLE_RETRY_AFTER_SECONDS));
 }
 
-function overloaded(msg = "ingest queue full"): Response {
-  return json(429, { error: { code: "overloaded", message: msg } }, retryAfterHeaders(OVERLOAD_RETRY_AFTER_SECONDS));
+function overloaded(msg = "ingest queue full", code = "overloaded"): Response {
+  return json(429, { error: { code, message: msg } }, retryAfterHeaders(OVERLOAD_RETRY_AFTER_SECONDS));
 }
 
 function requestTimeout(msg = "request timed out"): Response {
@@ -176,6 +176,23 @@ function appendTimeout(): Response {
       message: "append timed out; append outcome is unknown, check Stream-Next-Offset before retrying",
     },
   });
+}
+
+async function cancelRequestBody(req: Request): Promise<void> {
+  const body = req.body;
+  if (!body) return;
+  try {
+    await body.cancel("request rejected");
+    return;
+  } catch {
+    // ignore and try a reader-based cancel below
+  }
+  try {
+    const reader = body.getReader();
+    await reader.cancel("request rejected");
+  } catch {
+    // ignore
+  }
 }
 
 function normalizeContentType(value: string | null): string | null {
@@ -953,12 +970,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         return json(200, metrics.snapshot());
       }
 
-      const rejectIfMemoryLimited = (): Response | null => {
+      const rejectIfMemoryLimited = async (reqToCancel?: Request): Promise<Response | null> => {
         if (!memory || memory.shouldAllow()) return null;
+        if (reqToCancel) await cancelRequestBody(reqToCancel);
         memory.maybeGc("memory limit");
         memory.maybeHeapSnapshot("memory limit");
         metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "memory" });
-        return overloaded();
+        return overloaded("server memory backpressure", "memory_backpressure");
       };
 
       // /v1/streams
@@ -1051,6 +1069,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             return json(200, regRes.value);
           }
           if (req.method === "POST") {
+            const memReject = await rejectIfMemoryLimited(req);
+            if (memReject) return memReject;
             let body: unknown;
             try {
               body = await req.json();
@@ -1115,6 +1135,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           }
 
           if (req.method === "POST") {
+            const memReject = await rejectIfMemoryLimited(req);
+            if (memReject) return memReject;
             let body: any;
             try {
               body = await req.json();
@@ -1399,7 +1421,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             content_type: contentType,
           });
           try {
-            const memReject = rejectIfMemoryLimited();
+            const memReject = await rejectIfMemoryLimited(req);
             if (memReject) return memReject;
             const ab = await req.arrayBuffer();
             if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
@@ -1582,7 +1604,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             stream_content_type: streamContentType,
           });
           try {
-            const memReject = rejectIfMemoryLimited();
+            const memReject = await rejectIfMemoryLimited(req);
             if (memReject) return memReject;
             const ab = await req.arrayBuffer();
             if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
@@ -2070,7 +2092,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         })(),
         HTTP_RESOLVER_TIMEOUT_MS
       );
-      if (resolved === TIMEOUT_SENTINEL) return requestTimeout();
+      if (resolved === TIMEOUT_SENTINEL) {
+        await cancelRequestBody(req);
+        return requestTimeout();
+      }
       return resolved;
     } catch (e: any) {
       const msg = String(e?.message ?? e);

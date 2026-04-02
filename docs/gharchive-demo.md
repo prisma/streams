@@ -14,6 +14,7 @@ The script is self-contained:
 - appends each normalized batch to the target streams sequentially over raw HTTP
 - pauses on `429` or `503` using `Retry-After` and retries only the current
   stream operation
+- retries server-side `408` timeout responses for the current operation
 - applies a `20s` request timeout to ingester HTTP calls and retries the current
   operation on timeout
 - prints a final summary when all requested hours have been appended to every target stream
@@ -136,6 +137,8 @@ has been normalized and appended to every target stream:
 - each batch is sent to the target streams sequentially
 - if any stream operation responds with `429` or `503`, the demo pauses using
   `Retry-After` and retries that same operation before doing anything else
+- if the server returns `408` for `request_timeout` or `append_timeout`, the
+  demo retries that same operation before doing anything else
 - if an ingester HTTP request times out after `20s`, the demo pauses briefly and
   retries that same operation before doing anything else
 

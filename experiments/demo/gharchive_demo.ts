@@ -676,10 +676,11 @@ async function fetchWithServerBackoff(
 ): Promise<Response> {
   for (;;) {
     const response = await withTimeoutRetries(client, description, run);
-    if (response.status !== 429 && response.status !== 503) return response;
-    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-    process.stderr.write(`[gharchive-demo] backoff during ${description}; retrying in ${retryAfterMs}ms\n`);
-    if (retryAfterMs > 0) await sleep(retryAfterMs);
+    const retry = await classifyRetryableServerResponse(response, client);
+    if (!retry) return response;
+    process.stderr.write(`[gharchive-demo] backoff during ${description}; retrying in ${retry.waitMs}ms\n`);
+    await response.arrayBuffer();
+    if (retry.waitMs > 0) await sleep(retry.waitMs);
   }
 }
 
@@ -963,6 +964,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function classifyRetryableServerResponse(
+  response: Response,
+  client: GhArchiveHttpClient
+): Promise<{ waitMs: number; reason: string } | null> {
+  if (response.status === 429 || response.status === 503) {
+    return {
+      waitMs: parseRetryAfterMs(response.headers.get("retry-after")),
+      reason: response.status === 429 ? "server backpressure" : "server unavailable",
+    };
+  }
+  if (response.status !== 408) return null;
+  try {
+    const body = await response.clone().json();
+    const code = body?.error?.code;
+    if (code === "append_timeout" || code === "request_timeout") {
+      return {
+        waitMs: client.timeoutRetryDelayMs,
+        reason: code,
+      };
+    }
+  } catch {
+    // ignore malformed timeout bodies
+  }
+  return null;
+}
+
 async function appendBatchToStream(
   client: GhArchiveHttpClient,
   baseUrl: string,
@@ -998,12 +1025,12 @@ async function appendBatchToStream(
       await response.arrayBuffer();
       return { ackMs, backoffCount, backoffWaitMs };
     }
-    if (response.status === 429 || response.status === 503) {
-      const waitMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    const retry = await classifyRetryableServerResponse(response, client);
+    if (retry) {
       backoffCount += 1;
-      backoffWaitMs += waitMs;
+      backoffWaitMs += retry.waitMs;
       await response.arrayBuffer();
-      await sleep(waitMs);
+      if (retry.waitMs > 0) await sleep(retry.waitMs);
       continue;
     }
     throw dsError(`append failed for ${streamName}: HTTP ${response.status} ${await response.text()}`);

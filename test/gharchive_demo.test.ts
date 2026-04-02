@@ -436,6 +436,88 @@ describe("gharchive demo", () => {
   );
 
   test(
+    "retries server timeout responses on the current stream before moving to the next target",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-server-timeout-"));
+      const baseUrl = "http://127.0.0.1:8787";
+      const realFetch = globalThis.fetch;
+      const appendOrder: string[] = [];
+      let sawServerTimeout = false;
+      const exactStream = buildGhArchiveIndexedStreamName("gharchive-server-timeout", "day", "exact:actorLogin");
+      const ftsStream = buildGhArchiveIndexedStreamName("gharchive-server-timeout", "day", "fts:message");
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+          if (url.startsWith(baseUrl)) {
+            const requestUrl = new URL(url);
+            const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
+              if (!sawServerTimeout) {
+                sawServerTimeout = true;
+                appendOrder.push("exact:server-timeout");
+                return new Response(JSON.stringify({ error: { code: "request_timeout", message: "request timed out" } }), {
+                  status: 408,
+                  headers: { "content-type": "application/json" },
+                });
+              }
+              appendOrder.push("exact:ok");
+            }
+            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
+              appendOrder.push("fts:ok");
+            }
+            if (input instanceof Request) return app.fetch(new Request(input, init));
+            return app.fetch(new Request(url, init));
+          }
+          if (url.startsWith("https://data.gharchive.org/")) {
+            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
+            if (!match) return new Response("not found", { status: 404 });
+            return mockArchiveResponse(match[1]);
+          }
+          throw new Error(`unexpected fetch url: ${url}`);
+        }) as typeof fetch;
+
+        const summary = await runGhArchiveDemo(
+          [
+            "day",
+            "--url",
+            baseUrl,
+            "--stream-prefix",
+            "gharchive-server-timeout",
+            "--onlyindex",
+            "exact:actorLogin",
+            "--onlyindex",
+            "fts:message",
+          ],
+          {
+            timeoutRetryDelayMs: 0,
+          }
+        );
+
+        expect(sawServerTimeout).toBe(true);
+        expect(summary.appendBackoffCount).toBe(1);
+        expect(summary.appendBackoffWaitMs).toBe(0);
+        expect(appendOrder.slice(0, 3)).toEqual(["exact:server-timeout", "exact:ok", "fts:ok"]);
+      } finally {
+        globalThis.fetch = realFetch;
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
     "retries overloaded stream creation on the current stream before moving to the next target",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-create-backoff-"));
