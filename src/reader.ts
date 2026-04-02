@@ -85,6 +85,8 @@ export type SearchResultBatch = {
   stream: string;
   snapshotEndOffset: string;
   tookMs: number;
+  timedOut: boolean;
+  timeoutMs: number | null;
   coverage: {
     mode: "complete" | "published";
     complete: boolean;
@@ -914,11 +916,6 @@ export class StreamReader {
       const visibleSealedThrough = coverageState.canSearchWalTail
         ? srow.sealed_through
         : (coverageState.visibleThroughSeq < srow.sealed_through ? coverageState.visibleThroughSeq : srow.sealed_through);
-      const exactCandidateStartedAt = Date.now();
-      const exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
-      let exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
-      const columnClauses = collectPositiveSearchColumnClauses(request.q);
-      const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       const deadline = request.timeoutMs == null ? null : Date.now() + request.timeoutMs;
       const leadingSort = request.sort[0] ?? null;
       const offsetSearchAfter =
@@ -926,8 +923,12 @@ export class StreamReader {
       const cursorFieldBound = resolveSearchCursorFieldBound(request);
 
       const hits: SearchHitInternal[] = [];
-      let totalHits = 0;
       let timedOut = false;
+      const markTimedOutIfNeeded = (): boolean => {
+        if (deadline == null || Date.now() < deadline) return false;
+        timedOut = true;
+        return true;
+      };
       let indexedSegments = 0;
       let indexedSegmentTimeMs = 0;
       let ftsSectionGetMs = 0;
@@ -938,6 +939,16 @@ export class StreamReader {
       let scannedTailDocs = 0;
       let scannedTailTimeMs = 0;
       const indexFamiliesUsed = new Set<string>();
+      const columnClauses = collectPositiveSearchColumnClauses(request.q);
+      const ftsClauses = collectPositiveSearchFtsClauses(request.q);
+      let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
+      let exactCandidateTimeMs = 0;
+      if (!markTimedOutIfNeeded()) {
+        const exactCandidateStartedAt = Date.now();
+        exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+        exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
+        markTimedOutIfNeeded();
+      }
 
       const collectSearchMatchResult = (
         offsetSeq: bigint,
@@ -950,7 +961,6 @@ export class StreamReader {
         if (!evalRes.value.matched) return Result.ok(undefined);
         const fieldsRes = extractSearchHitFieldsResult(registry, offsetSeq, parsedRes.value);
         if (Result.isError(fieldsRes)) return Result.err({ kind: "internal", message: fieldsRes.error.message });
-        if (request.trackTotalHits) totalHits += 1;
         const sortInternal = buildSearchSortInternalValues(request.sort, fieldsRes.value, evalRes.value, offsetSeq);
         if (request.searchAfter && compareSearchAfterValues(sortInternal, request.sort, request.searchAfter) <= 0) {
           return Result.ok(undefined);
@@ -973,7 +983,9 @@ export class StreamReader {
         rangeStartSeq: bigint,
         rangeEndSeq: bigint
       ): Promise<Result<void, ReaderError>> => {
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
         const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
         let curOffset = seg.start_offset;
         for (const blockRes of iterateBlocksResult(segBytes)) {
           if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
@@ -989,10 +1001,7 @@ export class StreamReader {
               if (Result.isError(matchRes)) return matchRes;
             }
             curOffset += 1n;
-            if (deadline != null && Date.now() >= deadline) {
-              timedOut = true;
-              return Result.ok(undefined);
-            }
+            if (markTimedOutIfNeeded()) return Result.ok(undefined);
           }
         }
         return Result.ok(undefined);
@@ -1004,6 +1013,7 @@ export class StreamReader {
         rangeEndSeq: bigint
       ): Promise<Result<void, ReaderError>> => {
         const segmentStartedAt = Date.now();
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
         if (
           exactCandidateInfo.segments &&
           seg.segment_index < exactCandidateInfo.indexedThrough &&
@@ -1020,6 +1030,7 @@ export class StreamReader {
             return Result.ok(undefined);
           }
         }
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
 
         const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
           stream,
@@ -1039,6 +1050,7 @@ export class StreamReader {
           }
         );
         if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
         const familyCandidates = familyCandidatesRes.value;
         if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
           indexedSegments += familyCandidates.usedFamilies.size > 0 ? 1 : 0;
@@ -1061,7 +1073,7 @@ export class StreamReader {
         return Result.ok(undefined);
       };
 
-      const stopIfPageComplete = (): boolean => !request.trackTotalHits && hits.length >= request.size;
+      const stopIfPageComplete = (): boolean => hits.length >= request.size;
 
       if (leadingSort?.kind === "offset") {
         const descending = leadingSort.direction === "desc";
@@ -1076,20 +1088,17 @@ export class StreamReader {
               const walStart = rangeStartSeq > tailStart ? rangeStartSeq : tailStart;
               const walEnd = rangeEndSeq;
               if (walStart <= walEnd) {
-                const tailStartedAt = Date.now();
-                for (const record of this.db.iterWalRangeDesc(stream, walStart, walEnd)) {
-                  scannedTailDocs += 1;
-                  const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
-                  if (Result.isError(matchRes)) return matchRes;
-                  if (deadline != null && Date.now() >= deadline) {
-                    timedOut = true;
-                    break;
-                  }
-                  if (stopIfPageComplete()) break;
-                }
-                scannedTailTimeMs += Date.now() - tailStartedAt;
+              const tailStartedAt = Date.now();
+              for (const record of this.db.iterWalRangeDesc(stream, walStart, walEnd)) {
+                scannedTailDocs += 1;
+                const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
+                if (Result.isError(matchRes)) return matchRes;
+                if (markTimedOutIfNeeded()) break;
+                if (stopIfPageComplete()) break;
               }
+              scannedTailTimeMs += Date.now() - tailStartedAt;
             }
+          }
             if (!timedOut && !stopIfPageComplete()) {
               const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
               if (sealedEnd >= rangeStartSeq) {
@@ -1169,10 +1178,7 @@ export class StreamReader {
                 scannedTailDocs += 1;
                 const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
                 if (Result.isError(matchRes)) return matchRes;
-                if (deadline != null && Date.now() >= deadline) {
-                  timedOut = true;
-                  break;
-                }
+                if (markTimedOutIfNeeded()) break;
                 if (stopIfPageComplete()) break;
               }
               scannedTailTimeMs += Date.now() - tailStartedAt;
@@ -1182,10 +1188,13 @@ export class StreamReader {
 
         const pageHits = hits.slice(0, request.size);
         const nextSearchAfter = pageHits.length === request.size ? pageHits[pageHits.length - 1].sortResponse : null;
+        const exactTotalKnown = !timedOut && coverageState.complete && nextSearchAfter == null;
         return Result.ok({
           stream,
           snapshotEndOffset,
           tookMs: Date.now() - startedAt,
+          timedOut,
+          timeoutMs: request.timeoutMs,
           coverage: {
             mode: coverageState.mode,
             complete: coverageState.complete && !timedOut,
@@ -1210,8 +1219,8 @@ export class StreamReader {
             indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
           },
           total: {
-            value: request.trackTotalHits ? totalHits : pageHits.length,
-            relation: timedOut || !coverageState.complete ? "gte" : "eq",
+            value: pageHits.length,
+            relation: exactTotalKnown ? "eq" : "gte",
           },
           hits: pageHits.map((hit) => ({
             offset: hit.offset,
@@ -1240,10 +1249,7 @@ export class StreamReader {
           scannedTailDocs += 1;
           const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
           if (Result.isError(matchRes)) return matchRes;
-          if (deadline != null && Date.now() >= deadline) {
-            timedOut = true;
-            break;
-          }
+          if (markTimedOutIfNeeded()) break;
         }
         scannedTailTimeMs += Date.now() - tailStartedAt;
       }
@@ -1251,11 +1257,14 @@ export class StreamReader {
       hits.sort((left, right) => compareSearchHits(left, right, request.sort));
       const pageHits = hits.slice(0, request.size);
       const nextSearchAfter = pageHits.length === request.size ? pageHits[pageHits.length - 1].sortResponse : null;
+      const exactTotalKnown = !timedOut && coverageState.complete && nextSearchAfter == null;
 
       return Result.ok({
         stream,
         snapshotEndOffset,
         tookMs: Date.now() - startedAt,
+        timedOut,
+        timeoutMs: request.timeoutMs,
         coverage: {
           mode: coverageState.mode,
           complete: coverageState.complete && !timedOut,
@@ -1280,8 +1289,8 @@ export class StreamReader {
           indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
         },
         total: {
-          value: request.trackTotalHits ? totalHits : pageHits.length,
-          relation: timedOut || !coverageState.complete ? "gte" : "eq",
+          value: pageHits.length,
+          relation: exactTotalKnown ? "eq" : "gte",
         },
         hits: pageHits.map((hit) => ({
           offset: hit.offset,
@@ -1624,6 +1633,12 @@ export class StreamReader {
     }
   ): Promise<Result<void, ReaderError>> {
     const segmentStartedAt = Date.now();
+    const markTimedOutIfNeeded = (): boolean => {
+      if (state.deadline == null || Date.now() < state.deadline) return false;
+      state.setTimedOut(true);
+      return true;
+    };
+    if (markTimedOutIfNeeded()) return Result.ok(undefined);
     if (
       exactCandidateInfo.segments &&
       seg.segment_index < exactCandidateInfo.indexedThrough &&
@@ -1640,6 +1655,7 @@ export class StreamReader {
         return Result.ok(undefined);
       }
     }
+    if (markTimedOutIfNeeded()) return Result.ok(undefined);
 
     const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
       stream,
@@ -1653,6 +1669,7 @@ export class StreamReader {
       }
     );
     if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
+    if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const familyCandidates = familyCandidatesRes.value;
     if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
       if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegment();
@@ -1668,11 +1685,18 @@ export class StreamReader {
       state.addScannedSegment();
     }
 
+    if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+    if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const decodedBlocks: Array<{ records: Array<{ payload: Uint8Array }> }> = [];
     for (const blockRes of iterateBlocksResult(segBytes)) {
       if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
       decodedBlocks.push({ records: blockRes.value.decoded.records });
+      if (markTimedOutIfNeeded()) {
+        if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
+        else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+        return Result.ok(undefined);
+      }
     }
 
     let blockEndOffset = seg.end_offset;
@@ -1692,8 +1716,7 @@ export class StreamReader {
           const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
           if (Result.isError(matchRes)) return matchRes;
         }
-        if (state.deadline != null && Date.now() >= state.deadline) {
-          state.setTimedOut(true);
+        if (markTimedOutIfNeeded()) {
           if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
           else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
           return Result.ok(undefined);

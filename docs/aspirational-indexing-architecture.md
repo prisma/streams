@@ -406,7 +406,6 @@ The POST form is the primary interface.
 {
   "q": "status:>=500 path:/api/checkout contains:\"TypeError: fetch failed\"",
   "size": 50,
-  "track_total_hits": true,
   "search_after": [8.104, 1735778119000, "0:123355"],
   "sort": ["_score", "@timestamp:desc", "offset:desc"],
   "snippet": {
@@ -1650,7 +1649,7 @@ Add these limits.
 - max `OR` expansions: 256
 - max prefix expansions: 256 by default
 - `contains:` minimum normalized length: 3 bytes for indexed path
-- track_total_hits default cap: 10,000
+- exact total-hit counting is intentionally not supported on the request path
 - timeout per query: configurable, default 5s
 
 Behavior on over-limit conditions should be explicit `400` or `429`, not silent truncation.

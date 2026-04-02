@@ -508,18 +508,51 @@ Current request fields:
 - `size`
 - `search_after`
 - `sort`
-- `track_total_hits`
 - `timeout_ms`
+  - optional lower per-request budget
+  - server-side effective timeout is always clamped to `<= 3000 ms`
+  - the deadline is enforced cooperatively between work units, so wall time may
+    overshoot slightly before the partial response is returned
 
 Current response fields:
 
 - `stream`
 - `snapshot_end_offset`
 - `took_ms`
+- `timed_out`
+- `timeout_ms`
 - `coverage`
 - `total`
 - `hits`
 - `next_search_after`
+
+Current response status behavior:
+
+- `200` when search completes within the effective timeout budget
+- `408` when search reaches the effective timeout budget
+  - the response body is still a valid search result
+  - partial hits and coverage counters are included
+  - `total.relation` is `gte`
+  - observed wall time may be slightly above `timeout_ms`
+
+Current search response headers:
+
+- `search-timed-out`
+- `search-timeout-ms`
+- `search-took-ms`
+- `search-total-relation`
+- `search-coverage-complete`
+- `search-indexed-segments`
+- `search-indexed-segment-time-ms`
+- `search-fts-section-get-ms`
+- `search-fts-decode-ms`
+- `search-fts-clause-estimate-ms`
+- `search-scanned-segments`
+- `search-scanned-segment-time-ms`
+- `search-scanned-tail-docs`
+- `search-scanned-tail-time-ms`
+- `search-exact-candidate-time-ms`
+- `search-index-families-used`
 
 Current search coverage fields:
 
@@ -579,6 +612,13 @@ Current request-path behavior under active ingest:
 - `visible_through_primary_timestamp_max` and `oldest_omitted_append_at` let
   clients explain the freshness gap in time terms
 - if the newest suffix is omitted, `total.relation` is `gte`
+- if the returned page may not include every visible match, `total.relation` is
+  `gte`
+- `/_search` does not support request-time exact total-hit counting
+- if the request hits the effective timeout budget, `/_search` returns `408`
+  with a valid partial search result body instead of keeping the request open
+- timeout checks are cooperative rather than preemptive, so clients should treat
+  `timeout_ms` as a bounded target rather than a strict wall-clock guarantee
 
 ### 8.7 Aggregate
 

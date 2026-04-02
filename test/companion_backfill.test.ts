@@ -258,7 +258,6 @@ describe("bundled companions and backfill", () => {
               q: 'why:"retry later"',
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: false,
             }),
           })
         );
@@ -304,7 +303,6 @@ describe("bundled companions and backfill", () => {
               q: 'why:"retry later"',
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: false,
             }),
           })
         );
@@ -521,7 +519,6 @@ describe("bundled companions and backfill", () => {
               q: "constructor",
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: false,
             }),
           })
         );

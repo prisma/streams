@@ -72,7 +72,6 @@ export type CompiledSearchQuery =
 export type SearchRequest = {
   q: CompiledSearchQuery;
   size: number;
-  trackTotalHits: boolean;
   timeoutMs: number | null;
   sort: SearchSortSpec[];
   searchAfter: unknown[] | null;
@@ -534,9 +533,8 @@ export function parseSearchRequestBodyResult(registry: SchemaRegistry, raw: unkn
   if (!Number.isFinite(size) || size <= 0 || !Number.isInteger(size) || size > 500) {
     return Result.err({ message: "size must be an integer between 1 and 500" });
   }
-  const trackTotalHits = raw.track_total_hits === undefined ? true : raw.track_total_hits === true;
-  if (raw.track_total_hits !== undefined && typeof raw.track_total_hits !== "boolean") {
-    return Result.err({ message: "track_total_hits must be boolean" });
+  if ("track_total_hits" in raw) {
+    return Result.err({ message: "track_total_hits is no longer supported" });
   }
   const timeoutMs =
     raw.timeout_ms === undefined || raw.timeout_ms === null
@@ -563,7 +561,6 @@ export function parseSearchRequestBodyResult(registry: SchemaRegistry, raw: unkn
   return Result.ok({
     q: queryRes.value,
     size,
-    trackTotalHits,
     timeoutMs,
     sort,
     searchAfter: searchAfterRes.value,
@@ -576,6 +573,9 @@ export function parseSearchRequestQueryResult(
 ): Result<SearchRequest, { message: string }> {
   const q = params.get("q");
   if (!q) return Result.err({ message: "missing q" });
+  if (params.has("track_total_hits")) {
+    return Result.err({ message: "track_total_hits is no longer supported" });
+  }
   const sortValues = params.getAll("sort");
   const splitSorts = sortValues.flatMap((value) => value.split(",")).map((value) => value.trim()).filter((value) => value !== "");
   let searchAfter: unknown[] | null = null;
@@ -592,7 +592,6 @@ export function parseSearchRequestQueryResult(
   return parseSearchRequestBodyResult(registry, {
     q,
     size: params.get("size") ? Number(params.get("size")) : undefined,
-    track_total_hits: params.get("track_total_hits") == null ? undefined : params.get("track_total_hits") === "true",
     timeout_ms: params.get("timeout_ms") ? Number(params.get("timeout_ms")) : undefined,
     sort: splitSorts.length > 0 ? splitSorts : undefined,
     search_after: searchAfter,

@@ -346,6 +346,164 @@ describe("_search http", () => {
   );
 
   test(
+    "returns timed-out partial search responses with metrics headers and clamps timeout_ms to 3s",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-timeout-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 200,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (const event of [
+          {
+            eventTime: "2026-03-25T10:15:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2400,
+            requestId: "req_1",
+            region: "us-east-1",
+            message: "payment retry failed",
+            why: "downstream timeout",
+          },
+          {
+            eventTime: "2026-03-25T10:16:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2500,
+            requestId: "req_2",
+            region: "us-east-1",
+            message: "payment retry failed again",
+            why: "downstream timeout",
+          },
+        ]) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(event),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSearchFamilies(app);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              size: 10,
+              sort: ["offset:desc"],
+              timeout_ms: 10_000,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("search-timed-out")).toBe("false");
+        expect(res.headers.get("search-timeout-ms")).toBe("3000");
+        expect(res.headers.get("search-took-ms")).toEqual(expect.any(String));
+        expect(res.headers.get("search-indexed-segments")).toEqual(expect.any(String));
+
+        let body = await res.json();
+        expect(body.timed_out).toBe(false);
+        expect(body.timeout_ms).toBe(3000);
+        expect(body.total).toEqual({ value: 2, relation: "eq" });
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              size: 10,
+              sort: ["offset:desc"],
+              timeout_ms: 0,
+            }),
+          })
+        );
+        expect(res.status).toBe(408);
+        expect(res.headers.get("search-timed-out")).toBe("true");
+        expect(res.headers.get("search-timeout-ms")).toBe("0");
+        expect(res.headers.get("search-total-relation")).toBe("gte");
+        expect(res.headers.get("search-coverage-complete")).toBe("false");
+        expect(res.headers.get("search-indexed-segments")).toBe("0");
+        expect(res.headers.get("search-scanned-tail-docs")).toBe("0");
+
+        body = await res.json();
+        expect(body.timed_out).toBe(true);
+        expect(body.timeout_ms).toBe(0);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.total.relation).toBe("gte");
+        expect(body.hits).toEqual([]);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              track_total_hits: true,
+            }),
+          })
+        );
+        expect(res.status).toBe(400);
+        body = await res.json();
+        expect(body).toEqual({
+          error: {
+            code: "bad_request",
+            message: "track_total_hits is no longer supported",
+          },
+        });
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search?q=timeout&track_total_hits=true`, {
+            method: "GET",
+          })
+        );
+        expect(res.status).toBe(400);
+        body = await res.json();
+        expect(body).toEqual({
+          error: {
+            code: "bad_request",
+            message: "track_total_hits is no longer supported",
+          },
+        });
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
     "uses offset-desc search_after for efficient append-order pagination",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-offset-"));
@@ -408,7 +566,6 @@ describe("_search http", () => {
               q: "has:message",
               size: 1,
               sort: ["offset:desc"],
-              track_total_hits: false,
             }),
           })
         );
@@ -427,7 +584,6 @@ describe("_search http", () => {
               q: "has:message",
               size: 1,
               sort: ["offset:desc"],
-              track_total_hits: false,
               search_after: body.next_search_after,
             }),
           })
@@ -518,7 +674,6 @@ describe("_search http", () => {
               q: "timeout",
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: true,
             }),
           })
         );
@@ -632,7 +787,6 @@ describe("_search http", () => {
               q: "timeout",
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: true,
             }),
           })
         );
@@ -746,7 +900,6 @@ describe("_search http", () => {
               q: "timeout",
               sort: ["offset:desc"],
               size: 10,
-              track_total_hits: true,
             }),
           })
         );

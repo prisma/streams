@@ -67,10 +67,65 @@ Example:
 {
   "q": "service:checkout status:>=500 why:\"issuer declined\"",
   "size": 100,
-  "sort": ["offset:desc"],
-  "track_total_hits": false
+  "sort": ["offset:desc"]
 }
 ```
+
+## Timeout Handling
+
+`/_search` uses a server-side timeout target of `3000 ms`.
+
+- the request may set `timeout_ms` to a lower value
+- values above `3000` are clamped to `3000`
+- the reader checks that deadline cooperatively between work units
+- if the budget is exhausted, the server returns `408` with a normal JSON search
+  response body instead of hanging the request
+- because timeout checks are cooperative, observed wall time may overshoot the
+  configured timeout slightly while an in-flight unit of work completes
+
+Important UI rule:
+
+- treat `408` from `/_search` as a structured partial result, not as a transport
+  failure
+- still parse the JSON body
+- still render returned hits
+- show that the query timed out and totals are lower bounds
+
+Timed-out search responses include:
+
+- body fields:
+  - `timed_out`
+  - `timeout_ms`
+  - `coverage`
+  - `total`
+  - `hits`
+- headers:
+  - `search-timed-out`
+  - `search-timeout-ms`
+  - `search-took-ms`
+  - `search-total-relation`
+  - `search-coverage-complete`
+  - `search-indexed-segments`
+  - `search-indexed-segment-time-ms`
+  - `search-fts-section-get-ms`
+  - `search-fts-decode-ms`
+  - `search-fts-clause-estimate-ms`
+  - `search-scanned-segments`
+  - `search-scanned-segment-time-ms`
+  - `search-scanned-tail-docs`
+  - `search-scanned-tail-time-ms`
+  - `search-exact-candidate-time-ms`
+  - `search-index-families-used`
+
+Recommended UI treatment on timeout:
+
+- keep showing the returned hits
+- if `timed_out === true` or `search-timed-out: true`, show a banner such as:
+  - `Search hit its 3.0s budget. Showing the newest matches found so far.`
+- if `total.relation === "gte"`, label totals as a lower bound:
+  - `50+ matches`
+- expose a retry affordance if the UI wants to rerun with narrower filters
+- `/_search` no longer supports request-time exact total-hit counting
 
 ## Infinite Scroll
 
@@ -82,7 +137,6 @@ Rules:
 - keep the same `sort`
 - pass `search_after` exactly as returned
 - request the next page with the same `size`
-- keep `track_total_hits` disabled unless the UI really needs an exact total
 
 For newest-first append-order search, there is no separate `search_before`
 mechanism. Use:
@@ -99,8 +153,7 @@ Example first page:
 {
   "q": "service:checkout status:>=500",
   "size": 100,
-  "sort": ["offset:desc"],
-  "track_total_hits": false
+  "sort": ["offset:desc"]
 }
 ```
 
@@ -111,7 +164,6 @@ Example next page:
   "q": "service:checkout status:>=500",
   "size": 100,
   "sort": ["offset:desc"],
-  "track_total_hits": false,
   "search_after": ["0000000000000000000000007Z"]
 }
 ```
@@ -171,6 +223,8 @@ Recommended UI treatment:
   - `Newest omitted events started arriving at 2026-04-01T12:57:15Z.`
 - treat `total.relation === "gte"` on `/_search` as a lower bound, not an exact
   total
+- if the HTTP status is `408`, combine the freshness banner with a timeout note
+  instead of treating the response as an error page
 
 ## Query Syntax
 

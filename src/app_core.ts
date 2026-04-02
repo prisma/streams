@@ -4,7 +4,7 @@ import type { Config } from "./config";
 import { SqliteDurableStore, type StreamRow } from "./db/db";
 import { IngestQueue, type ProducerInfo, type AppendRow } from "./ingest";
 import type { ObjectStore } from "./objectstore/interface";
-import type { StreamReader, ReadBatch, ReaderError } from "./reader";
+import type { StreamReader, ReadBatch, ReaderError, SearchResultBatch } from "./reader";
 import { StreamNotifier } from "./notifier";
 import { encodeOffset, parseOffsetResult, offsetToSeqOrNeg1, canonicalizeOffset, type ParsedOffset } from "./offset";
 import { parseDurationMsResult } from "./util/duration";
@@ -68,11 +68,37 @@ function json(status: number, body: any, headers: HeadersInit = {}): Response {
 
 const OVERLOAD_RETRY_AFTER_SECONDS = "1";
 const UNAVAILABLE_RETRY_AFTER_SECONDS = "5";
+const SEARCH_REQUEST_TIMEOUT_MS = 3_000;
 
 function retryAfterHeaders(seconds: string, headers: HeadersInit = {}): HeadersInit {
   return {
     "retry-after": seconds,
     ...headers,
+  };
+}
+
+function clampSearchRequestTimeoutMs(timeoutMs: number | null): number {
+  return timeoutMs == null ? SEARCH_REQUEST_TIMEOUT_MS : Math.min(timeoutMs, SEARCH_REQUEST_TIMEOUT_MS);
+}
+
+function searchResponseHeaders(search: SearchResultBatch): HeadersInit {
+  return {
+    "search-timed-out": search.timedOut ? "true" : "false",
+    "search-timeout-ms": String(search.timeoutMs ?? SEARCH_REQUEST_TIMEOUT_MS),
+    "search-took-ms": String(search.tookMs),
+    "search-total-relation": search.total.relation,
+    "search-coverage-complete": search.coverage.complete ? "true" : "false",
+    "search-indexed-segments": String(search.coverage.indexedSegments),
+    "search-indexed-segment-time-ms": String(search.coverage.indexedSegmentTimeMs),
+    "search-fts-section-get-ms": String(search.coverage.ftsSectionGetMs),
+    "search-fts-decode-ms": String(search.coverage.ftsDecodeMs),
+    "search-fts-clause-estimate-ms": String(search.coverage.ftsClauseEstimateMs),
+    "search-scanned-segments": String(search.coverage.scannedSegments),
+    "search-scanned-segment-time-ms": String(search.coverage.scannedSegmentTimeMs),
+    "search-scanned-tail-docs": String(search.coverage.scannedTailDocs),
+    "search-scanned-tail-time-ms": String(search.coverage.scannedTailTimeMs),
+    "search-exact-candidate-time-ms": String(search.coverage.exactCandidateTimeMs),
+    "search-index-families-used": search.coverage.indexFamiliesUsed.join(","),
   };
 }
 
@@ -1179,12 +1205,19 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               ? parseSearchRequestQueryResult(regRes.value, url.searchParams)
               : parseSearchRequestBodyResult(regRes.value, requestBody);
             if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
-            const searchRes = await reader.searchResult({ stream, request: requestRes.value });
+            const request = {
+              ...requestRes.value,
+              timeoutMs: clampSearchRequestTimeoutMs(requestRes.value.timeoutMs),
+            };
+            const searchRes = await reader.searchResult({ stream, request });
             if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
-            return json(200, {
+            const status = searchRes.value.timedOut ? 408 : 200;
+            return json(status, {
               stream,
               snapshot_end_offset: searchRes.value.snapshotEndOffset,
               took_ms: searchRes.value.tookMs,
+              timed_out: searchRes.value.timedOut,
+              timeout_ms: searchRes.value.timeoutMs,
               coverage: {
                 mode: searchRes.value.coverage.mode,
                 complete: searchRes.value.coverage.complete,
@@ -1211,7 +1244,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               total: searchRes.value.total,
               hits: searchRes.value.hits,
               next_search_after: searchRes.value.nextSearchAfter,
-            });
+            }, searchResponseHeaders(searchRes.value));
           };
 
           if (req.method === "GET") {

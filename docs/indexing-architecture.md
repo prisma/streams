@@ -262,6 +262,8 @@ Current implementation:
 - binary `agg2` rollup and interval directories keyed by plan-relative
   ordinals
 - interval-local dimension dictionaries, ordinal columns, and measure columns
+- per-interval zstd compression when a payload shrinks, with lazy inflate on
+  first read of that interval
 - no `.agg` compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -290,6 +292,8 @@ Current implementation:
 
 - immutable per-segment sections inside bundled `.cix` companions
 - binary `mblk2` payloads used only by metrics-profile aggregate paths
+- zstd-compressed metrics-record payloads when the blob shrinks, with lazy
+  inflate on first fallback scan
 - no `.mblk` compaction yet
 - local SQLite stores only the bundled companion plan and per-segment companion
   object keys
@@ -435,18 +439,38 @@ Current request shape:
 - `size`
 - `search_after`
 - `sort`
-- `track_total_hits`
 - `timeout_ms`
+  - optional lower per-request budget
+  - the server clamps effective `/_search` timeout to `<= 3000 ms`
+  - the deadline is enforced cooperatively between work units, so wall time may
+    overshoot slightly before the partial response is returned
 
 Current response shape:
 
 - `stream`
 - `snapshot_end_offset`
 - `took_ms`
+- `timed_out`
+- `timeout_ms`
 - `coverage`
 - `total`
 - `hits`
 - `next_search_after`
+
+Current timeout behavior:
+
+- `/_search` returns `200` when it finishes within the effective timeout budget
+- `/_search` returns `408` when it exhausts the effective timeout budget
+- the `408` response still includes a normal search result body with:
+  - partial `hits`
+  - `timed_out=true`
+  - `total.relation="gte"`
+  - coverage and search timing counters
+- because timeout checks are cooperative, elapsed wall time can be slightly
+  higher than `timeout_ms`
+- response headers mirror the same timing counters for easier inspection in
+  browser tooling
+- `/_search` does not support request-time exact total-hit counting
 
 Current search coverage fields:
 
