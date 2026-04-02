@@ -100,7 +100,7 @@ describe("CompanionFileCache", () => {
     }
   });
 
-  test("evicts previously mapped files after clearMapped restores budget enforcement", async () => {
+  test("keeps previously mmapped files pinned after clearMapped", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-companion-file-cache-"));
     try {
       const firstKey = "streams/a/companions/one.cix";
@@ -130,8 +130,9 @@ describe("CompanionFileCache", () => {
       expect(Result.isError(secondRes)).toBeFalse();
       if (Result.isError(secondRes)) return;
 
-      expect(existsSync(firstPath)).toBeFalse();
+      expect(existsSync(firstPath)).toBeTrue();
       expect(existsSync(secondPath)).toBeTrue();
+      expect(cache.bytesForObjectKeyPrefix("streams/a/companions/")).toBe(8);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
