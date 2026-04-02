@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Result } from "better-result";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
@@ -575,6 +576,75 @@ describe("http behavior", () => {
       expect(r.headers.get("retry-after")).toBe("1");
       expect(await r.json()).toEqual({
         error: { code: "overloaded", message: "ingest queue full" },
+      });
+    });
+  });
+
+  test("append requests time out after 3s with an append-specific error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-append-timeout-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    try {
+      let res = await app.fetch(
+        new Request("http://local/v1/stream/slow-append", {
+          method: "PUT",
+          headers: { "content-type": "text/plain" },
+        })
+      );
+      expect(res.status).toBe(201);
+
+      app.deps.ingest.append = (() =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(Result.err({ kind: "internal" })), 3_200);
+        })) as any;
+
+      const start = Date.now();
+      res = await app.fetch(
+        new Request("http://local/v1/stream/slow-append", {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: "hello",
+        })
+      );
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(408);
+      expect(elapsed).toBeGreaterThanOrEqual(2_900);
+      expect(elapsed).toBeLessThan(4_500);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "append_timeout",
+          message: "append timed out; append outcome is unknown, check Stream-Next-Offset before retrying",
+        },
+      });
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("generic resolver timeout returns 408 for handlers that exceed 5s", { timeout: 8_000 }, async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-resolver-timeout`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const timedOut = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details?live=long-poll&timeout=6s`, {
+        headers: { "if-none-match": etag! },
+      });
+      const elapsed = Date.now() - start;
+
+      expect(timedOut.status).toBe(408);
+      expect(elapsed).toBeGreaterThanOrEqual(4_900);
+      expect(elapsed).toBeLessThan(7_500);
+      expect(await timedOut.json()).toEqual({
+        error: { code: "request_timeout", message: "request timed out" },
       });
     });
   });

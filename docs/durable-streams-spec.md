@@ -244,6 +244,30 @@ Implementation requirement:
 
 ## 6. Create stream (PUT)
 
+### Server-side request timeouts
+
+Current implementation rules:
+
+- all HTTP resolvers use a cooperative server-side timeout target of `5000 ms`
+- if that generic resolver timeout is reached first, the server returns
+  `408 Request Timeout` with:
+
+```json
+{
+  "error": {
+    "code": "request_timeout",
+    "message": "request timed out"
+  }
+}
+```
+
+- route-specific lower limits still apply inside that outer cap
+- because timeout checks are cooperative rather than preemptive, observed wall
+  time may overshoot the target slightly while an in-flight unit of work
+  completes
+- long-poll clients should keep requested waits at `<= 5s` and reconnect after
+  a `408`
+
 ### Request
 
 `PUT /v1/stream/{name}`
@@ -301,6 +325,28 @@ If `Stream-Seq` is provided:
 
 - `200 OK`
 - Must include `Stream-Next-Offset` (the offset of the last appended entry).
+
+Current implementation timeout behavior:
+
+- append waits use a cooperative server-side timeout target of `3000 ms`
+- this applies to `POST /v1/stream/{name}` and to `PUT /v1/stream/{name}` when
+  it includes an initial append or close operation
+- if the append wait reaches that budget first, the server returns
+  `408 Request Timeout` with:
+
+```json
+{
+  "error": {
+    "code": "append_timeout",
+    "message": "append timed out; append outcome is unknown, check Stream-Next-Offset before retrying"
+  }
+}
+```
+
+- append timeout is ambiguous from the client's perspective because the server
+  may still complete the append after the timeout response is sent
+- clients should read or `HEAD` the stream and inspect `Stream-Next-Offset`
+  before retrying a timed-out append
 
 ## 7A. Profile resource
 
@@ -446,6 +492,9 @@ Conditional and long-poll behavior:
 - `timeout=<duration>` or `timeout_ms=<ms>` controls the long-poll deadline;
   default `3000ms`
 - on long-poll timeout with no visible change, return `304 Not Modified`
+- the generic resolver timeout still caps the overall request at `5000 ms`, so
+  callers should keep requested long-poll waits at `<= 5s` and reconnect on
+  `408 Request Timeout`
 
 The same conditional-long-poll contract also applies to
 `GET /v1/stream/{name}/_index_status`.
@@ -465,13 +514,16 @@ The same conditional-long-poll contract also applies to
 
 ### 8.2 Live reads (long-poll)
 
-`GET /v1/stream/{name}?offset=<off>&live=true&timeout=30s`
+`GET /v1/stream/{name}?offset=<off>&live=true&timeout=5s`
 
 - If data exists after `off`, return immediately.
 - Otherwise, wait for new data or timeout.
 - On timeout, return an empty batch with `Stream-Next-Offset` unchanged.
 - `filter=` is supported for long-poll reads.
 - `live=sse` is not supported together with `filter=`.
+- the generic resolver timeout still caps the overall request at `5000 ms`, so
+  callers should keep requested long-poll waits at `<= 5s` and reconnect on
+  `408 Request Timeout`
 
 ### 8.3 Formats
 
@@ -534,6 +586,9 @@ Current response status behavior:
   - partial hits and coverage counters are included
   - `total.relation` is `gte`
   - observed wall time may be slightly above `timeout_ms`
+- if the outer generic `5000 ms` resolver timeout fires first while an
+  in-flight search work unit is still running, `/_search` may instead return
+  the generic request-timeout error body described above
 
 Current search response headers:
 

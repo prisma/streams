@@ -362,6 +362,26 @@ describe("durable streams (Bun+TS rewrite)", () => {
     expect(new TextDecoder().decode(bytes)).toBe("x");
   });
 
+  test("generic resolver timeout caps long-poll requests at 5s", { timeout: 8_000 }, async () => {
+    const cfg = makeConfig(root);
+    app = createApp(cfg, new MockR2Store());
+    server = Bun.serve({ port: 0, fetch: app.fetch });
+    baseUrl = `http://localhost:${server.port}`;
+
+    await fetch(`${baseUrl}/v1/stream/live_timeout_cap`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+    const start = Date.now();
+    const r = await fetch(`${baseUrl}/v1/stream/live_timeout_cap?offset=-1&live=long-poll&timeout=6s`);
+    const elapsed = Date.now() - start;
+
+    expect(r.status).toBe(408);
+    expect(elapsed).toBeGreaterThanOrEqual(4_900);
+    expect(elapsed).toBeLessThan(7_500);
+    expect(await r.json()).toEqual({
+      error: { code: "request_timeout", message: "request timed out" },
+    });
+  });
+
   test("/pk path overrides key query", async () => {
     const cfg = makeConfig(root);
     app = createApp(cfg, new MockR2Store());

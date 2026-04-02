@@ -319,8 +319,9 @@ cache.
 
 - responses include `ETag`
 - send `If-None-Match` with the last seen `ETag`
-- add `live=long-poll&timeout=30s` to wait for the next visible change
-- the server returns `200` when the descriptor changes and `304` on timeout
+- add `live=long-poll&timeout=5s` to wait for the next visible change
+- the server returns `200` when the descriptor changes, `304` on route-local
+  timeout, and `408` if the generic `5s` resolver timeout fires first
 
 ## Storage Model
 

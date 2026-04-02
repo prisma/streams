@@ -85,11 +85,18 @@ Example:
 
 Important UI rule:
 
-- treat `408` from `/_search` as a structured partial result, not as a transport
-  failure
+- `/_search` has two timeout shapes:
+  - the normal search timeout shape: `408` with a structured partial-result
+    body and `search-timed-out: true`
+  - the outer generic resolver timeout shape: `408` with
+    `{ "error": { "code": "request_timeout", "message": "request timed out" } }`
+- when `search-timed-out: true` is present, treat the response as a structured
+  partial result, not as a transport failure
 - still parse the JSON body
 - still render returned hits
 - show that the query timed out and totals are lower bounds
+- when the body is the generic `request_timeout` error, show a retry prompt
+  instead of trying to render hits from it
 
 Timed-out search responses include:
 
@@ -122,6 +129,8 @@ Recommended UI treatment on timeout:
 - keep showing the returned hits
 - if `timed_out === true` or `search-timed-out: true`, show a banner such as:
   - `Search hit its 3.0s budget. Showing the newest matches found so far.`
+- if the body is the generic `request_timeout` error, show a banner such as:
+  - `Search request timed out before the server produced a partial result. Try a narrower query and retry.`
 - if `total.relation === "gte"`, label totals as a lower bound:
   - `50+ matches`
 - expose a retry affordance if the UI wants to rerun with narrower filters
@@ -301,7 +310,7 @@ needs:
 
 - first call `GET /v1/stream/{name}/_details`
 - store the returned `ETag`
-- then reissue `GET /v1/stream/{name}/_details?live=long-poll&timeout=30s`
+- then reissue `GET /v1/stream/{name}/_details?live=long-poll&timeout=5s`
   with `If-None-Match: <etag>`
 
 The server responds:
@@ -309,6 +318,15 @@ The server responds:
 - `200` with a fresh descriptor when new events arrive or descriptor-visible
   metadata changes
 - `304` when the timeout expires with no visible change
+- `408` when the generic server-side resolver timeout fires first
+
+Current timeout rule:
+
+- all HTTP resolvers use a cooperative server-side timeout target of `5000 ms`
+- keep `/_details` long-poll requests at `<= 5s`
+- if the UI gets `408` with
+  `{ "error": { "code": "request_timeout", "message": "request timed out" } }`,
+  immediately reconnect using the latest `ETag`
 
 This lets a stream page follow `next_offset`, `epoch`, `total_size_bytes`, and
 indexing progress without polling the full `/v1/streams` list.

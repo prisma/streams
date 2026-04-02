@@ -7,13 +7,16 @@ Prisma Streams server that is already running on the standard full-server port:
 
 The script is self-contained:
 
-- it creates a new stream
+- it creates one new stream per selected index
 - installs the `generic` profile
-- installs a schema with search fields and rollups
+- installs a minimal schema for exactly that one index on each stream
 - downloads the requested GH Archive time range
-- appends normalized events through `@durable-streams/client`
-- waits for durable upload and bundled search readiness
-- prints a final summary only when the demo is complete
+- appends each normalized batch to the target streams sequentially over raw HTTP
+- pauses on `429` or `503` using `Retry-After` and retries only the current
+  stream operation
+- applies a `20s` request timeout to ingester HTTP calls and retries the current
+  operation on timeout
+- prints a final summary when all requested hours have been appended to every target stream
 
 ## Why GH Archive
 
@@ -49,30 +52,21 @@ Optional flags:
   Default: `8388608` for `day|week|month|year`, `2097152` for `all`
 - `--batch-max-records <count>`
   Default: `1000` for `day|week|month|year`, `250` for `all`
-- `--ready-timeout-ms <ms>`
-  Default: `1800000`
-- `--append-retry-timeout-ms <ms>`
-  Default: `900000`
 - `--noindex`
   Installs only the JSON schema and skips the search schema entirely. Useful for
-  raw-ingest control runs.
+  raw-ingest control runs. This mode creates a single stream.
 - `--onlyindex <selector>`
-  Installs only one search path plus the required `eventTime` timestamp field.
-  Useful for memory and builder-isolation experiments. Supported selectors:
+  Limits the demo to one or more single-index streams instead of the full set.
+  Each selected index gets its own stream with only that selector plus the
+  required `eventTime` timestamp field. Supported selectors:
   `exact:eventType`, `exact:ghArchiveId`, `exact:actorLogin`, `exact:repoName`,
   `exact:repoOwner`, `exact:orgLogin`, `exact:action`, `exact:refType`,
   `exact:public`, `exact:isBot`, `col:eventTime`, `col:public`, `col:isBot`,
   `col:commitCount`, `col:payloadBytes`, `col:payloadKb`, `fts:eventType`,
   `fts:repoOwner`, `fts:action`, `fts:refType`, `fts:title`, `fts:message`,
   `fts:body`, `agg:events`.
-  Repeat the flag or pass a comma-separated list to combine several selectors
-  into one minimal schema.
-- `--debug-progress`
-  Logs readiness progress while the script waits for uploaded data and bundled
-  search companions to catch up. Off by default so the demo stays quiet unless
-  you ask for progress output.
-- `--debug-progress-interval-ms <ms>`
-  Default: `5000`
+  Repeat the flag or pass a comma-separated list to create several single-index
+  streams in one run.
 
 Example:
 
@@ -86,7 +80,7 @@ Isolate one bundled-search field or exact index:
 bun run demo:gharchive all --stream-prefix gharchive-lab --onlyindex fts:message
 ```
 
-Combine several heavy selectors into one experiment:
+Fan out the same ingest workload into several isolated streams:
 
 ```bash
 bun run demo:gharchive all \
@@ -95,18 +89,21 @@ bun run demo:gharchive all \
   --onlyindex fts:message,agg:events
 ```
 
-That creates:
+That creates streams like:
 
-- `gharchive-lab-week`
+- `gharchive-lab-all-exact-ghArchiveId`
+- `gharchive-lab-all-fts-message`
+- `gharchive-lab-all-agg-events`
 
-The range suffix is part of the stream name so you can keep multiple demo
-streams side by side:
+The range suffix is part of every stream name so you can keep multiple demo
+sets side by side:
 
 - `gharchive-demo-day`
-- `gharchive-demo-week`
-- `gharchive-demo-month`
+- `gharchive-demo-day-exact-eventType`
+- `gharchive-demo-day-fts-message`
+- `gharchive-demo-day-agg-events`
 
-The script recreates the selected stream name on each run.
+The script recreates every selected target stream on each run.
 
 For the `all` range, the demo intentionally uses smaller append batches by
 default so the workload does not amplify the server's append-path JSON
@@ -121,6 +118,7 @@ GH Archive occasionally has missing hourly archives or publication gaps. The
 demo handles that directly:
 
 - an hourly archive returning `404` is skipped
+- each skipped hour is logged to stderr with the hour and archive URL
 - skipped hours are counted in the final summary as `missing`
 - successfully ingested hours are counted as `downloaded`
 - the run only fails if the entire requested range has no available hours
@@ -130,24 +128,19 @@ hours have not been published yet.
 
 ## Completion Semantics
 
-The demo completes once the stream is ready for user-facing search and
-aggregation:
+The demo completes once every available GH Archive hour in the requested range
+has been normalized and appended to every target stream:
 
-- uploaded segments are durably published
-- bundled companions are built for all uploaded segments
-- bundled search families (`.col`, `.fts`, `.agg`) are ready
+- there is no `_details` polling
+- there is no readiness wait for uploads, companions, or exact indexes
+- each batch is sent to the target streams sequentially
+- if any stream operation responds with `429` or `503`, the demo pauses using
+  `Retry-After` and retries that same operation before doing anything else
+- if an ingester HTTP request times out after `20s`, the demo pauses briefly and
+  retries that same operation before doing anything else
 
-The internal exact secondary-index family is still reported in the final
-summary, but it does not gate demo completion. Exact runs are an internal
-accelerator and currently build in fixed spans, so a trailing partial uploaded
-span can remain uncovered even when the stream is already fully usable through
-the bundled search path.
-
-If you want to watch the wait phase, run with:
-
-```bash
-bun run demo:gharchive day --debug-progress
-```
+This keeps the demo ingest loop intentionally simple and makes backpressure
+behavior explicit.
 
 ## Installed Profile And Schema
 
@@ -156,7 +149,8 @@ event stream, so the right fit is:
 
 - `generic` profile for plain durable JSON storage
 - user-managed schema for the normalized GH Archive event envelope
-- schema-owned `search` and `search.rollups` for query and aggregate support
+- per-stream `search` and `search.rollups` configuration for exactly one index
+  family selector at a time
 
 The normalized event shape includes:
 
@@ -179,9 +173,13 @@ The normalized event shape includes:
 - `payloadBytes`
 - `payloadKb`
 
+Every demo stream also derives its routing key from `repoName` using the schema
+registry `routingKey` field. When `repoName` is absent, the append proceeds
+without a routing key for that record.
+
 ## Search Fields
 
-The installed schema enables all shipped search families:
+The default run creates one stream per shipped selector:
 
 - keyword exact/prefix:
   - `eventType`
@@ -205,10 +203,15 @@ The installed schema enables all shipped search families:
   - `message`
   - `body`
 
-The demo now full-text indexes the larger `message` and `body` fields again,
-not just `title`. That gives the demo a stronger end-to-end exercise of the
-bundled `.fts` path over real issue bodies, review comments, and commit
-messages.
+Each one of those selectors is installed on its own stream alongside the shared
+`eventTime` timestamp field. For example:
+
+- `gharchive-demo-day-exact-actorLogin` carries only the `actorLogin` exact
+  index
+- `gharchive-demo-day-col-payloadBytes` carries only the `payloadBytes` column
+  index
+- `gharchive-demo-day-fts-message` carries only the `message` FTS index
+- `gharchive-demo-day-agg-events` carries only the `events` rollup
 
 Useful aliases:
 
@@ -221,8 +224,8 @@ Useful aliases:
 
 ## Rollups For Studio
 
-The demo also installs a rollup named `events` so Studio can demonstrate the
-aggregate UI.
+The `agg:events` stream installs a rollup named `events` so Studio can
+demonstrate the aggregate UI.
 
 Rollup configuration:
 
@@ -289,64 +292,28 @@ POST /v1/stream/gharchive-demo-day/_aggregate
 }
 ```
 
-## Readiness
+## Summary Output
 
-The script waits until:
-
-- uploaded data is published
-- bundled companions are ready for uploaded segments
-- search families are ready for uploaded segments
-
-When it finishes, the terminal summary includes:
+The final summary is emitted immediately after the last batch has been appended
+to every target stream. It includes:
 
 - requested hours
 - downloaded hours
 - missing hours
+- target stream count
+- target stream names
 - normalized row count
 - source bytes
 - normalized bytes
-- logical stream size
 - average ingest rate in MiB/s
 - download throughput in MiB/s
 - normalize throughput in MiB/s
 - append acknowledgement throughput in MiB/s
-- time to search-ready after the final append
+- append backoff count
+- append backoff wait time in milliseconds
 
-Only then does it print the final summary.
-
-Append hardening:
-
-- stream creation and appends go through the official
-  `@durable-streams/client`
-- transient `429` and `503` responses are retried automatically with client
-  backoff
-- the server includes `Retry-After` on overload and temporary unavailability,
-  so the client honors server-guided retry delays instead of busy retrying
-- `--append-retry-timeout-ms` caps how long one append batch may keep retrying
-  before the demo aborts
-
-This is important for large GH Archive loads, because the server correctly
-returns overload instead of buffering unboundedly when the ingest queue is
-full.
-
-The final summary includes:
-
-- `raw_source_bytes`
-- `normalized_bytes`
-- `stream_total_size_bytes`
-- `avg_ingest_mib_per_s`
-- `download_mib_per_s`
-- `normalize_mib_per_s`
-- `append_ack_mib_per_s`
-- `time_to_search_ready_ms`
-- readiness state for uploads and indexing
-
-Current readiness rule:
-
-- `uploaded=true`
-- `bundled=true`
-- `search=true`
-- exact secondary indexes may still be catching up in the background
+`append_backoff_*` includes both explicit server backoff (`429`/`503` with
+`Retry-After`) and append retries caused by ingester-side request timeouts.
 
 `avg_ingest_mib_per_s` is computed from normalized appended payload bytes over
 total wall-clock ingest time.
@@ -359,11 +326,8 @@ the time spent parsing GH Archive JSON, mapping it into the demo envelope, and
 serializing the normalized records.
 
 `append_ack_mib_per_s` is computed from normalized appended payload bytes over
-the time spent waiting for append acknowledgements from the stream server.
-
-`time_to_search_ready_ms` measures the delay between the final successful append
-acknowledgement and the point where uploaded segments plus bundled search
-companions are ready according to `/_details`.
+the time spent waiting on append responses from the stream server, excluding any
+explicit `Retry-After` sleep time.
 
 ## Notes
 

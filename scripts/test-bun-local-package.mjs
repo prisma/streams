@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -34,6 +34,10 @@ try {
   mkdirSync(consumerDir, { recursive: true });
 
   const localPackageDir = join(repoRoot, "dist", "npm", "streams-local");
+  const localPackageManifest = JSON.parse(readFileSync(join(localPackageDir, "package.json"), "utf8"));
+  if ("@durable-streams/client" in (localPackageManifest.dependencies ?? {})) {
+    throw new Error("@prisma/streams-local should not publish @durable-streams/client");
+  }
   const packOutput = run("npm", ["pack", "--pack-destination", packDir], localPackageDir);
   const tarballName = packOutput.split(/\r?\n/).filter(Boolean).at(-1);
   if (!tarballName) throw new Error("npm pack did not produce a tarball name");

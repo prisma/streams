@@ -112,6 +112,9 @@ For `@prisma/streams-local`, the build intentionally:
   targets the Node module surface
 - keeps npm dependencies external instead of rebundling them into the local
   package tarball
+- publishes only the runtime dependency subset the local package actually
+  imports, rather than copying the repository-wide dependency list into
+  `@prisma/streams-local`
 
 ## Why The Split Exists
 

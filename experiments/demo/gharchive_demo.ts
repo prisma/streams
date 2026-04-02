@@ -1,4 +1,3 @@
-import { DurableStream } from "@durable-streams/client";
 import { dsError } from "../../src/util/ds_error.ts";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
@@ -7,8 +6,9 @@ const DEFAULT_BATCH_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BATCH_MAX_RECORDS = 1_000;
 const DEFAULT_ALL_RANGE_BATCH_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_ALL_RANGE_BATCH_MAX_RECORDS = 250;
-const DEFAULT_READY_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_APPEND_RETRY_TIMEOUT_MS = 15 * 60 * 1_000;
+const GH_ARCHIVE_REQUEST_TIMEOUT_MS = 20_000;
+const GH_ARCHIVE_TIMEOUT_RETRY_DELAY_MS = 1_000;
+const GH_ARCHIVE_FETCH_TIMEOUT_CODE = "gharchive_fetch_timeout";
 const GH_ARCHIVE_START_MS = Date.UTC(2011, 1, 12, 0, 0, 0, 0);
 const GH_ARCHIVE_HOUR_MISSING_CODE = "gharchive_hour_missing";
 
@@ -65,27 +65,36 @@ export type GhArchiveDemoEvent = {
 
 export type GhArchiveDemoSummary = {
   avgIngestMiBPerSec: number;
-  bundledCompanionsReady: boolean;
+  appendAckMiBPerSec: number;
+  appendBackoffCount: number;
+  appendBackoffWaitMs: number;
   downloadMiBPerSec: number;
   downloadedHours: number;
   elapsedMs: number;
   endHour: string;
-  exactIndexesReady: boolean;
   hours: number;
   missingHours: number;
   normalizeMiBPerSec: number;
   normalizedBytes: number;
   normalizedRows: number;
-  appendAckMiBPerSec: number;
   range: GhArchiveRangeName;
   rawSourceBytes: number;
-  ready: boolean;
-  searchFamiliesReady: boolean;
   startHour: string;
-  stream: string;
-  timeToSearchReadyMs: number;
-  totalSizeBytes: string;
-  uploadedReady: boolean;
+  streamCount: number;
+  streams: string[];
+};
+
+export type GhArchiveDemoRunOptions = {
+  fetchImpl?: typeof fetch;
+  now?: Date;
+  requestTimeoutMs?: number;
+  timeoutRetryDelayMs?: number;
+};
+
+type GhArchiveHttpClient = {
+  fetchImpl: typeof fetch;
+  requestTimeoutMs: number;
+  timeoutRetryDelayMs: number;
 };
 
 export function resolveGhArchiveBatchDefaults(range: GhArchiveRangeName): { batchMaxBytes: number; batchMaxRecords: number } {
@@ -101,28 +110,6 @@ export function resolveGhArchiveBatchDefaults(range: GhArchiveRangeName): { batc
   };
 }
 
-type DetailsResponse = {
-  index_status: {
-    bundled_companions?: { fully_indexed_uploaded_segments?: boolean };
-    exact_indexes?: Array<{
-      name?: string;
-      indexed_segment_count?: number;
-      fully_indexed_uploaded_segments?: boolean;
-    }>;
-    search_families?: Array<{
-      family?: string;
-      covered_segment_count?: number;
-      stale_segment_count?: number;
-      fully_indexed_uploaded_segments?: boolean;
-    }>;
-  };
-  stream: {
-    sealed_through: string;
-    total_size_bytes: string;
-    uploaded_through: string;
-  };
-};
-
 type GhArchiveRawEvent = {
   actor?: { login?: string | null } | null;
   created_at?: string | null;
@@ -134,18 +121,16 @@ type GhArchiveRawEvent = {
   type?: string | null;
 };
 
-export type DemoReadiness = {
-  uploadedReady: boolean;
-  exactReady: boolean;
-  bundledReady: boolean;
-  searchReady: boolean;
-  ready: boolean;
-};
-
 type GhArchiveSchemaBuildOptions = {
   noIndex?: boolean;
   onlyIndex?: GhArchiveOnlyIndexSelector | null;
   onlyIndexes?: GhArchiveOnlyIndexSelector[];
+};
+
+type GhArchiveDemoStreamTarget = {
+  stream: string;
+  selector: GhArchiveOnlyIndexSelector | null;
+  schema: GhArchiveSchemaBuildOptions;
 };
 
 const GH_ARCHIVE_SEARCH_ALIASES = {
@@ -586,6 +571,39 @@ export function buildGhArchiveStreamName(prefix: string, range: GhArchiveRangeNa
   return `${prefix}-${range}`;
 }
 
+export function buildGhArchiveIndexedStreamName(
+  prefix: string,
+  range: GhArchiveRangeName,
+  selector: GhArchiveOnlyIndexSelector
+): string {
+  return `${buildGhArchiveStreamName(prefix, range)}-${selector.replace(":", "-")}`;
+}
+
+export function resolveGhArchiveStreamTargets(
+  prefix: string,
+  range: GhArchiveRangeName,
+  opts: { noIndex?: boolean; onlyIndexes?: GhArchiveOnlyIndexSelector[] } = {}
+): GhArchiveDemoStreamTarget[] {
+  if (opts.noIndex) {
+    return [
+      {
+        stream: buildGhArchiveStreamName(prefix, range),
+        selector: null,
+        schema: { noIndex: true },
+      },
+    ];
+  }
+  const selectors =
+    Array.isArray(opts.onlyIndexes) && opts.onlyIndexes.length > 0
+      ? opts.onlyIndexes
+      : [...GH_ARCHIVE_ONLY_INDEX_SELECTORS];
+  return selectors.map((selector) => ({
+    stream: buildGhArchiveIndexedStreamName(prefix, range, selector),
+    selector,
+    schema: { onlyIndex: selector },
+  }));
+}
+
 function streamUrl(baseUrl: string, stream: string): string {
   return `${baseUrl}/v1/stream/${encodeURIComponent(stream)}`;
 }
@@ -597,6 +615,72 @@ function hasErrorCode(error: unknown, code: string): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === code
   );
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return typeof error === "object" && error != null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
+async function fetchWithTimeout(
+  client: GhArchiveHttpClient,
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  const controller = new AbortController();
+  const parentSignal = init.signal;
+  const abortFromParent = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) abortFromParent();
+    else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, client.requestTimeoutMs);
+  try {
+    return await client.fetchImpl(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut || (!parentSignal?.aborted && controller.signal.aborted && isAbortLikeError(error))) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      throw dsError(`request timed out after ${client.requestTimeoutMs}ms: ${url}`, {
+        code: GH_ARCHIVE_FETCH_TIMEOUT_CODE,
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function withTimeoutRetries<T>(client: GhArchiveHttpClient, description: string, run: () => Promise<T>): Promise<T> {
+  for (;;) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!hasErrorCode(error, GH_ARCHIVE_FETCH_TIMEOUT_CODE)) throw error;
+      process.stderr.write(
+        `[gharchive-demo] timeout during ${description}; retrying in ${client.timeoutRetryDelayMs}ms\n`
+      );
+      if (client.timeoutRetryDelayMs > 0) await sleep(client.timeoutRetryDelayMs);
+    }
+  }
+}
+
+async function fetchWithServerBackoff(
+  client: GhArchiveHttpClient,
+  description: string,
+  run: () => Promise<Response>
+): Promise<Response> {
+  for (;;) {
+    const response = await withTimeoutRetries(client, description, run);
+    if (response.status !== 429 && response.status !== 503) return response;
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+    process.stderr.write(`[gharchive-demo] backoff during ${description}; retrying in ${retryAfterMs}ms\n`);
+    if (retryAfterMs > 0) await sleep(retryAfterMs);
+  }
 }
 
 export function resolveGhArchiveRangeHours(
@@ -798,6 +882,10 @@ export function buildGhArchiveSchemaUpdate(opts: GhArchiveSchemaBuildOptions = {
         payloadKb: { type: "number", minimum: 0 },
       },
     },
+    routingKey: {
+      jsonPointer: "/repoName",
+      required: false,
+    },
   };
   if (opts.noIndex) return update;
   const onlyIndexSelectors = normalizeOnlyIndexSelectors(opts);
@@ -810,51 +898,42 @@ export function buildGhArchiveSchemaUpdate(opts: GhArchiveSchemaBuildOptions = {
   return update;
 }
 
-async function fetchJson(url: string, init: RequestInit = {}): Promise<any> {
-  const response = await fetch(url, init);
+async function fetchJson(client: GhArchiveHttpClient, url: string, init: RequestInit = {}): Promise<any> {
+  const response = await fetchWithServerBackoff(client, `request ${url}`, () => fetchWithTimeout(client, url, init));
   const text = await response.text();
   if (!response.ok) throw dsError(`HTTP ${response.status} ${url}: ${text}`);
   if (text === "") return null;
   return JSON.parse(text);
 }
 
-async function deleteStreamIfExists(baseUrl: string, stream: string): Promise<void> {
-  try {
-    await DurableStream.delete({
-      url: streamUrl(baseUrl, stream),
-      contentType: "application/json",
-      batching: false,
-    });
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error != null &&
-      "status" in error &&
-      (error as { status?: unknown }).status === 404
-    ) {
-      return;
-    }
-    throw dsError(`failed to delete stream ${stream}`, { cause: error });
+async function deleteStreamIfExists(client: GhArchiveHttpClient, baseUrl: string, stream: string): Promise<void> {
+  const response = await fetchWithServerBackoff(client, `delete stream ${stream}`, () =>
+    fetchWithTimeout(client, streamUrl(baseUrl, stream), { method: "DELETE" })
+  );
+  if (response.status === 404) return;
+  if (!response.ok) {
+    throw dsError(`failed to delete stream ${stream}: HTTP ${response.status} ${await response.text()}`);
   }
 }
 
 async function createConfiguredStream(
+  client: GhArchiveHttpClient,
   baseUrl: string,
   stream: string,
   opts: GhArchiveSchemaBuildOptions = {}
-): Promise<DurableStream> {
-  let handle: DurableStream;
-  try {
-    handle = await DurableStream.create({
-      url: streamUrl(baseUrl, stream),
-      contentType: "application/json",
-      batching: false,
-    });
-  } catch (error) {
-    throw dsError(`failed to create stream ${stream}`, { cause: error });
+): Promise<void> {
+  const createResponse = await fetchWithServerBackoff(client, `create stream ${stream}`, () =>
+    fetchWithTimeout(client, streamUrl(baseUrl, stream), {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "",
+    })
+  );
+  if (!createResponse.ok) {
+    throw dsError(`failed to create stream ${stream}: HTTP ${createResponse.status} ${await createResponse.text()}`);
   }
 
-  await fetchJson(`${streamUrl(baseUrl, stream)}/_profile`, {
+  await fetchJson(client, `${streamUrl(baseUrl, stream)}/_profile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -863,28 +942,71 @@ async function createConfiguredStream(
     }),
   });
 
-  await fetchJson(`${streamUrl(baseUrl, stream)}/_schema`, {
+  await fetchJson(client, `${streamUrl(baseUrl, stream)}/_schema`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(buildGhArchiveSchemaUpdate(opts)),
   });
-
-  return handle;
 }
 
-async function appendBatch(
-  stream: DurableStream,
+function parseRetryAfterMs(value: string | null): number {
+  if (value == null || value.trim() === "") return 1_000;
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.max(0, Math.ceil(seconds * 1000));
+  const whenMs = Date.parse(trimmed);
+  if (Number.isFinite(whenMs)) return Math.max(0, whenMs - Date.now());
+  return 1_000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function appendBatchToStream(
+  client: GhArchiveHttpClient,
+  baseUrl: string,
   streamName: string,
-  rows: string[],
-  opts: { retryTimeoutMs?: number } = {}
-): Promise<void> {
-  if (rows.length === 0) return;
-  const retryTimeoutMs = opts.retryTimeoutMs ?? DEFAULT_APPEND_RETRY_TIMEOUT_MS;
-  const signal = AbortSignal.timeout(retryTimeoutMs);
-  try {
-    await stream.append(rows.join(","), { signal });
-  } catch (error) {
-    throw dsError(`append failed for ${streamName}`, { cause: error });
+  batchBody: string
+): Promise<{ ackMs: number; backoffCount: number; backoffWaitMs: number }> {
+  let ackMs = 0;
+  let backoffCount = 0;
+  let backoffWaitMs = 0;
+  for (;;) {
+    let response: Response;
+    const appendStartedAt = Date.now();
+    try {
+      response = await fetchWithTimeout(client, streamUrl(baseUrl, streamName), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: batchBody,
+      });
+    } catch (error) {
+      if (hasErrorCode(error, GH_ARCHIVE_FETCH_TIMEOUT_CODE)) {
+        backoffCount += 1;
+        backoffWaitMs += client.timeoutRetryDelayMs;
+        process.stderr.write(
+          `[gharchive-demo] append timeout on ${streamName}; retrying in ${client.timeoutRetryDelayMs}ms\n`
+        );
+        if (client.timeoutRetryDelayMs > 0) await sleep(client.timeoutRetryDelayMs);
+        continue;
+      }
+      throw dsError(`append failed for ${streamName}`, { cause: error });
+    }
+    ackMs += Date.now() - appendStartedAt;
+    if (response.ok) {
+      await response.arrayBuffer();
+      return { ackMs, backoffCount, backoffWaitMs };
+    }
+    if (response.status === 429 || response.status === 503) {
+      const waitMs = parseRetryAfterMs(response.headers.get("retry-after"));
+      backoffCount += 1;
+      backoffWaitMs += waitMs;
+      await response.arrayBuffer();
+      await sleep(waitMs);
+      continue;
+    }
+    throw dsError(`append failed for ${streamName}: HTTP ${response.status} ${await response.text()}`);
   }
 }
 
@@ -894,11 +1016,12 @@ function rateMiBPerSec(bytes: number, elapsedMs: number): number {
 }
 
 async function* iterateGhArchiveLines(
+  client: GhArchiveHttpClient,
   url: string,
   opts: { onDownloadWaitMs?: (elapsedMs: number) => void } = {}
 ): AsyncGenerator<string> {
   const fetchStartedAt = Date.now();
-  const response = await fetch(url);
+  const response = await withTimeoutRetries(client, `download ${url}`, () => fetchWithTimeout(client, url));
   opts.onDownloadWaitMs?.(Date.now() - fetchStartedAt);
   if (response.status === 404) {
     throw dsError(`gh archive hour unavailable: ${url}`, { code: GH_ARCHIVE_HOUR_MISSING_CODE });
@@ -926,104 +1049,9 @@ async function* iterateGhArchiveLines(
   if (buffer.trim() !== "") yield buffer;
 }
 
-async function waitUntilReady(baseUrl: string, stream: string, timeoutMs: number): Promise<DetailsResponse> {
-  return (await waitUntilReadyWithProgress(baseUrl, stream, timeoutMs)).details;
-}
-
-export function computeDemoReadiness(details: DetailsResponse): DemoReadiness {
-  const uploadedReady = BigInt(details.stream.uploaded_through) >= BigInt(details.stream.sealed_through);
-  const exactReady = (details.index_status.exact_indexes ?? []).every(
-    (entry) => entry.fully_indexed_uploaded_segments === true
-  );
-  const hasBundledCompanions = details.index_status.bundled_companions != null;
-  const hasSearchFamilies = (details.index_status.search_families ?? []).length > 0;
-  const bundledReady = hasBundledCompanions
-    ? details.index_status.bundled_companions?.fully_indexed_uploaded_segments === true
-    : !hasSearchFamilies;
-  const searchReady = (details.index_status.search_families ?? []).every(
-    (entry) => entry.fully_indexed_uploaded_segments === true
-  );
-  return {
-    uploadedReady,
-    exactReady,
-    bundledReady,
-    searchReady,
-    // The demo is considered ready once durable upload and the user-facing bundled
-    // search companions are ready. Exact secondary indexes remain an internal
-    // accelerator and may continue catching up in the background.
-    ready: uploadedReady && bundledReady && searchReady,
-  };
-}
-
-function formatReadinessDebug(details: DetailsResponse, readiness: DemoReadiness): string {
-  const exactProgress = (details.index_status.exact_indexes ?? [])
-    .map((entry) => `${entry.name ?? "unknown"}:${entry.indexed_segment_count ?? 0}`)
-    .join(",");
-  const searchProgress = (details.index_status.search_families ?? [])
-    .map((entry) => {
-      const covered = entry.covered_segment_count ?? 0;
-      const stale = entry.stale_segment_count ?? 0;
-      return `${entry.family ?? "unknown"}:${covered}/${covered + stale}`;
-    })
-    .join(",");
-  return [
-    `uploaded=${readiness.uploadedReady}`,
-    `bundled=${readiness.bundledReady}`,
-    `search=${readiness.searchReady}`,
-    `exact=${readiness.exactReady}`,
-    `next_offset=${details.stream.next_offset}`,
-    `uploaded_segments=${details.stream.uploaded_segment_count}/${details.stream.segment_count}`,
-    `pending_rows=${details.stream.pending_rows}`,
-    `pending_bytes=${details.stream.pending_bytes}`,
-    `bundled_objects=${details.index_status.bundled_companions?.object_count ?? 0}`,
-    `search_progress=${searchProgress || "none"}`,
-    `exact_progress=${exactProgress || "none"}`,
-  ].join(" ");
-}
-
-async function waitUntilReadyWithProgress(
-  baseUrl: string,
-  stream: string,
-  timeoutMs: number,
-  opts: { debugProgress?: boolean; debugIntervalMs?: number } = {}
-): Promise<{ details: DetailsResponse; readiness: DemoReadiness }> {
-  const deadline = Date.now() + timeoutMs;
-  const debugProgress = opts.debugProgress === true;
-  const debugIntervalMs = Math.max(1_000, opts.debugIntervalMs ?? 5_000);
-  let lastDebugAt = 0;
-  let lastDebugLine = "";
-  let lastDetails: DetailsResponse | null = null;
-  let lastReadiness: DemoReadiness | null = null;
-  for (;;) {
-    const details = (await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_details`, {
-      method: "GET",
-    })) as DetailsResponse;
-    const readiness = computeDemoReadiness(details);
-    lastDetails = details;
-    lastReadiness = readiness;
-    if (readiness.ready) return { details, readiness };
-    if (debugProgress) {
-      const line = formatReadinessDebug(details, readiness);
-      const now = Date.now();
-      if (line !== lastDebugLine || now - lastDebugAt >= debugIntervalMs) {
-        process.stderr.write(`[gharchive-demo] waiting ${line}\n`);
-        lastDebugLine = line;
-        lastDebugAt = now;
-      }
-    }
-    if (Date.now() > deadline) {
-      throw dsError(
-        `timed out waiting for uploads and indexes on ${stream}${
-          lastDetails && lastReadiness ? ` (${formatReadinessDebug(lastDetails, lastReadiness)})` : ""
-        }`
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-  }
-}
-
 export async function runGhArchiveDemo(
-  args: string[] = process.argv.slice(2)
+  args: string[] = process.argv.slice(2),
+  opts: GhArchiveDemoRunOptions = {}
 ): Promise<GhArchiveDemoSummary> {
   const range = parseRangeArg(args);
   const baseUrl = parseStringArg(args, "--url", DEFAULT_BASE_URL);
@@ -1031,22 +1059,25 @@ export async function runGhArchiveDemo(
   const batchDefaults = resolveGhArchiveBatchDefaults(range);
   const batchMaxBytes = parseIntArg(args, "--batch-max-bytes", batchDefaults.batchMaxBytes);
   const batchMaxRecords = parseIntArg(args, "--batch-max-records", batchDefaults.batchMaxRecords);
-  const readyTimeoutMs = parseIntArg(args, "--ready-timeout-ms", DEFAULT_READY_TIMEOUT_MS);
-  const appendRetryTimeoutMs = parseIntArg(args, "--append-retry-timeout-ms", DEFAULT_APPEND_RETRY_TIMEOUT_MS);
-  const debugProgress = hasFlag(args, "--debug-progress");
-  const debugProgressIntervalMs = parseIntArg(args, "--debug-progress-interval-ms", 5_000);
   const noIndex = hasFlag(args, "--noindex");
   const onlyIndexes = parseOnlyIndexArgs(args);
   if (noIndex && onlyIndexes.length > 0) {
     throw dsError("--noindex and --onlyindex cannot be combined");
   }
-  const stream = buildGhArchiveStreamName(streamPrefix, range);
+  const streamTargets = resolveGhArchiveStreamTargets(streamPrefix, range, { noIndex, onlyIndexes });
+  const client: GhArchiveHttpClient = {
+    fetchImpl: opts.fetchImpl ?? fetch,
+    requestTimeoutMs: opts.requestTimeoutMs ?? GH_ARCHIVE_REQUEST_TIMEOUT_MS,
+    timeoutRetryDelayMs: opts.timeoutRetryDelayMs ?? GH_ARCHIVE_TIMEOUT_RETRY_DELAY_MS,
+  };
   const startedAt = Date.now();
 
-  const { start, endExclusive, hours } = resolveGhArchiveRangeHours(range);
+  const { start, endExclusive, hours } = resolveGhArchiveRangeHours(range, opts.now);
 
-  await deleteStreamIfExists(baseUrl, stream);
-  const streamHandle = await createConfiguredStream(baseUrl, stream, { noIndex, onlyIndexes });
+  for (const target of streamTargets) {
+    await deleteStreamIfExists(client, baseUrl, target.stream);
+    await createConfiguredStream(client, baseUrl, target.stream, target.schema);
+  }
 
   const encoder = new TextEncoder();
   let normalizedRows = 0;
@@ -1057,14 +1088,20 @@ export async function runGhArchiveDemo(
   let downloadTimeMs = 0;
   let normalizeTimeMs = 0;
   let appendAckTimeMs = 0;
+  let appendBackoffCount = 0;
+  let appendBackoffWaitMs = 0;
   let batchRows: string[] = [];
   let batchBytes = 2;
 
   const flush = async () => {
     if (batchRows.length === 0) return;
-    const appendStartedAt = Date.now();
-    await appendBatch(streamHandle, stream, batchRows, { retryTimeoutMs: appendRetryTimeoutMs });
-    appendAckTimeMs += Date.now() - appendStartedAt;
+    const batchBody = `[${batchRows.join(",")}]`;
+    for (const target of streamTargets) {
+      const appendRes = await appendBatchToStream(client, baseUrl, target.stream, batchBody);
+      appendAckTimeMs += appendRes.ackMs;
+      appendBackoffCount += appendRes.backoffCount;
+      appendBackoffWaitMs += appendRes.backoffWaitMs;
+    }
     batchRows = [];
     batchBytes = 2;
   };
@@ -1072,7 +1109,7 @@ export async function runGhArchiveDemo(
   for (const hour of iterateGhArchiveHours(start, endExclusive)) {
     const archiveUrl = buildGhArchiveArchiveUrl(hour);
     try {
-      for await (const line of iterateGhArchiveLines(archiveUrl, {
+      for await (const line of iterateGhArchiveLines(client, archiveUrl, {
         onDownloadWaitMs: (elapsedMs) => {
           downloadTimeMs += elapsedMs;
         },
@@ -1109,6 +1146,7 @@ export async function runGhArchiveDemo(
     } catch (error) {
       if (hasErrorCode(error, GH_ARCHIVE_HOUR_MISSING_CODE)) {
         missingHours += 1;
+        process.stderr.write(`[gharchive-demo] missing hour ${formatArchiveHour(hour)} (${archiveUrl})\n`);
         continue;
       }
       throw error;
@@ -1116,16 +1154,10 @@ export async function runGhArchiveDemo(
   }
 
   await flush();
-  const searchReadyStartedAt = Date.now();
   if (downloadedHours === 0) {
     throw dsError(`no GH Archive hours were available for ${range} (${formatArchiveHour(start)} -> ${formatArchiveHour(addHours(endExclusive, -1))})`);
   }
-  const { details, readiness } = await waitUntilReadyWithProgress(baseUrl, stream, readyTimeoutMs, {
-    debugProgress,
-    debugIntervalMs: debugProgressIntervalMs,
-  });
   const elapsedMs = Date.now() - startedAt;
-  const timeToSearchReadyMs = Date.now() - searchReadyStartedAt;
   const avgIngestMiBPerSec = rateMiBPerSec(normalizedBytes, elapsedMs);
   const downloadMiBPerSec = rateMiBPerSec(rawSourceBytes, downloadTimeMs);
   const normalizeMiBPerSec = rateMiBPerSec(normalizedBytes, normalizeTimeMs);
@@ -1133,47 +1165,43 @@ export async function runGhArchiveDemo(
 
   return {
     avgIngestMiBPerSec,
-    bundledCompanionsReady: readiness.bundledReady,
+    appendAckMiBPerSec,
+    appendBackoffCount,
+    appendBackoffWaitMs,
     downloadMiBPerSec,
     downloadedHours,
     elapsedMs,
     endHour: formatArchiveHour(addHours(endExclusive, -1)),
-    exactIndexesReady: readiness.exactReady,
     hours,
     missingHours,
     normalizeMiBPerSec,
     normalizedBytes,
     normalizedRows,
-    appendAckMiBPerSec,
     range,
     rawSourceBytes,
-    ready: readiness.ready,
-    searchFamiliesReady: readiness.searchReady,
     startHour: formatArchiveHour(start),
-    stream,
-    timeToSearchReadyMs,
-    totalSizeBytes: details.stream.total_size_bytes,
-    uploadedReady: readiness.uploadedReady,
+    streamCount: streamTargets.length,
+    streams: streamTargets.map((target) => target.stream),
   };
 }
 
 async function main(): Promise<void> {
   const summary = await runGhArchiveDemo();
   const lines = [
-    `GH Archive demo ready`,
-    `stream: ${summary.stream}`,
+    `GH Archive demo complete`,
     `range: ${summary.range} (${summary.startHour} -> ${summary.endHour}, requested=${summary.hours}, downloaded=${summary.downloadedHours}, missing=${summary.missingHours})`,
+    `stream_count: ${summary.streamCount}`,
+    `streams: ${summary.streams.join(",")}`,
     `rows: ${summary.normalizedRows}`,
     `raw_source_bytes: ${summary.rawSourceBytes}`,
     `normalized_bytes: ${summary.normalizedBytes}`,
-    `stream_total_size_bytes: ${summary.totalSizeBytes}`,
     `avg_ingest_mib_per_s: ${summary.avgIngestMiBPerSec}`,
     `download_mib_per_s: ${summary.downloadMiBPerSec}`,
     `normalize_mib_per_s: ${summary.normalizeMiBPerSec}`,
     `append_ack_mib_per_s: ${summary.appendAckMiBPerSec}`,
-    `time_to_search_ready_ms: ${summary.timeToSearchReadyMs}`,
+    `append_backoff_count: ${summary.appendBackoffCount}`,
+    `append_backoff_wait_ms: ${summary.appendBackoffWaitMs}`,
     `elapsed_ms: ${summary.elapsedMs}`,
-    `ready: ${summary.ready} (uploaded=${summary.uploadedReady}, bundled=${summary.bundledCompanionsReady}, exact=${summary.exactIndexesReady}, search=${summary.searchFamiliesReady})`,
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
 }

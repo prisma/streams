@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Config } from "./config";
 import { SqliteDurableStore, type StreamRow } from "./db/db";
-import { IngestQueue, type ProducerInfo, type AppendRow } from "./ingest";
+import { IngestQueue, type ProducerInfo, type AppendRow, type AppendResult } from "./ingest";
 import type { ObjectStore } from "./objectstore/interface";
 import type { StreamReader, ReadBatch, ReaderError, SearchResultBatch } from "./reader";
 import { StreamNotifier } from "./notifier";
@@ -68,7 +68,12 @@ function json(status: number, body: any, headers: HeadersInit = {}): Response {
 
 const OVERLOAD_RETRY_AFTER_SECONDS = "1";
 const UNAVAILABLE_RETRY_AFTER_SECONDS = "5";
+const APPEND_REQUEST_TIMEOUT_MS = 3_000;
+const HTTP_RESOLVER_TIMEOUT_MS = 5_000;
 const SEARCH_REQUEST_TIMEOUT_MS = 3_000;
+const TIMEOUT_SENTINEL = Symbol("request-timeout");
+
+type TimeoutSentinel = typeof TIMEOUT_SENTINEL;
 
 function retryAfterHeaders(seconds: string, headers: HeadersInit = {}): HeadersInit {
   return {
@@ -79,6 +84,20 @@ function retryAfterHeaders(seconds: string, headers: HeadersInit = {}): HeadersI
 
 function clampSearchRequestTimeoutMs(timeoutMs: number | null): number {
   return timeoutMs == null ? SEARCH_REQUEST_TIMEOUT_MS : Math.min(timeoutMs, SEARCH_REQUEST_TIMEOUT_MS);
+}
+
+async function awaitWithCooperativeTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | TimeoutSentinel> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<TimeoutSentinel>((resolve) => {
+        timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer != null) clearTimeout(timer);
+  }
 }
 
 function searchResponseHeaders(search: SearchResultBatch): HeadersInit {
@@ -144,6 +163,19 @@ function unavailable(msg = "server shutting down"): Response {
 
 function overloaded(msg = "ingest queue full"): Response {
   return json(429, { error: { code: "overloaded", message: msg } }, retryAfterHeaders(OVERLOAD_RETRY_AFTER_SECONDS));
+}
+
+function requestTimeout(msg = "request timed out"): Response {
+  return json(408, { error: { code: "request_timeout", message: msg } });
+}
+
+function appendTimeout(): Response {
+  return json(408, {
+    error: {
+      code: "append_timeout",
+      message: "append timed out; append outcome is unknown, check Stream-Next-Offset before retrying",
+    },
+  });
 }
 
 function normalizeContentType(value: string | null): string | null {
@@ -563,6 +595,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       close: args.close,
     });
 
+  const awaitAppendWithTimeout = async (appendPromise: Promise<AppendResult>): Promise<AppendResult | Response> => {
+    const appendResult = await awaitWithCooperativeTimeout(appendPromise, APPEND_REQUEST_TIMEOUT_MS);
+    return appendResult === TIMEOUT_SENTINEL ? appendTimeout() : appendResult;
+  };
+
   const recordAppendOutcome = (args: {
     stream: string;
     lastOffset: bigint;
@@ -899,6 +936,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       return unavailable();
     }
     try {
+      const resolved = await awaitWithCooperativeTimeout(
+        (async (): Promise<Response> => {
       let url: URL;
       try {
         url = new URL(req.url, "http://localhost");
@@ -1414,13 +1453,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const rows = rowsRes.value.rows;
             appendedRows = rows.length;
             if (rows.length > 0 || streamClosed) {
-              const appendRes = await enqueueAppend({
+              const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
                 stream,
                 baseAppendMs: db.nowMs(),
                 rows,
                 contentType,
                 close: streamClosed,
-              });
+              }));
+              if (appendResOrResponse instanceof Response) return appendResOrResponse;
+              const appendRes = appendResOrResponse;
               if (Result.isError(appendRes)) {
                 if (appendRes.error.kind === "overloaded") return overloaded();
                 return json(500, { error: { code: "internal", message: "append failed" } });
@@ -1429,13 +1470,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               closedNow = appendRes.value.closed;
             }
           } else if (streamClosed) {
-            const appendRes = await enqueueAppend({
+            const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
               stream,
               baseAppendMs: db.nowMs(),
               rows: [],
               contentType,
               close: true,
-            });
+            }));
+            if (appendResOrResponse instanceof Response) return appendResOrResponse;
+            const appendRes = appendResOrResponse;
             if (Result.isError(appendRes)) {
               if (appendRes.error.kind === "overloaded") return overloaded();
               return json(500, { error: { code: "internal", message: "close failed" } });
@@ -1562,7 +1605,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               rows = rowsRes.value.rows;
             }
 
-            const appendRes = await enqueueAppend({
+            const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
               stream,
               baseAppendMs,
               rows,
@@ -1570,7 +1613,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               streamSeq,
               producer,
               close: streamClosed,
-            });
+            }));
+            if (appendResOrResponse instanceof Response) return appendResOrResponse;
+            const appendRes = appendResOrResponse;
 
             if (Result.isError(appendRes)) {
               const err = appendRes.error;
@@ -2022,6 +2067,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       }
 
       return notFound();
+        })(),
+        HTTP_RESOLVER_TIMEOUT_MS
+      );
+      if (resolved === TIMEOUT_SENTINEL) return requestTimeout();
+      return resolved;
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       if (!closing && !msg.includes("Statement has finalized")) {

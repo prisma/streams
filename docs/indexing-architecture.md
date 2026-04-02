@@ -466,6 +466,9 @@ Current timeout behavior:
   - `timed_out=true`
   - `total.relation="gte"`
   - coverage and search timing counters
+- if the outer generic `5000 ms` resolver timeout fires first while an
+  in-flight search work unit is still running, `/_search` may instead return
+  the generic `request_timeout` error body
 - because timeout checks are cooperative, elapsed wall time can be slightly
   higher than `timeout_ms`
 - response headers mirror the same timing counters for easier inspection in
