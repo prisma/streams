@@ -6,9 +6,10 @@ import { RestartStringTableView, encodeRestartStringTable } from "./binary/resta
 import { readUVarint, writeUVarint } from "./binary/varint";
 import type { SearchCompanionPlan } from "./companion_plan";
 
-export type FtsPosting = {
-  d: number;
-  p?: number[];
+export type FtsTermInput = {
+  doc_ids: number[];
+  freqs?: number[];
+  positions?: number[];
 };
 
 export type FtsFieldInput = {
@@ -17,7 +18,7 @@ export type FtsFieldInput = {
   prefix?: boolean;
   positions?: boolean;
   exists_docs: number[];
-  terms: Record<string, FtsPosting[]>;
+  terms: Record<string, FtsTermInput>;
 };
 
 export type FtsSectionInput = {
@@ -251,8 +252,8 @@ export function encodeFtsSegmentCompanion(input: FtsSectionInput, plan: SearchCo
     const postingsWriter = new BinaryWriter();
     let postingOffset = 0;
     for (const term of terms) {
-      const postings = field.terms[term] ?? [];
-      dfWriter.writeU32(postings.length);
+      const postings = field.terms[term] ?? { doc_ids: [] };
+      dfWriter.writeU32(postings.doc_ids.length);
       postingOffsetWriter.writeU32(postingOffset);
       const payload = encodePostingList(postings, field.positions === true);
       postingsWriter.writeBytes(payload);
@@ -375,31 +376,35 @@ export function decodeFtsSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
   }
 }
 
-function encodePostingList(postings: FtsPosting[], withPositions: boolean): Uint8Array {
+function encodePostingList(postings: FtsTermInput, withPositions: boolean): Uint8Array {
   const writer = new BinaryWriter();
-  for (let start = 0; start < postings.length; start += BLOCK_POSTING_LIMIT) {
-    const block = postings.slice(start, start + BLOCK_POSTING_LIMIT);
+  const docIds = postings.doc_ids;
+  const freqs = postings.freqs ?? [];
+  const positions = postings.positions ?? [];
+  let positionOffset = 0;
+  for (let start = 0; start < docIds.length; start += BLOCK_POSTING_LIMIT) {
+    const end = Math.min(docIds.length, start + BLOCK_POSTING_LIMIT);
     const docDeltaWriter = new BinaryWriter();
     const freqWriter = new BinaryWriter();
     const posWriter = new BinaryWriter();
-    for (let index = 1; index < block.length; index++) {
-      writeUVarint(docDeltaWriter, block[index]!.d - block[index - 1]!.d);
+    for (let index = start + 1; index < end; index++) {
+      writeUVarint(docDeltaWriter, docIds[index]! - docIds[index - 1]!);
     }
-    for (const posting of block) {
-      const positions = withPositions ? posting.p ?? [] : [];
-      const freq = withPositions ? positions.length : 1;
+    for (let index = start; index < end; index++) {
+      const freq = withPositions ? freqs[index] ?? 0 : 1;
       writeUVarint(freqWriter, freq);
       if (!withPositions) continue;
       let previous = 0;
-      for (const position of positions) {
+      for (let posIndex = 0; posIndex < freq; posIndex++) {
+        const position = positions[positionOffset++] ?? 0;
         writeUVarint(posWriter, position - previous);
         previous = position;
       }
     }
-    writer.writeU16(block.length);
+    writer.writeU16(end - start);
     writer.writeU8(withPositions ? BLOCK_FLAG_POSITIONS : 0);
     writer.writeU8(0);
-    writer.writeU32(block[0]?.d ?? 0);
+    writer.writeU32(docIds[start] ?? 0);
     writer.writeU32(docDeltaWriter.length);
     writer.writeU32(freqWriter.length);
     writer.writeU32(posWriter.length);

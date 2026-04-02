@@ -183,6 +183,8 @@ Current properties:
 
 - immutable `mblk` sections inside bundled per-segment `.cix` companions
 - binary `mblk2` section payloads loaded on demand from the bundled container
+- the metrics-record payload is zstd-compressed when that reduces bytes, then
+  inflated lazily on first fallback scan
 - bundled companions are stored in object storage under
   `streams/<hash>/segments/...cix`
 - local SQLite stores only bundled companion plan state and object keys

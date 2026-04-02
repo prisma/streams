@@ -1,4 +1,5 @@
 import { Result } from "better-result";
+import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { BinaryCursor, BinaryPayloadError, BinaryWriter, concatBytes, readF64, readI64, readU16, readU32 } from "./binary/codec";
 import { RestartStringTableView, encodeRestartStringTable } from "./binary/restart_strings";
 import { readUVarint, readZigZagVarint, writeUVarint, writeZigZagVarint } from "./binary/varint";
@@ -41,6 +42,8 @@ const ROLLUP_DIR_ENTRY_BYTES = 12;
 const INTERVAL_DIR_ENTRY_BYTES = 12;
 const DIM_DIR_ENTRY_BYTES = 20;
 const MEASURE_DIR_ENTRY_BYTES = 52;
+const AGG_INTERVAL_COMPRESSION_NONE = 0;
+const AGG_INTERVAL_COMPRESSION_ZSTD = 1;
 
 const MEASURE_KIND_COUNT = 1;
 const MEASURE_KIND_SUMMARY = 2;
@@ -54,12 +57,14 @@ type RollupDirEntry = {
 
 type IntervalDirEntry = {
   intervalOrdinal: number;
+  compression: number;
   payloadOffset: number;
   payloadLength: number;
 };
 
 type IntervalPayload = {
   intervalOrdinal: number;
+  compression: number;
   payload: Uint8Array;
 };
 
@@ -87,12 +92,14 @@ export class AggIntervalView {
         }>;
       }
     | null = null;
+  private intervalBytes: Uint8Array | null = null;
 
   constructor(
     readonly rollupName: string,
     readonly intervalMs: number,
     private readonly rollupPlan: SearchCompanionPlanRollup,
     private readonly bytes: Uint8Array,
+    private readonly compression: number,
     private readonly plan: SearchCompanionPlan
   ) {}
 
@@ -138,7 +145,8 @@ export class AggIntervalView {
 
   private decode() {
     if (this.decoded) return this.decoded;
-    const cursor = new BinaryCursor(this.bytes);
+    const intervalBytes = this.getIntervalBytes();
+    const cursor = new BinaryCursor(intervalBytes);
     const windowCount = cursor.readU32();
     const groupCount = cursor.readU32();
     const dimCount = cursor.readU16();
@@ -152,26 +160,26 @@ export class AggIntervalView {
     const measureDirOffset = cursor.readU32();
     const measureDirLength = cursor.readU32();
 
-    const windowStartBytes = slicePayload(this.bytes, windowStartsOffset, windowStartsLength, "invalid .agg2 window starts");
+    const windowStartBytes = slicePayload(intervalBytes, windowStartsOffset, windowStartsLength, "invalid .agg2 window starts");
     const windowStarts: bigint[] = [];
     for (let offset = 0; offset + 8 <= windowStartBytes.byteLength; offset += 8) {
       windowStarts.push(readI64(windowStartBytes, offset));
     }
-    const windowGroupOffsetsBytes = slicePayload(this.bytes, windowOffsetsOffset, windowOffsetsLength, "invalid .agg2 window offsets");
+    const windowGroupOffsetsBytes = slicePayload(intervalBytes, windowOffsetsOffset, windowOffsetsLength, "invalid .agg2 window offsets");
     const windowGroupOffsets = decodeU32Array(windowGroupOffsetsBytes);
 
     const dimensions: Array<{ name: string; dict: string[]; ordinals: Uint32Array }> = [];
     for (let index = 0; index < dimCount; index++) {
       const entryOffset = dimDirOffset + index * DIM_DIR_ENTRY_BYTES;
-      const fieldOrdinal = readU16(this.bytes, entryOffset);
-      const dictOffset = readU32(this.bytes, entryOffset + 4);
-      const dictLength = readU32(this.bytes, entryOffset + 8);
-      const ordinalsOffset = readU32(this.bytes, entryOffset + 12);
-      const ordinalsLength = readU32(this.bytes, entryOffset + 16);
+      const fieldOrdinal = readU16(intervalBytes, entryOffset);
+      const dictOffset = readU32(intervalBytes, entryOffset + 4);
+      const dictLength = readU32(intervalBytes, entryOffset + 8);
+      const ordinalsOffset = readU32(intervalBytes, entryOffset + 12);
+      const ordinalsLength = readU32(intervalBytes, entryOffset + 16);
       const fieldName = this.plan.fields.find((field) => field.ordinal === fieldOrdinal)?.name;
       if (!fieldName) continue;
-      const dictBytes = slicePayload(this.bytes, dictOffset, dictLength, "invalid .agg2 dim dict");
-      const ordinalBytes = slicePayload(this.bytes, ordinalsOffset, ordinalsLength, "invalid .agg2 dim ordinals");
+      const dictBytes = slicePayload(intervalBytes, dictOffset, dictLength, "invalid .agg2 dim dict");
+      const ordinalBytes = slicePayload(intervalBytes, ordinalsOffset, ordinalsLength, "invalid .agg2 dim ordinals");
       dimensions.push({
         name: fieldName,
         dict: new RestartStringTableView(dictBytes).terms(),
@@ -191,33 +199,33 @@ export class AggIntervalView {
     }> = [];
     for (let index = 0; index < measureCount; index++) {
       const entryOffset = measureDirOffset + index * MEASURE_DIR_ENTRY_BYTES;
-      const measureOrdinal = readU16(this.bytes, entryOffset);
-      const kindCode = this.bytes[entryOffset + 2]!;
-      const countOffset = readU32(this.bytes, entryOffset + 4);
-      const countLength = readU32(this.bytes, entryOffset + 8);
-      const sumOffset = readU32(this.bytes, entryOffset + 12);
-      const sumLength = readU32(this.bytes, entryOffset + 16);
-      const minOffset = readU32(this.bytes, entryOffset + 20);
-      const minLength = readU32(this.bytes, entryOffset + 24);
-      const maxOffset = readU32(this.bytes, entryOffset + 28);
-      const maxLength = readU32(this.bytes, entryOffset + 32);
-      const histOffsetsOffset = readU32(this.bytes, entryOffset + 36);
-      const histOffsetsLength = readU32(this.bytes, entryOffset + 40);
-      const histDataOffset = readU32(this.bytes, entryOffset + 44);
-      const histDataLength = readU32(this.bytes, entryOffset + 48);
+      const measureOrdinal = readU16(intervalBytes, entryOffset);
+      const kindCode = intervalBytes[entryOffset + 2]!;
+      const countOffset = readU32(intervalBytes, entryOffset + 4);
+      const countLength = readU32(intervalBytes, entryOffset + 8);
+      const sumOffset = readU32(intervalBytes, entryOffset + 12);
+      const sumLength = readU32(intervalBytes, entryOffset + 16);
+      const minOffset = readU32(intervalBytes, entryOffset + 20);
+      const minLength = readU32(intervalBytes, entryOffset + 24);
+      const maxOffset = readU32(intervalBytes, entryOffset + 28);
+      const maxLength = readU32(intervalBytes, entryOffset + 32);
+      const histOffsetsOffset = readU32(intervalBytes, entryOffset + 36);
+      const histOffsetsLength = readU32(intervalBytes, entryOffset + 40);
+      const histDataOffset = readU32(intervalBytes, entryOffset + 44);
+      const histDataLength = readU32(intervalBytes, entryOffset + 48);
       const measurePlan = this.rollupPlan.measures.find((measure) => measure.ordinal === measureOrdinal);
       if (!measurePlan) continue;
-      const countBytes = slicePayload(this.bytes, countOffset, countLength, "invalid .agg2 measure count column");
+      const countBytes = slicePayload(intervalBytes, countOffset, countLength, "invalid .agg2 measure count column");
       const measure = {
         name: measurePlan.name,
         kind: kindCode === MEASURE_KIND_SUMMARY ? ("summary" as const) : ("count" as const),
         countValues: decodeU32Array(countBytes),
       };
       if (measure.kind === "summary") {
-        const sumBytes = slicePayload(this.bytes, sumOffset, sumLength, "invalid .agg2 sum column");
-        const minBytes = slicePayload(this.bytes, minOffset, minLength, "invalid .agg2 min column");
-        const maxBytes = slicePayload(this.bytes, maxOffset, maxLength, "invalid .agg2 max column");
-        const histOffsetsBytes = histOffsetsLength > 0 ? slicePayload(this.bytes, histOffsetsOffset, histOffsetsLength, "invalid .agg2 histogram offsets") : new Uint8Array();
+        const sumBytes = slicePayload(intervalBytes, sumOffset, sumLength, "invalid .agg2 sum column");
+        const minBytes = slicePayload(intervalBytes, minOffset, minLength, "invalid .agg2 min column");
+        const maxBytes = slicePayload(intervalBytes, maxOffset, maxLength, "invalid .agg2 max column");
+        const histOffsetsBytes = histOffsetsLength > 0 ? slicePayload(intervalBytes, histOffsetsOffset, histOffsetsLength, "invalid .agg2 histogram offsets") : new Uint8Array();
         measures.push({
           ...measure,
           sumValues: decodeF64Array(sumBytes),
@@ -225,7 +233,7 @@ export class AggIntervalView {
           maxValues: decodeF64Array(maxBytes),
           histogramOffsets:
             histOffsetsBytes.byteLength > 0 ? decodeU32Array(histOffsetsBytes) : undefined,
-          histogramData: histDataLength > 0 ? slicePayload(this.bytes, histDataOffset, histDataLength, "invalid .agg2 histogram data") : undefined,
+          histogramData: histDataLength > 0 ? slicePayload(intervalBytes, histDataOffset, histDataLength, "invalid .agg2 histogram data") : undefined,
         });
         continue;
       }
@@ -234,6 +242,23 @@ export class AggIntervalView {
 
     this.decoded = { windowStarts, windowGroupOffsets, dimensions, measures };
     return this.decoded;
+  }
+
+  private getIntervalBytes(): Uint8Array {
+    if (this.intervalBytes) return this.intervalBytes;
+    if (this.compression === AGG_INTERVAL_COMPRESSION_NONE) {
+      this.intervalBytes = this.bytes;
+      return this.intervalBytes;
+    }
+    if (this.compression !== AGG_INTERVAL_COMPRESSION_ZSTD) {
+      throw new BinaryPayloadError(`unsupported .agg2 interval compression ${this.compression}`);
+    }
+    try {
+      this.intervalBytes = new Uint8Array(zstdDecompressSync(this.bytes));
+    } catch (error: unknown) {
+      throw new BinaryPayloadError(`invalid .agg2 compressed interval payload: ${String((error as Error)?.message ?? error)}`);
+    }
+    return this.intervalBytes;
   }
 }
 
@@ -273,7 +298,9 @@ export function encodeAggSegmentCompanion(input: AggSectionInput, plan: SearchCo
         .sort((a, b) => a.ordinal - b.ordinal)
         .map((interval) => ({
           intervalOrdinal: interval.ordinal,
-          payload: encodeIntervalPayload((source.intervals[interval.name] ?? source.intervals[String(interval.ms)])!, rollup, plan),
+          ...compressIntervalPayload(
+            encodeIntervalPayload((source.intervals[interval.name] ?? source.intervals[String(interval.ms)])!, rollup, plan)
+          ),
         }));
       return { rollup, intervals };
     });
@@ -300,6 +327,7 @@ export function encodeAggSegmentCompanion(input: AggSectionInput, plan: SearchCo
     for (const interval of entry.intervals) {
       intervalDirs.push({
         intervalOrdinal: interval.intervalOrdinal,
+        compression: interval.compression,
         payloadOffset,
         payloadLength: interval.payload.byteLength,
       });
@@ -308,7 +336,8 @@ export function encodeAggSegmentCompanion(input: AggSectionInput, plan: SearchCo
     }
     for (const intervalDirEntry of intervalDirs) {
       intervalDir.writeU16(intervalDirEntry.intervalOrdinal);
-      intervalDir.writeU16(0);
+      intervalDir.writeU8(intervalDirEntry.compression);
+      intervalDir.writeU8(0);
       intervalDir.writeU32(intervalDirEntry.payloadOffset);
       intervalDir.writeU32(intervalDirEntry.payloadLength);
     }
@@ -350,6 +379,7 @@ export function decodeAggSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
       for (let intervalIndex = 0; intervalIndex < intervalCount; intervalIndex++) {
         const intervalEntryOffset = intervalsOffset + intervalIndex * INTERVAL_DIR_ENTRY_BYTES;
         const intervalOrdinal = readU16(bytes, intervalEntryOffset);
+        const compression = bytes[intervalEntryOffset + 2] ?? AGG_INTERVAL_COMPRESSION_NONE;
         const payloadOffset = readU32(bytes, intervalEntryOffset + 4);
         const payloadLength = readU32(bytes, intervalEntryOffset + 8);
         const intervalPlan = rollupPlan.intervals.find((interval) => interval.ordinal === intervalOrdinal);
@@ -360,6 +390,7 @@ export function decodeAggSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
             intervalPlan.ms,
             rollupPlan,
             slicePayload(bytes, payloadOffset, payloadLength, "invalid .agg2 interval payload"),
+            compression,
             plan
           )
         );
@@ -551,6 +582,17 @@ function encodeHistogram(histogram: Record<string, number> | undefined): Uint8Ar
     writeUVarint(writer, Math.trunc(count));
   }
   return writer.finish();
+}
+
+function compressIntervalPayload(payload: Uint8Array): { compression: number; payload: Uint8Array } {
+  if (payload.byteLength === 0) {
+    return { compression: AGG_INTERVAL_COMPRESSION_NONE, payload };
+  }
+  const compressed = new Uint8Array(zstdCompressSync(payload));
+  if (compressed.byteLength >= payload.byteLength) {
+    return { compression: AGG_INTERVAL_COMPRESSION_NONE, payload };
+  }
+  return { compression: AGG_INTERVAL_COMPRESSION_ZSTD, payload: compressed };
 }
 
 function decodeHistogram(

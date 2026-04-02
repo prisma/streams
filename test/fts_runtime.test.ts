@@ -12,24 +12,23 @@ const input: FtsSectionInput = {
       prefix: true,
       exists_docs: [0, 1, 2],
       terms: {
-        "billing-api": [{ d: 0 }, { d: 2 }],
-        "billing-worker": [{ d: 1 }],
+        "billing-api": { doc_ids: [0, 2] },
+        "billing-worker": { doc_ids: [1] },
       },
     },
     message: {
       kind: "text",
       positions: true,
       exists_docs: [0, 1, 2],
-      doc_lengths: [3, 3, 4],
       terms: {
-        card: [{ d: 0, p: [0] }, { d: 2, p: [0] }],
-        declined: [{ d: 0, p: [1] }, { d: 2, p: [1] }],
-        issuer: [{ d: 0, p: [2] }],
-        retry: [{ d: 1, p: [0] }],
-        later: [{ d: 1, p: [1] }],
-        job: [{ d: 1, p: [2] }],
-        payment: [{ d: 2, p: [2] }],
-        failed: [{ d: 2, p: [3] }],
+        card: { doc_ids: [0, 2], freqs: [1, 1], positions: [0, 0] },
+        declined: { doc_ids: [0, 2], freqs: [1, 1], positions: [1, 1] },
+        issuer: { doc_ids: [0], freqs: [1], positions: [2] },
+        retry: { doc_ids: [1], freqs: [1], positions: [0] },
+        later: { doc_ids: [1], freqs: [1], positions: [1] },
+        job: { doc_ids: [1], freqs: [1], positions: [2] },
+        payment: { doc_ids: [2], freqs: [1], positions: [2] },
+        failed: { doc_ids: [2], freqs: [1], positions: [3] },
       },
     },
   },
@@ -115,9 +114,9 @@ describe(".fts runtime", () => {
   });
 
   test("returns an explicit error when prefix expansion exceeds the limit", () => {
-    const manyTerms: Record<string, { d: number }[]> = {};
+    const manyTerms: Record<string, { doc_ids: number[] }> = {};
     for (let i = 0; i < SEARCH_PREFIX_TERM_LIMIT + 1; i++) {
-      manyTerms[`req-${i}`] = [{ d: 0 }];
+      manyTerms[`req-${i}`] = { doc_ids: [0] };
     }
     const overloadedInput: FtsSectionInput = {
       ...input,

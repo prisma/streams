@@ -40,7 +40,7 @@ import {
   extractRawSearchValuesForFieldsResult,
   normalizeKeywordValue,
 } from "./schema";
-import type { FtsFieldInput, FtsPosting, FtsSectionInput, FtsSectionView } from "./fts_format";
+import type { FtsFieldInput, FtsSectionInput, FtsSectionView, FtsTermInput } from "./fts_format";
 import { buildMetricsBlockRecord } from "../profiles/metrics/normalize";
 import type { MetricsBlockSectionInput, MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import { parseDurationMsResult } from "../util/duration";
@@ -74,7 +74,7 @@ type FtsFieldBuilder = {
 };
 
 type GroupBuilder = {
-  dimensions: Record<string, string | null>;
+  key: string;
   measures: Record<string, AggMeasureState>;
 };
 
@@ -88,7 +88,22 @@ type AggRollupBuilder = {
   rollup: SearchRollupConfig;
   intervalsMs: number[];
   intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>;
+  dimensionNames: string[];
   fieldNames: string[];
+};
+
+type CompanionBuildProgress = {
+  docCount: number;
+  colFields: number;
+  colValues: number;
+  ftsFields: number;
+  ftsTerms: number;
+  ftsPostings: number;
+  ftsPositions: number;
+  aggRollups: number;
+  aggWindows: number;
+  aggGroups: number;
+  metricRecords: number;
 };
 
 const PAYLOAD_DECODER = new TextDecoder();
@@ -102,6 +117,49 @@ function compareValues(left: bigint | number | boolean, right: bigint | number |
   if (typeof left === "number" && typeof right === "number") return left < right ? -1 : left > right ? 1 : 0;
   if (typeof left === "boolean" && typeof right === "boolean") return left === right ? 0 : left ? 1 : -1;
   return String(left).localeCompare(String(right));
+}
+
+const AGG_DIMENSION_SEPARATOR = "\u001f";
+const AGG_DIMENSION_NULL = "\u0000";
+
+function encodeAggDimensionPart(value: string | null): string {
+  if (value == null) return AGG_DIMENSION_NULL;
+  return value.replaceAll(AGG_DIMENSION_SEPARATOR, `${AGG_DIMENSION_SEPARATOR}${AGG_DIMENSION_SEPARATOR}`);
+}
+
+function decodeAggDimensionPart(value: string): string | null {
+  if (value === AGG_DIMENSION_NULL) return null;
+  return value.replaceAll(`${AGG_DIMENSION_SEPARATOR}${AGG_DIMENSION_SEPARATOR}`, AGG_DIMENSION_SEPARATOR);
+}
+
+function encodeAggGroupKey(dimensions: Record<string, string | null>, dimensionNames: string[]): string {
+  return dimensionNames.map((name) => encodeAggDimensionPart(dimensions[name] ?? null)).join(AGG_DIMENSION_SEPARATOR);
+}
+
+function decodeAggGroupKey(groupKey: string, dimensionNames: string[]): Record<string, string | null> {
+  const parts: string[] = [];
+  let current = "";
+  for (let index = 0; index < groupKey.length; index++) {
+    const char = groupKey[index]!;
+    if (char !== AGG_DIMENSION_SEPARATOR) {
+      current += char;
+      continue;
+    }
+    const next = groupKey[index + 1];
+    if (next === AGG_DIMENSION_SEPARATOR) {
+      current += AGG_DIMENSION_SEPARATOR;
+      index += 1;
+      continue;
+    }
+    parts.push(current);
+    current = "";
+  }
+  parts.push(current);
+  const decoded: Record<string, string | null> = {};
+  for (let index = 0; index < dimensionNames.length; index++) {
+    decoded[dimensionNames[index]!] = decodeAggDimensionPart(parts[index] ?? AGG_DIMENSION_NULL);
+  }
+  return decoded;
 }
 
 function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSectionKind> {
@@ -530,7 +588,12 @@ export class SearchCompanionManager {
       CompanionBuildError
     >
   > {
+    const leaveLoad = this.memorySampler?.enter("companion_load_segment", {
+      stream: seg.stream,
+      segment_index: seg.segment_index,
+    });
     const bytesRes = await this.loadSegmentBytesResult(seg);
+    leaveLoad?.();
     if (Result.isError(bytesRes)) return bytesRes;
     const segmentBytes = bytesRes.value;
     const colBuilders = plan.families.col ? this.createColBuilders(registry) : new Map<string, ColumnFieldBuilder>();
@@ -548,29 +611,59 @@ export class SearchCompanionManager {
       for (const fieldName of builder.fieldNames) requiredFieldNames.add(fieldName);
     }
     const fieldNameList = Array.from(requiredFieldNames).sort((a, b) => a.localeCompare(b));
+    const leaveScan = this.memorySampler?.enter("companion_scan_records", {
+      stream: seg.stream,
+      segment_index: seg.segment_index,
+    });
     const docCountRes = await this.visitParsedSegmentRecordsResult(segmentBytes, seg, async ({ docCount, offset, parsed, parsedOk }) => {
       let rawSearchValues: Map<string, unknown[]> | null = null;
       if (parsedOk && fieldNameList.length > 0) {
+        const leaveExtract = this.memorySampler?.enter("companion_extract_raw", { doc_count: docCount });
         const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNameList);
+        leaveExtract?.();
         if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
         rawSearchValues = rawValuesRes.value;
       }
       if (rawSearchValues) {
+        const leaveCol = this.memorySampler?.enter("companion_record_col", { doc_count: docCount });
         this.recordColBuilders(colBuilders, rawSearchValues, docCount);
+        leaveCol?.();
+        const leaveFts = this.memorySampler?.enter("companion_record_fts", { doc_count: docCount });
         this.recordFtsBuilders(ftsBuilders, rawSearchValues, docCount);
+        leaveFts?.();
       }
       if (parsedOk && rawSearchValues) {
+        const leaveAgg = this.memorySampler?.enter("companion_record_agg", { doc_count: docCount });
         for (const builder of aggBuilders.values()) {
           const contributionRes = extractRollupContributionResult(registry, builder.rollup, offset, parsed, rawSearchValues);
-          if (Result.isError(contributionRes)) return invalidCompanionBuild(contributionRes.error.message);
+          if (Result.isError(contributionRes)) {
+            leaveAgg?.();
+            return invalidCompanionBuild(contributionRes.error.message);
+          }
           if (!contributionRes.value) continue;
-          const recordRes = this.recordAggContributionResult(builder.intervalMap, builder.intervalsMs, contributionRes.value);
-          if (Result.isError(recordRes)) return recordRes;
+          const recordRes = this.recordAggContributionResult(builder, contributionRes.value);
+          if (Result.isError(recordRes)) {
+            leaveAgg?.();
+            return recordRes;
+          }
         }
+        leaveAgg?.();
       }
-      if (metricsBuilder && parsedOk) this.recordMetricsBlockBuilder(metricsBuilder, parsed, docCount);
+      if (metricsBuilder && parsedOk) {
+        const leaveMetrics = this.memorySampler?.enter("companion_record_mblk", { doc_count: docCount });
+        this.recordMetricsBlockBuilder(metricsBuilder, parsed, docCount);
+        leaveMetrics?.();
+      }
+      if (this.memorySampler && (docCount + 1) % 1024 === 0) {
+        this.memorySampler.capture("companion_progress", {
+          stream: seg.stream,
+          segment_index: seg.segment_index,
+          ...this.summarizeCompanionBuildProgress(colBuilders, ftsBuilders, aggBuilders, metricsBuilder, docCount + 1),
+        });
+      }
       return Result.ok(undefined);
     });
+    leaveScan?.();
     if (Result.isError(docCountRes)) return docCountRes;
 
     const sectionPayloads: EncodedCompanionSectionPayload[] = [];
@@ -586,21 +679,47 @@ export class SearchCompanionManager {
     };
 
     if (plan.families.col) {
+      const leaveColEncode = this.memorySampler?.enter("companion_encode_col", {
+        stream: seg.stream,
+        segment_index: seg.segment_index,
+        doc_count: docCountRes.value,
+      });
       const colSection = this.finalizeColSection(registry, colBuilders, docCountRes.value);
       const primaryTimestampField = colSection.primary_timestamp_field;
       const primaryTimestampColumn = primaryTimestampField ? colSection.fields[primaryTimestampField] : undefined;
       primaryTimestampMinMs = typeof primaryTimestampColumn?.min === "bigint" ? primaryTimestampColumn.min : null;
       primaryTimestampMaxMs = typeof primaryTimestampColumn?.max === "bigint" ? primaryTimestampColumn.max : null;
       addSection(encodeCompanionSectionPayload("col", colSection, plan));
+      colBuilders.clear();
+      leaveColEncode?.();
     }
     if (plan.families.fts) {
+      const leaveFtsEncode = this.memorySampler?.enter("companion_encode_fts", {
+        stream: seg.stream,
+        segment_index: seg.segment_index,
+        doc_count: docCountRes.value,
+      });
       addSection(encodeCompanionSectionPayload("fts", this.finalizeFtsSection(ftsBuilders, docCountRes.value), plan));
+      ftsBuilders.clear();
+      leaveFtsEncode?.();
     }
     if (plan.families.agg) {
+      const leaveAggEncode = this.memorySampler?.enter("companion_encode_agg", {
+        stream: seg.stream,
+        segment_index: seg.segment_index,
+      });
       addSection(encodeCompanionSectionPayload("agg", this.finalizeAggSection(aggBuilders), plan));
+      aggBuilders.clear();
+      leaveAggEncode?.();
     }
     if (plan.families.mblk && metricsBuilder) {
+      const leaveMetricsEncode = this.memorySampler?.enter("companion_encode_mblk", {
+        stream: seg.stream,
+        segment_index: seg.segment_index,
+      });
       addSection(encodeCompanionSectionPayload("mblk", this.finalizeMetricsBlockSection(metricsBuilder), plan));
+      metricsBuilder.records.length = 0;
+      leaveMetricsEncode?.();
     }
 
     return Result.ok({
@@ -677,8 +796,8 @@ export class SearchCompanionManager {
       if (builder.values.length === 0) continue;
       fields[fieldName] = {
         kind: builder.kind,
-        doc_ids: [...builder.docIds],
-        values: [...builder.values],
+        doc_ids: builder.docIds,
+        values: builder.values,
         min: minValue,
         max: maxValue,
       };
@@ -700,7 +819,7 @@ export class SearchCompanionManager {
         prefix: field.prefix === true ? true : undefined,
         positions: field.positions === true ? true : undefined,
         exists_docs: [],
-        terms: Object.create(null) as Record<string, FtsPosting[]>,
+        terms: Object.create(null) as Record<string, FtsTermInput>,
       },
     };
   }
@@ -730,8 +849,9 @@ export class SearchCompanionManager {
       fieldCompanion.exists_docs.push(docCount);
       if (builder.config.kind === "keyword") {
         for (const value of textValues) {
-          const postings = fieldCompanion.terms[value] ?? [];
-          if (postings.length === 0 || postings[postings.length - 1]!.d !== docCount) postings.push({ d: docCount });
+          const postings = fieldCompanion.terms[value] ?? { doc_ids: [] };
+          const docIds = postings.doc_ids;
+          if (docIds.length === 0 || docIds[docIds.length - 1] !== docCount) docIds.push(docCount);
           fieldCompanion.terms[value] = postings;
         }
         continue;
@@ -740,12 +860,22 @@ export class SearchCompanionManager {
       for (const value of textValues) {
         const tokens = analyzeTextValue(value, builder.config.analyzer);
         for (const token of tokens) {
-          const postings = fieldCompanion.terms[token] ?? [];
-          const last = postings[postings.length - 1];
-          if (!last || last.d !== docCount) {
-            postings.push({ d: docCount, p: fieldCompanion.positions ? [position] : undefined });
-          } else if (fieldCompanion.positions && last.p) {
-            last.p.push(position);
+          const postings = fieldCompanion.terms[token] ?? {
+            doc_ids: [],
+            freqs: fieldCompanion.positions ? [] : undefined,
+            positions: fieldCompanion.positions ? [] : undefined,
+          };
+          const docIds = postings.doc_ids;
+          const lastIndex = docIds.length - 1;
+          if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
+            docIds.push(docCount);
+            if (fieldCompanion.positions) {
+              postings.freqs!.push(1);
+              postings.positions!.push(position);
+            }
+          } else if (fieldCompanion.positions) {
+            postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
+            postings.positions!.push(position);
           }
           fieldCompanion.terms[token] = postings;
           position += 1;
@@ -779,6 +909,7 @@ export class SearchCompanionManager {
         rollup,
         intervalsMs: parsedIntervalsRes.value,
         intervalMap,
+        dimensionNames: [...(rollup.dimensions ?? [])],
         fieldNames: rollupRequiredFieldNames(registry, rollup),
       });
     }
@@ -788,10 +919,55 @@ export class SearchCompanionManager {
   private finalizeAggSection(builders: Map<string, AggRollupBuilder>): AggSectionInput {
     const encodedRollups: AggSectionInput["rollups"] = {};
     for (const [rollupName, builder] of builders) {
-      encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(builder.intervalMap) };
+      encodedRollups[rollupName] = { intervals: this.finalizeAggIntervals(builder.intervalMap, builder.dimensionNames) };
     }
 
     return { rollups: encodedRollups };
+  }
+
+  private summarizeCompanionBuildProgress(
+    colBuilders: Map<string, ColumnFieldBuilder>,
+    ftsBuilders: Map<string, FtsFieldBuilder>,
+    aggBuilders: Map<string, AggRollupBuilder>,
+    metricsBuilder: MetricsBlockBuilder | null,
+    docCount: number
+  ): CompanionBuildProgress {
+    let colValues = 0;
+    for (const builder of colBuilders.values()) colValues += builder.values.length;
+
+    let ftsTerms = 0;
+    let ftsPostings = 0;
+    let ftsPositions = 0;
+    for (const builder of ftsBuilders.values()) {
+      for (const postings of Object.values(builder.companion.terms)) {
+        ftsTerms += 1;
+        ftsPostings += postings.doc_ids.length;
+        ftsPositions += postings.positions?.length ?? 0;
+      }
+    }
+
+    let aggWindows = 0;
+    let aggGroups = 0;
+    for (const builder of aggBuilders.values()) {
+      for (const windowMap of builder.intervalMap.values()) {
+        aggWindows += windowMap.size;
+        for (const groups of windowMap.values()) aggGroups += groups.size;
+      }
+    }
+
+    return {
+      docCount,
+      colFields: colBuilders.size,
+      colValues,
+      ftsFields: ftsBuilders.size,
+      ftsTerms,
+      ftsPostings,
+      ftsPositions,
+      aggRollups: aggBuilders.size,
+      aggWindows,
+      aggGroups,
+      metricRecords: metricsBuilder?.records.length ?? 0,
+    };
   }
 
   private parseRollupIntervalsResult(rollup: SearchRollupConfig): Result<number[], CompanionBuildError> {
@@ -805,22 +981,21 @@ export class SearchCompanionManager {
   }
 
   private recordAggContributionResult(
-    intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>,
-    intervalDurationsMs: number[],
+    builder: AggRollupBuilder,
     contribution: {
       timestampMs: number;
       dimensions: Record<string, string | null>;
       measures: Record<string, AggMeasureState>;
     }
   ): Result<void, CompanionBuildError> {
-    for (const intervalMs of intervalDurationsMs) {
+    const groupKey = encodeAggGroupKey(contribution.dimensions, builder.dimensionNames);
+    for (const intervalMs of builder.intervalsMs) {
       if (!Number.isFinite(intervalMs) || intervalMs <= 0) return invalidCompanionBuild(`invalid rollup interval ${intervalMs}`);
       const startMs = Math.floor(contribution.timestampMs / intervalMs) * intervalMs;
-      const windowMap = intervalMap.get(intervalMs) ?? new Map<number, Map<string, GroupBuilder>>();
-      intervalMap.set(intervalMs, windowMap);
+      const windowMap = builder.intervalMap.get(intervalMs) ?? new Map<number, Map<string, GroupBuilder>>();
+      builder.intervalMap.set(intervalMs, windowMap);
       const groups = windowMap.get(startMs) ?? new Map<string, GroupBuilder>();
       windowMap.set(startMs, groups);
-      const groupKey = JSON.stringify(contribution.dimensions);
       let group = groups.get(groupKey);
       if (!group) {
         const measures: Record<string, AggMeasureState> = {};
@@ -828,7 +1003,7 @@ export class SearchCompanionManager {
           measures[measureName] = cloneAggMeasureState(state);
         }
         group = {
-          dimensions: { ...contribution.dimensions },
+          key: groupKey,
           measures,
         };
         groups.set(groupKey, group);
@@ -843,7 +1018,8 @@ export class SearchCompanionManager {
   }
 
   private finalizeAggIntervals(
-    intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>
+    intervalMap: Map<number, Map<number, Map<string, GroupBuilder>>>,
+    dimensionNames: string[]
   ): AggSectionInput["rollups"][string]["intervals"] {
     const intervals: AggSectionInput["rollups"][string]["intervals"] = {};
     for (const [intervalMs, windowMap] of Array.from(intervalMap.entries()).sort((a, b) => a[0] - b[0])) {
@@ -854,7 +1030,7 @@ export class SearchCompanionManager {
           .map(([startMs, groups]) => ({
             start_ms: startMs,
             groups: Array.from(groups.values()).map((group) => ({
-              dimensions: group.dimensions,
+              dimensions: decodeAggGroupKey(group.key, dimensionNames),
               measures: group.measures,
             })),
           })),

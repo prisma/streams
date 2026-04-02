@@ -155,6 +155,12 @@ Each interval payload stores:
 This layout supports `count`, `summary`, and `summary_parts` measures without
 materializing a whole section-wide JSON object graph.
 
+Each `(rollup, interval)` payload is also compressed independently when zstd
+produces a smaller blob. The interval directory records the compression mode,
+and `AggIntervalView` inflates only the one touched interval on first access.
+That keeps the aggregate family compact at rest without forcing `_aggregate`
+queries to inflate unrelated rollups or intervals.
+
 ### `.mblk2`
 
 The metrics-profile fallback family now uses a binary `mblk2` section inside
@@ -165,6 +171,11 @@ The current implementation stores:
 - record count
 - min and max covered time bounds
 - the canonical metrics block records payload
+
+The records payload is compressed independently with zstd when that shrinks the
+blob. `MetricsBlockSectionView` inflates it lazily on first record access, so
+metrics-profile aggregate reads do not pay decompression until they actually
+scan the fallback metrics records.
 
 The query runtime loads this section only for metrics-profile aggregate paths.
 It is still a plan-relative binary section inside the bundled companion
@@ -257,6 +268,11 @@ That is intentional:
 - the main win comes from removing JSON/base64 and storing compact binary
   structures
 - query reads should not inflate unrelated families just to answer one clause
+
+`agg2` is the one deliberate exception at a finer granularity: it uses
+interval-local zstd compression inside the section because aggregate reads are
+already interval-scoped. The runtime still avoids whole-section inflation and
+only decompresses the touched interval payload.
 
 Raw segment `.bin` files and manifests still use their own segment/manifest
 compression paths. This document only covers bundled companion storage.
