@@ -5,6 +5,8 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
 const DEFAULT_STREAM_PREFIX = "gharchive-demo";
 const DEFAULT_BATCH_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BATCH_MAX_RECORDS = 1_000;
+const DEFAULT_ALL_RANGE_BATCH_MAX_BYTES = 2 * 1024 * 1024;
+const DEFAULT_ALL_RANGE_BATCH_MAX_RECORDS = 250;
 const DEFAULT_READY_TIMEOUT_MS = 30 * 60 * 1_000;
 const DEFAULT_APPEND_RETRY_TIMEOUT_MS = 15 * 60 * 1_000;
 const GH_ARCHIVE_START_MS = Date.UTC(2011, 1, 12, 0, 0, 0, 0);
@@ -85,6 +87,19 @@ export type GhArchiveDemoSummary = {
   totalSizeBytes: string;
   uploadedReady: boolean;
 };
+
+export function resolveGhArchiveBatchDefaults(range: GhArchiveRangeName): { batchMaxBytes: number; batchMaxRecords: number } {
+  if (range === "all") {
+    return {
+      batchMaxBytes: DEFAULT_ALL_RANGE_BATCH_MAX_BYTES,
+      batchMaxRecords: DEFAULT_ALL_RANGE_BATCH_MAX_RECORDS,
+    };
+  }
+  return {
+    batchMaxBytes: DEFAULT_BATCH_MAX_BYTES,
+    batchMaxRecords: DEFAULT_BATCH_MAX_RECORDS,
+  };
+}
 
 type DetailsResponse = {
   index_status: {
@@ -1013,8 +1028,9 @@ export async function runGhArchiveDemo(
   const range = parseRangeArg(args);
   const baseUrl = parseStringArg(args, "--url", DEFAULT_BASE_URL);
   const streamPrefix = parseStringArg(args, "--stream-prefix", DEFAULT_STREAM_PREFIX);
-  const batchMaxBytes = parseIntArg(args, "--batch-max-bytes", DEFAULT_BATCH_MAX_BYTES);
-  const batchMaxRecords = parseIntArg(args, "--batch-max-records", DEFAULT_BATCH_MAX_RECORDS);
+  const batchDefaults = resolveGhArchiveBatchDefaults(range);
+  const batchMaxBytes = parseIntArg(args, "--batch-max-bytes", batchDefaults.batchMaxBytes);
+  const batchMaxRecords = parseIntArg(args, "--batch-max-records", batchDefaults.batchMaxRecords);
   const readyTimeoutMs = parseIntArg(args, "--ready-timeout-ms", DEFAULT_READY_TIMEOUT_MS);
   const appendRetryTimeoutMs = parseIntArg(args, "--append-retry-timeout-ms", DEFAULT_APPEND_RETRY_TIMEOUT_MS);
   const debugProgress = hasFlag(args, "--debug-progress");

@@ -46,9 +46,9 @@ Optional flags:
 - `--stream-prefix <prefix>`
   Default: `gharchive-demo`
 - `--batch-max-bytes <bytes>`
-  Default: `8388608`
+  Default: `8388608` for `day|week|month|year`, `2097152` for `all`
 - `--batch-max-records <count>`
-  Default: `1000`
+  Default: `1000` for `day|week|month|year`, `250` for `all`
 - `--ready-timeout-ms <ms>`
   Default: `1800000`
 - `--append-retry-timeout-ms <ms>`
@@ -107,6 +107,13 @@ streams side by side:
 - `gharchive-demo-month`
 
 The script recreates the selected stream name on each run.
+
+For the `all` range, the demo intentionally uses smaller append batches by
+default so the workload does not amplify the server's append-path JSON
+materialization cost on low-memory hosts. On 1–2 GiB auto-tuned servers, the
+runtime also clamps segmenting, upload, and bundled-companion backfill to
+single-lane settings and shrinks segment size / target rows so the demo can
+keep ingesting while `.agg` companions are being built.
 
 ## Archive Availability
 
@@ -254,8 +261,7 @@ POST /v1/stream/gharchive-demo-day/_search
 {
   "q": "type:pushevent owner:prisma*",
   "size": 100,
-  "sort": ["offset:desc"],
-  "track_total_hits": false
+  "sort": ["offset:desc"]
 }
 ```
 

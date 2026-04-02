@@ -12,11 +12,12 @@ import {
   buildGhArchiveSchemaUpdate,
   buildGhArchiveStreamName,
   buildGhArchiveArchiveUrl,
-    normalizeGhArchiveEvent,
-    computeDemoReadiness,
-    resolveGhArchiveRangeHours,
-    runGhArchiveDemo,
-  } from "../experiments/demo/gharchive_demo";
+  resolveGhArchiveBatchDefaults,
+  normalizeGhArchiveEvent,
+  computeDemoReadiness,
+  resolveGhArchiveRangeHours,
+  runGhArchiveDemo,
+} from "../experiments/demo/gharchive_demo";
 
 function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
   const base = loadConfig();
@@ -63,6 +64,17 @@ describe("gharchive demo", () => {
   test("builds range suffix stream names", () => {
     expect(buildGhArchiveStreamName("gharchive-demo", "day")).toBe("gharchive-demo-day");
     expect(buildGhArchiveStreamName("lab", "year")).toBe("lab-year");
+  });
+
+  test("uses smaller default append batches for the all-range demo", () => {
+    expect(resolveGhArchiveBatchDefaults("day")).toEqual({
+      batchMaxBytes: 8 * 1024 * 1024,
+      batchMaxRecords: 1_000,
+    });
+    expect(resolveGhArchiveBatchDefaults("all")).toEqual({
+      batchMaxBytes: 2 * 1024 * 1024,
+      batchMaxRecords: 250,
+    });
   });
 
   test("resolves supported range windows from a fixed clock", () => {

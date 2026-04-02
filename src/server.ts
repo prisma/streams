@@ -6,6 +6,7 @@ import { MockR2Store } from "./objectstore/mock_r2";
 import { R2ObjectStore } from "./objectstore/r2";
 import { bootstrapFromR2 } from "./bootstrap";
 import { initConsoleLogging } from "./util/log";
+import { AUTO_TUNE_PRESETS, memoryLimitForPreset, tuneForPreset, type AutoTuneConfig } from "./auto_tune";
 
 initConsoleLogging();
 
@@ -36,22 +37,6 @@ function formatPresetList<T>(presets: number[], selected: number, map: (preset: 
     .join(", ");
 }
 
-type AutoTuneConfig = {
-  sqliteCacheMb: number;
-  workerSqliteCacheMb: number;
-  indexMemMb: number;
-  ingestBatchMb: number;
-  ingestQueueMb: number;
-  indexBuildConcurrency: number;
-  indexCompactConcurrency: number;
-  segmenterWorkers: number;
-  uploadConcurrency: number;
-};
-
-function memoryLimitForPreset(preset: number): number {
-  return preset === 256 ? 300 : preset;
-}
-
 function applyAutoTune(overrideMb: number | null): void {
   const envMemRaw = process.env.DS_MEMORY_LIMIT_MB;
   if (overrideMb != null) {
@@ -75,6 +60,8 @@ function applyAutoTune(overrideMb: number | null): void {
   }
 
   const conflictVars = [
+    "DS_SEGMENT_MAX_BYTES",
+    "DS_SEGMENT_TARGET_ROWS",
     "DS_SQLITE_CACHE_MB",
     "DS_SQLITE_CACHE_BYTES",
     "DS_WORKER_SQLITE_CACHE_MB",
@@ -82,6 +69,8 @@ function applyAutoTune(overrideMb: number | null): void {
     "DS_INDEX_RUN_MEM_CACHE_BYTES",
     "DS_INGEST_MAX_BATCH_BYTES",
     "DS_INGEST_MAX_QUEUE_BYTES",
+    "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
+    "DS_SEARCH_COMPANION_YIELD_BLOCKS",
   ];
   const conflicts = conflictVars.filter((v) => process.env[v] != null);
   if (conflicts.length > 0) {
@@ -89,28 +78,18 @@ function applyAutoTune(overrideMb: number | null): void {
     process.exit(1);
   }
 
-  const presets = [256, 512, 1024, 2048, 4096, 8192];
+  const presets = [...AUTO_TUNE_PRESETS];
   const preset = [...presets].reverse().find((v) => v <= memMb);
   if (!preset) {
     console.error(`DS_MEMORY_LIMIT_MB=${memMb} is below the minimum preset (256)`);
     process.exit(1);
   }
-
-  const tuneFor = (p: number): AutoTuneConfig => ({
-    sqliteCacheMb: Math.max(8, Math.floor(p / 16)),
-    workerSqliteCacheMb: Math.max(8, Math.min(32, Math.floor(p / 128))),
-    indexMemMb: Math.max(4, Math.floor(p / 64)),
-    ingestBatchMb: Math.max(2, Math.floor(p / 128)),
-    ingestQueueMb: Math.max(8, Math.floor(p / 32)),
-    indexBuildConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
-    indexCompactConcurrency: p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
-    segmenterWorkers: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
-    uploadConcurrency: p >= 8192 ? 16 : p >= 4096 ? 8 : p >= 1024 ? 4 : 2,
-  });
-  const tune = tuneFor(preset);
+  const tune: AutoTuneConfig = tuneForPreset(preset);
 
   const memoryLimitMb = memoryLimitForPreset(preset);
   process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
+  process.env.DS_SEGMENT_MAX_BYTES = String(tune.segmentMaxMiB * 1024 * 1024);
+  process.env.DS_SEGMENT_TARGET_ROWS = String(tune.segmentTargetRows);
   process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
   process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
   process.env.DS_INDEX_RUN_MEM_CACHE_BYTES = String(tune.indexMemMb * 1024 * 1024);
@@ -120,6 +99,8 @@ function applyAutoTune(overrideMb: number | null): void {
   process.env.DS_INDEX_COMPACT_CONCURRENCY = String(tune.indexCompactConcurrency);
   process.env.DS_SEGMENTER_WORKERS = String(tune.segmenterWorkers);
   process.env.DS_UPLOAD_CONCURRENCY = String(tune.uploadConcurrency);
+  process.env.DS_SEARCH_COMPANION_BATCH_SEGMENTS = String(tune.searchCompanionBatchSegments);
+  process.env.DS_SEARCH_COMPANION_YIELD_BLOCKS = String(tune.searchCompanionYieldBlocks);
 
   const presetLine = formatPresetList(presets, preset, (v) => v, (v) => String(v));
   console.log(`Auto-tuning for memory preset ${presetLine}`);
@@ -127,30 +108,61 @@ function applyAutoTune(overrideMb: number | null): void {
     `DS_MEMORY_LIMIT_MB presets: ${formatPresetList(presets, preset, (p) => memoryLimitForPreset(p), (v) => String(v))}`
   );
   console.log(
-    `DS_SQLITE_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).sqliteCacheMb, (v) => String(v))}`
+    `DS_SEGMENT_MAX_MIB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).segmentMaxMiB,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEGMENT_TARGET_ROWS presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).segmentTargetRows,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SQLITE_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneForPreset(p).sqliteCacheMb, (v) => String(v))}`
   );
   console.log(
     `DS_WORKER_SQLITE_CACHE_MB presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneFor(p).workerSqliteCacheMb,
+      (p) => tuneForPreset(p).workerSqliteCacheMb,
       (v) => String(v)
     )}`
   );
   console.log(
-    `DS_INDEX_RUN_MEM_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).indexMemMb, (v) => String(v))}`
+    `DS_INDEX_RUN_MEM_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).indexMemMb,
+      (v) => String(v)
+    )}`
   );
   console.log(
-    `DS_INGEST_MAX_BATCH_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).ingestBatchMb, (v) => String(v))}`
+    `DS_INGEST_MAX_BATCH_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).ingestBatchMb,
+      (v) => String(v)
+    )}`
   );
   console.log(
-    `DS_INGEST_MAX_QUEUE_MB presets: ${formatPresetList(presets, preset, (p) => tuneFor(p).ingestQueueMb, (v) => String(v))}`
+    `DS_INGEST_MAX_QUEUE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).ingestQueueMb,
+      (v) => String(v)
+    )}`
   );
   console.log(
     `DS_INDEX_BUILD_CONCURRENCY presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneFor(p).indexBuildConcurrency,
+      (p) => tuneForPreset(p).indexBuildConcurrency,
       (v) => String(v)
     )}`
   );
@@ -158,7 +170,7 @@ function applyAutoTune(overrideMb: number | null): void {
     `DS_INDEX_COMPACT_CONCURRENCY presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneFor(p).indexCompactConcurrency,
+      (p) => tuneForPreset(p).indexCompactConcurrency,
       (v) => String(v)
     )}`
   );
@@ -166,7 +178,7 @@ function applyAutoTune(overrideMb: number | null): void {
     `DS_SEGMENTER_WORKERS presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneFor(p).segmenterWorkers,
+      (p) => tuneForPreset(p).segmenterWorkers,
       (v) => String(v)
     )}`
   );
@@ -174,7 +186,23 @@ function applyAutoTune(overrideMb: number | null): void {
     `DS_UPLOAD_CONCURRENCY presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneFor(p).uploadConcurrency,
+      (p) => tuneForPreset(p).uploadConcurrency,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEARCH_COMPANION_BATCH_SEGMENTS presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).searchCompanionBatchSegments,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEARCH_COMPANION_YIELD_BLOCKS presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).searchCompanionYieldBlocks,
       (v) => String(v)
     )}`
   );

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config";
-import { deriveMemoryGuardLimitBytes } from "../src/memory";
+import { deriveMemoryGuardHeadroomBytes, deriveMemoryGuardLimitBytes } from "../src/memory";
 
 const KEYS = [
   "DS_MEMORY_LIMIT_MB",
@@ -58,5 +58,15 @@ describe("config memory tuning", () => {
     expect(deriveMemoryGuardLimitBytes(5 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
       Math.floor(hostTotalBytes * 0.7)
     );
+  });
+
+  test("derives host-memory headroom for low-memory guards", () => {
+    const hostTotalBytes = 4 * 1024 * 1024 * 1024;
+    expect(deriveMemoryGuardHeadroomBytes(0, hostTotalBytes)).toBe(0);
+    expect(deriveMemoryGuardHeadroomBytes(256 * 1024 * 1024, hostTotalBytes)).toBe(256 * 1024 * 1024);
+    expect(deriveMemoryGuardHeadroomBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
+      Math.floor(hostTotalBytes * 0.15)
+    );
+    expect(deriveMemoryGuardHeadroomBytes(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024)).toBe(2 * 1024 * 1024 * 1024);
   });
 });

@@ -2,6 +2,9 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 
 const HOST_MEMORY_GUARD_FRACTION = 0.7;
+const HOST_MEMORY_HEADROOM_FRACTION = 0.15;
+const HOST_MEMORY_HEADROOM_MIN_BYTES = 512 * 1024 * 1024;
+const HOST_MEMORY_HEADROOM_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 export function deriveMemoryGuardLimitBytes(requestedLimitBytes: number, hostTotalBytes = os.totalmem()): number {
   const requested = Math.max(0, Math.floor(requestedLimitBytes));
@@ -11,9 +14,22 @@ export function deriveMemoryGuardLimitBytes(requestedLimitBytes: number, hostTot
   return Math.min(requested, safeHostCap);
 }
 
+export function deriveMemoryGuardHeadroomBytes(limitBytes: number, hostTotalBytes = os.totalmem()): number {
+  const limit = Math.max(0, Math.floor(limitBytes));
+  if (limit <= 0) return 0;
+  if (!Number.isFinite(hostTotalBytes) || hostTotalBytes <= 0) {
+    return Math.min(limit, HOST_MEMORY_HEADROOM_MIN_BYTES);
+  }
+  const headroomFromHost = Math.floor(hostTotalBytes * HOST_MEMORY_HEADROOM_FRACTION);
+  const headroom = Math.max(HOST_MEMORY_HEADROOM_MIN_BYTES, headroomFromHost);
+  return Math.min(limit, Math.min(HOST_MEMORY_HEADROOM_MAX_BYTES, headroom));
+}
+
 export class MemoryGuard {
   private readonly limitBytes: number;
   private readonly resumeBytes: number;
+  private readonly hostHeadroomBytes: number;
+  private readonly hostResumeHeadroomBytes: number;
   private readonly intervalMs: number;
   private readonly onSample?: (rssBytes: number, overLimit: boolean, limitBytes: number) => void;
   private readonly heapSnapshotPath?: string;
@@ -49,6 +65,8 @@ export class MemoryGuard {
     // so the server doesn't "deadlock" itself under a stable high-water mark.
     const resumeFraction = Math.min(1.0, Math.max(0.5, opts.resumeFraction ?? 1.0));
     this.resumeBytes = Math.floor(this.limitBytes * resumeFraction);
+    this.hostHeadroomBytes = deriveMemoryGuardHeadroomBytes(this.limitBytes);
+    this.hostResumeHeadroomBytes = Math.floor(this.hostHeadroomBytes * 1.25);
     this.intervalMs = Math.max(50, opts.intervalMs ?? 1000);
     this.onSample = opts.onSample;
     this.heapSnapshotPath = opts.heapSnapshotPath;
@@ -69,9 +87,11 @@ export class MemoryGuard {
   private sample(): void {
     const rss = process.memoryUsage().rss;
     const effectiveBytes = this.effectiveBytesForGuard(rss);
+    const hostFreeBytes = os.freemem();
     this.lastRssBytes = rss;
     if (rss > this.maxRssBytes) this.maxRssBytes = rss;
-    const overLimit = this.limitBytes > 0 && effectiveBytes > this.limitBytes;
+    const hostLowMemory = this.hostHeadroomBytes > 0 && hostFreeBytes <= this.hostHeadroomBytes;
+    const overLimit = this.limitBytes > 0 && (effectiveBytes > this.limitBytes || hostLowMemory);
     if (this.onSample) {
       try {
         this.onSample(rss, overLimit, this.limitBytes);
@@ -81,12 +101,14 @@ export class MemoryGuard {
     }
     if (this.limitBytes <= 0) return;
     if (overLimit) {
-      this.maybeGc("memory sample");
-      this.maybeHeapSnapshot("memory sample");
+      this.maybeGc(hostLowMemory ? "host memory headroom" : "memory sample");
+      this.maybeHeapSnapshot(hostLowMemory ? "host memory headroom" : "memory sample");
     }
     if (this.overLimit) {
-      if (effectiveBytes <= this.resumeBytes) this.overLimit = false;
+      if (effectiveBytes <= this.resumeBytes && hostFreeBytes > this.hostResumeHeadroomBytes) this.overLimit = false;
     } else if (effectiveBytes > this.limitBytes) {
+      this.overLimit = true;
+    } else if (hostLowMemory) {
       this.overLimit = true;
     }
   }

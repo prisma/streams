@@ -9,35 +9,35 @@ runtime overview and command surface, see `overview.md`.
 
 - `DS_ROOT`: data directory (default `./ds-data`)
 - `DS_DB_PATH`: SQLite file path (default `${DS_ROOT}/wal.sqlite`)
-- `DS_SEGMENT_MAX_BYTES`: segment seal threshold (default 16 MiB)
+- `DS_SEGMENT_MAX_BYTES`: segment seal threshold (default 16 MiB; auto-tune uses 1–4 MiB on 256–2048 MiB presets)
 - `DS_BLOCK_MAX_BYTES`: max uncompressed bytes per DSB3 block (default 256 KiB)
-- `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 50k)
+- `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 50k; auto-tune uses 3k–12.5k on 256–2048 MiB presets)
 - `DS_SEGMENT_MAX_INTERVAL_MS`: max time between segment cuts (default 0; 0 disables time-based sealing)
 - `DS_SEGMENT_CHECK_MS`: segmenter tick interval (default 250ms)
-- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0)
+- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_UPLOAD_CHECK_MS`: uploader tick interval (default 250ms)
-- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4)
+- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1–2 GiB presets)
 - `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
-- `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads)
+- `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
-- `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4)
-- `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4)
+- `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
+- `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS`: maximum age for cached `.cix` files before startup/admission pruning retires them (default 24h)
 - `DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES`: hot mmap-backed companion bundles retained by the process (default 64)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_INDEX_COMPACTION_FANOUT`: compaction fanout (default 16)
-- `DS_INDEX_COMPACT_CONCURRENCY`: max parallel async run-loading tasks inside one exact-family compaction job (default 4; in-process, not worker threads)
+- `DS_INDEX_COMPACT_CONCURRENCY`: max parallel async run-loading tasks inside one exact-family compaction job (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_READ_MAX_BYTES`: read response byte cap (default 1 MiB)
 - `DS_READ_MAX_RECORDS`: read response record cap (default 1000)
 - `DS_APPEND_MAX_BODY_BYTES`: max append body size (default 10 MiB)
 - `DS_INGEST_FLUSH_MS`: group-commit flush interval (default 10ms)
 - `DS_INGEST_MAX_BATCH_REQS`: max requests per batch (default 200)
-- `DS_INGEST_MAX_BATCH_BYTES`: max payload bytes per batch (default 8 MiB)
+- `DS_INGEST_MAX_BATCH_BYTES`: max payload bytes per batch (default 8 MiB; auto-tune uses smaller values on 1–2 GiB presets)
 - `DS_INGEST_MAX_QUEUE_REQS`: max queued append requests (default 50k)
-- `DS_INGEST_MAX_QUEUE_BYTES`: max queued append bytes (default 64 MiB)
+- `DS_INGEST_MAX_QUEUE_BYTES`: max queued append bytes (default 64 MiB; auto-tune uses smaller values on 1–2 GiB presets)
 - `DS_LOCAL_BACKLOG_MAX_BYTES`: backpressure when unuploaded backlog exceeds this (default 10 GiB; 0 disables).
 - `DS_SQLITE_CACHE_BYTES` / `DS_SQLITE_CACHE_MB`: SQLite page cache budget (defaults to 25% of `DS_MEMORY_LIMIT_*` when set)
 - `DS_WORKER_SQLITE_CACHE_BYTES` / `DS_WORKER_SQLITE_CACHE_MB`: SQLite page cache budget for worker threads like segmenters and touch processors (defaults to a much smaller fraction of the main cache, capped at 32 MiB)
@@ -46,12 +46,15 @@ runtime overview and command surface, see `overview.md`.
 
 Memory-guard note:
 - On macOS, the guard confirms high RSS with the process `top` physical-memory value (`top -stats pid,mem`) before it flips into overload mode. This avoids false positives from Bun/JavaScriptCore virtual-memory accounting where RSS can read much higher than the process's actual physical footprint.
+- On Linux and other non-Darwin hosts, the guard now also watches host free memory, not just this process's RSS. When free memory drops below a host-headroom floor, Streams starts returning overloads and deferring background work before the kernel OOM killer takes the process down.
 - While over the limit, the guard rate-limits forced `Bun.gc()` calls from its own sampling loop, so idle servers can recover without waiting for a fresh request to hit the overload path.
 
 Companion-cache note:
 - Bundled companion reads now fetch the full remote `.cix` object once, store it locally, and mmap the local cached file.
 - Because Bun does not currently expose an explicit unmap primitive, a companion file that has been mmapped by the running process is treated as pinned until process restart.
 - Startup pruning and new cache admissions retire stale or oldest unmmapped companion files first; if the hot mapped set alone exceeds the disk budget, the process may temporarily sit above the configured cache cap until restart.
+- The auto-tuned 1–2 GiB presets also force companion rebuilding into one-segment / one-yield-block passes so aggregate-heavy `.cix` generation does not overlap too aggressively with append, segment cut, and upload work.
+- The auto-tuned 1–2 GiB presets also shrink segment size and target rows so one sealed segment does not create a 16 MiB / 50k-row companion-build working set on memory-constrained hosts.
 - `DS_OBJECTSTORE_TIMEOUT_MS`: object store request timeout (default 5s)
 - `DS_OBJECTSTORE_RETRIES`: object store retry count (default 3)
 - `DS_OBJECTSTORE_RETRY_BASE_MS`: base backoff for retries (default 50ms)
@@ -97,11 +100,15 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 ### Medium (1–4 GB RAM)
 - `DS_SEGMENT_MAX_BYTES=16MiB`
 - `DS_BLOCK_MAX_BYTES=256KiB`
-- `DS_UPLOAD_CONCURRENCY=4–8`
-- `DS_INGEST_MAX_BATCH_BYTES=8–16MiB`
+- `DS_UPLOAD_CONCURRENCY=2–8`
+- `DS_INGEST_MAX_BATCH_BYTES=4–8MiB`
 - `DS_READ_MAX_BYTES=1–4MiB`
 - SQLite `cache_size` around 128–256 MiB
 - Worker SQLite caches around 16–32 MiB each
+- On hosts near the low end of this range, prefer `DS_SEGMENTER_WORKERS=1`,
+  `DS_UPLOAD_CONCURRENCY=2`, `DS_SEARCH_COMPANION_BATCH_SEGMENTS=1`, and a
+  smaller `DS_SEGMENT_MAX_BYTES` / `DS_SEGMENT_TARGET_ROWS` pair while running
+  broad `all`-range ingest workloads with bundled `.agg` enabled.
 
 ## Diagnosing stalls
 
@@ -112,6 +119,8 @@ When throughput drops, check in this order:
 
 2) Segmenter backlog (pending_bytes high)
 - Reduce `DS_SEGMENT_MAX_BYTES` or decrease `DS_SEGMENT_CHECK_MS`.
+- On small hosts, also reduce `DS_SEGMENT_TARGET_ROWS` so companion builds seal
+  and finalize smaller row sets.
 
 3) Upload backlog (segments stuck locally)
 - Increase `DS_UPLOAD_CONCURRENCY` if network allows.
