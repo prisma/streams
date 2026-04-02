@@ -37,7 +37,6 @@ function invalidCompanionCache<T = never>(message: string): Result<T, CompanionF
 
 export class CompanionFileCache {
   private readonly entries = new Map<string, FileEntry>();
-  private readonly mappedKeys = new Set<string>();
   private readonly mappedBundles: LruCache<string, MappedCompanionBundle>;
   private totalBytes = 0;
 
@@ -107,7 +106,6 @@ export class CompanionFileCache {
   }): Promise<Result<MappedCompanionBundle, CompanionFileCacheError>> {
     const cached = this.mappedBundles.get(args.objectKey);
     if (cached) {
-      this.mappedKeys.add(args.objectKey);
       this.touch(args.objectKey);
       return Result.ok(cached);
     }
@@ -124,7 +122,6 @@ export class CompanionFileCache {
     }
     if (Result.isError(mappedRes)) return mappedRes;
 
-    this.mappedKeys.add(args.objectKey);
     this.mappedBundles.set(args.objectKey, mappedRes.value);
     this.touch(args.objectKey);
     return mappedRes;
@@ -224,7 +221,7 @@ export class CompanionFileCache {
   private pruneForBudget(nowMs: number, incomingBytes: number, allowMappedDeletes: boolean): void {
     if (this.maxAgeMs > 0) {
       for (const [objectKey, entry] of Array.from(this.entries.entries())) {
-        if (!allowMappedDeletes && this.mappedKeys.has(objectKey)) continue;
+        if (!allowMappedDeletes && this.mappedBundles.has(objectKey)) continue;
         if (nowMs - entry.mtimeMs <= this.maxAgeMs) continue;
         this.removeEntry(objectKey, allowMappedDeletes);
       }
@@ -234,10 +231,10 @@ export class CompanionFileCache {
       const next = this.entries.keys().next();
       if (next.done) break;
       const objectKey = next.value as string;
-      if (!allowMappedDeletes && this.mappedKeys.has(objectKey)) {
+      if (!allowMappedDeletes && this.mappedBundles.has(objectKey)) {
         let removed = false;
         for (const candidateKey of this.entries.keys()) {
-          if (this.mappedKeys.has(candidateKey)) continue;
+          if (this.mappedBundles.has(candidateKey)) continue;
           this.removeEntry(candidateKey, false);
           removed = true;
           break;
@@ -257,7 +254,7 @@ export class CompanionFileCache {
   }
 
   private removeEntry(objectKey: string, allowMappedDelete: boolean): void {
-    if (!allowMappedDelete && this.mappedKeys.has(objectKey)) return;
+    if (!allowMappedDelete && this.mappedBundles.has(objectKey)) return;
     const entry = this.entries.get(objectKey);
     if (!entry) return;
     try {

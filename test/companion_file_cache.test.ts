@@ -99,4 +99,41 @@ describe("CompanionFileCache", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("evicts previously mapped files after clearMapped restores budget enforcement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-companion-file-cache-"));
+    try {
+      const firstKey = "streams/a/companions/one.cix";
+      const secondKey = "streams/a/companions/two.cix";
+      const firstPath = join(root, firstKey);
+      const secondPath = join(root, secondKey);
+      const cache = new CompanionFileCache(root, 4, 60_000, 1);
+
+      const firstRes = await cache.loadMappedBundleResult({
+        objectKey: firstKey,
+        expectedSize: 4,
+        loadBytes: async () => new Uint8Array([1, 2, 3, 4]),
+        decodeToc: () => Result.ok(EMPTY_TOC),
+      });
+      expect(Result.isError(firstRes)).toBeFalse();
+      if (Result.isError(firstRes)) return;
+      expect(existsSync(firstPath)).toBeTrue();
+
+      cache.clearMapped();
+
+      const secondRes = await cache.loadMappedBundleResult({
+        objectKey: secondKey,
+        expectedSize: 4,
+        loadBytes: async () => new Uint8Array([5, 6, 7, 8]),
+        decodeToc: () => Result.ok(EMPTY_TOC),
+      });
+      expect(Result.isError(secondRes)).toBeFalse();
+      if (Result.isError(secondRes)) return;
+
+      expect(existsSync(firstPath)).toBeFalse();
+      expect(existsSync(secondPath)).toBeTrue();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

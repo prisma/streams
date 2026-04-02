@@ -1,2 +1,0 @@
-$ bun run experiments/demo/gharchive_demo.ts all --url "http://127.0.0.1:8787" --stream-prefix gharchive-sampler-linux --debug-progress --debug-progress-interval-ms "5000"
-error: script "demo:gharchive" was terminated by signal SIGTERM (Polite quit request)

@@ -1,1 +1,0 @@
-$ bun run experiments/demo/gharchive_demo.ts all --url "http://127.0.0.1:8787" --stream-prefix gharchive-memtest --debug-progress --debug-progress-interval-ms "5000"
