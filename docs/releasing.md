@@ -47,6 +47,8 @@ into temporary consumers, and verify:
 
 - Node end-to-end usage of `@prisma/streams-local`
 - Bun end-to-end usage of `@prisma/streams-local`, including the live `/touch/*` path
+- stateful local-runtime reopen flows that must read `/_schema` and skip
+  duplicate first-schema installs when the registry already matches
 - local package exposure of `GET /v1/server/_details` and `GET /v1/stream/{name}/_routing_keys`
 - Bun CLI startup for `@prisma/streams-server`
 

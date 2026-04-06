@@ -80,6 +80,78 @@ describe("local durable streams server", () => {
     });
   });
 
+  test("consumer reopen flow can read the current schema registry and skip duplicate schema install", async () => {
+    await withLocalRoot("schema-reopen", async () => {
+      const name = "schema-reopen";
+      const stream = "local-schema-reopen";
+      const desiredSchema = {
+        type: "object",
+        additionalProperties: false,
+        required: ["repo"],
+        properties: {
+          repo: { type: "string" },
+        },
+      };
+
+      async function ensureInstalledSchema(baseUrl: string): Promise<void> {
+        const current = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, { method: "GET" });
+        expect(current.status).toBe(200);
+        const registry = await current.json();
+        const currentSchema = registry?.schemas?.["1"] ?? null;
+        const alreadyMatches =
+          registry?.currentVersion === 1 && JSON.stringify(currentSchema) === JSON.stringify(desiredSchema);
+        if (alreadyMatches) return;
+
+        const install = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ schema: desiredSchema }),
+        });
+        expect(install.status).toBe(200);
+      }
+
+      const server1 = await startLocalDurableStreamsServer({ name, port: 0 });
+      try {
+        const baseUrl = server1.exports.http.url;
+        let res = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        });
+        expect([200, 201]).toContain(res.status);
+
+        await ensureInstalledSchema(baseUrl);
+
+        res = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify([{ repo: "alpha/repo" }]),
+        });
+        expect(res.status).toBe(204);
+      } finally {
+        await server1.close();
+      }
+
+      const server2 = await startLocalDurableStreamsServer({ name, port: 0 });
+      try {
+        const baseUrl = server2.exports.http.url;
+        await ensureInstalledSchema(baseUrl);
+
+        const append = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify([{ repo: "beta/repo" }]),
+        });
+        expect(append.status).toBe(204);
+
+        const read = await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}?offset=-1&format=json`);
+        expect(read.status).toBe(200);
+        expect(await read.json()).toEqual([{ repo: "alpha/repo" }, { repo: "beta/repo" }]);
+      } finally {
+        await server2.close();
+      }
+    });
+  });
+
   test("does not create segment/cache artifacts in local mode", async () => {
     await withLocalRoot("files", async () => {
       const name = "files";
