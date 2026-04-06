@@ -114,6 +114,10 @@ Important rule:
 - a search-only update requires an already-installed schema version
 - if you are installing the first schema for a stream, install `schema` and
   `search` together in the same `_schema` request
+- first-schema installation is not idempotent after data exists; stateful
+  clients that reopen an existing stream must `GET /_schema` first and skip the
+  install when the current registry already matches the desired schema/search
+  configuration
 
 Not supported:
 

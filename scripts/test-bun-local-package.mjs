@@ -71,11 +71,43 @@ const server = await startLocalDurableStreamsServer({
 
 const baseUrl = server.exports.http.url;
 const stream = "state";
+const schemaStream = "schema-reopen";
+const schemaUpdate = {
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["repo"],
+    properties: {
+      repo: { type: "string" },
+    },
+  },
+};
 
 async function fetchJson(url, init) {
   const res = await fetch(url, init);
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
+async function ensureSchemaInstalled(baseUrl, stream, update) {
+  const current = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, { method: "GET" });
+  if (current.status !== 200) throw new Error(\`schema get failed: \${current.status}\`);
+
+  const currentSchema = current.body?.schemas?.["1"] ?? null;
+  const alreadyMatches =
+    current.body?.currentVersion === 1 &&
+    JSON.stringify(currentSchema) === JSON.stringify(update.schema) &&
+    JSON.stringify(current.body?.routingKey ?? null) === JSON.stringify(update.routingKey ?? null) &&
+    JSON.stringify(current.body?.search ?? null) === JSON.stringify(update.search ?? null);
+
+  if (alreadyMatches) return;
+
+  const install = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (install.status !== 200) throw new Error(\`schema install failed: \${install.status}\`);
 }
 
 try {
@@ -142,6 +174,23 @@ try {
     if (JSON.stringify(routingKeys.body?.keys) !== JSON.stringify(["alpha/repo", "beta/repo"])) {
       throw new Error(\`unexpected routing keys: \${JSON.stringify(routingKeys.body)}\`);
     }
+  }
+
+  {
+    const res = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(schemaStream)}\`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+    });
+    if (res.status !== 201 && res.status !== 200) throw new Error(\`schema stream PUT failed: \${res.status}\`);
+
+    await ensureSchemaInstalled(baseUrl, schemaStream, schemaUpdate);
+
+    const append = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(schemaStream)}\`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify([{ repo: "alpha/repo" }]),
+    });
+    if (append.status !== 204) throw new Error(\`schema stream append failed: \${append.status}\`);
   }
 
   const activate = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/touch/templates/activate\`, {
@@ -213,6 +262,84 @@ try {
   );
 
   run("bun", ["consumer.mjs"], consumerDir);
+
+  writeFileSync(
+    join(consumerDir, "consumer-reopen.mjs"),
+    `
+import { startLocalDurableStreamsServer } from "@prisma/streams-local";
+
+const server = await startLocalDurableStreamsServer({
+  name: "${localServerName}",
+  port: 0,
+  hostname: "127.0.0.1",
+});
+
+const baseUrl = server.exports.http.url;
+const schemaStream = "schema-reopen";
+const schemaUpdate = {
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["repo"],
+    properties: {
+      repo: { type: "string" },
+    },
+  },
+};
+
+async function fetchJson(url, init) {
+  const res = await fetch(url, init);
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : null };
+}
+
+async function ensureSchemaInstalled(baseUrl, stream, update) {
+  const current = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, { method: "GET" });
+  if (current.status !== 200) throw new Error(\`schema get failed: \${current.status}\`);
+
+  const currentSchema = current.body?.schemas?.["1"] ?? null;
+  const alreadyMatches =
+    current.body?.currentVersion === 1 &&
+    JSON.stringify(currentSchema) === JSON.stringify(update.schema) &&
+    JSON.stringify(current.body?.routingKey ?? null) === JSON.stringify(update.routingKey ?? null) &&
+    JSON.stringify(current.body?.search ?? null) === JSON.stringify(update.search ?? null);
+
+  if (alreadyMatches) return;
+
+  const install = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  if (install.status !== 200) throw new Error(\`schema install failed: \${install.status}\`);
+}
+
+try {
+  await ensureSchemaInstalled(baseUrl, schemaStream, schemaUpdate);
+
+  const append = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(schemaStream)}\`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify([{ repo: "beta/repo" }]),
+  });
+  if (append.status !== 204) throw new Error(\`schema stream reopen append failed: \${append.status}\`);
+
+  const read = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(schemaStream)}?offset=-1&format=json\`, {
+    method: "GET",
+  });
+  if (read.status !== 200) throw new Error(\`schema stream reopen read failed: \${read.status}\`);
+  if (JSON.stringify(read.body) !== JSON.stringify([{ repo: "alpha/repo" }, { repo: "beta/repo" }])) {
+    throw new Error(\`unexpected schema stream reopen read: \${JSON.stringify(read.body)}\`);
+  }
+
+  console.log(JSON.stringify({ ok: true, reopen: true, url: baseUrl }));
+} finally {
+  await server.close();
+}
+`
+  );
+
+  run("bun", ["consumer-reopen.mjs"], consumerDir);
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }
