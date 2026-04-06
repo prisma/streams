@@ -1,26 +1,6 @@
-type Tags = Record<string, string>;
+import { buildInternalMetricsRecord } from "./profiles/metrics/normalize";
 
-type MetricEvent = {
-  apiVersion: "durable.streams/metrics/v1";
-  kind: "interval";
-  metric: string;
-  unit: "ns" | "bytes" | "count";
-  windowStart: number;
-  windowEnd: number;
-  intervalMs: number;
-  instance: string;
-  stream?: string;
-  tags?: Tags;
-  count: number;
-  sum: number;
-  min: number;
-  max: number;
-  avg: number;
-  p50: number;
-  p95: number;
-  p99: number;
-  buckets: Record<string, number>;
-};
+type Tags = Record<string, string>;
 
 class Histogram {
   private readonly maxSamples: number;
@@ -41,7 +21,7 @@ class Histogram {
     if (value < this.min) this.min = value;
     if (value > this.max) this.max = value;
     const bucket = Math.floor(Math.log2(Math.max(1, value)));
-    const key = String(1 << bucket);
+    const key = String(2 ** bucket);
     this.buckets[key] = (this.buckets[key] ?? 0) + 1;
     if (this.samples.length < this.maxSamples) {
       this.samples.push(value);
@@ -74,6 +54,10 @@ class Histogram {
 }
 
 type SeriesKey = string;
+
+export type MetricsMemoryStats = {
+  seriesCount: number;
+};
 
 class MetricSeries {
   readonly metric: string;
@@ -134,16 +118,18 @@ export class Metrics {
     };
   }
 
-  flushInterval(): MetricEvent[] {
+  getMemoryStats(): MetricsMemoryStats {
+    return { seriesCount: this.series.size };
+  }
+
+  flushInterval(): Record<string, unknown>[] {
     const windowEnd = Date.now();
     const intervalMs = windowEnd - this.windowStartMs;
-    const events: MetricEvent[] = [];
+    const events: Record<string, unknown>[] = [];
     for (const s of this.series.values()) {
       const snap = s.hist.snapshotAndReset();
       if (snap.count === 0) continue;
-      events.push({
-        apiVersion: "durable.streams/metrics/v1",
-        kind: "interval",
+      events.push(buildInternalMetricsRecord({
         metric: s.metric,
         unit: s.unit,
         windowStart: this.windowStartMs,
@@ -153,7 +139,7 @@ export class Metrics {
         stream: s.stream,
         tags: s.tags,
         ...snap,
-      });
+      }));
     }
     this.windowStartMs = windowEnd;
     return events;

@@ -13,15 +13,49 @@ export interface SqliteStatement {
 export interface SqliteDatabase {
   exec(sql: string): void;
   query(sql: string): SqliteStatement;
+  prepare(sql: string): SqliteStatement;
   transaction<T>(fn: () => T): () => T;
   close(): void;
 }
 
+type SqliteAdapterRuntimeCounts = {
+  open_connections: number;
+  prepared_statements: number;
+};
+
+const sqliteAdapterRuntimeCounts: SqliteAdapterRuntimeCounts = {
+  open_connections: 0,
+  prepared_statements: 0,
+};
+
+function incrementSqliteConnection(): void {
+  sqliteAdapterRuntimeCounts.open_connections += 1;
+}
+
+function decrementSqliteConnection(): void {
+  sqliteAdapterRuntimeCounts.open_connections = Math.max(0, sqliteAdapterRuntimeCounts.open_connections - 1);
+}
+
+function incrementPreparedStatement(): void {
+  sqliteAdapterRuntimeCounts.prepared_statements += 1;
+}
+
+function decrementPreparedStatement(): void {
+  sqliteAdapterRuntimeCounts.prepared_statements = Math.max(0, sqliteAdapterRuntimeCounts.prepared_statements - 1);
+}
+
+export function getSqliteAdapterRuntimeCounts(): SqliteAdapterRuntimeCounts {
+  return { ...sqliteAdapterRuntimeCounts };
+}
+
 class BunStatementAdapter implements SqliteStatement {
   private readonly stmt: any;
+  private readonly onFinalize?: () => void;
+  private finalized = false;
 
-  constructor(stmt: any) {
+  constructor(stmt: any, onFinalize?: () => void) {
     this.stmt = stmt;
+    this.onFinalize = onFinalize;
   }
 
   get(...params: any[]): any {
@@ -41,23 +75,58 @@ class BunStatementAdapter implements SqliteStatement {
   }
 
   finalize(): void {
-    if (typeof this.stmt.finalize === "function") this.stmt.finalize();
+    if (this.finalized) return;
+    this.finalized = true;
+    try {
+      if (typeof this.stmt.finalize === "function") this.stmt.finalize();
+    } finally {
+      this.onFinalize?.();
+    }
   }
 }
 
 class BunDatabaseAdapter implements SqliteDatabase {
   private readonly db: any;
+  private preparedStatementCount = 0;
+  private closed = false;
+  private readonly statementCache = new Map<string, BunStatementAdapter>();
 
   constructor(db: any) {
     this.db = db;
+    incrementSqliteConnection();
+  }
+
+  private trackStatement(): () => void {
+    let released = false;
+    this.preparedStatementCount += 1;
+    incrementPreparedStatement();
+    return () => {
+      if (released) return;
+      released = true;
+      this.preparedStatementCount = Math.max(0, this.preparedStatementCount - 1);
+      decrementPreparedStatement();
+    };
   }
 
   exec(sql: string): void {
     this.db.exec(sql);
   }
 
+  prepare(sql: string): SqliteStatement {
+    return new BunStatementAdapter(this.db.query(sql), this.trackStatement());
+  }
+
   query(sql: string): SqliteStatement {
-    return new BunStatementAdapter(this.db.query(sql));
+    const cached = this.statementCache.get(sql);
+    if (cached) return cached;
+    let adapter: BunStatementAdapter;
+    const release = this.trackStatement();
+    adapter = new BunStatementAdapter(this.db.query(sql), () => {
+      this.statementCache.delete(sql);
+      release();
+    });
+    this.statementCache.set(sql, adapter);
+    return adapter;
   }
 
   transaction<T>(fn: () => T): () => T {
@@ -65,15 +134,37 @@ class BunDatabaseAdapter implements SqliteDatabase {
   }
 
   close(): void {
-    this.db.close();
+    if (this.closed) return;
+    this.closed = true;
+    const cachedStatements = Array.from(this.statementCache.values());
+    this.statementCache.clear();
+    for (const stmt of cachedStatements) {
+      try {
+        stmt.finalize?.();
+      } catch {
+        // Ignore finalizer failures during shutdown.
+      }
+    }
+    while (this.preparedStatementCount > 0) {
+      this.preparedStatementCount -= 1;
+      decrementPreparedStatement();
+    }
+    try {
+      this.db.close();
+    } finally {
+      decrementSqliteConnection();
+    }
   }
 }
 
 class NodeStatementAdapter implements SqliteStatement {
   private readonly stmt: any;
+  private readonly onFinalize?: () => void;
+  private finalized = false;
 
-  constructor(stmt: any) {
+  constructor(stmt: any, onFinalize?: () => void) {
     this.stmt = stmt;
+    this.onFinalize = onFinalize;
   }
 
   get(...params: any[]): any {
@@ -93,7 +184,13 @@ class NodeStatementAdapter implements SqliteStatement {
   }
 
   finalize(): void {
-    if (typeof this.stmt.finalize === "function") this.stmt.finalize();
+    if (this.finalized) return;
+    this.finalized = true;
+    try {
+      if (typeof this.stmt.finalize === "function") this.stmt.finalize();
+    } finally {
+      this.onFinalize?.();
+    }
   }
 }
 
@@ -101,19 +198,50 @@ class NodeDatabaseAdapter implements SqliteDatabase {
   private txDepth = 0;
   private txCounter = 0;
   private readonly db: any;
+  private preparedStatementCount = 0;
+  private closed = false;
+  private readonly statementCache = new Map<string, NodeStatementAdapter>();
 
   constructor(db: any) {
     this.db = db;
+    incrementSqliteConnection();
+  }
+
+  private trackStatement(): () => void {
+    let released = false;
+    this.preparedStatementCount += 1;
+    incrementPreparedStatement();
+    return () => {
+      if (released) return;
+      released = true;
+      this.preparedStatementCount = Math.max(0, this.preparedStatementCount - 1);
+      decrementPreparedStatement();
+    };
   }
 
   exec(sql: string): void {
     this.db.exec(sql);
   }
 
-  query(sql: string): SqliteStatement {
+  prepare(sql: string): SqliteStatement {
     const stmt = this.db.prepare(sql);
     if (typeof stmt?.setReadBigInts === "function") stmt.setReadBigInts(true);
-    return new NodeStatementAdapter(stmt);
+    return new NodeStatementAdapter(stmt, this.trackStatement());
+  }
+
+  query(sql: string): SqliteStatement {
+    const cached = this.statementCache.get(sql);
+    if (cached) return cached;
+    const stmt = this.db.prepare(sql);
+    if (typeof stmt?.setReadBigInts === "function") stmt.setReadBigInts(true);
+    let adapter: NodeStatementAdapter;
+    const release = this.trackStatement();
+    adapter = new NodeStatementAdapter(stmt, () => {
+      this.statementCache.delete(sql);
+      release();
+    });
+    this.statementCache.set(sql, adapter);
+    return adapter;
   }
 
   transaction<T>(fn: () => T): () => T {
@@ -147,7 +275,26 @@ class NodeDatabaseAdapter implements SqliteDatabase {
   }
 
   close(): void {
-    this.db.close();
+    if (this.closed) return;
+    this.closed = true;
+    const cachedStatements = Array.from(this.statementCache.values());
+    this.statementCache.clear();
+    for (const stmt of cachedStatements) {
+      try {
+        stmt.finalize?.();
+      } catch {
+        // Ignore finalizer failures during shutdown.
+      }
+    }
+    while (this.preparedStatementCount > 0) {
+      this.preparedStatementCount -= 1;
+      decrementPreparedStatement();
+    }
+    try {
+      this.db.close();
+    } finally {
+      decrementSqliteConnection();
+    }
   }
 }
 

@@ -13,9 +13,9 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     rootDir,
     dbPath: `${rootDir}/wal.sqlite`,
     port: 0,
-    // Keep background interpreter polling off for determinism.
-    interpreterCheckIntervalMs: 0,
-    interpreterWorkers: 0,
+    // Keep background touch polling off for determinism.
+    touchCheckIntervalMs: 0,
+    touchWorkers: 0,
     ...overrides,
   };
 }
@@ -40,20 +40,20 @@ describe("/touch/wait timeout reliability", () => {
 
         const stream = "state_timeout";
 
-        // Create base stream + enable touch interpreter.
+        // Create base stream + enable the state-protocol profile.
         await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
             method: "PUT",
             headers: { "content-type": "application/json" },
           })
         );
-        await fetchJson(app, `http://local/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+        await fetchJson(app, `http://local/v1/stream/${encodeURIComponent(stream)}/_profile`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            interpreter: {
-              apiVersion: "durable.streams/stream-interpreter/v1",
-              format: "durable.streams/state-protocol/v1",
+            apiVersion: "durable.streams/profile/v1",
+            profile: {
+              kind: "state-protocol",
               touch: { enabled: true },
             },
           }),

@@ -5,7 +5,8 @@ import type { Config } from "../config";
 import type { IndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
 import { SegmentDiskCache } from "../segment/cache";
-import { iterateBlocksResult } from "../segment/format";
+import { loadSegmentBytesCached } from "../segment/cached_segment";
+import { iterateBlockRecordsResult } from "../segment/format";
 import { siphash24 } from "../util/siphash";
 import { retry } from "../util/retry";
 import { indexRunObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
@@ -14,9 +15,46 @@ import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_P
 import { IndexRunCache } from "./run_cache";
 import type { Metrics } from "../metrics";
 import { dsError } from "../util/ds_error.ts";
+import { yieldToEventLoop } from "../util/yield";
+import { RuntimeMemorySampler } from "../runtime_memory_sampler";
+import { ConcurrencyGate } from "../concurrency_gate";
+import type { ForegroundActivityTracker } from "../foreground_activity";
+import type { AggSectionView } from "../search/agg_format";
+import type { ColSectionView } from "../search/col_format";
+import type { FtsSectionView } from "../search/fts_format";
+import type { MetricsBlockSectionView } from "../profiles/metrics/block_format";
+import type { SchemaRegistryStore } from "../schema/registry";
+import type { RoutingKeyLexiconListResult } from "./lexicon_indexer";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
+export type CompanionSectionLookupStats = {
+  sectionGetMs: number;
+  decodeMs: number;
+};
+
+export type StreamIndexLookup = {
+  start(): void;
+  stop(): void;
+  enqueue(stream: string): void;
+  candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
+  candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
+  getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
+  getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
+  getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
+  getFtsSegmentCompanionWithStats?(
+    stream: string,
+    segmentIndex: number
+  ): Promise<{ companion: FtsSectionView | null; stats: CompanionSectionLookupStats }>;
+  getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSectionView | null>;
+  listRoutingKeysResult?(stream: string, after: string | null, limit: number): Promise<Result<RoutingKeyLexiconListResult, { kind: string; message: string }>>;
+  getLocalStorageUsage?(stream: string): {
+    routing_index_cache_bytes: number;
+    exact_index_cache_bytes: number;
+    companion_cache_bytes: number;
+    lexicon_index_cache_bytes: number;
+  };
+};
 
 function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildError> {
   return Result.err({ kind: "invalid_index_build", message });
@@ -54,6 +92,11 @@ export class IndexManager {
   private timer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
+  private readonly onMetadataChanged?: (stream: string) => void;
+  private readonly memorySampler?: RuntimeMemorySampler;
+  private readonly registry?: SchemaRegistryStore;
+  private readonly asyncGate: ConcurrencyGate;
+  private readonly foregroundActivity?: ForegroundActivityTracker;
 
   constructor(
     cfg: Config,
@@ -61,7 +104,12 @@ export class IndexManager {
     os: ObjectStore,
     segmentCache: SegmentDiskCache | undefined,
     publishManifest?: (stream: string) => Promise<void>,
-    metrics?: Metrics
+    metrics?: Metrics,
+    onMetadataChanged?: (stream: string) => void,
+    memorySampler?: RuntimeMemorySampler,
+    registry?: SchemaRegistryStore,
+    asyncGate?: ConcurrencyGate,
+    foregroundActivity?: ForegroundActivityTracker
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -76,8 +124,21 @@ export class IndexManager {
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
     this.retireMinMs = Math.max(0, cfg.indexRetireMinMs);
     this.metrics = metrics;
+    this.onMetadataChanged = onMetadataChanged;
+    this.memorySampler = memorySampler;
+    this.registry = registry;
+    this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
+    this.foregroundActivity = foregroundActivity;
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
+  }
+
+  private async yieldBackgroundWork(): Promise<void> {
+    if (this.foregroundActivity) {
+      await this.foregroundActivity.yieldBackgroundWork();
+      return;
+    }
+    await yieldToEventLoop();
   }
 
   start(): void {
@@ -98,8 +159,9 @@ export class IndexManager {
     this.queue.add(stream);
   }
 
-  async candidateSegments(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
+  async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
     if (this.span <= 0) return null;
+    if (!this.isRoutingConfigured(stream)) return null;
     const state = this.db.getIndexState(stream);
     if (!state) return null;
     const runs = this.db.listIndexRuns(stream);
@@ -131,6 +193,53 @@ export class IndexManager {
     return { segments, indexedThrough: state.indexed_through };
   }
 
+  async candidateSegmentsForSecondaryIndex(_stream: string, _indexName: string, _keyBytes: Uint8Array): Promise<IndexCandidate | null> {
+    return null;
+  }
+
+  async getColSegmentCompanion(_stream: string, _segmentIndex: number): Promise<ColSectionView | null> {
+    return null;
+  }
+
+  async getAggSegmentCompanion(_stream: string, _segmentIndex: number): Promise<AggSectionView | null> {
+    return null;
+  }
+
+  async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<FtsSectionView | null> {
+    return null;
+  }
+
+  async getMetricsBlockSegmentCompanion(_stream: string, _segmentIndex: number): Promise<MetricsBlockSectionView | null> {
+    return null;
+  }
+
+  getLocalCacheBytes(stream: string): number {
+    if (!this.runDiskCache) return 0;
+    return this.runDiskCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/index/`);
+  }
+
+  getMemoryStats(): {
+    runCacheBytes: number;
+    runCacheEntries: number;
+    runDiskCacheBytes: number;
+    runDiskCacheEntries: number;
+    runDiskMappedBytes: number;
+    runDiskMappedEntries: number;
+    runDiskPinnedEntries: number;
+  } {
+    const mem = this.runCache.stats();
+    const disk = this.runDiskCache?.stats();
+    return {
+      runCacheBytes: mem.usedBytes,
+      runCacheEntries: mem.entries,
+      runDiskCacheBytes: disk?.usedBytes ?? 0,
+      runDiskCacheEntries: disk?.entryCount ?? 0,
+      runDiskMappedBytes: disk?.mappedBytes ?? 0,
+      runDiskMappedEntries: disk?.mappedEntryCount ?? 0,
+      runDiskPinnedEntries: disk?.pinnedEntryCount ?? 0,
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -142,6 +251,21 @@ export class IndexManager {
       const streams = Array.from(this.queue);
       this.queue.clear();
       for (const stream of streams) {
+        if (!this.isRoutingConfigured(stream)) {
+          const hadRoutingState = !!this.db.getIndexState(stream) || this.db.listIndexRunsAll(stream).length > 0;
+          if (hadRoutingState) {
+            this.db.deleteIndex(stream);
+            this.onMetadataChanged?.(stream);
+            if (this.publishManifest) {
+              try {
+                await this.publishManifest(stream);
+              } catch {
+                // ignore and retry on next enqueue
+              }
+            }
+          }
+          continue;
+        }
         try {
           const buildRes = await this.maybeBuildRuns(stream);
           if (Result.isError(buildRes)) {
@@ -179,41 +303,43 @@ export class IndexManager {
     if (this.building.has(stream)) return Result.ok(undefined);
     this.building.add(stream);
     try {
-      let state = this.db.getIndexState(stream);
-      if (!state) {
-        const secret = randomBytes(16);
-        this.db.upsertIndexState(stream, secret, 0);
-        state = this.db.getIndexState(stream);
-      }
-      if (!state) return Result.ok(undefined);
-      if (this.metrics) {
-        const lag = Math.max(0, this.db.countUploadedSegments(stream) - state.indexed_through);
-        this.metrics.record("tieredstore.index.lag.segments", lag, "count", undefined, stream);
-      }
-      let indexedThrough = state.indexed_through;
-      for (;;) {
+      return await this.asyncGate.run(async () => {
+        let state = this.db.getIndexState(stream);
+        if (!state) {
+          const secret = randomBytes(16);
+          this.db.upsertIndexState(stream, secret, 0);
+          state = this.db.getIndexState(stream);
+        }
+        if (!state) return Result.ok(undefined);
+        if (this.metrics) {
+          const lag = Math.max(0, this.db.countUploadedSegments(stream) - state.indexed_through);
+          this.metrics.record("tieredstore.index.lag.segments", lag, "count", undefined, stream);
+        }
+        const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const start = indexedThrough;
         const end = start + this.span - 1;
         const segments: SegmentRow[] = [];
-        let ok = true;
         for (let i = start; i <= end; i++) {
           const seg = this.db.getSegmentByIndex(stream, i);
-          if (!seg || !seg.r2_etag) {
-            ok = false;
-            break;
-          }
+          if (!seg || !seg.r2_etag) return Result.ok(undefined);
           segments.push(seg);
         }
-        if (!ok) return Result.ok(undefined);
         const t0 = Date.now();
-        const runRes = await this.buildL0RunResult(stream, start, segments, state.index_secret);
+        const runRes = this.memorySampler
+          ? await this.memorySampler.track(
+              "routing_l0",
+              { stream, start_segment: start, end_segment: end },
+              () => this.buildL0RunResult(stream, start, segments, state.index_secret)
+            )
+          : await this.buildL0RunResult(stream, start, segments, state.index_secret);
         if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
         if (Result.isError(persistRes)) return persistRes;
+        const sizeBytes = persistRes.value;
         this.db.insertIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -221,6 +347,7 @@ export class IndexManager {
           start_segment: run.meta.startSegment,
           end_segment: run.meta.endSegment,
           object_key: run.meta.objectKey,
+          size_bytes: sizeBytes,
           filter_len: run.meta.filterLen,
           record_count: run.meta.recordCount,
         });
@@ -229,9 +356,10 @@ export class IndexManager {
           this.metrics.record("tieredstore.index.runs.built", 1, "count", { level: String(run.meta.level) }, stream);
           this.recordActiveRuns(stream);
         }
-        indexedThrough = end + 1;
-        this.db.updateIndexedThrough(stream, indexedThrough);
-        state.indexed_through = indexedThrough;
+        const nextIndexedThrough = end + 1;
+        this.db.updateIndexedThrough(stream, nextIndexedThrough);
+        state.indexed_through = nextIndexedThrough;
+        this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
             await this.publishManifest(stream);
@@ -239,7 +367,9 @@ export class IndexManager {
             // ignore manifest publish errors; will be retried by uploader/indexer
           }
         }
-      }
+        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.building.delete(stream);
     }
@@ -249,9 +379,13 @@ export class IndexManager {
     if (this.span <= 0) return Result.ok(undefined);
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     if (this.compacting.has(stream)) return Result.ok(undefined);
+    if (this.foregroundActivity?.wasActiveWithin(2000)) {
+      this.queue.add(stream);
+      return Result.ok(undefined);
+    }
     this.compacting.add(stream);
     try {
-      for (;;) {
+      return await this.asyncGate.run(async () => {
         const group = this.findCompactionGroup(stream);
         if (!group) {
           await this.gcRetiredRuns(stream);
@@ -265,6 +399,7 @@ export class IndexManager {
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
         if (Result.isError(persistRes)) return persistRes;
+        const sizeBytes = persistRes.value;
         this.db.insertIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -272,6 +407,7 @@ export class IndexManager {
           start_segment: run.meta.startSegment,
           end_segment: run.meta.endSegment,
           object_key: run.meta.objectKey,
+          size_bytes: sizeBytes,
           filter_len: run.meta.filterLen,
           record_count: run.meta.recordCount,
         });
@@ -288,6 +424,7 @@ export class IndexManager {
           retiredGen,
           nowMs
         );
+        this.onMetadataChanged?.(stream);
         if (this.metrics) {
           this.metrics.record("tieredstore.index.compact.latency", Number(elapsedNs), "ns", { level: String(run.meta.level) }, stream);
           this.metrics.record("tieredstore.index.runs.compacted", 1, "count", { level: String(run.meta.level) }, stream);
@@ -305,7 +442,9 @@ export class IndexManager {
           }
         }
         await this.gcRetiredRuns(stream);
-      }
+        this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.compacting.delete(stream);
     }
@@ -353,18 +492,39 @@ export class IndexManager {
     inputs: IndexRunRow[]
   ): Promise<Result<IndexRun, IndexBuildError>> {
     if (inputs.length === 0) return invalidIndexBuild("compact: missing inputs");
-    const segments = new Map<bigint, Set<number>>();
+    const segments = new Map<bigint, number[]>();
     const addSegment = (fp: bigint, seg: number) => {
-      let set = segments.get(fp);
-      if (!set) {
-        set = new Set<number>();
-        segments.set(fp, set);
+      let list = segments.get(fp);
+      if (!list) {
+        list = [];
+        segments.set(fp, list);
       }
-      set.add(seg);
+      list.push(seg);
+    };
+    const mergeRun = (meta: IndexRunRow, run: IndexRun): void => {
+      if (run.runType === RUN_TYPE_MASK16 && run.masks) {
+        for (let i = 0; i < run.fingerprints.length; i++) {
+          const fp = run.fingerprints[i];
+          const mask = run.masks[i];
+          for (let bit = 0; bit < 16; bit++) {
+            if ((mask & (1 << bit)) === 0) continue;
+            addSegment(fp, meta.start_segment + bit);
+          }
+        }
+        return;
+      }
+      if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
+        for (let i = 0; i < run.fingerprints.length; i++) {
+          const fp = run.fingerprints[i];
+          const postings = run.postings[i];
+          for (const rel of postings) addSegment(fp, meta.start_segment + rel);
+        }
+        return;
+      }
+      throw dsError(`unknown run type ${run.runType}`);
     };
 
     const pending = inputs.slice();
-    const results: Array<{ meta: IndexRunRow; run: IndexRun }> = [];
     const workers = Math.min(this.compactionConcurrency, pending.length);
     let buildError: string | null = null;
     const workerTasks: Promise<void>[] = [];
@@ -385,7 +545,13 @@ export class IndexManager {
               buildError = `missing run ${meta.run_id}`;
               return;
             }
-            results.push({ meta, run });
+            try {
+              mergeRun(meta, run);
+            } catch (e: unknown) {
+              buildError = errorMessage(e);
+              return;
+            }
+            await this.yieldBackgroundWork();
           }
         })()
       );
@@ -393,45 +559,22 @@ export class IndexManager {
     await Promise.all(workerTasks);
     if (buildError) return invalidIndexBuild(buildError);
 
-    for (const res of results) {
-      const run = res.run;
-      const meta = res.meta;
-      if (run.runType === RUN_TYPE_MASK16 && run.masks) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          const mask = run.masks[i];
-          for (let bit = 0; bit < 16; bit++) {
-            if ((mask & (1 << bit)) === 0) continue;
-            addSegment(fp, meta.start_segment + bit);
-          }
-        }
-      } else if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          const postings = run.postings[i];
-          for (const rel of postings) addSegment(fp, meta.start_segment + rel);
-        }
-      } else {
-        return invalidIndexBuild(`unknown run type ${run.runType}`);
-      }
-    }
-
     const startSegment = inputs[0].start_segment;
     const endSegment = inputs[inputs.length - 1].end_segment;
-    const pairs = Array.from(segments.entries())
-      .map(([fp, set]) => {
-        const list = Array.from(set);
-        list.sort((a, b) => a - b);
-        const rel = list.map((seg) => seg - startSegment);
-        return { fp, rel };
-      })
-      .sort((a, b) => (a.fp < b.fp ? -1 : a.fp > b.fp ? 1 : 0));
-
-    const fingerprints: bigint[] = [];
-    const postings: number[][] = [];
-    for (const p of pairs) {
-      fingerprints.push(p.fp);
-      postings.push(p.rel);
+    const fingerprints = Array.from(segments.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const postings: number[][] = new Array(fingerprints.length);
+    for (let i = 0; i < fingerprints.length; i++) {
+      const fp = fingerprints[i]!;
+      const list = segments.get(fp) ?? [];
+      list.sort((a, b) => a - b);
+      const rel: number[] = [];
+      let lastSeg = Number.NaN;
+      for (const seg of list) {
+        if (seg === lastSeg) continue;
+        rel.push(seg - startSegment);
+        lastSeg = seg;
+      }
+      postings[i] = rel;
     }
 
     const fuseRes = buildBinaryFuseResult(fingerprints);
@@ -492,7 +635,6 @@ export class IndexManager {
     const maskByFp = new Map<bigint, number>();
     const pending = segments.slice();
     const concurrency = Math.max(1, Math.min(this.buildConcurrency, pending.length));
-    const results: Array<Map<bigint, number>> = [];
     let buildError: string | null = null;
     const workers: Promise<void>[] = [];
     for (let i = 0; i < concurrency; i++) {
@@ -511,35 +653,35 @@ export class IndexManager {
             const bit = seg.segment_index - startSegment;
             const maskBit = 1 << bit;
             const local = new Map<bigint, number>();
-            for (const blockRes of iterateBlocksResult(segBytes)) {
-              if (Result.isError(blockRes)) {
-                buildError = blockRes.error.message;
+            let processedRecords = 0;
+            for (const recRes of iterateBlockRecordsResult(segBytes)) {
+              if (Result.isError(recRes)) {
+                buildError = recRes.error.message;
                 return;
               }
-              const { decoded } = blockRes.value;
-              for (const rec of decoded.records) {
-                if (rec.routingKey.byteLength === 0) continue;
-                const fp = siphash24(secret, rec.routingKey);
-                const prev = local.get(fp) ?? 0;
-                local.set(fp, prev | maskBit);
+              if (recRes.value.routingKey.byteLength === 0) continue;
+              const fp = siphash24(secret, recRes.value.routingKey);
+              const prev = local.get(fp) ?? 0;
+              local.set(fp, prev | maskBit);
+              processedRecords += 1;
+              if (processedRecords % 256 === 0) {
+                await this.yieldBackgroundWork();
               }
             }
-            results.push(local);
+            for (const [fp, mask] of local.entries()) {
+              const prev = maskByFp.get(fp) ?? 0;
+              maskByFp.set(fp, prev | mask);
+            }
+            local.clear();
+            await this.yieldBackgroundWork();
           }
         })()
       );
     }
     await Promise.all(workers);
     if (buildError) return invalidIndexBuild(buildError);
-    for (const local of results) {
-      for (const [fp, mask] of local.entries()) {
-        const prev = maskByFp.get(fp) ?? 0;
-        maskByFp.set(fp, prev | mask);
-      }
-    }
-    const entries = Array.from(maskByFp.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    const fingerprints = entries.map(([fp]) => fp);
-    const masks = entries.map(([, mask]) => mask);
+    const fingerprints = Array.from(maskByFp.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const masks = fingerprints.map((fp) => maskByFp.get(fp) ?? 0);
     const fuseRes = buildBinaryFuseResult(fingerprints);
     if (Result.isError(fuseRes)) return invalidIndexBuild(fuseRes.error.message);
     const { filter, bytes } = fuseRes.value;
@@ -566,7 +708,17 @@ export class IndexManager {
     return Result.ok(run);
   }
 
-  private async persistRunResult(run: IndexRun, stream?: string): Promise<Result<void, IndexBuildError>> {
+  private isRoutingConfigured(stream: string): boolean {
+    const streamRow = this.db.getStream(stream);
+    const contentType = streamRow?.content_type.split(";")[0]?.trim().toLowerCase() ?? null;
+    if (contentType != null && contentType !== "application/json") return true;
+    if (!this.registry) return false;
+    const regRes = this.registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return false;
+    return !!regRes.value.routingKey;
+  }
+
+  private async persistRunResult(run: IndexRun, stream?: string): Promise<Result<number, IndexBuildError>> {
     const payloadRes = encodeIndexRunResult(run);
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
     const payload = payloadRes.value;
@@ -587,8 +739,8 @@ export class IndexManager {
       return invalidIndexBuild(String(e?.message ?? e));
     }
     this.runDiskCache?.put(run.meta.objectKey, payload);
-    this.runCache.put(run.meta.objectKey, run);
-    return Result.ok(undefined);
+    this.runCache.put(run.meta.objectKey, run, payload.byteLength);
+    return Result.ok(payload.byteLength);
   }
 
   private async loadRunResult(meta: IndexRunRow): Promise<Result<IndexRun | null, IndexBuildError>> {
@@ -638,38 +790,16 @@ export class IndexManager {
     run.meta.endSegment = meta.end_segment;
     run.meta.filterLen = meta.filter_len;
     run.meta.recordCount = meta.record_count;
-    this.runCache.put(meta.object_key, run);
+    this.runCache.put(meta.object_key, run, meta.size_bytes);
     return Result.ok(run);
   }
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, IndexBuildError>> {
-    if (seg.local_path && seg.local_path.length > 0) {
-      try {
-        return Result.ok(new Uint8Array(readFileSync(seg.local_path)));
-      } catch {
-        // fall through
-      }
-    }
-    const diskCache = this.segmentCache;
-    const key = segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index);
-    if (diskCache && diskCache.has(key)) {
-      diskCache.recordHit();
-      diskCache.touch(key);
-      try {
-        return Result.ok(new Uint8Array(readFileSync(diskCache.getPath(key))));
-      } catch {
-        diskCache.remove(key);
-      }
-    }
-    if (diskCache) diskCache.recordMiss();
     try {
-      const data = await retry(
-        async () => {
-          const objectBytes = await this.os.get(key);
-          if (!objectBytes) throw dsError(`missing segment ${seg.segment_id}`);
-          if (diskCache) diskCache.put(key, objectBytes);
-          return objectBytes;
-        },
+      const data = await loadSegmentBytesCached(
+        this.os,
+        seg,
+        this.segmentCache,
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,

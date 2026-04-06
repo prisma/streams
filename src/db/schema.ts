@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 24;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS streams (
   updated_at_ms INTEGER NOT NULL,
 
   content_type TEXT NOT NULL,
+  profile TEXT NULL,
   stream_seq TEXT NULL,
   closed INTEGER NOT NULL DEFAULT 0,
   closed_producer_id TEXT NULL,
@@ -41,6 +42,11 @@ CREATE TABLE IF NOT EXISTS streams (
 
   pending_rows INTEGER NOT NULL,
   pending_bytes INTEGER NOT NULL,
+
+  -- Logical payload bytes ever appended to this stream and still part of its
+  -- visible history on this node. This is the constant-time source for
+  -- management endpoints such as /_details.
+  logical_size_bytes INTEGER NOT NULL DEFAULT 0,
 
   -- Logical size of retained rows in the wal table for this stream (payload-only bytes).
   -- This is explicitly tracked because SQLite file size is high-water and does not shrink
@@ -73,7 +79,6 @@ CREATE TABLE IF NOT EXISTS wal (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
-CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
 
 CREATE TABLE IF NOT EXISTS segments (
@@ -84,6 +89,7 @@ CREATE TABLE IF NOT EXISTS segments (
   end_offset INTEGER NOT NULL,
   block_count INTEGER NOT NULL,
   last_append_ms INTEGER NOT NULL,
+  payload_bytes INTEGER NOT NULL DEFAULT 0,
   size_bytes INTEGER NOT NULL,
   local_path TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL,
@@ -108,12 +114,20 @@ CREATE TABLE IF NOT EXISTS manifests (
   generation INTEGER NOT NULL,
   uploaded_generation INTEGER NOT NULL,
   last_uploaded_at_ms INTEGER NULL,
-  last_uploaded_etag TEXT NULL
+  last_uploaded_etag TEXT NULL,
+  last_uploaded_size_bytes INTEGER NULL
 );
 
 CREATE TABLE IF NOT EXISTS schemas (
   stream TEXT PRIMARY KEY,
   schema_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  uploaded_size_bytes INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS stream_profiles (
+  stream TEXT PRIMARY KEY,
+  profile_json TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 
@@ -126,9 +140,9 @@ CREATE TABLE IF NOT EXISTS producer_state (
   PRIMARY KEY (stream, producer_id)
 );
 
-CREATE TABLE IF NOT EXISTS stream_interpreters (
+CREATE TABLE IF NOT EXISTS stream_touch_state (
   stream TEXT PRIMARY KEY,
-  interpreted_through INTEGER NOT NULL,
+  processed_through INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 
@@ -170,6 +184,7 @@ CREATE TABLE IF NOT EXISTS index_runs (
   start_segment INTEGER NOT NULL,
   end_segment INTEGER NOT NULL,
   object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
   filter_len INTEGER NOT NULL,
   record_count INTEGER NOT NULL,
   retired_gen INTEGER NULL,
@@ -177,6 +192,107 @@ CREATE TABLE IF NOT EXISTS index_runs (
 );
 
 CREATE INDEX IF NOT EXISTS index_runs_stream_idx ON index_runs(stream, level, start_segment);
+`;
+
+const CREATE_SECONDARY_INDEX_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS secondary_index_state (
+  stream TEXT NOT NULL,
+  index_name TEXT NOT NULL,
+  index_secret BLOB NOT NULL,
+  config_hash TEXT NOT NULL,
+  indexed_through INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, index_name)
+);
+
+CREATE TABLE IF NOT EXISTS secondary_index_runs (
+  run_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  index_name TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  start_segment INTEGER NOT NULL,
+  end_segment INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  filter_len INTEGER NOT NULL,
+  record_count INTEGER NOT NULL,
+  retired_gen INTEGER NULL,
+  retired_at_ms INTEGER NULL
+);
+
+CREATE INDEX IF NOT EXISTS secondary_index_runs_stream_idx
+  ON secondary_index_runs(stream, index_name, level, start_segment);
+`;
+
+const CREATE_LEXICON_INDEX_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS lexicon_index_state (
+  stream TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_name TEXT NOT NULL,
+  indexed_through INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, source_kind, source_name)
+);
+
+CREATE TABLE IF NOT EXISTS lexicon_index_runs (
+  run_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_name TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  start_segment INTEGER NOT NULL,
+  end_segment INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  record_count INTEGER NOT NULL,
+  retired_gen INTEGER NULL,
+  retired_at_ms INTEGER NULL
+);
+
+CREATE INDEX IF NOT EXISTS lexicon_index_runs_stream_idx
+  ON lexicon_index_runs(stream, source_kind, source_name, level, start_segment);
+`;
+
+const CREATE_SEARCH_COMPANION_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS search_companion_plans (
+  stream TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  plan_hash TEXT NOT NULL,
+  plan_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS search_segment_companions (
+  stream TEXT NOT NULL,
+  segment_index INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  plan_generation INTEGER NOT NULL,
+  sections_json TEXT NOT NULL,
+  section_sizes_json TEXT NOT NULL DEFAULT '{}',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  primary_timestamp_min_ms INTEGER NULL,
+  primary_timestamp_max_ms INTEGER NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, segment_index)
+);
+
+CREATE INDEX IF NOT EXISTS search_segment_companions_stream_plan_idx
+  ON search_segment_companions(stream, plan_generation, segment_index);
+`;
+
+const CREATE_OBJECTSTORE_REQUEST_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS objectstore_request_counts (
+  stream_hash TEXT NOT NULL,
+  artifact TEXT NOT NULL,
+  op TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  bytes INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream_hash, artifact, op)
+);
+
+CREATE INDEX IF NOT EXISTS objectstore_request_counts_stream_hash_idx
+  ON objectstore_request_counts(stream_hash, updated_at_ms);
 `;
 
 const CREATE_TABLES_V4_SUFFIX_SQL = (suffix: string): string => `
@@ -201,6 +317,7 @@ CREATE TABLE streams_${suffix} (
 
   pending_rows INTEGER NOT NULL,
   pending_bytes INTEGER NOT NULL,
+  logical_size_bytes INTEGER NOT NULL DEFAULT 0,
 
   last_append_ms INTEGER NOT NULL,
   last_segment_cut_ms INTEGER NOT NULL,
@@ -263,7 +380,6 @@ CREATE TABLE producer_state_${suffix} (
 
 const CREATE_INDEXES_V4_SQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
-CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
 
 CREATE INDEX IF NOT EXISTS streams_pending_bytes_idx ON streams(pending_bytes);
@@ -297,6 +413,10 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
   if (version0 == null) {
     db.exec(CREATE_TABLES_V4_SQL);
     db.exec(CREATE_INDEX_TABLES_SQL);
+    db.exec(CREATE_SECONDARY_INDEX_TABLES_SQL);
+    db.exec(CREATE_LEXICON_INDEX_TABLES_SQL);
+    db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
+    db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
     db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
     return;
   }
@@ -325,6 +445,32 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV9ToV10(db);
     } else if (version === 10) {
       migrateV10ToV11(db);
+    } else if (version === 11) {
+      migrateV11ToV12(db);
+    } else if (version === 12) {
+      migrateV12ToV13(db);
+    } else if (version === 13) {
+      migrateV13ToV14(db);
+    } else if (version === 14) {
+      migrateV14ToV15(db);
+    } else if (version === 15) {
+      migrateV15ToV16(db);
+    } else if (version === 16) {
+      migrateV16ToV17(db);
+    } else if (version === 17) {
+      migrateV17ToV18(db);
+    } else if (version === 18) {
+      migrateV18ToV19(db);
+    } else if (version === 19) {
+      migrateV19ToV20(db);
+    } else if (version === 20) {
+      migrateV20ToV21(db);
+    } else if (version === 21) {
+      migrateV21ToV22(db);
+    } else if (version === 22) {
+      migrateV22ToV23(db);
+    } else if (version === 23) {
+      migrateV23ToV24(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -541,9 +687,9 @@ function migrateV5ToV6(db: SqliteDatabase): void {
 function migrateV6ToV7(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(`
-      CREATE TABLE IF NOT EXISTS stream_interpreters (
+      CREATE TABLE IF NOT EXISTS stream_touch_state (
         stream TEXT PRIMARY KEY,
-        interpreted_through INTEGER NOT NULL,
+        processed_through INTEGER NOT NULL,
         updated_at_ms INTEGER NOT NULL
       );
     `);
@@ -619,7 +765,161 @@ function migrateV9ToV10(db: SqliteDatabase): void {
 function migrateV10ToV11(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(`DROP INDEX IF EXISTS wal_touch_stream_rk_offset_idx;`);
+    db.exec(`UPDATE schema_version SET version = 11;`);
+  });
+  tx();
+}
+
+function migrateV11ToV12(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN profile TEXT NULL;`);
+    db.exec(`UPDATE schema_version SET version = 12;`);
+  });
+  tx();
+}
+
+function migrateV12ToV13(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_profiles (
+        stream TEXT PRIMARY KEY,
+        profile_json TEXT NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+    db.exec(`UPDATE schema_version SET version = 13;`);
+  });
+  tx();
+}
+
+function migrateV13ToV14(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stream_touch_state (
+        stream TEXT PRIMARY KEY,
+        processed_through INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+
+    const hasLegacy = !!db
+      .query(`SELECT name FROM sqlite_master WHERE type='table' AND name='stream_interpreters' LIMIT 1;`)
+      .get();
+    if (hasLegacy) {
+      db.exec(`
+        INSERT OR REPLACE INTO stream_touch_state(stream, processed_through, updated_at_ms)
+        SELECT stream, interpreted_through, updated_at_ms
+        FROM stream_interpreters;
+      `);
+      db.exec(`DROP TABLE stream_interpreters;`);
+    }
+
     db.exec(`UPDATE schema_version SET version = ${SCHEMA_VERSION};`);
+  });
+  tx();
+}
+
+function migrateV14ToV15(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_SECONDARY_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 15;`);
+  });
+  tx();
+}
+
+function migrateV15ToV16(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`UPDATE schema_version SET version = 16;`);
+  });
+  tx();
+}
+
+function migrateV16ToV17(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE streams ADD COLUMN logical_size_bytes INTEGER NOT NULL DEFAULT 0;`);
+
+    // Streams that still live entirely in the retained WAL can be backfilled
+    // cheaply here. Streams with published segments are repaired asynchronously
+    // at runtime from segment objects if this value is still missing.
+    db.exec(`
+      UPDATE streams
+      SET logical_size_bytes = wal_bytes
+      WHERE next_offset = wal_rows;
+    `);
+
+    db.exec(`UPDATE schema_version SET version = 17;`);
+  });
+  tx();
+}
+
+function migrateV17ToV18(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 18;`);
+  });
+  tx();
+}
+
+function migrateV18ToV19(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE secondary_index_state ADD COLUMN config_hash TEXT NOT NULL DEFAULT '';`);
+    db.exec(`DROP INDEX IF EXISTS search_family_segments_stream_idx;`);
+    db.exec(`DROP TABLE IF EXISTS search_family_segments;`);
+    db.exec(`DROP TABLE IF EXISTS search_family_state;`);
+    db.exec(`UPDATE schema_version SET version = 19;`);
+  });
+  tx();
+}
+
+function migrateV19ToV20(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE manifests ADD COLUMN last_uploaded_size_bytes INTEGER NULL;`);
+    db.exec(`ALTER TABLE schemas ADD COLUMN uploaded_size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE index_runs ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE secondary_index_runs ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN section_sizes_json TEXT NOT NULL DEFAULT '{}';`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 20;`);
+  });
+  tx();
+}
+
+function migrateV20ToV21(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_min_ms INTEGER NULL;`);
+    db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_max_ms INTEGER NULL;`);
+    db.exec(`UPDATE schema_version SET version = 21;`);
+  });
+  tx();
+}
+
+function migrateV21ToV22(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_LEXICON_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 22;`);
+  });
+  tx();
+}
+
+function migrateV22ToV23(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`DROP INDEX IF EXISTS wal_stream_offset_idx;`);
+    db.exec(`UPDATE schema_version SET version = 23;`);
+  });
+  tx();
+}
+
+function migrateV23ToV24(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    const hasPayloadBytes = db
+      .query(`PRAGMA table_info(segments);`)
+      .all()
+      .some((row: any) => String(row.name) === "payload_bytes");
+    if (!hasPayloadBytes) {
+      db.exec(`ALTER TABLE segments ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0;`);
+    }
+    db.exec(`UPDATE schema_version SET version = 24;`);
   });
   tx();
 }

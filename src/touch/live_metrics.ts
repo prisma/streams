@@ -1,5 +1,7 @@
 import type { IngestQueue } from "../ingest";
 import type { SqliteDurableStore } from "../db/db";
+import type { StreamProfileStore } from "../profiles";
+import { resolveEnabledTouchCapability } from "../profiles";
 import { STREAM_FLAG_TOUCH } from "../db/db";
 import { encodeOffset } from "../offset";
 import type { TouchConfig } from "./spec";
@@ -126,7 +128,7 @@ type StreamCounters = {
     latencySumMs: number;
     latencyHist: LatencyHistogram;
   };
-  interpreter: {
+  processor: {
     eventsIn: number;
     changesOut: number;
     errors: number;
@@ -134,12 +136,16 @@ type StreamCounters = {
     scannedBatches: number;
     scannedButEmitted0Batches: number;
     noInterestFastForwardBatches: number;
-    interpretedThroughDelta: number;
+    processedThroughDelta: number;
     touchesEmittedDelta: number;
     commitLagSamples: number;
     commitLagMsSum: number;
     commitLagHist: LatencyHistogram;
   };
+};
+
+export type LiveMetricsMemoryStats = {
+  counterStreams: number;
 };
 
 function defaultCounters(touchCfg: TouchConfig): StreamCounters {
@@ -179,7 +185,7 @@ function defaultCounters(touchCfg: TouchConfig): StreamCounters {
     },
     templates: { activated: 0, retired: 0, evicted: 0, activationDenied: 0 },
     wait: { calls: 0, keysWatchedTotal: 0, touched: 0, timeout: 0, stale: 0, latencySumMs: 0, latencyHist: makeLatencyHistogram() },
-    interpreter: {
+    processor: {
       eventsIn: 0,
       changesOut: 0,
       errors: 0,
@@ -187,7 +193,7 @@ function defaultCounters(touchCfg: TouchConfig): StreamCounters {
       scannedBatches: 0,
       scannedButEmitted0Batches: 0,
       noInterestFastForwardBatches: 0,
-      interpretedThroughDelta: 0,
+      processedThroughDelta: 0,
       touchesEmittedDelta: 0,
       commitLagSamples: 0,
       commitLagMsSum: 0,
@@ -199,6 +205,7 @@ function defaultCounters(touchCfg: TouchConfig): StreamCounters {
 export class LiveMetricsV2 {
   private readonly db: SqliteDurableStore;
   private readonly ingest: IngestQueue;
+  private readonly profiles: StreamProfileStore;
   private readonly metricsStream: string;
   private readonly enabled: boolean;
   private readonly intervalMs: number;
@@ -206,6 +213,10 @@ export class LiveMetricsV2 {
   private readonly snapshotChunkSize: number;
   private readonly retentionMs: number;
   private readonly getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+  private readonly onAppended?: (args: {
+    lastOffset: bigint;
+    stream: string;
+  }) => void;
   private timer: any | null = null;
   private snapshotTimer: any | null = null;
   private retentionTimer: any | null = null;
@@ -224,6 +235,7 @@ export class LiveMetricsV2 {
   constructor(
     db: SqliteDurableStore,
     ingest: IngestQueue,
+    profiles: StreamProfileStore,
     opts?: {
       enabled?: boolean;
       stream?: string;
@@ -232,10 +244,12 @@ export class LiveMetricsV2 {
       snapshotChunkSize?: number;
       retentionMs?: number;
       getTouchJournal?: (stream: string) => { meta: TouchJournalMeta; interval: TouchJournalIntervalStats } | null;
+      onAppended?: (args: { lastOffset: bigint; stream: string }) => void;
     }
   ) {
     this.db = db;
     this.ingest = ingest;
+    this.profiles = profiles;
     this.enabled = opts?.enabled !== false;
     this.metricsStream = opts?.stream ?? "live.metrics";
     this.intervalMs = opts?.intervalMs ?? 1000;
@@ -243,6 +257,7 @@ export class LiveMetricsV2 {
     this.snapshotChunkSize = opts?.snapshotChunkSize ?? 200;
     this.retentionMs = opts?.retentionMs ?? 7 * 24 * 60 * 60 * 1000;
     this.getTouchJournal = opts?.getTouchJournal;
+    this.onAppended = opts?.onAppended;
   }
 
   start(): void {
@@ -329,12 +344,16 @@ export class LiveMetricsV2 {
     return c;
   }
 
-  recordInterpreterError(stream: string, touchCfg: TouchConfig): void {
-    const c = this.get(stream, touchCfg);
-    c.interpreter.errors += 1;
+  getMemoryStats(): LiveMetricsMemoryStats {
+    return { counterStreams: this.counters.size };
   }
 
-  recordInterpreterBatch(args: {
+  recordProcessorError(stream: string, touchCfg: TouchConfig): void {
+    const c = this.get(stream, touchCfg);
+    c.processor.errors += 1;
+  }
+
+  recordProcessorBatch(args: {
     stream: string;
     touchCfg: TouchConfig;
     rowsRead: number;
@@ -361,7 +380,7 @@ export class LiveMetricsV2 {
     fineTouchesSuppressedDueToBudget?: boolean;
     scannedButEmitted0?: boolean;
     noInterestFastForward?: boolean;
-    interpretedThroughDelta?: number;
+    processedThroughDelta?: number;
     touchesEmittedDelta?: number;
   }): void {
     const c = this.get(args.stream, args.touchCfg);
@@ -377,18 +396,18 @@ export class LiveMetricsV2 {
     c.touch.fineWaitersActive = Math.max(c.touch.fineWaitersActive, Math.max(0, Math.floor(args.fineWaitersActive ?? 0)));
     c.touch.coarseWaitersActive = Math.max(c.touch.coarseWaitersActive, Math.max(0, Math.floor(args.coarseWaitersActive ?? 0)));
     c.touch.broadFineWaitersActive = Math.max(c.touch.broadFineWaitersActive, Math.max(0, Math.floor(args.broadFineWaitersActive ?? 0)));
-    c.interpreter.eventsIn += Math.max(0, args.rowsRead);
-    c.interpreter.changesOut += Math.max(0, args.changes);
-    c.interpreter.lagSourceOffsets = Math.max(c.interpreter.lagSourceOffsets, Math.max(0, args.lagSourceOffsets));
-    c.interpreter.scannedBatches += 1;
-    if (args.scannedButEmitted0) c.interpreter.scannedButEmitted0Batches += 1;
-    if (args.noInterestFastForward) c.interpreter.noInterestFastForwardBatches += 1;
-    c.interpreter.interpretedThroughDelta += Math.max(0, Math.floor(args.interpretedThroughDelta ?? 0));
-    c.interpreter.touchesEmittedDelta += Math.max(0, Math.floor(args.touchesEmittedDelta ?? 0));
+    c.processor.eventsIn += Math.max(0, args.rowsRead);
+    c.processor.changesOut += Math.max(0, args.changes);
+    c.processor.lagSourceOffsets = Math.max(c.processor.lagSourceOffsets, Math.max(0, args.lagSourceOffsets));
+    c.processor.scannedBatches += 1;
+    if (args.scannedButEmitted0) c.processor.scannedButEmitted0Batches += 1;
+    if (args.noInterestFastForward) c.processor.noInterestFastForwardBatches += 1;
+    c.processor.processedThroughDelta += Math.max(0, Math.floor(args.processedThroughDelta ?? 0));
+    c.processor.touchesEmittedDelta += Math.max(0, Math.floor(args.touchesEmittedDelta ?? 0));
     if (args.commitLagMs != null && Number.isFinite(args.commitLagMs) && args.commitLagMs >= 0) {
-      c.interpreter.commitLagSamples += 1;
-      c.interpreter.commitLagMsSum += args.commitLagMs;
-      c.interpreter.commitLagHist.record(args.commitLagMs);
+      c.processor.commitLagSamples += 1;
+      c.processor.commitLagMsSum += args.commitLagMs;
+      c.processor.commitLagHist.record(args.commitLagMs);
     }
     c.touch.fineTouchesDroppedDueToBudget += Math.max(0, args.fineTouchesDroppedDueToBudget ?? 0);
     c.touch.fineTouchesSkippedColdTemplate += Math.max(0, args.fineTouchesSkippedColdTemplate ?? 0);
@@ -458,12 +477,18 @@ export class LiveMetricsV2 {
     }
 
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(Date.now()),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }
@@ -483,7 +508,7 @@ export class LiveMetricsV2 {
       return v > max ? Number.MAX_SAFE_INTEGER : Number(v);
     };
 
-    const states = this.db.listStreamInterpreters();
+    const states = this.db.listStreamTouchStates();
     if (states.length === 0) return;
 
     const rows: Array<{ routingKey: Uint8Array | null; contentType: string; payload: Uint8Array }> = [];
@@ -501,16 +526,9 @@ export class LiveMetricsV2 {
       if (!regRow) continue;
 
       const touchCfg = ((): TouchConfig | null => {
-        try {
-          const row = this.db.getSchemaRegistry(stream);
-          if (!row) return null;
-          const raw = JSON.parse(row.registry_json);
-          const cfg = raw?.interpreter?.touch;
-          if (!cfg || !cfg.enabled) return null;
-          return cfg as TouchConfig;
-        } catch {
-          return null;
-        }
+        const profileRes = this.profiles.getProfileResult(stream, regRow);
+        if (Result.isError(profileRes)) return null;
+        return resolveEnabledTouchCapability(profileRes.value)?.touchCfg ?? null;
       })();
       if (!touchCfg) continue;
 
@@ -518,9 +536,9 @@ export class LiveMetricsV2 {
       const journal = this.getTouchJournal?.(stream) ?? null;
       const waitActive = journal?.meta.activeWaiters ?? 0;
       const tailSeq = regRow.next_offset > 0n ? regRow.next_offset - 1n : -1n;
-      const interpretedThrough = st.interpreted_through;
-      const gcThrough = interpretedThrough < regRow.uploaded_through ? interpretedThrough : regRow.uploaded_through;
-      const backlog = tailSeq >= interpretedThrough ? tailSeq - interpretedThrough : 0n;
+      const processedThrough = st.processed_through;
+      const gcThrough = processedThrough < regRow.uploaded_through ? processedThrough : regRow.uploaded_through;
+      const backlog = tailSeq >= processedThrough ? tailSeq - processedThrough : 0n;
       const backlogNum = backlog > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(backlog);
       let walOldestOffset: string | null = null;
       try {
@@ -603,27 +621,27 @@ export class LiveMetricsV2 {
           notifyWakeMsMax: journal?.interval.notifyWakeMsMax ?? 0,
           timeoutHeapSize: journal?.interval.heapSize ?? 0,
         },
-        interpreter: {
-          eventsIn: c.interpreter.eventsIn,
-          changesOut: c.interpreter.changesOut,
-          errors: c.interpreter.errors,
-          lagSourceOffsets: c.interpreter.lagSourceOffsets,
-          scannedBatches: c.interpreter.scannedBatches,
-          scannedButEmitted0Batches: c.interpreter.scannedButEmitted0Batches,
-          noInterestFastForwardBatches: c.interpreter.noInterestFastForwardBatches,
-          interpretedThroughDelta: c.interpreter.interpretedThroughDelta,
-          touchesEmittedDelta: c.interpreter.touchesEmittedDelta,
-          commitLagMsAvg: c.interpreter.commitLagSamples > 0 ? c.interpreter.commitLagMsSum / c.interpreter.commitLagSamples : 0,
-          commitLagMsP50: c.interpreter.commitLagHist.p50(),
-          commitLagMsP95: c.interpreter.commitLagHist.p95(),
-          commitLagMsP99: c.interpreter.commitLagHist.p99(),
+        processor: {
+          eventsIn: c.processor.eventsIn,
+          changesOut: c.processor.changesOut,
+          errors: c.processor.errors,
+          lagSourceOffsets: c.processor.lagSourceOffsets,
+          scannedBatches: c.processor.scannedBatches,
+          scannedButEmitted0Batches: c.processor.scannedButEmitted0Batches,
+          noInterestFastForwardBatches: c.processor.noInterestFastForwardBatches,
+          processedThroughDelta: c.processor.processedThroughDelta,
+          touchesEmittedDelta: c.processor.touchesEmittedDelta,
+          commitLagMsAvg: c.processor.commitLagSamples > 0 ? c.processor.commitLagMsSum / c.processor.commitLagSamples : 0,
+          commitLagMsP50: c.processor.commitLagHist.p50(),
+          commitLagMsP95: c.processor.commitLagHist.p95(),
+          commitLagMsP99: c.processor.commitLagHist.p99(),
         },
         base: {
           tailOffset: encodeOffset(regRow.epoch, tailSeq),
           nextOffset: encodeOffset(regRow.epoch, regRow.next_offset),
           sealedThrough: encodeOffset(regRow.epoch, regRow.sealed_through),
           uploadedThrough: encodeOffset(regRow.epoch, regRow.uploaded_through),
-          interpretedThrough: encodeOffset(regRow.epoch, interpretedThrough),
+          processedThrough: encodeOffset(regRow.epoch, processedThrough),
           gcThrough: encodeOffset(regRow.epoch, gcThrough),
           walOldestOffset,
           walRetainedRows: clampBigInt(regRow.wal_rows),
@@ -683,18 +701,18 @@ export class LiveMetricsV2 {
       c.wait.stale = 0;
       c.wait.latencySumMs = 0;
       c.wait.latencyHist.reset();
-      c.interpreter.eventsIn = 0;
-      c.interpreter.changesOut = 0;
-      c.interpreter.errors = 0;
-      c.interpreter.lagSourceOffsets = 0;
-      c.interpreter.scannedBatches = 0;
-      c.interpreter.scannedButEmitted0Batches = 0;
-      c.interpreter.noInterestFastForwardBatches = 0;
-      c.interpreter.interpretedThroughDelta = 0;
-      c.interpreter.touchesEmittedDelta = 0;
-      c.interpreter.commitLagSamples = 0;
-      c.interpreter.commitLagMsSum = 0;
-      c.interpreter.commitLagHist.reset();
+      c.processor.eventsIn = 0;
+      c.processor.changesOut = 0;
+      c.processor.errors = 0;
+      c.processor.lagSourceOffsets = 0;
+      c.processor.scannedBatches = 0;
+      c.processor.scannedButEmitted0Batches = 0;
+      c.processor.noInterestFastForwardBatches = 0;
+      c.processor.processedThroughDelta = 0;
+      c.processor.touchesEmittedDelta = 0;
+      c.processor.commitLagSamples = 0;
+      c.processor.commitLagMsSum = 0;
+      c.processor.commitLagHist.reset();
       c.gc.baseWalGcCalls = 0;
       c.gc.baseWalGcDeletedRows = 0;
       c.gc.baseWalGcDeletedBytes = 0;
@@ -704,12 +722,18 @@ export class LiveMetricsV2 {
 
     if (rows.length === 0) return;
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(nowMs),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }
@@ -718,7 +742,7 @@ export class LiveMetricsV2 {
   private async emitSnapshots(): Promise<void> {
     if (!this.enabled) return;
     const nowMs = Date.now();
-    const streams = this.db.listStreamInterpreters().map((r) => r.stream);
+    const streams = this.db.listStreamTouchStates().map((r) => r.stream);
     if (streams.length === 0) return;
 
     const encoder = new TextEncoder();
@@ -814,12 +838,18 @@ export class LiveMetricsV2 {
 
     if (rows.length === 0) return;
     try {
-      await this.ingest.appendInternal({
+      const appendRes = await this.ingest.appendInternal({
         stream: this.metricsStream,
         baseAppendMs: BigInt(nowMs),
         rows,
         contentType: "application/json",
       });
+      if (!Result.isError(appendRes)) {
+        this.onAppended?.({
+          lastOffset: appendRes.value.lastOffset,
+          stream: this.metricsStream,
+        });
+      }
     } catch {
       // best-effort
     }

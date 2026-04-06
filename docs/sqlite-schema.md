@@ -68,6 +68,7 @@ Segmenting hints:
 Additional columns present in the current implementation:
 - Stream protocol/config state:
   - `content_type`
+  - `profile`
   - `stream_seq`
   - `closed`
   - `closed_producer_id`
@@ -78,6 +79,7 @@ Additional columns present in the current implementation:
   - `expires_at_ms`
   - `stream_flags`
 - WAL accounting:
+  - `logical_size_bytes`
   - `wal_rows`
   - `wal_bytes`
 
@@ -90,7 +92,12 @@ Indexes:
 Invariants:
 - `0 <= uploaded_through <= sealed_through <= next_offset`
 - `0 <= uploaded_segment_count <= segment_count` (see `stream_segment_meta`)
+- `profile IS NULL` means the stream has no explicit declaration and is treated
+  as a `generic` stream
 - `pending_bytes` and `pending_rows` reflect WAL rows with `offset >= sealed_through` (or `>= uploaded_through`, depending on design); pick one and enforce consistently.
+- `logical_size_bytes` is the logical payload-byte size exposed by `/_details`;
+  it is updated on append, restored from manifests for published history, and
+  can be repaired asynchronously after bootstrap if missing.
 - `segment_in_progress` must be 0/1.
 
 ---
@@ -113,7 +120,6 @@ Optional columns (only if needed by protocol/indexing):
 
 Indexes:
 - `CREATE UNIQUE INDEX wal_stream_offset_uniq ON wal(stream, offset);`
-- `CREATE INDEX wal_stream_offset_idx ON wal(stream, offset);`
 - Optional for time-based ops:
   - `CREATE INDEX wal_ts_idx ON wal(ts_ms);`
 
@@ -177,6 +183,7 @@ Columns:
 - `uploaded_generation INTEGER NOT NULL`
 - `last_uploaded_at_ms INTEGER NULL`
 - `last_uploaded_etag TEXT NULL`
+- `last_uploaded_size_bytes INTEGER NULL`
 
 Invariants:
 - `uploaded_generation <= generation`
@@ -208,6 +215,7 @@ Columns:
 - `start_segment INTEGER NOT NULL`
 - `end_segment INTEGER NOT NULL`
 - `object_key TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
 - `filter_len INTEGER NOT NULL`
 - `record_count INTEGER NOT NULL`
 - `retired_gen INTEGER NULL`
@@ -218,15 +226,214 @@ Indexes:
 
 ---
 
-### 2.9 `schemas`
+### 2.9 `secondary_index_state`
+Local cache of the internal exact-match secondary index family.
+**Rebuildable from manifest**.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `index_name TEXT NOT NULL`
+- `index_secret BLOB NOT NULL`
+- `indexed_through INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream, index_name)`
+
+---
+
+### 2.10 `secondary_index_runs`
+Local catalog of the internal exact-match secondary index family runs.
+**Rebuildable from manifest**.
+
+Columns:
+- `run_id TEXT PRIMARY KEY`
+- `stream TEXT NOT NULL`
+- `index_name TEXT NOT NULL`
+- `level INTEGER NOT NULL`
+- `start_segment INTEGER NOT NULL`
+- `end_segment INTEGER NOT NULL`
+- `object_key TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
+- `filter_len INTEGER NOT NULL`
+- `record_count INTEGER NOT NULL`
+- `retired_gen INTEGER NULL`
+- `retired_at_ms INTEGER NULL`
+
+Indexes:
+- `CREATE INDEX secondary_index_runs_stream_idx ON secondary_index_runs(stream, index_name, level, start_segment);`
+
+---
+
+### 2.11 `schemas`
 Current implementation table (see `src/db/schema.ts`):
 
 - `stream TEXT PRIMARY KEY`
 - `schema_json TEXT NOT NULL`
 - `updated_at_ms INTEGER NOT NULL`
+- `uploaded_size_bytes INTEGER NOT NULL`
 
 `schema_json` stores the serialized per-stream schema registry JSON (schema versions,
-lenses, routingKey config, interpreter config).
+lenses, routingKey config, and schema-owned `search` declarations).
+
+---
+
+### 2.12 `search_companion_plans`
+Per-stream desired bundled companion plan. **Rebuildable from manifest**.
+
+Columns:
+- `stream TEXT PRIMARY KEY`
+- `generation INTEGER NOT NULL`
+- `plan_hash TEXT NOT NULL`
+- `plan_json TEXT NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- this is the durable local record of which bundled companion generation the
+  stream currently wants
+- `plan_json` stores the enabled families plus plan-relative field, rollup,
+  interval, and measure ordinals used by the current `PSCIX2` companion format
+- schema or profile changes that affect bundled sections increment the desired
+  generation
+
+---
+
+### 2.13 `search_segment_companions`
+Local catalog of current uploaded bundled `.cix` companion objects.
+**Rebuildable from manifest**.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `segment_index INTEGER NOT NULL`
+- `object_key TEXT NOT NULL`
+- `plan_generation INTEGER NOT NULL`
+- `sections_json TEXT NOT NULL`
+- `section_sizes_json TEXT NOT NULL`
+- `size_bytes INTEGER NOT NULL`
+- `primary_timestamp_min_ms INTEGER NULL`
+- `primary_timestamp_max_ms INTEGER NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream, segment_index)`
+
+Indexes:
+- `CREATE INDEX search_segment_companions_stream_plan_idx ON search_segment_companions(stream, plan_generation, segment_index);`
+
+Notes:
+- this is a local object catalog, not a row-level search projection
+- each row points at one immutable bundled `PSCIX2` companion object
+- `sections_json` records which bundled sections are present, such as `col`,
+  `fts`, `agg`, and `mblk`
+- `section_sizes_json` records the byte size of each binary bundled section
+  payload that is present
+- `primary_timestamp_min_ms` / `primary_timestamp_max_ms` store the bundled
+  companion's covered bounds for the stream's primary timestamp field when that
+  field is available; aggregate queries use these local values to skip
+  non-overlapping published segments without fetching any companion object
+- companions are published under `streams/<hash>/segments/...cix`
+
+---
+
+### 2.14 `objectstore_request_counts`
+Node-local per-stream object-store request accounting used by `/_details`.
+
+Columns:
+- `stream_hash TEXT NOT NULL`
+- `artifact TEXT NOT NULL`
+- `op TEXT NOT NULL`
+- `count INTEGER NOT NULL`
+- `bytes INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Primary key:
+- `(stream_hash, artifact, op)`
+
+Indexes:
+- `CREATE INDEX objectstore_request_counts_stream_idx ON objectstore_request_counts(stream_hash, updated_at_ms);`
+
+Notes:
+- this table is local operational accounting, not durable published stream
+  state
+- counters are node-local and reflect requests observed through the current
+  object-store wrapper
+- request counts are exposed through `GET /v1/stream/{name}/_details`
+
+---
+
+### 2.15 `stream_profiles`
+Stores non-generic profile configuration.
+
+Columns:
+- `stream TEXT PRIMARY KEY`
+- `profile_json TEXT NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- `streams.profile` stores the profile kind for cheap listing/filtering
+- `stream_profiles.profile_json` stores the full JSON config for profiles such
+  as `evlog` and `state-protocol`
+- missing stored profile metadata means the stream is treated as `generic`
+
+---
+
+### 2.15 `stream_touch_state`
+Rebuildable helper state for touch-enabled `state-protocol` streams.
+
+Columns:
+- `stream TEXT PRIMARY KEY`
+- `processed_through INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- tracks how far the background state-protocol touch worker has processed the
+  base stream
+- rows are created only for touch-enabled `state-protocol` streams
+- the table is rebuildable from stream metadata plus the stream contents
+- it is not mirrored to object storage as exact state; bootstrap/restart reseeds
+  it locally
+
+---
+
+### 2.16 `producer_state`
+Local idempotence and gap-detection state for producer-aware appends.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `producer_id TEXT NOT NULL`
+- `epoch INTEGER NOT NULL`
+- `last_seq INTEGER NOT NULL`
+- `updated_at_ms INTEGER NOT NULL`
+
+Notes:
+- used for `Producer-Id` / `Producer-Epoch` / `Producer-Seq` admission checks
+- local-only SQLite state; not mirrored to object storage
+- reset by `--bootstrap-from-r2`
+
+---
+
+### 2.13 `live_templates`
+Runtime template registry for touch-enabled `state-protocol` streams.
+
+Columns:
+- `stream TEXT NOT NULL`
+- `template_id TEXT NOT NULL`
+- `entity TEXT NOT NULL`
+- `fields_json TEXT NOT NULL`
+- `encodings_json TEXT NOT NULL`
+- `state TEXT NOT NULL`
+- `created_at_ms INTEGER NOT NULL`
+- `last_seen_at_ms INTEGER NOT NULL`
+- `inactivity_ttl_ms INTEGER NOT NULL`
+- `active_from_source_offset INTEGER NOT NULL`
+- `retired_at_ms INTEGER NULL`
+- `retired_reason TEXT NULL`
+
+Notes:
+- runtime helper state for fine-grained live invalidation
+- not part of the stream's durable published history
+- not mirrored to object storage
+- rebuilt or relearned by runtime traffic after restart/bootstrap
 
 ---
 

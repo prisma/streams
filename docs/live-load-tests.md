@@ -5,7 +5,7 @@ described in `live.md`.
 
 They run against a Durable Streams server process over HTTP, and they intentionally stress real bottlenecks:
 
-- touch interpreter throughput (CPU, JSON parse, key derivation)
+- touch processor throughput (CPU, JSON parse, key derivation)
 - touch coalescing behavior
 - base SQLite WAL growth + retention/GC
 - `/touch/wait` concurrency + fanout behavior
@@ -15,7 +15,7 @@ They run against a Durable Streams server process over HTTP, and they intentiona
 
 Note:
 
-- These CLIs configure the touch interpreter for the in-memory journal used by Live.
+- These CLIs configure the touch processor for the in-memory journal used by Live.
 
 ## Prereqs
 
@@ -24,16 +24,17 @@ Note:
 ```bash
 cd /path/to/prisma-streams
 
-DS_INTERPRETER_WORKERS=4 \
-DS_INTERPRETER_MAX_BATCH_ROWS=1000 \
-DS_INTERPRETER_MAX_BATCH_BYTES=$((8*1024*1024)) \
+DS_TOUCH_WORKERS=4 \
+DS_TOUCH_MAX_BATCH_ROWS=1000 \
+DS_TOUCH_MAX_BATCH_BYTES=$((8*1024*1024)) \
   bun run src/server.ts --object-store local --stats
 ```
 
 Notes:
 
 - `DS_ROOT` defaults to `./ds-data` (disk usage grows there).
-- Touch coalescing intervals are configured per stream via the interpreter config (these CLIs set them when `--setup` is enabled).
+- Touch coalescing intervals are configured per stream via the `state-protocol`
+  profile (these CLIs set it when `--setup` is enabled).
 
 2. Confirm the server is reachable:
 
@@ -50,7 +51,7 @@ What it stresses:
 - State Protocol ingest -> touch generation throughput
 - CPU cost of key derivation (tableKey + watchKeys)
 - touch coalescing window effectiveness under high/low key cardinality
-- WAL/GC gating behavior when interpreter falls behind
+- WAL/GC gating behavior when touch processing falls behind
 - `live.metrics` overhead under sustained write load
 
 ### Run (High cardinality: worst-case coalescing)
@@ -79,7 +80,7 @@ bun run experiments/loadtests/live/write_path.ts \
 - `--coarse-interval-ms` and `--coalesce-window-ms`
 - Guardrails:
   - `--lag-degrade-offsets` + `--lag-recover-offsets` (hysteresis for coarse-only mode under lag)
-  - `--fine-budget-per-batch` (hard cap of fine/template touches per interpreter batch; coarse table touches still emitted)
+  - `--fine-budget-per-batch` (hard cap of fine/template touches per processing batch; coarse table touches still emitted)
   - `--fine-tokens-per-second` + `--fine-burst` (token bucket for bounded fine-touch work)
 - `--ttl-ms` (template inactivity TTL on activation)
 
@@ -90,8 +91,8 @@ These are printed periodically by the CLI (via `live.metrics`):
 - `touch.touchesEmitted`
 - `touch.uniqueKeysTouched`
 - `touch.templateTouchesEmitted` vs `touch.tableTouchesEmitted`
-- `interpreter.errors` (should stay 0)
-- `interpreter.lagSourceOffsets` (should stay bounded per step)
+- `processor.errors` (should stay 0)
+- `processor.lagSourceOffsets` (should stay bounded per step)
 
 Also capture:
 
@@ -117,7 +118,10 @@ What it stresses:
 
 Implementation note:
 
-- The read-path harness configures `interpreter.touch.onMissingBefore="skipBefore"` for the test stream so the interpreter does not wedge if some active templates can’t be evaluated from partial row images. (Coarse touches are still emitted; fine touches are emitted when fields are present.)
+- The read-path harness configures `touch.onMissingBefore="skipBefore"` for the
+  test stream so touch processing does not wedge if some active templates can’t
+  be evaluated from partial row images. (Coarse touches are still emitted; fine
+  touches are emitted when fields are present.)
 - At high waiter concurrency, it’s often more accurate to **split writer/metrics from waiters** (so the client machine doesn’t starve the metrics long-poll / writer while also running thousands of wait loops). Use `--role`.
 
 ### Scenario 1: Many waiters, small key sets (typical live queries)
@@ -292,7 +296,7 @@ What it stresses:
 
 Roles:
 
-- `setup`: stream/interpreter/template setup + config file generation
+- `setup`: stream/profile/template setup + config file generation
 - `writer`: noise+targeted writer + targeted marker emission
 - `appkit`: AppKit runtime emulator with phase-based selective shedding
 - `metrics`: `/touch/meta` monotonic-counter sampling and phase summaries
@@ -404,14 +408,16 @@ For high load, prefer split-role runs (`writer` + `appkit` + `metrics`) over `--
 Additional scaling notes:
 
 - A single Bun process can cap effective concurrent client connections to one host. For very high subscription counts, scale out AppKit waiters across multiple processes instead of increasing `--subscriptions-hot-per-template` in one process.
-- Test 4 phase deltas (`fineRate*`, `interpretedDeltaRate*`, `touchesDeltaRate*`, `notifyWakeupsRate*`) are computed from monotonic `/touch/meta` counters by snapshot subtraction, so they remain meaningful under overload even when `live.metrics` is delayed.
+- Test 4 phase deltas (`fineRate*`, `processedDeltaRate*`, `touchesDeltaRate*`, `notifyWakeupsRate*`) are computed from monotonic `/touch/meta` counters by snapshot subtraction, so they remain meaningful under overload even when `live.metrics` is delayed.
 - `/touch/meta` now exposes journal flush timing (`lastFlushAtMs`, `flushIntervalMsMaxLast10s`, `flushIntervalMsP95Last10s`) to help diagnose p95 tails in high-load runs.
 
 ## Troubleshooting / Tips
 
-- If template activation is being denied or evicted: ensure the stream’s interpreter config allows it.
-  - These CLIs configure a permissive `interpreter.touch.templates` policy when `--setup` is enabled (higher caps, no activation rate limit).
-- If you just ran the write-path test (Test 1) at high rates, the interpreter may be backlogged for minutes. For the cleanest read-path numbers (Test 2), restart the server (or use a fresh `DS_ROOT`) so `/touch/wait` latency isn’t dominated by unrelated interpreter catch-up work.
+- If template activation is being denied or evicted: ensure the stream’s
+  `state-protocol` touch config allows it.
+  - These CLIs configure a permissive `touch.templates` policy when `--setup`
+    is enabled (higher caps, no activation rate limit).
+- If you just ran the write-path test (Test 1) at high rates, the touch processor may be backlogged for minutes. For the cleanest read-path numbers (Test 2), restart the server (or use a fresh `DS_ROOT`) so `/touch/wait` latency isn’t dominated by unrelated catch-up work.
 - Watch `ds-data/` growth during Test 1:
 
 ```bash

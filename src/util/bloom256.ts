@@ -1,13 +1,13 @@
 import { dsError } from "./ds_error.ts";
 /**
- * A tiny 256-bit bloom filter (2048 bits) with 3 hash probes.
+ * A tiny 256-bit bloom filter with 3 hash probes.
  *
  * This is used per DSB3 block to cheaply skip blocks during key-filtered reads.
  *
  * Correctness rule: bloom filter may have false positives but MUST NOT have false negatives.
  */
 
-const BITS = 2048n;
+const BITS = 256n;
 const MASK64 = (1n << 64n) - 1n;
 
 function fnv1a64(data: Uint8Array): bigint {

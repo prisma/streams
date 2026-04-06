@@ -5,6 +5,7 @@
     "": {
       "name": "durable-streams-bun-ts",
       "dependencies": {
+        "@durable-streams/client": "^0.2.1",
         "ajv": "^8.12.0",
         "better-result": "^2.7.0",
         "env-paths": "^3.0.0",

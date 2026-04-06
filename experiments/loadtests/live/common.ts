@@ -183,14 +183,23 @@ export async function ensureStream(baseUrl: string, stream: string, contentType 
   }
 }
 
-export async function ensureSchemaAndInterpreter(baseUrl: string, stream: string, interpreter: any, schema?: any): Promise<void> {
+export async function ensureSchemaAndProfile(baseUrl: string, stream: string, profile: any, schema?: any): Promise<void> {
   const reg = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, { method: "GET" });
   const currentVersion = typeof reg?.currentVersion === "number" ? reg.currentVersion : 0;
-  const body = currentVersion === 0 ? { schema: schema ?? { type: "object", additionalProperties: true }, interpreter } : { interpreter };
-  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+  if (currentVersion === 0) {
+    await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schema: schema ?? { type: "object", additionalProperties: true } }),
+    });
+  }
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile,
+    }),
   });
 }
 
@@ -247,7 +256,7 @@ export type TouchMetaMemory = {
   scanRowsTotal?: number;
   scanBatchesTotal?: number;
   scannedButEmitted0BatchesTotal?: number;
-  interpretedThroughDeltaTotal?: number;
+  processedThroughDeltaTotal?: number;
   touchesEmittedTotal?: number;
   touchesTableTotal?: number;
   touchesTemplateTotal?: number;

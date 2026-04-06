@@ -13,13 +13,24 @@ import { LruCache } from "./util/lru";
 import type { StatsCollector } from "./stats";
 import type { BackpressureGate } from "./backpressure";
 import { dsError } from "./util/ds_error.ts";
+import { RuntimeMemorySampler } from "./runtime_memory_sampler";
 
 export type UploaderController = {
   start(): void;
   stop(hard?: boolean): void;
   countSegmentsWaiting(): number;
-  setHooks(hooks: { onSegmentsUploaded?: (stream: string) => void } | undefined): void;
+  getMemoryStats?: () => {
+    inflight_segments: number;
+    inflight_segment_bytes: number;
+    manifest_inflight_streams: number;
+  };
+  setHooks(hooks: UploaderHooks | undefined): void;
   publishManifest(stream: string): Promise<void>;
+};
+
+export type UploaderHooks = {
+  onSegmentsUploaded?: (stream: string) => void;
+  onMetadataChanged?: (stream: string) => void;
 };
 
 export class Uploader {
@@ -29,13 +40,15 @@ export class Uploader {
   private readonly diskCache?: SegmentDiskCache;
   private readonly stats?: StatsCollector;
   private readonly gate?: BackpressureGate;
+  private readonly memorySampler?: RuntimeMemorySampler;
   private timer: any | null = null;
   private running = false;
   private stopping = false;
   private readonly inflight = new Set<string>();
   private readonly failures = new FailureTracker(1024);
-  private hooks?: { onSegmentsUploaded?: (stream: string) => void };
+  private hooks?: UploaderHooks;
   private readonly manifestInflight = new Set<string>();
+  private inflightSegmentBytes = 0;
 
   constructor(
     config: Config,
@@ -44,7 +57,8 @@ export class Uploader {
     diskCache?: SegmentDiskCache,
     stats?: StatsCollector,
     gate?: BackpressureGate,
-    hooks?: { onSegmentsUploaded?: (stream: string) => void }
+    hooks?: UploaderHooks,
+    memorySampler?: RuntimeMemorySampler
   ) {
     this.config = config;
     this.db = db;
@@ -53,9 +67,10 @@ export class Uploader {
     this.stats = stats;
     this.gate = gate;
     this.hooks = hooks;
+    this.memorySampler = memorySampler;
   }
 
-  setHooks(hooks: { onSegmentsUploaded?: (stream: string) => void } | undefined): void {
+  setHooks(hooks: UploaderHooks | undefined): void {
     this.hooks = hooks;
   }
 
@@ -78,12 +93,20 @@ export class Uploader {
     return this.db.countPendingSegments();
   }
 
+  getMemoryStats(): { inflight_segments: number; inflight_segment_bytes: number; manifest_inflight_streams: number } {
+    return {
+      inflight_segments: this.inflight.size,
+      inflight_segment_bytes: this.inflightSegmentBytes,
+      manifest_inflight_streams: this.manifestInflight.size,
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.stopping) return;
     if (this.running) return;
     this.running = true;
     try {
-      const pending = this.db.pendingUploadSegments(1000);
+      const pending = this.db.pendingUploadHeads(1000);
       if (pending.length === 0) return;
 
       // Upload with bounded concurrency.
@@ -141,6 +164,7 @@ export class Uploader {
       if (!seg) return;
       if (this.inflight.has(seg.segment_id)) continue;
       this.inflight.add(seg.segment_id);
+      this.inflightSegmentBytes += Math.max(0, seg.size_bytes);
       try {
         try {
           await this.uploadOne(seg);
@@ -155,6 +179,7 @@ export class Uploader {
         }
       } finally {
         this.inflight.delete(seg.segment_id);
+        this.inflightSegmentBytes = Math.max(0, this.inflightSegmentBytes - Math.max(0, seg.size_bytes));
       }
     }
   }
@@ -163,6 +188,11 @@ export class Uploader {
     if (this.stopping) return;
     const shash = streamHash16Hex(seg.stream);
     const objectKey = segmentObjectKey(shash, seg.segment_index);
+    const leaveUploadPhase = this.memorySampler?.enter("upload", {
+      stream: seg.stream,
+      segment_index: seg.segment_index,
+      size_bytes: seg.size_bytes,
+    });
     try {
       const res = await retry(
         async () => {
@@ -180,11 +210,14 @@ export class Uploader {
         }
       );
       this.db.markSegmentUploaded(seg.segment_id, res.etag, this.db.nowMs());
+      this.hooks?.onMetadataChanged?.(seg.stream);
       if (this.stats) this.stats.recordUploadedBytes(seg.size_bytes);
       if (this.gate) this.gate.adjustOnUpload(seg.size_bytes);
     } catch (e) {
       this.failures.recordFailure(seg.stream);
       throw e;
+    } finally {
+      leaveUploadPhase?.();
     }
   }
 
@@ -218,6 +251,9 @@ export class Uploader {
 
       const uploadedThrough =
         uploadedPrefix === 0 ? -1n : readU64LE(meta.segment_offsets, (uploadedPrefix - 1) * 8) - 1n;
+      const unpublishedWalBytes = this.db.getWalBytesAfterOffset(stream, uploadedThrough);
+      const publishedLogicalSizeBytes =
+        srow.logical_size_bytes > unpublishedWalBytes ? srow.logical_size_bytes - unpublishedWalBytes : 0n;
 
       const manifestRow = this.db.getManifestRow(stream);
       const generation = manifestRow.generation + 1;
@@ -225,15 +261,49 @@ export class Uploader {
       const indexState = this.db.getIndexState(stream);
       const indexRuns = this.db.listIndexRuns(stream);
       const retiredRuns = this.db.listRetiredIndexRuns(stream);
+      const secondaryIndexStates = this.db.listSecondaryIndexStates(stream);
+      const secondaryIndexRuns = secondaryIndexStates.flatMap((state) => this.db.listSecondaryIndexRuns(stream, state.index_name));
+      const retiredSecondaryIndexRuns = secondaryIndexStates.flatMap((state) =>
+        this.db.listRetiredSecondaryIndexRuns(stream, state.index_name)
+      );
+      const lexiconIndexStates = this.db.listLexiconIndexStates(stream);
+      const lexiconIndexRuns = lexiconIndexStates.flatMap((state) =>
+        this.db.listLexiconIndexRuns(stream, state.source_kind, state.source_name)
+      );
+      const retiredLexiconIndexRuns = lexiconIndexStates.flatMap((state) =>
+        this.db.listRetiredLexiconIndexRuns(stream, state.source_kind, state.source_name)
+      );
+      const searchCompanionPlan = this.db.getSearchCompanionPlan(stream);
+      const searchSegmentCompanions = this.db.listSearchSegmentCompanions(stream);
+      let profileJson: Record<string, any> | null = null;
+      const profileRow = this.db.getStreamProfile(stream);
+      if (profileRow) {
+        try {
+          profileJson = JSON.parse(profileRow.profile_json);
+        } catch {
+          this.failures.recordFailure(stream);
+          throw dsError(`invalid profile_json for ${stream}`);
+        }
+      }
       const manifestRes = buildManifestResult({
         streamName: stream,
         streamRow: srow,
+        publishedLogicalSizeBytes,
+        profileJson,
         segmentMeta: meta,
         uploadedPrefixCount: uploadedPrefix,
         generation,
         indexState,
         indexRuns,
         retiredRuns,
+        secondaryIndexStates,
+        secondaryIndexRuns,
+        retiredSecondaryIndexRuns,
+        lexiconIndexStates,
+        lexiconIndexRuns,
+        retiredLexiconIndexRuns,
+        searchCompanionPlan,
+        searchSegmentCompanions,
       });
       if (Result.isError(manifestRes)) {
         this.failures.recordFailure(stream);
@@ -261,7 +331,8 @@ export class Uploader {
       }
 
       // Commit point: advance uploaded_through and delete WAL prefix.
-      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough);
+      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough, body.byteLength);
+      this.hooks?.onMetadataChanged?.(stream);
 
       // Local disk cleanup: delete newly uploaded segment files.
       if (uploadedPrefix > prevPrefix) {

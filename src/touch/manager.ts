@@ -2,9 +2,9 @@ import type { Config } from "../config";
 import type { SqliteDurableStore } from "../db/db";
 import type { IngestQueue } from "../ingest";
 import type { StreamNotifier } from "../notifier";
-import type { SchemaRegistryStore } from "../schema/registry";
-import { isTouchEnabled } from "./spec";
-import { TouchInterpreterWorkerPool } from "./worker_pool";
+import type { StreamProfileStore } from "../profiles";
+import { listTouchCapableProfileKinds, resolveEnabledTouchCapability, resolveTouchCapability } from "../profiles";
+import { TouchProcessorWorkerPool } from "./worker_pool";
 import { LruCache } from "../util/lru";
 import type { BackpressureGate } from "../backpressure";
 import { LiveTemplateRegistry, type TemplateDecl } from "./live_templates";
@@ -27,12 +27,12 @@ const BASE_WAL_GC_INTERVAL_MS = (() => {
 
 const BASE_WAL_GC_CHUNK_OFFSETS = (() => {
   const raw = process.env.DS_BASE_WAL_GC_CHUNK_OFFSETS;
-  if (raw == null || raw.trim() === "") return 100_000;
+  if (raw == null || raw.trim() === "") return 1_000_000;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     // eslint-disable-next-line no-console
     console.error(`invalid DS_BASE_WAL_GC_CHUNK_OFFSETS: ${raw}`);
-    return 100_000;
+    return 1_000_000;
   }
   return Math.floor(n);
 })();
@@ -86,7 +86,7 @@ type StreamRuntimeTotals = {
   scanRowsTotal: number;
   scanBatchesTotal: number;
   scannedButEmitted0BatchesTotal: number;
-  interpretedThroughDeltaTotal: number;
+  processedThroughDeltaTotal: number;
   touchesEmittedTotal: number;
   touchesTableTotal: number;
   touchesTemplateTotal: number;
@@ -99,11 +99,37 @@ type StreamRuntimeTotals = {
   waitStaleTotal: number;
 };
 
-export class TouchInterpreterManager {
+export type TouchProcessorManagerMemoryStats = {
+  dirtyStreams: number;
+  journals: number;
+  journalsCreatedTotal: number;
+  journalFilterBytesTotal: number;
+  fineLagCoarseOnlyStreams: number;
+  touchModeStreams: number;
+  fineTokenBucketStreams: number;
+  hotFineStreams: number;
+  lagSourceOffsetStreams: number;
+  restrictedTemplateBucketStreams: number;
+  runtimeTotalsStreams: number;
+  zeroRowBacklogStreakStreams: number;
+  templateLastSeenEntries: number;
+  templateDirtyLastSeenEntries: number;
+  templateRateStateStreams: number;
+  liveMetricsCounterStreams: number;
+};
+
+export type TouchTopStreamEntry = {
+  stream: string;
+  journal_filter_bytes: number;
+  dirty: boolean;
+  touch_mode: "idle" | "fine" | "restricted" | "coarseOnly" | null;
+};
+
+export class TouchProcessorManager {
   private readonly cfg: Config;
   private readonly db: SqliteDurableStore;
-  private readonly registry: SchemaRegistryStore;
-  private readonly pool: TouchInterpreterWorkerPool;
+  private readonly profiles: StreamProfileStore;
+  private readonly pool: TouchProcessorWorkerPool;
   private timer: any | null = null;
   private running = false;
   private stopping = false;
@@ -122,6 +148,7 @@ export class TouchInterpreterManager {
   private readonly restrictedTemplateBucketStateByStream = new Map<string, RestrictedTemplateBucketState>();
   private readonly runtimeTotalsByStream = new Map<string, StreamRuntimeTotals>();
   private readonly zeroRowBacklogStreakByStream = new Map<string, number>();
+  private journalsCreatedTotal = 0;
   private streamScanCursor = 0;
   private restartWorkerPoolRequested = false;
   private lastWorkerPoolRestartAtMs = 0;
@@ -131,19 +158,23 @@ export class TouchInterpreterManager {
     db: SqliteDurableStore,
     ingest: IngestQueue,
     notifier: StreamNotifier,
-    registry: SchemaRegistryStore,
+    profiles: StreamProfileStore,
     backpressure?: BackpressureGate
   ) {
     this.cfg = cfg;
     this.db = db;
-    this.registry = registry;
-    this.pool = new TouchInterpreterWorkerPool(cfg, cfg.interpreterWorkers);
+    this.profiles = profiles;
+    this.pool = new TouchProcessorWorkerPool(cfg, cfg.touchWorkers);
     this.templates = new LiveTemplateRegistry(db);
-    this.liveMetrics = new LiveMetricsV2(db, ingest, {
+    this.liveMetrics = new LiveMetricsV2(db, ingest, profiles, {
       getTouchJournal: (stream) => {
         const j = this.journals.get(stream);
         if (!j) return null;
         return { meta: j.getMeta(), interval: j.snapshotAndResetIntervalStats() };
+      },
+      onAppended: ({ lastOffset, stream }) => {
+        notifier.notify(stream, lastOffset);
+        notifier.notifyDetailsChanged(stream);
       },
     });
   }
@@ -151,8 +182,7 @@ export class TouchInterpreterManager {
   start(): void {
     if (this.timer) return;
     this.stopping = false;
-    this.pool.start();
-    this.seedInterpretersFromRegistry();
+    this.seedTouchStateFromProfiles();
     const liveMetricsRes = this.liveMetrics.ensureStreamResult();
     if (Result.isError(liveMetricsRes)) {
       // eslint-disable-next-line no-console
@@ -160,10 +190,10 @@ export class TouchInterpreterManager {
     } else {
       this.liveMetrics.start();
     }
-    if (this.cfg.interpreterCheckIntervalMs > 0) {
+    if (this.cfg.touchCheckIntervalMs > 0) {
       this.timer = setInterval(() => {
         void this.tick();
-      }, this.cfg.interpreterCheckIntervalMs);
+      }, this.cfg.touchCheckIntervalMs);
     }
   }
 
@@ -187,6 +217,46 @@ export class TouchInterpreterManager {
     this.lastWorkerPoolRestartAtMs = 0;
   }
 
+  getMemoryStats(): TouchProcessorManagerMemoryStats {
+    let journalFilterBytesTotal = 0;
+    for (const journal of this.journals.values()) journalFilterBytesTotal += journal.getFilterBytes();
+    const templateStats = this.templates.getMemoryStats();
+    const liveMetricsStats = this.liveMetrics.getMemoryStats();
+    return {
+      dirtyStreams: this.dirty.size,
+      journals: this.journals.size,
+      journalsCreatedTotal: this.journalsCreatedTotal,
+      journalFilterBytesTotal,
+      fineLagCoarseOnlyStreams: this.fineLagCoarseOnlyByStream.size,
+      touchModeStreams: this.touchModeByStream.size,
+      fineTokenBucketStreams: this.fineTokenBucketsByStream.size,
+      hotFineStreams: this.hotFineByStream.size,
+      lagSourceOffsetStreams: this.lagSourceOffsetsByStream.size,
+      restrictedTemplateBucketStreams: this.restrictedTemplateBucketStateByStream.size,
+      runtimeTotalsStreams: this.runtimeTotalsByStream.size,
+      zeroRowBacklogStreakStreams: this.zeroRowBacklogStreakByStream.size,
+      templateLastSeenEntries: templateStats.lastSeenEntries,
+      templateDirtyLastSeenEntries: templateStats.dirtyLastSeenEntries,
+      templateRateStateStreams: templateStats.rateStateStreams,
+      liveMetricsCounterStreams: liveMetricsStats.counterStreams,
+    };
+  }
+
+  getTopStreams(limit = 5): TouchTopStreamEntry[] {
+    const rows: TouchTopStreamEntry[] = [];
+    for (const [stream, journal] of this.journals) {
+      rows.push({
+        stream,
+        journal_filter_bytes: journal.getFilterBytes(),
+        dirty: this.dirty.has(stream),
+        touch_mode: this.touchModeByStream.get(stream) ?? null,
+      });
+    }
+    return rows
+      .sort((a, b) => b.journal_filter_bytes - a.journal_filter_bytes || a.stream.localeCompare(b.stream))
+      .slice(0, Math.max(0, Math.floor(limit)));
+  }
+
   notify(stream: string): void {
     this.dirty.add(stream);
   }
@@ -194,14 +264,15 @@ export class TouchInterpreterManager {
   async tick(): Promise<void> {
     if (this.stopping) return;
     if (this.running) return;
-    if (this.cfg.interpreterWorkers <= 0) return;
+    if (this.cfg.touchWorkers <= 0) return;
     this.running = true;
     try {
       const nowMs = Date.now();
       const dirtyNow = new Set(this.dirty);
       this.dirty.clear();
-      const states = this.db.listStreamInterpreters();
+      const states = this.db.listStreamTouchStates();
       if (states.length === 0) return;
+      this.pool.start();
       const stateByStream = new Map(states.map((s) => [s.stream, s]));
 
       const ordered: string[] = [];
@@ -209,7 +280,7 @@ export class TouchInterpreterManager {
       for (const s of stateByStream.keys()) if (!dirtyNow.has(s)) ordered.push(s);
       const prioritized = this.prioritizeStreamsForProcessing(ordered, nowMs);
 
-      const maxConcurrent = Math.max(1, this.cfg.interpreterWorkers);
+      const maxConcurrent = Math.max(1, this.cfg.touchWorkers);
       const tasks: Promise<void>[] = [];
       if (prioritized.length > 0) {
         const total = prioritized.length;
@@ -220,10 +291,10 @@ export class TouchInterpreterManager {
           if (this.failures.shouldSkip(stream)) continue;
           const st = stateByStream.get(stream);
           if (!st) continue;
-          const p = this.processOne(stream, st.interpreted_through).catch((e) => {
+          const p = this.processOne(stream, st.processed_through).catch((e) => {
             this.failures.recordFailure(stream);
             // eslint-disable-next-line no-console
-            console.error("touch interpreter failed", stream, e);
+            console.error("touch processor failed", stream, e);
           });
           tasks.push(p);
         }
@@ -237,23 +308,23 @@ export class TouchInterpreterManager {
           this.lastWorkerPoolRestartAtMs = Date.now();
         } catch (e) {
           // eslint-disable-next-line no-console
-          console.error("touch interpreter worker-pool restart failed", e);
+          console.error("touch processor worker-pool restart failed", e);
         }
       }
 
-      // Opportunistically GC base WAL beyond the interpreter checkpoint.
+      // Opportunistically GC base WAL beyond the touch-processing checkpoint.
       //
       // commitManifest() already GC's on upload, but it can't retroactively GC
-      // rows that were held back by interpreter lag once the interpreter later
+      // rows that were held back by touch-processing lag once the processor later
       // catches up (unless another upload happens). This loop makes GC progress
       // deterministic for "catch up after lag" scenarios.
       for (const stream of stateByStream.keys()) {
         if (this.stopping) break;
         const srow = this.db.getStream(stream);
         if (!srow || this.db.isDeleted(srow)) continue;
-        const interp = this.db.getStreamInterpreter(stream);
-        if (!interp) continue;
-        this.maybeGcBaseWal(stream, srow.uploaded_through, interp.interpreted_through);
+        const touchState = this.db.getStreamTouchState(stream);
+        if (!touchState) continue;
+        this.maybeGcBaseWal(stream, srow.uploaded_through, touchState.processed_through);
       }
 
       // Template retirement GC + last-seen flush (sliding window).
@@ -261,15 +332,16 @@ export class TouchInterpreterManager {
       let persistIntervalMin = Number.POSITIVE_INFINITY;
       for (const stream of stateByStream.keys()) {
         if (this.stopping) break;
-        const regRes = this.registry.getRegistryResult(stream);
-        if (Result.isError(regRes)) {
+        const profileRes = this.profiles.getProfileResult(stream);
+        if (Result.isError(profileRes)) {
           // eslint-disable-next-line no-console
-          console.error("touch registry read failed", stream, regRes.error.message);
+          console.error("touch profile read failed", stream, profileRes.error.message);
           continue;
         }
-        const reg = regRes.value;
-        if (!isTouchEnabled(reg.interpreter)) continue;
-        const touchCfg = reg.interpreter.touch;
+        const profile = profileRes.value;
+        const enabledTouch = resolveEnabledTouchCapability(profile);
+        if (!enabledTouch) continue;
+        const touchCfg = enabledTouch.touchCfg;
         touchCfgByStream.set(stream, touchCfg);
         const persistInterval = touchCfg.templates?.lastSeenPersistIntervalMs ?? 5 * 60 * 1000;
         if (persistInterval < persistIntervalMin) persistIntervalMin = persistInterval;
@@ -296,37 +368,38 @@ export class TouchInterpreterManager {
     }
   }
 
-  private async processOne(stream: string, interpretedThrough: bigint): Promise<void> {
+  private async processOne(stream: string, processedThroughAtStart: bigint): Promise<void> {
     const srow = this.db.getStream(stream);
     if (!srow || this.db.isDeleted(srow)) {
-      this.db.deleteStreamInterpreter(stream);
+      this.db.deleteStreamTouchState(stream);
       return;
     }
 
     const next = srow.next_offset;
     if (next <= 0n) return;
-    const fromOffset = interpretedThrough + 1n;
+    const fromOffset = processedThroughAtStart + 1n;
     const toOffset = next - 1n;
     if (fromOffset > toOffset) return;
 
-    const regRes = this.registry.getRegistryResult(stream);
-    if (Result.isError(regRes)) {
+    const profileRes = this.profiles.getProfileResult(stream, srow);
+    if (Result.isError(profileRes)) {
       // eslint-disable-next-line no-console
-      console.error("touch registry read failed", stream, regRes.error.message);
-      this.db.deleteStreamInterpreter(stream);
+      console.error("touch profile read failed", stream, profileRes.error.message);
+      this.db.deleteStreamTouchState(stream);
       return;
     }
-    const reg = regRes.value;
-    if (!isTouchEnabled(reg.interpreter)) {
-      this.db.deleteStreamInterpreter(stream);
+    const profile = profileRes.value;
+    const enabledTouch = resolveEnabledTouchCapability(profile);
+    if (!enabledTouch) {
+      this.db.deleteStreamTouchState(stream);
       return;
     }
-    const touchCfg = reg.interpreter.touch;
+    const touchCfg = enabledTouch.touchCfg;
     const failProcessing = (message: string): void => {
       this.failures.recordFailure(stream);
-      this.liveMetrics.recordInterpreterError(stream, touchCfg);
+      this.liveMetrics.recordProcessorError(stream, touchCfg);
       // eslint-disable-next-line no-console
-      console.error("touch interpreter failed", stream, message);
+      console.error("touch processor failed", stream, message);
     };
 
     const nowMs = Date.now();
@@ -339,7 +412,7 @@ export class TouchInterpreterManager {
 
     // Guardrail: when lag/backlog grows too large, temporarily suppress
     // fine/template touches (coarse table touches are still emitted).
-    const lagAtStart = toOffset >= interpretedThrough ? toOffset - interpretedThrough : 0n;
+    const lagAtStart = toOffset >= processedThroughAtStart ? toOffset - processedThroughAtStart : 0n;
     const suppressFineDueToLag = this.computeSuppressFineDueToLag(stream, touchCfg, lagAtStart, hasFineDemand);
     const j = this.getOrCreateJournal(stream, touchCfg);
     j.setCoalesceMs(this.computeAdaptiveCoalesceMs(touchCfg, lagAtStart, hasAnyWaiters));
@@ -375,7 +448,7 @@ export class TouchInterpreterManager {
     if (fineGranularity !== "template") {
       this.restrictedTemplateBucketStateByStream.delete(stream);
     }
-    const interpretMode: "full" | "hotTemplatesOnly" = fineGranularity === "template" ? "hotTemplatesOnly" : "full";
+    const processingMode: "full" | "hotTemplatesOnly" = fineGranularity === "template" ? "hotTemplatesOnly" : "full";
     const touchMode: "idle" | "fine" | "restricted" | "coarseOnly" = !hasAnyWaiters ? "idle" : emitFineTouches ? (suppressFineDueToLag ? "restricted" : "fine") : "coarseOnly";
     this.touchModeByStream.set(stream, touchMode);
 
@@ -383,13 +456,13 @@ export class TouchInterpreterManager {
       stream,
       fromOffset,
       toOffset,
-      interpreter: reg.interpreter,
-      maxRows: Math.max(1, this.cfg.interpreterMaxBatchRows),
-      maxBytes: Math.max(1, this.cfg.interpreterMaxBatchBytes),
+      profile,
+      maxRows: Math.max(1, this.cfg.touchMaxBatchRows),
+      maxBytes: Math.max(1, this.cfg.touchMaxBatchBytes),
       emitFineTouches,
       fineTouchBudget: emitFineTouches ? fineBudget : 0,
       fineGranularity,
-      interpretMode,
+      processingMode,
       filterHotTemplates: !!(hotFine && hotFine.templateFilteringEnabled),
       hotTemplateIds: hotFine?.hotTemplateIdsForWorker ?? null,
     });
@@ -407,7 +480,7 @@ export class TouchInterpreterManager {
           this.restartWorkerPoolRequested = true;
           // eslint-disable-next-line no-console
           console.error(
-            "touch interpreter produced zero-row batch despite WAL backlog; scheduling worker-pool restart",
+            "touch processor produced zero-row batch despite WAL backlog; scheduling worker-pool restart",
             stream,
             `from=${fromOffset.toString()}`,
             `to=${toOffset.toString()}`
@@ -477,7 +550,7 @@ export class TouchInterpreterManager {
       this.lagSourceOffsetsByStream.set(stream, effectiveLag);
       const maxSourceTsMs = Number(res.stats.maxSourceTsMs ?? 0);
       const commitLagMs = maxSourceTsMs > 0 ? Math.max(0, Date.now() - maxSourceTsMs) : undefined;
-      this.liveMetrics.recordInterpreterBatch({
+      this.liveMetrics.recordProcessorBatch({
         stream,
         touchCfg,
         rowsRead: res.stats.rowsRead,
@@ -504,9 +577,13 @@ export class TouchInterpreterManager {
         broadFineWaitersActive: hotFine?.broadFineWaitersActive ?? 0,
         scannedButEmitted0: res.stats.rowsRead > 0 && touches.length === 0,
         noInterestFastForward: false,
-        interpretedThroughDelta:
-          res.processedThrough >= interpretedThrough
-            ? Number((res.processedThrough - interpretedThrough) > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : res.processedThrough - interpretedThrough)
+        processedThroughDelta:
+          res.processedThrough >= processedThroughAtStart
+            ? Number(
+                (res.processedThrough - processedThroughAtStart) > BigInt(Number.MAX_SAFE_INTEGER)
+                  ? BigInt(Number.MAX_SAFE_INTEGER)
+                  : res.processedThrough - processedThroughAtStart
+              )
             : 0,
         touchesEmittedDelta: touches.length,
       });
@@ -514,15 +591,19 @@ export class TouchInterpreterManager {
       // ignore
     }
 
-    const interpretedDelta =
-      res.processedThrough >= interpretedThrough
-        ? Number((res.processedThrough - interpretedThrough) > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : res.processedThrough - interpretedThrough)
+    const processedDelta =
+      res.processedThrough >= processedThroughAtStart
+        ? Number(
+            (res.processedThrough - processedThroughAtStart) > BigInt(Number.MAX_SAFE_INTEGER)
+              ? BigInt(Number.MAX_SAFE_INTEGER)
+              : res.processedThrough - processedThroughAtStart
+          )
         : 0;
     const totals = this.getOrCreateRuntimeTotals(stream);
     totals.scanBatchesTotal += 1;
     totals.scanRowsTotal += Math.max(0, res.stats.rowsRead);
     if (res.stats.rowsRead > 0 && touches.length === 0) totals.scannedButEmitted0BatchesTotal += 1;
-    totals.interpretedThroughDeltaTotal += interpretedDelta;
+    totals.processedThroughDeltaTotal += processedDelta;
     totals.touchesEmittedTotal += touches.length;
     let tableTouches = 0;
     let templateTouches = 0;
@@ -537,13 +618,13 @@ export class TouchInterpreterManager {
     totals.fineTouchesSkippedColdKeyTotal += fineSkippedColdKey;
     totals.fineTouchesSkippedTemplateBucketTotal += fineSkippedTemplateBucket;
 
-    this.db.updateStreamInterpreterThrough(stream, res.processedThrough);
+    this.db.updateStreamTouchStateThrough(stream, res.processedThrough);
     if (res.processedThrough < toOffset) this.dirty.add(stream);
     this.failures.recordSuccess(stream);
   }
 
-  private maybeGcBaseWal(stream: string, uploadedThrough: bigint, interpretedThrough: bigint): void {
-    const gcTargetThrough = interpretedThrough < uploadedThrough ? interpretedThrough : uploadedThrough;
+  private maybeGcBaseWal(stream: string, uploadedThrough: bigint, processedThrough: bigint): void {
+    const gcTargetThrough = processedThrough < uploadedThrough ? processedThrough : uploadedThrough;
     if (gcTargetThrough < 0n) return;
 
     const now = Date.now();
@@ -575,24 +656,20 @@ export class TouchInterpreterManager {
     }
   }
 
-  private seedInterpretersFromRegistry(): void {
-    // Bootstrap support: bootstrapFromR2 restores schema registry JSON but does not
-    // populate stream_interpreters. Seeding here makes interpreters start working
+  private seedTouchStateFromProfiles(): void {
+    // Bootstrap support: bootstrapFromR2 restores profile state but does not
+    // populate stream_touch_state. Seeding here makes touch processing start working
     // after bootstraps and restarts without requiring a no-op config update.
     try {
-      const rows = this.db.db.query(`SELECT stream, schema_json FROM schemas;`).all() as any[];
-      for (const row of rows) {
-        const stream = String(row.stream);
-        const json = String(row.schema_json ?? "");
-        let raw: any;
-        try {
-          raw = JSON.parse(json);
-        } catch {
-          continue;
+      for (const kind of listTouchCapableProfileKinds()) {
+        const streams = this.db.listStreamsByProfile(kind);
+        for (const stream of streams) {
+          const profileRes = this.profiles.getProfileResult(stream);
+          if (Result.isError(profileRes)) continue;
+          const touchCapability = resolveTouchCapability(profileRes.value);
+          if (!touchCapability) continue;
+          touchCapability.syncState({ db: this.db, stream, profile: profileRes.value });
         }
-        const enabled = !!raw?.interpreter?.touch?.enabled;
-        if (enabled) this.db.ensureStreamInterpreter(stream);
-        else this.db.deleteStreamInterpreter(stream);
       }
     } catch {
       // ignore
@@ -718,7 +795,7 @@ export class TouchInterpreterManager {
     scanRowsTotal: number;
     scanBatchesTotal: number;
     scannedButEmitted0BatchesTotal: number;
-    interpretedThroughDeltaTotal: number;
+    processedThroughDeltaTotal: number;
     touchesEmittedTotal: number;
     touchesTableTotal: number;
     touchesTemplateTotal: number;
@@ -758,7 +835,7 @@ export class TouchInterpreterManager {
       scanRowsTotal: totals.scanRowsTotal,
       scanBatchesTotal: totals.scanBatchesTotal,
       scannedButEmitted0BatchesTotal: totals.scannedButEmitted0BatchesTotal,
-      interpretedThroughDeltaTotal: totals.interpretedThroughDeltaTotal,
+      processedThroughDeltaTotal: totals.processedThroughDeltaTotal,
       touchesEmittedTotal: totals.touchesEmittedTotal,
       touchesTableTotal: totals.touchesTableTotal,
       touchesTemplateTotal: totals.touchesTemplateTotal,
@@ -823,6 +900,7 @@ export class TouchInterpreterManager {
       keyIndexMaxKeys: mem.keyIndexMaxKeys ?? 32,
     });
     this.journals.set(stream, j);
+    this.journalsCreatedTotal += 1;
     return j;
   }
 
@@ -867,13 +945,13 @@ export class TouchInterpreterManager {
     const cold: string[] = [];
     for (const stream of ordered) {
       let hasActiveWaiters = false;
-      const regRes = this.registry.getRegistryResult(stream);
-      if (Result.isError(regRes)) {
+      const profileRes = this.profiles.getProfileResult(stream);
+      if (Result.isError(profileRes)) {
         hasActiveWaiters = false;
       } else {
-        const reg = regRes.value;
-        if (isTouchEnabled(reg.interpreter)) {
-          const snap = this.getHotFineSnapshot(stream, reg.interpreter.touch, nowMs);
+        const enabledTouch = resolveEnabledTouchCapability(profileRes.value);
+        if (enabledTouch) {
+          const snap = this.getHotFineSnapshot(stream, enabledTouch.touchCfg, nowMs);
           hasActiveWaiters = snap.fineWaitersActive + snap.coarseWaitersActive > 0;
         }
       }
@@ -1140,7 +1218,7 @@ export class TouchInterpreterManager {
       scanRowsTotal: 0,
       scanBatchesTotal: 0,
       scannedButEmitted0BatchesTotal: 0,
-      interpretedThroughDeltaTotal: 0,
+      processedThroughDeltaTotal: 0,
       touchesEmittedTotal: 0,
       touchesTableTotal: 0,
       touchesTemplateTotal: 0,

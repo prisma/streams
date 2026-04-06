@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
@@ -23,6 +23,7 @@ function run(cmd, args, cwd) {
 }
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "prisma-streams-bun-local-e2e-"));
+const localServerName = basename(tmpRoot);
 
 try {
   run("node", ["scripts/build-npm-packages.mjs"], repoRoot);
@@ -33,6 +34,10 @@ try {
   mkdirSync(consumerDir, { recursive: true });
 
   const localPackageDir = join(repoRoot, "dist", "npm", "streams-local");
+  const localPackageManifest = JSON.parse(readFileSync(join(localPackageDir, "package.json"), "utf8"));
+  if ("@durable-streams/client" in (localPackageManifest.dependencies ?? {})) {
+    throw new Error("@prisma/streams-local should not publish @durable-streams/client");
+  }
   const packOutput = run("npm", ["pack", "--pack-destination", packDir], localPackageDir);
   const tarballName = packOutput.split(/\r?\n/).filter(Boolean).at(-1);
   if (!tarballName) throw new Error("npm pack did not produce a tarball name");
@@ -59,7 +64,7 @@ try {
 import { startLocalDurableStreamsServer } from "@prisma/streams-local";
 
 const server = await startLocalDurableStreamsServer({
-  name: "bun-e2e",
+  name: "${localServerName}",
   port: 0,
   hostname: "127.0.0.1",
 });
@@ -74,6 +79,12 @@ async function fetchJson(url, init) {
 }
 
 try {
+  const serverDetails = await fetchJson(\`\${baseUrl}/v1/server/_details\`, { method: "GET" });
+  if (serverDetails.status !== 200) throw new Error(\`/v1/server/_details failed: \${serverDetails.status}\`);
+  if (serverDetails.body?.auto_tune?.preset_mb !== 1024) {
+    throw new Error(\`expected local preset 1024, got \${JSON.stringify(serverDetails.body?.auto_tune)}\`);
+  }
+
   {
     const res = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}\`, {
       method: "PUT",
@@ -83,13 +94,13 @@ try {
   }
 
   {
-    const schema = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_schema\`, {
+    const profile = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/_profile\`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        interpreter: {
-          apiVersion: "durable.streams/stream-interpreter/v1",
-          format: "durable.streams/state-protocol/v1",
+        apiVersion: "durable.streams/profile/v1",
+        profile: {
+          kind: "state-protocol",
           touch: {
             enabled: true,
             onMissingBefore: "coarse",
@@ -97,7 +108,40 @@ try {
         },
       }),
     });
-    if (schema.status !== 200) throw new Error(\`schema install failed: \${schema.status}\`);
+    if (profile.status !== 200) throw new Error(\`profile install failed: \${profile.status}\`);
+  }
+
+  {
+    const routingStream = "routing";
+    const res = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}\`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+    });
+    if (res.status !== 201 && res.status !== 200) throw new Error(\`routing PUT failed: \${res.status}\`);
+
+    const schema = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}/_schema\`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        routingKey: { jsonPointer: "/repo", required: false },
+      }),
+    });
+    if (schema.status !== 200) throw new Error(\`routing schema install failed: \${schema.status}\`);
+
+    const append = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}\`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify([{ repo: "beta/repo" }, { repo: "alpha/repo" }, { repo: "beta/repo" }]),
+    });
+    if (append.status !== 204) throw new Error(\`routing append failed: \${append.status}\`);
+
+    const routingKeys = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}/_routing_keys?limit=10\`, {
+      method: "GET",
+    });
+    if (routingKeys.status !== 200) throw new Error(\`routing keys failed: \${routingKeys.status}\`);
+    if (JSON.stringify(routingKeys.body?.keys) !== JSON.stringify(["alpha/repo", "beta/repo"])) {
+      throw new Error(\`unexpected routing keys: \${JSON.stringify(routingKeys.body)}\`);
+    }
   }
 
   const activate = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/touch/templates/activate\`, {

@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SegmentDiskCache } from "../src/segment/cache";
+import { loadSegmentSource } from "../src/segment/cached_segment";
+import { MockR2Store } from "../src/objectstore/mock_r2";
+import { segmentObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 
 describe("segment disk cache", () => {
   test("persists across restart", () => {
@@ -62,7 +65,7 @@ describe("segment disk cache", () => {
     }
   });
 
-  test("stats track hits/misses/evictions", () => {
+  test("stats track hits/misses and pinned mappings can sit above budget", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
     try {
       const cache = new SegmentDiskCache(root, 4);
@@ -77,10 +80,67 @@ describe("segment disk cache", () => {
       const stats = cache.stats();
       expect(stats.hits).toBe(1);
       expect(stats.misses).toBe(1);
-      expect(stats.evictions).toBeGreaterThanOrEqual(1);
-      expect(stats.entryCount).toBe(1);
+      expect(stats.evictions).toBe(0);
+      expect(stats.entryCount).toBe(2);
       expect(stats.maxBytes).toBe(4);
-      expect(stats.usedBytes).toBeGreaterThan(0);
+      expect(stats.usedBytes).toBeGreaterThan(stats.maxBytes);
+      expect(stats.mappedEntryCount).toBe(1);
+      expect(stats.pinnedEntryCount).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("mapped files stay pinned and readable after cache pressure", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
+    try {
+      const cache = new SegmentDiskCache(root, 8, 4);
+      const key1 = "streams/a/segments/0000000000000000.bin";
+      const key2 = "streams/b/segments/0000000000000000.bin";
+      const payload1 = new Uint8Array([1, 2, 3, 4]);
+      const payload2 = new Uint8Array([5, 6, 7, 8]);
+      expect(cache.put(key1, payload1)).toBe(true);
+      const mapped = cache.getMapped(key1);
+      expect(mapped).not.toBeNull();
+      expect(mapped && Array.from(mapped.bytes)).toEqual(Array.from(payload1));
+
+      expect(cache.put(key2, payload2)).toBe(true);
+      expect(cache.has(key1)).toBe(true);
+      expect(cache.has(key2)).toBe(true);
+
+      const stats = cache.stats();
+      expect(stats.mappedEntryCount).toBe(1);
+      expect(stats.pinnedEntryCount).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("segment sources are mmap-backed or in-memory bytes, never path fallbacks", async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
+    try {
+      const cache = new SegmentDiskCache(root, 1024 * 1024, 4);
+      const key = segmentObjectKey(streamHash16Hex("a"), 0);
+      const payload = new Uint8Array([1, 2, 3, 4]);
+      expect(cache.put(key, payload)).toBe(true);
+
+      const cachedSeg = {
+        stream: "a",
+        segment_index: 0,
+        local_path: "",
+      } as any;
+      const cachedSource = await loadSegmentSource(new MockR2Store(), cachedSeg, cache);
+      expect(cachedSource.kind === "mapped" || cachedSource.kind === "bytes").toBe(true);
+
+      const localPath = join(root, "local-seg.bin");
+      writeFileSync(localPath, payload);
+      const localSeg = {
+        stream: "a",
+        segment_index: 1,
+        local_path: localPath,
+      } as any;
+      const localSource = await loadSegmentSource(new MockR2Store(), localSeg, cache);
+      expect(localSource.kind === "mapped" || localSource.kind === "bytes").toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

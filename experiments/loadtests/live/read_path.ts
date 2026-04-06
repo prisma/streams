@@ -14,7 +14,7 @@ import {
   activateTemplatesChunked,
   csvArg,
   deleteStream,
-  ensureSchemaAndInterpreter,
+  ensureSchemaAndProfile,
   ensureStream,
   getTouchMeta,
   hasFlag,
@@ -57,11 +57,11 @@ Options:
   --graceful-stop                     Do not abort in-flight wait calls at the duration boundary; allow them to complete (adds up to waitTimeoutMs wall time)
   --lag-degrade-offsets <n>           (default: 5000) Switch to coarse-only when lag >= N source offsets
   --lag-recover-offsets <n>           (default: 1000) Re-enable fine touches when lag <= N source offsets
-  --fine-budget-per-batch <n>         (default: 2000) Hard cap for fine/template touches per interpreter batch (0 = coarse-only)
+  --fine-budget-per-batch <n>         (default: 2000) Hard cap for fine/template touches per processing batch (0 = coarse-only)
   --fine-tokens-per-second <n>        (default: 200000) Fine-touch token bucket refill rate
   --fine-burst <n>                    (default: 400000) Fine-touch token bucket burst capacity
-  --setup                             Ensure stream + interpreter config (default: on)
-  --no-setup                          Do not modify stream schema/interpreter
+  --setup                             Ensure stream + state-protocol profile (default: on)
+  --no-setup                          Do not modify stream schema/profile
   --activate-templates                Activate templates pre-step (default: on)
   --no-activate-templates             Skip template activation pre-step
   --metrics                           Tail live.metrics and print summaries (default: on)
@@ -500,9 +500,8 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
   const fineBudgetPerBatch = Math.max(0, intArg(args, "fine-budget-per-batch", 2000));
   const fineTokensPerSecond = Math.max(0, intArg(args, "fine-tokens-per-second", 200_000));
   const fineBurst = Math.max(0, intArg(args, "fine-burst", 400_000));
-  const interpreter = {
-    apiVersion: "durable.streams/stream-interpreter/v1",
-    format: "durable.streams/state-protocol/v1",
+  const profile = {
+    kind: "state-protocol",
     touch: {
       enabled: true,
       lagDegradeFineTouchesAtSourceOffsets: lagDegradeOffsets,
@@ -510,7 +509,7 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
       fineTouchBudgetPerBatch: fineBudgetPerBatch,
       fineTokensPerSecond,
       fineBurstTokens: fineBurst,
-      // Read-path load tests don't want interpreter batches to wedge just because
+      // Read-path load tests don't want touch processing batches to wedge just because
       // some active templates can't be evaluated from partial row images.
       onMissingBefore: "skipBefore",
       templates: {
@@ -522,7 +521,7 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
   };
 
   await ensureStream(baseUrl, stream, "application/json");
-  await ensureSchemaAndInterpreter(baseUrl, stream, interpreter);
+  await ensureSchemaAndProfile(baseUrl, stream, profile);
   await waitForTouchReady(baseUrl, stream);
 }
 
@@ -581,7 +580,7 @@ async function main(): Promise<void> {
 
   if (doSetup) {
     // eslint-disable-next-line no-console
-    console.log(`[read-path] setup: ensuring stream + interpreter config (touch enabled)`);
+    console.log(`[read-path] setup: ensuring stream + state-protocol profile (touch enabled)`);
     await setupStream(baseUrl, stream, ARGS);
   } else {
     // eslint-disable-next-line no-console
@@ -617,7 +616,7 @@ async function main(): Promise<void> {
     console.log(`[read-path] template pre-step: skipped (--no-activate-templates)`);
   }
 
-  // Warmup: ensure interpreter/derived stream are actually advancing before we start measuring wait behavior.
+  // Warmup: ensure touch processing is actually advancing before we start measuring wait behavior.
   if (role !== "waiters") {
     await warmupTouchStream(baseUrl, stream);
   }

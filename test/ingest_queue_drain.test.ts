@@ -18,8 +18,8 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     segmentCheckIntervalMs: 100_000,
     uploadIntervalMs: 100_000,
     indexCheckIntervalMs: 100_000,
-    interpreterCheckIntervalMs: 100_000,
-    interpreterWorkers: 0,
+    touchCheckIntervalMs: 100_000,
+    touchWorkers: 0,
     segmenterWorkers: 0,
     ...overrides,
   };

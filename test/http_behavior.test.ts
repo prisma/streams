@@ -1,11 +1,14 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Result } from "better-result";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import type { GetOptions, ObjectStore, PutResult } from "../src/objectstore/interface";
 import { encodeOffset, parseOffset } from "../src/offset";
+import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter } from "../src/segment/format";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -18,6 +21,36 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     uploadIntervalMs: 60_000,
     ...overrides,
   };
+}
+
+function writeSingleRecordSegment(
+  path: string,
+  offset: bigint,
+  appendNs: bigint,
+  routingKey: string,
+  payloadText: string
+): number {
+  const record = {
+    appendNs,
+    routingKey: new TextEncoder().encode(routingKey),
+    payload: new TextEncoder().encode(payloadText),
+  };
+  const block = encodeBlock([record]);
+  const footer = encodeFooter([
+    {
+      blockOffset: 0,
+      firstOffset: offset,
+      recordCount: 1,
+      compressedLen: block.byteLength - DSB3_HEADER_BYTES,
+      firstAppendNs: appendNs,
+      lastAppendNs: appendNs,
+    },
+  ]);
+  const bytes = new Uint8Array(block.byteLength + footer.byteLength);
+  bytes.set(block, 0);
+  bytes.set(footer, block.byteLength);
+  writeFileSync(path, bytes);
+  return bytes.byteLength;
 }
 
 async function withServer<T>(
@@ -48,6 +81,86 @@ function nextOffset(resp: Response): bigint {
 async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
+
+async function waitForCondition(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await check()) return;
+    await sleep(25);
+  }
+  throw new Error("timed out waiting for condition");
+}
+
+class RecordingStore implements ObjectStore {
+  readonly inner = new MockR2Store();
+  readonly getCalls: Array<{ key: string; opts?: GetOptions }> = [];
+
+  clearGetCalls(): void {
+    this.getCalls.length = 0;
+  }
+
+  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+    return this.inner.put(key, data, opts);
+  }
+
+  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+    return this.inner.putFile ? this.inner.putFile(key, path, size, opts) : this.inner.put(key, await Bun.file(path).bytes(), opts);
+  }
+
+  async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
+    this.getCalls.push({
+      key,
+      opts: opts?.range ? { range: { start: opts.range.start, end: opts.range.end } } : undefined,
+    });
+    return this.inner.get(key, opts);
+  }
+
+  async head(key: string): Promise<{ etag: string; size: number } | null> {
+    return this.inner.head(key);
+  }
+
+  async delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return this.inner.list(prefix);
+  }
+}
+
+const DETAILS_SEARCH_SCHEMA = {
+  schema: {
+    type: "object",
+    additionalProperties: true,
+  },
+  search: {
+    primaryTimestampField: "eventTime",
+    fields: {
+      eventTime: {
+        kind: "date",
+        bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+        column: true,
+        exists: true,
+        sortable: true,
+      },
+      service: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/service" }],
+        exact: true,
+        prefix: true,
+        exists: true,
+        sortable: true,
+      },
+      message: {
+        kind: "text",
+        bindings: [{ version: 1, jsonPointer: "/message" }],
+        analyzer: "unicode_word_v1",
+        exists: true,
+        positions: true,
+      },
+    },
+  },
+};
 
 describe("http behavior", () => {
   test("create/append/read raw and end offset", async () => {
@@ -111,6 +224,608 @@ describe("http behavior", () => {
       const names = arr.map((r: any) => r.name).sort();
       expect(names).toContain("a");
       expect(names).toContain("b");
+      const streamA = arr.find((row: any) => row.name === "a");
+      expect(streamA?.profile).toBe("generic");
+    });
+  });
+
+  test("profile subresource defaults to generic and supports explicit declaration", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      let r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+
+      r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "generic" },
+        }),
+      });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+    });
+  });
+
+  test("details endpoint combines stream, profile, schema, and index status", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const r = await fetch(`${baseUrl}/v1/stream/details/_details`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.stream).toMatchObject({
+        name: "details",
+        content_type: "text/plain",
+        profile: "generic",
+        created_at: expect.any(String),
+        updated_at: expect.any(String),
+        expires_at: null,
+        epoch: 0,
+        next_offset: "0",
+        sealed_through: "-1",
+        uploaded_through: "-1",
+        segment_count: 0,
+        uploaded_segment_count: 0,
+        total_size_bytes: "0",
+      });
+      expect(body.profile).toEqual({
+        apiVersion: "durable.streams/profile/v1",
+        profile: { kind: "generic" },
+      });
+      expect(body.schema).toMatchObject({
+        apiVersion: "durable.streams/schema-registry/v1",
+        schema: "details",
+        currentVersion: 0,
+        boundaries: [],
+      });
+      expect(body.index_status).toMatchObject({
+        stream: "details",
+        profile: "generic",
+        segments: {
+          total_count: 0,
+          uploaded_count: 0,
+        },
+      });
+      expect(body.index_status.routing_key_index?.configured).toBe(false);
+      expect(body.index_status.exact_indexes).toEqual([]);
+      expect(body.index_status.search_families).toEqual([]);
+    });
+  });
+
+  test("server details endpoint exposes configured limits and live runtime state", async () => {
+    await withServer(
+      {
+        autoTuneRequestedMemoryMb: 3072,
+        autoTunePresetMb: 2048,
+        autoTuneEffectiveMemoryLimitMb: 2048,
+        ingestConcurrency: 3,
+        readConcurrency: 5,
+        searchConcurrency: 2,
+        asyncIndexConcurrency: 1,
+        uploadConcurrency: 7,
+      },
+      async ({ baseUrl }) => {
+        const r = await fetch(`${baseUrl}/v1/server/_details`);
+        expect(r.status).toBe(200);
+        const body = await r.json();
+        expect(body).toMatchObject({
+          auto_tune: {
+            enabled: true,
+            requested_memory_mb: 3072,
+            preset_mb: 2048,
+            effective_memory_limit_mb: 2048,
+          },
+          configured_limits: {
+            concurrency: {
+              ingest: 3,
+              read: 5,
+              search: 2,
+              async_index: 1,
+              upload: 7,
+            },
+          },
+          runtime: {
+            memory: {
+              pressure_active: expect.any(Boolean),
+              pressure_limit_bytes: expect.any(Number),
+              last_rss_bytes: expect.any(Number),
+              max_rss_bytes: expect.any(Number),
+              process: {
+                rss_bytes: expect.any(Number),
+                heap_total_bytes: expect.any(Number),
+                heap_used_bytes: expect.any(Number),
+                external_bytes: expect.any(Number),
+                array_buffers_bytes: expect.any(Number),
+              },
+              subsystems: {
+                heap_estimates: expect.any(Object),
+                mapped_files: expect.any(Object),
+                disk_caches: expect.any(Object),
+                configured_budgets: expect.any(Object),
+                counts: expect.any(Object),
+              },
+              totals: {
+                heap_estimate_bytes: expect.any(Number),
+                mapped_file_bytes: expect.any(Number),
+                disk_cache_bytes: expect.any(Number),
+                configured_budget_bytes: expect.any(Number),
+              },
+            },
+            ingest_queue: {
+              requests: expect.any(Number),
+              bytes: expect.any(Number),
+              full: expect.any(Boolean),
+            },
+            local_backpressure: {
+              enabled: expect.any(Boolean),
+              current_bytes: expect.any(Number),
+              max_bytes: expect.any(Number),
+              over_limit: expect.any(Boolean),
+            },
+            uploads: {
+              pending_segments: expect.any(Number),
+            },
+          },
+        });
+        expect(body.runtime.concurrency.ingest).toEqual({
+          configured_limit: 3,
+          current_limit: 3,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.read).toEqual({
+          configured_limit: 5,
+          current_limit: 5,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.search).toEqual({
+          configured_limit: 2,
+          current_limit: 2,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.async_index).toEqual({
+          configured_limit: 1,
+          current_limit: 1,
+          active: 0,
+          queued: 0,
+        });
+      }
+    );
+  });
+
+  test("server mem endpoint exposes runtime bytes, leak-candidate counters, and top stream contributors", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/mem-a`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      await fetch(`${baseUrl}/v1/stream/mem-a`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "abcdef",
+      });
+      const r = await fetch(`${baseUrl}/v1/server/_mem`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body).toMatchObject({
+        ts: expect.any(String),
+        process: {
+          rss_bytes: expect.any(Number),
+          heap_total_bytes: expect.any(Number),
+          heap_used_bytes: expect.any(Number),
+          external_bytes: expect.any(Number),
+          array_buffers_bytes: expect.any(Number),
+        },
+        process_breakdown: {
+          source: expect.any(String),
+          js_managed_bytes: expect.any(Number),
+          js_external_non_array_buffers_bytes: expect.any(Number),
+          mapped_file_bytes: expect.any(Number),
+          sqlite_runtime_bytes: expect.any(Number),
+          unattributed_rss_bytes: expect.any(Number),
+        },
+        sqlite: {
+          available: expect.any(Boolean),
+          source: expect.any(String),
+          memory_used_bytes: expect.any(Number),
+          memory_highwater_bytes: expect.any(Number),
+          pagecache_used_slots: expect.any(Number),
+          pagecache_used_slots_highwater: expect.any(Number),
+          pagecache_overflow_bytes: expect.any(Number),
+          pagecache_overflow_highwater_bytes: expect.any(Number),
+          malloc_count: expect.any(Number),
+          malloc_count_highwater: expect.any(Number),
+          open_connections: expect.any(Number),
+          prepared_statements: expect.any(Number),
+        },
+        gc: {
+          forced_gc_count: expect.any(Number),
+          forced_gc_reclaimed_bytes_total: expect.any(Number),
+          heap_snapshots_written: expect.any(Number),
+        },
+        high_water: {
+          process: expect.any(Object),
+          process_breakdown: expect.any(Object),
+          sqlite: expect.any(Object),
+          runtime_bytes: expect.any(Object),
+          runtime_totals: expect.any(Object),
+        },
+        runtime_counts: {
+          mock_r2_in_memory_bytes: expect.any(Number),
+          mock_r2_object_count: expect.any(Number),
+          sqlite_open_connections: expect.any(Number),
+          sqlite_prepared_statements: expect.any(Number),
+        },
+        runtime_bytes: {
+          heap_estimates: expect.any(Object),
+          mapped_files: expect.any(Object),
+          disk_caches: expect.any(Object),
+          configured_budgets: expect.any(Object),
+          pipeline_buffers: expect.any(Object),
+          sqlite_runtime: expect.any(Object),
+        },
+        runtime_totals: {
+          heap_estimate_bytes: expect.any(Number),
+          mapped_file_bytes: expect.any(Number),
+          disk_cache_bytes: expect.any(Number),
+          configured_budget_bytes: expect.any(Number),
+          pipeline_buffer_bytes: expect.any(Number),
+          sqlite_runtime_bytes: expect.any(Number),
+        },
+        top_streams: {
+          local_storage_bytes: expect.any(Array),
+          pending_wal_bytes: expect.any(Array),
+          touch_journal_filter_bytes: expect.any(Array),
+          notifier_waiters: expect.any(Array),
+        },
+        counters: {
+          "tieredstore.mem.leak_candidate.segment_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.lexicon_file_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.companion_file_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.routing_run_disk_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.exact_run_disk_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.active_count": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.created_total": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.filter_bytes_total": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journal.default_filter_bytes": 4 * (1 << 22),
+          "tieredstore.mem.leak_candidate.touch.maps.fine_lag_coarse_only_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.touch_mode_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.fine_token_bucket_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.hot_fine_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.lag_source_offset_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.restricted_template_bucket_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.runtime_totals_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.zero_row_backlog_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.last_seen_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.dirty_last_seen_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.rate_state_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_metrics.counter_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.notifier.latest_seq_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.notifier.details_version_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.metrics.series": expect.any(Number),
+          "tieredstore.mem.leak_candidate.secondary_index.stream_idle_ticks_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.mock_r2.in_memory_bytes": expect.any(Number),
+          "tieredstore.mem.leak_candidate.mock_r2.object_count": expect.any(Number),
+        },
+      });
+    });
+  });
+
+  test("details endpoint reports total_size_bytes with simple lookup", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/size`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      await fetch(`${baseUrl}/v1/stream/size`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "abc",
+      });
+
+      const r = await fetch(`${baseUrl}/v1/stream/size/_details`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body.stream).toMatchObject({
+        name: "size",
+        next_offset: "1",
+        total_size_bytes: "3",
+        pending_bytes: "3",
+        wal_bytes: "3",
+      });
+    });
+  });
+
+  test("details endpoint reports storage usage and object-store request accounting", async () => {
+    await withServer(
+      {
+        segmentMaxBytes: 180,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        indexCheckIntervalMs: 10,
+        indexL0SpanSegments: 2,
+        searchCompanionBuildBatchSegments: 2,
+      },
+      async ({ baseUrl }) => {
+        let r = await fetch(`${baseUrl}/v1/stream/details-storage`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        });
+        expect([200, 201]).toContain(r.status);
+
+        r = await fetch(`${baseUrl}/v1/stream/details-storage/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(DETAILS_SEARCH_SCHEMA),
+        });
+        expect(r.status).toBe(200);
+
+        for (let i = 0; i < 12; i++) {
+          const event = {
+            eventTime: `2026-03-31T12:${String(i).padStart(2, "0")}:00.000Z`,
+            service: i % 2 === 0 ? "billing-api" : "worker-api",
+            message: `record ${i} constructor push`,
+          };
+          const appendRes = await fetch(`${baseUrl}/v1/stream/details-storage`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(event),
+          });
+          expect(appendRes.status).toBe(204);
+        }
+
+        let body: any = null;
+        const deadline = Date.now() + 10_000;
+        let ready = false;
+        while (Date.now() < deadline) {
+          const detailsRes = await fetch(`${baseUrl}/v1/stream/details-storage/_details`);
+          expect(detailsRes.status).toBe(200);
+          body = await detailsRes.json();
+          if (
+            Number(body.stream?.uploaded_segment_count ?? 0) > 0 &&
+            Number(body.index_status?.bundled_companions?.object_count ?? 0) > 0
+          ) {
+            ready = true;
+            break;
+          }
+          await sleep(50);
+        }
+
+        expect(body).not.toBeNull();
+        expect(ready).toBe(true);
+        expect(Number(body.stream.uploaded_segment_count)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.total_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.segments_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.indexes_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.manifest_bytes)).toBeGreaterThan(0);
+        expect(Number(body.storage.object_storage.schema_registry_bytes)).toBeGreaterThan(0);
+        expect(body.storage.object_storage.segment_object_count).toBe(Number(body.stream.uploaded_segment_count));
+        expect(body.storage.object_storage.bundled_companion_object_count).toBeGreaterThan(0);
+
+        expect(Number(body.storage.local_storage.wal_retained_bytes)).toBeGreaterThanOrEqual(0);
+        expect(Number(body.storage.local_storage.sqlite_shared_total_bytes)).toBeGreaterThan(0);
+
+        expect(Number(body.object_store_requests.puts)).toBeGreaterThan(0);
+        expect(Number(body.object_store_requests.reads)).toBeGreaterThanOrEqual(0);
+        expect(body.object_store_requests.by_artifact).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              artifact: "segment",
+            }),
+            expect.objectContaining({
+              artifact: "manifest",
+            }),
+            expect.objectContaining({
+              artifact: "schema_registry",
+            }),
+          ])
+        );
+
+        const routingIndex = body.index_status.routing_key_index;
+        expect(routingIndex).toMatchObject({
+          configured: false,
+        });
+        expect(Number(routingIndex.bytes_at_rest)).toBeGreaterThanOrEqual(0);
+        expect(routingIndex.object_count).toBe(0);
+        expect(routingIndex.indexed_segment_count).toBe(0);
+
+        const exactIndex = body.index_status.exact_indexes.find((entry: any) => entry.name === "service");
+        expect(exactIndex).toBeDefined();
+        expect(Number(exactIndex.bytes_at_rest)).toBeGreaterThanOrEqual(0);
+        expect(exactIndex.object_count).toBeGreaterThanOrEqual(0);
+        expect(exactIndex.lag_segments).toBeGreaterThanOrEqual(0);
+        expect(typeof exactIndex.stale_configuration).toBe("boolean");
+
+        const ftsFamily = body.index_status.search_families.find((entry: any) => entry.family === "fts");
+        expect(ftsFamily).toBeDefined();
+        expect(Number(ftsFamily.bytes_at_rest)).toBeGreaterThan(0);
+        expect(ftsFamily.object_count).toBeGreaterThan(0);
+      }
+    );
+  });
+
+  test("details endpoint returns etag and supports conditional get", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-etag`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-etag/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const second = await fetch(`${baseUrl}/v1/stream/details-etag/_details`, {
+        headers: { "if-none-match": etag! },
+      });
+      expect(second.status).toBe(304);
+      expect(second.headers.get("etag")).toBe(etag);
+    });
+  });
+
+  test("details long-poll wakes on append", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-live`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-live/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const detailsPromise = fetch(`${baseUrl}/v1/stream/details-live/_details?live=long-poll&timeout=2s`, {
+        headers: { "if-none-match": etag! },
+      });
+      await sleep(100);
+      await fetch(`${baseUrl}/v1/stream/details-live`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "a",
+      });
+
+      const next = await detailsPromise;
+      expect(next.status).toBe(200);
+      expect(next.headers.get("etag")).not.toBe(etag);
+      const body = await next.json();
+      expect(body.stream).toMatchObject({
+        name: "details-live",
+        next_offset: "1",
+        total_size_bytes: "1",
+      });
+    });
+  });
+
+  test("__stream_metrics__ details long-poll wakes on internal metrics emission", async () => {
+    await withServer({ metricsFlushIntervalMs: 100 }, async ({ baseUrl }) => {
+      const first = await fetch(`${baseUrl}/v1/stream/__stream_metrics__/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const next = await fetch(
+        `${baseUrl}/v1/stream/__stream_metrics__/_details?live=long-poll&timeout=2s`,
+        {
+          headers: { "if-none-match": etag! },
+        },
+      );
+
+      expect(next.status).toBe(200);
+      expect(Date.now() - start).toBeLessThan(1800);
+      expect(next.headers.get("etag")).not.toBe(etag);
+
+      const body = await next.json();
+      expect(body.stream?.name).toBe("__stream_metrics__");
+      expect(Number(body.stream?.next_offset ?? "0")).toBeGreaterThan(0);
+    });
+  });
+
+  test("details long-poll wakes on metadata changes", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-meta`, { method: "PUT", headers: { "content-type": "application/json" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-meta/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const detailsPromise = fetch(`${baseUrl}/v1/stream/details-meta/_details?live=long-poll&timeout=2s`, {
+        headers: { "if-none-match": etag! },
+      });
+      await sleep(100);
+      const update = await fetch(`${baseUrl}/v1/stream/details-meta/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "evlog" },
+        }),
+      });
+      expect(update.status).toBe(200);
+
+      const next = await detailsPromise;
+      expect(next.status).toBe(200);
+      expect(next.headers.get("etag")).not.toBe(etag);
+      const body = await next.json();
+      expect(body.stream?.profile).toBe("evlog");
+      expect(body.profile?.profile).toEqual({ kind: "evlog" });
+    });
+  });
+
+  test("details long-poll times out with 304 when unchanged", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-timeout`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-timeout/_details`);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const timedOut = await fetch(`${baseUrl}/v1/stream/details-timeout/_details?live=long-poll&timeout=200ms`, {
+        headers: { "if-none-match": etag! },
+      });
+      expect(timedOut.status).toBe(304);
+      expect(Date.now() - start).toBeGreaterThan(150);
+      expect(timedOut.headers.get("etag")).toBe(etag);
+    });
+  });
+
+  test("profile subresource rejects unsupported profiles", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      const r = await fetch(`${baseUrl}/v1/stream/profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "queue" },
+        }),
+      });
+      expect(r.status).toBe(400);
+    });
+  });
+
+  test("state-protocol profile requires json streams and enables touch routes", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/text-profiled`, { method: "PUT", headers: { "content-type": "text/plain" } });
+
+      let r = await fetch(`${baseUrl}/v1/stream/text-profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: {
+            kind: "state-protocol",
+            touch: { enabled: true },
+          },
+        }),
+      });
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("application/json");
+
+      await fetch(`${baseUrl}/v1/stream/json-profiled`, { method: "PUT", headers: { "content-type": "application/json" } });
+
+      r = await fetch(`${baseUrl}/v1/stream/json-profiled/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: {
+            kind: "state-protocol",
+            touch: { enabled: true, onMissingBefore: "coarse" },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+      const profileJson = await r.json();
+      expect(profileJson.apiVersion).toBe("durable.streams/profile/v1");
+      expect(profileJson.profile?.kind).toBe("state-protocol");
+      expect(profileJson.profile?.touch?.enabled).toBe(true);
+      expect(profileJson.profile?.touch?.onMissingBefore).toBe("coarse");
+
+      r = await fetch(`${baseUrl}/v1/stream/json-profiled/touch/meta`);
+      expect(r.status).toBe(200);
     });
   });
 
@@ -138,6 +853,160 @@ describe("http behavior", () => {
       r = await fetch(`${baseUrl}/v1/stream/delete-me?offset=-1`);
       expect(r.status).toBe(404);
     });
+  });
+
+  test("overload responses include retry-after", async () => {
+    await withServer({ ingestMaxQueueBytes: 1, ingestMaxQueueRequests: 1 }, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/overloaded`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+
+      const r = await fetch(`${baseUrl}/v1/stream/overloaded`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "ab",
+      });
+
+      expect(r.status).toBe(429);
+      expect(r.headers.get("retry-after")).toBe("1");
+      expect(await r.json()).toEqual({
+        error: { code: "overloaded", message: "ingest queue full" },
+      });
+    });
+  });
+
+  test("memory pressure state no longer rejects append requests", { timeout: 5_000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-memory-pressure-signal-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+    try {
+      let res = await fetch(`${baseUrl}/v1/stream/memory-backpressure`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+      expect(res.status).toBe(201);
+
+      const originalIsOverLimit = app.deps.memory.isOverLimit.bind(app.deps.memory);
+      (app.deps.memory as any).isOverLimit = () => true;
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
+        },
+      });
+
+      const start = Date.now();
+      res = await Promise.race([
+        fetch(`${baseUrl}/v1/stream/memory-backpressure`, {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body,
+          duplex: "half",
+        }),
+        sleep(1_500).then(() => {
+          throw new Error("memory backpressure response hung");
+        }),
+      ]);
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(204);
+      expect(elapsed).toBeLessThan(1_500);
+      expect(res.headers.get("retry-after")).toBeNull();
+
+      (app.deps.memory as any).isOverLimit = originalIsOverLimit;
+    } finally {
+      server.stop();
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("append requests time out after 3s with an append-specific error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-append-timeout-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    try {
+      let res = await app.fetch(
+        new Request("http://local/v1/stream/slow-append", {
+          method: "PUT",
+          headers: { "content-type": "text/plain" },
+        })
+      );
+      expect(res.status).toBe(201);
+
+      app.deps.ingest.append = (() =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(Result.err({ kind: "internal" })), 3_200);
+        })) as any;
+
+      const start = Date.now();
+      res = await app.fetch(
+        new Request("http://local/v1/stream/slow-append", {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: "hello",
+        })
+      );
+      const elapsed = Date.now() - start;
+
+      expect(res.status).toBe(408);
+      expect(elapsed).toBeGreaterThanOrEqual(2_900);
+      expect(elapsed).toBeLessThan(4_500);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "append_timeout",
+          message: "append timed out; append outcome is unknown, check Stream-Next-Offset before retrying",
+        },
+      });
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("generic resolver timeout returns 408 for handlers that exceed 5s", { timeout: 8_000 }, async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/details-resolver-timeout`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+
+      const first = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details`);
+      expect(first.status).toBe(200);
+      const etag = first.headers.get("etag");
+      expect(etag).not.toBeNull();
+
+      const start = Date.now();
+      const timedOut = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details?live=long-poll&timeout=6s`, {
+        headers: { "if-none-match": etag! },
+      });
+      const elapsed = Date.now() - start;
+
+      expect(timedOut.status).toBe(408);
+      expect(elapsed).toBeGreaterThanOrEqual(4_900);
+      expect(elapsed).toBeLessThan(7_500);
+      expect(await timedOut.json()).toEqual({
+        error: { code: "request_timeout", message: "request timed out" },
+      });
+    });
+  });
+
+  test("shutdown responses include retry-after", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-close-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    try {
+      app.close();
+      const r = await app.fetch(new Request("http://local/health"));
+      expect(r.status).toBe(503);
+      expect(r.headers.get("retry-after")).toBe("5");
+      expect(await r.json()).toEqual({
+        error: { code: "unavailable", message: "server shutting down" },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("append max body bytes enforced", async () => {
@@ -198,6 +1067,492 @@ describe("http behavior", () => {
         body: JSON.stringify({ k: "k3", z: 3 }),
       });
       expect(r.status).toBe(400);
+    });
+  });
+
+  test(
+    "keyed reads download and cache whole remote segments instead of range-reading them",
+    { timeout: 15_000 },
+    async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-keyed-cache-"));
+    const cfg = makeConfig(root, {
+      ingestFlushIntervalMs: 1,
+      indexCheckIntervalMs: 10,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      segmentTargetRows: 2,
+      segmentMaxBytes: 1024 * 1024,
+      segmentCacheMaxBytes: 32 * 1024 * 1024,
+    });
+    const store = new RecordingStore();
+    const app = createApp(cfg, store);
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    try {
+      let r = await fetch(`${baseUrl}/v1/stream/keyed-cache`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+      expect([200, 201]).toContain(r.status);
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ routingKey: { jsonPointer: "/k", required: true } }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([
+          { k: "0--key/alpha", x: 1 },
+          { k: "0--key/boomerang", x: 2 },
+        ]),
+      });
+      expect(r.status).toBe(204);
+
+      await waitForCondition(async () => {
+        const details = await fetch(`${baseUrl}/v1/stream/keyed-cache/_details`);
+        if (!details.ok) return false;
+        const body = await details.json();
+        return body.stream.uploaded_segment_count === 1;
+      });
+
+      rmSync(join(root, "cache"), { recursive: true, force: true });
+      store.clearGetCalls();
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache?offset=-1&format=json&key=${encodeURIComponent("0--key/boomerang")}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ k: "0--key/boomerang", x: 2 }]);
+
+      const firstSegmentGets = store.getCalls.filter((call) => call.key.endsWith(".bin"));
+      expect(firstSegmentGets.length).toBeGreaterThan(0);
+      expect(firstSegmentGets.every((call) => call.opts?.range == null)).toBe(true);
+
+      store.clearGetCalls();
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache?offset=-1&format=json&key=${encodeURIComponent("0--key/boomerang")}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ k: "0--key/boomerang", x: 2 }]);
+      expect(store.getCalls.filter((call) => call.key.endsWith(".bin"))).toHaveLength(0);
+    } finally {
+      server.stop();
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+    }
+  );
+
+  test(
+    "planned sealed scans do not walk every indexed sealed segment when the candidate set is small",
+    { timeout: 15_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-http-keyed-plan-"));
+      const app = createApp(makeConfig(root), new MockR2Store());
+
+      try {
+        for (let i = 0; i < 40; i++) {
+          if (i === 0) {
+            app.deps.db.ensureStream("keyed-plan", { contentType: "application/octet-stream" });
+          }
+          app.deps.db.createSegmentRow({
+            segmentId: `seg-${i}`,
+            stream: "keyed-plan",
+            segmentIndex: i,
+            startOffset: BigInt(i),
+            endOffset: BigInt(i),
+            blockCount: 1,
+            lastAppendMs: BigInt(i + 1),
+            payloadBytes: 1n,
+            sizeBytes: 1,
+            localPath: "",
+          });
+        }
+
+        const originalFindSegmentForOffset = app.deps.db.findSegmentForOffset.bind(app.deps.db);
+        let findSegmentCalls = 0;
+        (app.deps.db as any).findSegmentForOffset = (stream: string, offset: bigint) => {
+          findSegmentCalls += 1;
+          return originalFindSegmentForOffset(stream, offset);
+        };
+
+        const planned = (app.deps.reader as any).planSealedReadSegments(
+          "keyed-plan",
+          0n,
+          39n,
+          new Set([7]),
+          16,
+          "asc"
+        );
+        expect(planned).not.toBeNull();
+        expect(planned.segments.map((seg: any) => seg.segment_index)).toEqual([7, ...Array.from({ length: 24 }, (_, i) => i + 16)]);
+        const reversePlanned = (app.deps.reader as any).planSealedReadSegments(
+          "keyed-plan",
+          0n,
+          39n,
+          new Set([7]),
+          16,
+          "desc"
+        );
+        expect(reversePlanned).not.toBeNull();
+        expect(reversePlanned.segments.map((seg: any) => seg.segment_index)).toEqual([
+          ...Array.from({ length: 24 }, (_, i) => 39 - i),
+          7,
+        ]);
+        expect(findSegmentCalls).toBeLessThanOrEqual(8);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test(
+    "seekOffsetByTimestamp with a key does not walk every indexed sealed segment when the routing candidate set is small",
+    { timeout: 15_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-http-seek-plan-"));
+      const app = createApp(makeConfig(root), new MockR2Store());
+
+      try {
+        app.deps.db.ensureStream("seek-plan", { contentType: "application/octet-stream" });
+        for (let i = 0; i < 40; i++) {
+          const localPath = join(root, `seg-${i}.bin`);
+          const routingKey = i === 7 ? "needle" : `other-${i}`;
+          const sizeBytes = writeSingleRecordSegment(localPath, BigInt(i), BigInt(i + 1), routingKey, `payload-${i}`);
+          app.deps.db.commitSealedSegment({
+            segmentId: `seg-${i}`,
+            stream: "seek-plan",
+            segmentIndex: i,
+            startOffset: BigInt(i),
+            endOffset: BigInt(i),
+            blockCount: 1,
+            lastAppendMs: BigInt(i + 1),
+            sizeBytes,
+            localPath,
+            payloadBytes: BigInt(sizeBytes),
+            rowsSealed: 1n,
+          });
+        }
+
+        const originalFindSegmentForOffset = app.deps.db.findSegmentForOffset.bind(app.deps.db);
+        let findSegmentCalls = 0;
+        (app.deps.db as any).findSegmentForOffset = (stream: string, offset: bigint) => {
+          findSegmentCalls += 1;
+          return originalFindSegmentForOffset(stream, offset);
+        };
+
+        const originalResolveCandidateSegments = (app.deps.reader as any).resolveCandidateSegments.bind(app.deps.reader);
+        (app.deps.reader as any).resolveCandidateSegments = async (
+          stream: string,
+          keyBytes: Uint8Array | null,
+          filter: unknown
+        ) => {
+          if (stream === "seek-plan" && keyBytes && new TextDecoder().decode(keyBytes) === "needle" && filter == null) {
+            return { segments: new Set([7]), indexedThrough: 16 };
+          }
+          return originalResolveCandidateSegments(stream, keyBytes, filter);
+        };
+
+        const res = await app.deps.reader.seekOffsetByTimestampResult("seek-plan", 0n, "needle");
+        expect(Result.isOk(res)).toBe(true);
+        if (Result.isOk(res)) {
+          expect(res.value).toBe(encodeOffset(0, 6n));
+        }
+        expect(findSegmentCalls).toBeLessThanOrEqual(4);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test("json schema date-time format is enforced on append", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+
+      let r = await fetch(`${baseUrl}/v1/stream/date-format/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string", format: "date-time" },
+            },
+            required: ["eventTime"],
+            additionalProperties: false,
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ eventTime: "not-a-timestamp" }]),
+      });
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("must match format");
+
+      r = await fetch(`${baseUrl}/v1/stream/date-format`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ eventTime: "2026-03-30T12:59:05.983Z" }]),
+      });
+      expect(r.status).toBe(204);
+    });
+  });
+
+  test("read filter applies indexed predicates on the main read path", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filterable`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filterable/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+              status: { type: "integer" },
+              message: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+              status: {
+                kind: "integer",
+                bindings: [{ version: 1, jsonPointer: "/status" }],
+                exact: true,
+                column: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filterable`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([
+          { service: "api", status: 200, message: "ok" },
+          { service: "worker", status: 503, message: "retry" },
+          { service: "api", status: 503, message: "boom" },
+        ]),
+      });
+      expect(r.status).toBe(204);
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "service:api status:>=500",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filterable?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ service: "api", status: 503, message: "boom" }]);
+      expect(nextOffset(r)).toBe(2n);
+    });
+  });
+
+  test("read filter advances the stream cursor when no entries match", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-empty`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-empty/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filter-empty`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ service: "api" }, { service: "api" }]),
+      });
+      expect(r.status).toBe(204);
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "service:worker",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filter-empty?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([]);
+      expect(nextOffset(r)).toBe(1n);
+    });
+  });
+
+  test("read filter rejects non-json streams and non-indexed fields", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-raw`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-raw?offset=-1&filter=service:api`);
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("application/json");
+
+      await fetch(`${baseUrl}/v1/stream/filter-bad-field`, { method: "PUT", headers: { "content-type": "application/json" } });
+      r = await fetch(`${baseUrl}/v1/stream/filter-bad-field/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              service: { type: "string" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              service: {
+                kind: "keyword",
+                bindings: [{ version: 1, jsonPointer: "/service" }],
+                normalizer: "lowercase_v1",
+                exact: true,
+                prefix: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/filter-bad-field?offset=-1&format=json&filter=status:500`);
+      expect(r.status).toBe(400);
+      expect(await r.text()).toContain("not indexed");
+    });
+  });
+
+  test("read filter reports the 100MB scan limit on unsealed tail scans", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/filter-limit`, { method: "PUT", headers: { "content-type": "application/json" } });
+      let r = await fetch(`${baseUrl}/v1/stream/filter-limit/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          schema: {
+            type: "object",
+            properties: {
+              eventTime: { type: "string" },
+              status: { type: "integer" },
+              message: { type: "string" },
+              seq: { type: "integer" },
+            },
+            additionalProperties: true,
+          },
+          search: {
+            primaryTimestampField: "eventTime",
+            fields: {
+              eventTime: {
+                kind: "date",
+                bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                exact: true,
+                column: true,
+                exists: true,
+                sortable: true,
+              },
+              status: {
+                kind: "integer",
+                bindings: [{ version: 1, jsonPointer: "/status" }],
+                exact: true,
+                column: true,
+                exists: true,
+              },
+            },
+          },
+        }),
+      });
+      expect(r.status).toBe(200);
+
+      const largeMessage = "x".repeat(4 * 1024 * 1024);
+      for (let i = 0; i < 30; i++) {
+        r = await fetch(`${baseUrl}/v1/stream/filter-limit`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify([{ status: 200, message: largeMessage, seq: i }]),
+        });
+        expect(r.status).toBe(204);
+      }
+
+      const params = new URLSearchParams({
+        offset: "-1",
+        format: "json",
+        filter: "status:>=500",
+      });
+      r = await fetch(`${baseUrl}/v1/stream/filter-limit?${params.toString()}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([]);
+      expect(r.headers.get("stream-filter-scan-limit-reached")).toBe("true");
+      expect(r.headers.get("stream-filter-scan-limit-bytes")).toBe(String(100 * 1024 * 1024));
+      expect(Number(r.headers.get("stream-filter-scanned-bytes"))).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+      expect(nextOffset(r)).toBeLessThan(29n);
     });
   });
 

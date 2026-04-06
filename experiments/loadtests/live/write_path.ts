@@ -13,7 +13,7 @@ import {
   activateTemplatesChunked,
   csvIntArg,
   deleteStream,
-  ensureSchemaAndInterpreter,
+  ensureSchemaAndProfile,
   ensureStream,
   fetchJson,
   getTouchMeta,
@@ -46,7 +46,7 @@ Options:
   --mode high-cardinality|low-cardinality  (default: high-cardinality)
   --lag-degrade-offsets <n>           (default: 5000) Switch to coarse-only when lag >= N source offsets
   --lag-recover-offsets <n>           (default: 1000) Re-enable fine touches when lag <= N source offsets
-  --fine-budget-per-batch <n>         (default: 2000) Hard cap for fine/template touches per interpreter batch (0 = coarse-only)
+  --fine-budget-per-batch <n>         (default: 2000) Hard cap for fine/template touches per processing batch (0 = coarse-only)
   --fine-tokens-per-second <n>        (default: 200000) Fine-touch token bucket refill rate
   --fine-burst <n>                    (default: 400000) Fine-touch token bucket burst capacity
   --steps <csv events/sec>            (default: 1000,5000,10000,20000)
@@ -58,8 +58,8 @@ Options:
   --ttl-ms <n>                        (default: 3600000) Template inactivity TTL for activations
   --coarse-interval-ms <n>            (default: 100)
   --coalesce-window-ms <n>            (default: 100)
-  --setup                             Ensure stream + interpreter config (default: on)
-  --no-setup                          Do not modify stream schema/interpreter
+  --setup                             Ensure stream + state-protocol profile (default: on)
+  --no-setup                          Do not modify stream schema/profile
   --activate-templates                Activate templates pre-step (default: on)
   --no-activate-templates             Skip template activation pre-step
   --reset                             Delete <stream> first
@@ -71,7 +71,7 @@ Notes:
   - This script batches append requests; adjust --batch-events and --producers
     to avoid client-side bottlenecks.
   - Template activation requires caps/rate-limits that allow >298 templates per
-    entity; --setup configures a permissive interpreter.touch.templates policy.
+    entity; --setup configures a permissive state-protocol touch.templates policy.
 `);
   process.exit(exitCode);
 }
@@ -536,14 +536,14 @@ type LiveTick = {
     fineTouchesSuppressedBatchesDueToLag?: number;
     fineTouchesSuppressedBatchesDueToBudget?: number;
   };
-  interpreter: {
+  processor: {
     errors: number;
     lagSourceOffsets: number;
   };
 };
 
 function isLiveTick(x: any): x is LiveTick {
-  return !!x && typeof x === "object" && x.type === "live.tick" && typeof x.stream === "string" && x.touch && x.interpreter;
+  return !!x && typeof x === "object" && x.type === "live.tick" && typeof x.stream === "string" && x.touch && x.processor;
 }
 
 type TickAgg = {
@@ -555,7 +555,7 @@ type TickAgg = {
   fineTouchesDroppedDueToBudget: number;
   fineTouchesSuppressedBatchesDueToLag: number;
   fineTouchesSuppressedBatchesDueToBudget: number;
-  interpreterErrors: number;
+  processorErrors: number;
   maxLagSourceOffsets: number;
   lastTick: LiveTick | null;
 };
@@ -570,7 +570,7 @@ function newTickAgg(): TickAgg {
     fineTouchesDroppedDueToBudget: 0,
     fineTouchesSuppressedBatchesDueToLag: 0,
     fineTouchesSuppressedBatchesDueToBudget: 0,
-    interpreterErrors: 0,
+    processorErrors: 0,
     maxLagSourceOffsets: 0,
     lastTick: null,
   };
@@ -585,8 +585,8 @@ function applyTick(agg: TickAgg, tick: LiveTick): void {
   agg.fineTouchesDroppedDueToBudget += Number(tick.touch.fineTouchesDroppedDueToBudget ?? 0);
   agg.fineTouchesSuppressedBatchesDueToLag += Number(tick.touch.fineTouchesSuppressedBatchesDueToLag ?? 0);
   agg.fineTouchesSuppressedBatchesDueToBudget += Number(tick.touch.fineTouchesSuppressedBatchesDueToBudget ?? 0);
-  agg.interpreterErrors += Number(tick.interpreter.errors ?? 0);
-  agg.maxLagSourceOffsets = Math.max(agg.maxLagSourceOffsets, Number(tick.interpreter.lagSourceOffsets ?? 0));
+  agg.processorErrors += Number(tick.processor.errors ?? 0);
+  agg.maxLagSourceOffsets = Math.max(agg.maxLagSourceOffsets, Number(tick.processor.lagSourceOffsets ?? 0));
   agg.lastTick = tick;
 }
 
@@ -639,9 +639,8 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
   const fineTokensPerSecond = Math.max(0, intArg(args, "fine-tokens-per-second", 200_000));
   const fineBurst = Math.max(0, intArg(args, "fine-burst", 400_000));
 
-  const interpreter = {
-    apiVersion: "durable.streams/stream-interpreter/v1",
-    format: "durable.streams/state-protocol/v1",
+  const profile = {
+    kind: "state-protocol",
     touch: {
       enabled: true,
       coarseIntervalMs,
@@ -662,7 +661,7 @@ async function setupStream(baseUrl: string, stream: string, args: ParsedArgs): P
   };
 
   await ensureStream(baseUrl, stream, "application/json");
-  await ensureSchemaAndInterpreter(baseUrl, stream, interpreter);
+  await ensureSchemaAndProfile(baseUrl, stream, profile);
   await waitForTouchReady(baseUrl, stream);
 }
 
@@ -694,7 +693,7 @@ async function main(): Promise<void> {
 
   if (doSetup) {
     // eslint-disable-next-line no-console
-    console.log(`[write-path] setup: ensuring stream + interpreter config (touch enabled)`);
+    console.log(`[write-path] setup: ensuring stream + state-protocol profile (touch enabled)`);
     await setupStream(baseUrl, stream, ARGS);
   } else {
     // eslint-disable-next-line no-console
@@ -740,7 +739,7 @@ async function main(): Promise<void> {
 
   const entityWeighted = normalizeWeights(ENTITY_SPECS);
 
-  // Warmup: avoid false "0 touches" steps caused by interpreter/derived-stream startup latency.
+  // Warmup: avoid false "0 touches" steps caused by touch processing startup latency.
   await warmupTouchStream(baseUrl, stream);
 
   // live.metrics tailer (optional)
@@ -774,7 +773,7 @@ async function main(): Promise<void> {
                   t.touch.fineTouchesSuppressedBatchesDueToLag ?? 0
                 )} fineSuppressedBudgetBatches=${fmtInt(
                   t.touch.fineTouchesSuppressedBatchesDueToBudget ?? 0
-                )} lagSourceOffsets=${fmtInt(t.interpreter.lagSourceOffsets)} errors=${fmtInt(t.interpreter.errors)}`
+                )} lagSourceOffsets=${fmtInt(t.processor.lagSourceOffsets)} errors=${fmtInt(t.processor.errors)}`
               );
             }
           }
@@ -870,8 +869,8 @@ async function main(): Promise<void> {
           tickAgg.fineTouchesSuppressedBatchesDueToLag
         )} fineSuppressedBudgetBatches=${fmtInt(
           tickAgg.fineTouchesSuppressedBatchesDueToBudget
-        )} uniqueKeysTouched=${fmtInt(tickAgg.uniqueKeysTouched)} maxLagSourceOffsets=${fmtInt(tickAgg.maxLagSourceOffsets)} interpreterErrors=${fmtInt(
-          tickAgg.interpreterErrors
+        )} uniqueKeysTouched=${fmtInt(tickAgg.uniqueKeysTouched)} maxLagSourceOffsets=${fmtInt(tickAgg.maxLagSourceOffsets)} processorErrors=${fmtInt(
+          tickAgg.processorErrors
         )}`
       );
     }

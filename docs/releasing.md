@@ -47,6 +47,7 @@ into temporary consumers, and verify:
 
 - Node end-to-end usage of `@prisma/streams-local`
 - Bun end-to-end usage of `@prisma/streams-local`, including the live `/touch/*` path
+- local package exposure of `GET /v1/server/_details` and `GET /v1/stream/{name}/_routing_keys`
 - Bun CLI startup for `@prisma/streams-server`
 
 3. Build the publishable package directories:
@@ -59,7 +60,7 @@ This produces:
 
 - `dist/README.md`
 - `dist/local/*.js`
-- `dist/touch/interpreter_worker.js`
+- `dist/touch/processor_worker.js`
 - `dist/types/local/*.d.ts`
 - `dist/npm/streams-local/**`
 - `dist/npm/streams-server/**`
@@ -110,8 +111,13 @@ For `@prisma/streams-local`, the build intentionally:
   each embed their own copy of the runtime
 - keeps the local runtime Bun-compatible even though the generated bundle
   targets the Node module surface
+- pins the embedded local runtime to the built-in `1024 MB` auto-tune preset so
+  Prisma CLI gets a predictable cache and concurrency budget
 - keeps npm dependencies external instead of rebundling them into the local
   package tarball
+- publishes only the runtime dependency subset the local package actually
+  imports, rather than copying the repository-wide dependency list into
+  `@prisma/streams-local`
 
 ## Why The Split Exists
 

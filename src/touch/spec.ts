@@ -1,16 +1,26 @@
 import { Result } from "better-result";
 import { dsError } from "../util/ds_error.ts";
 
-export type StreamInterpreterConfig = {
-  apiVersion: "durable.streams/stream-interpreter/v1";
-  format?: "durable.streams/state-protocol/v1";
-  touch?: TouchConfig;
-};
-
-export type StreamInterpreterConfigValidationError = {
-  kind: "invalid_interpreter";
+export type TouchConfigValidationError = {
+  kind: "invalid_touch";
   message: string;
 };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function rejectUnknownKeysResult(
+  obj: Record<string, unknown>,
+  allowed: readonly string[],
+  path: string
+): Result<void, TouchConfigValidationError> {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(obj)) {
+    if (!allowedSet.has(key)) return invalidTouch(`${path}.${key} is not supported`);
+  }
+  return Result.ok(undefined);
+}
 
 export type TouchConfig = {
   enabled: boolean;
@@ -32,12 +42,12 @@ export type TouchConfig = {
    *
    * - coarse: emit coarse table touches only (safe default)
    * - skipBefore: compute fine touches from `value` only
-   * - error: interpreter errors (useful for strict debugging)
+   * - error: processing errors (useful for strict debugging)
    */
   onMissingBefore?: "coarse" | "skipBefore" | "error";
   /**
-   * Optional guardrail: when the interpreter backlog (source offsets behind the tail)
-   * exceeds this threshold, the interpreter will emit coarse table touches only
+   * Optional guardrail: when the touch-processing backlog (source offsets behind the tail)
+   * exceeds this threshold, the processor will emit coarse table touches only
    * (fine/template touches are suppressed) to preserve timeliness under overload.
    *
    * Default: 5000.
@@ -53,7 +63,7 @@ export type TouchConfig = {
    */
   lagRecoverFineTouchesAtSourceOffsets?: number;
   /**
-   * Optional guardrail: cap fine/template touches emitted per interpreter batch.
+   * Optional guardrail: cap fine/template touches emitted per processing batch.
    * Table touches are always emitted for correctness.
    *
    * Default: 2000.
@@ -79,7 +89,7 @@ export type TouchConfig = {
    */
   lagReservedFineTouchBudgetPerBatch?: number;
   /**
-   * Memory-only touch journal parameters. Only used when storage="memory".
+   * In-memory touch journal parameters.
    */
   memory?: {
     /**
@@ -166,8 +176,8 @@ export type TouchConfig = {
   };
 };
 
-function invalidInterpreter<T = never>(message: string): Result<T, StreamInterpreterConfigValidationError> {
-  return Result.err({ kind: "invalid_interpreter", message });
+function invalidTouch<T = never>(message: string): Result<T, TouchConfigValidationError> {
+  return Result.err({ kind: "invalid_touch", message });
 }
 
 function parseNumberField(
@@ -175,9 +185,9 @@ function parseNumberField(
   defaultValue: number,
   message: string,
   predicate: (n: number) => boolean
-): Result<number, StreamInterpreterConfigValidationError> {
+): Result<number, TouchConfigValidationError> {
   const n = value === undefined ? defaultValue : Number(value);
-  if (!Number.isFinite(n) || !predicate(n)) return invalidInterpreter(message);
+  if (!Number.isFinite(n) || !predicate(n)) return invalidTouch(message);
   return Result.ok(n);
 }
 
@@ -186,158 +196,178 @@ function parseIntegerField(
   defaultValue: number,
   message: string,
   predicate: (n: number) => boolean
-): Result<number, StreamInterpreterConfigValidationError> {
+): Result<number, TouchConfigValidationError> {
   const n = value === undefined ? defaultValue : Number(value);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || !predicate(n)) return invalidInterpreter(message);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || !predicate(n)) return invalidTouch(message);
   return Result.ok(n);
 }
 
-function validateTouchConfigResult(raw: any): Result<TouchConfig, StreamInterpreterConfigValidationError> {
-  if (!raw || typeof raw !== "object") return invalidInterpreter("interpreter.touch must be an object");
+export function validateTouchConfigResult(raw: any, fieldPath = "touch"): Result<TouchConfig, TouchConfigValidationError> {
+  if (!isPlainObject(raw)) return invalidTouch(`${fieldPath} must be an object`);
+  const topLevelCheck = rejectUnknownKeysResult(
+    raw,
+    [
+      "enabled",
+      "coarseIntervalMs",
+      "touchCoalesceWindowMs",
+      "onMissingBefore",
+      "lagDegradeFineTouchesAtSourceOffsets",
+      "lagRecoverFineTouchesAtSourceOffsets",
+      "fineTouchBudgetPerBatch",
+      "fineTokensPerSecond",
+      "fineBurstTokens",
+      "lagReservedFineTouchBudgetPerBatch",
+      "memory",
+      "templates",
+    ],
+    fieldPath
+  );
+  if (Result.isError(topLevelCheck)) return topLevelCheck;
+
   const enabled = !!raw.enabled;
   if (!enabled) {
     return Result.ok({ enabled: false });
   }
 
-  if (raw.storage !== undefined) {
-    return invalidInterpreter("interpreter.touch.storage is no longer supported; touch always uses the in-memory journal");
-  }
-  if (raw.derivedStream !== undefined) {
-    return invalidInterpreter("interpreter.touch.derivedStream is no longer supported");
-  }
-  if (raw.retention !== undefined) {
-    return invalidInterpreter("interpreter.touch.retention is no longer supported");
-  }
-
   const coarseIntervalMsRes = parseNumberField(
     raw.coarseIntervalMs,
     100,
-    "interpreter.touch.coarseIntervalMs must be > 0",
+    `${fieldPath}.coarseIntervalMs must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(coarseIntervalMsRes)) return coarseIntervalMsRes;
   const touchCoalesceWindowMsRes = parseNumberField(
     raw.touchCoalesceWindowMs,
     100,
-    "interpreter.touch.touchCoalesceWindowMs must be > 0",
+    `${fieldPath}.touchCoalesceWindowMs must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(touchCoalesceWindowMsRes)) return touchCoalesceWindowMsRes;
 
   const onMissingBefore = raw.onMissingBefore === undefined ? "coarse" : raw.onMissingBefore;
   if (onMissingBefore !== "coarse" && onMissingBefore !== "skipBefore" && onMissingBefore !== "error") {
-    return invalidInterpreter("interpreter.touch.onMissingBefore must be coarse|skipBefore|error");
+    return invalidTouch(`${fieldPath}.onMissingBefore must be coarse|skipBefore|error`);
   }
 
-  const templates = raw.templates && typeof raw.templates === "object" ? raw.templates : {};
+  const templates = raw.templates === undefined ? {} : isPlainObject(raw.templates) ? raw.templates : null;
+  if (templates == null) return invalidTouch(`${fieldPath}.templates must be an object`);
+  const templatesCheck = rejectUnknownKeysResult(
+    templates,
+    ["defaultInactivityTtlMs", "lastSeenPersistIntervalMs", "gcIntervalMs", "maxActiveTemplatesPerEntity", "maxActiveTemplatesPerStream", "activationRateLimitPerMinute"],
+    `${fieldPath}.templates`
+  );
+  if (Result.isError(templatesCheck)) return templatesCheck;
   const defaultInactivityTtlMsRes = parseNumberField(
     templates.defaultInactivityTtlMs,
     60 * 60 * 1000,
-    "interpreter.touch.templates.defaultInactivityTtlMs must be >= 0",
+    `${fieldPath}.templates.defaultInactivityTtlMs must be >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(defaultInactivityTtlMsRes)) return defaultInactivityTtlMsRes;
   const lastSeenPersistIntervalMsRes = parseNumberField(
     templates.lastSeenPersistIntervalMs,
     5 * 60 * 1000,
-    "interpreter.touch.templates.lastSeenPersistIntervalMs must be > 0",
+    `${fieldPath}.templates.lastSeenPersistIntervalMs must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(lastSeenPersistIntervalMsRes)) return lastSeenPersistIntervalMsRes;
   const gcIntervalMsRes = parseNumberField(
     templates.gcIntervalMs,
     60_000,
-    "interpreter.touch.templates.gcIntervalMs must be > 0",
+    `${fieldPath}.templates.gcIntervalMs must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(gcIntervalMsRes)) return gcIntervalMsRes;
   const maxActiveTemplatesPerEntityRes = parseNumberField(
     templates.maxActiveTemplatesPerEntity,
     256,
-    "interpreter.touch.templates.maxActiveTemplatesPerEntity must be > 0",
+    `${fieldPath}.templates.maxActiveTemplatesPerEntity must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(maxActiveTemplatesPerEntityRes)) return maxActiveTemplatesPerEntityRes;
   const maxActiveTemplatesPerStreamRes = parseNumberField(
     templates.maxActiveTemplatesPerStream,
     2048,
-    "interpreter.touch.templates.maxActiveTemplatesPerStream must be > 0",
+    `${fieldPath}.templates.maxActiveTemplatesPerStream must be > 0`,
     (n) => n > 0
   );
   if (Result.isError(maxActiveTemplatesPerStreamRes)) return maxActiveTemplatesPerStreamRes;
   const activationRateLimitPerMinuteRes = parseNumberField(
     templates.activationRateLimitPerMinute,
     100,
-    "interpreter.touch.templates.activationRateLimitPerMinute must be >= 0",
+    `${fieldPath}.templates.activationRateLimitPerMinute must be >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(activationRateLimitPerMinuteRes)) return activationRateLimitPerMinuteRes;
 
-  if (raw.metrics !== undefined) {
-    return invalidInterpreter("interpreter.touch.metrics is not supported; live metrics are a global server feature");
-  }
-
-  const memoryRaw = raw.memory && typeof raw.memory === "object" ? raw.memory : {};
+  const memoryRaw = raw.memory === undefined ? {} : isPlainObject(raw.memory) ? raw.memory : null;
+  if (memoryRaw == null) return invalidTouch(`${fieldPath}.memory must be an object`);
+  const memoryCheck = rejectUnknownKeysResult(
+    memoryRaw,
+    ["bucketMs", "filterPow2", "k", "pendingMaxKeys", "keyIndexMaxKeys", "hotKeyTtlMs", "hotTemplateTtlMs", "hotMaxKeys", "hotMaxTemplates"],
+    `${fieldPath}.memory`
+  );
+  if (Result.isError(memoryCheck)) return memoryCheck;
   const bucketMsRes = parseIntegerField(
     memoryRaw.bucketMs,
     100,
-    "interpreter.touch.memory.bucketMs must be an integer > 0",
+    `${fieldPath}.memory.bucketMs must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(bucketMsRes)) return bucketMsRes;
   const filterPow2Res = parseIntegerField(
     memoryRaw.filterPow2,
     22,
-    "interpreter.touch.memory.filterPow2 must be an integer in [10,30]",
+    `${fieldPath}.memory.filterPow2 must be an integer in [10,30]`,
     (n) => n >= 10 && n <= 30
   );
   if (Result.isError(filterPow2Res)) return filterPow2Res;
   const kRes = parseIntegerField(
     memoryRaw.k,
     4,
-    "interpreter.touch.memory.k must be an integer in [1,8]",
+    `${fieldPath}.memory.k must be an integer in [1,8]`,
     (n) => n >= 1 && n <= 8
   );
   if (Result.isError(kRes)) return kRes;
   const pendingMaxKeysRes = parseIntegerField(
     memoryRaw.pendingMaxKeys,
     100_000,
-    "interpreter.touch.memory.pendingMaxKeys must be an integer > 0",
+    `${fieldPath}.memory.pendingMaxKeys must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(pendingMaxKeysRes)) return pendingMaxKeysRes;
   const keyIndexMaxKeysRes = parseIntegerField(
     memoryRaw.keyIndexMaxKeys,
     32,
-    "interpreter.touch.memory.keyIndexMaxKeys must be an integer in [1,1024]",
+    `${fieldPath}.memory.keyIndexMaxKeys must be an integer in [1,1024]`,
     (n) => n >= 1 && n <= 1024
   );
   if (Result.isError(keyIndexMaxKeysRes)) return keyIndexMaxKeysRes;
   const hotKeyTtlMsRes = parseIntegerField(
     memoryRaw.hotKeyTtlMs,
     10_000,
-    "interpreter.touch.memory.hotKeyTtlMs must be an integer > 0",
+    `${fieldPath}.memory.hotKeyTtlMs must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(hotKeyTtlMsRes)) return hotKeyTtlMsRes;
   const hotTemplateTtlMsRes = parseIntegerField(
     memoryRaw.hotTemplateTtlMs,
     10_000,
-    "interpreter.touch.memory.hotTemplateTtlMs must be an integer > 0",
+    `${fieldPath}.memory.hotTemplateTtlMs must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(hotTemplateTtlMsRes)) return hotTemplateTtlMsRes;
   const hotMaxKeysRes = parseIntegerField(
     memoryRaw.hotMaxKeys,
     1_000_000,
-    "interpreter.touch.memory.hotMaxKeys must be an integer > 0",
+    `${fieldPath}.memory.hotMaxKeys must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(hotMaxKeysRes)) return hotMaxKeysRes;
   const hotMaxTemplatesRes = parseIntegerField(
     memoryRaw.hotMaxTemplates,
     4096,
-    "interpreter.touch.memory.hotMaxTemplates must be an integer > 0",
+    `${fieldPath}.memory.hotMaxTemplates must be an integer > 0`,
     (n) => n > 0
   );
   if (Result.isError(hotMaxTemplatesRes)) return hotMaxTemplatesRes;
@@ -345,42 +375,42 @@ function validateTouchConfigResult(raw: any): Result<TouchConfig, StreamInterpre
   const lagDegradeFineTouchesAtSourceOffsetsRes = parseIntegerField(
     raw.lagDegradeFineTouchesAtSourceOffsets,
     5000,
-    "interpreter.touch.lagDegradeFineTouchesAtSourceOffsets must be an integer >= 0",
+    `${fieldPath}.lagDegradeFineTouchesAtSourceOffsets must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(lagDegradeFineTouchesAtSourceOffsetsRes)) return lagDegradeFineTouchesAtSourceOffsetsRes;
   const lagRecoverFineTouchesAtSourceOffsetsRes = parseIntegerField(
     raw.lagRecoverFineTouchesAtSourceOffsets,
     1000,
-    "interpreter.touch.lagRecoverFineTouchesAtSourceOffsets must be an integer >= 0",
+    `${fieldPath}.lagRecoverFineTouchesAtSourceOffsets must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(lagRecoverFineTouchesAtSourceOffsetsRes)) return lagRecoverFineTouchesAtSourceOffsetsRes;
   const fineTouchBudgetPerBatchRes = parseIntegerField(
     raw.fineTouchBudgetPerBatch,
     2000,
-    "interpreter.touch.fineTouchBudgetPerBatch must be an integer >= 0",
+    `${fieldPath}.fineTouchBudgetPerBatch must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(fineTouchBudgetPerBatchRes)) return fineTouchBudgetPerBatchRes;
   const fineTokensPerSecondRes = parseIntegerField(
     raw.fineTokensPerSecond,
     200_000,
-    "interpreter.touch.fineTokensPerSecond must be an integer >= 0",
+    `${fieldPath}.fineTokensPerSecond must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(fineTokensPerSecondRes)) return fineTokensPerSecondRes;
   const fineBurstTokensRes = parseIntegerField(
     raw.fineBurstTokens,
     400_000,
-    "interpreter.touch.fineBurstTokens must be an integer >= 0",
+    `${fieldPath}.fineBurstTokens must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(fineBurstTokensRes)) return fineBurstTokensRes;
   const lagReservedFineTouchBudgetPerBatchRes = parseIntegerField(
     raw.lagReservedFineTouchBudgetPerBatch,
     200,
-    "interpreter.touch.lagReservedFineTouchBudgetPerBatch must be an integer >= 0",
+    `${fieldPath}.lagReservedFineTouchBudgetPerBatch must be an integer >= 0`,
     (n) => n >= 0
   );
   if (Result.isError(lagReservedFineTouchBudgetPerBatchRes)) return lagReservedFineTouchBudgetPerBatchRes;
@@ -418,39 +448,12 @@ function validateTouchConfigResult(raw: any): Result<TouchConfig, StreamInterpre
   });
 }
 
-export function validateStreamInterpreterConfigResult(
-  raw: any
-): Result<StreamInterpreterConfig, StreamInterpreterConfigValidationError> {
-  if (!raw || typeof raw !== "object") return invalidInterpreter("interpreter must be an object");
-  if (raw.apiVersion !== "durable.streams/stream-interpreter/v1") {
-    return invalidInterpreter("invalid interpreter apiVersion");
-  }
-  const formatRaw = raw.format === undefined ? undefined : raw.format;
-  if (formatRaw !== undefined && formatRaw !== "durable.streams/state-protocol/v1") {
-    return invalidInterpreter("interpreter.format must be durable.streams/state-protocol/v1");
-  }
-  if (raw.variants !== undefined) {
-    return invalidInterpreter("interpreter.variants is not supported (State Protocol is the only supported format)");
-  }
-  let touch: TouchConfig | undefined;
-  if (raw.touch !== undefined) {
-    const touchRes = validateTouchConfigResult(raw.touch);
-    if (Result.isError(touchRes)) return invalidInterpreter(touchRes.error.message);
-    touch = touchRes.value;
-  }
-  return Result.ok({
-    apiVersion: "durable.streams/stream-interpreter/v1",
-    format: "durable.streams/state-protocol/v1",
-    touch,
-  });
-}
-
-export function validateStreamInterpreterConfig(raw: any): StreamInterpreterConfig {
-  const res = validateStreamInterpreterConfigResult(raw);
+export function validateTouchConfig(raw: any, fieldPath = "touch"): TouchConfig {
+  const res = validateTouchConfigResult(raw, fieldPath);
   if (Result.isError(res)) throw dsError(res.error.message);
   return res.value;
 }
 
-export function isTouchEnabled(cfg: StreamInterpreterConfig | undefined): cfg is StreamInterpreterConfig & { touch: TouchConfig } {
-  return !!cfg?.touch?.enabled;
+export function isTouchEnabled(cfg: TouchConfig | undefined): cfg is TouchConfig & { enabled: true } {
+  return !!cfg?.enabled;
 }

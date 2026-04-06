@@ -6,6 +6,14 @@ This document describes the tiered routing-key index used by the Prisma
 Streams Bun + TypeScript implementation. The index is a secondary structure
 that accelerates key-filtered reads without changing the single-log write path.
 
+This document covers the fingerprint-based exact routing-key index. Alphabetic
+routing-key enumeration now uses a separate immutable lexicon run family,
+documented in [indexing-architecture.md](./indexing-architecture.md). The two
+families are complementary:
+
+- the tiered routing-key index answers exact key -> candidate segments
+- the routing-key lexicon answers sorted distinct key listing
+
 ## Goals
 
 - Make key-filtered reads fast by narrowing the segment scan set.

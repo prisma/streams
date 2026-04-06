@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
+import { STREAM_FLAG_DELETED, type SqliteDurableStore } from "../src/db/db";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 import { parseOffset } from "../src/offset";
 
@@ -20,6 +21,71 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+function seedAccelerationState(db: SqliteDurableStore, stream: string): void {
+  const secret = new Uint8Array([1, 2, 3, 4]);
+  db.upsertIndexState(stream, secret, 1);
+  db.insertIndexRun({
+    run_id: `${stream}-routing-run`,
+    stream,
+    level: 0,
+    start_segment: 0,
+    end_segment: 0,
+    object_key: `streams/${stream}/routing.run`,
+    size_bytes: 32,
+    filter_len: 4,
+    record_count: 1,
+  });
+  db.upsertSecondaryIndexState(stream, "repoName", secret, "cfg", 1);
+  db.insertSecondaryIndexRun({
+    run_id: `${stream}-secondary-run`,
+    stream,
+    index_name: "repoName",
+    level: 0,
+    start_segment: 0,
+    end_segment: 0,
+    object_key: `streams/${stream}/exact.run`,
+    size_bytes: 32,
+    filter_len: 4,
+    record_count: 1,
+  });
+  db.upsertLexiconIndexState(stream, "routing_key", "", 1);
+  db.insertLexiconIndexRun({
+    run_id: `${stream}-lexicon-run`,
+    stream,
+    source_kind: "routing_key",
+    source_name: "",
+    level: 0,
+    start_segment: 0,
+    end_segment: 0,
+    object_key: `streams/${stream}/lexicon.run`,
+    size_bytes: 32,
+    record_count: 1,
+  });
+  db.upsertSearchCompanionPlan(stream, 1, "hash", JSON.stringify({ generation: 1, sections: ["col"] }));
+  db.upsertSearchSegmentCompanion(
+    stream,
+    0,
+    `streams/${stream}/segments/0.cmp`,
+    1,
+    JSON.stringify(["col"]),
+    JSON.stringify({ col: 32 }),
+    32,
+    null,
+    null
+  );
+}
+
+function expectAccelerationStateCleared(db: SqliteDurableStore, stream: string): void {
+  expect(db.getIndexState(stream)).toBeNull();
+  expect(db.listIndexRuns(stream)).toHaveLength(0);
+  expect(db.listSecondaryIndexStates(stream)).toHaveLength(0);
+  expect(db.listSecondaryIndexRuns(stream, "repoName")).toHaveLength(0);
+  expect(db.listLexiconIndexStates(stream)).toHaveLength(0);
+  expect(db.listLexiconIndexRuns(stream, "routing_key", "")).toHaveLength(0);
+  expect(db.getSearchCompanionPlan(stream)).toBeNull();
+  expect(db.listSearchSegmentCompanions(stream)).toHaveLength(0);
 }
 
 describe("assumptions", () => {
@@ -115,7 +181,7 @@ describe("assumptions", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("schema update accepts registry-shaped payload", async () => {
+  test("schema update rejects registry-shaped payload", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
     const cfg = makeConfig(root);
     const app = createApp(cfg, new MockR2Store());
@@ -141,7 +207,7 @@ describe("assumptions", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-    expect(schemaRes.status).toBe(200);
+    expect(schemaRes.status).toBe(400);
 
     server.stop();
     app.close();
@@ -168,6 +234,32 @@ describe("assumptions", () => {
       body: JSON.stringify(payload),
     });
     expect(schemaRes.status).toBe(200);
+
+    server.stop();
+    app.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("schema update rejects legacy routing-key aliases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
+    const cfg = makeConfig(root);
+    const app = createApp(cfg, new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    const streamName = "record/app.bsky.feed.like";
+    const putRes = await fetch(`${baseUrl}/v1/stream/${streamName}`, { method: "PUT" });
+    expect([200, 201]).toContain(putRes.status);
+
+    const schemaRes = await fetch(`${baseUrl}/v1/stream/${streamName}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schema: { type: "object", additionalProperties: true },
+        routing_key: "/subject/uri",
+      }),
+    });
+    expect(schemaRes.status).toBe(400);
 
     server.stop();
     app.close();
@@ -385,7 +477,7 @@ describe("assumptions", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("delete is tombstone and listing excludes deleted", async () => {
+  test("delete is tombstone, listing excludes deleted, and acceleration state is scrubbed", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
     const cfg = makeConfig(root);
     const app = createApp(cfg, new MockR2Store());
@@ -393,6 +485,12 @@ describe("assumptions", () => {
     const baseUrl = `http://localhost:${server.port}`;
 
     await fetch(`${baseUrl}/v1/stream/del`, { method: "PUT" });
+    seedAccelerationState(app.deps.db, "del");
+    expect(app.deps.db.getIndexState("del")).not.toBeNull();
+    expect(app.deps.db.listSecondaryIndexStates("del")).toHaveLength(1);
+    expect(app.deps.db.listLexiconIndexStates("del")).toHaveLength(1);
+    expect(app.deps.db.getSearchCompanionPlan("del")).not.toBeNull();
+
     await fetch(`${baseUrl}/v1/stream/del`, { method: "DELETE" });
     const r = await fetch(`${baseUrl}/v1/stream/del?offset=-1`);
     expect([404, 410]).toContain(r.status);
@@ -400,10 +498,45 @@ describe("assumptions", () => {
     const list = await fetch(`${baseUrl}/v1/streams`);
     const arr = await list.json();
     expect(arr.find((x: any) => x.name === "del")).toBeUndefined();
+    const deletedRow = app.deps.db.getStream("del");
+    expect(deletedRow).not.toBeNull();
+    expect(deletedRow && app.deps.db.isDeleted(deletedRow)).toBe(true);
+    expectAccelerationStateCleared(app.deps.db, "del");
 
     server.stop();
     app.close();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test("startup scrubs stale acceleration state for deleted streams", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
+    const cfg = makeConfig(root);
+    const app = createApp(cfg, new MockR2Store());
+    try {
+      app.deps.db.ensureStream("stale");
+      const now = app.deps.db.nowMs();
+      app.deps.db.db
+        .query(`UPDATE streams SET stream_flags = (stream_flags | ?), updated_at_ms=? WHERE stream=?;`)
+        .run(STREAM_FLAG_DELETED, now, "stale");
+      seedAccelerationState(app.deps.db, "stale");
+      expect(app.deps.db.getIndexState("stale")).not.toBeNull();
+      expect(app.deps.db.listSecondaryIndexStates("stale")).toHaveLength(1);
+      expect(app.deps.db.listLexiconIndexStates("stale")).toHaveLength(1);
+      expect(app.deps.db.getSearchCompanionPlan("stale")).not.toBeNull();
+    } finally {
+      app.close();
+    }
+
+    const restarted = createApp(cfg, new MockR2Store());
+    try {
+      const deletedRow = restarted.deps.db.getStream("stale");
+      expect(deletedRow).not.toBeNull();
+      expect(deletedRow && restarted.deps.db.isDeleted(deletedRow)).toBe(true);
+      expectAccelerationStateCleared(restarted.deps.db, "stale");
+    } finally {
+      restarted.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("Stream-Seq is lexicographic and strictly increasing", async () => {

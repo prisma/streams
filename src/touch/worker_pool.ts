@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Result } from "better-result";
@@ -17,7 +15,7 @@ export type WorkerPoolProcessError = {
   message: string;
 };
 
-export class TouchInterpreterWorkerPool {
+export class TouchProcessorWorkerPool {
   private readonly cfg: Config;
   private readonly workerCount: number;
   private readonly workers: Array<{ worker: Worker; busy: boolean; currentId: number | null }> = [];
@@ -103,25 +101,20 @@ export class TouchInterpreterWorkerPool {
       stream: next.stream,
       fromOffset: next.fromOffset,
       toOffset: next.toOffset,
-      interpreter: next.interpreter,
+      profile: next.profile,
       maxRows: next.maxRows,
       maxBytes: next.maxBytes,
       emitFineTouches: next.emitFineTouches,
       fineTouchBudget: next.fineTouchBudget,
       fineGranularity: next.fineGranularity,
-      interpretMode: next.interpretMode,
+      processingMode: next.processingMode,
       filterHotTemplates: next.filterHotTemplates,
       hotTemplateIds: next.hotTemplateIds,
     } satisfies ProcessRequest);
   }
 
   private spawnWorker(idx: number, generation: number = this.generation): void {
-    const workerUrl = new URL("./interpreter_worker.ts", import.meta.url);
-    let workerSpec = fileURLToPath(workerUrl);
-    if (!existsSync(workerSpec)) {
-      const fallback = resolve(process.cwd(), "src/touch/interpreter_worker.ts");
-      if (existsSync(fallback)) workerSpec = fallback;
-    }
+    const workerSpec = fileURLToPath(new URL("./processor_worker.ts", import.meta.url));
 
     const worker = new Worker(workerSpec, {
       workerData: { config: this.cfg, hostRuntime: detectHostRuntime() },
@@ -161,13 +154,13 @@ export class TouchInterpreterWorkerPool {
     worker.on("error", (err) => {
       if (generation !== this.generation) return;
       // eslint-disable-next-line no-console
-      console.error(`touch interpreter worker ${idx} error`, err);
+      console.error(`touch processor worker ${idx} error`, err);
     });
 
     worker.on("exit", (code) => {
       if (generation !== this.generation || !this.started) return;
       // eslint-disable-next-line no-console
-      console.error(`touch interpreter worker ${idx} exited with code ${code}, respawning`);
+      console.error(`touch processor worker ${idx} exited with code ${code}, respawning`);
       if (slot.currentId != null) {
         const p = this.pending.get(slot.currentId);
         if (p) {

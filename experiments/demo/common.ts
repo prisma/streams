@@ -1,4 +1,4 @@
-import type { StreamInterpreterConfig } from "../../src/touch/spec";
+import type { StateProtocolStreamProfile } from "../../src/profile";
 import { dsError } from "../../src/util/ds_error.ts";
 
 export const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
@@ -11,9 +11,8 @@ export const DEMO_SCHEMA = {
 
 export const DEMO_ENTITY = "public.todos";
 
-export const DEMO_INTERPRETER: StreamInterpreterConfig = {
-  apiVersion: "durable.streams/stream-interpreter/v1",
-  format: "durable.streams/state-protocol/v1",
+export const DEMO_PROFILE: StateProtocolStreamProfile = {
+  kind: "state-protocol",
   touch: {
     enabled: true,
   },

@@ -15,6 +15,7 @@ class FakeS3File {
   ) {}
 
   async exists(): Promise<boolean> {
+    this.client.existsCalls += 1;
     return this.client.entries.has(this.key);
   }
 
@@ -23,6 +24,7 @@ class FakeS3File {
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
+    this.client.arrayBufferCalls += 1;
     const entry = this.client.entries.get(this.key);
     if (!entry) throw new Error("missing");
     const start = this.range?.begin ?? 0;
@@ -62,6 +64,8 @@ class FakeS3Client {
 
   readonly entries = new Map<string, Entry>();
   readonly options: Record<string, unknown> | undefined;
+  existsCalls = 0;
+  arrayBufferCalls = 0;
 
   constructor(options?: Record<string, unknown>) {
     this.options = options;
@@ -130,6 +134,20 @@ describe("R2ObjectStore", () => {
     await store.delete("streams/a");
     expect(await store.head("streams/a")).toBeNull();
     expect(await store.get("streams/a")).toBeNull();
+  });
+
+  test("get handles missing objects from the GET itself without an exists preflight", async () => {
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      accessKeyId: "key",
+      secretAccessKey: "secret",
+    });
+
+    const client = FakeS3Client.instances[0]!;
+    expect(await store.get("streams/missing")).toBeNull();
+    expect(client.existsCalls).toBe(0);
+    expect(client.arrayBufferCalls).toBe(1);
   });
 
   test("paginates list results", async () => {

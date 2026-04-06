@@ -14,6 +14,7 @@ const rootPackage = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf
 const repository = rootPackage.repository;
 const bugs = rootPackage.bugs;
 const homepage = rootPackage.homepage;
+const localPackageDependencyNames = ["ajv", "better-result", "env-paths", "proper-lockfile"];
 
 function run(cmd, args) {
   const result = spawnSync(cmd, args, {
@@ -30,6 +31,18 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function pickDependencies(names) {
+  const picked = {};
+  for (const name of names) {
+    const version = rootPackage.dependencies?.[name];
+    if (!version) {
+      throw new Error(`missing dependency ${name} in root package.json`);
+    }
+    picked[name] = version;
+  }
+  return picked;
+}
+
 function copyTextFile(src, dest) {
   writeFileSync(dest, readFileSync(src));
 }
@@ -44,6 +57,7 @@ function copyCommonDocs(destDir, readmeText) {
 }
 
 function copyDir(src, dest, filter = () => true) {
+  rmSync(dest, { recursive: true, force: true });
   cpSync(src, dest, {
     recursive: true,
     filter: (source) => filter(source),
@@ -67,7 +81,7 @@ function copyLocalTypes(destDir) {
   const localTypesDir = join(destDir, "dist", "types", "local");
   mkdirSync(localTypesDir, { recursive: true });
   for (const name of ["index.d.ts", "server.d.ts", "daemon.d.ts"]) {
-    cpSync(join(distDir, "types", "local", name), join(localTypesDir, name));
+    copyTextFile(join(distDir, "types", "local", name), join(localTypesDir, name));
   }
 }
 
@@ -96,7 +110,7 @@ function buildLocalPackage() {
     publishConfig: {
       access: "public",
     },
-    dependencies: rootPackage.dependencies,
+    dependencies: pickDependencies(localPackageDependencyNames),
     files: ["README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "dist/"],
     exports: {
       ".": {

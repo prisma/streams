@@ -3,7 +3,6 @@ import type { SqliteDurableStore } from "./db/db";
 import { STREAM_FLAG_DELETED } from "./db/db";
 import type { StatsCollector } from "./stats";
 import type { BackpressureGate } from "./backpressure";
-import type { MemoryGuard } from "./memory";
 import type { Metrics } from "./metrics";
 import { Result } from "better-result";
 
@@ -55,7 +54,6 @@ export class IngestQueue {
   private readonly db: SqliteDurableStore;
   private readonly stats?: StatsCollector;
   private readonly gate?: BackpressureGate;
-  private readonly memory?: MemoryGuard;
   private readonly metrics?: Metrics;
   private readonly q: AppendTask[] = [];
   private timer: any | null = null;
@@ -73,12 +71,11 @@ export class IngestQueue {
     upsertProducerState: any;
   };
 
-  constructor(cfg: Config, db: SqliteDurableStore, stats?: StatsCollector, gate?: BackpressureGate, memory?: MemoryGuard, metrics?: Metrics) {
+  constructor(cfg: Config, db: SqliteDurableStore, stats?: StatsCollector, gate?: BackpressureGate, metrics?: Metrics) {
     this.cfg = cfg;
     this.db = db;
     this.stats = stats;
     this.gate = gate;
-    this.memory = memory;
     this.metrics = metrics;
 
     this.stmts = {
@@ -95,6 +92,7 @@ export class IngestQueue {
         `UPDATE streams
          SET next_offset=?, updated_at_ms=?, last_append_ms=?,
              pending_rows=pending_rows+?, pending_bytes=pending_bytes+?,
+             logical_size_bytes=logical_size_bytes+?,
              wal_rows=wal_rows+?, wal_bytes=wal_bytes+?,
              stream_seq=?,
              closed=CASE WHEN ? THEN 1 ELSE closed END,
@@ -149,14 +147,6 @@ export class IngestQueue {
     close?: boolean;
   }, opts?: { bypassBackpressure?: boolean; priority?: "high" | "normal" }): Promise<AppendResult> {
     const bytes = args.rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
-    if (this.memory && !this.memory.shouldAllow()) {
-      this.memory.maybeGc("memory limit");
-      if (!opts?.bypassBackpressure) {
-        this.memory.maybeHeapSnapshot("memory limit");
-        if (this.metrics) this.metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "memory" });
-        return Promise.resolve(Result.err({ kind: "overloaded" }));
-      }
-    }
     if (!opts?.bypassBackpressure) {
       if (this.q.length >= this.cfg.ingestMaxQueueRequests || this.queuedBytes + bytes > this.cfg.ingestMaxQueueBytes) {
         if (this.metrics) this.metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "queue" });
@@ -206,6 +196,13 @@ export class IngestQueue {
 
   getQueueStats(): { requests: number; bytes: number } {
     return { requests: this.q.length, bytes: this.queuedBytes };
+  }
+
+  getMemoryStats(): { queuedPayloadBytes: number; queuedRequests: number } {
+    return {
+      queuedPayloadBytes: this.queuedBytes,
+      queuedRequests: this.q.length,
+    };
   }
 
   isQueueFull(): boolean {
@@ -559,6 +556,7 @@ export class IngestQueue {
           nowMs,
           st.lastAppendMs,
           BigInt(task.rows.length),
+          totalBytes,
           totalBytes,
           BigInt(task.rows.length),
           totalBytes,

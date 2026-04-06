@@ -276,6 +276,10 @@ export class TouchJournal {
     };
   }
 
+  getFilterBytes(): number {
+    return this.lastSet.byteLength;
+  }
+
   touch(keyId: number, sourceOffsetSeq?: bigint): void {
     if (this.pending.size === 0 && !this.overflow && this.pendingBucketStartMs <= 0) {
       this.pendingBucketStartMs = Date.now();

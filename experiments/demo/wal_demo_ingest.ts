@@ -9,7 +9,7 @@
  *   bun run experiments/demo/wal_demo_ingest.ts --url http://127.0.0.1:8080 --stream demo.wal --delay-ms 250
  */
 
-import { DEFAULT_BASE_URL, DEFAULT_STREAM, DEMO_INTERPRETER, DEMO_SCHEMA, sleep, hasFlag, parseIntArg, parseStringArg } from "./common";
+import { DEFAULT_BASE_URL, DEFAULT_STREAM, DEMO_PROFILE, DEMO_SCHEMA, sleep, hasFlag, parseIntArg, parseStringArg } from "./common";
 import { dsError } from "../../src/util/ds_error.ts";
 
 const ARGS = process.argv.slice(2);
@@ -234,22 +234,23 @@ async function ensureStream(baseUrl: string, stream: string): Promise<void> {
   }
 }
 
-async function ensureSchemaAndInterpreter(baseUrl: string, stream: string): Promise<void> {
+async function ensureSchemaAndProfile(baseUrl: string, stream: string): Promise<void> {
   const reg = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, { method: "GET" });
   const currentVersion = typeof reg?.currentVersion === "number" ? reg.currentVersion : 0;
   if (currentVersion === 0) {
     await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ schema: DEMO_SCHEMA, interpreter: DEMO_INTERPRETER }),
+      body: JSON.stringify({ schema: DEMO_SCHEMA }),
     });
-    return;
   }
-  // Avoid lens complexity; just ensure interpreter is set.
-  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+  await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/_profile`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ interpreter: DEMO_INTERPRETER }),
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: DEMO_PROFILE,
+    }),
   });
 }
 
@@ -284,7 +285,7 @@ async function main(): Promise<void> {
   }
 
   await ensureStream(baseUrl, stream);
-  await ensureSchemaAndInterpreter(baseUrl, stream);
+  await ensureSchemaAndProfile(baseUrl, stream);
 
   // eslint-disable-next-line no-console
   console.log(`[demo][ingest] stream ready: ${stream}`);
