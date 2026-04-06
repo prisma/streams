@@ -1,3 +1,4 @@
+import { encodeOffset } from "../../src/offset";
 import { dsError } from "../../src/util/ds_error.ts";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:8787";
@@ -8,8 +9,10 @@ const DEFAULT_ALL_RANGE_BATCH_MAX_BYTES = 2 * 1024 * 1024;
 const DEFAULT_ALL_RANGE_BATCH_MAX_RECORDS = 250;
 const GH_ARCHIVE_REQUEST_TIMEOUT_MS = 20_000;
 const GH_ARCHIVE_TIMEOUT_RETRY_DELAY_MS = 1_000;
+const GH_ARCHIVE_MISSING_HOUR_SKIP_AHEAD_HOURS = 12;
+const GH_ARCHIVE_FIRST_AVAILABLE_HOUR_UTC = 10;
 const GH_ARCHIVE_FETCH_TIMEOUT_CODE = "gharchive_fetch_timeout";
-const GH_ARCHIVE_START_MS = Date.UTC(2011, 1, 12, 0, 0, 0, 0);
+const GH_ARCHIVE_START_MS = Date.UTC(2020, 0, 1, GH_ARCHIVE_FIRST_AVAILABLE_HOUR_UTC, 0, 0, 0);
 const GH_ARCHIVE_HOUR_MISSING_CODE = "gharchive_hour_missing";
 
 export type GhArchiveRangeName = "day" | "week" | "month" | "year" | "all";
@@ -125,6 +128,8 @@ type GhArchiveSchemaBuildOptions = {
   noIndex?: boolean;
   onlyIndex?: GhArchiveOnlyIndexSelector | null;
   onlyIndexes?: GhArchiveOnlyIndexSelector[];
+  routingOnly?: boolean;
+  bareStream?: boolean;
 };
 
 type GhArchiveDemoStreamTarget = {
@@ -141,6 +146,8 @@ const GH_ARCHIVE_SEARCH_ALIASES = {
   repo: "repoName",
   type: "eventType",
 } as const;
+
+const GH_ARCHIVE_DEFAULT_GOLDEN_STREAM = "golden-stream";
 
 const GH_ARCHIVE_DEFAULT_FIELDS = [
   { field: "title", boost: 1.5 },
@@ -567,6 +574,12 @@ function formatArchiveHour(date: Date): string {
   return `${y}-${m}-${d}-${h}`;
 }
 
+function parseArchiveHour(value: string): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) throw dsError(`invalid archive hour: ${value}`);
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), 0, 0, 0));
+}
+
 export function buildGhArchiveStreamName(prefix: string, range: GhArchiveRangeName): string {
   return `${prefix}-${range}`;
 }
@@ -582,8 +595,24 @@ export function buildGhArchiveIndexedStreamName(
 export function resolveGhArchiveStreamTargets(
   prefix: string,
   range: GhArchiveRangeName,
-  opts: { noIndex?: boolean; onlyIndexes?: GhArchiveOnlyIndexSelector[] } = {}
+  opts: {
+    noIndex?: boolean;
+    onlyIndexes?: GhArchiveOnlyIndexSelector[];
+    goldenStream?: boolean;
+    goldenStreamName?: string;
+    goldenStreamNoRoutingKey?: boolean;
+    goldenStreamFullIndex?: boolean;
+  } = {}
 ): GhArchiveDemoStreamTarget[] {
+  if (opts.goldenStream) {
+    return [
+      {
+        stream: opts.goldenStreamName ?? GH_ARCHIVE_DEFAULT_GOLDEN_STREAM,
+        selector: null,
+        schema: opts.goldenStreamNoRoutingKey ? { bareStream: true } : opts.goldenStreamFullIndex ? {} : { routingOnly: true },
+      },
+    ];
+  }
   if (opts.noIndex) {
     return [
       {
@@ -602,6 +631,15 @@ export function resolveGhArchiveStreamTargets(
     selector,
     schema: { onlyIndex: selector },
   }));
+}
+
+export function buildGhArchiveRoutingOnlyUpdate(): Record<string, unknown> {
+  return {
+    routingKey: {
+      jsonPointer: "/repoName",
+      required: false,
+    },
+  };
 }
 
 function streamUrl(baseUrl: string, stream: string): string {
@@ -712,6 +750,20 @@ export function* iterateGhArchiveHours(start: Date, endExclusive: Date): Generat
 
 export function buildGhArchiveArchiveUrl(hour: Date): string {
   return `https://data.gharchive.org/${formatArchiveHour(hour)}.json.gz`;
+}
+
+function missingHourResumeHour(hour: Date, endExclusive: Date): Date {
+  const utcHour = hour.getUTCHours();
+  if (utcHour < GH_ARCHIVE_FIRST_AVAILABLE_HOUR_UTC) {
+    const resumeHour = new Date(hour.getTime());
+    resumeHour.setUTCHours(GH_ARCHIVE_FIRST_AVAILABLE_HOUR_UTC, 0, 0, 0);
+    if (resumeHour.getTime() > hour.getTime() && resumeHour.getTime() < endExclusive.getTime()) {
+      return resumeHour;
+    }
+  }
+  const remainingHours = Math.max(1, Math.ceil((endExclusive.getTime() - hour.getTime()) / (60 * 60 * 1000)));
+  const skippedHours = Math.min(GH_ARCHIVE_MISSING_HOUR_SKIP_AHEAD_HOURS, remainingHours);
+  return addHours(hour, skippedHours);
 }
 
 function getNestedRecord(value: unknown, key: string): Record<string, unknown> | null {
@@ -917,6 +969,38 @@ async function deleteStreamIfExists(client: GhArchiveHttpClient, baseUrl: string
   }
 }
 
+async function getStreamDetailsIfExists(client: GhArchiveHttpClient, baseUrl: string, stream: string): Promise<any | null> {
+  const response = await fetchWithServerBackoff(client, `details stream ${stream}`, () =>
+    fetchWithTimeout(client, `${streamUrl(baseUrl, stream)}/_details`, { method: "GET" })
+  );
+  if (response.status === 404) return null;
+  const text = await response.text();
+  if (!response.ok) {
+    throw dsError(`failed to fetch stream details ${stream}: HTTP ${response.status} ${text}`);
+  }
+  return text === "" ? null : JSON.parse(text);
+}
+
+async function fetchLatestArchiveHourIfExists(client: GhArchiveHttpClient, baseUrl: string, stream: string): Promise<string | null> {
+  const details = await getStreamDetailsIfExists(client, baseUrl, stream);
+  if (!details) return null;
+  const streamDetails = details.stream ?? details;
+  const nextOffset = BigInt(streamDetails.next_offset ?? "0");
+  if (nextOffset <= 0n) return null;
+  const epoch = Number(streamDetails.epoch ?? 0);
+  const cursorSeq = nextOffset >= 2n ? nextOffset - 2n : -1n;
+  const offset = cursorSeq < 0n ? "-1" : encodeOffset(epoch, cursorSeq);
+  const records = await fetchJson(client, `${streamUrl(baseUrl, stream)}?offset=${encodeURIComponent(offset)}&format=json`, {
+    method: "GET",
+  });
+  if (!Array.isArray(records) || records.length === 0) return null;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const archiveHour = records[index]?.archiveHour;
+    if (typeof archiveHour === "string" && archiveHour.length > 0) return archiveHour;
+  }
+  return null;
+}
+
 async function createConfiguredStream(
   client: GhArchiveHttpClient,
   baseUrl: string,
@@ -942,6 +1026,19 @@ async function createConfiguredStream(
       profile: { kind: "generic" },
     }),
   });
+
+  if (opts.routingOnly) {
+    await fetchJson(client, `${streamUrl(baseUrl, stream)}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildGhArchiveRoutingOnlyUpdate()),
+    });
+    return;
+  }
+
+  if (opts.bareStream) {
+    return;
+  }
 
   await fetchJson(client, `${streamUrl(baseUrl, stream)}/_schema`, {
     method: "POST",
@@ -1087,11 +1184,35 @@ export async function runGhArchiveDemo(
   const batchMaxBytes = parseIntArg(args, "--batch-max-bytes", batchDefaults.batchMaxBytes);
   const batchMaxRecords = parseIntArg(args, "--batch-max-records", batchDefaults.batchMaxRecords);
   const noIndex = hasFlag(args, "--noindex");
+  const goldenStream = hasFlag(args, "--golden-stream");
+  const goldenStreamName = parseStringArg(args, "--golden-stream-name", GH_ARCHIVE_DEFAULT_GOLDEN_STREAM);
+  const goldenStreamNoRoutingKey = hasFlag(args, "--golden-stream-no-routing-key");
+  const goldenStreamFullIndex = hasFlag(args, "--golden-stream-full-index");
+  const resumeStream = hasFlag(args, "--resume-stream");
   const onlyIndexes = parseOnlyIndexArgs(args);
   if (noIndex && onlyIndexes.length > 0) {
     throw dsError("--noindex and --onlyindex cannot be combined");
   }
-  const streamTargets = resolveGhArchiveStreamTargets(streamPrefix, range, { noIndex, onlyIndexes });
+  if (goldenStream && (noIndex || onlyIndexes.length > 0)) {
+    throw dsError("--golden-stream cannot be combined with --noindex or --onlyindex");
+  }
+  if (goldenStreamNoRoutingKey && !goldenStream) {
+    throw dsError("--golden-stream-no-routing-key requires --golden-stream");
+  }
+  if (goldenStreamFullIndex && !goldenStream) {
+    throw dsError("--golden-stream-full-index requires --golden-stream");
+  }
+  if (goldenStreamFullIndex && goldenStreamNoRoutingKey) {
+    throw dsError("--golden-stream-full-index cannot be combined with --golden-stream-no-routing-key");
+  }
+  const streamTargets = resolveGhArchiveStreamTargets(streamPrefix, range, {
+    noIndex,
+    onlyIndexes,
+    goldenStream,
+    goldenStreamName,
+    goldenStreamNoRoutingKey,
+    goldenStreamFullIndex,
+  });
   const client: GhArchiveHttpClient = {
     fetchImpl: opts.fetchImpl ?? fetch,
     requestTimeoutMs: opts.requestTimeoutMs ?? GH_ARCHIVE_REQUEST_TIMEOUT_MS,
@@ -1100,10 +1221,31 @@ export async function runGhArchiveDemo(
   const startedAt = Date.now();
 
   const { start, endExclusive, hours } = resolveGhArchiveRangeHours(range, opts.now);
+  let effectiveStart = start;
 
   for (const target of streamTargets) {
-    await deleteStreamIfExists(client, baseUrl, target.stream);
-    await createConfiguredStream(client, baseUrl, target.stream, target.schema);
+    if (!resumeStream) {
+      await deleteStreamIfExists(client, baseUrl, target.stream);
+      await createConfiguredStream(client, baseUrl, target.stream, target.schema);
+      continue;
+    }
+    const details = await getStreamDetailsIfExists(client, baseUrl, target.stream);
+    if (!details) {
+      await createConfiguredStream(client, baseUrl, target.stream, target.schema);
+    }
+  }
+
+  if (resumeStream) {
+    let resumeFrom: Date | null = null;
+    for (const target of streamTargets) {
+      const latestArchiveHour = await fetchLatestArchiveHourIfExists(client, baseUrl, target.stream);
+      if (!latestArchiveHour) continue;
+      const nextHour = addHours(parseArchiveHour(latestArchiveHour), 1);
+      if (resumeFrom == null || nextHour.getTime() < resumeFrom.getTime()) resumeFrom = nextHour;
+    }
+    if (resumeFrom && resumeFrom.getTime() > effectiveStart.getTime()) {
+      effectiveStart = resumeFrom;
+    }
   }
 
   const encoder = new TextEncoder();
@@ -1133,7 +1275,8 @@ export async function runGhArchiveDemo(
     batchBytes = 2;
   };
 
-  for (const hour of iterateGhArchiveHours(start, endExclusive)) {
+  let hour = effectiveStart;
+  while (hour < endExclusive) {
     const archiveUrl = buildGhArchiveArchiveUrl(hour);
     try {
       for await (const line of iterateGhArchiveLines(client, archiveUrl, {
@@ -1170,10 +1313,16 @@ export async function runGhArchiveDemo(
         normalizeTimeMs += Date.now() - normalizeStartedAt;
       }
       downloadedHours += 1;
+      hour = addHours(hour, 1);
     } catch (error) {
       if (hasErrorCode(error, GH_ARCHIVE_HOUR_MISSING_CODE)) {
-        missingHours += 1;
-        process.stderr.write(`[gharchive-demo] missing hour ${formatArchiveHour(hour)} (${archiveUrl})\n`);
+        const resumeHour = missingHourResumeHour(hour, endExclusive);
+        const skippedHours = Math.max(1, Math.ceil((resumeHour.getTime() - hour.getTime()) / (60 * 60 * 1000)));
+        missingHours += skippedHours;
+        process.stderr.write(
+          `[gharchive-demo] missing hour ${formatArchiveHour(hour)} (${archiveUrl}); skipping ahead ${skippedHours}h to ${formatArchiveHour(resumeHour)}\n`
+        );
+        hour = resumeHour;
         continue;
       }
       throw error;
@@ -1206,7 +1355,7 @@ export async function runGhArchiveDemo(
     normalizedRows,
     range,
     rawSourceBytes,
-    startHour: formatArchiveHour(start),
+    startHour: formatArchiveHour(effectiveStart),
     streamCount: streamTargets.length,
     streams: streamTargets.map((target) => target.stream),
   };

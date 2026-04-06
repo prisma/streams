@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 24;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS wal (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
-CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
 
 CREATE TABLE IF NOT EXISTS segments (
@@ -90,6 +89,7 @@ CREATE TABLE IF NOT EXISTS segments (
   end_offset INTEGER NOT NULL,
   block_count INTEGER NOT NULL,
   last_append_ms INTEGER NOT NULL,
+  payload_bytes INTEGER NOT NULL DEFAULT 0,
   size_bytes INTEGER NOT NULL,
   local_path TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL,
@@ -224,6 +224,35 @@ CREATE INDEX IF NOT EXISTS secondary_index_runs_stream_idx
   ON secondary_index_runs(stream, index_name, level, start_segment);
 `;
 
+const CREATE_LEXICON_INDEX_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS lexicon_index_state (
+  stream TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_name TEXT NOT NULL,
+  indexed_through INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (stream, source_kind, source_name)
+);
+
+CREATE TABLE IF NOT EXISTS lexicon_index_runs (
+  run_id TEXT PRIMARY KEY,
+  stream TEXT NOT NULL,
+  source_kind TEXT NOT NULL,
+  source_name TEXT NOT NULL,
+  level INTEGER NOT NULL,
+  start_segment INTEGER NOT NULL,
+  end_segment INTEGER NOT NULL,
+  object_key TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  record_count INTEGER NOT NULL,
+  retired_gen INTEGER NULL,
+  retired_at_ms INTEGER NULL
+);
+
+CREATE INDEX IF NOT EXISTS lexicon_index_runs_stream_idx
+  ON lexicon_index_runs(stream, source_kind, source_name, level, start_segment);
+`;
+
 const CREATE_SEARCH_COMPANION_TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS search_companion_plans (
   stream TEXT PRIMARY KEY,
@@ -351,7 +380,6 @@ CREATE TABLE producer_state_${suffix} (
 
 const CREATE_INDEXES_V4_SQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS wal_stream_offset_uniq ON wal(stream, offset);
-CREATE INDEX IF NOT EXISTS wal_stream_offset_idx ON wal(stream, offset);
 CREATE INDEX IF NOT EXISTS wal_ts_idx ON wal(ts_ms);
 
 CREATE INDEX IF NOT EXISTS streams_pending_bytes_idx ON streams(pending_bytes);
@@ -386,6 +414,7 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
     db.exec(CREATE_TABLES_V4_SQL);
     db.exec(CREATE_INDEX_TABLES_SQL);
     db.exec(CREATE_SECONDARY_INDEX_TABLES_SQL);
+    db.exec(CREATE_LEXICON_INDEX_TABLES_SQL);
     db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
     db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
     db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
@@ -436,6 +465,12 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV19ToV20(db);
     } else if (version === 20) {
       migrateV20ToV21(db);
+    } else if (version === 21) {
+      migrateV21ToV22(db);
+    } else if (version === 22) {
+      migrateV22ToV23(db);
+    } else if (version === 23) {
+      migrateV23ToV24(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -855,6 +890,36 @@ function migrateV20ToV21(db: SqliteDatabase): void {
     db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_min_ms INTEGER NULL;`);
     db.exec(`ALTER TABLE search_segment_companions ADD COLUMN primary_timestamp_max_ms INTEGER NULL;`);
     db.exec(`UPDATE schema_version SET version = 21;`);
+  });
+  tx();
+}
+
+function migrateV21ToV22(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_LEXICON_INDEX_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 22;`);
+  });
+  tx();
+}
+
+function migrateV22ToV23(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(`DROP INDEX IF EXISTS wal_stream_offset_idx;`);
+    db.exec(`UPDATE schema_version SET version = 23;`);
+  });
+  tx();
+}
+
+function migrateV23ToV24(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    const hasPayloadBytes = db
+      .query(`PRAGMA table_info(segments);`)
+      .all()
+      .some((row: any) => String(row.name) === "payload_bytes");
+    if (!hasPayloadBytes) {
+      db.exec(`ALTER TABLE segments ADD COLUMN payload_bytes INTEGER NOT NULL DEFAULT 0;`);
+    }
+    db.exec(`UPDATE schema_version SET version = 24;`);
   });
   tx();
 }

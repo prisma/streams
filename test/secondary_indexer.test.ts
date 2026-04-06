@@ -119,6 +119,7 @@ describe("secondary indexer", () => {
         endOffset: 0n,
         blockCount: 1,
         lastAppendMs: app.deps.db.nowMs(),
+        payloadBytes: 1n,
         sizeBytes: 1,
         localPath: `${root}/seg-0.bin`,
       });

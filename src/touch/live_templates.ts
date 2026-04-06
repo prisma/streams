@@ -66,6 +66,12 @@ export type TemplateLifecycleEvent =
 
 type RateState = { tokens: number; lastRefillMs: number };
 
+export type LiveTemplateRegistryMemoryStats = {
+  lastSeenEntries: number;
+  dirtyLastSeenEntries: number;
+  rateStateStreams: number;
+};
+
 function nowIso(ms: number): string {
   return new Date(ms).toISOString();
 }
@@ -103,6 +109,14 @@ export class LiveTemplateRegistry {
 
   private key(stream: string, templateId: string): string {
     return `${stream}\n${templateId}`;
+  }
+
+  getMemoryStats(): LiveTemplateRegistryMemoryStats {
+    return {
+      lastSeenEntries: this.lastSeenMem.size,
+      dirtyLastSeenEntries: this.dirtyLastSeen.size,
+      rateStateStreams: this.rate.size,
+    };
   }
 
   private allowActivation(stream: string, nowMs: number, limitPerMinute: number): boolean {

@@ -70,9 +70,8 @@ describe("metrics profile", () => {
       const schemaRes = await fetchJsonApp(app, "http://local/v1/stream/__stream_metrics__/_schema", { method: "GET" });
       expect(schemaRes.status).toBe(200);
       expect(schemaRes.body?.currentVersion).toBe(1);
-      expect(schemaRes.body?.search?.profile).toBe("metrics");
-      expect(schemaRes.body?.routingKey).toEqual({ jsonPointer: "/seriesKey", required: true });
-      expect(schemaRes.body?.search?.rollups?.metrics).toBeDefined();
+      expect(schemaRes.body?.search).toBeUndefined();
+      expect(schemaRes.body?.routingKey).toBeUndefined();
 
       await app.fetch(
         new Request("http://local/v1/stream/metric-source", {
@@ -89,6 +88,7 @@ describe("metrics profile", () => {
       );
 
       const events = await waitForMetricsEvent(app);
+      const metricNames = new Set(events.map((event: any) => event.metric));
       expect(events[0]).toEqual(
         expect.objectContaining({
           apiVersion: "durable.streams/metrics/v1",
@@ -103,14 +103,122 @@ describe("metrics profile", () => {
           }),
         })
       );
+      expect(metricNames.has("tieredstore.concurrency.limit")).toBe(true);
+      expect(metricNames.has("tieredstore.concurrency.active")).toBe(true);
+      expect(metricNames.has("tieredstore.concurrency.queued")).toBe(true);
+      expect(metricNames.has("process.memory.pressure")).toBe(true);
+      expect(metricNames.has("process.heap.total.bytes")).toBe(true);
+      expect(metricNames.has("process.heap.used.bytes")).toBe(true);
+      expect(metricNames.has("process.memory.unattributed.bytes")).toBe(true);
+      expect(metricNames.has("tieredstore.sqlite.memory.used.bytes")).toBe(true);
+      expect(metricNames.has("process.gc.forced.count")).toBe(true);
+      expect(metricNames.has("tieredstore.upload.pending_segments")).toBe(true);
+      expect(metricNames.has("tieredstore.ingest.queue.capacity.bytes")).toBe(true);
+      expect(metricNames.has("tieredstore.memory.subsystem.bytes")).toBe(true);
+      expect(metricNames.has("tieredstore.memory.tracked.bytes")).toBe(true);
 
       const detailsRes = await fetchJsonApp(app, "http://local/v1/stream/__stream_metrics__/_details", { method: "GET" });
       expect(detailsRes.status).toBe(200);
       expect(detailsRes.body?.stream?.profile).toBe("metrics");
-      expect(detailsRes.body?.schema?.search?.profile).toBe("metrics");
-      expect(detailsRes.body?.index_status?.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts", "mblk"]);
+      expect(detailsRes.body?.schema?.search).toBeUndefined();
+      expect(detailsRes.body?.index_status?.routing_key_index?.configured).toBe(false);
+      expect(detailsRes.body?.index_status?.routing_key_lexicon?.configured).toBe(false);
+      expect(detailsRes.body?.index_status?.search_families).toEqual([]);
+      expect(app.deps.db.getIndexState("__stream_metrics__")).toBeNull();
+      expect(app.deps.db.listSecondaryIndexStates("__stream_metrics__")).toEqual([]);
+      expect(app.deps.db.listLexiconIndexStates("__stream_metrics__")).toEqual([]);
+      expect(app.deps.db.getSearchCompanionPlan("__stream_metrics__")).toBeNull();
+      expect(app.deps.db.listSearchSegmentCompanions("__stream_metrics__")).toEqual([]);
     } finally {
       app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("startup clears stale internal metrics accelerators from previous runs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-profile-metrics-cleanup-"));
+    const first = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      first.app.deps.db.upsertIndexState("__stream_metrics__", new Uint8Array(16).fill(1), 32);
+      first.app.deps.db.insertIndexRun({
+        run_id: "stale-routing",
+        stream: "__stream_metrics__",
+        level: 0,
+        start_segment: 0,
+        end_segment: 15,
+        object_key: "streams/stale/index/routing.run",
+        size_bytes: 128,
+        filter_len: 32,
+        record_count: 1,
+      });
+      first.app.deps.db.upsertSecondaryIndexState("__stream_metrics__", "metric", new Uint8Array(16).fill(2), "stale", 32);
+      first.app.deps.db.insertSecondaryIndexRun({
+        run_id: "stale-secondary",
+        stream: "__stream_metrics__",
+        index_name: "metric",
+        level: 0,
+        start_segment: 0,
+        end_segment: 15,
+        object_key: "streams/stale/secondary/metric.run",
+        size_bytes: 128,
+        filter_len: 32,
+        record_count: 1,
+      });
+      first.app.deps.db.upsertLexiconIndexState("__stream_metrics__", "routing_key", "", 32);
+      first.app.deps.db.insertLexiconIndexRun({
+        run_id: "stale-lexicon",
+        stream: "__stream_metrics__",
+        source_kind: "routing_key",
+        source_name: "",
+        level: 0,
+        start_segment: 0,
+        end_segment: 15,
+        object_key: "streams/stale/lexicon/routing.lex",
+        size_bytes: 128,
+        record_count: 1,
+      });
+      first.app.deps.db.upsertSearchCompanionPlan(
+        "__stream_metrics__",
+        1,
+        "stale",
+        JSON.stringify({
+          families: { col: true, fts: true, agg: true, mblk: true },
+          fields: [],
+          rollups: [],
+          summary: { search: "stale" },
+        })
+      );
+      first.app.deps.db.upsertSearchSegmentCompanion(
+        "__stream_metrics__",
+        0,
+        "streams/stale/segments/0000000000000000-stale.cix",
+        1,
+        "{}",
+        "{}",
+        128,
+        null,
+        null
+      );
+    } finally {
+      first.app.close();
+    }
+
+    const second = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const schemaRes = await fetchJsonApp(second.app, "http://local/v1/stream/__stream_metrics__/_schema", { method: "GET" });
+      expect(schemaRes.status).toBe(200);
+      expect(schemaRes.body?.search).toBeUndefined();
+      expect(schemaRes.body?.routingKey).toBeUndefined();
+      expect(second.app.deps.db.getIndexState("__stream_metrics__")).toBeNull();
+      expect(second.app.deps.db.listIndexRunsAll("__stream_metrics__")).toEqual([]);
+      expect(second.app.deps.db.listSecondaryIndexStates("__stream_metrics__")).toEqual([]);
+      expect(second.app.deps.db.listSecondaryIndexRuns("__stream_metrics__", "metric")).toEqual([]);
+      expect(second.app.deps.db.listLexiconIndexStates("__stream_metrics__")).toEqual([]);
+      expect(second.app.deps.db.listLexiconIndexRunsAll("__stream_metrics__", "routing_key", "")).toEqual([]);
+      expect(second.app.deps.db.getSearchCompanionPlan("__stream_metrics__")).toBeNull();
+      expect(second.app.deps.db.listSearchSegmentCompanions("__stream_metrics__")).toEqual([]);
+    } finally {
+      second.app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -31,6 +31,14 @@ type FileEntry = {
   mtimeMs: number;
 };
 
+export type CompanionFileCacheStats = {
+  usedBytes: number;
+  entryCount: number;
+  mappedBytes: number;
+  mappedEntryCount: number;
+  pinnedEntryCount: number;
+};
+
 function invalidCompanionCache<T = never>(message: string): Result<T, CompanionFileCacheError> {
   return Result.err({ kind: "invalid_companion_cache", message });
 }
@@ -128,6 +136,22 @@ export class CompanionFileCache {
     this.mappedBundles.set(args.objectKey, mappedRes.value);
     this.touch(args.objectKey);
     return mappedRes;
+  }
+
+  stats(): CompanionFileCacheStats {
+    let mappedBytes = 0;
+    let mappedEntryCount = 0;
+    for (const bundle of this.mappedBundles.values()) {
+      mappedBytes += bundle.sizeBytes;
+      mappedEntryCount += 1;
+    }
+    return {
+      usedBytes: this.totalBytes,
+      entryCount: this.entries.size,
+      mappedBytes,
+      mappedEntryCount,
+      pinnedEntryCount: this.pinnedKeys.size,
+    };
   }
 
   private async ensureLocalFileResult(

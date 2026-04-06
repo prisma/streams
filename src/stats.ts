@@ -1,6 +1,6 @@
 import type { SqliteDurableStore } from "./db/db";
 import type { UploaderController } from "./uploader";
-import type { MemoryGuard } from "./memory";
+import type { MemoryPressureMonitor } from "./memory";
 import type { BackpressureGate } from "./backpressure";
 import type { IngestQueue } from "./ingest";
 
@@ -110,7 +110,7 @@ export class StatsReporter {
   private readonly uploader: UploaderController;
   private readonly ingest?: IngestQueue;
   private readonly backpressure?: BackpressureGate;
-  private readonly memory?: MemoryGuard;
+  private readonly memory?: MemoryPressureMonitor;
 
   constructor(
     stats: StatsCollector,
@@ -118,7 +118,7 @@ export class StatsReporter {
     uploader: UploaderController,
     ingest?: IngestQueue,
     backpressure?: BackpressureGate,
-    memory?: MemoryGuard,
+    memory?: MemoryPressureMonitor,
     intervalMs = 60_000
   ) {
     this.stats = stats;

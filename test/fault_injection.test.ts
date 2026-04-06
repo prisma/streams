@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import type { GetOptions, ObjectStore, PutResult } from "../src/objectstore/interface";
+import { dsError } from "../src/util/ds_error";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -23,6 +25,50 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+class GapPreservingStore implements ObjectStore {
+  readonly attemptedSegmentIndexes: number[] = [];
+  private readonly inner = new MockR2Store();
+
+  private captureSegmentIndex(key: string): number | null {
+    const match = key.match(/\/segments\/([0-9]{16})\.bin$/);
+    if (!match) return null;
+    return Number(match[1]);
+  }
+
+  private maybeFail(key: string): void {
+    const idx = this.captureSegmentIndex(key);
+    if (idx == null) return;
+    this.attemptedSegmentIndexes.push(idx);
+    if (idx === 0) throw dsError(`forced segment upload timeout for ${key}`);
+  }
+
+  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+    this.maybeFail(key);
+    return this.inner.put(key, data, opts);
+  }
+
+  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+    this.maybeFail(key);
+    return this.inner.putFile!(key, path, size, opts);
+  }
+
+  async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
+    return this.inner.get(key, opts);
+  }
+
+  async head(key: string): Promise<{ etag: string; size: number } | null> {
+    return this.inner.head(key);
+  }
+
+  async delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return this.inner.list(prefix);
+  }
 }
 
 describe("fault injection", () => {
@@ -60,6 +106,47 @@ describe("fault injection", () => {
       const keys = await os.list("streams/");
       expect(keys.some((k) => k.endsWith("/manifest.json"))).toBe(true);
       expect(keys.some((k) => k.includes("/segments/") && k.endsWith(".bin"))).toBe(true);
+
+      server.stop();
+      app.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("uploader does not bypass the earliest missing segment in a stream", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-upload-order-"));
+    try {
+      const cfg = makeConfig(root, {
+        uploadConcurrency: 2,
+        objectStoreRetries: 0,
+      });
+      const os = new GapPreservingStore();
+      const app = createApp(cfg, os);
+      const server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      await fetch(`${baseUrl}/v1/stream/order_test`, { method: "PUT" });
+
+      const payload = new Uint8Array(600);
+      payload.fill(9);
+      for (let i = 0; i < 8; i++) {
+        const r = await fetch(`${baseUrl}/v1/stream/order_test`, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: payload,
+        });
+        expect(r.status).toBe(204);
+      }
+
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (os.attemptedSegmentIndexes.length >= 3) break;
+        await sleep(50);
+      }
+
+      expect(os.attemptedSegmentIndexes.length).toBeGreaterThan(0);
+      expect(new Set(os.attemptedSegmentIndexes)).toEqual(new Set([0]));
 
       server.stop();
       app.close();

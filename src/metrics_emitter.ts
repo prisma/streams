@@ -10,6 +10,7 @@ export class MetricsEmitter {
     lastOffset: bigint;
     stream: string;
   }) => void;
+  private readonly collectRuntimeMetrics?: () => void;
   private timer: any | null = null;
 
   constructor(
@@ -18,12 +19,14 @@ export class MetricsEmitter {
     intervalMs: number,
     opts?: {
       onAppended?: (args: { lastOffset: bigint; stream: string }) => void;
+      collectRuntimeMetrics?: () => void;
     },
   ) {
     this.metrics = metrics;
     this.ingest = ingest;
     this.intervalMs = intervalMs;
     this.onAppended = opts?.onAppended;
+    this.collectRuntimeMetrics = opts?.collectRuntimeMetrics;
   }
 
   start(): void {
@@ -42,6 +45,7 @@ export class MetricsEmitter {
     const queue = this.ingest.getQueueStats();
     this.metrics.record("tieredstore.ingest.queue.bytes", queue.bytes, "bytes");
     this.metrics.record("tieredstore.ingest.queue.requests", queue.requests, "count");
+    this.collectRuntimeMetrics?.();
     const events = this.metrics.flushInterval();
     if (events.length === 0) return;
     const rows = events.map((e) => ({

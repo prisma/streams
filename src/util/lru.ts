@@ -42,4 +42,12 @@ export class LruCache<K, V> {
   clear(): void {
     this.map.clear();
   }
+
+  values(): IterableIterator<V> {
+    return this.map.values();
+  }
+
+  entries(): IterableIterator<[K, V]> {
+    return this.map.entries();
+  }
 }

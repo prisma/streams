@@ -1,4 +1,3 @@
-import { existsSync, openSync, readSync, closeSync } from "node:fs";
 import type { Config } from "./config";
 import type { SqliteDurableStore, SegmentRow } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
@@ -12,13 +11,20 @@ import {
 import { decodeJsonPayloadResult } from "./schema/read_json";
 import { SchemaRegistryStore } from "./schema/registry";
 import { parseOffsetResult, offsetToSeqOrNeg1, encodeOffset } from "./offset";
-import { decodeBlockResult, iterateBlocksResult, parseBlockHeaderResult, parseFooterBytes, DSB3_HEADER_BYTES, type SegmentFooter } from "./segment/format";
+import {
+  type BlockIndexEntry,
+  decodeBlockResult,
+  iterateBlocksResult,
+  parseBlockHeaderResult,
+  parseFooter,
+  parseFooterBytes,
+  DSB3_HEADER_BYTES,
+} from "./segment/format";
 import { SegmentDiskCache, type SegmentCacheStats } from "./segment/cache";
+import { loadSegmentBytesCached, loadSegmentSource, readRangeFromSource, type SegmentReadSource } from "./segment/cached_segment";
 import { Bloom256 } from "./util/bloom256";
-import { segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
 import { readU32BE } from "./util/endian";
-import { retry, type RetryOptions } from "./util/retry";
-import { LruCache } from "./util/lru";
+import { type RetryOptions } from "./util/retry";
 import type { IndexCandidate, StreamIndexLookup } from "./index/indexer";
 import { dsError } from "./util/ds_error.ts";
 import { Result } from "better-result";
@@ -54,7 +60,7 @@ import type { MetricsBlockSectionView } from "./profiles/metrics/block_format";
 import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
 import { RuntimeMemorySampler } from "./runtime_memory_sampler";
-import type { MemoryGuard } from "./memory";
+import type { MemoryPressureMonitor } from "./memory";
 
 export type ReadFormat = "raw" | "json";
 
@@ -157,7 +163,6 @@ export type ReaderError =
   | { kind: "invalid_offset"; message: string }
   | { kind: "internal"; message: string };
 
-type FooterCacheEntry = { footer: SegmentFooter | null; footerStart: number };
 const READ_FILTER_SCAN_LIMIT_BYTES = 100 * 1024 * 1024;
 type SegmentCandidateInfo = { segments: Set<number> | null; indexedThrough: number };
 type SearchFamilyCandidateInfo = { docIds: Set<number> | null; usedFamilies: Set<string> };
@@ -197,6 +202,12 @@ type PublishedCoverageState = {
   possibleMissingWalRows: number;
 };
 
+type PlannedReadSegments = {
+  segments: SegmentRow[];
+  sealedEndSeq: bigint;
+};
+type PlannedReadOrder = "asc" | "desc";
+
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
 }
@@ -214,90 +225,53 @@ function parseCompanionSections(value: string): Set<string> {
   }
 }
 
-function objectKeyForSegment(seg: SegmentRow): string {
-  const streamHash = streamHash16Hex(seg.stream);
-  return segmentObjectKey(streamHash, seg.segment_index);
-}
-
-function readRangeFromFile(path: string, start: number, end: number): Uint8Array {
-  const len = end - start + 1;
-  const fd = openSync(path, "r");
-  try {
-    const buf = Buffer.alloc(len);
-    const bytesRead = readSync(fd, buf, 0, len, start);
-    if (bytesRead !== len) throw dsError("short read");
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-async function readSegmentRange(
-  os: ObjectStore,
-  seg: SegmentRow,
-  start: number,
-  end: number,
-  diskCache?: SegmentDiskCache,
-  retryOpts?: RetryOptions
-): Promise<Uint8Array> {
-  const local = seg.local_path;
-  if (existsSync(local)) return readRangeFromFile(local, start, end);
-
-  const objectKey = objectKeyForSegment(seg);
-  if (diskCache && diskCache.has(objectKey)) {
-    diskCache.recordHit();
-    diskCache.touch(objectKey);
-    return readRangeFromFile(diskCache.getPath(objectKey), start, end);
-  }
-  if (diskCache) diskCache.recordMiss();
-
-  const bytes = await retry(
-    async () => {
-      const res = await os.get(objectKey, { range: { start, end } });
-      if (!res) throw dsError(`object store missing segment: ${objectKey}`);
-      return res;
-    },
-    retryOpts ?? { retries: 0, baseDelayMs: 0, maxDelayMs: 0, timeoutMs: 0 }
-  );
-  if (diskCache && start === 0 && end === seg.size_bytes - 1) {
-    diskCache.put(objectKey, bytes);
-  }
-  return bytes;
-}
-
 async function loadSegmentBytes(
   os: ObjectStore,
   seg: SegmentRow,
   diskCache?: SegmentDiskCache,
   retryOpts?: RetryOptions
 ): Promise<Uint8Array> {
-  return readSegmentRange(os, seg, 0, seg.size_bytes - 1, diskCache, retryOpts);
+  return loadSegmentBytesCached(os, seg, diskCache, retryOpts);
 }
 
-async function loadSegmentFooter(
-  os: ObjectStore,
-  seg: SegmentRow,
-  diskCache?: SegmentDiskCache,
-  retryOpts?: RetryOptions,
-  footerCache?: LruCache<string, FooterCacheEntry>
-): Promise<{ footer: SegmentFooter | null; footerStart: number } | null> {
-  const cacheKey = seg.segment_id;
-  if (footerCache) {
-    const cached = footerCache.get(cacheKey);
-    if (cached) return cached;
+function loadSegmentDataLimitFromSource(seg: SegmentRow, source: SegmentReadSource): number {
+  if (seg.size_bytes < 8) return seg.size_bytes;
+  const tail = readRangeFromSource(source, seg.size_bytes - 8, seg.size_bytes - 1);
+  const magic = String.fromCharCode(tail[4], tail[5], tail[6], tail[7]);
+  if (magic !== "DSF1") return seg.size_bytes;
+  const footerLen = readU32BE(tail, 0);
+  const footerStart = seg.size_bytes - 8 - footerLen;
+  return footerStart >= 0 ? footerStart : seg.size_bytes;
+}
+
+function findFirstRelevantBlockIndex(blocks: BlockIndexEntry[], seq: bigint): number {
+  if (blocks.length <= 1) return 0;
+  let lo = 0;
+  let hi = blocks.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    if (blocks[mid]!.firstOffset <= seq) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
+  return best;
+}
+
+function loadSegmentFooterBlocksFromSource(seg: SegmentRow, source: SegmentReadSource): BlockIndexEntry[] | null {
   if (seg.size_bytes < 8) return null;
-  const tail = await readSegmentRange(os, seg, seg.size_bytes - 8, seg.size_bytes - 1, diskCache, retryOpts);
+  const tail = readRangeFromSource(source, seg.size_bytes - 8, seg.size_bytes - 1);
   const magic = String.fromCharCode(tail[4], tail[5], tail[6], tail[7]);
   if (magic !== "DSF1") return null;
   const footerLen = readU32BE(tail, 0);
   const footerStart = seg.size_bytes - 8 - footerLen;
   if (footerStart < 0) return null;
-  const footerBytes = await readSegmentRange(os, seg, footerStart, footerStart + footerLen - 1, diskCache, retryOpts);
+  const footerBytes = readRangeFromSource(source, footerStart, footerStart + footerLen - 1);
   const footer = parseFooterBytes(footerBytes);
-  const result = { footer, footerStart };
-  if (footerCache) footerCache.set(cacheKey, result);
-  return result;
+  return footer?.blocks ?? null;
 }
 
 export class StreamReader {
@@ -306,10 +280,9 @@ export class StreamReader {
   private readonly os: ObjectStore;
   private readonly registry: SchemaRegistryStore;
   private readonly diskCache?: SegmentDiskCache;
-  private readonly footerCache?: LruCache<string, FooterCacheEntry>;
   private readonly index?: StreamIndexLookup;
   private readonly memorySampler?: RuntimeMemorySampler;
-  private readonly memory?: MemoryGuard;
+  private readonly memory?: MemoryPressureMonitor;
 
   constructor(
     config: Config,
@@ -319,7 +292,7 @@ export class StreamReader {
     diskCache?: SegmentDiskCache,
     index?: StreamIndexLookup,
     memorySampler?: RuntimeMemorySampler,
-    memory?: MemoryGuard
+    memory?: MemoryPressureMonitor
   ) {
     this.config = config;
     this.db = db;
@@ -329,9 +302,72 @@ export class StreamReader {
     this.index = index;
     this.memorySampler = memorySampler;
     this.memory = memory;
-    if (config.segmentFooterCacheEntries > 0) {
-      this.footerCache = new LruCache(config.segmentFooterCacheEntries);
+  }
+
+  private planSealedReadSegments(
+    stream: string,
+    startSeq: bigint,
+    sealedEndSeq: bigint,
+    candidateSegments: Set<number> | null,
+    indexedThrough: number,
+    order: PlannedReadOrder = "asc"
+  ): PlannedReadSegments | null {
+    if (startSeq > sealedEndSeq) return { segments: [], sealedEndSeq };
+    if (candidateSegments == null) return null;
+
+    const startSeg = this.db.findSegmentForOffset(stream, startSeq);
+    const endSeg = this.db.findSegmentForOffset(stream, sealedEndSeq);
+    if (!startSeg || !endSeg) return null;
+
+    const startIndex = startSeg.segment_index;
+    const endIndex = endSeg.segment_index;
+    const plannedIndexes: number[] = [];
+    const seenIndexes = new Set<number>();
+    const indexedPrefixEnd = Math.min(endIndex, indexedThrough - 1);
+
+    if (order === "asc") {
+      if (startIndex <= indexedPrefixEnd) {
+        const sortedCandidateIndexes = Array.from(candidateSegments)
+          .filter((segmentIndex) => segmentIndex >= startIndex && segmentIndex <= indexedPrefixEnd)
+          .sort((a, b) => a - b);
+        for (const segmentIndex of sortedCandidateIndexes) {
+          if (seenIndexes.has(segmentIndex)) continue;
+          plannedIndexes.push(segmentIndex);
+          seenIndexes.add(segmentIndex);
+        }
+      }
+
+      const tailStartIndex = Math.max(startIndex, indexedThrough);
+      for (let segmentIndex = tailStartIndex; segmentIndex <= endIndex; segmentIndex++) {
+        if (seenIndexes.has(segmentIndex)) continue;
+        plannedIndexes.push(segmentIndex);
+        seenIndexes.add(segmentIndex);
+      }
+    } else {
+      for (let segmentIndex = endIndex; segmentIndex >= Math.max(startIndex, indexedThrough); segmentIndex--) {
+        if (seenIndexes.has(segmentIndex)) continue;
+        plannedIndexes.push(segmentIndex);
+        seenIndexes.add(segmentIndex);
+      }
+      if (startIndex <= indexedPrefixEnd) {
+        const sortedCandidateIndexes = Array.from(candidateSegments)
+          .filter((segmentIndex) => segmentIndex >= startIndex && segmentIndex <= indexedPrefixEnd)
+          .sort((a, b) => b - a);
+        for (const segmentIndex of sortedCandidateIndexes) {
+          if (seenIndexes.has(segmentIndex)) continue;
+          plannedIndexes.push(segmentIndex);
+          seenIndexes.add(segmentIndex);
+        }
+      }
     }
+
+    const plannedSegments: SegmentRow[] = [];
+    for (const segmentIndex of plannedIndexes) {
+      const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+      if (!seg) return null;
+      plannedSegments.push(seg);
+    }
+    return { segments: plannedSegments, sealedEndSeq };
   }
 
   cacheStats(): SegmentCacheStats | null {
@@ -499,10 +535,17 @@ export class StreamReader {
     try {
       const sinceNs = sinceMs * 1_000_000n;
       const keyBytes = key ? utf8Bytes(key) : null;
+      const candidateInfo = await this.resolveCandidateSegments(stream, keyBytes, null);
+      const plannedSealedSegments = this.planSealedReadSegments(
+        stream,
+        0n,
+        srow.sealed_through,
+        candidateInfo.segments,
+        candidateInfo.indexedThrough,
+        "asc"
+      );
 
-      // Scan segments in order.
-      const segments = this.db.listSegmentsForStream(stream);
-      for (const seg of segments) {
+      for (const seg of plannedSealedSegments?.segments ?? this.db.listSegmentsForStream(stream)) {
         const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
         let curOffset = seg.start_offset;
         for (const blockRes of iterateBlocksResult(segBytes)) {
@@ -647,6 +690,61 @@ export class StreamReader {
         seg: SegmentRow,
         allowedDocIds: Set<number> | null
       ): Promise<Result<void, ReaderError>> => {
+        const footer = parseFooter(segBytes)?.footer;
+        if (footer) {
+          for (let blockIndex = findFirstRelevantBlockIndex(footer.blocks, seq); blockIndex < footer.blocks.length; blockIndex++) {
+            const block = footer.blocks[blockIndex]!;
+            const blockStart = block.firstOffset;
+            const blockEnd = blockStart + BigInt(block.recordCount) - 1n;
+            if (blockEnd < seq) continue;
+            if (blockStart > endOffsetNum) break;
+
+            if (keyBytes) {
+              const headerBytes = segBytes.subarray(block.blockOffset, block.blockOffset + DSB3_HEADER_BYTES);
+              const headerRes = parseBlockHeaderResult(headerBytes);
+              if (Result.isError(headerRes)) return Result.err({ kind: "internal", message: headerRes.error.message });
+              const bloom = new Bloom256(headerRes.value.bloom);
+              if (!bloom.maybeHas(keyBytes)) continue;
+            }
+
+            const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+            const blockBytes = segBytes.subarray(block.blockOffset, block.blockOffset + totalLen);
+            const decodedRes = decodeBlockResult(blockBytes);
+            if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+            const decoded = decodedRes.value;
+            let curOffset = blockStart;
+            for (const r of decoded.records) {
+              if (curOffset < seq) {
+                curOffset += 1n;
+                continue;
+              }
+              if (curOffset > endOffsetNum) break;
+              const localDocId = Number(curOffset - seg.start_offset);
+              if (allowedDocIds && !allowedDocIds.has(localDocId)) {
+                curOffset += 1n;
+                continue;
+              }
+              const matchRes = evaluateRecordResult(curOffset, r.routingKey, r.payload);
+              if (Result.isError(matchRes)) return matchRes;
+              if (matchRes.value.matched) {
+                results.push({ offset: curOffset, payload: r.payload });
+                bytesOut += r.payload.byteLength;
+              }
+              curOffset += 1n;
+              if (matchRes.value.stop) {
+                filterScanLimitReached = true;
+                seq = curOffset;
+                return Result.ok(undefined);
+              }
+              if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) {
+                seq = curOffset;
+                return Result.ok(undefined);
+              }
+            }
+          }
+          return Result.ok(undefined);
+        }
+
         let curOffset = seg.start_offset;
         for (const blockRes of iterateBlocksResult(segBytes)) {
           if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
@@ -690,17 +788,189 @@ export class StreamReader {
         return Result.ok(undefined);
       };
 
+      const scanSegmentSource = async (
+        source: SegmentReadSource,
+        seg: SegmentRow,
+        allowedDocIds: Set<number> | null
+      ): Promise<Result<void, ReaderError>> => {
+        const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
+        if (footerBlocks) {
+          for (let blockIndex = findFirstRelevantBlockIndex(footerBlocks, seq); blockIndex < footerBlocks.length; blockIndex++) {
+            const block = footerBlocks[blockIndex]!;
+            const blockStart = block.firstOffset;
+            const blockEnd = blockStart + BigInt(block.recordCount) - 1n;
+            if (blockEnd < seq) continue;
+            if (blockStart > endOffsetNum) break;
+
+            const headerBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + DSB3_HEADER_BYTES - 1);
+            const headerRes = parseBlockHeaderResult(headerBytes);
+            if (Result.isError(headerRes)) return Result.err({ kind: "internal", message: headerRes.error.message });
+            if (keyBytes) {
+              const bloom = new Bloom256(headerRes.value.bloom);
+              if (!bloom.maybeHas(keyBytes)) continue;
+            }
+
+            const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+            const blockBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1);
+            const decodedRes = decodeBlockResult(blockBytes);
+            if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+            const decoded = decodedRes.value;
+            let curOffset = blockStart;
+            for (const r of decoded.records) {
+              if (curOffset < seq) {
+                curOffset += 1n;
+                continue;
+              }
+              if (curOffset > endOffsetNum) break;
+              const localDocId = Number(curOffset - seg.start_offset);
+              if (allowedDocIds && !allowedDocIds.has(localDocId)) {
+                curOffset += 1n;
+                continue;
+              }
+              const matchRes = evaluateRecordResult(curOffset, r.routingKey, r.payload);
+              if (Result.isError(matchRes)) return matchRes;
+              if (matchRes.value.matched) {
+                results.push({ offset: curOffset, payload: r.payload });
+                bytesOut += r.payload.byteLength;
+              }
+              curOffset += 1n;
+              if (matchRes.value.stop) {
+                filterScanLimitReached = true;
+                seq = curOffset;
+                return Result.ok(undefined);
+              }
+              if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) {
+                seq = curOffset;
+                return Result.ok(undefined);
+              }
+            }
+          }
+          return Result.ok(undefined);
+        }
+
+        const limit = loadSegmentDataLimitFromSource(seg, source);
+        let blockOffset = 0;
+        let blockFirstOffset = seg.start_offset;
+        while (blockOffset < limit) {
+          const headerBytes = readRangeFromSource(source, blockOffset, blockOffset + DSB3_HEADER_BYTES - 1);
+          const headerRes = parseBlockHeaderResult(headerBytes);
+          if (Result.isError(headerRes)) return Result.err({ kind: "internal", message: headerRes.error.message });
+          const header = headerRes.value;
+          const totalLen = DSB3_HEADER_BYTES + header.compressedLen;
+          const blockStart = blockFirstOffset;
+          const blockEnd = blockStart + BigInt(header.recordCount) - 1n;
+          if (blockEnd < seq) {
+            blockOffset += totalLen;
+            blockFirstOffset = blockEnd + 1n;
+            continue;
+          }
+          if (blockStart > endOffsetNum) break;
+
+          if (keyBytes) {
+            const bloom = new Bloom256(header.bloom);
+            if (!bloom.maybeHas(keyBytes)) {
+              blockOffset += totalLen;
+              blockFirstOffset = blockEnd + 1n;
+              continue;
+            }
+          }
+
+          const blockBytes = readRangeFromSource(source, blockOffset, blockOffset + totalLen - 1);
+          const decodedRes = decodeBlockResult(blockBytes);
+          if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+          const decoded = decodedRes.value;
+          let curOffset = blockStart;
+          for (const r of decoded.records) {
+            if (curOffset < seq) {
+              curOffset += 1n;
+              continue;
+            }
+            if (curOffset > endOffsetNum) break;
+            const localDocId = Number(curOffset - seg.start_offset);
+            if (allowedDocIds && !allowedDocIds.has(localDocId)) {
+              curOffset += 1n;
+              continue;
+            }
+            const matchRes = evaluateRecordResult(curOffset, r.routingKey, r.payload);
+            if (Result.isError(matchRes)) return matchRes;
+            if (matchRes.value.matched) {
+              results.push({ offset: curOffset, payload: r.payload });
+              bytesOut += r.payload.byteLength;
+            }
+            curOffset += 1n;
+            if (matchRes.value.stop) {
+              filterScanLimitReached = true;
+              seq = curOffset;
+              return Result.ok(undefined);
+            }
+            if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) {
+              seq = curOffset;
+              return Result.ok(undefined);
+            }
+          }
+          blockOffset += totalLen;
+          blockFirstOffset = blockEnd + 1n;
+        }
+        return Result.ok(undefined);
+      };
+
+      const sealedEndSeq = endOffsetNum < srow.sealed_through ? endOffsetNum : srow.sealed_through;
+      const plannedSealedSegments = this.planSealedReadSegments(
+        stream,
+        seq,
+        sealedEndSeq,
+        candidateSegments,
+        indexedThrough,
+        "asc"
+      );
+
       // 1) Read from sealed segments.
-      while (seq <= endOffsetNum && seq <= srow.sealed_through) {
-        const seg = this.db.findSegmentForOffset(stream, seq);
-        if (!seg) {
-          // Corruption in local metadata: sealed_through points past segments table.
-          break;
-        }
-        if (candidateSegments && seg.segment_index < indexedThrough && !candidateSegments.has(seg.segment_index)) {
+      if (plannedSealedSegments) {
+        for (const seg of plannedSealedSegments.segments) {
+          if (seg.end_offset < seq) continue;
+          if (seg.start_offset > sealedEndSeq) break;
+          let allowedDocIds: Set<number> | null = null;
+          if (columnClauses.length > 0) {
+            const docIdsRes = await this.resolveColumnCandidateDocIdsResult(stream, seg.segment_index, columnClauses);
+            if (Result.isError(docIdsRes)) return Result.err({ kind: "internal", message: docIdsRes.error.message });
+            if (docIdsRes.value) {
+              allowedDocIds = docIdsRes.value;
+              if (allowedDocIds.size === 0) {
+                seq = seg.end_offset + 1n;
+                continue;
+              }
+            }
+          }
+          const preferFull = !keyBytes && this.config.readMaxBytes >= seg.size_bytes;
+          if (preferFull) {
+            const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+            const scanRes = await scanSegmentBytes(segBytes, seg, allowedDocIds);
+            if (Result.isError(scanRes)) return scanRes;
+            if (filterScanLimitReached) return Result.ok(finalize());
+            if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) return Result.ok(finalize());
+          } else {
+            const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
+            const scanRes = await scanSegmentSource(source, seg, allowedDocIds);
+            if (Result.isError(scanRes)) return scanRes;
+            if (filterScanLimitReached) return Result.ok(finalize());
+            if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) return Result.ok(finalize());
+          }
           seq = seg.end_offset + 1n;
-          continue;
         }
+        if (seq <= plannedSealedSegments.sealedEndSeq) {
+          seq = plannedSealedSegments.sealedEndSeq + 1n;
+        }
+      } else {
+        while (seq <= endOffsetNum && seq <= srow.sealed_through) {
+          const seg = this.db.findSegmentForOffset(stream, seq);
+          if (!seg) {
+            // Corruption in local metadata: sealed_through points past segments table.
+            break;
+          }
+          if (candidateSegments && seg.segment_index < indexedThrough && !candidateSegments.has(seg.segment_index)) {
+            seq = seg.end_offset + 1n;
+            continue;
+          }
         let allowedDocIds: Set<number> | null = null;
         if (columnClauses.length > 0) {
           const docIdsRes = await this.resolveColumnCandidateDocIdsResult(stream, seg.segment_index, columnClauses);
@@ -721,84 +991,16 @@ export class StreamReader {
           if (filterScanLimitReached) return Result.ok(finalize());
           if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) return Result.ok(finalize());
         } else {
-          const footerInfo = await loadSegmentFooter(this.os, seg, this.diskCache, this.retryOpts(), this.footerCache);
-          if (!footerInfo || !footerInfo.footer) {
-            const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
-            const scanRes = await scanSegmentBytes(segBytes, seg, allowedDocIds);
-            if (Result.isError(scanRes)) return scanRes;
-            if (filterScanLimitReached) return Result.ok(finalize());
-            if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) return Result.ok(finalize());
-          } else {
-            const footer = footerInfo.footer;
-            for (const entry of footer.blocks) {
-              const blockStart = entry.firstOffset;
-              const blockEnd = entry.firstOffset + BigInt(entry.recordCount) - 1n;
-              if (blockEnd < seq) continue;
-              if (blockStart > endOffsetNum) break;
-
-              if (keyBytes) {
-                const headerBytes = await readSegmentRange(
-                  this.os,
-                  seg,
-                  entry.blockOffset,
-                  entry.blockOffset + DSB3_HEADER_BYTES - 1,
-                  this.diskCache,
-                  this.retryOpts()
-                );
-                const headerRes = parseBlockHeaderResult(headerBytes);
-                if (Result.isError(headerRes)) return Result.err({ kind: "internal", message: headerRes.error.message });
-                const header = headerRes.value;
-                const bloom = new Bloom256(header.bloom);
-                if (!bloom.maybeHas(keyBytes)) continue;
-              }
-
-              const totalLen = DSB3_HEADER_BYTES + entry.compressedLen;
-              const blockBytes = await readSegmentRange(
-                this.os,
-                seg,
-                entry.blockOffset,
-                entry.blockOffset + totalLen - 1,
-                this.diskCache,
-                this.retryOpts()
-              );
-              const decodedRes = decodeBlockResult(blockBytes);
-              if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
-              const decoded = decodedRes.value;
-              let curOffset = entry.firstOffset;
-              for (const r of decoded.records) {
-                if (curOffset < seq) {
-                  curOffset += 1n;
-                  continue;
-                }
-                if (curOffset > endOffsetNum) break;
-                const localDocId = Number(curOffset - seg.start_offset);
-                if (allowedDocIds && !allowedDocIds.has(localDocId)) {
-                  curOffset += 1n;
-                  continue;
-                }
-                const matchRes = evaluateRecordResult(curOffset, r.routingKey, r.payload);
-                if (Result.isError(matchRes)) return matchRes;
-                if (matchRes.value.matched) {
-                  results.push({ offset: curOffset, payload: r.payload });
-                  bytesOut += r.payload.byteLength;
-                }
-                curOffset += 1n;
-                if (matchRes.value.stop) {
-                  filterScanLimitReached = true;
-                  seq = curOffset;
-                  return Result.ok(finalize());
-                }
-                if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) {
-                  seq = curOffset;
-                  return Result.ok(finalize());
-                }
-              }
-            }
-          }
+          const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
+          const scanRes = await scanSegmentSource(source, seg, allowedDocIds);
+          if (Result.isError(scanRes)) return scanRes;
+          if (filterScanLimitReached) return Result.ok(finalize());
+          if (results.length >= this.config.readMaxRecords || bytesOut >= this.config.readMaxBytes) return Result.ok(finalize());
         }
 
-        // Move to next segment.
-        seq = seg.end_offset + 1n;
+          // Move to next segment.
+          seq = seg.end_offset + 1n;
+        }
       }
 
       // 2) Read remaining from WAL tail.
@@ -1102,75 +1304,150 @@ export class StreamReader {
             if (!timedOut && !stopIfPageComplete()) {
               const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
               if (sealedEnd >= rangeStartSeq) {
-                const startSeg = this.db.findSegmentForOffset(stream, sealedEnd);
-                let segmentIndex = startSeg?.segment_index ?? this.db.countSegmentsForStream(stream) - 1;
-                while (segmentIndex >= 0) {
-                  const seg = this.db.getSegmentByIndex(stream, segmentIndex);
-                  if (!seg) {
-                    segmentIndex -= 1;
-                    continue;
+                const plannedSealedSegments = this.planSealedReadSegments(
+                  stream,
+                  rangeStartSeq,
+                  sealedEnd,
+                  exactCandidateInfo.segments,
+                  exactCandidateInfo.indexedThrough,
+                  "desc"
+                );
+                if (plannedSealedSegments) {
+                  for (const seg of plannedSealedSegments.segments) {
+                    const scanRes = await this.scanSegmentReverseForSearchResult(
+                      stream,
+                      seg,
+                      exactCandidateInfo,
+                      cursorFieldBound,
+                      columnClauses,
+                      ftsClauses,
+                      rangeStartSeq,
+                      sealedEnd,
+                      {
+                        indexFamiliesUsed,
+                        collectSearchMatchResult,
+                        deadline,
+                        isTimedOut: () => timedOut,
+                        setTimedOut: (next) => {
+                          timedOut = next;
+                        },
+                        stopIfPageComplete,
+                        addIndexedSegment: () => {
+                          indexedSegments += 1;
+                        },
+                        addScannedSegment: () => {
+                          scannedSegments += 1;
+                        },
+                        addIndexedSegmentTimeMs: (deltaMs) => {
+                          indexedSegmentTimeMs += deltaMs;
+                        },
+                        addFtsSectionGetMs: (deltaMs) => {
+                          ftsSectionGetMs += deltaMs;
+                        },
+                        addFtsDecodeMs: (deltaMs) => {
+                          ftsDecodeMs += deltaMs;
+                        },
+                        addFtsClauseEstimateMs: (deltaMs) => {
+                          ftsClauseEstimateMs += deltaMs;
+                        },
+                        addScannedSegmentTimeMs: (deltaMs) => {
+                          scannedSegmentTimeMs += deltaMs;
+                        },
+                      }
+                    );
+                    if (Result.isError(scanRes)) return scanRes;
+                    if (timedOut || stopIfPageComplete()) break;
                   }
-                  if (seg.end_offset < rangeStartSeq) break;
-                  if (seg.start_offset > sealedEnd) {
-                    segmentIndex -= 1;
-                    continue;
-                  }
-                  const scanRes = await this.scanSegmentReverseForSearchResult(
-                    stream,
-                    seg,
-                    exactCandidateInfo,
-                    cursorFieldBound,
-                    columnClauses,
-                    ftsClauses,
-                    rangeStartSeq,
-                    sealedEnd,
-                    {
-                      indexFamiliesUsed,
-                      collectSearchMatchResult,
-                      deadline,
-                      isTimedOut: () => timedOut,
-                      setTimedOut: (next) => {
-                        timedOut = next;
-                      },
-                      stopIfPageComplete,
-                      addIndexedSegment: () => {
-                        indexedSegments += 1;
-                      },
-                      addScannedSegment: () => {
-                        scannedSegments += 1;
-                      },
-                      addIndexedSegmentTimeMs: (deltaMs) => {
-                        indexedSegmentTimeMs += deltaMs;
-                      },
-                      addFtsSectionGetMs: (deltaMs) => {
-                        ftsSectionGetMs += deltaMs;
-                      },
-                      addFtsDecodeMs: (deltaMs) => {
-                        ftsDecodeMs += deltaMs;
-                      },
-                      addFtsClauseEstimateMs: (deltaMs) => {
-                        ftsClauseEstimateMs += deltaMs;
-                      },
-                      addScannedSegmentTimeMs: (deltaMs) => {
-                        scannedSegmentTimeMs += deltaMs;
-                      },
+                } else {
+                  const startSeg = this.db.findSegmentForOffset(stream, sealedEnd);
+                  let segmentIndex = startSeg?.segment_index ?? this.db.countSegmentsForStream(stream) - 1;
+                  while (segmentIndex >= 0) {
+                    const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+                    if (!seg) {
+                      segmentIndex -= 1;
+                      continue;
                     }
-                  );
-                  if (Result.isError(scanRes)) return scanRes;
-                  if (timedOut || stopIfPageComplete()) break;
-                  segmentIndex -= 1;
+                    if (seg.end_offset < rangeStartSeq) break;
+                    if (seg.start_offset > sealedEnd) {
+                      segmentIndex -= 1;
+                      continue;
+                    }
+                    const scanRes = await this.scanSegmentReverseForSearchResult(
+                      stream,
+                      seg,
+                      exactCandidateInfo,
+                      cursorFieldBound,
+                      columnClauses,
+                      ftsClauses,
+                      rangeStartSeq,
+                      sealedEnd,
+                      {
+                        indexFamiliesUsed,
+                        collectSearchMatchResult,
+                        deadline,
+                        isTimedOut: () => timedOut,
+                        setTimedOut: (next) => {
+                          timedOut = next;
+                        },
+                        stopIfPageComplete,
+                        addIndexedSegment: () => {
+                          indexedSegments += 1;
+                        },
+                        addScannedSegment: () => {
+                          scannedSegments += 1;
+                        },
+                        addIndexedSegmentTimeMs: (deltaMs) => {
+                          indexedSegmentTimeMs += deltaMs;
+                        },
+                        addFtsSectionGetMs: (deltaMs) => {
+                          ftsSectionGetMs += deltaMs;
+                        },
+                        addFtsDecodeMs: (deltaMs) => {
+                          ftsDecodeMs += deltaMs;
+                        },
+                        addFtsClauseEstimateMs: (deltaMs) => {
+                          ftsClauseEstimateMs += deltaMs;
+                        },
+                        addScannedSegmentTimeMs: (deltaMs) => {
+                          scannedSegmentTimeMs += deltaMs;
+                        },
+                      }
+                    );
+                    if (Result.isError(scanRes)) return scanRes;
+                    if (timedOut || stopIfPageComplete()) break;
+                    segmentIndex -= 1;
+                  }
                 }
               }
             }
           } else {
             let seq = rangeStartSeq;
-            while (seq <= rangeEndSeq && seq <= visibleSealedThrough) {
-              const seg = this.db.findSegmentForOffset(stream, seq);
-              if (!seg) break;
-              const scanRes = await scanSegmentWithFamiliesResult(seg, rangeStartSeq, rangeEndSeq);
-              if (Result.isError(scanRes)) return scanRes;
-              seq = seg.end_offset + 1n;
-              if (timedOut || stopIfPageComplete()) break;
+            const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
+            const plannedSealedSegments = this.planSealedReadSegments(
+              stream,
+              rangeStartSeq,
+              sealedEnd,
+              exactCandidateInfo.segments,
+              exactCandidateInfo.indexedThrough,
+              "asc"
+            );
+            if (plannedSealedSegments) {
+              for (const seg of plannedSealedSegments.segments) {
+                const scanRes = await scanSegmentWithFamiliesResult(seg, rangeStartSeq, rangeEndSeq);
+                if (Result.isError(scanRes)) return scanRes;
+                seq = seg.end_offset + 1n;
+                if (timedOut || stopIfPageComplete()) break;
+              }
+              if (seq <= plannedSealedSegments.sealedEndSeq) seq = plannedSealedSegments.sealedEndSeq + 1n;
+            } else {
+              while (seq <= rangeEndSeq && seq <= visibleSealedThrough) {
+                const seg = this.db.findSegmentForOffset(stream, seq);
+                if (!seg) break;
+                const scanRes = await scanSegmentWithFamiliesResult(seg, rangeStartSeq, rangeEndSeq);
+                if (Result.isError(scanRes)) return scanRes;
+                seq = seg.end_offset + 1n;
+                if (timedOut || stopIfPageComplete()) break;
+              }
             }
             if (!timedOut && !stopIfPageComplete() && coverageState.canSearchWalTail && seq <= rangeEndSeq) {
               const tailStartedAt = Date.now();
@@ -1234,13 +1511,32 @@ export class StreamReader {
       }
 
       let seq = 0n;
-      while (seq <= visibleSnapshotEndSeq && seq <= visibleSealedThrough) {
-        const seg = this.db.findSegmentForOffset(stream, seq);
-        if (!seg) break;
-        const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
-        if (Result.isError(scanRes)) return scanRes;
-        seq = seg.end_offset + 1n;
-        if (timedOut) break;
+      const sealedEnd = visibleSnapshotEndSeq < visibleSealedThrough ? visibleSnapshotEndSeq : visibleSealedThrough;
+      const plannedSealedSegments = this.planSealedReadSegments(
+        stream,
+        0n,
+        sealedEnd,
+        exactCandidateInfo.segments,
+        exactCandidateInfo.indexedThrough,
+        "asc"
+      );
+      if (plannedSealedSegments) {
+        for (const seg of plannedSealedSegments.segments) {
+          const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
+          if (Result.isError(scanRes)) return scanRes;
+          seq = seg.end_offset + 1n;
+          if (timedOut) break;
+        }
+        if (seq <= plannedSealedSegments.sealedEndSeq) seq = plannedSealedSegments.sealedEndSeq + 1n;
+      } else {
+        while (seq <= visibleSnapshotEndSeq && seq <= visibleSealedThrough) {
+          const seg = this.db.findSegmentForOffset(stream, seq);
+          if (!seg) break;
+          const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
+          if (Result.isError(scanRes)) return scanRes;
+          seq = seg.end_offset + 1n;
+          if (timedOut) break;
+        }
       }
 
       if (!timedOut && coverageState.canSearchWalTail && seq <= snapshotEndSeq) {

@@ -1,19 +1,21 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { SecondaryIndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
 import { SchemaRegistryStore } from "../schema/registry";
 import { SegmentDiskCache } from "../segment/cache";
+import { loadSegmentBytesCached } from "../segment/cached_segment";
 import { iterateBlockRecordsResult } from "../segment/format";
 import { retry } from "../util/retry";
 import { dsError } from "../util/ds_error.ts";
-import { secondaryIndexRunObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
+import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { siphash24 } from "../util/siphash";
 import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
-import type { MemoryGuard } from "../memory";
+import { ConcurrencyGate } from "../concurrency_gate";
+import type { ForegroundActivityTracker } from "../foreground_activity";
 import { binaryFuseContains, buildBinaryFuseResult } from "./binary_fuse";
 import { IndexRunCache } from "./run_cache";
 import {
@@ -52,13 +54,12 @@ function binarySearch(values: bigint[], needle: bigint): number {
 
 const PAYLOAD_DECODER = new TextDecoder();
 const TERM_ENCODER = new TextEncoder();
-const MEMORY_PRESSURE_PAUSE = "__memory_pressure_pause__";
-
 export class SecondaryIndexManager {
   private readonly cfg: Config;
   private readonly db: SqliteDurableStore;
   private readonly os: ObjectStore;
   private readonly registry: SchemaRegistryStore;
+  private readonly segmentCache?: SegmentDiskCache;
   private readonly runDiskCache?: SegmentDiskCache;
   private readonly runCache: IndexRunCache;
   private readonly span: number;
@@ -77,26 +78,31 @@ export class SecondaryIndexManager {
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
-  private readonly memory?: MemoryGuard;
+  private readonly asyncGate: ConcurrencyGate;
+  private readonly foregroundActivity?: ForegroundActivityTracker;
 
   constructor(
     cfg: Config,
     db: SqliteDurableStore,
     os: ObjectStore,
     registry: SchemaRegistryStore,
+    segmentCache?: SegmentDiskCache,
     publishManifest?: (stream: string) => Promise<void>,
     onMetadataChanged?: (stream: string) => void,
     memorySampler?: RuntimeMemorySampler,
-    memory?: MemoryGuard
+    asyncGate?: ConcurrencyGate,
+    foregroundActivity?: ForegroundActivityTracker
   ) {
     this.cfg = cfg;
     this.db = db;
     this.os = os;
     this.registry = registry;
+    this.segmentCache = segmentCache;
     this.publishManifest = publishManifest;
     this.onMetadataChanged = onMetadataChanged;
     this.memorySampler = memorySampler;
-    this.memory = memory;
+    this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
+    this.foregroundActivity = foregroundActivity;
     this.span = cfg.indexL0SpanSegments;
     this.buildConcurrency = Math.max(1, cfg.indexBuildConcurrency);
     this.compactionFanout = cfg.indexCompactionFanout;
@@ -109,6 +115,14 @@ export class SecondaryIndexManager {
       cfg.indexRunCacheMaxBytes > 0
         ? new SegmentDiskCache(`${cfg.rootDir}/cache/secondary-index`, cfg.indexRunCacheMaxBytes)
         : undefined;
+  }
+
+  private async yieldBackgroundWork(): Promise<void> {
+    if (this.foregroundActivity) {
+      await this.foregroundActivity.yieldBackgroundWork();
+      return;
+    }
+    await yieldToEventLoop();
   }
 
   start(): void {
@@ -177,6 +191,30 @@ export class SecondaryIndexManager {
     return this.runDiskCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/secondary-index/`);
   }
 
+  getMemoryStats(): {
+    runCacheBytes: number;
+    runCacheEntries: number;
+    runDiskCacheBytes: number;
+    runDiskCacheEntries: number;
+    runDiskMappedBytes: number;
+    runDiskMappedEntries: number;
+    runDiskPinnedEntries: number;
+    streamIdleTickEntries: number;
+  } {
+    const mem = this.runCache.stats();
+    const disk = this.runDiskCache?.stats();
+    return {
+      runCacheBytes: mem.usedBytes,
+      runCacheEntries: mem.entries,
+      runDiskCacheBytes: disk?.usedBytes ?? 0,
+      runDiskCacheEntries: disk?.entryCount ?? 0,
+      runDiskMappedBytes: disk?.mappedBytes ?? 0,
+      runDiskMappedEntries: disk?.mappedEntryCount ?? 0,
+      runDiskPinnedEntries: disk?.pinnedEntryCount ?? 0,
+      streamIdleTickEntries: this.streamIdleTicks.size,
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -240,57 +278,43 @@ export class SecondaryIndexManager {
     if (this.span <= 0) return Result.ok(undefined);
     const key = `${stream}:${index.name}`;
     if (this.building.has(key)) return Result.ok(undefined);
-    if (this.memory && !this.memory.shouldAllow()) {
-      this.queue.add(stream);
-      return Result.ok(undefined);
-    }
     this.building.add(key);
     try {
-      const configHash = hashSecondaryIndexField(index);
-      let state = this.db.getSecondaryIndexState(stream, index.name);
-      if (!state) {
-        this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
-        state = this.db.getSecondaryIndexState(stream, index.name);
-      } else if (state.config_hash !== configHash) {
-        this.db.deleteSecondaryIndex(stream, index.name);
-        this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
-        state = this.db.getSecondaryIndexState(stream, index.name);
-        this.onMetadataChanged?.(stream);
-        if (this.publishManifest) {
-          try {
-            await this.publishManifest(stream);
-          } catch {
-            // ignore and retry later
+      return await this.asyncGate.run(async () => {
+        const configHash = hashSecondaryIndexField(index);
+        let state = this.db.getSecondaryIndexState(stream, index.name);
+        if (!state) {
+          this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
+          state = this.db.getSecondaryIndexState(stream, index.name);
+        } else if (state.config_hash !== configHash) {
+          this.db.deleteSecondaryIndex(stream, index.name);
+          this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
+          state = this.db.getSecondaryIndexState(stream, index.name);
+          this.onMetadataChanged?.(stream);
+          if (this.publishManifest) {
+            try {
+              await this.publishManifest(stream);
+            } catch {
+              // ignore and retry later
+            }
           }
         }
-      }
-      if (!state) return Result.ok(undefined);
-
-      let indexedThrough = state.indexed_through;
-      for (;;) {
+        if (!state) return Result.ok(undefined);
         if (this.shouldPauseExactBackgroundWork(stream)) {
           this.queue.add(stream);
           return Result.ok(undefined);
         }
-        if (this.memory && !this.memory.shouldAllow()) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
+        const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const start = indexedThrough;
         const end = start + this.span - 1;
         const segments: SegmentRow[] = [];
-        let ok = true;
         for (let i = start; i <= end; i++) {
           const seg = this.db.getSegmentByIndex(stream, i);
-          if (!seg || !seg.r2_etag) {
-            ok = false;
-            break;
-          }
+          if (!seg || !seg.r2_etag) return Result.ok(undefined);
           segments.push(seg);
         }
-        if (!ok) return Result.ok(undefined);
 
         const runRes = this.memorySampler
           ? await this.memorySampler.track(
@@ -299,13 +323,7 @@ export class SecondaryIndexManager {
               () => this.buildL0RunResult(stream, index, start, segments, state.index_secret)
             )
           : await this.buildL0RunResult(stream, index, start, segments, state.index_secret);
-        if (Result.isError(runRes)) {
-          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
-            this.queue.add(stream);
-            return Result.ok(undefined);
-          }
-          return runRes;
-        }
+        if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const persistRes = await this.persistRunResult(run);
         if (Result.isError(persistRes)) return persistRes;
@@ -322,9 +340,9 @@ export class SecondaryIndexManager {
           filter_len: run.meta.filterLen,
           record_count: run.meta.recordCount,
         });
-        indexedThrough = end + 1;
-        this.db.updateSecondaryIndexedThrough(stream, index.name, indexedThrough);
-        state.indexed_through = indexedThrough;
+        const nextIndexedThrough = end + 1;
+        this.db.updateSecondaryIndexedThrough(stream, index.name, nextIndexedThrough);
+        state.indexed_through = nextIndexedThrough;
         this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
@@ -333,7 +351,9 @@ export class SecondaryIndexManager {
             // ignore and retry later
           }
         }
-      }
+        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.building.delete(key);
     }
@@ -344,18 +364,14 @@ export class SecondaryIndexManager {
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     const key = `${stream}:${indexName}`;
     if (this.compacting.has(key)) return Result.ok(undefined);
-    if (this.memory && !this.memory.shouldAllow()) {
+    if (this.foregroundActivity?.wasActiveWithin(2000)) {
       this.queue.add(stream);
       return Result.ok(undefined);
     }
     this.compacting.add(key);
     try {
-      for (;;) {
+      return await this.asyncGate.run(async () => {
         if (this.shouldPauseExactBackgroundWork(stream)) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
-        if (this.memory && !this.memory.shouldAllow()) {
           this.queue.add(stream);
           return Result.ok(undefined);
         }
@@ -366,13 +382,7 @@ export class SecondaryIndexManager {
         }
         const { level, runs } = group;
         const runRes = await this.buildCompactedRunResult(stream, indexName, level + 1, runs);
-        if (Result.isError(runRes)) {
-          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
-            this.queue.add(stream);
-            return Result.ok(undefined);
-          }
-          return runRes;
-        }
+        if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const persistRes = await this.persistRunResult(run);
         if (Result.isError(persistRes)) return persistRes;
@@ -408,7 +418,9 @@ export class SecondaryIndexManager {
           }
         }
         await this.gcRetiredRuns(stream, indexName);
-      }
+        this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.compacting.delete(key);
     }
@@ -496,10 +508,6 @@ export class SecondaryIndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
             const meta = pending.shift();
             if (!meta) return;
             const runRes = await this.loadRunResult(meta);
@@ -518,11 +526,7 @@ export class SecondaryIndexManager {
               buildError = String((e as any)?.message ?? e);
               return;
             }
-            await yieldToEventLoop();
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
+            await this.yieldBackgroundWork();
           }
         })()
       );
@@ -589,10 +593,6 @@ export class SecondaryIndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
             const seg = pending.shift();
             if (!seg) return;
             const segBytesRes = await this.loadSegmentBytesResult(seg);
@@ -605,6 +605,7 @@ export class SecondaryIndexManager {
             const maskBit = 1 << bit;
             const local = new Map<bigint, number>();
             let offset = seg.start_offset;
+            let processedRecords = 0;
             for (const recRes of iterateBlockRecordsResult(segBytes)) {
               if (Result.isError(recRes)) {
                 buildError = recRes.error.message;
@@ -626,17 +627,17 @@ export class SecondaryIndexManager {
                 }
               }
               offset += 1n;
+              processedRecords += 1;
+              if (processedRecords % 64 === 0) {
+                await this.yieldBackgroundWork();
+              }
             }
             for (const [fp, mask] of local.entries()) {
               const prev = maskByFp.get(fp) ?? 0;
               maskByFp.set(fp, prev | mask);
             }
             local.clear();
-            await yieldToEventLoop();
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
+            await this.yieldBackgroundWork();
           }
         })()
       );
@@ -761,7 +762,7 @@ export class SecondaryIndexManager {
       return invalidIndexBuild(String((e as any)?.message ?? e));
     }
     this.runDiskCache?.put(run.meta.objectKey, payloadRes.value);
-    this.runCache.put(run.meta.objectKey, run);
+    this.runCache.put(run.meta.objectKey, run, payloadRes.value.byteLength);
     return Result.ok(payloadRes.value.byteLength);
   }
 
@@ -798,20 +799,16 @@ export class SecondaryIndexManager {
     }
     const decodeRes = decodeIndexRunResult(bytes);
     if (Result.isError(decodeRes)) return invalidIndexBuild(decodeRes.error.message);
-    this.runCache.put(meta.object_key, decodeRes.value);
+    this.runCache.put(meta.object_key, decodeRes.value, meta.size_bytes);
     return Result.ok(decodeRes.value);
   }
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, SecondaryIndexBuildError>> {
     try {
-      const data = await retry(
-        async () => {
-          if (existsSync(seg.local_path)) return readFileSync(seg.local_path);
-          const key = segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index);
-          const remote = await this.os.get(key);
-          if (!remote) throw dsError(`missing segment ${key}`);
-          return remote;
-        },
+      const data = await loadSegmentBytesCached(
+        this.os,
+        seg,
+        this.segmentCache,
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,

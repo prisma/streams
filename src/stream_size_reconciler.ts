@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import { Result } from "better-result";
 import type { SqliteDurableStore, SegmentRow } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
+import type { SegmentDiskCache } from "./segment/cache";
+import { loadSegmentBytesCached } from "./segment/cached_segment";
 import { iterateBlocksResult } from "./segment/format";
-import { segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
 import { dsError } from "./util/ds_error";
 import { yieldToEventLoop } from "./util/yield";
 
@@ -15,6 +16,7 @@ export class StreamSizeReconciler {
   constructor(
     private readonly db: SqliteDurableStore,
     private readonly os: ObjectStore,
+    private readonly segmentCache?: SegmentDiskCache,
     private readonly onMetadataChanged?: (stream: string) => void
   ) {}
 
@@ -93,10 +95,6 @@ export class StreamSizeReconciler {
     if (existsSync(segment.local_path)) {
       return new Uint8Array(await readFile(segment.local_path));
     }
-    const shash = streamHash16Hex(segment.stream);
-    const objectKey = segmentObjectKey(shash, segment.segment_index);
-    const bytes = await this.os.get(objectKey);
-    if (!bytes) throw dsError(`missing segment object ${objectKey}`);
-    return bytes;
+    return loadSegmentBytesCached(this.os, segment, this.segmentCache);
   }
 }

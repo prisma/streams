@@ -320,14 +320,13 @@ Actions:
 
 Primary causes:
 
-- memory guard (`DS_MEMORY_LIMIT_*`)
 - ingest queue limits
 - local backlog gate (`DS_LOCAL_BACKLOG_MAX_BYTES`)
 
 Actions:
 
 1. Inspect `/metrics` and `__stream_metrics__`.
-2. Reduce write load or increase capacity knobs safely.
+2. Reduce write load or increase ingest/read/search/async-index concurrency and cache budgets safely.
 3. If due to backlog, prioritize object-store recovery and upload drain.
 
 ### 4.6 Touch/live issues

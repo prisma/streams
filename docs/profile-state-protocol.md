@@ -65,6 +65,106 @@ routing-key extraction. They do not own:
 - live invalidation behavior
 - State Protocol semantics
 
+## WAL Search Schema (Prisma-Style Events)
+
+When `state-protocol` is used for WAL change events like:
+
+```json
+{
+  "type": "public.posts",
+  "key": "42",
+  "value": { "id": 42, "title": "Hello" },
+  "oldValue": null,
+  "headers": {
+    "operation": "insert",
+    "timestamp": "2026-03-16T12:00:00.000Z"
+  }
+}
+```
+
+install schema `search.fields` explicitly if you need efficient event lookup by
+table and row key. The `state-protocol` profile does not auto-install WAL
+search fields.
+
+Recommended setup at bootstrap time (before ingesting stream data):
+
+- install this as the first schema while the stream is still empty
+- for existing streams, follow the schema evolution rules in
+  [`schemas.md`](./schemas.md)
+
+```json
+{
+  "apiVersion": "durable.streams/schema-registry/v1",
+  "schema": {
+    "type": "object",
+    "required": ["type", "key", "headers"],
+    "properties": {
+      "type": { "type": "string" },
+      "key": { "type": "string" },
+      "headers": {
+        "type": "object",
+        "required": ["timestamp", "operation"],
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "operation": { "type": "string" }
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "search": {
+    "primaryTimestampField": "eventTime",
+    "aliases": {
+      "table": "type",
+      "rowKey": "key"
+    },
+    "fields": {
+      "eventTime": {
+        "kind": "date",
+        "bindings": [{ "version": 1, "jsonPointer": "/headers/timestamp" }],
+        "exact": true,
+        "column": true,
+        "exists": true,
+        "sortable": true
+      },
+      "operation": {
+        "kind": "keyword",
+        "bindings": [{ "version": 1, "jsonPointer": "/headers/operation" }],
+        "exact": true,
+        "exists": true
+      },
+      "type": {
+        "kind": "keyword",
+        "bindings": [{ "version": 1, "jsonPointer": "/type" }],
+        "exact": true,
+        "exists": true
+      },
+      "key": {
+        "kind": "keyword",
+        "bindings": [{ "version": 1, "jsonPointer": "/key" }],
+        "exact": true,
+        "exists": true
+      }
+    }
+  }
+}
+```
+
+With that schema, these query patterns are supported efficiently:
+
+- table + row:
+  - `POST /v1/stream/<name>/_search` with `q: "type:\"public.posts\" AND key:\"42\""`
+- table only:
+  - `POST /v1/stream/<name>/_search` with `q: "type:\"public.posts\""`
+
+Important:
+
+- `GET /v1/stream/<name>?key=...` filters by the stream routing key, not the
+  top-level WAL payload field named `key`.
+- For multi-table WAL streams, keep row identity lookup in schema search
+  (`type` + `key`) unless you intentionally define a dedicated composite routing
+  key in the payload.
+
 ## Implementation Rule
 
 All State Protocol-specific behavior lives behind the profile definition under

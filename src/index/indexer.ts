@@ -5,6 +5,7 @@ import type { Config } from "../config";
 import type { IndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
 import { SegmentDiskCache } from "../segment/cache";
+import { loadSegmentBytesCached } from "../segment/cached_segment";
 import { iterateBlockRecordsResult } from "../segment/format";
 import { siphash24 } from "../util/siphash";
 import { retry } from "../util/retry";
@@ -16,12 +17,14 @@ import type { Metrics } from "../metrics";
 import { dsError } from "../util/ds_error.ts";
 import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
+import { ConcurrencyGate } from "../concurrency_gate";
+import type { ForegroundActivityTracker } from "../foreground_activity";
 import type { AggSectionView } from "../search/agg_format";
 import type { ColSectionView } from "../search/col_format";
 import type { FtsSectionView } from "../search/fts_format";
 import type { MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import type { SchemaRegistryStore } from "../schema/registry";
-import type { MemoryGuard } from "../memory";
+import type { RoutingKeyLexiconListResult } from "./lexicon_indexer";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
@@ -44,10 +47,12 @@ export type StreamIndexLookup = {
     segmentIndex: number
   ): Promise<{ companion: FtsSectionView | null; stats: CompanionSectionLookupStats }>;
   getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number): Promise<MetricsBlockSectionView | null>;
+  listRoutingKeysResult?(stream: string, after: string | null, limit: number): Promise<Result<RoutingKeyLexiconListResult, { kind: string; message: string }>>;
   getLocalStorageUsage?(stream: string): {
     routing_index_cache_bytes: number;
     exact_index_cache_bytes: number;
     companion_cache_bytes: number;
+    lexicon_index_cache_bytes: number;
   };
 };
 
@@ -58,8 +63,6 @@ function invalidIndexBuild<T = never>(message: string): Result<T, IndexBuildErro
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
 }
-
-const MEMORY_PRESSURE_PAUSE = "__memory_pressure_pause__";
 
 export class IndexManager {
   private readonly cfg: Config;
@@ -92,7 +95,8 @@ export class IndexManager {
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly registry?: SchemaRegistryStore;
-  private readonly memory?: MemoryGuard;
+  private readonly asyncGate: ConcurrencyGate;
+  private readonly foregroundActivity?: ForegroundActivityTracker;
 
   constructor(
     cfg: Config,
@@ -104,7 +108,8 @@ export class IndexManager {
     onMetadataChanged?: (stream: string) => void,
     memorySampler?: RuntimeMemorySampler,
     registry?: SchemaRegistryStore,
-    memory?: MemoryGuard
+    asyncGate?: ConcurrencyGate,
+    foregroundActivity?: ForegroundActivityTracker
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -122,9 +127,18 @@ export class IndexManager {
     this.onMetadataChanged = onMetadataChanged;
     this.memorySampler = memorySampler;
     this.registry = registry;
-    this.memory = memory;
+    this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
+    this.foregroundActivity = foregroundActivity;
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
+  }
+
+  private async yieldBackgroundWork(): Promise<void> {
+    if (this.foregroundActivity) {
+      await this.foregroundActivity.yieldBackgroundWork();
+      return;
+    }
+    await yieldToEventLoop();
   }
 
   start(): void {
@@ -204,6 +218,28 @@ export class IndexManager {
     return this.runDiskCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/index/`);
   }
 
+  getMemoryStats(): {
+    runCacheBytes: number;
+    runCacheEntries: number;
+    runDiskCacheBytes: number;
+    runDiskCacheEntries: number;
+    runDiskMappedBytes: number;
+    runDiskMappedEntries: number;
+    runDiskPinnedEntries: number;
+  } {
+    const mem = this.runCache.stats();
+    const disk = this.runDiskCache?.stats();
+    return {
+      runCacheBytes: mem.usedBytes,
+      runCacheEntries: mem.entries,
+      runDiskCacheBytes: disk?.usedBytes ?? 0,
+      runDiskCacheEntries: disk?.entryCount ?? 0,
+      runDiskMappedBytes: disk?.mappedBytes ?? 0,
+      runDiskMappedEntries: disk?.mappedEntryCount ?? 0,
+      runDiskPinnedEntries: disk?.pinnedEntryCount ?? 0,
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -265,44 +301,31 @@ export class IndexManager {
   private async maybeBuildRuns(stream: string): Promise<Result<void, IndexBuildError>> {
     if (this.span <= 0) return Result.ok(undefined);
     if (this.building.has(stream)) return Result.ok(undefined);
-    if (this.memory && !this.memory.shouldAllow()) {
-      this.queue.add(stream);
-      return Result.ok(undefined);
-    }
     this.building.add(stream);
     try {
-      let state = this.db.getIndexState(stream);
-      if (!state) {
-        const secret = randomBytes(16);
-        this.db.upsertIndexState(stream, secret, 0);
-        state = this.db.getIndexState(stream);
-      }
-      if (!state) return Result.ok(undefined);
-      if (this.metrics) {
-        const lag = Math.max(0, this.db.countUploadedSegments(stream) - state.indexed_through);
-        this.metrics.record("tieredstore.index.lag.segments", lag, "count", undefined, stream);
-      }
-      let indexedThrough = state.indexed_through;
-      for (;;) {
-        if (this.memory && !this.memory.shouldAllow()) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
+      return await this.asyncGate.run(async () => {
+        let state = this.db.getIndexState(stream);
+        if (!state) {
+          const secret = randomBytes(16);
+          this.db.upsertIndexState(stream, secret, 0);
+          state = this.db.getIndexState(stream);
         }
+        if (!state) return Result.ok(undefined);
+        if (this.metrics) {
+          const lag = Math.max(0, this.db.countUploadedSegments(stream) - state.indexed_through);
+          this.metrics.record("tieredstore.index.lag.segments", lag, "count", undefined, stream);
+        }
+        const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const start = indexedThrough;
         const end = start + this.span - 1;
         const segments: SegmentRow[] = [];
-        let ok = true;
         for (let i = start; i <= end; i++) {
           const seg = this.db.getSegmentByIndex(stream, i);
-          if (!seg || !seg.r2_etag) {
-            ok = false;
-            break;
-          }
+          if (!seg || !seg.r2_etag) return Result.ok(undefined);
           segments.push(seg);
         }
-        if (!ok) return Result.ok(undefined);
         const t0 = Date.now();
         const runRes = this.memorySampler
           ? await this.memorySampler.track(
@@ -311,13 +334,7 @@ export class IndexManager {
               () => this.buildL0RunResult(stream, start, segments, state.index_secret)
             )
           : await this.buildL0RunResult(stream, start, segments, state.index_secret);
-        if (Result.isError(runRes)) {
-          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
-            this.queue.add(stream);
-            return Result.ok(undefined);
-          }
-          return runRes;
-        }
+        if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
@@ -339,9 +356,9 @@ export class IndexManager {
           this.metrics.record("tieredstore.index.runs.built", 1, "count", { level: String(run.meta.level) }, stream);
           this.recordActiveRuns(stream);
         }
-        indexedThrough = end + 1;
-        this.db.updateIndexedThrough(stream, indexedThrough);
-        state.indexed_through = indexedThrough;
+        const nextIndexedThrough = end + 1;
+        this.db.updateIndexedThrough(stream, nextIndexedThrough);
+        state.indexed_through = nextIndexedThrough;
         this.onMetadataChanged?.(stream);
         if (this.publishManifest) {
           try {
@@ -350,7 +367,9 @@ export class IndexManager {
             // ignore manifest publish errors; will be retried by uploader/indexer
           }
         }
-      }
+        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.building.delete(stream);
     }
@@ -360,17 +379,13 @@ export class IndexManager {
     if (this.span <= 0) return Result.ok(undefined);
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     if (this.compacting.has(stream)) return Result.ok(undefined);
-    if (this.memory && !this.memory.shouldAllow()) {
+    if (this.foregroundActivity?.wasActiveWithin(2000)) {
       this.queue.add(stream);
       return Result.ok(undefined);
     }
     this.compacting.add(stream);
     try {
-      for (;;) {
-        if (this.memory && !this.memory.shouldAllow()) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
+      return await this.asyncGate.run(async () => {
         const group = this.findCompactionGroup(stream);
         if (!group) {
           await this.gcRetiredRuns(stream);
@@ -379,13 +394,7 @@ export class IndexManager {
         const t0 = Date.now();
         const { level, runs } = group;
         const runRes = await this.buildCompactedRunResult(stream, level + 1, runs);
-        if (Result.isError(runRes)) {
-          if (runRes.error.message === MEMORY_PRESSURE_PAUSE) {
-            this.queue.add(stream);
-            return Result.ok(undefined);
-          }
-          return runRes;
-        }
+        if (Result.isError(runRes)) return runRes;
         const run = runRes.value;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
@@ -433,7 +442,9 @@ export class IndexManager {
           }
         }
         await this.gcRetiredRuns(stream);
-      }
+        this.queue.add(stream);
+        return Result.ok(undefined);
+      });
     } finally {
       this.compacting.delete(stream);
     }
@@ -522,10 +533,6 @@ export class IndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
             const meta = pending.shift();
             if (!meta) return;
             const runRes = await this.loadRunResult(meta);
@@ -544,11 +551,7 @@ export class IndexManager {
               buildError = errorMessage(e);
               return;
             }
-            await yieldToEventLoop();
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
+            await this.yieldBackgroundWork();
           }
         })()
       );
@@ -639,10 +642,6 @@ export class IndexManager {
         (async () => {
           for (;;) {
             if (buildError) return;
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
             const seg = pending.shift();
             if (!seg) return;
             const segBytesRes = await this.loadSegmentBytesResult(seg);
@@ -654,6 +653,7 @@ export class IndexManager {
             const bit = seg.segment_index - startSegment;
             const maskBit = 1 << bit;
             const local = new Map<bigint, number>();
+            let processedRecords = 0;
             for (const recRes of iterateBlockRecordsResult(segBytes)) {
               if (Result.isError(recRes)) {
                 buildError = recRes.error.message;
@@ -663,17 +663,17 @@ export class IndexManager {
               const fp = siphash24(secret, recRes.value.routingKey);
               const prev = local.get(fp) ?? 0;
               local.set(fp, prev | maskBit);
+              processedRecords += 1;
+              if (processedRecords % 256 === 0) {
+                await this.yieldBackgroundWork();
+              }
             }
             for (const [fp, mask] of local.entries()) {
               const prev = maskByFp.get(fp) ?? 0;
               maskByFp.set(fp, prev | mask);
             }
             local.clear();
-            await yieldToEventLoop();
-            if (this.memory && !this.memory.shouldAllow()) {
-              buildError = MEMORY_PRESSURE_PAUSE;
-              return;
-            }
+            await this.yieldBackgroundWork();
           }
         })()
       );
@@ -739,7 +739,7 @@ export class IndexManager {
       return invalidIndexBuild(String(e?.message ?? e));
     }
     this.runDiskCache?.put(run.meta.objectKey, payload);
-    this.runCache.put(run.meta.objectKey, run);
+    this.runCache.put(run.meta.objectKey, run, payload.byteLength);
     return Result.ok(payload.byteLength);
   }
 
@@ -790,38 +790,16 @@ export class IndexManager {
     run.meta.endSegment = meta.end_segment;
     run.meta.filterLen = meta.filter_len;
     run.meta.recordCount = meta.record_count;
-    this.runCache.put(meta.object_key, run);
+    this.runCache.put(meta.object_key, run, meta.size_bytes);
     return Result.ok(run);
   }
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, IndexBuildError>> {
-    if (seg.local_path && seg.local_path.length > 0) {
-      try {
-        return Result.ok(readFileSync(seg.local_path));
-      } catch {
-        // fall through
-      }
-    }
-    const diskCache = this.segmentCache;
-    const key = segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index);
-    if (diskCache && diskCache.has(key)) {
-      diskCache.recordHit();
-      diskCache.touch(key);
-      try {
-        return Result.ok(readFileSync(diskCache.getPath(key)));
-      } catch {
-        diskCache.remove(key);
-      }
-    }
-    if (diskCache) diskCache.recordMiss();
     try {
-      const data = await retry(
-        async () => {
-          const objectBytes = await this.os.get(key);
-          if (!objectBytes) throw dsError(`missing segment ${seg.segment_id}`);
-          if (diskCache) diskCache.put(key, objectBytes);
-          return objectBytes;
-        },
+      const data = await loadSegmentBytesCached(
+        this.os,
+        seg,
+        this.segmentCache,
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,

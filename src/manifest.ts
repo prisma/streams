@@ -3,6 +3,8 @@ import { Result } from "better-result";
 import type {
   IndexRunRow,
   IndexStateRow,
+  LexiconIndexRunRow,
+  LexiconIndexStateRow,
   SearchCompanionPlanRow,
   SearchSegmentCompanionRow,
   SecondaryIndexRunRow,
@@ -51,6 +53,9 @@ type BuildManifestArgs = {
   secondaryIndexStates?: SecondaryIndexStateRow[];
   secondaryIndexRuns?: SecondaryIndexRunRow[];
   retiredSecondaryIndexRuns?: SecondaryIndexRunRow[];
+  lexiconIndexStates?: LexiconIndexStateRow[];
+  lexiconIndexRuns?: LexiconIndexRunRow[];
+  retiredLexiconIndexRuns?: LexiconIndexRunRow[];
   searchCompanionPlan?: SearchCompanionPlanRow | null;
   searchSegmentCompanions?: SearchSegmentCompanionRow[];
 };
@@ -150,6 +155,35 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
         })),
       };
   }
+  const lexiconIndexes = (args.lexiconIndexStates ?? []).map((state) => ({
+    source_kind: state.source_kind,
+    source_name: state.source_name,
+    indexed_through: state.indexed_through,
+    active_runs: (args.lexiconIndexRuns ?? [])
+      .filter((run) => run.source_kind === state.source_kind && run.source_name === state.source_name)
+      .map((run) => ({
+        run_id: run.run_id,
+        level: run.level,
+        start_segment: run.start_segment,
+        end_segment: run.end_segment,
+        object_key: run.object_key,
+        size_bytes: run.size_bytes,
+        record_count: run.record_count,
+      })),
+    retired_runs: (args.retiredLexiconIndexRuns ?? [])
+      .filter((run) => run.source_kind === state.source_kind && run.source_name === state.source_name)
+      .map((run) => ({
+        run_id: run.run_id,
+        level: run.level,
+        start_segment: run.start_segment,
+        end_segment: run.end_segment,
+        object_key: run.object_key,
+        size_bytes: run.size_bytes,
+        record_count: run.record_count,
+        retired_gen: run.retired_gen ?? undefined,
+        retired_at_unix: run.retired_at_ms != null ? Number(run.retired_at_ms / 1000n) : undefined,
+      })),
+  }));
   const searchCompanionPlan = args.searchCompanionPlan ?? null;
   const searchCompanionSegments = (args.searchSegmentCompanions ?? [])
     .filter((segment) => segment.segment_index < prefix)
@@ -196,6 +230,7 @@ export function buildManifestResult(args: BuildManifestArgs): Result<ManifestJso
     active_runs: activeRuns,
     retired_runs: retired,
     secondary_indexes: secondaryIndexes,
+    lexicon_indexes: lexiconIndexes,
     search_companions: searchCompanionPlan
       ? {
           generation: searchCompanionPlan.generation,

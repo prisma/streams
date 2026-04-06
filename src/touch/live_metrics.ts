@@ -144,6 +144,10 @@ type StreamCounters = {
   };
 };
 
+export type LiveMetricsMemoryStats = {
+  counterStreams: number;
+};
+
 function defaultCounters(touchCfg: TouchConfig): StreamCounters {
   return {
     touch: {
@@ -338,6 +342,10 @@ export class LiveMetricsV2 {
     const c = defaultCounters({ enabled: true } as TouchConfig);
     this.counters.set(stream, c);
     return c;
+  }
+
+  getMemoryStats(): LiveMetricsMemoryStats {
+    return { counterStreams: this.counters.size };
   }
 
   recordProcessorError(stream: string, touchCfg: TouchConfig): void {

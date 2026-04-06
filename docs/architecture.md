@@ -51,6 +51,8 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Implements long-poll reads without busy loops.
 - Resolves the stream profile definition before handling profile-owned
   metadata or routes.
+- Admits ingest, read, and search work through bounded in-process concurrency
+  gates instead of a direct memory-based reject path.
 
 2) WAL writer (single-writer loop)
 - Batches append requests from a bounded queue (group commit).
@@ -64,17 +66,30 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
 4) Uploader
 - Selects pending segments from SQLite and uploads with bounded concurrency.
+- For each stream, it prioritizes the earliest non-uploaded segment only.
+- Later segments from the same stream do not bypass an older missing segment.
 - Uploads segments first, then publishes a new manifest generation.
 - Advances uploaded_through only after manifest upload succeeds, then GC WAL rows.
 
 5) Index managers
-- The full server starts three in-process indexing managers:
+- The full server starts four in-process indexing managers:
   - routing-key
+  - routing-key lexicon
   - exact secondary
   - bundled companions (`.col`, `.fts`, `.agg`, `.mblk`) via `SearchCompanionManager`
 - They run on a timer (`DS_INDEX_CHECK_MS`) inside the main server process.
 - They are asynchronous background loops, not dedicated worker threads or
   separate processes.
+- They share one top-level async-index concurrency gate, so routing,
+  routing-key lexicon, exact, and bundled-companion work compete for the same
+  bounded budget.
+- Background index work yields cooperatively at bounded per-record / per-block
+  intervals, and it backs off further while foreground read and search
+  requests are active. Foreground latency should not depend on one whole index
+  build segment finishing first.
+- Routing, exact, and lexicon compactions also defer briefly after recent
+  foreground traffic so a request burst is not interrupted by an immediate
+  large compaction pass.
 - `DS_INDEX_BUILD_CONCURRENCY` controls parallel segment-processing tasks
   inside one exact-family run build.
 - `DS_INDEX_COMPACT_CONCURRENCY` controls parallel run-loading tasks inside
@@ -83,6 +98,9 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 6) Reader
 - Merges historical data from segments (local cache or R2) with tail data in SQLite.
 - Supports key-filtered reads and long-poll semantics.
+- On a remote segment cache miss, it fetches the whole segment object directly
+  from R2 and treats a missing-object GET as `null`, rather than probing object
+  existence before the fetch.
 
 7) Object store
 - ObjectStore interface with put/get/head/list plus streaming uploads.
@@ -156,6 +174,25 @@ and if it is missing a background reconciliation pass can rebuild it from
 published segments plus retained WAL. Profiles and schemas only shape how a
 stream is interpreted.
 
+## Stream Deletion Enforcement
+
+`DELETE /v1/stream/{name}` is enforced as a tombstone plus local acceleration
+scrub:
+
+- the stream row stays in SQLite with the deleted flag set
+- the same local delete transaction removes all stream-owned acceleration state:
+  - routing index state and runs
+  - exact secondary index state and runs
+  - routing-key lexicon state and runs
+  - bundled search companion plans and per-segment companion rows
+- the request path does not synchronously delete already-published remote
+  segment, manifest, schema, or index objects
+
+Startup re-enforces the same invariant before background loops start. On boot,
+the server scans tombstoned streams and re-runs the acceleration scrub so older
+builds, crashes, or manual SQLite edits cannot leave orphaned async-index state
+behind for deleted streams.
+
 ## Data flow
 
 ### Append
@@ -181,7 +218,11 @@ stream is interpreted.
 3. Clear segment_in_progress.
 
 ### Upload
-1. Uploader selects segments with uploaded_at_ms IS NULL.
+1. Uploader selects the earliest `uploaded_at_ms IS NULL` segment for each
+   stream.
+   - upload order may still interleave across different streams
+   - but one stream's published prefix is preserved: later segments do not jump
+     ahead of an earlier missing segment
 2. Upload segment bytes to object store using the TieredStore key layout.
 3. Generate and upload a new manifest generation for that stream:
    - use the append‑only segment meta arrays
@@ -190,9 +231,18 @@ stream is interpreted.
    offset <= uploaded_through in one transaction.
 
 ### Read
-- For offsets < uploaded_through: read from segments (local cache or range reads).
+- For offsets < uploaded_through: read from segments via a full-object local cache.
+  - on first touch of a remote segment, the server downloads the entire segment object, stores it under `DS_ROOT/cache/`, and serves the read from that local file
+  - later reads for the same segment are served from the local cached file, and hot cached segment files are read through `Bun.mmap()`; if mmap is unavailable, the reader falls back to a single full-file byte buffer, not repeated slice-by-slice file opens
+  - keyed reads do a single forward pass over cached block headers and matching blocks; they do not issue remote range reads or repeatedly reopen local cached files for tiny slices
+  - unkeyed offset reads use the segment footer's block index to jump directly to the first relevant block instead of decoding forward from block 0
+  - when the routing index has a candidate set, keyed reads plan the sealed segment scan up front and visit only candidate indexed segments plus the uncovered uploaded tail
+  - `since + key` cursor seeking uses the same routing-candidate plan, so it does not walk the full indexed sealed prefix segment-by-segment
 - For offsets >= uploaded_through: read from SQLite WAL tail.
 - Merge results in order, honor limit, key filter, and format.
+- For unversioned JSON streams, `format=json` responses reuse stored payload
+  bytes directly and concatenate them into the response array body. The handler
+  does not decode and re-encode each record on the steady-state path.
 - Supports catch‑up reads, long‑poll, and SSE.
 
 ## SQLite usage and invariants
@@ -200,6 +250,29 @@ stream is interpreted.
 SQLite is the immediate source of truth for local operation:
 - WAL rows (append-only)
 - Stream progress (next_offset, sealed_through, uploaded_through)
+- Repeated literal SQL is prepared once per connection and then reused through
+  the sqlite adapter's statement cache. This is the default path for
+  `get`/`all`/`run` calls in the server.
+- Iterator-style WAL scans and WAL GC `DELETE ... RETURNING` sweeps still
+  prepare a fresh statement per call and finalize it immediately after use.
+  That is intentional: Bun's sqlite iterator path is safe with fresh
+  statements but not with a shared cached iterator statement.
+- SQLite runtime policy is strict:
+  - runtime reads and writes use prepared statements only
+  - `db.exec(...)` is reserved for one-shot schema/bootstrap work, not request
+    handlers, background loops, or repeated DML/SELECT paths
+  - any statement that is not intentionally retained in the adapter's bounded
+    per-connection cache must be finalized as soon as the caller is done with
+    it
+  - Bun's [`Statement`](https://bun.com/reference/bun/sqlite/Statement)
+    reference matters here: fresh statements own native `sqlite3_stmt`
+    resources until `finalize()` or Bun's disposal path runs
+- Prepared-statement count is an operational guardrail, not a vanity metric:
+  - a well-behaved app or helper process should usually stay at about a dozen
+    live prepared statements or fewer
+  - materially higher counts must be deliberate, bounded, and justified by one
+    documented cache rather than accidental dynamic-SQL churn or unfinalized
+    iterator statements
 - Segment metadata (local files and upload state)
 - Manifest generation state
 
@@ -266,12 +339,29 @@ All work queues are bounded:
 - upload queue
 - inflight uploads semaphore
 
-Overload behavior is explicit (429/503) rather than unbounded buffering.
-Caches (segment data cache, schema/lens caches) are size-limited and only cover
-active streams.
+Request-path work is also bounded:
+- ingest/create requests use a dedicated concurrency gate
+- read requests use a dedicated concurrency gate
+- search / aggregate requests use a dedicated concurrency gate
+
+Background indexing is bounded by a shared async-index gate across routing,
+exact, and bundled-companion work.
+
+Memory pressure is no longer a direct reject path. Instead, it is sampled and
+can reduce search and async-index concurrency, never below `1`.
+
+Overload behavior is still explicit (429/503) rather than unbounded buffering,
+but `429` now reflects queue/backlog pressure, not a separate memory gate.
+
+Caches (segment data cache, schema/lens caches, companion caches) are
+size-limited and only cover active streams.
 
 ## Observability
 
 - Interval metrics are appended to the `__stream_metrics__` stream using the
   built-in `metrics` profile.
+- The internal `__stream_metrics__` stream intentionally installs only the
+  canonical schema, not the full metrics search/rollup registry, so the node
+  does not create `.agg`/`.mblk`/`.fts`/`.col` self-indexing work while
+  emitting operational telemetry.
 - Optional `--stats` log line provides ingest/stored/uploaded throughput plus WAL/meta sizes and backpressure.

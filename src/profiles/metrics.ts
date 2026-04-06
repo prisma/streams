@@ -5,8 +5,10 @@ import type {
   StreamProfileReadResult,
 } from "./profile";
 import { cloneStreamProfileSpec, expectPlainObjectResult, rejectUnknownKeysResult, normalizeProfileContentType } from "./profile";
-import { buildMetricsDefaultRegistry } from "./metrics/schema";
+import { buildInternalMetricsRegistry, buildMetricsDefaultRegistry } from "./metrics/schema";
 import { normalizeMetricsRecordResult } from "./metrics/normalize";
+
+const INTERNAL_METRICS_STREAM = "__stream_metrics__";
 
 export type MetricsStreamProfile = {
   kind: "metrics";
@@ -50,7 +52,9 @@ export const METRICS_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
         message: "metrics profile requires application/json stream content-type",
       });
     }
-    const registryRes = registry.replaceRegistryResult(stream, buildMetricsDefaultRegistry(stream));
+    const desiredRegistry =
+      stream === INTERNAL_METRICS_STREAM ? buildInternalMetricsRegistry(stream) : buildMetricsDefaultRegistry(stream);
+    const registryRes = registry.replaceRegistryResult(stream, desiredRegistry);
     if (Result.isError(registryRes)) return Result.err({ kind: "bad_request", message: registryRes.error.message });
     db.updateStreamProfile(stream, "metrics");
     db.deleteStreamProfile(stream);

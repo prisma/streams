@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type {
@@ -11,12 +10,16 @@ import type {
 import type { Metrics } from "../metrics";
 import type { ObjectStore } from "../objectstore/interface";
 import { SchemaRegistryStore, type SchemaRegistry, type SearchFieldConfig } from "../schema/registry";
+import { SegmentDiskCache } from "../segment/cache";
+import { loadSegmentBytesCached } from "../segment/cached_segment";
 import { iterateBlockRecordsResult } from "../segment/format";
 import { dsError } from "../util/ds_error.ts";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
-import type { MemoryGuard } from "../memory";
+import { ConcurrencyGate } from "../concurrency_gate";
+import type { ForegroundActivityTracker } from "../foreground_activity";
 import { retry } from "../util/retry";
-import { searchCompanionObjectKey, segmentObjectKey, streamHash16Hex } from "../util/stream_paths";
+import { yieldToEventLoop } from "../util/yield";
+import { searchCompanionObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
   PSCIX2_MAX_TOC_BYTES,
@@ -108,10 +111,6 @@ type CompanionBuildProgress = {
 
 const PAYLOAD_DECODER = new TextDecoder();
 
-async function yieldToEventLoop(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
-
 function compareValues(left: bigint | number | boolean, right: bigint | number | boolean): number {
   if (typeof left === "bigint" && typeof right === "bigint") return left < right ? -1 : left > right ? 1 : 0;
   if (typeof left === "number" && typeof right === "number") return left < right ? -1 : left > right ? 1 : 0;
@@ -178,8 +177,11 @@ export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly fileCache: CompanionFileCache;
+  private readonly segmentCache?: SegmentDiskCache;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
+  private readonly asyncGate: ConcurrencyGate;
+  private readonly foregroundActivity?: ForegroundActivityTracker;
   private timer: any | null = null;
   private running = false;
 
@@ -188,20 +190,33 @@ export class SearchCompanionManager {
     private readonly db: SqliteDurableStore,
     private readonly os: ObjectStore,
     private readonly registry: SchemaRegistryStore,
+    segmentCache?: SegmentDiskCache,
     private readonly publishManifest?: (stream: string) => Promise<void>,
     private readonly onMetadataChanged?: (stream: string) => void,
     private readonly metrics?: Metrics,
     memorySampler?: RuntimeMemorySampler,
-    private readonly memory?: MemoryGuard
+    asyncGate?: ConcurrencyGate,
+    foregroundActivity?: ForegroundActivityTracker
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
+    this.segmentCache = segmentCache;
     this.memorySampler = memorySampler;
+    this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
+    this.foregroundActivity = foregroundActivity;
     this.fileCache = new CompanionFileCache(
       `${cfg.rootDir}/cache/companions`,
       cfg.searchCompanionFileCacheMaxBytes,
       cfg.searchCompanionFileCacheMaxAgeMs,
       cfg.searchCompanionMappedCacheEntries
     );
+  }
+
+  private async yieldBackgroundWork(): Promise<void> {
+    if (this.foregroundActivity) {
+      await this.foregroundActivity.yieldBackgroundWork();
+      return;
+    }
+    await yieldToEventLoop();
   }
 
   start(): void {
@@ -249,6 +264,23 @@ export class SearchCompanionManager {
     return this.fileCache.bytesForObjectKeyPrefix(`streams/${streamHash16Hex(stream)}/segments/`);
   }
 
+  getMemoryStats(): {
+    fileCacheBytes: number;
+    fileCacheEntries: number;
+    mappedFileBytes: number;
+    mappedFileEntries: number;
+    pinnedFileEntries: number;
+  } {
+    const stats = this.fileCache.stats();
+    return {
+      fileCacheBytes: stats.usedBytes,
+      fileCacheEntries: stats.entryCount,
+      mappedFileBytes: stats.mappedBytes,
+      mappedFileEntries: stats.mappedEntryCount,
+      pinnedFileEntries: stats.pinnedEntryCount,
+    };
+  }
+
   private async getSectionCompanion<K extends CompanionSectionKind>(
     stream: string,
     segmentIndex: number,
@@ -266,7 +298,6 @@ export class SearchCompanionManager {
     try {
       let sectionGetMs = 0;
       let decodeMs = 0;
-      if (this.memory?.isOverLimit()) this.fileCache.clearMapped();
       const planRow = this.getCurrentPlanRow(stream);
       if (!planRow) return { companion: null, stats: { sectionGetMs, decodeMs } };
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
@@ -428,29 +459,23 @@ export class SearchCompanionManager {
         this.metrics.record("tieredstore.companion.lag.segments", stale.length, "count", undefined, stream);
       }
       if (stale.length === 0) return Result.ok(undefined);
-      if (this.memory && !this.memory.shouldAllow()) {
-        this.queue.add(stream);
-        return Result.ok(undefined);
-      }
 
       const batchLimit = Math.max(1, this.cfg.searchCompanionBuildBatchSegments);
       const batch = stale.slice(0, batchLimit);
       let builtCount = 0;
       for (const nextSegmentIndex of batch) {
-        if (this.memory && !this.memory.shouldAllow()) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
         const seg = this.db.getSegmentByIndex(stream, nextSegmentIndex);
         if (!seg || !seg.r2_etag) continue;
         const startedAt = Date.now();
-        const companionRes = this.memorySampler
-          ? await this.memorySampler.track(
-              "companion",
-              { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
-              () => this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
-            )
-          : await this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg);
+        const companionRes = await this.asyncGate.run(async () =>
+          this.memorySampler
+            ? await this.memorySampler.track(
+                "companion",
+                { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
+                () => this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
+              )
+            : await this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
+        );
         if (Result.isError(companionRes)) return companionRes;
         const objectId = Buffer.from(randomBytes(8)).toString("hex");
         const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), seg.segment_index, objectId);
@@ -513,13 +538,10 @@ export class SearchCompanionManager {
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, CompanionBuildError>> {
     try {
-      if (existsSync(seg.local_path)) return Result.ok(readFileSync(seg.local_path));
-      const bytes = await retry(
-        async () => {
-          const data = await this.os.get(segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index));
-          if (!data) throw dsError(`missing segment ${seg.segment_index}`);
-          return data;
-        },
+      const bytes = await loadSegmentBytesCached(
+        this.os,
+        seg,
+        this.segmentCache,
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,
@@ -553,7 +575,7 @@ export class SearchCompanionManager {
       if (rec.blockOffset !== lastBlockOffset) {
         processedBlocks += 1;
         lastBlockOffset = rec.blockOffset;
-        if (processedBlocks % this.yieldBlocks === 0) await yieldToEventLoop();
+        if (processedBlocks % this.yieldBlocks === 0) await this.yieldBackgroundWork();
       }
       let parsed: unknown = null;
       let parsedOk = false;

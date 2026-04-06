@@ -10,6 +10,7 @@ The script is self-contained:
 - it creates one new stream per selected index
 - installs the `generic` profile
 - installs a minimal schema for exactly that one index on each stream
+- or, in `--golden-stream` mode, installs only a routing key and skips schema/search setup entirely
 - downloads the requested GH Archive time range
 - appends each normalized batch to the target streams sequentially over raw HTTP
 - pauses on `429` or `503` using `Retry-After` and retries only the current
@@ -56,6 +57,27 @@ Optional flags:
 - `--noindex`
   Installs only the JSON schema and skips the search schema entirely. Useful for
   raw-ingest control runs. This mode creates a single stream.
+- `--golden-stream`
+  Creates exactly one stream named `golden-stream`, installs the `generic`
+  profile, and applies only `routingKey: { jsonPointer: \"/repoName\",
+  required: false }`. It skips the JSON schema and all search/index config.
+- `--golden-stream-name <stream>`
+  Overrides the default `golden-stream` name used by `--golden-stream`.
+- `--golden-stream-full-index`
+  Only valid with `--golden-stream`. Creates exactly one stream, but applies the
+  full GH Archive schema update instead of the routing-only golden-stream mode.
+  That means:
+  - `routingKey: { jsonPointer: "/repoName", required: false }`
+  - `search.primaryTimestampField = "eventTime"`
+  - the full GH Archive exact/column/fts/rollup search config on that one stream
+- `--golden-stream-no-routing-key`
+  Only valid with `--golden-stream`. Leaves the stream completely bare:
+  no schema, no routing key, and no search config.
+- `--resume-stream`
+  Reuses any existing target streams instead of deleting and recreating them.
+  When a target stream already contains GH Archive demo events, the ingester
+  reads the latest appended `archiveHour` and resumes from the next hour rather
+  than replaying from the beginning.
 - `--onlyindex <selector>`
   Limits the demo to one or more single-index streams instead of the full set.
   Each selected index gets its own stream with only that selector plus the
@@ -109,23 +131,40 @@ The script recreates every selected target stream on each run.
 For the `all` range, the demo intentionally uses smaller append batches by
 default so the workload does not amplify the server's append-path JSON
 materialization cost on low-memory hosts. On 1–2 GiB auto-tuned servers, the
-runtime also clamps segmenting, upload, and bundled-companion backfill to
-single-lane settings and shrinks segment size / target rows so the demo can
-keep ingesting while `.agg` companions are being built.
+runtime also clamps upload and bundled-companion backfill to single-lane
+settings. Segment geometry stays at the normal `16 MiB` / `100,000`-row seal
+thresholds so long-range ingest is not dominated by many tiny uploaded segment
+objects.
+
+The `all` range now starts at `2020-01-01 10:00 UTC`, not at the earliest GH
+Archive history. This is intentional:
+
+- the older historical range has long stretches of sparse or missing hours
+- `2020-01-01 10:00 UTC` is a verified available hour
+- real 2020 hourly archives still match the event shape this demo normalizes:
+  top-level `id`, `type`, `created_at`, `actor`, `repo`, `payload`, and
+  `public`
 
 ## Archive Availability
 
 GH Archive occasionally has missing hourly archives or publication gaps. The
 demo handles that directly:
 
-- an hourly archive returning `404` is skipped
-- each skipped hour is logged to stderr with the hour and archive URL
-- skipped hours are counted in the final summary as `missing`
+- an hourly archive returning `404` is treated as the start of a likely gap
+- if the missing hour is before `10:00 UTC`, the demo assumes the well-known
+  historical day-start gap and jumps directly to `10:00 UTC` on that same day
+- otherwise, the demo logs the missing hour and skips ahead `12` hours before
+  trying again
+- the skipped span is counted in the final summary as `missing`
 - successfully ingested hours are counted as `downloaded`
 - the run only fails if the entire requested range has no available hours
 
-This means a `day` run can still succeed even if a few of the newest public
-hours have not been published yet.
+This favors long-range progress over perfect coverage in sparse historical gap
+zones. In the early historical range, GH Archive frequently has no hourly files
+for `00:00` through `09:00 UTC`, so jumping straight to `10:00 UTC` avoids
+losing the first available hours of each day. A `day` run can still succeed
+even if a few of the newest public hours have not been published yet, and an
+`all` run will move past long missing stretches much faster.
 
 ## Completion Semantics
 
@@ -144,6 +183,73 @@ has been normalized and appended to every target stream:
 
 This keeps the demo ingest loop intentionally simple and makes backpressure
 behavior explicit.
+
+## Golden Stream Sanity Mode
+
+When you want to isolate raw append behavior from schema/search setup entirely,
+run:
+
+```bash
+bun run demo:gharchive all --url http://127.0.0.1:8787 --golden-stream
+```
+
+Or target a different standalone stream:
+
+```bash
+bun run demo:gharchive all \
+  --url http://127.0.0.1:8787 \
+  --golden-stream \
+  --golden-stream-name golden-stream-2
+```
+
+To run one fully indexed standalone stream instead of the routing-only golden
+mode:
+
+```bash
+bun run demo:gharchive all \
+  --url http://127.0.0.1:8787 \
+  --golden-stream \
+  --golden-stream-name stream-3 \
+  --golden-stream-full-index
+```
+
+To run the same standalone ingest shape without even the routing key:
+
+```bash
+bun run demo:gharchive all \
+  --url http://127.0.0.1:8787 \
+  --golden-stream \
+  --golden-stream-name golden-stream-4 \
+  --golden-stream-no-routing-key
+```
+
+To resume an existing golden stream in place:
+
+```bash
+bun run demo:gharchive all \
+  --url http://127.0.0.1:8787 \
+  --golden-stream \
+  --golden-stream-name golden-stream-2 \
+  --resume-stream
+```
+
+That mode:
+
+- uses exactly one stream: `golden-stream`
+- does not install a JSON schema
+- does not install any search fields or rollups
+- still derives the routing key from `repoName`
+
+With `--golden-stream-no-routing-key`, it becomes a completely bare generic
+JSON stream:
+
+- no JSON schema
+- no routing key
+- no search fields or rollups
+- no routing, lexicon, exact, or bundled companion background work
+
+It is the simplest long-run ingest shape in this demo and is useful as a sanity
+check when multi-stream index experiments are ambiguous.
 
 ## Installed Profile And Schema
 

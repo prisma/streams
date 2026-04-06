@@ -30,6 +30,17 @@ export function secondaryIndexRunObjectKey(streamHash: string, indexName: string
   return `streams/${streamHash}/secondary-index/${encodeURIComponent(indexName)}/${runId}.idx`;
 }
 
+export function lexiconRunObjectKey(
+  streamHash: string,
+  sourceKind: string,
+  sourceName: string,
+  runId: string
+): string {
+  const encodedKind = encodeURIComponent(sourceKind);
+  const encodedName = encodeURIComponent(sourceName === "" ? "__default__" : sourceName);
+  return `streams/${streamHash}/lexicon/${encodedKind}/${encodedName}/${runId}.lex`;
+}
+
 export function searchCompanionObjectKey(streamHash: string, segmentIndex: number, objectId: string): string {
   return `streams/${streamHash}/segments/${pad16(segmentIndex)}-${objectId}.cix`;
 }

@@ -162,6 +162,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
           endOffset,
           blockCount: segmentBlocks[i],
           lastAppendMs: lastTsMs,
+          payloadBytes: 0n,
           sizeBytes: head.size,
           localPath,
         });
@@ -252,6 +253,52 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
           const retiredGen = typeof run.retired_gen === "number" ? run.retired_gen : Number(manifest.generation ?? 0);
           const retiredAtUnix = typeof run.retired_at_unix === "number" ? run.retired_at_unix : Math.floor(Number(nowMs) / 1000);
           db.retireSecondaryIndexRuns([runId], retiredGen, BigInt(retiredAtUnix) * 1000n);
+        }
+      }
+
+      const lexiconIndexes = Array.isArray(manifest.lexicon_indexes) ? manifest.lexicon_indexes : [];
+      for (const rawState of lexiconIndexes) {
+        if (!rawState || typeof rawState !== "object") continue;
+        const sourceKind = typeof (rawState as any).source_kind === "string" ? (rawState as any).source_kind : "";
+        if (sourceKind === "") continue;
+        const sourceName = typeof (rawState as any).source_name === "string" ? (rawState as any).source_name : "";
+        const indexedThrough =
+          typeof (rawState as any).indexed_through === "number" ? Number((rawState as any).indexed_through) : 0;
+        db.upsertLexiconIndexState(stream, sourceKind, sourceName, indexedThrough);
+
+        const activeLexiconRuns = Array.isArray((rawState as any).active_runs) ? (rawState as any).active_runs : [];
+        const retiredLexiconRuns = Array.isArray((rawState as any).retired_runs) ? (rawState as any).retired_runs : [];
+        for (const run of activeLexiconRuns) {
+          db.insertLexiconIndexRun({
+            run_id: String(run.run_id),
+            stream,
+            source_kind: sourceKind,
+            source_name: sourceName,
+            level: Number(run.level),
+            start_segment: Number(run.start_segment),
+            end_segment: Number(run.end_segment),
+            object_key: String(run.object_key),
+            size_bytes: Number(run.size_bytes ?? 0),
+            record_count: Number(run.record_count ?? 0),
+          });
+        }
+        for (const run of retiredLexiconRuns) {
+          const runId = String(run.run_id);
+          db.insertLexiconIndexRun({
+            run_id: runId,
+            stream,
+            source_kind: sourceKind,
+            source_name: sourceName,
+            level: Number(run.level),
+            start_segment: Number(run.start_segment),
+            end_segment: Number(run.end_segment),
+            object_key: String(run.object_key),
+            size_bytes: Number(run.size_bytes ?? 0),
+            record_count: Number(run.record_count ?? 0),
+          });
+          const retiredGen = typeof run.retired_gen === "number" ? run.retired_gen : Number(manifest.generation ?? 0);
+          const retiredAtUnix = typeof run.retired_at_unix === "number" ? run.retired_at_unix : Math.floor(Number(nowMs) / 1000);
+          db.retireLexiconIndexRuns([runId], retiredGen, BigInt(retiredAtUnix) * 1000n);
         }
       }
 

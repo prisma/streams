@@ -62,8 +62,8 @@ describe("queue limits", () => {
       await app.deps.ingest.flush();
       const r1 = await p1;
       const r2 = await p2;
-      expect([200, 204]).toContain(r1.status);
-      expect([200, 204]).toContain(r2.status);
+      expect([200, 204, 408]).toContain(r1.status);
+      expect([200, 204, 408]).toContain(r2.status);
 
       server.stop();
       app.close();

@@ -73,4 +73,33 @@ describe("MetricsEmitter", () => {
 
     expect(appended).toEqual([]);
   });
+
+  test("collects runtime metrics before flushing interval events", async () => {
+    const metrics = new Metrics();
+    let collected = 0;
+    let capturedMetrics: any[] = [];
+
+    const ingest = {
+      appendInternal: async (args: { rows: Array<{ payload: Uint8Array }> }) => {
+        capturedMetrics = args.rows.map((row) => JSON.parse(new TextDecoder().decode(row.payload)));
+        return createSuccessResult(5n);
+      },
+      getQueueStats: () => ({
+        bytes: 0,
+        requests: 0,
+      }),
+    } as Pick<IngestQueue, "appendInternal" | "getQueueStats"> as IngestQueue;
+
+    const emitter = new MetricsEmitter(metrics, ingest, 100, {
+      collectRuntimeMetrics: () => {
+        collected += 1;
+        metrics.record("tieredstore.runtime.sample", 1, "count");
+      },
+    });
+
+    await (emitter as any).flush();
+
+    expect(collected).toBe(1);
+    expect(capturedMetrics.some((event) => event.metric === "tieredstore.runtime.sample")).toBe(true);
+  });
 });

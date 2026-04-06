@@ -305,3 +305,15 @@ export function buildMetricsDefaultRegistry(stream: string): SchemaRegistry {
   };
 }
 
+export function buildInternalMetricsRegistry(stream: string): SchemaRegistry {
+  return {
+    apiVersion: SCHEMA_REGISTRY_API_VERSION,
+    schema: stream,
+    currentVersion: 1,
+    boundaries: [{ offset: 0, version: 1 }],
+    schemas: {
+      "1": structuredClone(METRICS_CANONICAL_SCHEMA),
+    },
+    lenses: {},
+  };
+}

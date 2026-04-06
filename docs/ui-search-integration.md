@@ -339,8 +339,11 @@ supported source of truth:
   metadata.
 - `storage.local_storage`
   Current retained bytes for WAL, pending sealed segments, caches, and the
-  shared SQLite footprint. This now includes the local bundled-companion cache
-  under `${DS_ROOT}/cache/companions`.
+  shared SQLite footprint. This includes:
+  - the local segment read-through cache under `${DS_ROOT}/cache/`
+  - the local routing/exact run caches
+  - the local lexicon cache under `${DS_ROOT}/cache/lexicon`
+  - the local bundled-companion cache under `${DS_ROOT}/cache/companions`
 - `storage.companion_families`
   Bundled companion byte breakdown for `col`, `fts`, `agg`, and `mblk`.
 - `index_status.routing_key_index`, `index_status.exact_indexes[*]`, and

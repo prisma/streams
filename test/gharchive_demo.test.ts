@@ -11,6 +11,7 @@ import {
   GH_ARCHIVE_ONLY_INDEX_SELECTORS,
   buildGhArchiveArchiveUrl,
   buildGhArchiveIndexedStreamName,
+  buildGhArchiveRoutingOnlyUpdate,
   buildGhArchiveSchemaUpdate,
   buildGhArchiveStreamName,
   normalizeGhArchiveEvent,
@@ -61,6 +62,49 @@ function mockArchiveResponse(hourLabel: string): Response {
   });
 }
 
+type DemoFetchContext = {
+  app: ReturnType<typeof createApp>;
+  baseUrl: string;
+  input: RequestInfo | URL;
+  init?: RequestInit;
+  method: string;
+  requestUrl: URL | null;
+  url: string;
+};
+
+function makeDemoFetch(
+  app: ReturnType<typeof createApp>,
+  baseUrl: string,
+  intercept?: (ctx: DemoFetchContext) => Promise<Response | null> | Response | null
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const requestUrl = url.startsWith(baseUrl) ? new URL(url) : null;
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const context: DemoFetchContext = {
+      app,
+      baseUrl,
+      input,
+      init,
+      method,
+      requestUrl,
+      url,
+    };
+    const intercepted = intercept ? await intercept(context) : null;
+    if (intercepted) return intercepted;
+    if (requestUrl) {
+      if (input instanceof Request) return app.fetch(new Request(input, init));
+      return app.fetch(new Request(url, init));
+    }
+    if (url.startsWith("https://data.gharchive.org/")) {
+      const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
+      if (!match) return new Response("not found", { status: 404 });
+      return mockArchiveResponse(match[1]);
+    }
+    throw new Error(`unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+}
+
 describe("gharchive demo", () => {
   test("builds base and per-index stream names", () => {
     expect(buildGhArchiveStreamName("gharchive-demo", "day")).toBe("gharchive-demo-day");
@@ -92,6 +136,11 @@ describe("gharchive demo", () => {
     const week = resolveGhArchiveRangeHours("week", now);
     expect(week.hours).toBe(24 * 7);
     expect(week.start.toISOString()).toBe("2026-03-23T10:00:00.000Z");
+
+    const all = resolveGhArchiveRangeHours("all", now);
+    expect(all.start.toISOString()).toBe("2020-01-01T10:00:00.000Z");
+    expect(all.endExclusive.toISOString()).toBe("2026-03-30T10:00:00.000Z");
+    expect(all.hours).toBe(24 * 2_280);
   });
 
   test("normalizes push-style gh archive events into the demo envelope", () => {
@@ -168,6 +217,30 @@ describe("gharchive demo", () => {
     expect(parsed.value.search).toBeUndefined();
   });
 
+  test("supports a routing-only schema mode for golden-stream", () => {
+    const parsed = parseSchemaUpdateResult(buildGhArchiveRoutingOnlyUpdate());
+    expect(Result.isOk(parsed)).toBe(true);
+    if (Result.isError(parsed)) return;
+    expect(parsed.value.routingKey).toEqual({ jsonPointer: "/repoName", required: false });
+    expect(parsed.value.schema).toBeUndefined();
+    expect(parsed.value.search).toBeUndefined();
+  });
+
+  test("supports a full-index golden-stream target mode", () => {
+    const targets = resolveGhArchiveStreamTargets("ignored", "all", {
+      goldenStream: true,
+      goldenStreamName: "stream-3",
+      goldenStreamFullIndex: true,
+    });
+    expect(targets).toEqual([
+      {
+        stream: "stream-3",
+        selector: null,
+        schema: {},
+      },
+    ]);
+  });
+
   test("supports isolated exact, column, fts, and rollup search configs", () => {
     expect(GH_ARCHIVE_ONLY_INDEX_SELECTORS).toContain("exact:actorLogin");
     expect(GH_ARCHIVE_ONLY_INDEX_SELECTORS).toContain("col:payloadBytes");
@@ -230,6 +303,31 @@ describe("gharchive demo", () => {
         schema: { noIndex: true },
       },
     ]);
+
+    const goldenTargets = resolveGhArchiveStreamTargets("ignored", "all", {
+      goldenStream: true,
+      goldenStreamName: "golden-stream-2",
+    });
+    expect(goldenTargets).toEqual([
+      {
+        stream: "golden-stream-2",
+        selector: null,
+        schema: { routingOnly: true },
+      },
+    ]);
+
+    const bareGoldenTargets = resolveGhArchiveStreamTargets("ignored", "all", {
+      goldenStream: true,
+      goldenStreamName: "golden-stream-4",
+      goldenStreamNoRoutingKey: true,
+    });
+    expect(bareGoldenTargets).toEqual([
+      {
+        stream: "golden-stream-4",
+        selector: null,
+        schema: { bareStream: true },
+      },
+    ]);
   });
 
   test(
@@ -237,7 +335,6 @@ describe("gharchive demo", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
       let detailsRequests = 0;
       let sawOverloadAppend = false;
       const appendOrder: string[] = [];
@@ -255,13 +352,20 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            const requestUrl = new URL(url);
-            if (requestUrl.pathname.endsWith("/_details")) detailsRequests += 1;
-            const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--stream-prefix",
+          "gharchive-e2e",
+          "--onlyindex",
+          "exact:actorLogin",
+          "--onlyindex",
+          "fts:message",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl, ({ method, requestUrl }) => {
+            if (requestUrl?.pathname.endsWith("/_details")) detailsRequests += 1;
+            if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
               if (!sawOverloadAppend) {
                 sawOverloadAppend = true;
                 appendOrder.push("exact:backoff");
@@ -275,31 +379,12 @@ describe("gharchive demo", () => {
               }
               appendOrder.push("exact:ok");
             }
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
+            if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
               appendOrder.push("fts:ok");
             }
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
-        const summary = await runGhArchiveDemo([
-          "day",
-          "--url",
-          baseUrl,
-          "--stream-prefix",
-          "gharchive-e2e",
-          "--onlyindex",
-          "exact:actorLogin",
-          "--onlyindex",
-          "fts:message",
-        ]);
+            return null;
+          }),
+        });
 
         expect(summary.streamCount).toBe(2);
         expect(summary.streams).toEqual([exactStream, ftsStream]);
@@ -335,7 +420,6 @@ describe("gharchive demo", () => {
         expect(ftsDetails.index_status.exact_indexes).toEqual([]);
         expect(ftsDetails.index_status.search_families.map((entry: { family: string }) => entry.family)).toEqual(["fts"]);
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -348,7 +432,6 @@ describe("gharchive demo", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-timeout-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
       const appendOrder: string[] = [];
       let sawTimedOutAppend = false;
       const exactStream = buildGhArchiveIndexedStreamName("gharchive-timeout", "day", "exact:actorLogin");
@@ -365,45 +448,6 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            const requestUrl = new URL(url);
-            const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
-              if (!sawTimedOutAppend) {
-                sawTimedOutAppend = true;
-                appendOrder.push("exact:timeout");
-                const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-                return new Promise<Response>((_resolve, reject) => {
-                  const rejectAbort = () => reject(new DOMException("Aborted", "AbortError"));
-                  if (!signal) {
-                    reject(new Error("missing timeout signal"));
-                    return;
-                  }
-                  if (signal.aborted) {
-                    rejectAbort();
-                    return;
-                  }
-                  signal.addEventListener("abort", rejectAbort, { once: true });
-                });
-              }
-              appendOrder.push("exact:ok");
-            }
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
-              appendOrder.push("fts:ok");
-            }
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
         const summary = await runGhArchiveDemo(
           [
             "day",
@@ -417,6 +461,32 @@ describe("gharchive demo", () => {
             "fts:message",
           ],
           {
+            fetchImpl: makeDemoFetch(app, baseUrl, ({ input, init, method, requestUrl }) => {
+              if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
+                if (!sawTimedOutAppend) {
+                  sawTimedOutAppend = true;
+                  appendOrder.push("exact:timeout");
+                  const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+                  return new Promise<Response>((_resolve, reject) => {
+                    const rejectAbort = () => reject(new DOMException("Aborted", "AbortError"));
+                    if (!signal) {
+                      reject(new Error("missing timeout signal"));
+                      return;
+                    }
+                    if (signal.aborted) {
+                      rejectAbort();
+                      return;
+                    }
+                    signal.addEventListener("abort", rejectAbort, { once: true });
+                  });
+                }
+                appendOrder.push("exact:ok");
+              }
+              if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
+                appendOrder.push("fts:ok");
+              }
+              return null;
+            }),
             requestTimeoutMs: 20,
             timeoutRetryDelayMs: 0,
           }
@@ -427,7 +497,6 @@ describe("gharchive demo", () => {
         expect(summary.appendBackoffWaitMs).toBe(0);
         expect(appendOrder.slice(0, 3)).toEqual(["exact:timeout", "exact:ok", "fts:ok"]);
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -440,7 +509,6 @@ describe("gharchive demo", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-server-timeout-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
       const appendOrder: string[] = [];
       let sawServerTimeout = false;
       const exactStream = buildGhArchiveIndexedStreamName("gharchive-server-timeout", "day", "exact:actorLogin");
@@ -457,36 +525,6 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            const requestUrl = new URL(url);
-            const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
-              if (!sawServerTimeout) {
-                sawServerTimeout = true;
-                appendOrder.push("exact:server-timeout");
-                return new Response(JSON.stringify({ error: { code: "request_timeout", message: "request timed out" } }), {
-                  status: 408,
-                  headers: { "content-type": "application/json" },
-                });
-              }
-              appendOrder.push("exact:ok");
-            }
-            if (method.toUpperCase() === "POST" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
-              appendOrder.push("fts:ok");
-            }
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
         const summary = await runGhArchiveDemo(
           [
             "day",
@@ -500,6 +538,23 @@ describe("gharchive demo", () => {
             "fts:message",
           ],
           {
+            fetchImpl: makeDemoFetch(app, baseUrl, ({ method, requestUrl }) => {
+              if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
+                if (!sawServerTimeout) {
+                  sawServerTimeout = true;
+                  appendOrder.push("exact:server-timeout");
+                  return new Response(JSON.stringify({ error: { code: "request_timeout", message: "request timed out" } }), {
+                    status: 408,
+                    headers: { "content-type": "application/json" },
+                  });
+                }
+                appendOrder.push("exact:ok");
+              }
+              if (method.toUpperCase() === "POST" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
+                appendOrder.push("fts:ok");
+              }
+              return null;
+            }),
             timeoutRetryDelayMs: 0,
           }
         );
@@ -509,7 +564,6 @@ describe("gharchive demo", () => {
         expect(summary.appendBackoffWaitMs).toBe(0);
         expect(appendOrder.slice(0, 3)).toEqual(["exact:server-timeout", "exact:ok", "fts:ok"]);
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -522,7 +576,6 @@ describe("gharchive demo", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-create-backoff-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
       const createOrder: string[] = [];
       let sawCreateBackoff = false;
       const exactStream = buildGhArchiveIndexedStreamName("gharchive-create-backoff", "day", "exact:actorLogin");
@@ -539,12 +592,19 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            const requestUrl = new URL(url);
-            const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-            if (method.toUpperCase() === "PUT" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--stream-prefix",
+          "gharchive-create-backoff",
+          "--onlyindex",
+          "exact:actorLogin",
+          "--onlyindex",
+          "fts:message",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl, ({ method, requestUrl }) => {
+            if (method.toUpperCase() === "PUT" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(exactStream)}`) {
               if (!sawCreateBackoff) {
                 sawCreateBackoff = true;
                 createOrder.push("exact:create-backoff");
@@ -558,37 +618,17 @@ describe("gharchive demo", () => {
               }
               createOrder.push("exact:create-ok");
             }
-            if (method.toUpperCase() === "PUT" && requestUrl.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
+            if (method.toUpperCase() === "PUT" && requestUrl?.pathname === `/v1/stream/${encodeURIComponent(ftsStream)}`) {
               createOrder.push("fts:create-ok");
             }
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
-        const summary = await runGhArchiveDemo([
-          "day",
-          "--url",
-          baseUrl,
-          "--stream-prefix",
-          "gharchive-create-backoff",
-          "--onlyindex",
-          "exact:actorLogin",
-          "--onlyindex",
-          "fts:message",
-        ]);
+            return null;
+          }),
+        });
 
         expect(summary.streamCount).toBe(2);
         expect(sawCreateBackoff).toBe(true);
         expect(createOrder.slice(0, 3)).toEqual(["exact:create-backoff", "exact:create-ok", "fts:create-ok"]);
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -601,7 +641,6 @@ describe("gharchive demo", () => {
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-noindex-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
       const cfg = makeConfig(root, {
         segmentMaxBytes: 512,
         segmentCheckIntervalMs: 10,
@@ -614,20 +653,6 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
         const summary = await runGhArchiveDemo([
           "day",
           "--url",
@@ -635,7 +660,9 @@ describe("gharchive demo", () => {
           "--stream-prefix",
           "gharchive-noindex",
           "--noindex",
-        ]);
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl),
+        });
 
         expect(summary.streamCount).toBe(1);
         expect(summary.streams).toEqual(["gharchive-noindex-day"]);
@@ -649,7 +676,6 @@ describe("gharchive demo", () => {
         expect(details.index_status.search_families).toEqual([]);
         expect(details.index_status.bundled_companions.object_count).toBe(0);
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -658,11 +684,206 @@ describe("gharchive demo", () => {
   );
 
   test(
-    "skips missing gh archive hours and completes when other hours are available",
+    "runs end to end in golden-stream routing-only mode with a custom stream name",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-missing-"));
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-golden-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--golden-stream",
+          "--golden-stream-name",
+          "golden-stream-2",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl),
+        });
+
+        expect(summary.streamCount).toBe(1);
+        expect(summary.streams).toEqual(["golden-stream-2"]);
+
+        const detailsRes = await app.fetch(new Request("http://local/v1/stream/golden-stream-2/_details", { method: "GET" }));
+        expect(detailsRes.status).toBe(200);
+        const details = await detailsRes.json();
+        expect(details.schema.routingKey).toEqual({ jsonPointer: "/repoName", required: false });
+        expect(details.schema.search).toBeUndefined();
+        expect(details.index_status.exact_indexes).toEqual([]);
+        expect(details.index_status.search_families).toEqual([]);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
+    "runs end to end in bare golden-stream mode without schema or routing key",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-golden-bare-"));
+      const baseUrl = "http://127.0.0.1:8787";
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--golden-stream",
+          "--golden-stream-name",
+          "golden-stream-4",
+          "--golden-stream-no-routing-key",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl),
+        });
+
+        expect(summary.streamCount).toBe(1);
+        expect(summary.streams).toEqual(["golden-stream-4"]);
+
+        const detailsRes = await app.fetch(new Request("http://local/v1/stream/golden-stream-4/_details", { method: "GET" }));
+        expect(detailsRes.status).toBe(200);
+        const details = await detailsRes.json();
+        expect(details.schema.routingKey).toBeUndefined();
+        expect(details.schema.search).toBeUndefined();
+        expect(details.index_status.routing_key_index.configured).toBe(false);
+        expect(details.index_status.routing_key_lexicon.configured).toBe(false);
+        expect(details.index_status.exact_indexes).toEqual([]);
+        expect(details.index_status.search_families).toEqual([]);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
+    "resume-stream reuses an existing golden stream and resumes from the hour after the latest archiveHour",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-resume-"));
+      const baseUrl = "http://127.0.0.1:8787";
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      const archiveRequests: string[] = [];
+      let deleteCalls = 0;
+      try {
+        let res = await app.fetch(
+          new Request("http://local/v1/stream/golden-stream-2", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect(res.status).toBe(201);
+        res = await app.fetch(
+          new Request("http://local/v1/stream/golden-stream-2/_schema", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(buildGhArchiveRoutingOnlyUpdate()),
+          })
+        );
+        expect(res.status).toBe(200);
+        res = await app.fetch(
+          new Request("http://local/v1/stream/golden-stream-2", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              ghArchiveId: "seed",
+              eventType: "PushEvent",
+              actorLogin: "octocat",
+              repoName: "prisma/streams",
+              repoOwner: "prisma",
+              orgLogin: "prisma",
+              action: null,
+              refType: null,
+              public: true,
+              isBot: false,
+              title: null,
+              message: "seed",
+              body: null,
+              archiveHour: "2020-01-01-12",
+              eventTime: "2020-01-01T12:00:00.000Z",
+              commitCount: 1,
+              payloadBytes: 1,
+              payloadKb: 0.001,
+            }),
+          })
+        );
+        expect(res.status).toBe(204);
+
+        const summary = await runGhArchiveDemo(
+          [
+            "all",
+            "--url",
+            baseUrl,
+            "--golden-stream",
+            "--golden-stream-name",
+            "golden-stream-2",
+            "--resume-stream",
+          ],
+          {
+            fetchImpl: makeDemoFetch(app, baseUrl, ({ method, url }) => {
+              if (method === "DELETE" && url.includes("/v1/stream/golden-stream-2")) {
+                deleteCalls += 1;
+              }
+              if (url.startsWith("https://data.gharchive.org/")) {
+                const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
+                if (!match) return new Response("not found", { status: 404 });
+                archiveRequests.push(match[1]);
+                return mockArchiveResponse(match[1]);
+              }
+              return null;
+            }),
+            now: new Date("2020-01-01T15:00:00.000Z"),
+          }
+        );
+
+        expect(deleteCalls).toBe(0);
+        expect(archiveRequests[0]).toBe("2020-01-01-13");
+        expect(summary.startHour).toBe("2020-01-01-13");
+        expect(summary.streams).toEqual(["golden-stream-2"]);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
+    "jumps to 10:00 UTC when a day-start gh archive hour is missing and later same-day hours are available",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-missing-day-start-"));
+      const baseUrl = "http://127.0.0.1:8787";
       const realStderrWrite = process.stderr.write.bind(process.stderr);
       const stderrLines: string[] = [];
       let missingInjected = false;
@@ -682,43 +903,39 @@ describe("gharchive demo", () => {
           stderrLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
           return true;
         }) as typeof process.stderr.write;
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
-            if (!match) return new Response("not found", { status: 404 });
-            if (!missingInjected) {
-              missingInjected = true;
-              return new Response("not found", { status: 404 });
-            }
-            return mockArchiveResponse(match[1]);
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
-
         const summary = await runGhArchiveDemo([
           "day",
           "--url",
           baseUrl,
           "--stream-prefix",
-          "gharchive-missing-hour",
+          "gharchive-missing-day-start",
           "--onlyindex",
           "fts:message",
-        ]);
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl, ({ url }) => {
+            if (url.startsWith("https://data.gharchive.org/")) {
+              const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
+              if (!match) return new Response("not found", { status: 404 });
+              if (!missingInjected) {
+                missingInjected = true;
+                return new Response("not found", { status: 404 });
+              }
+              return mockArchiveResponse(match[1]);
+            }
+            return null;
+          }),
+          now: new Date("2011-02-13T00:00:00.000Z"),
+        });
 
         expect(missingInjected).toBe(true);
         expect(summary.hours).toBe(24);
-        expect(summary.downloadedHours).toBe(23);
-        expect(summary.missingHours).toBe(1);
-        expect(summary.normalizedRows).toBe(23);
-        expect(stderrLines.join("")).toContain("[gharchive-demo] missing hour");
+        expect(summary.downloadedHours).toBe(14);
+        expect(summary.missingHours).toBe(10);
+        expect(summary.normalizedRows).toBe(14);
+        expect(stderrLines.join("")).toContain("[gharchive-demo] missing hour 2011-02-12-00");
+        expect(stderrLines.join("")).toContain("skipping ahead 10h to 2011-02-12-10");
       } finally {
         process.stderr.write = realStderrWrite;
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }
@@ -727,11 +944,13 @@ describe("gharchive demo", () => {
   );
 
   test(
-    "fails clearly when no gh archive hours are available for the requested range",
+    "skips ahead by twelve hours after a non-day-start missing gh archive hour and completes when later hours are available",
     async () => {
-      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-none-"));
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-missing-"));
       const baseUrl = "http://127.0.0.1:8787";
-      const realFetch = globalThis.fetch;
+      const realStderrWrite = process.stderr.write.bind(process.stderr);
+      const stderrLines: string[] = [];
+      let missingInjected = false;
       const cfg = makeConfig(root, {
         segmentMaxBytes: 512,
         segmentCheckIntervalMs: 10,
@@ -744,18 +963,67 @@ describe("gharchive demo", () => {
       });
       const app = createApp(cfg);
       try {
-        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-          const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          if (url.startsWith(baseUrl)) {
-            if (input instanceof Request) return app.fetch(new Request(input, init));
-            return app.fetch(new Request(url, init));
-          }
-          if (url.startsWith("https://data.gharchive.org/")) {
-            return new Response("not found", { status: 404 });
-          }
-          throw new Error(`unexpected fetch url: ${url}`);
-        }) as typeof fetch;
+        process.stderr.write = ((chunk: string | Uint8Array) => {
+          stderrLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+          return true;
+        }) as typeof process.stderr.write;
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--stream-prefix",
+          "gharchive-missing-hour",
+          "--onlyindex",
+          "fts:message",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl, ({ url }) => {
+            if (url.startsWith("https://data.gharchive.org/")) {
+              const match = /(\d{4}-\d{2}-\d{2}-\d{2})\.json\.gz$/.exec(url);
+              if (!match) return new Response("not found", { status: 404 });
+              if (!missingInjected) {
+                missingInjected = true;
+                return new Response("not found", { status: 404 });
+              }
+              return mockArchiveResponse(match[1]);
+            }
+            return null;
+          }),
+          now: new Date("2011-02-13T15:00:00.000Z"),
+        });
 
+        expect(missingInjected).toBe(true);
+        expect(summary.hours).toBe(24);
+        expect(summary.downloadedHours).toBe(12);
+        expect(summary.missingHours).toBe(12);
+        expect(summary.normalizedRows).toBe(12);
+        expect(stderrLines.join("")).toContain("[gharchive-demo] missing hour");
+        expect(stderrLines.join("")).toContain("skipping ahead 12h");
+      } finally {
+        process.stderr.write = realStderrWrite;
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
+    "fails clearly when no gh archive hours are available for the requested range",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-none-"));
+      const baseUrl = "http://127.0.0.1:8787";
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
         await expect(
           runGhArchiveDemo([
             "day",
@@ -763,10 +1031,14 @@ describe("gharchive demo", () => {
             baseUrl,
             "--stream-prefix",
             "gharchive-no-hours",
-          ])
+          ], {
+            fetchImpl: makeDemoFetch(app, baseUrl, ({ url }) => {
+              if (url.startsWith("https://data.gharchive.org/")) return new Response("not found", { status: 404 });
+              return null;
+            }),
+          })
         ).rejects.toThrow("no GH Archive hours were available");
       } finally {
-        globalThis.fetch = realFetch;
         app.close();
         rmSync(root, { recursive: true, force: true });
       }

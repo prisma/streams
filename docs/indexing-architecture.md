@@ -13,6 +13,8 @@ The planned low-latency read model for heavy-ingest periods lives in
 Prisma Streams now ships these indexing layers:
 
 - the existing routing-key tiered index
+- a stream-level lexicographic lexicon run family, currently auto-enabled for
+  schema routing keys
 - the existing exact-match secondary index family, now treated as an internal
   accelerator derived from schema `search.fields`
 - a bundled per-segment `PSCIX2` companion container (`.cix`)
@@ -37,6 +39,9 @@ The public query surfaces are:
   - exact/range/existence filtering on JSON streams
   - cursor-friendly read semantics
   - exact family and `.col` may prune sealed history
+  - keyed reads use the routing index to build a sealed read plan, so they scan
+    candidate indexed segments plus the uncovered tail instead of cursor-walking
+    the entire indexed prefix
   - the local unsealed tail is always scanned for correctness
 - `POST /v1/stream/{name}/_search`
 - `GET /v1/stream/{name}/_search?q=...`
@@ -49,6 +54,13 @@ The public query surfaces are:
     allow it
   - scans source segments and the WAL tail for partial edges and uncovered
     ranges
+- `GET /v1/stream/{name}/_routing_keys?limit=...&after=...`
+  - returns distinct routing keys in alphabetical order
+  - pages via the exclusive `after` cursor
+  - uses stream-level lexicon runs for the indexed uploaded prefix
+  - falls back to direct routing-key extraction from uncovered segments and the
+    WAL tail so results remain complete before the first run exists and while
+    the lexicon catches up
 
 The source of truth remains the stream itself. Search families are accelerators
 and remote serving structures, not durable record stores.
@@ -162,6 +174,104 @@ Current support notes:
 
 The routing-key family is unchanged. It remains the hot path for exact routing
 key lookup and `/pk/<key>` reads.
+
+### Routing-key lexicon family
+
+The routing-key lexicon family is a separate immutable run family for
+alphabetical distinct-key enumeration. It is enabled automatically for any
+stream whose installed schema declares `routingKey`.
+
+Current implementation:
+
+- immutable stream-level `.lex` runs, not per-segment companions
+- L0 build span matches the other tiered indexes: 16 uploaded segments
+- asynchronous background build after upload
+- higher-level immutable compaction using the same contiguous-run policy as the
+  other tiered index families
+- manifest-published state and run lists
+- a local immutable `.lex` file cache under `${DS_ROOT}/cache/lexicon`
+  - freshly built runs are seeded into the local cache immediately after upload
+  - first read of an uncached run downloads the full `.lex` object once, stores
+    it locally, and serves future requests from a local `Bun.mmap()` mapping
+  - as with bundled companion files, a `.lex` file that has been mmapped by the
+    current process is treated as pinned until restart because Bun does not
+    expose an explicit unmap primitive
+- best-effort alphabetical browse while lexicon lag exists
+  - the indexed uploaded prefix comes from `.lex` runs
+  - once any `.lex` coverage exists, uncovered uploaded sealed segments are not
+    scanned in the request path
+  - the request path may scan at most one uncovered local sealed segment plus
+    the WAL tail
+  - before the first `.lex` run exists, the request path may scan at most one
+    uploaded sealed segment plus the local tail / WAL
+  - if uncovered uploaded history remains, `_routing_keys` returns a partial
+    page with `coverage.complete=false`
+  - `next_after` may still be non-null for those partial pages; Studio must
+    treat the cursor as best-effort and show that uploaded lexicon lag may
+    still hide earlier keys
+
+The object-store naming is intentionally generic so the same family can later
+support lexicographic listing for other fields:
+
+```text
+streams/<hash>/lexicon/<source-kind>/<source-name>/<run-id>.lex
+```
+
+Current routing-key mapping:
+
+- `source-kind = routing_key`
+- `source-name = __default__` in the object path
+
+Future field lexicons can reuse this prefix with a different `source-kind` and
+field-specific `source-name`.
+
+Each `.lex` run stores a sorted restart-coded string table. That gives:
+
+- lower-bound seek for `after=...`
+- compact immutable objects
+- k-way merge pagination across active runs without a mutable global B-tree
+
+The `_routing_keys` response now also exposes per-request timing so operators
+and Studio can tell where time is going:
+
+- `timing.lexicon_run_get_ms`
+- `timing.lexicon_decode_ms`
+- `timing.lexicon_enumerate_ms`
+- `timing.lexicon_merge_ms`
+- `timing.fallback_scan_ms`
+- `timing.fallback_segment_get_ms`
+- `timing.fallback_wal_scan_ms`
+- `timing.lexicon_runs_loaded`
+
+Studio / operator UI guidance:
+
+- use `/_details.storage.local_storage.lexicon_index_cache_bytes` to show how
+  much local `.lex` cache is resident on the node
+- use `/_details.storage.local_storage.segment_cache_bytes`,
+  `routing_index_cache_bytes`, `exact_index_cache_bytes`, and
+  `companion_cache_bytes` to show how much local read-through cache has been
+  seeded by routing-key reads, stream reads, and index backfill work
+- use `/_routing_keys.coverage.complete`,
+  `coverage.possible_missing_uploaded_segments`, and
+  `coverage.possible_missing_local_segments` to explain whether the page is
+  complete or still waiting on lexicon catch-up
+- when `coverage.complete=false`, label the page as best-effort even if
+  `next_after` is present
+- use the `timing.*` breakdown to distinguish:
+  - cached lexicon run load/decode cost
+  - lexicon enumeration cost across active runs
+  - indexed/fallback merge cost
+  - fallback segment scan cost
+  - WAL tail scan cost
+
+Serving the first page does not require enumerating the full indexed prefix:
+
+- the request loads all active runs, but only asks each run for a page-sized
+  candidate set starting at `after`
+- the indexed side is no longer expanded by the number of fallback keys found
+  in the WAL or local tail
+- lexicon merge yields are batched, so a large fallback set no longer forces
+  thousands of event-loop round trips just to serve a small page
 
 ### Exact secondary family
 
@@ -365,8 +475,19 @@ Relevant concurrency knobs:
 - `DS_INDEX_BUILD_CONCURRENCY`
 - `DS_INDEX_COMPACT_CONCURRENCY`
 - `DS_INDEX_CHECK_MS`
+- `DS_ASYNC_INDEX_CONCURRENCY`
 
 These are in-process async concurrency limits, not separate OS workers.
+
+`DS_ASYNC_INDEX_CONCURRENCY` is the shared top-level permit pool across:
+
+- routing-key L0 build / compaction
+- exact-secondary L0 build / compaction
+- bundled companion build / backfill
+
+Each manager still has its own inner build/compaction fanout knobs, but no
+manager can monopolize more top-level concurrent jobs than the shared async
+gate allows.
 
 `SearchCompanionManager` also emits progress metrics so companion lag can be
 observed independently of the exact family:
@@ -376,6 +497,19 @@ observed independently of the exact family:
 - `tieredstore.companion.lag.segments`
 - `tieredstore.companion.build.latency`
 - `tieredstore.companion.objects.built`
+
+The node also emits shared runtime gate metrics into `__stream_metrics__` so
+operators can tell whether async indexing is being narrowed under
+memory pressure:
+
+- `tieredstore.concurrency.limit` with `gate=async_index` and
+  `kind=configured|effective`
+- `tieredstore.concurrency.active` with `gate=async_index`
+- `tieredstore.concurrency.queued` with `gate=async_index`
+- `process.memory.pressure`
+
+For a point-in-time view of the same state plus the configured auto-tune
+budget, use `GET /v1/server/_details`.
 
 On startup, the full server enqueues all streams into the index controller so
 existing streams can catch up automatically after bootstrap, schema changes, or
@@ -398,9 +532,9 @@ Current bundled-companion rules:
   table and decode only the requested section family on demand
 - long-running bundled companion builds yield cooperatively every bounded number
   of segment blocks so the HTTP server stays responsive during backfill
-- bundled companion backfill defers work when the process memory guard is over
-  limit, preferring temporary mixed coverage over driving the main server
-  deeper into memory pressure
+- bundled companion backfill no longer hard-pauses on a memory overload flag;
+  instead it competes for the shared async-index gate like the other indexing
+  managers
 - a plan change puts the stream into mixed coverage until historical companions
   are rebuilt
 - queries use current bundled sections where present and raw-scan missing or
@@ -428,6 +562,10 @@ Current contract:
 - unsealed WAL tail is always scanned
 - one filtered response stops after 100 MB of examined payload bytes and reports
   that through response headers
+- when a routing-key or exact-candidate set is available, the reader plans the
+  sealed segment scan up front and visits only candidate indexed segments plus
+  the uncovered uploaded tail; it does not cursor-walk the full indexed sealed
+  prefix just to skip non-candidate history
 
 This path is optimized for stream-like cursor progression, not ranked search.
 
@@ -474,6 +612,9 @@ Current timeout behavior:
 - response headers mirror the same timing counters for easier inspection in
   browser tooling
 - `/_search` does not support request-time exact total-hit counting
+- when exact clauses produce a candidate segment set, `_search` uses a planned
+  sealed-segment scan instead of iterating the entire indexed sealed prefix one
+  segment at a time
 
 Current search coverage fields:
 
@@ -598,12 +739,14 @@ endpoints:
 
 - `GET /v1/stream/{name}/_index_status`
 - `GET /v1/stream/{name}/_details`
+- `GET /v1/stream/{name}/_routing_keys`
 
 `/_index_status` reports:
 
 - segment counts
 - manifest generation/upload state
 - routing-key index status
+- routing-key lexicon status
 - internal exact-index status, including stale-config detection
 - bundled companion object coverage
 - `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
@@ -612,13 +755,19 @@ endpoints:
 Current exact-index scheduling:
 
 - bundled companions are the first background priority for uploaded segments
+- all async index families share one bounded gate and yield cooperatively inside
+  segment scans; when a foreground read or search is active, those background
+  loops back off further instead of monopolizing the event loop
+- routing, exact, and lexicon compactions also wait for a short quiet window
+  after foreground traffic before resuming
 - exact secondary-index build and compaction only run after bundled companions
   are caught up, the stream has no in-progress segment cut or pending upload
   segment, and the stream has been append-idle for about ten minutes so exact
   work does not re-enter the ingest hot path during long but temporary quiet
   gaps
 - byte-at-rest and object-count accounting for index families
-- lag in both segments and milliseconds for routing, exact, and bundled-family
+- lag in both segments and milliseconds for routing, routing-key lexicon,
+  exact, and bundled-family
   progress
 
 `/_details` is the combined stream-management descriptor. It nests:
@@ -671,6 +820,14 @@ The `metrics` profile auto-installs:
 - default `search.fields`
 - default `search.rollups`
 - the `.mblk` family alongside `.agg`
+
+The internal `__stream_metrics__` system stream is the intentional exception:
+
+- it keeps the `metrics` profile for canonical record normalization
+- it installs only the canonical schema
+- it does not install `routingKey`, `search.fields`, or `search.rollups`
+- it therefore does not build routing, lexicon, exact, `.col`, `.fts`, `.agg`,
+  or `.mblk` state for the internal stream
 
 The intended planner order for metrics streams is:
 

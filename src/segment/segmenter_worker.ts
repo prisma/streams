@@ -32,10 +32,22 @@ const hooks: SegmenterHooks = {
 
 const segmenter = new Segmenter(cfg, db, data.opts ?? {}, hooks, memorySampler);
 segmenter.start();
+const memoryTimer = setInterval(() => {
+  try {
+    parentPort?.postMessage({ type: "memory", workerId: threadId, stats: segmenter.getMemoryStats() });
+  } catch {
+    // ignore
+  }
+}, 1_000);
 
 parentPort?.on("message", (msg: any) => {
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "stop") {
+    try {
+      clearInterval(memoryTimer);
+    } catch {
+      // ignore
+    }
     try {
       segmenter.stop();
     } catch {

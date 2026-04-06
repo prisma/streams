@@ -55,6 +55,10 @@ class Histogram {
 
 type SeriesKey = string;
 
+export type MetricsMemoryStats = {
+  seriesCount: number;
+};
+
 class MetricSeries {
   readonly metric: string;
   readonly unit: "ns" | "bytes" | "count";
@@ -112,6 +116,10 @@ export class Metrics {
       uptime_ms: Date.now() - this.startMs,
       series: this.series.size,
     };
+  }
+
+  getMemoryStats(): MetricsMemoryStats {
+    return { seriesCount: this.series.size };
   }
 
   flushInterval(): Record<string, unknown>[] {

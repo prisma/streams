@@ -19,6 +19,11 @@ export type UploaderController = {
   start(): void;
   stop(hard?: boolean): void;
   countSegmentsWaiting(): number;
+  getMemoryStats?: () => {
+    inflight_segments: number;
+    inflight_segment_bytes: number;
+    manifest_inflight_streams: number;
+  };
   setHooks(hooks: UploaderHooks | undefined): void;
   publishManifest(stream: string): Promise<void>;
 };
@@ -43,6 +48,7 @@ export class Uploader {
   private readonly failures = new FailureTracker(1024);
   private hooks?: UploaderHooks;
   private readonly manifestInflight = new Set<string>();
+  private inflightSegmentBytes = 0;
 
   constructor(
     config: Config,
@@ -87,12 +93,20 @@ export class Uploader {
     return this.db.countPendingSegments();
   }
 
+  getMemoryStats(): { inflight_segments: number; inflight_segment_bytes: number; manifest_inflight_streams: number } {
+    return {
+      inflight_segments: this.inflight.size,
+      inflight_segment_bytes: this.inflightSegmentBytes,
+      manifest_inflight_streams: this.manifestInflight.size,
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.stopping) return;
     if (this.running) return;
     this.running = true;
     try {
-      const pending = this.db.pendingUploadSegments(1000);
+      const pending = this.db.pendingUploadHeads(1000);
       if (pending.length === 0) return;
 
       // Upload with bounded concurrency.
@@ -150,6 +164,7 @@ export class Uploader {
       if (!seg) return;
       if (this.inflight.has(seg.segment_id)) continue;
       this.inflight.add(seg.segment_id);
+      this.inflightSegmentBytes += Math.max(0, seg.size_bytes);
       try {
         try {
           await this.uploadOne(seg);
@@ -164,6 +179,7 @@ export class Uploader {
         }
       } finally {
         this.inflight.delete(seg.segment_id);
+        this.inflightSegmentBytes = Math.max(0, this.inflightSegmentBytes - Math.max(0, seg.size_bytes));
       }
     }
   }
@@ -250,6 +266,13 @@ export class Uploader {
       const retiredSecondaryIndexRuns = secondaryIndexStates.flatMap((state) =>
         this.db.listRetiredSecondaryIndexRuns(stream, state.index_name)
       );
+      const lexiconIndexStates = this.db.listLexiconIndexStates(stream);
+      const lexiconIndexRuns = lexiconIndexStates.flatMap((state) =>
+        this.db.listLexiconIndexRuns(stream, state.source_kind, state.source_name)
+      );
+      const retiredLexiconIndexRuns = lexiconIndexStates.flatMap((state) =>
+        this.db.listRetiredLexiconIndexRuns(stream, state.source_kind, state.source_name)
+      );
       const searchCompanionPlan = this.db.getSearchCompanionPlan(stream);
       const searchSegmentCompanions = this.db.listSearchSegmentCompanions(stream);
       let profileJson: Record<string, any> | null = null;
@@ -276,6 +299,9 @@ export class Uploader {
         secondaryIndexStates,
         secondaryIndexRuns,
         retiredSecondaryIndexRuns,
+        lexiconIndexStates,
+        lexiconIndexRuns,
+        retiredLexiconIndexRuns,
         searchCompanionPlan,
         searchSegmentCompanions,
       });

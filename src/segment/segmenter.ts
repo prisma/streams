@@ -21,6 +21,17 @@ export type SegmenterHooks = {
   onSegmentSealed?: (stream: string, payloadBytes: number, segmentBytes: number) => void;
 };
 
+export type SegmenterMemoryStats = {
+  active_builds: number;
+  active_streams: number;
+  active_payload_bytes: number;
+  active_segment_bytes_estimate: number;
+  active_rows: number;
+};
+
+const SEGMENT_COMPRESSION_WINDOW = 8;
+const MIN_COMPRESSED_FILL_RATIO = 0.5;
+
 export class Segmenter {
   private readonly config: Config;
   private readonly db: SqliteDurableStore;
@@ -31,6 +42,10 @@ export class Segmenter {
   private running = false;
   private stopping = false;
   private readonly failures = new FailureTracker(1024);
+  private activeBuildStream: string | null = null;
+  private activePayloadBytes = 0;
+  private activeSegmentBytesEstimate = 0;
+  private activeRows = 0;
 
   constructor(
     config: Config,
@@ -65,6 +80,16 @@ export class Segmenter {
     else this.stopping = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  getMemoryStats(): SegmenterMemoryStats {
+    return {
+      active_builds: this.activeBuildStream ? 1 : 0,
+      active_streams: this.activeBuildStream ? 1 : 0,
+      active_payload_bytes: this.activePayloadBytes,
+      active_segment_bytes_estimate: this.activeSegmentBytesEstimate,
+      active_rows: this.activeRows,
+    };
   }
 
   private async tick(): Promise<void> {
@@ -138,11 +163,31 @@ export class Segmenter {
     }
   }
 
+  private resolvePayloadSealTargetBytes(stream: string): bigint {
+    const baseTarget = BigInt(this.config.segmentMaxBytes);
+    const ratio = this.db.recentSegmentCompressionRatio(stream, SEGMENT_COMPRESSION_WINDOW);
+    if (ratio == null || !Number.isFinite(ratio) || ratio <= 0 || ratio >= MIN_COMPRESSED_FILL_RATIO) {
+      return baseTarget;
+    }
+    const desiredCompressedBytes = Math.ceil(this.config.segmentMaxBytes * MIN_COMPRESSED_FILL_RATIO);
+    const boosted = BigInt(Math.ceil(desiredCompressedBytes / ratio));
+    return boosted > baseTarget ? boosted : baseTarget;
+  }
+
+  private shouldSealStream(row: { stream: string; pending_bytes: bigint; pending_rows: bigint; last_segment_cut_ms: bigint }): boolean {
+    const payloadSealTargetBytes = this.resolvePayloadSealTargetBytes(row.stream);
+    if (row.pending_bytes >= payloadSealTargetBytes) return true;
+    if (row.pending_rows >= BigInt(this.opts.minCandidateRows)) return true;
+    if (this.opts.maxIntervalMs > 0 && BigInt(Date.now()) - row.last_segment_cut_ms >= BigInt(this.opts.maxIntervalMs)) return true;
+    return false;
+  }
+
   private async buildOne(stream: string): Promise<void> {
     if (this.stopping) return;
     const row = this.db.getStream(stream);
     if (!row || this.db.isDeleted(row)) return;
     if (row.segment_in_progress) return;
+    if (!this.shouldSealStream(row)) return;
 
     const startOffset = row.sealed_through + 1n;
     const maxOffset = row.next_offset - 1n;
@@ -152,6 +197,10 @@ export class Segmenter {
     if (!this.db.tryClaimSegment(stream)) return;
 
     try {
+      this.activeBuildStream = stream;
+      this.activePayloadBytes = 0;
+      this.activeSegmentBytesEstimate = 0;
+      this.activeRows = 0;
       const segmentIndex = this.db.nextSegmentIndexForStream(stream);
       const shash = streamHash16Hex(stream);
       const localPath = localSegmentPath(this.config.rootDir, shash, segmentIndex);
@@ -174,6 +223,8 @@ export class Segmenter {
 
         // Decide endOffset by scanning WAL rows until threshold.
         // IMPORTANT: pending_bytes tracks WAL payload bytes only (not record/block overhead).
+        const payloadSealTargetBytes = this.resolvePayloadSealTargetBytes(stream);
+        const rowSealTarget = BigInt(this.opts.minCandidateRows);
         let payloadBytes = 0n;
         let rowsSealed = 0n;
         let endOffset = startOffset - 1n;
@@ -223,6 +274,9 @@ export class Segmenter {
           payloadBytes += BigInt(payload.byteLength);
           rowsSealed += 1n;
           endOffset = offset;
+          this.activePayloadBytes = Number(payloadBytes);
+          this.activeRows = Number(rowsSealed);
+          this.activeSegmentBytesEstimate = fileBytes + blockBytesApprox;
 
           recordsSinceYield += 1;
           if (recordsSinceYield >= 512 || Date.now() - lastYieldMs >= 10) {
@@ -231,7 +285,8 @@ export class Segmenter {
             recordsSinceYield = 0;
           }
 
-          if (payloadBytes >= BigInt(this.config.segmentMaxBytes)) break;
+          if (payloadBytes >= payloadSealTargetBytes) break;
+          if (rowsSealed >= rowSealTarget) break;
           if (rowsSealed >= BigInt(this.opts.maxRowsPerSegment)) break;
         }
 
@@ -257,6 +312,7 @@ export class Segmenter {
         const footer = encodeFooter(blockIndex);
         writeSync(fd, footer);
         fileBytes += footer.byteLength;
+        this.activeSegmentBytesEstimate = fileBytes;
 
         fsyncSync(fd);
 
@@ -296,6 +352,10 @@ export class Segmenter {
         leaveCutPhase?.();
       }
     } finally {
+      this.activeBuildStream = null;
+      this.activePayloadBytes = 0;
+      this.activeSegmentBytesEstimate = 0;
+      this.activeRows = 0;
       // Release claim.
       if (!this.stopping) {
         try {

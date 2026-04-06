@@ -27,12 +27,12 @@ const BASE_WAL_GC_INTERVAL_MS = (() => {
 
 const BASE_WAL_GC_CHUNK_OFFSETS = (() => {
   const raw = process.env.DS_BASE_WAL_GC_CHUNK_OFFSETS;
-  if (raw == null || raw.trim() === "") return 100_000;
+  if (raw == null || raw.trim() === "") return 1_000_000;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     // eslint-disable-next-line no-console
     console.error(`invalid DS_BASE_WAL_GC_CHUNK_OFFSETS: ${raw}`);
-    return 100_000;
+    return 1_000_000;
   }
   return Math.floor(n);
 })();
@@ -99,6 +99,32 @@ type StreamRuntimeTotals = {
   waitStaleTotal: number;
 };
 
+export type TouchProcessorManagerMemoryStats = {
+  dirtyStreams: number;
+  journals: number;
+  journalsCreatedTotal: number;
+  journalFilterBytesTotal: number;
+  fineLagCoarseOnlyStreams: number;
+  touchModeStreams: number;
+  fineTokenBucketStreams: number;
+  hotFineStreams: number;
+  lagSourceOffsetStreams: number;
+  restrictedTemplateBucketStreams: number;
+  runtimeTotalsStreams: number;
+  zeroRowBacklogStreakStreams: number;
+  templateLastSeenEntries: number;
+  templateDirtyLastSeenEntries: number;
+  templateRateStateStreams: number;
+  liveMetricsCounterStreams: number;
+};
+
+export type TouchTopStreamEntry = {
+  stream: string;
+  journal_filter_bytes: number;
+  dirty: boolean;
+  touch_mode: "idle" | "fine" | "restricted" | "coarseOnly" | null;
+};
+
 export class TouchProcessorManager {
   private readonly cfg: Config;
   private readonly db: SqliteDurableStore;
@@ -122,6 +148,7 @@ export class TouchProcessorManager {
   private readonly restrictedTemplateBucketStateByStream = new Map<string, RestrictedTemplateBucketState>();
   private readonly runtimeTotalsByStream = new Map<string, StreamRuntimeTotals>();
   private readonly zeroRowBacklogStreakByStream = new Map<string, number>();
+  private journalsCreatedTotal = 0;
   private streamScanCursor = 0;
   private restartWorkerPoolRequested = false;
   private lastWorkerPoolRestartAtMs = 0;
@@ -188,6 +215,46 @@ export class TouchProcessorManager {
     this.zeroRowBacklogStreakByStream.clear();
     this.restartWorkerPoolRequested = false;
     this.lastWorkerPoolRestartAtMs = 0;
+  }
+
+  getMemoryStats(): TouchProcessorManagerMemoryStats {
+    let journalFilterBytesTotal = 0;
+    for (const journal of this.journals.values()) journalFilterBytesTotal += journal.getFilterBytes();
+    const templateStats = this.templates.getMemoryStats();
+    const liveMetricsStats = this.liveMetrics.getMemoryStats();
+    return {
+      dirtyStreams: this.dirty.size,
+      journals: this.journals.size,
+      journalsCreatedTotal: this.journalsCreatedTotal,
+      journalFilterBytesTotal,
+      fineLagCoarseOnlyStreams: this.fineLagCoarseOnlyByStream.size,
+      touchModeStreams: this.touchModeByStream.size,
+      fineTokenBucketStreams: this.fineTokenBucketsByStream.size,
+      hotFineStreams: this.hotFineByStream.size,
+      lagSourceOffsetStreams: this.lagSourceOffsetsByStream.size,
+      restrictedTemplateBucketStreams: this.restrictedTemplateBucketStateByStream.size,
+      runtimeTotalsStreams: this.runtimeTotalsByStream.size,
+      zeroRowBacklogStreakStreams: this.zeroRowBacklogStreakByStream.size,
+      templateLastSeenEntries: templateStats.lastSeenEntries,
+      templateDirtyLastSeenEntries: templateStats.dirtyLastSeenEntries,
+      templateRateStateStreams: templateStats.rateStateStreams,
+      liveMetricsCounterStreams: liveMetricsStats.counterStreams,
+    };
+  }
+
+  getTopStreams(limit = 5): TouchTopStreamEntry[] {
+    const rows: TouchTopStreamEntry[] = [];
+    for (const [stream, journal] of this.journals) {
+      rows.push({
+        stream,
+        journal_filter_bytes: journal.getFilterBytes(),
+        dirty: this.dirty.has(stream),
+        touch_mode: this.touchModeByStream.get(stream) ?? null,
+      });
+    }
+    return rows
+      .sort((a, b) => b.journal_filter_bytes - a.journal_filter_bytes || a.stream.localeCompare(b.stream))
+      .slice(0, Math.max(0, Math.floor(limit)));
   }
 
   notify(stream: string): void {
@@ -833,6 +900,7 @@ export class TouchProcessorManager {
       keyIndexMaxKeys: mem.keyIndexMaxKeys ?? 32,
     });
     this.journals.set(stream, j);
+    this.journalsCreatedTotal += 1;
     return j;
   }
 

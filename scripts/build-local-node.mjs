@@ -48,6 +48,10 @@ It keeps all state in a single local SQLite database and supports the live /
 touch system, but it does not run the full production segmenting and object
 store pipeline.
 
+The embedded local runtime always applies the built-in \`1024 MB\` auto-tune
+preset, so Prisma CLI gets a predictable cache and concurrency budget and the
+same current HTTP surface, including \`GET /v1/server/_details\`.
+
 ## Supported Package Surface
 
 - \`@prisma/streams-local\`

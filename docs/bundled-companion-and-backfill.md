@@ -165,7 +165,10 @@ Current runtime behavior:
 - cooperative via `DS_SEARCH_COMPANION_YIELD_BLOCKS`
 - local companion cache admissions bounded by
   `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`
-- deferred when the memory guard is already over limit
+- shares the top-level async-index concurrency gate with routing and exact
+  background work
+- may run with fewer async-index permits while the memory-pressure threshold is
+  exceeded, but never below one permit
 - one replacement `.cix` per rebuilt segment
 - one manifest publish after each successful rebuild batch
 

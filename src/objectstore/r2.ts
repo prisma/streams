@@ -31,6 +31,22 @@ function stripQuotes(value: string | null): string {
   return value.replace(/^\"|\"$/g, "");
 }
 
+function isMissingObjectError(err: unknown): boolean {
+  const record = err as Record<string, unknown> | null | undefined;
+  const status = record?.status;
+  const statusCode = record?.statusCode;
+  const code = String(record?.code ?? "");
+  const message = String(record?.message ?? err ?? "").toLowerCase();
+  if (status === 404 || statusCode === 404) return true;
+  if (code === "NoSuchKey" || code === "NotFound") return true;
+  return (
+    message.includes("not found") ||
+    message.includes("no such key") ||
+    message.includes("does not exist") ||
+    message === "missing"
+  );
+}
+
 export class R2ObjectStore implements ObjectStore {
   private readonly client: Bun.S3Client;
 
@@ -76,13 +92,13 @@ export class R2ObjectStore implements ObjectStore {
   async get(key: string, opts: GetOptions = {}): Promise<Uint8Array | null> {
     try {
       const file = this.file(key);
-      if (!(await file.exists())) return null;
       const body =
         opts.range == null
           ? file
           : file.slice(opts.range.start, opts.range.end == null ? undefined : opts.range.end + 1);
       return new Uint8Array(await body.arrayBuffer());
     } catch (err) {
+      if (isMissingObjectError(err)) return null;
       this.wrapError("GET", key, err);
     }
   }

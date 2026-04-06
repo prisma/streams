@@ -240,9 +240,19 @@ Current behavior:
 - content type: `application/json`
 - profile: `metrics`
 - routing key: canonical `seriesKey`
+- installed registry: canonical schema only
+- installed schema routing key: none
+- installed search config: none
+- background routing / lexicon / exact / bundled companion indexing: disabled
 
-The stream is automatically searchable and aggregatable because the profile
-installs its schema/search/rollup registry at startup.
+This is intentional. The internal metrics stream must not create its own heavy
+search and aggregate backfill loop while the node is already under load.
+Searchable and aggregatable metrics remain supported on normal user-created
+`metrics` streams; the lean internal stream exists only for durable operational
+event capture.
+
+To correlate those interval records with the node's current configuration, use
+`GET /v1/server/_details`.
 
 ## Metrics Currently Emitted
 
@@ -254,12 +264,87 @@ This implementation emits interval summaries for:
 - `tieredstore.ingest.sqlite_busy.wait`
 - `tieredstore.ingest.queue.bytes`
 - `tieredstore.ingest.queue.requests`
+- `tieredstore.ingest.queue.capacity.bytes`
+- `tieredstore.ingest.queue.capacity.requests`
 - `tieredstore.backpressure.over_limit`
+- `tieredstore.backpressure.current.bytes`
+- `tieredstore.backpressure.limit.bytes`
+- `tieredstore.backpressure.pressure`
 
 ### Process memory
 
 - `process.rss.bytes`
 - `process.rss.over_limit`
+- `process.rss.current.bytes`
+- `process.rss.max_interval.bytes`
+- `process.heap.total.bytes`
+- `process.heap.used.bytes`
+- `process.external.bytes`
+- `process.array_buffers.bytes`
+- `process.memory.rss.anon.bytes`
+- `process.memory.rss.file.bytes`
+- `process.memory.rss.shmem.bytes`
+- `process.memory.js_managed.bytes`
+- `process.memory.js_external_non_array_buffers.bytes`
+- `process.memory.unattributed.bytes`
+- `process.memory.unattributed_anon.bytes`
+- `process.memory.limit.bytes`
+- `process.memory.pressure`
+- `process.gc.forced.count`
+- `process.gc.reclaimed.bytes`
+  - tags:
+    - `kind=last|total`
+- `process.gc.last_forced_at_ms`
+- `process.heap.snapshot.count`
+- `process.heap.snapshot.last_at_ms`
+- `process.memory.high_water.bytes`
+  - tags:
+    - `metric=<name>`
+- `tieredstore.sqlite.memory.used.bytes`
+- `tieredstore.sqlite.memory.high_water.bytes`
+- `tieredstore.sqlite.pagecache.used`
+- `tieredstore.sqlite.pagecache.high_water`
+- `tieredstore.sqlite.pagecache.overflow.bytes`
+- `tieredstore.sqlite.pagecache.overflow.high_water.bytes`
+- `tieredstore.sqlite.malloc.count`
+- `tieredstore.sqlite.malloc.high_water.count`
+- `tieredstore.sqlite.open_connections`
+- `tieredstore.sqlite.prepared_statements`
+- `tieredstore.sqlite.high_water`
+  - tags:
+    - `metric=<name>`
+- `tieredstore.memory.subsystem.bytes`
+  - tags:
+    - `kind=heap_estimates|mapped_files|disk_caches|configured_budgets|pipeline_buffers|sqlite_runtime`
+    - `subsystem=<name>`
+- `tieredstore.memory.subsystem.count`
+  - tags:
+    - `subsystem=<name>`
+- `tieredstore.memory.tracked.bytes`
+  - tags:
+    - `kind=heap_estimate|mapped_file|disk_cache|configured_budget|pipeline_buffer|sqlite_runtime`
+- `tieredstore.memory.high_water.bytes`
+  - tags:
+    - `kind=runtime_total|runtime_subsystem`
+    - `metric=<name>`
+    - `subsystem_kind=<name>` for `kind=runtime_subsystem`
+
+### Runtime concurrency and limits
+
+- `tieredstore.concurrency.limit`
+  - tags:
+    - `gate=ingest|read|search|async_index`
+    - `kind=configured|effective`
+- `tieredstore.concurrency.active`
+  - tags:
+    - `gate=ingest|read|search|async_index`
+- `tieredstore.concurrency.queued`
+  - tags:
+    - `gate=ingest|read|search|async_index`
+- `tieredstore.upload.pending_segments`
+- `tieredstore.upload.concurrency.limit`
+- `tieredstore.auto_tune.preset_mb`
+- `tieredstore.auto_tune.effective_memory_limit_mb`
 
 ### Append and read throughput
 
@@ -296,12 +381,19 @@ Use these endpoints to inspect metrics stream state:
 
 - `GET /metrics`
   lightweight process snapshot including current in-memory series count
+- `GET /v1/server/_details`
+  configured cache / concurrency limits plus live gate, queue, upload, and detailed runtime memory state
+- `GET /v1/server/_mem`
+  compact process-memory triage view including process breakdown, SQLite runtime
+  counters, GC/high-water state, and bounded top-stream contributors
 - `GET /v1/stream/__stream_metrics__/_profile`
   current profile resource
 - `GET /v1/stream/__stream_metrics__/_schema`
-  canonical metrics schema and search config
+  canonical metrics schema for the internal stream; this intentionally has no
+  `routingKey` and no `search` section
 - `GET /v1/stream/__stream_metrics__/_index_status`
-  current `.col`, `.fts`, `.agg`, and `.mblk` family progress
+  current index state; the internal stream should report no configured routing,
+  lexicon, exact, or bundled companion families
 - `GET /v1/stream/__stream_metrics__/_details`
   combined stream/profile/schema/index view
 
@@ -327,3 +419,32 @@ The next natural expansion points are:
 - use `.mblk` more aggressively for series discovery and non-rollup aggregate
   planning
 - reduce ingest-path active-series memory pressure in the internal emitter
+
+## Heap diagnostics
+
+The runtime memory view is intentionally split into:
+
+- `process.*`
+  - direct process totals from `process.memoryUsage()`
+- `runtime.memory.subsystems.heap_estimates`
+  - bytes the server can currently attribute to in-process retained structures
+    such as the ingest queue and in-memory index-run caches
+  - index-run cache bytes are tracked against encoded run-object size so active
+    routing runs can remain hot without the estimate expanding to full JS object
+    overhead
+- `runtime.memory.subsystems.mapped_files`
+  - mmap-backed file bytes for cached segments, `.lex`, and bundled `.cix` caches
+- `runtime.memory.subsystems.disk_caches`
+  - on-disk cache occupancy for segment, run, lexicon, and companion caches
+- `runtime.memory.subsystems.configured_budgets`
+  - the configured caps those caches are meant to respect
+
+Use these together when diagnosing high RSS:
+
+- if `process.heap.used.bytes` is high and `heap_estimates` grows with it, the
+  likely issue is retained JS-side state
+- if `mapped_files` is large but `heap.used` stays modest, the process is
+  likely file-backed rather than heap-heavy
+- if RSS is high while both `heap_estimates` and `mapped_files` stay small, the
+  remaining pressure is likely SQLite, Bun runtime, or other unattributed
+  native allocations

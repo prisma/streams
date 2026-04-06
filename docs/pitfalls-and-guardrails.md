@@ -28,6 +28,16 @@ The native driver is fast but synchronous. Treat large queries as “slow I/O”
 
 Rules:
 - prepared statements only
+- never build dynamic SQL strings for repeated runtime queries when Bun
+  `Database.query()` / `Database.prepare()` can own one prepared statement
+  instead
+- fresh Bun [`Statement`](https://bun.com/reference/bun/sqlite/Statement)
+  objects must be finalized as soon as they are no longer needed; use
+  `finalize()` or disposal semantics, and do it in `finally` for
+  iterator-style scans
+- the live prepared-statement working set should stay at about a dozen or less
+  for a normal app, and anything materially above that needs a documented
+  bounded cache or a bug investigation
 - use iterators for large result sets (never `.all()` on unbounded queries)
 - batch writes with group commit
 - cap the amount of work per tick for segmenter/uploader

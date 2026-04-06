@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { LOCAL_AUTO_TUNE_PRESET_MB } from "../src/local/config";
 import { startLocalDurableStreamsServer } from "../src/local/server";
 import { getDataDir } from "../src/local/state";
 
@@ -112,6 +113,85 @@ describe("local durable streams server", () => {
 
       const segmentFiles = files.filter((f) => f.endsWith(".bin") || f.includes("segments"));
       expect(segmentFiles.length).toBe(0);
+    });
+  });
+
+  test("reports the fixed local auto-tune preset and supports routing key listing", async () => {
+    await withLocalRoot("details", async () => {
+      const server = await startLocalDurableStreamsServer({ name: "details", port: 0 });
+      try {
+        const baseUrl = server.exports.http.url;
+
+        let res = await fetch(`${baseUrl}/v1/server/_details`);
+        expect(res.status).toBe(200);
+        const serverDetails = await res.json();
+        expect(serverDetails.auto_tune).toEqual({
+          enabled: true,
+          requested_memory_mb: LOCAL_AUTO_TUNE_PRESET_MB,
+          preset_mb: LOCAL_AUTO_TUNE_PRESET_MB,
+          effective_memory_limit_mb: LOCAL_AUTO_TUNE_PRESET_MB,
+        });
+        expect(serverDetails.runtime.memory.process).toEqual({
+          rss_bytes: expect.any(Number),
+          heap_total_bytes: expect.any(Number),
+          heap_used_bytes: expect.any(Number),
+          external_bytes: expect.any(Number),
+          array_buffers_bytes: expect.any(Number),
+        });
+        expect(serverDetails.runtime.memory.process_breakdown).toEqual(
+          expect.objectContaining({
+            source: expect.any(String),
+            js_managed_bytes: expect.any(Number),
+            unattributed_rss_bytes: expect.any(Number),
+          })
+        );
+        expect(serverDetails.runtime.memory.sqlite).toEqual(
+          expect.objectContaining({
+            available: expect.any(Boolean),
+            source: expect.any(String),
+            memory_used_bytes: expect.any(Number),
+            open_connections: expect.any(Number),
+            prepared_statements: expect.any(Number),
+          })
+        );
+        expect(serverDetails.runtime.memory.high_water).toEqual(
+          expect.objectContaining({
+            process: expect.any(Object),
+            runtime_totals: expect.any(Object),
+          })
+        );
+        expect(serverDetails.runtime.memory.subsystems.configured_budgets.sqlite_cache_budget_bytes).toBeGreaterThan(0);
+
+        res = await fetch(`${baseUrl}/v1/stream/local-routing`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        });
+        expect([200, 201]).toContain(res.status);
+
+        res = await fetch(`${baseUrl}/v1/stream/local-routing/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            routingKey: { jsonPointer: "/repo", required: false },
+          }),
+        });
+        expect(res.status).toBe(200);
+
+        res = await fetch(`${baseUrl}/v1/stream/local-routing`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify([{ repo: "beta/repo" }, { repo: "alpha/repo" }, { repo: "beta/repo" }]),
+        });
+        expect(res.status).toBe(204);
+
+        res = await fetch(`${baseUrl}/v1/stream/local-routing/_routing_keys?limit=10`);
+        expect(res.status).toBe(200);
+        const routingKeys = await res.json();
+        expect(routingKeys.keys).toEqual(["alpha/repo", "beta/repo"]);
+        expect(routingKeys.coverage.complete).toBe(true);
+      } finally {
+        await server.close();
+      }
     });
   });
 });

@@ -119,6 +119,11 @@ await server.close();
 The published `@prisma/streams-local` surface is built to run on both Bun and
 Node. The full self-hosted server remains Bun-only.
 
+The local embedded runtime always applies the built-in `1024 MB` auto-tune
+preset. That keeps the local package on the current control-plane and endpoint
+surface while giving Prisma CLI a predictable cache and concurrency budget
+without extra configuration.
+
 The package smoke tests cover the local Live path under both host runtimes:
 
 - `bun run test:node-local-package`

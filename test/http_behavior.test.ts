@@ -1,12 +1,14 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Result } from "better-result";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import type { GetOptions, ObjectStore, PutResult } from "../src/objectstore/interface";
 import { encodeOffset, parseOffset } from "../src/offset";
+import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter } from "../src/segment/format";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -19,6 +21,36 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     uploadIntervalMs: 60_000,
     ...overrides,
   };
+}
+
+function writeSingleRecordSegment(
+  path: string,
+  offset: bigint,
+  appendNs: bigint,
+  routingKey: string,
+  payloadText: string
+): number {
+  const record = {
+    appendNs,
+    routingKey: new TextEncoder().encode(routingKey),
+    payload: new TextEncoder().encode(payloadText),
+  };
+  const block = encodeBlock([record]);
+  const footer = encodeFooter([
+    {
+      blockOffset: 0,
+      firstOffset: offset,
+      recordCount: 1,
+      compressedLen: block.byteLength - DSB3_HEADER_BYTES,
+      firstAppendNs: appendNs,
+      lastAppendNs: appendNs,
+    },
+  ]);
+  const bytes = new Uint8Array(block.byteLength + footer.byteLength);
+  bytes.set(block, 0);
+  bytes.set(footer, block.byteLength);
+  writeFileSync(path, bytes);
+  return bytes.byteLength;
 }
 
 async function withServer<T>(
@@ -48,6 +80,52 @@ function nextOffset(resp: Response): bigint {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+async function waitForCondition(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await check()) return;
+    await sleep(25);
+  }
+  throw new Error("timed out waiting for condition");
+}
+
+class RecordingStore implements ObjectStore {
+  readonly inner = new MockR2Store();
+  readonly getCalls: Array<{ key: string; opts?: GetOptions }> = [];
+
+  clearGetCalls(): void {
+    this.getCalls.length = 0;
+  }
+
+  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+    return this.inner.put(key, data, opts);
+  }
+
+  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+    return this.inner.putFile ? this.inner.putFile(key, path, size, opts) : this.inner.put(key, await Bun.file(path).bytes(), opts);
+  }
+
+  async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
+    this.getCalls.push({
+      key,
+      opts: opts?.range ? { range: { start: opts.range.start, end: opts.range.end } } : undefined,
+    });
+    return this.inner.get(key, opts);
+  }
+
+  async head(key: string): Promise<{ etag: string; size: number } | null> {
+    return this.inner.head(key);
+  }
+
+  async delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return this.inner.list(prefix);
+  }
 }
 
 const DETAILS_SEARCH_SCHEMA = {
@@ -221,6 +299,224 @@ describe("http behavior", () => {
       expect(body.index_status.routing_key_index?.configured).toBe(false);
       expect(body.index_status.exact_indexes).toEqual([]);
       expect(body.index_status.search_families).toEqual([]);
+    });
+  });
+
+  test("server details endpoint exposes configured limits and live runtime state", async () => {
+    await withServer(
+      {
+        autoTuneRequestedMemoryMb: 3072,
+        autoTunePresetMb: 2048,
+        autoTuneEffectiveMemoryLimitMb: 2048,
+        ingestConcurrency: 3,
+        readConcurrency: 5,
+        searchConcurrency: 2,
+        asyncIndexConcurrency: 1,
+        uploadConcurrency: 7,
+      },
+      async ({ baseUrl }) => {
+        const r = await fetch(`${baseUrl}/v1/server/_details`);
+        expect(r.status).toBe(200);
+        const body = await r.json();
+        expect(body).toMatchObject({
+          auto_tune: {
+            enabled: true,
+            requested_memory_mb: 3072,
+            preset_mb: 2048,
+            effective_memory_limit_mb: 2048,
+          },
+          configured_limits: {
+            concurrency: {
+              ingest: 3,
+              read: 5,
+              search: 2,
+              async_index: 1,
+              upload: 7,
+            },
+          },
+          runtime: {
+            memory: {
+              pressure_active: expect.any(Boolean),
+              pressure_limit_bytes: expect.any(Number),
+              last_rss_bytes: expect.any(Number),
+              max_rss_bytes: expect.any(Number),
+              process: {
+                rss_bytes: expect.any(Number),
+                heap_total_bytes: expect.any(Number),
+                heap_used_bytes: expect.any(Number),
+                external_bytes: expect.any(Number),
+                array_buffers_bytes: expect.any(Number),
+              },
+              subsystems: {
+                heap_estimates: expect.any(Object),
+                mapped_files: expect.any(Object),
+                disk_caches: expect.any(Object),
+                configured_budgets: expect.any(Object),
+                counts: expect.any(Object),
+              },
+              totals: {
+                heap_estimate_bytes: expect.any(Number),
+                mapped_file_bytes: expect.any(Number),
+                disk_cache_bytes: expect.any(Number),
+                configured_budget_bytes: expect.any(Number),
+              },
+            },
+            ingest_queue: {
+              requests: expect.any(Number),
+              bytes: expect.any(Number),
+              full: expect.any(Boolean),
+            },
+            local_backpressure: {
+              enabled: expect.any(Boolean),
+              current_bytes: expect.any(Number),
+              max_bytes: expect.any(Number),
+              over_limit: expect.any(Boolean),
+            },
+            uploads: {
+              pending_segments: expect.any(Number),
+            },
+          },
+        });
+        expect(body.runtime.concurrency.ingest).toEqual({
+          configured_limit: 3,
+          current_limit: 3,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.read).toEqual({
+          configured_limit: 5,
+          current_limit: 5,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.search).toEqual({
+          configured_limit: 2,
+          current_limit: 2,
+          active: 0,
+          queued: 0,
+        });
+        expect(body.runtime.concurrency.async_index).toEqual({
+          configured_limit: 1,
+          current_limit: 1,
+          active: 0,
+          queued: 0,
+        });
+      }
+    );
+  });
+
+  test("server mem endpoint exposes runtime bytes, leak-candidate counters, and top stream contributors", async () => {
+    await withServer({}, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/mem-a`, { method: "PUT", headers: { "content-type": "text/plain" } });
+      await fetch(`${baseUrl}/v1/stream/mem-a`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "abcdef",
+      });
+      const r = await fetch(`${baseUrl}/v1/server/_mem`);
+      expect(r.status).toBe(200);
+      const body = await r.json();
+      expect(body).toMatchObject({
+        ts: expect.any(String),
+        process: {
+          rss_bytes: expect.any(Number),
+          heap_total_bytes: expect.any(Number),
+          heap_used_bytes: expect.any(Number),
+          external_bytes: expect.any(Number),
+          array_buffers_bytes: expect.any(Number),
+        },
+        process_breakdown: {
+          source: expect.any(String),
+          js_managed_bytes: expect.any(Number),
+          js_external_non_array_buffers_bytes: expect.any(Number),
+          mapped_file_bytes: expect.any(Number),
+          sqlite_runtime_bytes: expect.any(Number),
+          unattributed_rss_bytes: expect.any(Number),
+        },
+        sqlite: {
+          available: expect.any(Boolean),
+          source: expect.any(String),
+          memory_used_bytes: expect.any(Number),
+          memory_highwater_bytes: expect.any(Number),
+          pagecache_used_slots: expect.any(Number),
+          pagecache_used_slots_highwater: expect.any(Number),
+          pagecache_overflow_bytes: expect.any(Number),
+          pagecache_overflow_highwater_bytes: expect.any(Number),
+          malloc_count: expect.any(Number),
+          malloc_count_highwater: expect.any(Number),
+          open_connections: expect.any(Number),
+          prepared_statements: expect.any(Number),
+        },
+        gc: {
+          forced_gc_count: expect.any(Number),
+          forced_gc_reclaimed_bytes_total: expect.any(Number),
+          heap_snapshots_written: expect.any(Number),
+        },
+        high_water: {
+          process: expect.any(Object),
+          process_breakdown: expect.any(Object),
+          sqlite: expect.any(Object),
+          runtime_bytes: expect.any(Object),
+          runtime_totals: expect.any(Object),
+        },
+        runtime_counts: {
+          mock_r2_in_memory_bytes: expect.any(Number),
+          mock_r2_object_count: expect.any(Number),
+          sqlite_open_connections: expect.any(Number),
+          sqlite_prepared_statements: expect.any(Number),
+        },
+        runtime_bytes: {
+          heap_estimates: expect.any(Object),
+          mapped_files: expect.any(Object),
+          disk_caches: expect.any(Object),
+          configured_budgets: expect.any(Object),
+          pipeline_buffers: expect.any(Object),
+          sqlite_runtime: expect.any(Object),
+        },
+        runtime_totals: {
+          heap_estimate_bytes: expect.any(Number),
+          mapped_file_bytes: expect.any(Number),
+          disk_cache_bytes: expect.any(Number),
+          configured_budget_bytes: expect.any(Number),
+          pipeline_buffer_bytes: expect.any(Number),
+          sqlite_runtime_bytes: expect.any(Number),
+        },
+        top_streams: {
+          local_storage_bytes: expect.any(Array),
+          pending_wal_bytes: expect.any(Array),
+          touch_journal_filter_bytes: expect.any(Array),
+          notifier_waiters: expect.any(Array),
+        },
+        counters: {
+          "tieredstore.mem.leak_candidate.segment_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.lexicon_file_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.companion_file_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.routing_run_disk_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.exact_run_disk_cache.pinned_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.active_count": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.created_total": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journals.filter_bytes_total": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.journal.default_filter_bytes": 4 * (1 << 22),
+          "tieredstore.mem.leak_candidate.touch.maps.fine_lag_coarse_only_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.touch_mode_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.fine_token_bucket_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.hot_fine_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.lag_source_offset_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.restricted_template_bucket_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.runtime_totals_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.touch.maps.zero_row_backlog_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.last_seen_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.dirty_last_seen_entries": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_template.rate_state_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.live_metrics.counter_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.notifier.latest_seq_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.notifier.details_version_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.metrics.series": expect.any(Number),
+          "tieredstore.mem.leak_candidate.secondary_index.stream_idle_ticks_streams": expect.any(Number),
+          "tieredstore.mem.leak_candidate.mock_r2.in_memory_bytes": expect.any(Number),
+          "tieredstore.mem.leak_candidate.mock_r2.object_count": expect.any(Number),
+        },
+      });
     });
   });
 
@@ -580,8 +876,8 @@ describe("http behavior", () => {
     });
   });
 
-  test("memory backpressure rejects streaming request bodies promptly", { timeout: 5_000 }, async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-http-memory-backpressure-"));
+  test("memory pressure state no longer rejects append requests", { timeout: 5_000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-memory-pressure-signal-"));
     const app = createApp(makeConfig(root), new MockR2Store());
     const server = Bun.serve({ port: 0, fetch: app.fetch });
     const baseUrl = `http://localhost:${server.port}`;
@@ -592,12 +888,13 @@ describe("http behavior", () => {
       });
       expect(res.status).toBe(201);
 
-      const originalShouldAllow = app.deps.memory.shouldAllow.bind(app.deps.memory);
-      (app.deps.memory as any).shouldAllow = () => false;
+      const originalIsOverLimit = app.deps.memory.isOverLimit.bind(app.deps.memory);
+      (app.deps.memory as any).isOverLimit = () => true;
 
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("hello"));
+          controller.close();
         },
       });
 
@@ -615,14 +912,11 @@ describe("http behavior", () => {
       ]);
       const elapsed = Date.now() - start;
 
-      expect(res.status).toBe(429);
+      expect(res.status).toBe(204);
       expect(elapsed).toBeLessThan(1_500);
-      expect(res.headers.get("retry-after")).toBe("1");
-      expect(await res.json()).toEqual({
-        error: { code: "memory_backpressure", message: "server memory backpressure" },
-      });
+      expect(res.headers.get("retry-after")).toBeNull();
 
-      (app.deps.memory as any).shouldAllow = originalShouldAllow;
+      (app.deps.memory as any).isOverLimit = originalIsOverLimit;
     } finally {
       server.stop();
       app.close();
@@ -775,6 +1069,204 @@ describe("http behavior", () => {
       expect(r.status).toBe(400);
     });
   });
+
+  test(
+    "keyed reads download and cache whole remote segments instead of range-reading them",
+    { timeout: 15_000 },
+    async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-keyed-cache-"));
+    const cfg = makeConfig(root, {
+      ingestFlushIntervalMs: 1,
+      indexCheckIntervalMs: 10,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      segmentTargetRows: 2,
+      segmentMaxBytes: 1024 * 1024,
+      segmentCacheMaxBytes: 32 * 1024 * 1024,
+    });
+    const store = new RecordingStore();
+    const app = createApp(cfg, store);
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    try {
+      let r = await fetch(`${baseUrl}/v1/stream/keyed-cache`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+      expect([200, 201]).toContain(r.status);
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache/_schema`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ routingKey: { jsonPointer: "/k", required: true } }),
+      });
+      expect(r.status).toBe(200);
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([
+          { k: "0--key/alpha", x: 1 },
+          { k: "0--key/boomerang", x: 2 },
+        ]),
+      });
+      expect(r.status).toBe(204);
+
+      await waitForCondition(async () => {
+        const details = await fetch(`${baseUrl}/v1/stream/keyed-cache/_details`);
+        if (!details.ok) return false;
+        const body = await details.json();
+        return body.stream.uploaded_segment_count === 1;
+      });
+
+      rmSync(join(root, "cache"), { recursive: true, force: true });
+      store.clearGetCalls();
+
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache?offset=-1&format=json&key=${encodeURIComponent("0--key/boomerang")}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ k: "0--key/boomerang", x: 2 }]);
+
+      const firstSegmentGets = store.getCalls.filter((call) => call.key.endsWith(".bin"));
+      expect(firstSegmentGets.length).toBeGreaterThan(0);
+      expect(firstSegmentGets.every((call) => call.opts?.range == null)).toBe(true);
+
+      store.clearGetCalls();
+      r = await fetch(`${baseUrl}/v1/stream/keyed-cache?offset=-1&format=json&key=${encodeURIComponent("0--key/boomerang")}`);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual([{ k: "0--key/boomerang", x: 2 }]);
+      expect(store.getCalls.filter((call) => call.key.endsWith(".bin"))).toHaveLength(0);
+    } finally {
+      server.stop();
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+    }
+  );
+
+  test(
+    "planned sealed scans do not walk every indexed sealed segment when the candidate set is small",
+    { timeout: 15_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-http-keyed-plan-"));
+      const app = createApp(makeConfig(root), new MockR2Store());
+
+      try {
+        for (let i = 0; i < 40; i++) {
+          if (i === 0) {
+            app.deps.db.ensureStream("keyed-plan", { contentType: "application/octet-stream" });
+          }
+          app.deps.db.createSegmentRow({
+            segmentId: `seg-${i}`,
+            stream: "keyed-plan",
+            segmentIndex: i,
+            startOffset: BigInt(i),
+            endOffset: BigInt(i),
+            blockCount: 1,
+            lastAppendMs: BigInt(i + 1),
+            payloadBytes: 1n,
+            sizeBytes: 1,
+            localPath: "",
+          });
+        }
+
+        const originalFindSegmentForOffset = app.deps.db.findSegmentForOffset.bind(app.deps.db);
+        let findSegmentCalls = 0;
+        (app.deps.db as any).findSegmentForOffset = (stream: string, offset: bigint) => {
+          findSegmentCalls += 1;
+          return originalFindSegmentForOffset(stream, offset);
+        };
+
+        const planned = (app.deps.reader as any).planSealedReadSegments(
+          "keyed-plan",
+          0n,
+          39n,
+          new Set([7]),
+          16,
+          "asc"
+        );
+        expect(planned).not.toBeNull();
+        expect(planned.segments.map((seg: any) => seg.segment_index)).toEqual([7, ...Array.from({ length: 24 }, (_, i) => i + 16)]);
+        const reversePlanned = (app.deps.reader as any).planSealedReadSegments(
+          "keyed-plan",
+          0n,
+          39n,
+          new Set([7]),
+          16,
+          "desc"
+        );
+        expect(reversePlanned).not.toBeNull();
+        expect(reversePlanned.segments.map((seg: any) => seg.segment_index)).toEqual([
+          ...Array.from({ length: 24 }, (_, i) => 39 - i),
+          7,
+        ]);
+        expect(findSegmentCalls).toBeLessThanOrEqual(8);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test(
+    "seekOffsetByTimestamp with a key does not walk every indexed sealed segment when the routing candidate set is small",
+    { timeout: 15_000 },
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-http-seek-plan-"));
+      const app = createApp(makeConfig(root), new MockR2Store());
+
+      try {
+        app.deps.db.ensureStream("seek-plan", { contentType: "application/octet-stream" });
+        for (let i = 0; i < 40; i++) {
+          const localPath = join(root, `seg-${i}.bin`);
+          const routingKey = i === 7 ? "needle" : `other-${i}`;
+          const sizeBytes = writeSingleRecordSegment(localPath, BigInt(i), BigInt(i + 1), routingKey, `payload-${i}`);
+          app.deps.db.commitSealedSegment({
+            segmentId: `seg-${i}`,
+            stream: "seek-plan",
+            segmentIndex: i,
+            startOffset: BigInt(i),
+            endOffset: BigInt(i),
+            blockCount: 1,
+            lastAppendMs: BigInt(i + 1),
+            sizeBytes,
+            localPath,
+            payloadBytes: BigInt(sizeBytes),
+            rowsSealed: 1n,
+          });
+        }
+
+        const originalFindSegmentForOffset = app.deps.db.findSegmentForOffset.bind(app.deps.db);
+        let findSegmentCalls = 0;
+        (app.deps.db as any).findSegmentForOffset = (stream: string, offset: bigint) => {
+          findSegmentCalls += 1;
+          return originalFindSegmentForOffset(stream, offset);
+        };
+
+        const originalResolveCandidateSegments = (app.deps.reader as any).resolveCandidateSegments.bind(app.deps.reader);
+        (app.deps.reader as any).resolveCandidateSegments = async (
+          stream: string,
+          keyBytes: Uint8Array | null,
+          filter: unknown
+        ) => {
+          if (stream === "seek-plan" && keyBytes && new TextDecoder().decode(keyBytes) === "needle" && filter == null) {
+            return { segments: new Set([7]), indexedThrough: 16 };
+          }
+          return originalResolveCandidateSegments(stream, keyBytes, filter);
+        };
+
+        const res = await app.deps.reader.seekOffsetByTimestampResult("seek-plan", 0n, "needle");
+        expect(Result.isOk(res)).toBe(true);
+        if (Result.isOk(res)) {
+          expect(res.value).toBe(encodeOffset(0, 6n));
+        }
+        expect(findSegmentCalls).toBeLessThanOrEqual(4);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   test("json schema date-time format is enforced on append", async () => {
     await withServer({}, async ({ baseUrl }) => {

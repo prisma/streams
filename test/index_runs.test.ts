@@ -57,6 +57,7 @@ describe("index runs", () => {
 
     const cfg = makeConfig(root, {
       segmentMaxBytes: payload.byteLength * rowsPerSegment,
+      segmentTargetRows: rowsPerSegment,
       segmentCheckIntervalMs: 25,
       uploadIntervalMs: 25,
       uploadConcurrency: 2,

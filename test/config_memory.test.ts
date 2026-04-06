@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config";
-import { deriveMemoryGuardHeadroomBytes, deriveMemoryGuardLimitBytes } from "../src/memory";
+import { deriveMemoryPressureHeadroomBytes, deriveMemoryPressureLimitBytes } from "../src/memory";
 
 const KEYS = [
   "DS_MEMORY_LIMIT_MB",
@@ -51,22 +51,24 @@ describe("config memory tuning", () => {
     expect(cfg.heapSnapshotPath).toBe("/tmp/streams.heapsnapshot");
   });
 
-  test("clamps the memory guard to a safe fraction of host memory", () => {
+  test("clamps the memory-pressure threshold to a safe fraction of host memory", () => {
     const hostTotalBytes = 4 * 1024 * 1024 * 1024;
-    expect(deriveMemoryGuardLimitBytes(0, hostTotalBytes)).toBe(0);
-    expect(deriveMemoryGuardLimitBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(2 * 1024 * 1024 * 1024);
-    expect(deriveMemoryGuardLimitBytes(5 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
+    expect(deriveMemoryPressureLimitBytes(0, hostTotalBytes)).toBe(0);
+    expect(deriveMemoryPressureLimitBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(2 * 1024 * 1024 * 1024);
+    expect(deriveMemoryPressureLimitBytes(5 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
       Math.floor(hostTotalBytes * 0.7)
     );
   });
 
-  test("derives host-memory headroom for low-memory guards", () => {
+  test("derives host-memory headroom for low-memory pressure thresholds", () => {
     const hostTotalBytes = 4 * 1024 * 1024 * 1024;
-    expect(deriveMemoryGuardHeadroomBytes(0, hostTotalBytes)).toBe(0);
-    expect(deriveMemoryGuardHeadroomBytes(256 * 1024 * 1024, hostTotalBytes)).toBe(256 * 1024 * 1024);
-    expect(deriveMemoryGuardHeadroomBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
+    expect(deriveMemoryPressureHeadroomBytes(0, hostTotalBytes)).toBe(0);
+    expect(deriveMemoryPressureHeadroomBytes(256 * 1024 * 1024, hostTotalBytes)).toBe(256 * 1024 * 1024);
+    expect(deriveMemoryPressureHeadroomBytes(2 * 1024 * 1024 * 1024, hostTotalBytes)).toBe(
       Math.floor(hostTotalBytes * 0.15)
     );
-    expect(deriveMemoryGuardHeadroomBytes(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024)).toBe(2 * 1024 * 1024 * 1024);
+    expect(deriveMemoryPressureHeadroomBytes(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024)).toBe(
+      2 * 1024 * 1024 * 1024
+    );
   });
 });

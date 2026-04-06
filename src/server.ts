@@ -67,8 +67,15 @@ function applyAutoTune(overrideMb: number | null): void {
     "DS_WORKER_SQLITE_CACHE_MB",
     "DS_WORKER_SQLITE_CACHE_BYTES",
     "DS_INDEX_RUN_MEM_CACHE_BYTES",
+    "DS_LEXICON_INDEX_CACHE_MAX_BYTES",
     "DS_INGEST_MAX_BATCH_BYTES",
     "DS_INGEST_MAX_QUEUE_BYTES",
+    "DS_INGEST_CONCURRENCY",
+    "DS_READ_CONCURRENCY",
+    "DS_SEARCH_CONCURRENCY",
+    "DS_ASYNC_INDEX_CONCURRENCY",
+    "DS_SEARCH_COMPANION_TOC_CACHE_BYTES",
+    "DS_SEARCH_COMPANION_SECTION_CACHE_BYTES",
     "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
     "DS_SEARCH_COMPANION_YIELD_BLOCKS",
   ];
@@ -87,14 +94,24 @@ function applyAutoTune(overrideMb: number | null): void {
   const tune: AutoTuneConfig = tuneForPreset(preset);
 
   const memoryLimitMb = memoryLimitForPreset(preset);
+  process.env.DS_AUTO_TUNE_REQUESTED_MB = String(memMb);
+  process.env.DS_AUTO_TUNE_PRESET_MB = String(preset);
+  process.env.DS_AUTO_TUNE_EFFECTIVE_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_SEGMENT_MAX_BYTES = String(tune.segmentMaxMiB * 1024 * 1024);
   process.env.DS_SEGMENT_TARGET_ROWS = String(tune.segmentTargetRows);
   process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
   process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
   process.env.DS_INDEX_RUN_MEM_CACHE_BYTES = String(tune.indexMemMb * 1024 * 1024);
+  process.env.DS_LEXICON_INDEX_CACHE_MAX_BYTES = String(tune.lexiconIndexCacheMb * 1024 * 1024);
+  process.env.DS_SEARCH_COMPANION_TOC_CACHE_BYTES = String(tune.searchCompanionTocCacheMb * 1024 * 1024);
+  process.env.DS_SEARCH_COMPANION_SECTION_CACHE_BYTES = String(tune.searchCompanionSectionCacheMb * 1024 * 1024);
   process.env.DS_INGEST_MAX_BATCH_BYTES = String(tune.ingestBatchMb * 1024 * 1024);
   process.env.DS_INGEST_MAX_QUEUE_BYTES = String(tune.ingestQueueMb * 1024 * 1024);
+  process.env.DS_INGEST_CONCURRENCY = String(tune.ingestConcurrency);
+  process.env.DS_READ_CONCURRENCY = String(tune.readConcurrency);
+  process.env.DS_SEARCH_CONCURRENCY = String(tune.searchConcurrency);
+  process.env.DS_ASYNC_INDEX_CONCURRENCY = String(tune.asyncIndexConcurrency);
   process.env.DS_INDEX_BUILD_CONCURRENCY = String(tune.indexBuildConcurrency);
   process.env.DS_INDEX_COMPACT_CONCURRENCY = String(tune.indexCompactConcurrency);
   process.env.DS_SEGMENTER_WORKERS = String(tune.segmenterWorkers);
@@ -143,6 +160,30 @@ function applyAutoTune(overrideMb: number | null): void {
     )}`
   );
   console.log(
+    `DS_LEXICON_INDEX_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).lexiconIndexCacheMb,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEARCH_COMPANION_TOC_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).searchCompanionTocCacheMb,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEARCH_COMPANION_SECTION_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).searchCompanionSectionCacheMb,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
     `DS_INGEST_MAX_BATCH_MB presets: ${formatPresetList(
       presets,
       preset,
@@ -155,6 +196,38 @@ function applyAutoTune(overrideMb: number | null): void {
       presets,
       preset,
       (p) => tuneForPreset(p).ingestQueueMb,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_INGEST_CONCURRENCY presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).ingestConcurrency,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_READ_CONCURRENCY presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).readConcurrency,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEARCH_CONCURRENCY presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).searchConcurrency,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_ASYNC_INDEX_CONCURRENCY presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).asyncIndexConcurrency,
       (v) => String(v)
     )}`
   );

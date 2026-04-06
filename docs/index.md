@@ -43,10 +43,28 @@ and tooling.
 ## Operations
 
 - [operational-notes.md](./operational-notes.md) — tuning knobs and stall diagnosis
+- [memory-assumption.md](./memory-assumption.md) — ranked working assumptions for explaining RSS growth from the current memory observability surfaces
 - [recovery-integrity-runbook.md](./recovery-integrity-runbook.md) — recovery steps and correctness checks
 - [segment-performance.md](./segment-performance.md) — segment read-path performance notes
 - [routing-key-performance.md](./routing-key-performance.md) — routing-key performance status and pointers
 - [live-load-tests.md](./live-load-tests.md) — black-box load tests for the live / touch system
+- [memory-observability-mmap-pinned-caches.md](./memory-observability/memory-observability-mmap-pinned-caches.md) — leak-candidate counters for pinned mmap caches
+- [memory-observability-server-mem-endpoint.md](./memory-observability/memory-observability-server-mem-endpoint.md) — `GET /v1/server/_mem` payload, runtime byte groups, and top-stream views
+- [memory-observability-process-breakdown.md](./memory-observability/memory-observability-process-breakdown.md) — anon/file/shmem RSS attribution and unattributed memory counters
+- [memory-observability-sqlite-runtime.md](./memory-observability/memory-observability-sqlite-runtime.md) — SQLite allocator/runtime counters and current limitations
+- [memory-observability-ingest-pipeline-buffers.md](./memory-observability/memory-observability-ingest-pipeline-buffers.md) — live segmenter/uploader buffer attribution
+- [memory-observability-gc-high-water.md](./memory-observability/memory-observability-gc-high-water.md) — forced GC effectiveness and high-water marks with timestamps
+- [memory-observability-top-stream-contributors.md](./memory-observability/memory-observability-top-stream-contributors.md) — per-stream contributor summaries for local storage, WAL, touch, and notifier state
+- [memory-observability-touch-journal-lifecycle.md](./memory-observability/memory-observability-touch-journal-lifecycle.md) — leak-candidate counters for active touch journals
+- [memory-observability-touch-journal-default-footprint.md](./memory-observability/memory-observability-touch-journal-default-footprint.md) — leak-candidate counters for touch journal filter footprint
+- [memory-observability-state-protocol-journal-creation.md](./memory-observability/memory-observability-state-protocol-journal-creation.md) — leak-candidate counters for journal creation churn
+- [memory-observability-touch-manager-stream-maps.md](./memory-observability/memory-observability-touch-manager-stream-maps.md) — leak-candidate counters for touch manager stream maps
+- [memory-observability-live-template-registry-maps.md](./memory-observability/memory-observability-live-template-registry-maps.md) — leak-candidate counters for template registry memory maps
+- [memory-observability-live-metrics-counters-map.md](./memory-observability/memory-observability-live-metrics-counters-map.md) — leak-candidate counters for live metrics map cardinality
+- [memory-observability-stream-notifier-version-maps.md](./memory-observability/memory-observability-stream-notifier-version-maps.md) — leak-candidate counters for notifier version maps
+- [memory-observability-metrics-series-cardinality.md](./memory-observability/memory-observability-metrics-series-cardinality.md) — leak-candidate counters for internal metrics series cardinality
+- [memory-observability-secondary-index-idle-map.md](./memory-observability/memory-observability-secondary-index-idle-map.md) — leak-candidate counters for secondary index idle map cardinality
+- [memory-observability-local-mock-r2-memory.md](./memory-observability/memory-observability-local-mock-r2-memory.md) — leak-candidate counters for local MockR2 in-memory usage
 
 ## Development And Release
 

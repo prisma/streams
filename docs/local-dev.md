@@ -9,6 +9,8 @@ It is different from the full self-hosted server:
 - no object-store uploads
 - same HTTP API shape for development use
 - optimized for loopback and embedded tooling, not hostile-network deployment
+- fixed built-in `1024 MB` auto-tune preset so embedded local servers have
+  predictable cache and concurrency limits
 
 ## Supported Package Surface
 
@@ -70,6 +72,22 @@ console.log(server.exports.sqlite.path);
 
 await server.close();
 ```
+
+The embedded local runtime exposes the same server inspection endpoint as the
+full server:
+
+- `GET /v1/server/_details`
+
+In local mode this reports:
+
+- `auto_tune.enabled = true`
+- `auto_tune.preset_mb = 1024`
+- the effective local cache and concurrency settings derived from that preset
+
+The same package surface also includes the current stream subresources, such as
+alphabetical routing-key listing via:
+
+- `GET /v1/stream/{name}/_routing_keys`
 
 ## Daemon Integration
 

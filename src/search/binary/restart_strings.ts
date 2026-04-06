@@ -30,6 +30,10 @@ export class RestartStringTableView {
     }
   }
 
+  count(): number {
+    return this.termCount;
+  }
+
   terms(): string[] {
     if (this.termsCache) return this.termsCache;
     try {
@@ -68,7 +72,7 @@ export class RestartStringTableView {
   }
 
   expandPrefixResult(prefix: string, limit: number): Result<number[], { message: string }> {
-    const start = this.lowerBound(prefix);
+    const start = this.lowerBoundOrdinal(prefix);
     const matches: number[] = [];
     for (let index = start; index < this.termCount; index++) {
       const term = this.decodeTermAt(index);
@@ -82,7 +86,7 @@ export class RestartStringTableView {
     return Result.ok(matches);
   }
 
-  private lowerBound(target: string): number {
+  lowerBoundOrdinal(target: string): number {
     let low = 0;
     let high = this.termCount;
     while (low < high) {
@@ -92,6 +96,10 @@ export class RestartStringTableView {
       else high = mid;
     }
     return low;
+  }
+
+  termAt(termOrdinal: number): string | null {
+    return this.decodeTermAt(termOrdinal);
   }
 
   private decodeTermAt(termOrdinal: number): string | null {

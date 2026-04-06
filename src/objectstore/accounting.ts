@@ -13,6 +13,7 @@ function classifyKey(key: string): ClassifiedRequest | null {
   if (rest === "manifest.json") return { streamHash, artifact: "manifest" };
   if (rest === "schema-registry.json") return { streamHash, artifact: "schema_registry" };
   if (rest.startsWith("index/")) return { streamHash, artifact: "routing_index" };
+  if (rest.startsWith("lexicon/")) return { streamHash, artifact: "routing_key_lexicon" };
   if (rest.startsWith("secondary-index/")) return { streamHash, artifact: "exact_index" };
   if (rest.startsWith("segments/") && rest.endsWith(".bin")) return { streamHash, artifact: "segment" };
   if (rest.startsWith("segments/") && rest.endsWith(".cix")) return { streamHash, artifact: "bundled_companion" };
@@ -27,6 +28,7 @@ function classifyListPrefix(prefix: string): ClassifiedRequest | null {
   const [, streamHash, rest = ""] = match;
   if (rest === "" || rest === "segments") return { streamHash, artifact: "segment" };
   if (rest === "index") return { streamHash, artifact: "routing_index" };
+  if (rest.startsWith("lexicon")) return { streamHash, artifact: "routing_key_lexicon" };
   if (rest.startsWith("secondary-index")) return { streamHash, artifact: "exact_index" };
   return { streamHash, artifact: "meta" };
 }

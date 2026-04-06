@@ -56,6 +56,7 @@ implementation.
 - `GET  /v1/stream/{name}/_search?q=...` search
 - `POST /v1/stream/{name}/_search` search
 - `POST /v1/stream/{name}/_aggregate` aggregate
+- `GET  /v1/stream/{name}/_routing_keys` list routing keys alphabetically
 - `GET  /v1/stream/{name}/_index_status` get per-stream index status
 - `GET  /v1/stream/{name}/_details` get combined stream details
 
@@ -63,8 +64,17 @@ implementation.
 
 - `GET /v1/streams` list streams
 
+### 2.6 Server inspection
+
+- `GET /v1/server/_details` get server-scoped configured limits and live runtime state
+
 System streams (reserved names):
 - `__stream_metrics__` (metrics; see `metrics.md`)
+  - uses the `metrics` profile for canonical normalization
+  - intentionally installs a lean internal schema registry with no `routingKey`
+    and no `search` config
+  - therefore does not build routing, lexicon, exact, or bundled companion
+    families for the internal system stream
 - `__stream_stats__` (segment stats; see `internal/STREAM_STATS.md`) (proposal
   only; not implemented in the current Bun + TypeScript server)
 - `__registry__` (stream lifecycle log; recommended to make listing cheap)
@@ -279,16 +289,6 @@ Headers:
 
 - `201 Created` if created
 - `200 OK` if already exists (idempotent)
-- `429 Too Many Requests` if the server is under memory backpressure, with:
-
-```json
-{
-  "error": {
-    "code": "memory_backpressure",
-    "message": "server memory backpressure"
-  }
-}
-```
 
 Profile rule:
 
@@ -335,21 +335,8 @@ If `Stream-Seq` is provided:
 
 - `200 OK`
 - Must include `Stream-Next-Offset` (the offset of the last appended entry).
-- `429 Too Many Requests` may be returned before request-body decode when the
-  server is under memory backpressure, with:
-
-```json
-{
-  "error": {
-    "code": "memory_backpressure",
-    "message": "server memory backpressure"
-  }
-}
-```
-
-- when the server rejects an append early for memory backpressure, it cancels
-  the request body so clients do not remain stuck uploading a body that the
-  server has already decided not to process
+- `429 Too Many Requests` may be returned when the append queue or local
+  backlog budget is full
 
 Current implementation timeout behavior:
 
@@ -429,6 +416,68 @@ Rules:
 
 ## 7B. Stream inspection resources
 
+### Routing-key listing
+
+`GET /v1/stream/{name}/_routing_keys`
+
+Query parameters:
+
+- `limit` optional positive integer, default `100`, maximum `500`
+- `after` optional exclusive cursor; when present, only routing keys strictly
+  greater than `after` are returned
+
+Response fields:
+
+- `stream`
+- `source`
+- `took_ms`
+- `coverage`
+- `timing`
+- `keys`
+- `next_after`
+
+Rules:
+
+- this endpoint is read-only
+- it is supported only when the installed schema declares `routingKey`
+- keys are returned in strict ascending lexicographic order
+- keys are distinct
+- `next_after` is `null` when the page is exhausted; otherwise the client uses
+  the returned value as the next request’s `after`
+- the server uses the routing-key lexicon run family for the indexed uploaded
+  prefix
+- once any lexicon coverage exists, uploaded sealed segments beyond the indexed
+  prefix are not scanned in the request path
+- the request path may scan at most one sealed segment from the uncovered local
+  tail; the WAL tail is still scanned directly
+- before the first `.lex` run exists, the request path may scan at most one
+  uploaded sealed segment plus the local tail and WAL
+- when uncovered uploaded history exists, the response is a best-effort
+  alphabetical page over the indexed prefix plus the directly scanned local
+  tail / WAL
+- `coverage.complete=false` means uncovered uploaded history may still contain
+  routing keys that sort before or between the returned keys
+- `next_after` may still be non-null when `coverage.complete=false`; clients may
+  continue paging, but they must treat cursors as best-effort while uploaded
+  lexicon lag remains
+- `coverage.indexed_segments` reports the uploaded prefix covered by lexicon
+  runs
+- `coverage.scanned_uploaded_segments`, `coverage.scanned_local_segments`, and
+  `coverage.scanned_wal_rows` report the uncovered data that had to be scanned
+  directly
+- `coverage.possible_missing_uploaded_segments` and
+  `coverage.possible_missing_local_segments` report uncovered sealed segments
+  that were not scanned in-request
+- `timing.lexicon_run_get_ms`, `timing.lexicon_decode_ms`, and
+  `timing.lexicon_enumerate_ms` break down indexed-prefix serving time
+- `timing.lexicon_merge_ms` breaks down the final indexed/fallback merge
+- `timing.fallback_scan_ms`, `timing.fallback_segment_get_ms`, and
+  `timing.fallback_wal_scan_ms` break down direct fallback work
+- `timing.lexicon_runs_loaded` reports how many active `.lex` runs were loaded
+  for this page
+- the indexed side fetches only a page-sized candidate set from active runs; it
+  does not expand the indexed candidate count based on fallback key volume
+
 ### Index status
 
 `GET /v1/stream/{name}/_index_status`
@@ -440,6 +489,7 @@ Response fields:
 - `segments`
 - `manifest`
 - `routing_key_index`
+- `routing_key_lexicon`
 - `exact_indexes`
 - `bundled_companions`
 - `search_families`
@@ -450,6 +500,7 @@ Rules:
 - it reports current per-stream segment and manifest state
 - it reports async index/search-family progress for the current stream
 - `routing_key_index` covers the routing-key tiered index
+- `routing_key_lexicon` covers the alphabetical routing-key lexicon run family
 - `exact_indexes` covers the internal exact-match secondary family derived from
   schema `search.fields`
 - `exact_indexes[*].stale_configuration` is true when a configured exact field
@@ -460,10 +511,11 @@ Rules:
   `agg`, and `mblk`
 - `manifest.last_uploaded_size_bytes` is the uploaded manifest object size as a
   string when known
-- `routing_key_index`, each `exact_indexes[*]`, `bundled_companions`, and each
+- `routing_key_index`, `routing_key_lexicon`, each `exact_indexes[*]`,
+  `bundled_companions`, and each
   `search_families[*]` report `bytes_at_rest`
-- `routing_key_index`, each `exact_indexes[*]`, and each `search_families[*]`
-  report `lag_segments` and `lag_ms`
+- `routing_key_index`, `routing_key_lexicon`, each `exact_indexes[*]`, and each
+  `search_families[*]` report `lag_segments` and `lag_ms`
 - `search_families[*].contiguous_covered_segment_count` is the contiguous
   uploaded prefix covered by that bundled section
 
@@ -496,6 +548,11 @@ Rules:
   segments, indexes, and manifest/schema metadata
 - `storage.local_storage` reports current local retained bytes for:
   WAL, pending sealed segments, caches, and the shared SQLite footprint
+  - `segment_cache_bytes`, `routing_index_cache_bytes`,
+    `exact_index_cache_bytes`, `lexicon_index_cache_bytes`, and
+    `companion_cache_bytes` are local on-disk cache occupancy, not process heap
+  - segment and index caches are seeded on first read of a remote object; they
+    may increase even when the request was initiated by a read-only UI flow
 - `storage.companion_families` splits bundled companion bytes by section family
   (`col`, `fts`, `agg`, `mblk`)
 - `object_store_requests` reports node-local per-stream object-store request
@@ -523,6 +580,117 @@ Conditional and long-poll behavior:
 
 The same conditional-long-poll contract also applies to
 `GET /v1/stream/{name}/_index_status`.
+
+### Server details
+
+`GET /v1/server/_details`
+
+Response fields:
+
+- `auto_tune`
+- `configured_limits`
+- `runtime`
+
+Rules:
+
+- this endpoint is read-only
+- it is server-scoped, not stream-scoped
+- `auto_tune` reports whether `--auto-tune` was active for this process and, when present:
+  - `requested_memory_mb`
+  - `preset_mb`
+  - `effective_memory_limit_mb`
+- `configured_limits` reports the currently configured budgets and caps for:
+  - caches
+  - concurrency
+  - ingest queue and backlog limits
+  - segmenting and upload settings
+  - request / object-store timeouts
+  - memory-pressure threshold
+- `runtime` reports current live state for:
+  - memory pressure and RSS
+  - current process memory usage:
+    - `rss_bytes`
+    - `heap_total_bytes`
+    - `heap_used_bytes`
+    - `external_bytes`
+    - `array_buffers_bytes`
+  - process-level attribution:
+    - `process_breakdown`
+  - SQLite runtime allocator state:
+    - `sqlite`
+  - forced-GC and heap-snapshot state:
+    - `gc`
+  - tracked runtime memory subsystems, grouped as:
+    - `heap_estimates`
+    - `mapped_files`
+    - `disk_caches`
+    - `configured_budgets`
+    - `pipeline_buffers`
+    - `sqlite_runtime`
+    - `counts`
+  - subtotal rollups for the tracked groups:
+    - `heap_estimate_bytes`
+    - `mapped_file_bytes`
+    - `disk_cache_bytes`
+    - `configured_budget_bytes`
+    - `pipeline_buffer_bytes`
+    - `sqlite_runtime_bytes`
+  - high-water marks with timestamps:
+    - `high_water`
+  - ingest queue fill
+  - local backlog pressure
+  - pending uploads
+  - the effective concurrency gate state for ingest, read, search, and async index
+  - bounded top-N stream contributors for local storage, retained WAL, touch journals, and notifier waiters:
+    - `top_streams`
+- `runtime.memory.subsystems.heap_estimates` is the operator-facing view of
+  retained in-process bytes that the server can currently attribute directly,
+  such as queued ingest payload bytes and in-memory index-run caches.
+- `runtime.memory.subsystems.mapped_files` reports file-backed mmap bytes such
+  as cached segment files, routing-key lexicon runs, and bundled companion
+  files. These contribute to RSS differently from JS heap.
+- `runtime.memory.subsystems.disk_caches` and
+  `runtime.memory.subsystems.configured_budgets` are included so diagnostics
+  UIs can contrast retained heap-like bytes with on-disk cache occupancy and
+  configured cache budgets.
+- `runtime.memory.subsystems.pipeline_buffers` reports current in-flight
+  segmenter/uploader bytes rather than retained caches.
+- `runtime.memory.subsystems.sqlite_runtime` reports SQLite process-global
+  allocator bytes from `sqlite3_status64()` when available.
+- `runtime.memory.process_breakdown.unattributed_rss_bytes` is the remaining
+  RSS after subtracting JS-managed bytes, tracked mapped-file bytes, and tracked
+  SQLite runtime bytes. It is a conservative approximation, not an exact
+  ownership map.
+- this endpoint is intended for operators and diagnostics UIs that need one cheap summary of the node's configured and effective runtime limits
+
+### Server memory snapshot
+
+`GET /v1/server/_mem`
+
+Response fields:
+
+- `ts`
+- `process`
+- `process_breakdown`
+- `sqlite`
+- `gc`
+- `high_water`
+- `counters`
+- `runtime_counts`
+- `runtime_bytes`
+- `runtime_totals`
+- `top_streams`
+
+Rules:
+
+- this endpoint is read-only
+- it is server-scoped, not stream-scoped
+- it is the compact memory-triage view, whereas `/_details` is the broader node descriptor
+- `runtime_bytes` mirrors the byte-bearing memory subsystem groups without the
+  `counts` section
+- `runtime_totals` mirrors the byte rollups for those groups
+- `top_streams` is bounded current state only; it is not part of the metrics stream because
+  emitting top-N stream names as metrics would create unbounded series cardinality
 
 ---
 
@@ -558,6 +726,10 @@ The same conditional-long-poll contract also applies to
 ### 8.4 Key-filtered reads
 
 - `key=<k>` or `/pk/<k>` selects only entries whose routing key equals `<k>`.
+- If the routing index has a candidate segment set, the server may plan the
+  sealed scan up front and read only candidate indexed segments plus the
+  uncovered uploaded tail.
+- `since + key` cursor seeking may use the same planned sealed scan.
 
 Correctness requirement:
 - Key-filtering is exact: false positives from bloom/index must still validate actual key matches.
@@ -695,6 +867,9 @@ Current request-path behavior under active ingest:
 - if the returned page may not include every visible match, `total.relation` is
   `gte`
 - `/_search` does not support request-time exact total-hit counting
+- when exact clauses provide a candidate segment set, `/_search` may plan the
+  sealed segment scan up front instead of iterating the full indexed sealed
+  prefix one segment at a time
 - if the request hits the effective timeout budget, `/_search` returns `408`
   with a valid partial search result body instead of keeping the request open
 - timeout checks are cooperative rather than preemptive, so clients should treat
@@ -782,6 +957,14 @@ Headers:
 `DELETE /v1/stream/{name}`
 
 - Deletes/tombstones the stream.
+- Removes the stream's local acceleration state in the same local delete
+  transaction:
+  - routing-key index state and runs
+  - exact secondary index state and runs
+  - routing-key lexicon state and runs
+  - bundled search companion plans and per-segment companion catalog rows
+- Does not synchronously delete already-published segment, manifest, schema, or
+  index objects from remote object storage.
 - Must be idempotent.
 
 ---
@@ -795,7 +978,7 @@ Recommended status codes:
 - `409 Conflict`: `Stream-Seq` mismatch
 - `410 Gone`: expired stream (or `404` if you prefer hiding existence; choose one and keep it consistent)
 - `413 Payload Too Large`: append body too large
-- `429 Too Many Requests`: transient backpressure / memory budget exhausted
+- `429 Too Many Requests`: transient queue or backlog backpressure
 - `503 Service Unavailable`: transient server unavailability, such as shutdown
 - `500 Internal Server Error`: unexpected errors
 

@@ -37,6 +37,7 @@ export class RuntimeMemorySampler {
   private nextPhaseKey = 0;
   private jscModule: BunJscModule | null | undefined;
   private sampling = false;
+  private subsystemProvider: (() => unknown) | null = null;
 
   constructor(path: string, opts: { intervalMs?: number; scope?: string } = {}) {
     this.scope = opts.scope?.trim() || "main";
@@ -132,6 +133,10 @@ export class RuntimeMemorySampler {
     void this.sample(reason, data);
   }
 
+  setSubsystemProvider(provider: (() => unknown) | null): void {
+    this.subsystemProvider = provider;
+  }
+
   track<T>(label: string, meta: PhaseMeta, fn: () => T): T {
     const leave = this.enter(label, meta);
     try {
@@ -171,6 +176,7 @@ export class RuntimeMemorySampler {
         process_memory_usage: process.memoryUsage(),
         jsc_heap_stats: await this.readJscHeapStats(),
         jsc_memory_usage: await this.readJscMemoryUsage(),
+        memory_subsystems: this.readSubsystems(),
         active_phases: activePhases,
         primary_phase: primary ? { label: primary.label, duration_ms: primary.duration_ms, meta: primary.meta } : null,
       });
@@ -216,5 +222,14 @@ export class RuntimeMemorySampler {
   private writeLine(payload: Record<string, unknown>): void {
     if (!this.stream) return;
     this.stream.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  private readSubsystems(): unknown {
+    if (!this.subsystemProvider) return null;
+    try {
+      return this.subsystemProvider();
+    } catch {
+      return null;
+    }
   }
 }

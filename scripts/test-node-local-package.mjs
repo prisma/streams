@@ -79,6 +79,12 @@ async function fetchJson(url, init) {
 }
 
 try {
+  const serverDetails = await fetchJson(\`\${baseUrl}/v1/server/_details\`, { method: "GET" });
+  if (serverDetails.status !== 200) throw new Error(\`/v1/server/_details failed: \${serverDetails.status}\`);
+  if (serverDetails.body?.auto_tune?.preset_mb !== 1024) {
+    throw new Error(\`expected local preset 1024, got \${JSON.stringify(serverDetails.body?.auto_tune)}\`);
+  }
+
   {
     const res = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}\`, {
       method: "PUT",
@@ -103,6 +109,39 @@ try {
       }),
     });
     if (profile.status !== 200) throw new Error(\`profile install failed: \${profile.status}\`);
+  }
+
+  {
+    const routingStream = "routing";
+    const res = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}\`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+    });
+    if (res.status !== 201 && res.status !== 200) throw new Error(\`routing PUT failed: \${res.status}\`);
+
+    const schema = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}/_schema\`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        routingKey: { jsonPointer: "/repo", required: false },
+      }),
+    });
+    if (schema.status !== 200) throw new Error(\`routing schema install failed: \${schema.status}\`);
+
+    const append = await fetch(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}\`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify([{ repo: "beta/repo" }, { repo: "alpha/repo" }, { repo: "beta/repo" }]),
+    });
+    if (append.status !== 204) throw new Error(\`routing append failed: \${append.status}\`);
+
+    const routingKeys = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(routingStream)}/_routing_keys?limit=10\`, {
+      method: "GET",
+    });
+    if (routingKeys.status !== 200) throw new Error(\`routing keys failed: \${routingKeys.status}\`);
+    if (JSON.stringify(routingKeys.body?.keys) !== JSON.stringify(["alpha/repo", "beta/repo"])) {
+      throw new Error(\`unexpected routing keys: \${JSON.stringify(routingKeys.body)}\`);
+    }
   }
 
   const activate = await fetchJson(\`\${baseUrl}/v1/stream/\${encodeURIComponent(stream)}/touch/templates/activate\`, {

@@ -25,13 +25,23 @@ import { resolvePointerResult } from "./util/json_pointer";
 import { ExpirySweeper } from "./expiry_sweeper";
 import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
-import { MemoryGuard } from "./memory";
+import { MemoryPressureMonitor } from "./memory";
 import { RuntimeMemorySampler } from "./runtime_memory_sampler";
 import { TouchProcessorManager } from "./touch/manager";
+import type { SegmentDiskCache } from "./segment/cache";
 import { StreamSizeReconciler } from "./stream_size_reconciler";
+import { ConcurrencyGate } from "./concurrency_gate";
+import {
+  buildProcessMemoryBreakdown,
+  type RuntimeHighWaterMark,
+  type RuntimeMemoryHighWaterSnapshot,
+  type RuntimeMemorySubsystemSnapshot,
+  type RuntimeMemorySnapshot,
+} from "./runtime_memory";
 import type { SegmenterController } from "./segment/segmenter_workers";
 import type { UploaderController } from "./uploader";
 import type { StreamIndexLookup } from "./index/indexer";
+import { ForegroundActivityTracker } from "./foreground_activity";
 import { Result } from "better-result";
 import { parseReadFilterResult } from "./read_filter";
 import { hashSecondaryIndexField } from "./index/secondary_schema";
@@ -72,6 +82,7 @@ const APPEND_REQUEST_TIMEOUT_MS = 3_000;
 const HTTP_RESOLVER_TIMEOUT_MS = 5_000;
 const SEARCH_REQUEST_TIMEOUT_MS = 3_000;
 const TIMEOUT_SENTINEL = Symbol("request-timeout");
+const DEFAULT_TOUCH_JOURNAL_FILTER_BYTES = 4 * (1 << 22);
 
 type TimeoutSentinel = typeof TIMEOUT_SENTINEL;
 
@@ -98,6 +109,10 @@ async function awaitWithCooperativeTimeout<T>(promise: Promise<T>, timeoutMs: nu
   } finally {
     if (timer != null) clearTimeout(timer);
   }
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return typeof error === "object" && error != null && "name" in error && (error as { name?: unknown }).name === "AbortError";
 }
 
 function searchResponseHeaders(search: SearchResultBatch): HeadersInit {
@@ -256,6 +271,25 @@ function encodeSseEvent(eventType: string, data: string): string {
   return out;
 }
 
+const INTERNAL_METRICS_STREAM = "__stream_metrics__";
+
+function clearInternalMetricsAccelerationState(db: SqliteDurableStore): void {
+  db.deleteAccelerationState(INTERNAL_METRICS_STREAM);
+}
+
+function reconcileDeletedStreamAccelerationState(db: SqliteDurableStore): void {
+  let offset = 0;
+  const pageSize = 1000;
+  for (;;) {
+    const streams = db.listDeletedStreams(pageSize, offset);
+    for (const stream of streams) {
+      db.deleteAccelerationState(stream);
+    }
+    if (streams.length < pageSize) break;
+    offset += streams.length;
+  }
+}
+
 function computeCursor(nowMs: number, provided: string | null): string {
   let cursor = Math.floor(nowMs / 1000);
   if (provided && /^[0-9]+$/.test(provided)) {
@@ -265,16 +299,16 @@ function computeCursor(nowMs: number, provided: string | null): string {
   return String(cursor);
 }
 
-function concatPayloads(parts: Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const p of parts) total += p.byteLength;
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.byteLength;
+function concatPayloads(parts: Uint8Array[]): Buffer {
+  return Buffer.concat(parts.map((part) => Buffer.from(part.buffer, part.byteOffset, part.byteLength)));
+}
+
+function bodyBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
+  const buffer = bytes.buffer;
+  if (bytes.byteOffset === 0 && bytes.byteLength === buffer.byteLength) {
+    return buffer as ArrayBuffer;
   }
-  return out;
+  return buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 function keyBytesFromString(s: string | null): Uint8Array | null {
@@ -389,7 +423,13 @@ export type App = {
     touch: TouchProcessorManager;
     stats?: StatsCollector;
     backpressure?: BackpressureGate;
-    memory?: MemoryGuard;
+    memory?: MemoryPressureMonitor;
+    concurrency?: {
+      ingest: ConcurrencyGate;
+      read: ConcurrencyGate;
+      search: ConcurrencyGate;
+      asyncIndex: ConcurrencyGate;
+    };
     memorySampler?: RuntimeMemorySampler;
   };
 };
@@ -404,7 +444,9 @@ export type CreateAppRuntimeArgs = {
   touch: TouchProcessorManager;
   stats?: StatsCollector;
   backpressure?: BackpressureGate;
-  memory: MemoryGuard;
+  memory: MemoryPressureMonitor;
+  asyncIndexGate: ConcurrencyGate;
+  foregroundActivity: ForegroundActivityTracker;
   metrics: Metrics;
   memorySampler?: RuntimeMemorySampler;
 };
@@ -415,11 +457,15 @@ type AppRuntimeDeps = {
   segmenter: SegmenterController;
   uploader: UploaderController;
   indexer?: StreamIndexLookup;
+  segmentDiskCache?: SegmentDiskCache;
   uploadSchemaRegistry: (stream: string, registry: SchemaRegistry) => Promise<void>;
+  getRuntimeMemorySnapshot?: () => RuntimeMemorySubsystemSnapshot;
   getLocalStorageUsage?: (stream: string) => {
     segment_cache_bytes: number;
     routing_index_cache_bytes: number;
     exact_index_cache_bytes: number;
+    lexicon_index_cache_bytes: number;
+    companion_cache_bytes: number;
   };
   start(): void;
 };
@@ -429,12 +475,26 @@ export type CreateAppCoreOptions = {
   createRuntime(args: CreateAppRuntimeArgs): AppRuntimeDeps;
 };
 
+function reduceConcurrencyLimit(limit: number): number {
+  return Math.max(1, Math.ceil(Math.max(1, limit) / 2));
+}
+
+function gateSnapshot(configuredLimit: number, gate: ConcurrencyGate) {
+  return {
+    configured_limit: configuredLimit,
+    current_limit: gate.getLimit(),
+    active: gate.getActive(),
+    queued: gate.getQueued(),
+  };
+}
+
 export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   mkdirSync(cfg.rootDir, { recursive: true });
   cleanupTempSegments(cfg.rootDir);
 
   const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes });
   db.resetSegmentInProgress();
+  reconcileDeletedStreamAccelerationState(db);
   const stats = opts.stats;
   const metrics = new Metrics();
   const backpressure =
@@ -449,15 +509,22 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         })
       : undefined;
   memorySampler?.start();
-  const memory = new MemoryGuard(cfg.memoryLimitBytes, {
+  const ingestGate = new ConcurrencyGate(cfg.ingestConcurrency);
+  const readGate = new ConcurrencyGate(cfg.readConcurrency);
+  const searchGate = new ConcurrencyGate(cfg.searchConcurrency);
+  const asyncIndexGate = new ConcurrencyGate(cfg.asyncIndexConcurrency);
+  const foregroundActivity = new ForegroundActivityTracker();
+  const memory = new MemoryPressureMonitor(cfg.memoryLimitBytes, {
     onSample: (rss, overLimit) => {
       metrics.record("process.rss.bytes", rss, "bytes");
       if (overLimit) metrics.record("process.rss.over_limit", 1, "count");
+      searchGate.setLimit(overLimit ? reduceConcurrencyLimit(cfg.searchConcurrency) : cfg.searchConcurrency);
+      asyncIndexGate.setLimit(overLimit ? reduceConcurrencyLimit(cfg.asyncIndexConcurrency) : cfg.asyncIndexConcurrency);
     },
     heapSnapshotPath: cfg.heapSnapshotPath ?? undefined,
   });
   memory.start();
-  const ingest = new IngestQueue(cfg, db, stats, backpressure, memory, metrics);
+  const ingest = new IngestQueue(cfg, db, stats, backpressure, metrics);
   const notifier = new StreamNotifier();
   const registry = new SchemaRegistryStore(db);
   const profiles = new StreamProfileStore(db, registry);
@@ -473,30 +540,508 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     stats,
     backpressure,
     memory,
+    asyncIndexGate,
+    foregroundActivity,
     metrics,
     memorySampler,
   });
-  const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry, getLocalStorageUsage } = runtime;
+  const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry, getRuntimeMemorySnapshot, getLocalStorageUsage } = runtime;
+  const runtimeHighWater: RuntimeMemoryHighWaterSnapshot = {
+    process: {},
+    process_breakdown: {},
+    sqlite: {},
+    runtime_bytes: {},
+    runtime_totals: {},
+  };
+
+  const observeHighWaterValue = (target: Record<string, RuntimeHighWaterMark>, key: string, value: number, at: string): void => {
+    const next = Math.max(0, Math.floor(value));
+    const existing = target[key];
+    if (!existing || next > existing.value) {
+      target[key] = {
+        value: next,
+        at,
+      };
+    }
+  };
+
+  const buildRuntimeBytes = (runtimeMemory: RuntimeMemorySnapshot): Record<string, Record<string, number>> => {
+    const groups: Record<string, Record<string, number>> = {};
+    for (const [kind, values] of Object.entries(runtimeMemory.subsystems)) {
+      if (kind === "counts") continue;
+      groups[kind] = values;
+    }
+    return groups;
+  };
+
+  const buildTopStreamContributors = (limit = 5) => {
+    const safeLimit = Math.max(1, Math.min(limit, 20));
+    const localStorageRows: Array<{
+      stream: string;
+      bytes: number;
+      wal_retained_bytes: number;
+      segment_cache_bytes: number;
+      index_cache_bytes: number;
+    }> = [];
+    const pendingWalRows: Array<{ stream: string; pending_wal_bytes: number; pending_rows: number }> = [];
+    let offset = 0;
+    const pageSize = 1000;
+    for (;;) {
+      const rows = db.listStreams(pageSize, offset);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        if (db.isDeleted(row)) continue;
+        const usage = getLocalStorageUsage?.(row.stream) ?? { segment_cache_bytes: 0 };
+        const walRetainedBytes = Number(row.pending_bytes);
+        const segmentCacheBytes = Math.max(0, Math.floor(Number((usage as Record<string, number>).segment_cache_bytes ?? 0)));
+        const indexCacheBytes = Math.max(
+          0,
+          Math.floor(
+            Number((usage as Record<string, number>).routing_index_cache_bytes ?? 0) +
+              Number((usage as Record<string, number>).exact_index_cache_bytes ?? 0) +
+              Number((usage as Record<string, number>).lexicon_index_cache_bytes ?? 0) +
+              Number((usage as Record<string, number>).companion_cache_bytes ?? 0)
+          )
+        );
+        localStorageRows.push({
+          stream: row.stream,
+          bytes: Math.max(0, walRetainedBytes + segmentCacheBytes + indexCacheBytes),
+          wal_retained_bytes: Math.max(0, walRetainedBytes),
+          segment_cache_bytes: segmentCacheBytes,
+          index_cache_bytes: indexCacheBytes,
+        });
+        pendingWalRows.push({
+          stream: row.stream,
+          pending_wal_bytes: Math.max(0, walRetainedBytes),
+          pending_rows: Math.max(0, Number(row.pending_rows)),
+        });
+      }
+      if (rows.length < pageSize) break;
+      offset += rows.length;
+    }
+    localStorageRows.sort((a, b) => b.bytes - a.bytes || a.stream.localeCompare(b.stream));
+    pendingWalRows.sort((a, b) => b.pending_wal_bytes - a.pending_wal_bytes || a.stream.localeCompare(b.stream));
+    return {
+      local_storage_bytes: localStorageRows.slice(0, safeLimit),
+      pending_wal_bytes: pendingWalRows.slice(0, safeLimit),
+      touch_journal_filter_bytes: touch.getTopStreams(safeLimit),
+      notifier_waiters: notifier.getTopStreams(safeLimit),
+    };
+  };
+
+  const buildRuntimeMemorySnapshot = (): RuntimeMemorySnapshot => {
+    const processUsage = process.memoryUsage();
+    const subsystemSnapshot = getRuntimeMemorySnapshot?.() ?? {
+      subsystems: {
+        heap_estimates: {},
+        mapped_files: {},
+        disk_caches: {},
+        configured_budgets: {},
+        pipeline_buffers: {},
+        sqlite_runtime: {},
+        counts: {},
+      },
+      totals: {
+        heap_estimate_bytes: 0,
+        mapped_file_bytes: 0,
+        disk_cache_bytes: 0,
+        configured_budget_bytes: 0,
+        pipeline_buffer_bytes: 0,
+        sqlite_runtime_bytes: 0,
+      },
+    };
+    const sqliteRuntimeBytes = subsystemSnapshot.subsystems.sqlite_runtime ?? {};
+    const runtimeCounts = subsystemSnapshot.subsystems.counts ?? {};
+    const snapshot: RuntimeMemorySnapshot = {
+      process: {
+        rss_bytes: processUsage.rss,
+        heap_total_bytes: processUsage.heapTotal,
+        heap_used_bytes: processUsage.heapUsed,
+        external_bytes: processUsage.external,
+        array_buffers_bytes: processUsage.arrayBuffers,
+      },
+      process_breakdown: buildProcessMemoryBreakdown({
+        process: {
+          rss_bytes: processUsage.rss,
+          heap_total_bytes: processUsage.heapTotal,
+          heap_used_bytes: processUsage.heapUsed,
+          external_bytes: processUsage.external,
+          array_buffers_bytes: processUsage.arrayBuffers,
+        },
+        mappedFileBytes: subsystemSnapshot.totals.mapped_file_bytes,
+        sqliteRuntimeBytes: Number(sqliteRuntimeBytes["sqlite_memory_used_bytes"] ?? 0),
+      }),
+      sqlite: {
+        available: Number(runtimeCounts["sqlite_open_connections"] ?? 0) > 0 || Number(sqliteRuntimeBytes["sqlite_memory_used_bytes"] ?? 0) > 0,
+        source:
+          Number(runtimeCounts["sqlite_open_connections"] ?? 0) > 0 || Number(sqliteRuntimeBytes["sqlite_memory_used_bytes"] ?? 0) > 0
+            ? "sqlite3_status64"
+            : "unavailable",
+        memory_used_bytes: Math.max(0, Math.floor(Number(sqliteRuntimeBytes["sqlite_memory_used_bytes"] ?? 0))),
+        memory_highwater_bytes: Math.max(
+          0,
+          Math.floor(Number(sqliteRuntimeBytes["sqlite_memory_highwater_bytes"] ?? 0))
+        ),
+        pagecache_used_slots: Math.max(0, Math.floor(Number(runtimeCounts["sqlite_pagecache_used_slots"] ?? 0))),
+        pagecache_used_slots_highwater: Math.max(
+          0,
+          Math.floor(Number(runtimeCounts["sqlite_pagecache_used_slots_highwater"] ?? 0))
+        ),
+        pagecache_overflow_bytes: Math.max(
+          0,
+          Math.floor(Number(sqliteRuntimeBytes["sqlite_pagecache_overflow_bytes"] ?? 0))
+        ),
+        pagecache_overflow_highwater_bytes: Math.max(
+          0,
+          Math.floor(Number(sqliteRuntimeBytes["sqlite_pagecache_overflow_highwater_bytes"] ?? 0))
+        ),
+        malloc_count: Math.max(0, Math.floor(Number(runtimeCounts["sqlite_malloc_count"] ?? 0))),
+        malloc_count_highwater: Math.max(
+          0,
+          Math.floor(Number(runtimeCounts["sqlite_malloc_count_highwater"] ?? 0))
+        ),
+        open_connections: Math.max(0, Math.floor(Number(runtimeCounts["sqlite_open_connections"] ?? 0))),
+        prepared_statements: Math.max(
+          0,
+          Math.floor(Number(runtimeCounts["sqlite_prepared_statements"] ?? 0))
+        ),
+      },
+      gc: memory.getGcStats(),
+      subsystems: subsystemSnapshot.subsystems,
+      totals: subsystemSnapshot.totals,
+    };
+    const ts = new Date().toISOString();
+    for (const [key, value] of Object.entries(snapshot.process)) observeHighWaterValue(runtimeHighWater.process, key, value, ts);
+    for (const [key, value] of Object.entries(snapshot.process_breakdown)) {
+      if (typeof value === "number") observeHighWaterValue(runtimeHighWater.process_breakdown, key, value, ts);
+    }
+    for (const [key, value] of Object.entries(snapshot.sqlite)) {
+      if (typeof value === "number") observeHighWaterValue(runtimeHighWater.sqlite, key, value, ts);
+    }
+    for (const [kind, values] of Object.entries(buildRuntimeBytes(snapshot))) {
+      const bucket = (runtimeHighWater.runtime_bytes[kind] ??= {});
+      for (const [key, value] of Object.entries(values)) observeHighWaterValue(bucket, key, value, ts);
+    }
+    for (const [key, value] of Object.entries(snapshot.totals)) observeHighWaterValue(runtimeHighWater.runtime_totals, key, value, ts);
+    if (snapshot.sqlite.memory_used_bytes > 0) observeHighWaterValue(runtimeHighWater.sqlite, "memory_used_bytes", snapshot.sqlite.memory_used_bytes, ts);
+    if (snapshot.sqlite.pagecache_overflow_bytes > 0)
+      observeHighWaterValue(runtimeHighWater.sqlite, "pagecache_overflow_bytes", snapshot.sqlite.pagecache_overflow_bytes, ts);
+    if (snapshot.sqlite.pagecache_used_slots > 0)
+      observeHighWaterValue(runtimeHighWater.sqlite, "pagecache_used_slots", snapshot.sqlite.pagecache_used_slots, ts);
+    if (snapshot.sqlite.malloc_count > 0) observeHighWaterValue(runtimeHighWater.sqlite, "malloc_count", snapshot.sqlite.malloc_count, ts);
+    return snapshot;
+  };
+
+  const buildLeakCandidateCounters = (): Record<string, number> => {
+    const runtimeMemory = buildRuntimeMemorySnapshot();
+    const runtimeCounts = runtimeMemory.subsystems.counts ?? {};
+    const countValue = (name: string): number => {
+      const raw = Number(runtimeCounts[name] ?? 0);
+      if (!Number.isFinite(raw)) return 0;
+      return Math.max(0, Math.floor(raw));
+    };
+    const touchMemory = touch.getMemoryStats();
+    const notifierMemory = notifier.getMemoryStats();
+    const metricsMemory = metrics.getMemoryStats();
+    return {
+      "tieredstore.mem.leak_candidate.segment_cache.pinned_entries": countValue("segment_pinned_files"),
+      "tieredstore.mem.leak_candidate.lexicon_file_cache.pinned_entries": countValue("lexicon_pinned_files"),
+      "tieredstore.mem.leak_candidate.companion_file_cache.pinned_entries": countValue("companion_pinned_files"),
+      "tieredstore.mem.leak_candidate.routing_run_disk_cache.pinned_entries": countValue("routing_run_disk_cache_pinned_entries"),
+      "tieredstore.mem.leak_candidate.exact_run_disk_cache.pinned_entries": countValue("exact_run_disk_cache_pinned_entries"),
+      "tieredstore.mem.leak_candidate.touch.journals.active_count": touchMemory.journals,
+      "tieredstore.mem.leak_candidate.touch.journals.created_total": touchMemory.journalsCreatedTotal,
+      "tieredstore.mem.leak_candidate.touch.journals.filter_bytes_total": touchMemory.journalFilterBytesTotal,
+      "tieredstore.mem.leak_candidate.touch.journal.default_filter_bytes": DEFAULT_TOUCH_JOURNAL_FILTER_BYTES,
+      "tieredstore.mem.leak_candidate.touch.maps.fine_lag_coarse_only_streams": touchMemory.fineLagCoarseOnlyStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.touch_mode_streams": touchMemory.touchModeStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.fine_token_bucket_streams": touchMemory.fineTokenBucketStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.hot_fine_streams": touchMemory.hotFineStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.lag_source_offset_streams": touchMemory.lagSourceOffsetStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.restricted_template_bucket_streams": touchMemory.restrictedTemplateBucketStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.runtime_totals_streams": touchMemory.runtimeTotalsStreams,
+      "tieredstore.mem.leak_candidate.touch.maps.zero_row_backlog_streams": touchMemory.zeroRowBacklogStreakStreams,
+      "tieredstore.mem.leak_candidate.live_template.last_seen_entries": touchMemory.templateLastSeenEntries,
+      "tieredstore.mem.leak_candidate.live_template.dirty_last_seen_entries": touchMemory.templateDirtyLastSeenEntries,
+      "tieredstore.mem.leak_candidate.live_template.rate_state_streams": touchMemory.templateRateStateStreams,
+      "tieredstore.mem.leak_candidate.live_metrics.counter_streams": touchMemory.liveMetricsCounterStreams,
+      "tieredstore.mem.leak_candidate.notifier.latest_seq_streams": notifierMemory.latestSeqStreams,
+      "tieredstore.mem.leak_candidate.notifier.details_version_streams": notifierMemory.detailsVersionStreams,
+      "tieredstore.mem.leak_candidate.metrics.series": metricsMemory.seriesCount,
+      "tieredstore.mem.leak_candidate.secondary_index.stream_idle_ticks_streams": countValue("secondary_index_stream_idle_ticks"),
+      "tieredstore.mem.leak_candidate.mock_r2.in_memory_bytes": countValue("mock_r2_in_memory_bytes"),
+      "tieredstore.mem.leak_candidate.mock_r2.object_count": countValue("mock_r2_object_count"),
+    };
+  };
+
+  const buildServerMem = () => {
+    const runtimeMemory = buildRuntimeMemorySnapshot();
+    return {
+      ts: new Date().toISOString(),
+      process: runtimeMemory.process,
+      process_breakdown: runtimeMemory.process_breakdown,
+      sqlite: runtimeMemory.sqlite,
+      gc: runtimeMemory.gc,
+      high_water: runtimeHighWater,
+      counters: buildLeakCandidateCounters(),
+      runtime_counts: runtimeMemory.subsystems.counts,
+      runtime_bytes: buildRuntimeBytes(runtimeMemory),
+      runtime_totals: runtimeMemory.totals,
+      top_streams: buildTopStreamContributors(),
+    };
+  };
+  memorySampler?.setSubsystemProvider(() => buildRuntimeMemorySnapshot().subsystems);
+  const buildServerDetails = () => {
+    const runtimeMemory = buildRuntimeMemorySnapshot();
+    return {
+      auto_tune: {
+        enabled: cfg.autoTunePresetMb != null,
+        requested_memory_mb: cfg.autoTuneRequestedMemoryMb,
+        preset_mb: cfg.autoTunePresetMb,
+        effective_memory_limit_mb: cfg.autoTuneEffectiveMemoryLimitMb,
+      },
+      configured_limits: {
+        caches: {
+          sqlite_cache_bytes: cfg.sqliteCacheBytes,
+          worker_sqlite_cache_bytes: cfg.workerSqliteCacheBytes,
+          index_run_memory_cache_bytes: cfg.indexRunMemoryCacheBytes,
+          index_run_disk_cache_bytes: cfg.indexRunCacheMaxBytes,
+          lexicon_index_cache_bytes: cfg.lexiconIndexCacheMaxBytes,
+          segment_cache_bytes: cfg.segmentCacheMaxBytes,
+          companion_toc_cache_bytes: cfg.searchCompanionTocCacheBytes,
+          companion_section_cache_bytes: cfg.searchCompanionSectionCacheBytes,
+          companion_file_cache_bytes: cfg.searchCompanionFileCacheMaxBytes,
+        },
+        concurrency: {
+          ingest: cfg.ingestConcurrency,
+          read: cfg.readConcurrency,
+          search: cfg.searchConcurrency,
+          async_index: cfg.asyncIndexConcurrency,
+          upload: cfg.uploadConcurrency,
+          index_build: cfg.indexBuildConcurrency,
+          index_compact: cfg.indexCompactionConcurrency,
+        },
+        ingest: {
+          max_batch_requests: cfg.ingestMaxBatchRequests,
+          max_batch_bytes: cfg.ingestMaxBatchBytes,
+          max_queue_requests: cfg.ingestMaxQueueRequests,
+          max_queue_bytes: cfg.ingestMaxQueueBytes,
+          busy_timeout_ms: cfg.ingestBusyTimeoutMs,
+          local_backlog_max_bytes: cfg.localBacklogMaxBytes,
+        },
+        search: {
+          companion_batch_segments: cfg.searchCompanionBuildBatchSegments,
+          companion_yield_blocks: cfg.searchCompanionYieldBlocks,
+          wal_overlay_quiet_period_ms: cfg.searchWalOverlayQuietPeriodMs,
+          wal_overlay_max_bytes: cfg.searchWalOverlayMaxBytes,
+        },
+        segmenting: {
+          segment_max_bytes: cfg.segmentMaxBytes,
+          segment_target_rows: cfg.segmentTargetRows,
+          segmenter_workers: cfg.segmenterWorkers,
+        },
+        timeouts: {
+          append_request_timeout_ms: APPEND_REQUEST_TIMEOUT_MS,
+          search_request_timeout_ms: SEARCH_REQUEST_TIMEOUT_MS,
+          resolver_timeout_ms: HTTP_RESOLVER_TIMEOUT_MS,
+          object_store_timeout_ms: cfg.objectStoreTimeoutMs,
+        },
+        memory: {
+          pressure_limit_bytes: cfg.memoryLimitBytes,
+        },
+      },
+      runtime: {
+        memory: {
+          pressure_active: memory.isOverLimit(),
+          pressure_limit_bytes: memory.getLimitBytes(),
+          last_rss_bytes: memory.getLastRssBytes(),
+          max_rss_bytes: memory.getMaxRssBytes(),
+          process: runtimeMemory.process,
+          process_breakdown: runtimeMemory.process_breakdown,
+          sqlite: runtimeMemory.sqlite,
+          gc: runtimeMemory.gc,
+          subsystems: runtimeMemory.subsystems,
+          totals: runtimeMemory.totals,
+          high_water: runtimeHighWater,
+        },
+        ingest_queue: {
+          requests: ingest.getQueueStats().requests,
+          bytes: ingest.getQueueStats().bytes,
+          full: ingest.isQueueFull(),
+        },
+        local_backpressure: {
+          enabled: backpressure?.enabled() ?? false,
+          current_bytes: backpressure?.getCurrentBytes() ?? 0,
+          max_bytes: backpressure?.getMaxBytes() ?? 0,
+          over_limit: backpressure?.isOverLimit() ?? false,
+        },
+        uploads: {
+          pending_segments: uploader.countSegmentsWaiting(),
+        },
+        concurrency: {
+          ingest: gateSnapshot(cfg.ingestConcurrency, ingestGate),
+          read: gateSnapshot(cfg.readConcurrency, readGate),
+          search: gateSnapshot(cfg.searchConcurrency, searchGate),
+          async_index: gateSnapshot(cfg.asyncIndexConcurrency, asyncIndexGate),
+        },
+        top_streams: buildTopStreamContributors(),
+      },
+    };
+  };
+  const collectRuntimeMetrics = () => {
+    const queue = ingest.getQueueStats();
+    const emitGate = (name: string, configuredLimit: number, gate: ConcurrencyGate) => {
+      metrics.record("tieredstore.concurrency.limit", configuredLimit, "count", { gate: name, kind: "configured" });
+      metrics.record("tieredstore.concurrency.limit", gate.getLimit(), "count", { gate: name, kind: "effective" });
+      metrics.record("tieredstore.concurrency.active", gate.getActive(), "count", { gate: name });
+      metrics.record("tieredstore.concurrency.queued", gate.getQueued(), "count", { gate: name });
+    };
+    emitGate("ingest", cfg.ingestConcurrency, ingestGate);
+    emitGate("read", cfg.readConcurrency, readGate);
+    emitGate("search", cfg.searchConcurrency, searchGate);
+    emitGate("async_index", cfg.asyncIndexConcurrency, asyncIndexGate);
+    metrics.record("tieredstore.ingest.queue.capacity.requests", cfg.ingestMaxQueueRequests, "count");
+    metrics.record("tieredstore.ingest.queue.capacity.bytes", cfg.ingestMaxQueueBytes, "bytes");
+    metrics.record("tieredstore.upload.pending_segments", uploader.countSegmentsWaiting(), "count");
+    metrics.record("tieredstore.upload.concurrency.limit", cfg.uploadConcurrency, "count");
+    if (cfg.memoryLimitBytes > 0) metrics.record("process.memory.limit.bytes", cfg.memoryLimitBytes, "bytes");
+    const lastRss = memory.getLastRssBytes();
+    if (lastRss > 0) metrics.record("process.rss.current.bytes", lastRss, "bytes");
+    const maxRss = memory.snapshotMaxRssBytes();
+    if (maxRss > 0) metrics.record("process.rss.max_interval.bytes", maxRss, "bytes");
+    const runtimeMemory = buildRuntimeMemorySnapshot();
+    metrics.record("process.heap.total.bytes", runtimeMemory.process.heap_total_bytes, "bytes");
+    metrics.record("process.heap.used.bytes", runtimeMemory.process.heap_used_bytes, "bytes");
+    metrics.record("process.external.bytes", runtimeMemory.process.external_bytes, "bytes");
+    metrics.record("process.array_buffers.bytes", runtimeMemory.process.array_buffers_bytes, "bytes");
+    if (runtimeMemory.process_breakdown.rss_anon_bytes != null) {
+      metrics.record("process.memory.rss.anon.bytes", runtimeMemory.process_breakdown.rss_anon_bytes, "bytes");
+    }
+    if (runtimeMemory.process_breakdown.rss_file_bytes != null) {
+      metrics.record("process.memory.rss.file.bytes", runtimeMemory.process_breakdown.rss_file_bytes, "bytes");
+    }
+    if (runtimeMemory.process_breakdown.rss_shmem_bytes != null) {
+      metrics.record("process.memory.rss.shmem.bytes", runtimeMemory.process_breakdown.rss_shmem_bytes, "bytes");
+    }
+    if (runtimeMemory.process_breakdown.unattributed_anon_bytes != null) {
+      metrics.record("process.memory.unattributed_anon.bytes", runtimeMemory.process_breakdown.unattributed_anon_bytes, "bytes");
+    }
+    metrics.record("process.memory.js_managed.bytes", runtimeMemory.process_breakdown.js_managed_bytes, "bytes");
+    metrics.record(
+      "process.memory.js_external_non_array_buffers.bytes",
+      runtimeMemory.process_breakdown.js_external_non_array_buffers_bytes,
+      "bytes"
+    );
+    metrics.record("process.memory.unattributed.bytes", runtimeMemory.process_breakdown.unattributed_rss_bytes, "bytes");
+    metrics.record("tieredstore.sqlite.memory.used.bytes", runtimeMemory.sqlite.memory_used_bytes, "bytes");
+    metrics.record("tieredstore.sqlite.memory.high_water.bytes", runtimeMemory.sqlite.memory_highwater_bytes, "bytes");
+    metrics.record("tieredstore.sqlite.pagecache.used", runtimeMemory.sqlite.pagecache_used_slots, "count");
+    metrics.record("tieredstore.sqlite.pagecache.high_water", runtimeMemory.sqlite.pagecache_used_slots_highwater, "count");
+    metrics.record("tieredstore.sqlite.pagecache.overflow.bytes", runtimeMemory.sqlite.pagecache_overflow_bytes, "bytes");
+    metrics.record(
+      "tieredstore.sqlite.pagecache.overflow.high_water.bytes",
+      runtimeMemory.sqlite.pagecache_overflow_highwater_bytes,
+      "bytes"
+    );
+    metrics.record("tieredstore.sqlite.malloc.count", runtimeMemory.sqlite.malloc_count, "count");
+    metrics.record("tieredstore.sqlite.malloc.high_water.count", runtimeMemory.sqlite.malloc_count_highwater, "count");
+    metrics.record("tieredstore.sqlite.open_connections", runtimeMemory.sqlite.open_connections, "count");
+    metrics.record("tieredstore.sqlite.prepared_statements", runtimeMemory.sqlite.prepared_statements, "count");
+    for (const [kind, values] of Object.entries(runtimeMemory.subsystems)) {
+      if (kind === "counts") continue;
+      for (const [subsystem, value] of Object.entries(values)) {
+        metrics.record("tieredstore.memory.subsystem.bytes", value, "bytes", { kind, subsystem });
+      }
+    }
+    for (const [subsystem, value] of Object.entries(runtimeMemory.subsystems.counts)) {
+      metrics.record("tieredstore.memory.subsystem.count", value, "count", { subsystem });
+    }
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.heap_estimate_bytes, "bytes", { kind: "heap_estimate" });
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.mapped_file_bytes, "bytes", { kind: "mapped_file" });
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.disk_cache_bytes, "bytes", { kind: "disk_cache" });
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.configured_budget_bytes, "bytes", { kind: "configured_budget" });
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.pipeline_buffer_bytes, "bytes", { kind: "pipeline_buffer" });
+    metrics.record("tieredstore.memory.tracked.bytes", runtimeMemory.totals.sqlite_runtime_bytes, "bytes", { kind: "sqlite_runtime" });
+    const memLeakCounters = buildLeakCandidateCounters();
+    for (const [metricName, value] of Object.entries(memLeakCounters)) {
+      const unit = metricName.endsWith("_bytes") ? "bytes" : "count";
+      metrics.record(metricName, value, unit);
+    }
+    metrics.record("process.gc.forced.count", runtimeMemory.gc.forced_gc_count, "count");
+    metrics.record("process.gc.reclaimed.bytes", runtimeMemory.gc.forced_gc_reclaimed_bytes_total, "bytes", { kind: "total" });
+    if (runtimeMemory.gc.last_forced_gc_reclaimed_bytes != null) {
+      metrics.record("process.gc.reclaimed.bytes", runtimeMemory.gc.last_forced_gc_reclaimed_bytes, "bytes", { kind: "last" });
+    }
+    if (runtimeMemory.gc.last_forced_gc_at_ms != null) {
+      metrics.record("process.gc.last_forced_at_ms", runtimeMemory.gc.last_forced_gc_at_ms, "count");
+    }
+    metrics.record("process.heap.snapshot.count", runtimeMemory.gc.heap_snapshots_written, "count");
+    if (runtimeMemory.gc.last_heap_snapshot_at_ms != null) {
+      metrics.record("process.heap.snapshot.last_at_ms", runtimeMemory.gc.last_heap_snapshot_at_ms, "count");
+    }
+    for (const [metricName, entry] of Object.entries(runtimeHighWater.process)) {
+      metrics.record("process.memory.high_water.bytes", entry.value, "bytes", { metric: metricName });
+    }
+    for (const [metricName, entry] of Object.entries(runtimeHighWater.process_breakdown)) {
+      metrics.record("process.memory.high_water.bytes", entry.value, "bytes", { metric: metricName });
+    }
+    for (const [metricName, entry] of Object.entries(runtimeHighWater.runtime_totals)) {
+      metrics.record("tieredstore.memory.high_water.bytes", entry.value, "bytes", { kind: "runtime_total", metric: metricName });
+    }
+    for (const [kind, entries] of Object.entries(runtimeHighWater.runtime_bytes)) {
+      for (const [metricName, entry] of Object.entries(entries)) {
+        metrics.record("tieredstore.memory.high_water.bytes", entry.value, "bytes", {
+          kind: "runtime_subsystem",
+          subsystem_kind: kind,
+          metric: metricName,
+        });
+      }
+    }
+    for (const [metricName, entry] of Object.entries(runtimeHighWater.sqlite)) {
+      const unit =
+        metricName.includes("bytes") || metricName.includes("memory") || metricName.includes("overflow") ? "bytes" : "count";
+      metrics.record("tieredstore.sqlite.high_water", entry.value, unit, { metric: metricName });
+    }
+    metrics.record("process.memory.pressure", memory.isOverLimit() ? 1 : 0, "count");
+    if (backpressure) {
+      metrics.record("tieredstore.backpressure.current.bytes", backpressure.getCurrentBytes(), "bytes");
+      metrics.record("tieredstore.backpressure.limit.bytes", backpressure.getMaxBytes(), "bytes");
+      metrics.record("tieredstore.backpressure.pressure", backpressure.isOverLimit() ? 1 : 0, "count");
+    }
+    if (cfg.autoTunePresetMb != null) {
+      metrics.record("tieredstore.auto_tune.preset_mb", cfg.autoTunePresetMb, "count");
+    }
+    if (cfg.autoTuneEffectiveMemoryLimitMb != null) {
+      metrics.record("tieredstore.auto_tune.effective_memory_limit_mb", cfg.autoTuneEffectiveMemoryLimitMb, "count");
+    }
+  };
   const metricsEmitter = new MetricsEmitter(metrics, ingest, cfg.metricsFlushIntervalMs, {
     onAppended: ({ lastOffset, stream }) => {
       notifier.notify(stream, lastOffset);
       notifier.notifyDetailsChanged(stream);
     },
+    collectRuntimeMetrics,
   });
   const expirySweeper = new ExpirySweeper(cfg, db);
-  const streamSizeReconciler = new StreamSizeReconciler(db, store, (stream) => notifier.notifyDetailsChanged(stream));
+  const streamSizeReconciler = new StreamSizeReconciler(
+    db,
+    store,
+    runtime.segmentDiskCache,
+    (stream) => notifier.notifyDetailsChanged(stream)
+  );
 
-  const metricsStreamRow = db.ensureStream("__stream_metrics__", { contentType: "application/json", profile: "metrics" });
-  const metricsProfileRes = profiles.updateProfileResult("__stream_metrics__", metricsStreamRow, { kind: "metrics" });
+  const metricsStreamRow = db.ensureStream(INTERNAL_METRICS_STREAM, { contentType: "application/json", profile: "metrics" });
+  const metricsProfileRes = profiles.updateProfileResult(INTERNAL_METRICS_STREAM, metricsStreamRow, { kind: "metrics" });
   if (Result.isError(metricsProfileRes)) {
-    throw dsError(`failed to initialize __stream_metrics__ profile: ${metricsProfileRes.error.message}`);
+    throw dsError(`failed to initialize ${INTERNAL_METRICS_STREAM} profile: ${metricsProfileRes.error.message}`);
   }
+  clearInternalMetricsAccelerationState(db);
   runtime.start();
   if (metricsProfileRes.value.schemaRegistry) {
     void (async () => {
       try {
-        await uploadSchemaRegistry("__stream_metrics__", metricsProfileRes.value.schemaRegistry!);
-        await uploader.publishManifest("__stream_metrics__");
+        await uploadSchemaRegistry(INTERNAL_METRICS_STREAM, metricsProfileRes.value.schemaRegistry!);
+        await uploader.publishManifest(INTERNAL_METRICS_STREAM);
       } catch {
         // background best-effort; next manifest publication will reconcile
       }
@@ -655,6 +1200,23 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     return Result.ok({ values });
   };
 
+  const encodeStoredJsonArrayResult = (
+    stream: string,
+    records: Array<{ payload: Uint8Array }>
+  ): Result<Buffer | null, { status: 400 | 500; message: string }> => {
+    const regRes = registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return Result.err({ status: 500, message: regRes.error.message });
+    if (regRes.value.currentVersion !== 0) return Result.ok(null);
+    const parts: Buffer[] = [Buffer.from("[")];
+    for (let i = 0; i < records.length; i++) {
+      if (i > 0) parts.push(Buffer.from(","));
+      const payload = records[i]!.payload;
+      parts.push(Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength));
+    }
+    parts.push(Buffer.from("]"));
+    return Result.ok(Buffer.concat(parts));
+  };
+
   const buildStreamSummary = (stream: string, row: StreamRow, profileKind: string) => ({
     name: stream,
     content_type: normalizeContentType(row.content_type) ?? row.content_type,
@@ -703,12 +1265,17 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     const uploadedSegmentBytes = db.getUploadedSegmentBytes(stream);
     const pendingSealedSegmentBytes = db.getPendingSealedSegmentBytes(stream);
     const routingIndexStorage = db.getRoutingIndexStorage(stream);
+    const routingLexiconStorage =
+      db
+        .getLexiconIndexStorage(stream)
+        .find((entry) => entry.source_kind === "routing_key" && entry.source_name === "") ?? { object_count: 0, bytes: 0n };
     const secondaryIndexStorage = new Map(db.getSecondaryIndexStorage(stream).map((entry) => [entry.index_name, entry]));
     const companionStorage = db.getBundledCompanionStorage(stream);
     const localStorageUsage = {
       segment_cache_bytes: 0,
       routing_index_cache_bytes: 0,
       exact_index_cache_bytes: 0,
+      lexicon_index_cache_bytes: 0,
       companion_cache_bytes: 0,
       ...(getLocalStorageUsage?.(stream) ?? {}),
     };
@@ -726,18 +1293,20 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         total_bytes: (
           uploadedSegmentBytes +
           routingIndexStorage.bytes +
+          routingLexiconStorage.bytes +
           exactIndexBytes +
           companionStorage.bytes +
           (manifest.last_uploaded_size_bytes ?? 0n) +
           (schemaRow?.uploaded_size_bytes ?? 0n)
         ).toString(),
         segments_bytes: uploadedSegmentBytes.toString(),
-        indexes_bytes: (routingIndexStorage.bytes + exactIndexBytes + companionStorage.bytes).toString(),
+        indexes_bytes: (routingIndexStorage.bytes + routingLexiconStorage.bytes + exactIndexBytes + companionStorage.bytes).toString(),
         manifest_and_meta_bytes: ((manifest.last_uploaded_size_bytes ?? 0n) + (schemaRow?.uploaded_size_bytes ?? 0n)).toString(),
         manifest_bytes: (manifest.last_uploaded_size_bytes ?? 0n).toString(),
         schema_registry_bytes: (schemaRow?.uploaded_size_bytes ?? 0n).toString(),
         segment_object_count: indexStatus.segments.uploaded_count,
         routing_index_object_count: routingIndexStorage.object_count,
+        routing_lexicon_object_count: routingLexiconStorage.object_count,
         exact_index_object_count: indexStatus.exact_indexes.reduce((sum: number, entry: any) => sum + Number(entry.object_count ?? 0), 0),
         bundled_companion_object_count: companionStorage.object_count,
       },
@@ -748,6 +1317,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           BigInt(localStorageUsage.segment_cache_bytes) +
           BigInt(localStorageUsage.routing_index_cache_bytes) +
           BigInt(localStorageUsage.exact_index_cache_bytes) +
+          BigInt(localStorageUsage.lexicon_index_cache_bytes) +
           BigInt(localStorageUsage.companion_cache_bytes)
         ).toString(),
         wal_retained_bytes: row.wal_bytes.toString(),
@@ -756,6 +1326,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         segment_cache_bytes: String(localStorageUsage.segment_cache_bytes),
         routing_index_cache_bytes: String(localStorageUsage.routing_index_cache_bytes),
         exact_index_cache_bytes: String(localStorageUsage.exact_index_cache_bytes),
+        lexicon_index_cache_bytes: String(localStorageUsage.lexicon_index_cache_bytes),
         companion_cache_bytes: String(localStorageUsage.companion_cache_bytes),
         sqlite_shared_total_bytes: sqliteSharedBytes.toString(),
       },
@@ -798,6 +1369,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     const routingRuns = db.listIndexRuns(stream);
     const retiredRoutingRuns = db.listRetiredIndexRuns(stream);
     const routingStorage = db.getRoutingIndexStorage(stream);
+    const routingLexiconState = db.getLexiconIndexState(stream, "routing_key", "");
+    const routingLexiconRuns = db.listLexiconIndexRuns(stream, "routing_key", "");
+    const retiredRoutingLexiconRuns = db.listRetiredLexiconIndexRuns(stream, "routing_key", "");
+    const routingLexiconStorage =
+      db
+        .getLexiconIndexStorage(stream)
+        .find((entry) => entry.source_kind === "routing_key" && entry.source_name === "") ?? { object_count: 0, bytes: 0n };
     const secondaryIndexStorage = new Map(db.getSecondaryIndexStorage(stream).map((entry) => [entry.index_name, entry]));
 
     const exactIndexes = configuredExactIndexes(reg.search).map(({ name, kind, configHash }) => {
@@ -889,6 +1467,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         fully_indexed_uploaded_segments: reg.routingKey == null ? true : (routingState?.indexed_through ?? 0) >= uploadedSegmentCount,
         updated_at: timestampToIsoString(routingState?.updated_at_ms ?? null),
       },
+      routing_key_lexicon: {
+        configured: reg.routingKey != null,
+        indexed_segment_count: routingLexiconState?.indexed_through ?? 0,
+        lag_segments: Math.max(0, uploadedSegmentCount - (routingLexiconState?.indexed_through ?? 0)),
+        lag_ms: buildIndexLagMs(stream, row, routingLexiconState?.indexed_through ?? 0),
+        bytes_at_rest: routingLexiconStorage.bytes.toString(),
+        object_count: routingLexiconStorage.object_count,
+        active_run_count: routingLexiconRuns.length,
+        retired_run_count: retiredRoutingLexiconRuns.length,
+        fully_indexed_uploaded_segments: reg.routingKey == null ? true : (routingLexiconState?.indexed_through ?? 0) >= uploadedSegmentCount,
+        updated_at: timestampToIsoString(routingLexiconState?.updated_at_ms ?? null),
+      },
       exact_indexes: exactIndexes,
       bundled_companions: {
         object_count: currentCompanionRows.length,
@@ -952,9 +1542,25 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     if (closing) {
       return unavailable();
     }
+    const requestAbortController = new AbortController();
+    const abortFromClient = () => requestAbortController.abort(req.signal.reason);
+    let timedOut = false;
+    if (req.signal.aborted) requestAbortController.abort(req.signal.reason);
+    else req.signal.addEventListener("abort", abortFromClient, { once: true });
     try {
-      const resolved = await awaitWithCooperativeTimeout(
-        (async (): Promise<Response> => {
+      const runWithGate = async <T>(gate: ConcurrencyGate, fn: () => Promise<T>): Promise<T> =>
+        gate.run(fn, requestAbortController.signal);
+      const runForeground = async <T>(fn: () => Promise<T>): Promise<T> => {
+        const leaveForeground = foregroundActivity.enter();
+        try {
+          return await fn();
+        } finally {
+          leaveForeground();
+        }
+      };
+      const runForegroundWithGate = async <T>(gate: ConcurrencyGate, fn: () => Promise<T>): Promise<T> =>
+        runForeground(() => runWithGate(gate, fn));
+      const requestPromise = (async (): Promise<Response> => {
       let url: URL;
       try {
         url = new URL(req.url, "http://localhost");
@@ -969,15 +1575,12 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       if (path === "/metrics") {
         return json(200, metrics.snapshot());
       }
-
-      const rejectIfMemoryLimited = async (reqToCancel?: Request): Promise<Response | null> => {
-        if (!memory || memory.shouldAllow()) return null;
-        if (reqToCancel) await cancelRequestBody(reqToCancel);
-        memory.maybeGc("memory limit");
-        memory.maybeHeapSnapshot("memory limit");
-        metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "memory" });
-        return overloaded("server memory backpressure", "memory_backpressure");
-      };
+      if (req.method === "GET" && path === "/v1/server/_details") {
+        return json(200, buildServerDetails());
+      }
+      if (req.method === "GET" && path === "/v1/server/_mem") {
+        return json(200, buildServerMem());
+      }
 
       // /v1/streams
       if (req.method === "GET" && path === "/v1/streams") {
@@ -1016,6 +1619,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isAggregate = false;
         let isDetails = false;
         let isIndexStatus = false;
+        let isRoutingKeys = false;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
@@ -1035,6 +1639,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           segments.pop();
         } else if (segments[segments.length - 1] === "_index_status") {
           isIndexStatus = true;
+          segments.pop();
+        } else if (segments[segments.length - 1] === "_routing_keys") {
+          isRoutingKeys = true;
           segments.pop();
         } else if (
           segments.length >= 3 &&
@@ -1069,8 +1676,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             return json(200, regRes.value);
           }
           if (req.method === "POST") {
-            const memReject = await rejectIfMemoryLimited(req);
-            if (memReject) return memReject;
             let body: unknown;
             try {
               body = await req.json();
@@ -1135,8 +1740,6 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           }
 
           if (req.method === "POST") {
-            const memReject = await rejectIfMemoryLimited(req);
-            if (memReject) return memReject;
             let body: any;
             try {
               body = await req.json();
@@ -1253,6 +1856,53 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           });
         }
 
+        if (isRoutingKeys) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+          if (req.method !== "GET") return badRequest("unsupported method");
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return internalError();
+          if (regRes.value.routingKey == null) return badRequest("routing key not configured");
+          const limitRaw = url.searchParams.get("limit");
+          const limit = limitRaw == null ? 100 : Number(limitRaw);
+          if (!Number.isFinite(limit) || limit <= 0 || !Number.isInteger(limit)) return badRequest("invalid limit");
+          const after = url.searchParams.get("after");
+          const listRes = indexer?.listRoutingKeysResult
+            ? await runForeground(() => indexer.listRoutingKeysResult!(stream, after, limit))
+            : Result.err({ kind: "invalid_lexicon_index", message: "routing key lexicon unavailable" });
+          if (Result.isError(listRes)) return internalError(listRes.error.message);
+          return json(200, {
+            stream,
+            source: {
+              kind: "routing_key",
+              name: "",
+            },
+            took_ms: listRes.value.tookMs,
+            coverage: {
+              complete: listRes.value.coverage.complete,
+              indexed_segments: listRes.value.coverage.indexedSegments,
+              scanned_uploaded_segments: listRes.value.coverage.scannedUploadedSegments,
+              scanned_local_segments: listRes.value.coverage.scannedLocalSegments,
+              scanned_wal_rows: listRes.value.coverage.scannedWalRows,
+              possible_missing_uploaded_segments: listRes.value.coverage.possibleMissingUploadedSegments,
+              possible_missing_local_segments: listRes.value.coverage.possibleMissingLocalSegments,
+            },
+            timing: {
+              lexicon_run_get_ms: listRes.value.timing.lexiconRunGetMs,
+              lexicon_decode_ms: listRes.value.timing.lexiconDecodeMs,
+              lexicon_enumerate_ms: listRes.value.timing.lexiconEnumerateMs,
+              lexicon_merge_ms: listRes.value.timing.lexiconMergeMs,
+              fallback_scan_ms: listRes.value.timing.fallbackScanMs,
+              fallback_segment_get_ms: listRes.value.timing.fallbackSegmentGetMs,
+              fallback_wal_scan_ms: listRes.value.timing.fallbackWalScanMs,
+              lexicon_runs_loaded: listRes.value.timing.lexiconRunsLoaded,
+            },
+            keys: listRes.value.keys,
+            next_after: listRes.value.nextAfter,
+          });
+        }
+
         if (isSearch) {
           const srow = db.getStream(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
@@ -1270,7 +1920,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               ...requestRes.value,
               timeoutMs: clampSearchRequestTimeoutMs(requestRes.value.timeoutMs),
             };
-            const searchRes = await reader.searchResult({ stream, request });
+            const searchRes = await runForegroundWithGate(searchGate, () => reader.searchResult({ stream, request }));
             if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
             const status = searchRes.value.timedOut ? 408 : 200;
             return json(status, {
@@ -1343,7 +1993,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
           const requestRes = parseAggregateRequestBodyResult(regRes.value, body);
           if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
-          const aggregateRes = await reader.aggregateResult({ stream, request: requestRes.value });
+          const aggregateRes = await runForegroundWithGate(searchGate, () => reader.aggregateResult({ stream, request: requestRes.value }));
           if (Result.isError(aggregateRes)) return readerErrorResponse(aggregateRes.error);
           return json(200, {
             stream,
@@ -1421,114 +2071,114 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             content_type: contentType,
           });
           try {
-            const memReject = await rejectIfMemoryLimited(req);
-            if (memReject) return memReject;
-            const ab = await req.arrayBuffer();
-            if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
-            const bodyBytes = new Uint8Array(ab);
+            return await runWithGate(ingestGate, async () => {
+              const ab = await req.arrayBuffer();
+              if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
+              const bodyBytes = new Uint8Array(ab);
 
-            let srow = db.getStream(stream);
-            if (srow && db.isDeleted(srow)) {
-              db.hardDeleteStream(stream);
-              srow = null;
-            }
-            if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
-              db.hardDeleteStream(stream);
-              srow = null;
-            }
-
-          if (srow) {
-            const existingClosed = srow.closed !== 0;
-            const existingContentType = normalizeContentType(srow.content_type) ?? srow.content_type;
-            const ttlMatch =
-              ttlSeconds != null
-                ? srow.ttl_seconds != null && srow.ttl_seconds === ttlSeconds
-                : expiresAtMs != null
-                  ? srow.ttl_seconds == null && srow.expires_at_ms != null && srow.expires_at_ms === expiresAtMs
-                  : srow.ttl_seconds == null && srow.expires_at_ms == null;
-            if (existingContentType !== contentType || existingClosed !== streamClosed || !ttlMatch) {
-              return conflict("stream config mismatch");
-            }
-
-            const tailOffset = encodeOffset(srow.epoch, srow.next_offset - 1n);
-            const headers: Record<string, string> = {
-              "content-type": existingContentType,
-              "stream-next-offset": tailOffset,
-            };
-            if (existingClosed) headers["stream-closed"] = "true";
-            if (srow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(srow.expires_at_ms)).toISOString();
-            return new Response(null, { status: 200, headers: withNosniff(headers) });
-          }
-
-          db.ensureStream(stream, { contentType, expiresAtMs, ttlSeconds, closed: false });
-          notifier.notifyDetailsChanged(stream);
-          let lastOffset = -1n;
-          let appendedRows = 0;
-          let closedNow = false;
-
-          if (bodyBytes.byteLength > 0) {
-            const rowsRes = buildAppendRowsResult(stream, bodyBytes, contentType, routingKeyHeader, true);
-            if (Result.isError(rowsRes)) {
-              if (rowsRes.error.status === 500) return internalError();
-              return badRequest(rowsRes.error.message);
-            }
-            const rows = rowsRes.value.rows;
-            appendedRows = rows.length;
-            if (rows.length > 0 || streamClosed) {
-              const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
-                stream,
-                baseAppendMs: db.nowMs(),
-                rows,
-                contentType,
-                close: streamClosed,
-              }));
-              if (appendResOrResponse instanceof Response) return appendResOrResponse;
-              const appendRes = appendResOrResponse;
-              if (Result.isError(appendRes)) {
-                if (appendRes.error.kind === "overloaded") return overloaded();
-                return json(500, { error: { code: "internal", message: "append failed" } });
+              let srow = db.getStream(stream);
+              if (srow && db.isDeleted(srow)) {
+                db.hardDeleteStream(stream);
+                srow = null;
               }
-              lastOffset = appendRes.value.lastOffset;
-              closedNow = appendRes.value.closed;
-            }
-          } else if (streamClosed) {
-            const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
-              stream,
-              baseAppendMs: db.nowMs(),
-              rows: [],
-              contentType,
-              close: true,
-            }));
-            if (appendResOrResponse instanceof Response) return appendResOrResponse;
-            const appendRes = appendResOrResponse;
-            if (Result.isError(appendRes)) {
-              if (appendRes.error.kind === "overloaded") return overloaded();
-              return json(500, { error: { code: "internal", message: "close failed" } });
-            }
-            lastOffset = appendRes.value.lastOffset;
-            closedNow = appendRes.value.closed;
-          }
+              if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
+                db.hardDeleteStream(stream);
+                srow = null;
+              }
 
-          recordAppendOutcome({
-            stream,
-            lastOffset,
-            appendedRows,
-            metricsBytes: bodyBytes.byteLength,
-            ingestedBytes: bodyBytes.byteLength,
-            touched: bodyBytes.byteLength > 0 || streamClosed,
-            closed: closedNow,
-          });
+              if (srow) {
+                const existingClosed = srow.closed !== 0;
+                const existingContentType = normalizeContentType(srow.content_type) ?? srow.content_type;
+                const ttlMatch =
+                  ttlSeconds != null
+                    ? srow.ttl_seconds != null && srow.ttl_seconds === ttlSeconds
+                    : expiresAtMs != null
+                      ? srow.ttl_seconds == null && srow.expires_at_ms != null && srow.expires_at_ms === expiresAtMs
+                      : srow.ttl_seconds == null && srow.expires_at_ms == null;
+                if (existingContentType !== contentType || existingClosed !== streamClosed || !ttlMatch) {
+                  return conflict("stream config mismatch");
+                }
 
-            const createdRow = db.getStream(stream)!;
-            const tailOffset = encodeOffset(createdRow.epoch, createdRow.next_offset - 1n);
-            const headers: Record<string, string> = {
-              "content-type": contentType,
-              "stream-next-offset": appendedRows > 0 || streamClosed ? encodeOffset(createdRow.epoch, lastOffset) : tailOffset,
-              location: req.url,
-            };
-            if (streamClosed || closedNow) headers["stream-closed"] = "true";
-            if (createdRow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(createdRow.expires_at_ms)).toISOString();
-            return new Response(null, { status: 201, headers: withNosniff(headers) });
+                const tailOffset = encodeOffset(srow.epoch, srow.next_offset - 1n);
+                const headers: Record<string, string> = {
+                  "content-type": existingContentType,
+                  "stream-next-offset": tailOffset,
+                };
+                if (existingClosed) headers["stream-closed"] = "true";
+                if (srow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(srow.expires_at_ms)).toISOString();
+                return new Response(null, { status: 200, headers: withNosniff(headers) });
+              }
+
+              db.ensureStream(stream, { contentType, expiresAtMs, ttlSeconds, closed: false });
+              notifier.notifyDetailsChanged(stream);
+              let lastOffset = -1n;
+              let appendedRows = 0;
+              let closedNow = false;
+
+              if (bodyBytes.byteLength > 0) {
+                const rowsRes = buildAppendRowsResult(stream, bodyBytes, contentType, routingKeyHeader, true);
+                if (Result.isError(rowsRes)) {
+                  if (rowsRes.error.status === 500) return internalError();
+                  return badRequest(rowsRes.error.message);
+                }
+                const rows = rowsRes.value.rows;
+                appendedRows = rows.length;
+                if (rows.length > 0 || streamClosed) {
+                  const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
+                    stream,
+                    baseAppendMs: db.nowMs(),
+                    rows,
+                    contentType,
+                    close: streamClosed,
+                  }));
+                  if (appendResOrResponse instanceof Response) return appendResOrResponse;
+                  const appendRes = appendResOrResponse;
+                  if (Result.isError(appendRes)) {
+                    if (appendRes.error.kind === "overloaded") return overloaded();
+                    return json(500, { error: { code: "internal", message: "append failed" } });
+                  }
+                  lastOffset = appendRes.value.lastOffset;
+                  closedNow = appendRes.value.closed;
+                }
+              } else if (streamClosed) {
+                const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
+                  stream,
+                  baseAppendMs: db.nowMs(),
+                  rows: [],
+                  contentType,
+                  close: true,
+                }));
+                if (appendResOrResponse instanceof Response) return appendResOrResponse;
+                const appendRes = appendResOrResponse;
+                if (Result.isError(appendRes)) {
+                  if (appendRes.error.kind === "overloaded") return overloaded();
+                  return json(500, { error: { code: "internal", message: "close failed" } });
+                }
+                lastOffset = appendRes.value.lastOffset;
+                closedNow = appendRes.value.closed;
+              }
+
+              recordAppendOutcome({
+                stream,
+                lastOffset,
+                appendedRows,
+                metricsBytes: bodyBytes.byteLength,
+                ingestedBytes: bodyBytes.byteLength,
+                touched: bodyBytes.byteLength > 0 || streamClosed,
+                closed: closedNow,
+              });
+
+              const createdRow = db.getStream(stream)!;
+              const tailOffset = encodeOffset(createdRow.epoch, createdRow.next_offset - 1n);
+              const headers: Record<string, string> = {
+                "content-type": contentType,
+                "stream-next-offset": appendedRows > 0 || streamClosed ? encodeOffset(createdRow.epoch, lastOffset) : tailOffset,
+                location: req.url,
+              };
+              if (streamClosed || closedNow) headers["stream-closed"] = "true";
+              if (createdRow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(createdRow.expires_at_ms)).toISOString();
+              return new Response(null, { status: 201, headers: withNosniff(headers) });
+            });
           } finally {
             leaveAppendPhase?.();
           }
@@ -1604,102 +2254,102 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             stream_content_type: streamContentType,
           });
           try {
-            const memReject = await rejectIfMemoryLimited(req);
-            if (memReject) return memReject;
-            const ab = await req.arrayBuffer();
-            if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
-            const bodyBytes = new Uint8Array(ab);
+            return await runWithGate(ingestGate, async () => {
+              const ab = await req.arrayBuffer();
+              if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
+              const bodyBytes = new Uint8Array(ab);
 
-            const isCloseOnly = streamClosed && bodyBytes.byteLength === 0;
-            if (bodyBytes.byteLength === 0 && !streamClosed) return badRequest("empty body");
+              const isCloseOnly = streamClosed && bodyBytes.byteLength === 0;
+              if (bodyBytes.byteLength === 0 && !streamClosed) return badRequest("empty body");
 
-            let reqContentType = normalizeContentType(req.headers.get("content-type"));
-            if (!isCloseOnly && !reqContentType) return badRequest("missing content-type");
+              let reqContentType = normalizeContentType(req.headers.get("content-type"));
+              if (!isCloseOnly && !reqContentType) return badRequest("missing content-type");
 
-            const routingKeyHeader = req.headers.get("stream-key");
-            let rows: AppendRow[] = [];
-            if (!isCloseOnly) {
-              const rowsRes = buildAppendRowsResult(stream, bodyBytes, reqContentType!, routingKeyHeader, false);
-              if (Result.isError(rowsRes)) {
-                if (rowsRes.error.status === 500) return internalError();
-                return badRequest(rowsRes.error.message);
+              const routingKeyHeader = req.headers.get("stream-key");
+              let rows: AppendRow[] = [];
+              if (!isCloseOnly) {
+                const rowsRes = buildAppendRowsResult(stream, bodyBytes, reqContentType!, routingKeyHeader, false);
+                if (Result.isError(rowsRes)) {
+                  if (rowsRes.error.status === 500) return internalError();
+                  return badRequest(rowsRes.error.message);
+                }
+                rows = rowsRes.value.rows;
               }
-              rows = rowsRes.value.rows;
-            }
 
-            const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
-              stream,
-              baseAppendMs,
-              rows,
-              contentType: reqContentType ?? streamContentType,
-              streamSeq,
-              producer,
-              close: streamClosed,
-            }));
-            if (appendResOrResponse instanceof Response) return appendResOrResponse;
-            const appendRes = appendResOrResponse;
+              const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
+                stream,
+                baseAppendMs,
+                rows,
+                contentType: reqContentType ?? streamContentType,
+                streamSeq,
+                producer,
+                close: streamClosed,
+              }));
+              if (appendResOrResponse instanceof Response) return appendResOrResponse;
+              const appendRes = appendResOrResponse;
 
-            if (Result.isError(appendRes)) {
-              const err = appendRes.error;
-              if (err.kind === "overloaded") return overloaded();
-              if (err.kind === "gone") return notFound("stream expired");
-              if (err.kind === "not_found") return notFound();
-              if (err.kind === "content_type_mismatch") return conflict("content-type mismatch");
-              if (err.kind === "stream_seq") {
-                return conflict("sequence mismatch", {
-                  "stream-expected-seq": err.expected,
-                  "stream-received-seq": err.received,
-                });
+              if (Result.isError(appendRes)) {
+                const err = appendRes.error;
+                if (err.kind === "overloaded") return overloaded();
+                if (err.kind === "gone") return notFound("stream expired");
+                if (err.kind === "not_found") return notFound();
+                if (err.kind === "content_type_mismatch") return conflict("content-type mismatch");
+                if (err.kind === "stream_seq") {
+                  return conflict("sequence mismatch", {
+                    "stream-expected-seq": err.expected,
+                    "stream-received-seq": err.received,
+                  });
+                }
+                if (err.kind === "closed") {
+                  const headers: Record<string, string> = {
+                    "stream-next-offset": encodeOffset(srow.epoch, err.lastOffset),
+                    "stream-closed": "true",
+                  };
+                  return new Response(null, { status: 409, headers: withNosniff(headers) });
+                }
+                if (err.kind === "producer_stale_epoch") {
+                  return new Response(null, {
+                    status: 403,
+                    headers: withNosniff({ "producer-epoch": String(err.producerEpoch) }),
+                  });
+                }
+                if (err.kind === "producer_gap") {
+                  return new Response(null, {
+                    status: 409,
+                    headers: withNosniff({
+                      "producer-expected-seq": String(err.expected),
+                      "producer-received-seq": String(err.received),
+                    }),
+                  });
+                }
+                if (err.kind === "producer_epoch_seq") return badRequest("invalid producer sequence");
+                return json(500, { error: { code: "internal", message: "append failed" } });
               }
-              if (err.kind === "closed") {
-                const headers: Record<string, string> = {
-                  "stream-next-offset": encodeOffset(srow.epoch, err.lastOffset),
-                  "stream-closed": "true",
-                };
-                return new Response(null, { status: 409, headers: withNosniff(headers) });
-              }
-              if (err.kind === "producer_stale_epoch") {
-                return new Response(null, {
-                  status: 403,
-                  headers: withNosniff({ "producer-epoch": String(err.producerEpoch) }),
-                });
-              }
-              if (err.kind === "producer_gap") {
-                return new Response(null, {
-                  status: 409,
-                  headers: withNosniff({
-                    "producer-expected-seq": String(err.expected),
-                    "producer-received-seq": String(err.received),
-                  }),
-                });
-              }
-              if (err.kind === "producer_epoch_seq") return badRequest("invalid producer sequence");
-              return json(500, { error: { code: "internal", message: "append failed" } });
-            }
-            const res = appendRes.value;
+              const res = appendRes.value;
 
-            const appendBytes = rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
-            recordAppendOutcome({
-              stream,
-              lastOffset: res.lastOffset,
-              appendedRows: res.appendedRows,
-              metricsBytes: appendBytes,
-              ingestedBytes: bodyBytes.byteLength,
-              touched: true,
-              closed: res.closed,
+              const appendBytes = rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
+              recordAppendOutcome({
+                stream,
+                lastOffset: res.lastOffset,
+                appendedRows: res.appendedRows,
+                metricsBytes: appendBytes,
+                ingestedBytes: bodyBytes.byteLength,
+                touched: true,
+                closed: res.closed,
+              });
+
+              const headers: Record<string, string> = {
+                "stream-next-offset": encodeOffset(srow.epoch, res.lastOffset),
+              };
+              if (res.closed) headers["stream-closed"] = "true";
+              if (producer && res.producer) {
+                headers["producer-epoch"] = String(res.producer.epoch);
+                headers["producer-seq"] = String(res.producer.seq);
+              }
+
+              const status = producer && res.appendedRows > 0 ? 200 : 204;
+              return new Response(null, { status, headers: withNosniff(headers) });
             });
-
-            const headers: Record<string, string> = {
-              "stream-next-offset": encodeOffset(srow.epoch, res.lastOffset),
-            };
-            if (res.closed) headers["stream-closed"] = "true";
-            if (producer && res.producer) {
-              headers["producer-epoch"] = String(res.producer.epoch);
-              headers["producer-seq"] = String(res.producer.seq);
-            }
-
-            const status = producer && res.appendedRows > 0 ? 200 : 204;
-            return new Response(null, { status, headers: withNosniff(headers) });
           } finally {
             leaveAppendPhase?.();
           }
@@ -1810,6 +2460,20 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             }
 
             if (format === "json") {
+              const encodedRes = encodeStoredJsonArrayResult(stream, batch.records);
+              if (Result.isError(encodedRes)) {
+                if (encodedRes.error.status === 500) return internalError();
+                return badRequest(encodedRes.error.message);
+              }
+              if (encodedRes.value) {
+                metrics.recordRead(encodedRes.value.byteLength, batch.records.length);
+                const headers: Record<string, string> = {
+                  "content-type": "application/json",
+                  ...baseHeaders,
+                };
+                return new Response(bodyBufferFromBytes(encodedRes.value), { status: 200, headers: withNosniff(headers) });
+              }
+
               const decoded = decodeJsonRecords(stream, batch.records);
               if (Result.isError(decoded)) {
                 if (decoded.error.status === 500) return internalError();
@@ -1830,9 +2494,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               "content-type": streamContentType,
               ...baseHeaders,
             };
-            const outBody = new Uint8Array(outBytes.byteLength);
-            outBody.set(outBytes);
-            return new Response(outBody, { status: 200, headers: withNosniff(headers) });
+            return new Response(bodyBufferFromBytes(outBytes), { status: 200, headers: withNosniff(headers) });
           };
 
           if (mode === "sse") {
@@ -1871,7 +2533,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                         records: [],
                       };
                     } else {
-                      const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
+                      const batchRes = await runForegroundWithGate(readGate, () =>
+                        reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter })
+                      );
                       if (Result.isError(batchRes)) {
                         fail(batchRes.error.message);
                         return;
@@ -1885,12 +2549,21 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                     if (batch.records.length > 0) {
                       let dataPayload = "";
                       if (format === "json") {
-                        const decoded = decodeJsonRecords(stream, batch.records);
-                        if (Result.isError(decoded)) {
-                          fail(decoded.error.message);
+                        const encodedRes = encodeStoredJsonArrayResult(stream, batch.records);
+                        if (Result.isError(encodedRes)) {
+                          fail(encodedRes.error.message);
                           return;
                         }
-                        dataPayload = JSON.stringify(decoded.value.values);
+                        if (encodedRes.value) {
+                          dataPayload = new TextDecoder().decode(encodedRes.value);
+                        } else {
+                          const decoded = decodeJsonRecords(stream, batch.records);
+                          if (Result.isError(decoded)) {
+                            fail(decoded.error.message);
+                            return;
+                          }
+                          dataPayload = JSON.stringify(decoded.value.values);
+                        }
                       } else {
                         const outBytes = concatPayloads(batch.records.map((r) => r.payload));
                         dataPayload =
@@ -1976,7 +2649,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               const deadline = Date.now() + (timeoutMs ?? defaultLongPollTimeoutMs);
               let currentOffset = tailOffset;
               while (true) {
-                const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
+                const batchRes = await runForegroundWithGate(readGate, () =>
+                  reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter })
+                );
                 if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
                 const batch = batchRes.value;
                 if (batch.records.length > 0 || batch.filterScanLimitReached) {
@@ -2035,7 +2710,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             const deadline = Date.now() + (timeoutMs ?? defaultLongPollTimeoutMs);
             let currentOffset = offset;
             while (true) {
-              const batchRes = await reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter });
+              const batchRes = await runForegroundWithGate(readGate, () =>
+                reader.readResult({ stream, offset: currentOffset, key: key ?? null, format, filter })
+              );
               if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
               const batch = batchRes.value;
               if (batch.records.length > 0 || batch.filterScanLimitReached) {
@@ -2078,7 +2755,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             return new Response(null, { status: 204, headers: withNosniff(headers) });
           }
 
-          const batchRes = await reader.readResult({ stream, offset, key: key ?? null, format, filter });
+          const batchRes = await runForegroundWithGate(readGate, () =>
+            reader.readResult({ stream, offset, key: key ?? null, format, filter })
+          );
           if (Result.isError(batchRes)) return readerErrorResponse(batchRes.error);
           const batch = batchRes.value;
           const cacheControl = "immutable, max-age=31536000";
@@ -2089,21 +2768,29 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       }
 
       return notFound();
-        })(),
-        HTTP_RESOLVER_TIMEOUT_MS
-      );
+        })();
+      const resolved = await awaitWithCooperativeTimeout(requestPromise, HTTP_RESOLVER_TIMEOUT_MS);
       if (resolved === TIMEOUT_SENTINEL) {
+        timedOut = true;
+        requestAbortController.abort(new Error("request timed out"));
+        void requestPromise.catch(() => {});
         await cancelRequestBody(req);
         return requestTimeout();
       }
       return resolved;
     } catch (e: any) {
+      if (isAbortLikeError(e)) {
+        if (timedOut) return requestTimeout();
+        return new Response(null, { status: 204 });
+      }
       const msg = String(e?.message ?? e);
       if (!closing && !msg.includes("Statement has finalized")) {
         // eslint-disable-next-line no-console
         console.error("request failed", e);
       }
       return internalError();
+    } finally {
+      req.signal.removeEventListener("abort", abortFromClient);
     }
   };
 
@@ -2142,6 +2829,12 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       stats,
       backpressure,
       memory,
+      concurrency: {
+        ingest: ingestGate,
+        read: readGate,
+        search: searchGate,
+        asyncIndex: asyncIndexGate,
+      },
       memorySampler,
     },
   };

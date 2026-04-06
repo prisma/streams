@@ -120,7 +120,6 @@ Optional columns (only if needed by protocol/indexing):
 
 Indexes:
 - `CREATE UNIQUE INDEX wal_stream_offset_uniq ON wal(stream, offset);`
-- `CREATE INDEX wal_stream_offset_idx ON wal(stream, offset);`
 - Optional for time-based ops:
   - `CREATE INDEX wal_ts_idx ON wal(ts_ms);`
 
