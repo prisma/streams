@@ -16,7 +16,7 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(1024).asyncIndexConcurrency).toBe(1);
     expect(tuneForPreset(1024).segmenterWorkers).toBe(1);
     expect(tuneForPreset(1024).uploadConcurrency).toBe(2);
-    expect(tuneForPreset(1024).indexBuildConcurrency).toBe(1);
+    expect(tuneForPreset(1024).indexBuilders).toBe(1);
     expect(tuneForPreset(1024).lexiconIndexCacheMb).toBe(32);
     expect(tuneForPreset(1024).searchCompanionBatchSegments).toBe(1);
     expect(tuneForPreset(1024).searchCompanionYieldBlocks).toBe(1);
@@ -29,8 +29,8 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(2048).searchConcurrency).toBe(2);
     expect(tuneForPreset(2048).asyncIndexConcurrency).toBe(1);
     expect(tuneForPreset(2048).segmenterWorkers).toBe(1);
-    expect(tuneForPreset(2048).uploadConcurrency).toBe(2);
-    expect(tuneForPreset(2048).indexBuildConcurrency).toBe(1);
+    expect(tuneForPreset(2048).uploadConcurrency).toBe(4);
+    expect(tuneForPreset(2048).indexBuilders).toBe(1);
     expect(tuneForPreset(2048).lexiconIndexCacheMb).toBe(64);
     expect(tuneForPreset(2048).searchCompanionBatchSegments).toBe(1);
     expect(tuneForPreset(2048).searchCompanionYieldBlocks).toBe(1);
@@ -47,7 +47,7 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(4096).asyncIndexConcurrency).toBe(2);
     expect(tuneForPreset(4096).segmenterWorkers).toBe(2);
     expect(tuneForPreset(4096).uploadConcurrency).toBe(4);
-    expect(tuneForPreset(4096).indexBuildConcurrency).toBe(2);
+    expect(tuneForPreset(4096).indexBuilders).toBe(2);
     expect(tuneForPreset(4096).lexiconIndexCacheMb).toBe(128);
     expect(tuneForPreset(4096).searchCompanionBatchSegments).toBe(2);
     expect(tuneForPreset(4096).searchCompanionYieldBlocks).toBe(2);

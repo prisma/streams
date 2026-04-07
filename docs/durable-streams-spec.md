@@ -336,7 +336,8 @@ If `Stream-Seq` is provided:
 - `200 OK`
 - Must include `Stream-Next-Offset` (the offset of the last appended entry).
 - `429 Too Many Requests` may be returned when the append queue or local
-  backlog budget is full
+  backlog budget is full, or when indexing is too far behind to retain the
+  required local segment window
 
 Current implementation timeout behavior:
 
@@ -640,6 +641,7 @@ Rules:
   - ingest queue fill
   - local backlog pressure
   - pending uploads
+  - uploader path telemetry under `runtime.uploads.path`
   - the effective concurrency gate state for ingest, read, search, and async index
   - bounded top-N stream contributors for local storage, retained WAL, touch journals, and notifier waiters:
     - `top_streams`
@@ -963,6 +965,11 @@ Headers:
   - exact secondary index state and runs
   - routing-key lexicon state and runs
   - bundled search companion plans and per-segment companion catalog rows
+  - per-stream object-store request-accounting counters
+  - local async-index action history rows
+- After the tombstone manifest publish for the delete completes, the server
+  clears the per-stream request-accounting counters again so recreating the same
+  stream name starts from zeroed counters.
 - Does not synchronously delete already-published segment, manifest, schema, or
   index objects from remote object storage.
 - Must be idempotent.
@@ -978,7 +985,8 @@ Recommended status codes:
 - `409 Conflict`: `Stream-Seq` mismatch
 - `410 Gone`: expired stream (or `404` if you prefer hiding existence; choose one and keep it consistent)
 - `413 Payload Too Large`: append body too large
-- `429 Too Many Requests`: transient queue or backlog backpressure
+- `429 Too Many Requests`: transient queue, backlog, or index-locality
+  backpressure
 - `503 Service Unavailable`: transient server unavailability, such as shutdown
 - `500 Internal Server Error`: unexpected errors
 
@@ -987,6 +995,11 @@ Errors should be JSON:
 ```json
 {"error": {"code": "...", "message": "..."}}
 ```
+
+Current `429` codes include:
+
+- `overloaded`
+- `index_building_behind`
 
 Transient `429` and `503` responses should include `Retry-After` so clients can
 apply server-guided backoff.

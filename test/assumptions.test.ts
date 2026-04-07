@@ -7,6 +7,7 @@ import { loadConfig, type Config } from "../src/config";
 import { STREAM_FLAG_DELETED, type SqliteDurableStore } from "../src/db/db";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 import { parseOffset } from "../src/offset";
+import { streamHash16Hex } from "../src/util/stream_paths";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -77,6 +78,33 @@ function seedAccelerationState(db: SqliteDurableStore, stream: string): void {
   );
 }
 
+function seedObjectStoreCounters(db: SqliteDurableStore, stream: string): void {
+  const streamHash = streamHash16Hex(stream);
+  db.recordObjectStoreRequestByHash(streamHash, "segment", "put", 128, 2);
+  db.recordObjectStoreRequestByHash(streamHash, "manifest", "put", 64, 1);
+}
+
+function seedAsyncIndexAction(db: SqliteDurableStore, stream: string): void {
+  const seq = db.beginAsyncIndexAction({
+    stream,
+    actionKind: "routing_l0_build",
+    targetKind: "routing_index",
+    inputKind: "segment",
+    inputCount: 1,
+    inputSizeBytes: 128n,
+    startSegment: 0,
+    endSegment: 0,
+    detailJson: JSON.stringify({ level: 0 }),
+  });
+  db.completeAsyncIndexAction({
+    seq,
+    status: "succeeded",
+    outputCount: 1,
+    outputSizeBytes: 64n,
+    detailJson: JSON.stringify({ level: 0 }),
+  });
+}
+
 function expectAccelerationStateCleared(db: SqliteDurableStore, stream: string): void {
   expect(db.getIndexState(stream)).toBeNull();
   expect(db.listIndexRuns(stream)).toHaveLength(0);
@@ -86,6 +114,21 @@ function expectAccelerationStateCleared(db: SqliteDurableStore, stream: string):
   expect(db.listLexiconIndexRuns(stream, "routing_key", "")).toHaveLength(0);
   expect(db.getSearchCompanionPlan(stream)).toBeNull();
   expect(db.listSearchSegmentCompanions(stream)).toHaveLength(0);
+}
+
+function expectObjectStoreCountersCleared(db: SqliteDurableStore, stream: string): void {
+  const summary = db.getObjectStoreRequestSummaryByHash(streamHash16Hex(stream));
+  expect(summary.puts).toBe(0n);
+  expect(summary.reads).toBe(0n);
+  expect(summary.gets).toBe(0n);
+  expect(summary.heads).toBe(0n);
+  expect(summary.lists).toBe(0n);
+  expect(summary.deletes).toBe(0n);
+  expect(summary.by_artifact).toHaveLength(0);
+}
+
+function expectAsyncIndexActionsCleared(db: SqliteDurableStore, stream: string): void {
+  expect(db.listAsyncIndexActions(stream, 10)).toHaveLength(0);
 }
 
 describe("assumptions", () => {
@@ -486,10 +529,13 @@ describe("assumptions", () => {
 
     await fetch(`${baseUrl}/v1/stream/del`, { method: "PUT" });
     seedAccelerationState(app.deps.db, "del");
+    seedObjectStoreCounters(app.deps.db, "del");
+    seedAsyncIndexAction(app.deps.db, "del");
     expect(app.deps.db.getIndexState("del")).not.toBeNull();
     expect(app.deps.db.listSecondaryIndexStates("del")).toHaveLength(1);
     expect(app.deps.db.listLexiconIndexStates("del")).toHaveLength(1);
     expect(app.deps.db.getSearchCompanionPlan("del")).not.toBeNull();
+    expect(app.deps.db.getObjectStoreRequestSummaryByHash(streamHash16Hex("del")).puts).toBeGreaterThan(0n);
 
     await fetch(`${baseUrl}/v1/stream/del`, { method: "DELETE" });
     const r = await fetch(`${baseUrl}/v1/stream/del?offset=-1`);
@@ -502,6 +548,28 @@ describe("assumptions", () => {
     expect(deletedRow).not.toBeNull();
     expect(deletedRow && app.deps.db.isDeleted(deletedRow)).toBe(true);
     expectAccelerationStateCleared(app.deps.db, "del");
+    expectObjectStoreCountersCleared(app.deps.db, "del");
+    expectAsyncIndexActionsCleared(app.deps.db, "del");
+
+    server.stop();
+    app.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("delete resets per-stream request counters even after tombstone manifest publication", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
+    const cfg = makeConfig(root);
+    const app = createApp(cfg, new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+
+    await fetch(`${baseUrl}/v1/stream/reset-counters`, { method: "PUT" });
+    seedObjectStoreCounters(app.deps.db, "reset-counters");
+    expect(app.deps.db.getObjectStoreRequestSummaryByHash(streamHash16Hex("reset-counters")).puts).toBeGreaterThan(0n);
+
+    const deleted = await fetch(`${baseUrl}/v1/stream/reset-counters`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expectObjectStoreCountersCleared(app.deps.db, "reset-counters");
 
     server.stop();
     app.close();
@@ -519,10 +587,13 @@ describe("assumptions", () => {
         .query(`UPDATE streams SET stream_flags = (stream_flags | ?), updated_at_ms=? WHERE stream=?;`)
         .run(STREAM_FLAG_DELETED, now, "stale");
       seedAccelerationState(app.deps.db, "stale");
+      seedObjectStoreCounters(app.deps.db, "stale");
+      seedAsyncIndexAction(app.deps.db, "stale");
       expect(app.deps.db.getIndexState("stale")).not.toBeNull();
       expect(app.deps.db.listSecondaryIndexStates("stale")).toHaveLength(1);
       expect(app.deps.db.listLexiconIndexStates("stale")).toHaveLength(1);
       expect(app.deps.db.getSearchCompanionPlan("stale")).not.toBeNull();
+      expect(app.deps.db.getObjectStoreRequestSummaryByHash(streamHash16Hex("stale")).puts).toBeGreaterThan(0n);
     } finally {
       app.close();
     }
@@ -533,6 +604,8 @@ describe("assumptions", () => {
       expect(deletedRow).not.toBeNull();
       expect(deletedRow && restarted.deps.db.isDeleted(deletedRow)).toBe(true);
       expectAccelerationStateCleared(restarted.deps.db, "stale");
+      expectObjectStoreCountersCleared(restarted.deps.db, "stale");
+      expectAsyncIndexActionsCleared(restarted.deps.db, "stale");
     } finally {
       restarted.close();
       rmSync(root, { recursive: true, force: true });

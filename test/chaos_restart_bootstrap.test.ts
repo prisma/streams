@@ -154,10 +154,9 @@ describe("chaos restart + bootstrap", () => {
       const cfg = makeConfig(root, {
         indexL0SpanSegments: 4,
         indexCheckIntervalMs: 50,
-        indexBuildConcurrency: 2,
+        indexBuilders: 2,
         indexCompactionFanout: 4,
         indexMaxLevel: 2,
-        indexCompactionConcurrency: 2,
       });
       let app = createApp(cfg, chaosStore);
 
@@ -226,10 +225,9 @@ describe("chaos restart + bootstrap", () => {
         const cfg2 = makeConfig(root2, {
           indexL0SpanSegments: 4,
           indexCheckIntervalMs: 50,
-          indexBuildConcurrency: 2,
+          indexBuilders: 2,
           indexCompactionFanout: 4,
           indexMaxLevel: 2,
-          indexCompactionConcurrency: 2,
         });
         await bootstrapFromR2(cfg2, bootstrapStore, { clearLocal: true });
         const app2 = createApp(cfg2, bootstrapStore);

@@ -232,8 +232,8 @@ describe("metrics profile", () => {
       uploadConcurrency: 2,
       indexL0SpanSegments: 1,
       indexCheckIntervalMs: 10,
-      segmentCacheMaxBytes: 0,
-      segmentFooterCacheEntries: 0,
+      segmentCacheMaxBytes: 64 * 1024 * 1024,
+      segmentFooterCacheEntries: 128,
       metricsFlushIntervalMs: 0,
     });
     try {

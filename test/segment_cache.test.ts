@@ -65,7 +65,7 @@ describe("segment disk cache", () => {
     }
   });
 
-  test("stats track hits/misses and pinned mappings can sit above budget", () => {
+  test("required indexing entries reject overflow instead of exceeding budget", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
     try {
       const cache = new SegmentDiskCache(root, 4);
@@ -73,28 +73,31 @@ describe("segment disk cache", () => {
       const key2 = "streams/b/segments/0000000000000000.bin";
       const payload = new Uint8Array([1, 2, 3, 4]);
       cache.put(key1, payload);
+      expect(cache.markRequiredForIndexing(key1)).toBe(true);
       cache.get(key1); // hit
       cache.get("missing"); // miss
-      cache.put(key2, payload); // eviction
+      expect(cache.put(key2, payload)).toBe(false);
 
       const stats = cache.stats();
       expect(stats.hits).toBe(1);
       expect(stats.misses).toBe(1);
       expect(stats.evictions).toBe(0);
-      expect(stats.entryCount).toBe(2);
+      expect(stats.entryCount).toBe(1);
       expect(stats.maxBytes).toBe(4);
-      expect(stats.usedBytes).toBeGreaterThan(stats.maxBytes);
+      expect(stats.usedBytes).toBeLessThanOrEqual(stats.maxBytes);
       expect(stats.mappedEntryCount).toBe(1);
       expect(stats.pinnedEntryCount).toBe(1);
+      expect(stats.requiredEntryCount).toBe(1);
+      expect(stats.requiredBytes).toBe(4);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("mapped files stay pinned and readable after cache pressure", () => {
+  test("mapped files stay readable after on-disk eviction pressure", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
     try {
-      const cache = new SegmentDiskCache(root, 8, 4);
+      const cache = new SegmentDiskCache(root, 4, 4);
       const key1 = "streams/a/segments/0000000000000000.bin";
       const key2 = "streams/b/segments/0000000000000000.bin";
       const payload1 = new Uint8Array([1, 2, 3, 4]);
@@ -105,12 +108,14 @@ describe("segment disk cache", () => {
       expect(mapped && Array.from(mapped.bytes)).toEqual(Array.from(payload1));
 
       expect(cache.put(key2, payload2)).toBe(true);
-      expect(cache.has(key1)).toBe(true);
+      expect(cache.has(key1)).toBe(false);
       expect(cache.has(key2)).toBe(true);
+      expect(Array.from(cache.get(key1) ?? new Uint8Array())).toEqual(Array.from(payload1));
 
       const stats = cache.stats();
       expect(stats.mappedEntryCount).toBe(1);
       expect(stats.pinnedEntryCount).toBe(1);
+      expect(stats.usedBytes).toBeLessThanOrEqual(stats.maxBytes);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

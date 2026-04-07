@@ -58,9 +58,9 @@ Each assumption must have a corresponding conformance test.
 - Test: append one entry, decode Stream-Next-Offset and assert epoch=0.
 
 13) Stream deletion is a tombstone in SQLite, but stream-owned acceleration state is scrubbed immediately; objects in R2 are not synchronously deleted.
-- Behavior: `DELETE /v1/stream/{name}` keeps the tombstoned stream row, removes routing/exact/lexicon/companion state for that stream in the same local transaction, and startup reconciliation re-scrubs any stale deleted-stream acceleration rows left by older builds.
+- Behavior: `DELETE /v1/stream/{name}` keeps the tombstoned stream row, removes routing/exact/lexicon/companion state plus per-stream object-store request-accounting counters and local `async_index_actions` rows for that stream in the same local transaction, then clears the same request counters again after the delete-manifest publish so recreating the same stream name starts at zero. Startup reconciliation re-scrubs any stale deleted-stream state left by older builds.
 - Rationale: avoids slow object-store deletion on the request path while preventing deleted streams from leaving orphaned async-index state behind.
-- Test: DELETE then GET returns 404/410, `/v1/streams` excludes the stream, and all per-stream acceleration tables are empty. A restart also clears stale deleted-stream acceleration rows.
+- Test: DELETE then GET returns 404/410, `/v1/streams` excludes the stream, and all per-stream acceleration tables, request-accounting rows, and local async-index action rows are empty. A restart also clears stale deleted-stream state.
 
 14) Stream list excludes deleted and expired streams.
 - Rationale: operationally expected; matches UI expectations.

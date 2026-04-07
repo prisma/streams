@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { SecondaryIndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
@@ -7,8 +6,7 @@ import type { ObjectStore } from "../objectstore/interface";
 import { SchemaRegistryStore } from "../schema/registry";
 import { SegmentDiskCache } from "../segment/cache";
 import { loadSegmentBytesCached } from "../segment/cached_segment";
-import { iterateBlockRecordsResult } from "../segment/format";
-import { retry } from "../util/retry";
+import { retry, retryAbortable } from "../util/retry";
 import { dsError } from "../util/ds_error.ts";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { siphash24 } from "../util/siphash";
@@ -26,12 +24,15 @@ import {
   type IndexRun,
 } from "./run_format";
 import {
-  extractSecondaryIndexValuesForFieldResult,
   extractSecondaryIndexValuesResult,
   getConfiguredSecondaryIndexes,
   hashSecondaryIndexField,
   type SecondaryIndexField,
 } from "./secondary_schema";
+import type { IndexSegmentLocalityManager } from "./segment_locality";
+import { IndexBuildWorkerPool } from "./index_build_worker_pool";
+import type { SecondaryCompactionRunSource } from "./secondary_compaction_build";
+import { beginAsyncIndexAction } from "./async_index_actions";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 
@@ -52,8 +53,6 @@ function binarySearch(values: bigint[], needle: bigint): number {
   return -1;
 }
 
-const PAYLOAD_DECODER = new TextDecoder();
-const TERM_ENCODER = new TextEncoder();
 export class SecondaryIndexManager {
   private readonly cfg: Config;
   private readonly db: SqliteDurableStore;
@@ -63,23 +62,24 @@ export class SecondaryIndexManager {
   private readonly runDiskCache?: SegmentDiskCache;
   private readonly runCache: IndexRunCache;
   private readonly span: number;
-  private readonly buildConcurrency: number;
   private readonly compactionFanout: number;
   private readonly maxLevel: number;
-  private readonly compactionConcurrency: number;
   private readonly retireGenWindow: number;
   private readonly retireMinMs: number;
-  private readonly queue = new Set<string>();
+  private readonly buildQueue = new Set<string>();
+  private readonly compactionQueue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly compacting = new Set<string>();
-  private readonly streamIdleTicks = new Map<string, { logicalSizeBytes: bigint; nextOffset: bigint; flatTicks: number }>();
-  private timer: any | null = null;
-  private running = false;
+  private runningBuildTick = false;
+  private runningCompactionTick = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
+  private readonly segmentLocality?: IndexSegmentLocalityManager;
+  private readonly buildWorkers: IndexBuildWorkerPool;
+  private readonly ownsBuildWorkers: boolean;
 
   constructor(
     cfg: Config,
@@ -91,7 +91,9 @@ export class SecondaryIndexManager {
     onMetadataChanged?: (stream: string) => void,
     memorySampler?: RuntimeMemorySampler,
     asyncGate?: ConcurrencyGate,
-    foregroundActivity?: ForegroundActivityTracker
+    foregroundActivity?: ForegroundActivityTracker,
+    segmentLocality?: IndexSegmentLocalityManager,
+    buildWorkers?: IndexBuildWorkerPool
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -103,11 +105,13 @@ export class SecondaryIndexManager {
     this.memorySampler = memorySampler;
     this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
     this.foregroundActivity = foregroundActivity;
+    this.segmentLocality = segmentLocality;
+    this.ownsBuildWorkers = !buildWorkers;
+    this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
+    if (this.ownsBuildWorkers) this.buildWorkers.start();
     this.span = cfg.indexL0SpanSegments;
-    this.buildConcurrency = Math.max(1, cfg.indexBuildConcurrency);
     this.compactionFanout = cfg.indexCompactionFanout;
     this.maxLevel = cfg.indexMaxLevel;
-    this.compactionConcurrency = Math.max(1, cfg.indexCompactionConcurrency);
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
     this.retireMinMs = Math.max(0, cfg.indexRetireMinMs);
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
@@ -126,22 +130,19 @@ export class SecondaryIndexManager {
   }
 
   start(): void {
-    if (this.span <= 0) return;
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      void this.tick();
-    }, this.cfg.indexCheckIntervalMs);
+    // Scheduling is owned by the global index manager.
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    this.streamIdleTicks.clear();
+    this.runningBuildTick = false;
+    this.runningCompactionTick = false;
+    if (this.ownsBuildWorkers) this.buildWorkers.stop();
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
-    this.queue.add(stream);
+    this.buildQueue.add(stream);
+    this.compactionQueue.add(stream);
   }
 
   async candidateSegmentsForSecondaryIndex(
@@ -199,7 +200,6 @@ export class SecondaryIndexManager {
     runDiskMappedBytes: number;
     runDiskMappedEntries: number;
     runDiskPinnedEntries: number;
-    streamIdleTickEntries: number;
   } {
     const mem = this.runCache.stats();
     const disk = this.runDiskCache?.stats();
@@ -211,67 +211,100 @@ export class SecondaryIndexManager {
       runDiskMappedBytes: disk?.mappedBytes ?? 0,
       runDiskMappedEntries: disk?.mappedEntryCount ?? 0,
       runDiskPinnedEntries: disk?.pinnedEntryCount ?? 0,
-      streamIdleTickEntries: this.streamIdleTicks.size,
     };
   }
 
-  private async tick(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+  async tick(): Promise<void> {
+    await Promise.all([this.runOneBuildTask(), this.runOneCompactionTask()]);
+  }
+
+  async runOneBuildTask(): Promise<boolean> {
+    if (this.runningBuildTick) return false;
+    const stream = this.takeNextStream(this.buildQueue);
+    if (!stream) return false;
+    this.runningBuildTick = true;
     try {
-      const streams = Array.from(this.queue);
-      this.queue.clear();
-      for (const stream of streams) {
-        const regRes = this.registry.getRegistryResult(stream);
-        if (Result.isError(regRes)) continue;
-        if (this.shouldPauseExactBackgroundWork(stream)) {
-          this.queue.add(stream);
-          continue;
-        }
-        const configured = getConfiguredSecondaryIndexes(regRes.value);
-        const configuredNames = new Set(configured.map((entry) => entry.name));
-        const existing = this.db.listSecondaryIndexStates(stream);
-        let removedAny = false;
-        for (const state of existing) {
-          if (configuredNames.has(state.index_name)) continue;
-          this.db.deleteSecondaryIndex(stream, state.index_name);
-          removedAny = true;
-        }
-        if (removedAny) {
-          this.onMetadataChanged?.(stream);
-          if (this.publishManifest) {
-            try {
-              await this.publishManifest(stream);
-            } catch {
-              // ignore and retry on next enqueue
-            }
-          }
-        }
-        for (const index of configured) {
+      const regRes = this.registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) return true;
+      const registry = regRes.value;
+      const configured = getConfiguredSecondaryIndexes(registry);
+      const configuredNames = new Set(configured.map((entry) => entry.name));
+      const existing = this.db.listSecondaryIndexStates(stream);
+      let removedAny = false;
+      for (const state of existing) {
+        if (configuredNames.has(state.index_name)) continue;
+        this.db.deleteSecondaryIndex(stream, state.index_name);
+        removedAny = true;
+      }
+      if (removedAny) {
+        this.onMetadataChanged?.(stream);
+        if (this.publishManifest) {
           try {
-            const buildRes = await this.maybeBuildRuns(stream, index);
-            if (Result.isError(buildRes)) {
-              this.queue.add(stream);
-              continue;
-            }
-            const compactRes = await this.maybeCompactRuns(stream, index.name);
-            if (Result.isError(compactRes)) {
-              this.queue.add(stream);
-              continue;
-            }
-          } catch (e) {
-            const msg = String((e as any)?.message ?? e).toLowerCase();
-            if (!msg.includes("database has closed") && !msg.includes("closed database") && !msg.includes("statement has finalized")) {
-              // eslint-disable-next-line no-console
-              console.error("secondary index build failed", stream, index.name, e);
-            }
-            this.queue.add(stream);
+            await this.publishManifest(stream);
+          } catch {
+            // ignore and retry on next enqueue
           }
         }
       }
+      for (const index of configured) {
+        try {
+          const buildRes = await this.maybeBuildRuns(stream, index);
+          if (Result.isError(buildRes)) {
+            this.buildQueue.add(stream);
+            break;
+          }
+        } catch (e) {
+          const msg = String((e as any)?.message ?? e).toLowerCase();
+          if (!msg.includes("database has closed") && !msg.includes("closed database") && !msg.includes("statement has finalized")) {
+            console.error("secondary index build failed", stream, index.name, e);
+          }
+          this.buildQueue.add(stream);
+          break;
+        }
+      }
+      return true;
     } finally {
-      this.running = false;
+      this.runningBuildTick = false;
     }
+  }
+
+  async runOneCompactionTask(): Promise<boolean> {
+    if (this.runningCompactionTick) return false;
+    const stream = this.takeNextStream(this.compactionQueue);
+    if (!stream) return false;
+    this.runningCompactionTick = true;
+    try {
+      const regRes = this.registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) return true;
+      const configured = getConfiguredSecondaryIndexes(regRes.value);
+      for (const index of configured) {
+        try {
+          const compactRes = await this.maybeCompactRuns(stream, index.name);
+          if (Result.isError(compactRes)) {
+            this.compactionQueue.add(stream);
+            break;
+          }
+        } catch (e) {
+          const msg = String((e as any)?.message ?? e).toLowerCase();
+          if (!msg.includes("database has closed") && !msg.includes("closed database") && !msg.includes("statement has finalized")) {
+            console.error("secondary index compaction failed", stream, index.name, e);
+          }
+          this.compactionQueue.add(stream);
+          break;
+        }
+      }
+      return true;
+    } finally {
+      this.runningCompactionTick = false;
+    }
+  }
+
+  private takeNextStream(queue: Set<string>): string | null {
+    const next = queue.values().next();
+    if (next.done) return null;
+    const stream = next.value as string;
+    queue.delete(stream);
+    return stream;
   }
 
   private async maybeBuildRuns(stream: string, index: SecondaryIndexField): Promise<Result<void, SecondaryIndexBuildError>> {
@@ -280,6 +313,9 @@ export class SecondaryIndexManager {
     if (this.building.has(key)) return Result.ok(undefined);
     this.building.add(key);
     try {
+      const registryRes = this.registry.getRegistryResult(stream);
+      if (Result.isError(registryRes)) return invalidIndexBuild(registryRes.error.message);
+      const registry = registryRes.value;
       return await this.asyncGate.run(async () => {
         const configHash = hashSecondaryIndexField(index);
         let state = this.db.getSecondaryIndexState(stream, index.name);
@@ -300,10 +336,6 @@ export class SecondaryIndexManager {
           }
         }
         if (!state) return Result.ok(undefined);
-        if (this.shouldPauseExactBackgroundWork(stream)) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
         const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
@@ -315,18 +347,95 @@ export class SecondaryIndexManager {
           if (!seg || !seg.r2_etag) return Result.ok(undefined);
           segments.push(seg);
         }
+        const segmentLeaseRes = this.segmentLocality
+          ? await this.segmentLocality.acquireWindowResult(stream, segments, `exact indexing (${index.name})`)
+          : Result.err({ kind: "missing_segment" as const, message: "exact indexing requires a segment disk cache" });
+        if (Result.isError(segmentLeaseRes)) {
+          if (segmentLeaseRes.error.kind === "index_cache_overloaded") {
+            this.buildQueue.add(stream);
+            this.onMetadataChanged?.(stream);
+            return Result.ok(undefined);
+          }
+          return invalidIndexBuild(segmentLeaseRes.error.message);
+        }
 
-        const runRes = this.memorySampler
-          ? await this.memorySampler.track(
-              "exact_l0",
-              { stream, index_name: index.name, start_segment: start, end_segment: end },
-              () => this.buildL0RunResult(stream, index, start, segments, state.index_secret)
-            )
-          : await this.buildL0RunResult(stream, index, start, segments, state.index_secret);
-        if (Result.isError(runRes)) return runRes;
-        const run = runRes.value;
-        const persistRes = await this.persistRunResult(run);
-        if (Result.isError(persistRes)) return persistRes;
+        const action = beginAsyncIndexAction(this.db, {
+          stream,
+          actionKind: "secondary_l0_build",
+          targetKind: "secondary_index",
+          targetName: index.name,
+          inputKind: "segment",
+          inputCount: segments.length,
+          inputSizeBytes: segments.reduce((sum, segment) => sum + BigInt(segment.size_bytes), 0n),
+          startSegment: start,
+          endSegment: end,
+          detail: {
+            level: 0,
+            input_payload_bytes: segments.reduce((sum, segment) => sum + Number(segment.payload_bytes), 0),
+          },
+        });
+        let runRes;
+        try {
+          runRes = this.memorySampler
+            ? await this.memorySampler.track(
+                "exact_l0",
+                { stream, index_name: index.name, start_segment: start, end_segment: end },
+                () =>
+                  this.buildWorkers.buildResult({
+                    kind: "secondary_l0_build",
+                    input: {
+                      stream,
+                      index,
+                      registry,
+                      startSegment: start,
+                      span: this.span,
+                      secret: state.index_secret,
+                      segments: segmentLeaseRes.value.localSegments.map((segment) => ({
+                        segmentIndex: segment.segmentIndex,
+                        startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
+                        localPath: segment.localPath,
+                      })),
+                    },
+                  })
+              )
+            : await this.buildWorkers.buildResult({
+                kind: "secondary_l0_build",
+                input: {
+                  stream,
+                  index,
+                  registry,
+                  startSegment: start,
+                  span: this.span,
+                  secret: state.index_secret,
+                  segments: segmentLeaseRes.value.localSegments.map((segment) => ({
+                    segmentIndex: segment.segmentIndex,
+                    startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
+                    localPath: segment.localPath,
+                  })),
+                },
+              });
+        } finally {
+          segmentLeaseRes.value.release();
+        }
+        if (Result.isError(runRes)) {
+          action.fail(runRes.error.message);
+          return invalidIndexBuild(runRes.error.message);
+        }
+        if (runRes.value.kind !== "secondary_l0_build") {
+          action.fail("unexpected worker result kind");
+          return invalidIndexBuild("unexpected worker result kind");
+        }
+        const run = runRes.value.output;
+        const persistRes = await this.persistRunPayloadResult(run.meta, run.payload);
+        if (Result.isError(persistRes)) {
+          action.fail(persistRes.error.message, {
+            detail: {
+              output_record_count: run.meta.recordCount,
+              output_filter_len: run.meta.filterLen,
+            },
+          });
+          return persistRes;
+        }
         const sizeBytes = persistRes.value;
         this.db.insertSecondaryIndexRun({
           run_id: run.meta.runId,
@@ -351,9 +460,20 @@ export class SecondaryIndexManager {
             // ignore and retry later
           }
         }
-        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.queue.add(stream);
+        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.buildQueue.add(stream);
+        this.compactionQueue.add(stream);
+        action.succeed({
+          outputCount: 1,
+          outputSizeBytes: BigInt(sizeBytes),
+          detail: {
+            output_record_count: run.meta.recordCount,
+            output_filter_len: run.meta.filterLen,
+          },
+        });
         return Result.ok(undefined);
       });
+    } catch (e: unknown) {
+      return invalidIndexBuild(String((e as any)?.message ?? e));
     } finally {
       this.building.delete(key);
     }
@@ -364,28 +484,46 @@ export class SecondaryIndexManager {
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     const key = `${stream}:${indexName}`;
     if (this.compacting.has(key)) return Result.ok(undefined);
-    if (this.foregroundActivity?.wasActiveWithin(2000)) {
-      this.queue.add(stream);
-      return Result.ok(undefined);
-    }
     this.compacting.add(key);
     try {
       return await this.asyncGate.run(async () => {
-        if (this.shouldPauseExactBackgroundWork(stream)) {
-          this.queue.add(stream);
-          return Result.ok(undefined);
-        }
         const group = this.findCompactionGroup(stream, indexName);
         if (!group) {
           await this.gcRetiredRuns(stream, indexName);
           return Result.ok(undefined);
         }
         const { level, runs } = group;
+        const action = beginAsyncIndexAction(this.db, {
+          stream,
+          actionKind: "secondary_compaction_build",
+          targetKind: "secondary_index",
+          targetName: indexName,
+          inputKind: "run",
+          inputCount: runs.length,
+          inputSizeBytes: runs.reduce((sum, run) => sum + BigInt(run.size_bytes), 0n),
+          startSegment: runs[0]?.start_segment ?? null,
+          endSegment: runs[runs.length - 1]?.end_segment ?? null,
+          detail: {
+            level_from: level,
+            level_to: level + 1,
+          },
+        });
         const runRes = await this.buildCompactedRunResult(stream, indexName, level + 1, runs);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          action.fail(runRes.error.message);
+          return runRes;
+        }
         const run = runRes.value;
         const persistRes = await this.persistRunResult(run);
-        if (Result.isError(persistRes)) return persistRes;
+        if (Result.isError(persistRes)) {
+          action.fail(persistRes.error.message, {
+            detail: {
+              output_record_count: run.meta.recordCount,
+              output_filter_len: run.meta.filterLen,
+            },
+          });
+          return persistRes;
+        }
         const sizeBytes = persistRes.value;
         this.db.insertSecondaryIndexRun({
           run_id: run.meta.runId,
@@ -418,7 +556,15 @@ export class SecondaryIndexManager {
           }
         }
         await this.gcRetiredRuns(stream, indexName);
-        this.queue.add(stream);
+        this.compactionQueue.add(stream);
+        action.succeed({
+          outputCount: 1,
+          outputSizeBytes: BigInt(sizeBytes),
+          detail: {
+            output_record_count: run.meta.recordCount,
+            output_filter_len: run.meta.filterLen,
+          },
+        });
         return Result.ok(undefined);
       });
     } finally {
@@ -468,205 +614,86 @@ export class SecondaryIndexManager {
     level: number,
     inputs: SecondaryIndexRunRow[]
   ): Promise<Result<IndexRun, SecondaryIndexBuildError>> {
-    if (inputs.length === 0) return invalidIndexBuild("compact: missing inputs");
-    const segments = new Map<bigint, number[]>();
-    const addSegment = (fp: bigint, seg: number) => {
-      let list = segments.get(fp);
-      if (!list) {
-        list = [];
-        segments.set(fp, list);
-      }
-      list.push(seg);
-    };
-    const mergeRun = (meta: SecondaryIndexRunRow, run: IndexRun): void => {
-      if (run.runType === RUN_TYPE_MASK16 && run.masks) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          const mask = run.masks[i];
-          for (let bit = 0; bit < 16; bit++) {
-            if ((mask & (1 << bit)) !== 0) addSegment(fp, meta.start_segment + bit);
-          }
-        }
-        return;
-      }
-      if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
-        for (let i = 0; i < run.fingerprints.length; i++) {
-          const fp = run.fingerprints[i];
-          for (const rel of run.postings[i]) addSegment(fp, meta.start_segment + rel);
-        }
-        return;
-      }
-      throw dsError(`unknown run type ${run.runType}`);
-    };
-
-    const pending = inputs.slice();
-    const workers = Math.min(this.compactionConcurrency, pending.length);
-    let buildError: string | null = null;
-    const workerTasks: Promise<void>[] = [];
-    for (let w = 0; w < workers; w++) {
-      workerTasks.push(
-        (async () => {
-          for (;;) {
-            if (buildError) return;
-            const meta = pending.shift();
-            if (!meta) return;
-            const runRes = await this.loadRunResult(meta);
-            if (Result.isError(runRes)) {
-              buildError = runRes.error.message;
-              return;
-            }
-            const run = runRes.value;
-            if (!run) {
-              buildError = `missing run ${meta.run_id}`;
-              return;
-            }
-            try {
-              mergeRun(meta, run);
-            } catch (e: unknown) {
-              buildError = String((e as any)?.message ?? e);
-              return;
-            }
-            await this.yieldBackgroundWork();
-          }
-        })()
-      );
-    }
-    await Promise.all(workerTasks);
-    if (buildError) return invalidIndexBuild(buildError);
-
-    const startSegment = inputs[0].start_segment;
-    const endSegment = inputs[inputs.length - 1].end_segment;
-    const fingerprints = Array.from(segments.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const postings: number[][] = new Array(fingerprints.length);
-    for (let i = 0; i < fingerprints.length; i++) {
-      const fp = fingerprints[i]!;
-      const list = segments.get(fp) ?? [];
-      list.sort((a, b) => a - b);
-      const rel: number[] = [];
-      let lastSeg = Number.NaN;
-      for (const seg of list) {
-        if (seg === lastSeg) continue;
-        rel.push(seg - startSegment);
-        lastSeg = seg;
-      }
-      postings[i] = rel;
-    }
-    const fuseRes = buildBinaryFuseResult(fingerprints);
-    if (Result.isError(fuseRes)) return invalidIndexBuild(fuseRes.error.message);
-    const shash = streamHash16Hex(stream);
-    const runId = `${indexName}-l${level}-${startSegment.toString().padStart(16, "0")}-${endSegment.toString().padStart(16, "0")}-${Date.now()}`;
-    return Result.ok({
-      meta: {
-        runId,
+    const sourcesRes = await this.prepareCompactionSourcesResult(inputs);
+    if (Result.isError(sourcesRes)) return sourcesRes;
+    const buildRes = await this.buildWorkers.buildResult({
+      kind: "secondary_compaction_build",
+      input: {
+        stream,
+        indexName,
         level,
-        startSegment,
-        endSegment,
-        objectKey: secondaryIndexRunObjectKey(shash, indexName, runId),
-        filterLen: fuseRes.value.bytes.byteLength,
-        recordCount: fingerprints.length,
+        inputs: sourcesRes.value,
       },
-      runType: RUN_TYPE_POSTINGS,
-      filterBytes: fuseRes.value.bytes,
-      filter: fuseRes.value.filter,
-      fingerprints,
-      postings,
     });
+    if (Result.isError(buildRes)) return invalidIndexBuild(buildRes.error.message);
+    if (buildRes.value.kind !== "secondary_compaction_build") return invalidIndexBuild("unexpected worker result kind");
+    const runRes = decodeIndexRunResult(buildRes.value.output.payload);
+    if (Result.isError(runRes)) return invalidIndexBuild(runRes.error.message);
+    const run = runRes.value;
+    run.meta.runId = buildRes.value.output.meta.runId;
+    run.meta.level = buildRes.value.output.meta.level;
+    run.meta.startSegment = buildRes.value.output.meta.startSegment;
+    run.meta.endSegment = buildRes.value.output.meta.endSegment;
+    run.meta.objectKey = buildRes.value.output.meta.objectKey;
+    run.meta.filterLen = buildRes.value.output.meta.filterLen;
+    run.meta.recordCount = buildRes.value.output.meta.recordCount;
+    return Result.ok(run);
   }
 
-  private async buildL0RunResult(
-    stream: string,
-    index: SecondaryIndexField,
-    startSegment: number,
-    segments: SegmentRow[],
-    secret: Uint8Array
-  ): Promise<Result<IndexRun, SecondaryIndexBuildError>> {
-    const regRes = this.registry.getRegistryResult(stream);
-    if (Result.isError(regRes)) return invalidIndexBuild(regRes.error.message);
-    const registry = regRes.value;
-    const maskByFp = new Map<bigint, number>();
-    const pending = segments.slice();
-    const concurrency = Math.max(1, Math.min(this.buildConcurrency, pending.length));
-    let buildError: string | null = null;
-    const workers: Promise<void>[] = [];
-    for (let i = 0; i < concurrency; i++) {
-      workers.push(
-        (async () => {
-          for (;;) {
-            if (buildError) return;
-            const seg = pending.shift();
-            if (!seg) return;
-            const segBytesRes = await this.loadSegmentBytesResult(seg);
-            if (Result.isError(segBytesRes)) {
-              buildError = segBytesRes.error.message;
-              return;
-            }
-            const segBytes = segBytesRes.value;
-            const bit = seg.segment_index - startSegment;
-            const maskBit = 1 << bit;
-            const local = new Map<bigint, number>();
-            let offset = seg.start_offset;
-            let processedRecords = 0;
-            for (const recRes of iterateBlockRecordsResult(segBytes)) {
-              if (Result.isError(recRes)) {
-                buildError = recRes.error.message;
-                return;
-              }
-              let parsed: unknown;
-              try {
-                parsed = JSON.parse(PAYLOAD_DECODER.decode(recRes.value.payload));
-              } catch {
-                offset += 1n;
-                continue;
-              }
-              const valuesRes = extractSecondaryIndexValuesForFieldResult(registry, offset, parsed, index);
-              if (!Result.isError(valuesRes)) {
-                for (const value of valuesRes.value) {
-                  const fp = siphash24(secret, TERM_ENCODER.encode(value));
-                  const prev = local.get(fp) ?? 0;
-                  local.set(fp, prev | maskBit);
-                }
-              }
-              offset += 1n;
-              processedRecords += 1;
-              if (processedRecords % 64 === 0) {
-                await this.yieldBackgroundWork();
-              }
-            }
-            for (const [fp, mask] of local.entries()) {
-              const prev = maskByFp.get(fp) ?? 0;
-              maskByFp.set(fp, prev | mask);
-            }
-            local.clear();
-            await this.yieldBackgroundWork();
-          }
-        })()
-      );
+  private async prepareCompactionSourcesResult(
+    inputs: SecondaryIndexRunRow[]
+  ): Promise<Result<SecondaryCompactionRunSource[], SecondaryIndexBuildError>> {
+    const sources: SecondaryCompactionRunSource[] = [];
+    for (const meta of inputs) {
+      const sourceRes = await this.prepareCompactionSourceResult(meta);
+      if (Result.isError(sourceRes)) return sourceRes;
+      sources.push(sourceRes.value);
     }
-    await Promise.all(workers);
-    if (buildError) return invalidIndexBuild(buildError);
-    const fingerprints = Array.from(maskByFp.keys()).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const masks = fingerprints.map((fp) => maskByFp.get(fp) ?? 0);
-    const fuseRes = buildBinaryFuseResult(fingerprints);
-    if (Result.isError(fuseRes)) return invalidIndexBuild(fuseRes.error.message);
-    const shash = streamHash16Hex(stream);
-    const endSegment = startSegment + this.span - 1;
-    const runId = `${index.name}-l0-${startSegment.toString().padStart(16, "0")}-${endSegment.toString().padStart(16, "0")}-${Date.now()}`;
-    return Result.ok({
-      meta: {
-        runId,
-        level: 0,
-        startSegment,
-        endSegment,
-        objectKey: secondaryIndexRunObjectKey(shash, index.name, runId),
-        filterLen: fuseRes.value.bytes.byteLength,
-        recordCount: fingerprints.length,
-      },
-      runType: RUN_TYPE_MASK16,
-      filterBytes: fuseRes.value.bytes,
-      filter: fuseRes.value.filter,
-      fingerprints,
-      masks,
-    });
+    return Result.ok(sources);
+  }
+
+  private async prepareCompactionSourceResult(
+    meta: SecondaryIndexRunRow
+  ): Promise<Result<SecondaryCompactionRunSource, SecondaryIndexBuildError>> {
+    if (this.runDiskCache?.has(meta.object_key)) {
+      return Result.ok({
+        runId: meta.run_id,
+        startSegment: meta.start_segment,
+        endSegment: meta.end_segment,
+        localPath: this.runDiskCache.getPath(meta.object_key),
+      });
+    }
+    try {
+      const bytes = await retry(
+        async () => {
+          const data = await this.os.get(meta.object_key);
+          if (!data) throw dsError(`missing secondary index run ${meta.object_key}`);
+          return data;
+        },
+        {
+          retries: this.cfg.objectStoreRetries,
+          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+          timeoutMs: this.cfg.objectStoreTimeoutMs,
+        }
+      );
+      if (this.runDiskCache?.put(meta.object_key, bytes)) {
+        return Result.ok({
+          runId: meta.run_id,
+          startSegment: meta.start_segment,
+          endSegment: meta.end_segment,
+          localPath: this.runDiskCache.getPath(meta.object_key),
+        });
+      }
+      return Result.ok({
+        runId: meta.run_id,
+        startSegment: meta.start_segment,
+        endSegment: meta.end_segment,
+        bytes,
+      });
+    } catch (e: unknown) {
+      return invalidIndexBuild(String((e as any)?.message ?? e));
+    }
   }
 
   private async gcRetiredRuns(stream: string, indexName: string): Promise<void> {
@@ -697,60 +724,20 @@ export class SecondaryIndexManager {
     this.db.deleteSecondaryIndexRuns(toDelete.map((run) => run.run_id));
   }
 
-  private hasCompanionBacklog(stream: string): boolean {
-    const plan = this.db.getSearchCompanionPlan(stream);
-    if (!plan) return false;
-    const uploadedCount = this.db.countUploadedSegments(stream);
-    for (let segmentIndex = 0; segmentIndex < uploadedCount; segmentIndex++) {
-      const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
-      if (!row || row.plan_generation !== plan.generation) return true;
-    }
-    return false;
-  }
-
-  private shouldPauseExactBackgroundWork(stream: string): boolean {
-    if (this.hasCompanionBacklog(stream)) {
-      this.streamIdleTicks.delete(stream);
-      return true;
-    }
-    const streamRow = this.db.getStream(stream);
-    if (!streamRow) return false;
-    if (streamRow.segment_in_progress !== 0) {
-      this.streamIdleTicks.delete(stream);
-      return true;
-    }
-    if (streamRow.pending_bytes > 0n) {
-      this.streamIdleTicks.delete(stream);
-      return true;
-    }
-    if (this.db.countSegmentsForStream(stream) > this.db.countUploadedSegments(stream)) {
-      this.streamIdleTicks.delete(stream);
-      return true;
-    }
-
-    const requiredFlatTicks = Math.max(3, Math.ceil(60_000 / this.cfg.indexCheckIntervalMs));
-    const previous = this.streamIdleTicks.get(stream) ?? {
-      logicalSizeBytes: -1n,
-      nextOffset: -1n,
-      flatTicks: 0,
-    };
-    if (previous.logicalSizeBytes === streamRow.logical_size_bytes && previous.nextOffset === streamRow.next_offset) {
-      previous.flatTicks += 1;
-    } else {
-      previous.logicalSizeBytes = streamRow.logical_size_bytes;
-      previous.nextOffset = streamRow.next_offset;
-      previous.flatTicks = 0;
-    }
-    this.streamIdleTicks.set(stream, previous);
-    return previous.flatTicks < requiredFlatTicks;
-  }
-
   private async persistRunResult(run: IndexRun): Promise<Result<number, SecondaryIndexBuildError>> {
     const payloadRes = encodeIndexRunResult(run);
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
+    return await this.persistRunPayloadResult(run.meta, payloadRes.value, run);
+  }
+
+  private async persistRunPayloadResult(
+    meta: IndexRun["meta"],
+    payload: Uint8Array,
+    decodedRun?: IndexRun
+  ): Promise<Result<number, SecondaryIndexBuildError>> {
     try {
-      await retry(
-        () => this.os.put(run.meta.objectKey, payloadRes.value, { contentLength: payloadRes.value.byteLength }),
+      await retryAbortable(
+        (signal) => this.os.put(meta.objectKey, payload, { contentLength: payload.byteLength, signal }),
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,
@@ -761,9 +748,9 @@ export class SecondaryIndexManager {
     } catch (e: unknown) {
       return invalidIndexBuild(String((e as any)?.message ?? e));
     }
-    this.runDiskCache?.put(run.meta.objectKey, payloadRes.value);
-    this.runCache.put(run.meta.objectKey, run, payloadRes.value.byteLength);
-    return Result.ok(payloadRes.value.byteLength);
+    this.runDiskCache?.put(meta.objectKey, payload);
+    if (decodedRun) this.runCache.put(meta.objectKey, decodedRun, payload.byteLength);
+    return Result.ok(payload.byteLength);
   }
 
   private async loadRunResult(meta: SecondaryIndexRunRow): Promise<Result<IndexRun | null, SecondaryIndexBuildError>> {

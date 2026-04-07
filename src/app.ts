@@ -8,7 +8,7 @@ import { SegmentDiskCache } from "./segment/cache";
 import { Segmenter, type SegmenterHooks } from "./segment/segmenter";
 import { SegmenterWorkerPool } from "./segment/segmenter_workers";
 import { Uploader } from "./uploader";
-import { retry } from "./util/retry";
+import { retryAbortable } from "./util/retry";
 import { schemaObjectKey, streamHash16Hex } from "./util/stream_paths";
 import type { StatsCollector } from "./stats";
 import { IndexManager, type StreamIndexLookup } from "./index/indexer";
@@ -18,83 +18,15 @@ import { SearchCompanionManager } from "./search/companion_manager";
 import { LexiconIndexManager } from "./index/lexicon_indexer";
 import { readSqliteRuntimeMemoryStats } from "./sqlite/runtime_stats";
 import { sumRuntimeMemoryValues } from "./runtime_memory";
+import { IndexSegmentLocalityManager } from "./index/segment_locality";
+import { IndexBuildWorkerPool } from "./index/index_build_worker_pool";
+import { GlobalIndexManager } from "./index/global_index_manager";
 
 export type { App } from "./app_core";
 
 export type CreateAppOptions = {
   stats?: StatsCollector;
 };
-
-class CombinedIndexController implements StreamIndexLookup {
-  constructor(
-    private readonly routingIndex: IndexManager,
-    private readonly secondaryIndex: SecondaryIndexManager,
-    private readonly companionIndex: SearchCompanionManager,
-    private readonly lexiconIndex: LexiconIndexManager
-  ) {}
-
-  start(): void {
-    this.routingIndex.start();
-    this.secondaryIndex.start();
-    this.companionIndex.start();
-    this.lexiconIndex.start();
-  }
-
-  stop(): void {
-    this.routingIndex.stop();
-    this.secondaryIndex.stop();
-    this.companionIndex.stop();
-    this.lexiconIndex.stop();
-  }
-
-  enqueue(stream: string): void {
-    this.routingIndex.enqueue(stream);
-    this.secondaryIndex.enqueue(stream);
-    this.companionIndex.enqueue(stream);
-    this.lexiconIndex.enqueue(stream);
-  }
-
-  candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array) {
-    return this.routingIndex.candidateSegmentsForRoutingKey(stream, keyBytes);
-  }
-
-  candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array) {
-    return this.secondaryIndex.candidateSegmentsForSecondaryIndex(stream, indexName, keyBytes);
-  }
-
-  getAggSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.companionIndex.getAggSegmentCompanion(stream, segmentIndex);
-  }
-
-  getColSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.companionIndex.getColSegmentCompanion(stream, segmentIndex);
-  }
-
-  getFtsSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.companionIndex.getFtsSegmentCompanion(stream, segmentIndex);
-  }
-
-  getFtsSegmentCompanionWithStats(stream: string, segmentIndex: number) {
-    return this.companionIndex.getFtsSegmentCompanionWithStats(stream, segmentIndex);
-  }
-
-  getMetricsBlockSegmentCompanion(stream: string, segmentIndex: number) {
-    return this.companionIndex.getMetricsBlockSegmentCompanion(stream, segmentIndex);
-  }
-
-  listRoutingKeysResult(stream: string, after: string | null, limit: number) {
-    return this.lexiconIndex.listRoutingKeysResult(stream, after, limit);
-  }
-
-  getLocalStorageUsage(stream: string) {
-    return {
-      routing_index_cache_bytes: this.routingIndex.getLocalCacheBytes(stream),
-      exact_index_cache_bytes: this.secondaryIndex.getLocalCacheBytes(stream),
-      companion_cache_bytes: this.companionIndex.getLocalCacheBytes(stream),
-      lexicon_index_cache_bytes: this.lexiconIndex.getLocalCacheBytes(stream),
-    };
-  }
-}
 
 export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions = {}): App {
   return createAppCore(cfg, {
@@ -111,6 +43,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       };
       const diskCache = new SegmentDiskCache(`${config.rootDir}/cache`, config.segmentCacheMaxBytes);
       const uploader = new Uploader(config, db, store, diskCache, stats, backpressure, undefined, memorySampler);
+      const indexSegmentLocality = new IndexSegmentLocalityManager(diskCache, store, backpressure);
+      const indexBuildWorkers = new IndexBuildWorkerPool(Math.max(1, config.indexBuilders));
       const routingIndexer = new IndexManager(
         config,
         db,
@@ -122,7 +56,9 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         memorySampler,
         registry,
         asyncIndexGate,
-        foregroundActivity
+        foregroundActivity,
+        indexSegmentLocality,
+        indexBuildWorkers
       );
       const secondaryIndexer = new SecondaryIndexManager(
         config,
@@ -134,7 +70,9 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         (stream) => notifier.notifyDetailsChanged(stream),
         memorySampler,
         asyncIndexGate,
-        foregroundActivity
+        foregroundActivity,
+        indexSegmentLocality,
+        indexBuildWorkers
       );
       const companionIndexer = new SearchCompanionManager(
         config,
@@ -147,7 +85,9 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         metrics,
         memorySampler,
         asyncIndexGate,
-        foregroundActivity
+        foregroundActivity,
+        indexSegmentLocality,
+        indexBuildWorkers
       );
       const lexiconIndexer = new LexiconIndexManager(
         config,
@@ -159,13 +99,17 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         metrics,
         registry,
         asyncIndexGate,
-        foregroundActivity
+        foregroundActivity,
+        indexSegmentLocality,
+        indexBuildWorkers
       );
-      const indexer = new CombinedIndexController(
+      const indexer = new GlobalIndexManager(
+        config,
         routingIndexer,
         secondaryIndexer,
         companionIndexer,
-        lexiconIndexer
+        lexiconIndexer,
+        indexBuildWorkers
       );
       uploader.setHooks({
         onSegmentsUploaded: (stream) => indexer.enqueue(stream),
@@ -188,8 +132,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
           const shash = streamHash16Hex(stream);
           const key = schemaObjectKey(shash);
           const body = new TextEncoder().encode(JSON.stringify(reg));
-          await retry(
-            () => store.put(key, body, { contentType: "application/json", contentLength: body.byteLength }),
+          await retryAbortable(
+            (signal) => store.put(key, body, { contentType: "application/json", contentLength: body.byteLength, signal }),
             {
               retries: config.objectStoreRetries,
               baseDelayMs: config.objectStoreBaseDelayMs,
@@ -240,6 +184,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
           };
           const diskCaches = {
             segment_disk_cache_bytes: segmentDiskStats.usedBytes,
+            segment_required_for_indexing_bytes: segmentDiskStats.requiredBytes,
             routing_run_disk_cache_bytes: routingIndexMemory.runDiskCacheBytes,
             exact_run_disk_cache_bytes: secondaryIndexMemory.runDiskCacheBytes,
             lexicon_disk_cache_bytes: lexiconMemory.fileCacheBytes,
@@ -272,6 +217,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
             segment_disk_cache_entries: segmentDiskStats.entryCount,
             segment_mapped_files: segmentDiskStats.mappedEntryCount,
             segment_pinned_files: segmentDiskStats.pinnedEntryCount,
+            segment_required_for_indexing_files: segmentDiskStats.requiredEntryCount,
             routing_run_cache_entries: routingIndexMemory.runCacheEntries,
             routing_run_disk_cache_entries: routingIndexMemory.runDiskCacheEntries,
             routing_run_disk_cache_mapped_entries: routingIndexMemory.runDiskMappedEntries,
@@ -280,7 +226,6 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
             exact_run_disk_cache_entries: secondaryIndexMemory.runDiskCacheEntries,
             exact_run_disk_cache_mapped_entries: secondaryIndexMemory.runDiskMappedEntries,
             exact_run_disk_cache_pinned_entries: secondaryIndexMemory.runDiskPinnedEntries,
-            secondary_index_stream_idle_ticks: secondaryIndexMemory.streamIdleTickEntries,
             lexicon_cached_files: lexiconMemory.fileCacheEntries,
             lexicon_mapped_files: lexiconMemory.mappedFileEntries,
             lexicon_pinned_files: lexiconMemory.pinnedFileEntries,

@@ -41,8 +41,8 @@ describe("bootstrap from R2", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 25,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const store = new MockR2Store();
       const app = createApp(cfg, store);
@@ -193,8 +193,8 @@ describe("bootstrap from R2", () => {
       }
 
       const cfg2 = makeConfig(root2, {
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 25,
       });
@@ -273,9 +273,6 @@ describe("bootstrap from R2", () => {
 
         const secondaryIndexer = (app2.deps.indexer as any).secondaryIndex;
         app2.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app2.deps.db.nowMs() - 11n * 60_000n, stream);
-        for (let attempt = 0; attempt < 3000; attempt++) {
-          if (!(secondaryIndexer as any).shouldPauseExactBackgroundWork(stream)) break;
-        }
         const exactDeadline = Date.now() + 10_000;
         while (Date.now() < exactDeadline) {
           const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
@@ -360,8 +357,8 @@ describe("bootstrap from R2", () => {
       const stream = "deleted-before-restart";
 
       const cfg = makeConfig(root, {
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const store = new MockR2Store();
       const app = createApp(cfg, store);
@@ -388,8 +385,8 @@ describe("bootstrap from R2", () => {
       }
 
       const cfg2 = makeConfig(root2, {
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       await bootstrapFromR2(cfg2, store, { clearLocal: true });
       const app2 = createApp(cfg2, store);
@@ -428,8 +425,8 @@ describe("bootstrap from R2", () => {
         segmentCheckIntervalMs: 25,
         uploadIntervalMs: 25,
         uploadConcurrency: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const app = createApp(cfg, store);
       try {
@@ -481,8 +478,8 @@ describe("bootstrap from R2", () => {
       });
 
       const cfg2 = makeConfig(root2, {
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       await bootstrapFromR2(cfg2, store, { clearLocal: true });
 

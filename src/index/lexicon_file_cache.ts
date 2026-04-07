@@ -95,6 +95,14 @@ export class LexiconFileCache {
     return Result.ok(path);
   }
 
+  async ensureLocalFileResult(args: {
+    objectKey: string;
+    expectedSize: number;
+    loadBytes: () => Promise<Uint8Array>;
+  }): Promise<Result<string, LexiconFileCacheError>> {
+    return await this.ensureLocalFileResultImpl(args.objectKey, args.expectedSize, args.loadBytes);
+  }
+
   async loadMappedFileResult(args: {
     objectKey: string;
     expectedSize: number;
@@ -107,7 +115,7 @@ export class LexiconFileCache {
       return Result.ok(cached);
     }
 
-    const localPathRes = await this.ensureLocalFileResult(args.objectKey, args.expectedSize, args.loadBytes);
+    const localPathRes = await this.ensureLocalFileResultImpl(args.objectKey, args.expectedSize, args.loadBytes);
     if (Result.isError(localPathRes)) return localPathRes;
 
     const mappedRes = this.mapFileResult(args.objectKey, localPathRes.value, args.expectedSize);
@@ -134,7 +142,7 @@ export class LexiconFileCache {
     };
   }
 
-  private async ensureLocalFileResult(
+  private async ensureLocalFileResultImpl(
     objectKey: string,
     expectedSize: number,
     loadBytes: () => Promise<Uint8Array>

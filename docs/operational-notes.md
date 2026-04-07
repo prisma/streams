@@ -16,12 +16,12 @@ runtime overview and command surface, see `overview.md`.
 - `DS_SEGMENT_CHECK_MS`: segmenter tick interval (default 250ms)
 - `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_UPLOAD_CHECK_MS`: uploader tick interval (default 250ms)
-- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1–2 GiB presets)
+- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1 GiB, `4` on 2–4 GiB, and `8` on 8 GiB)
 - `DS_BASE_WAL_GC_CHUNK_OFFSETS`: max base-WAL rows deleted per GC sweep/manifest commit transaction (default 1,000,000)
 - `DS_BASE_WAL_GC_INTERVAL_MS`: minimum delay between touch-manager base-WAL GC sweeps per stream (default 1000ms)
 - `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
-- `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
+- `DS_INDEX_BUILDERS`: global worker-thread count for generic index-build jobs (default 1; auto-tune uses `1` on 256–2048 MiB presets, `2` on 4096 MiB, and `4` on 8192 MiB)
 - `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
@@ -35,7 +35,6 @@ runtime overview and command surface, see `overview.md`.
 - `DS_LEXICON_INDEX_CACHE_MAX_BYTES`: on-disk lexicon-run cache cap for local immutable `.lex` files under `${DS_ROOT}/cache/lexicon` (default derived from memory limit; auto-tune uses 8–64 MiB on 256–2048 MiB presets)
 - `DS_LEXICON_MMAP_CACHE_ENTRIES`: hot mmap-backed lexicon files retained by the process (default 64)
 - `DS_INDEX_COMPACTION_FANOUT`: compaction fanout (default 16)
-- `DS_INDEX_COMPACT_CONCURRENCY`: max parallel async run-loading tasks inside one exact-family compaction job (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_READ_MAX_BYTES`: read response byte cap (default 1 MiB)
 - `DS_READ_MAX_RECORDS`: read response record cap (default 1000)
 - `DS_APPEND_MAX_BODY_BYTES`: max append body size (default 10 MiB)
@@ -61,6 +60,7 @@ Concurrency/load-shedding note:
   - read requests are admitted through `DS_READ_CONCURRENCY`
   - `_search` and `_aggregate` requests are admitted through `DS_SEARCH_CONCURRENCY`
   - routing-key indexing, exact indexing, and bundled-companion builds share one `DS_ASYNC_INDEX_CONCURRENCY` gate
+  - the global index manager schedules routing, lexicon, exact, and bundled-companion build/compaction work kinds in round-robin order onto the shared `DS_INDEX_BUILDERS` pool
 - The memory sampler is now only an adaptive signal:
   - on macOS it confirms high RSS with physical memory from `top -stats pid,mem`
   - on Linux it uses `MemAvailable` from `/proc/meminfo`, not raw `free` memory
@@ -93,8 +93,14 @@ Companion-cache note:
   - keyed reads walk cached segment bytes in one forward pass, so they avoid both remote range reads and repeated local `open/read/close` calls for tiny slices
   - footer walks, block scans, keyed reads, stream-size reconciliation, exact-index builds, lexicon builds, and bundled-companion builds all read from that local segment file once it exists
   - there are no remote segment range reads in the supported read path anymore
-  - mmapped cached segment files are pinned until restart; if the pinned set alone exceeds the segment cache budget, the on-disk cache may remain above the configured cap until restart
-- `DS_OBJECTSTORE_TIMEOUT_MS`: object store request timeout (default 5s)
+  - segment-backed indexing jobs reserve required cached segment files through the shared segment-locality manager
+  - routing-key, routing-key lexicon, and exact-secondary L0 builds each reserve the next `DS_INDEX_L0_SPAN` uploaded segment files as **required for indexing**
+  - bundled companion builds reserve one uploaded segment file at a time through the same lease mechanism
+  - required-for-indexing segment files are never evicted while their lease is active
+  - once the relevant job finishes and its indexed watermark or companion catalog advances, those leases are released immediately
+  - unlike the lexicon / companion / run caches, the segment cache may evict the on-disk file for an already-mmapped segment while keeping the live mapping resident in-process; this keeps the on-disk segment cache within `DS_SEGMENT_CACHE_MAX_BYTES`
+  - if the next required indexing window cannot be retained locally without exceeding the segment-cache budget, append admission may return `429` with `error.code = "index_building_behind"` until indexing catches up
+- `DS_OBJECTSTORE_TIMEOUT_MS`: object store request timeout (default 30s). Timed-out object-store writes now abort the underlying upload instead of letting the PUT continue in the background.
 - `DS_OBJECTSTORE_RETRIES`: object store retry count (default 3)
 - `DS_OBJECTSTORE_RETRY_BASE_MS`: base backoff for retries (default 50ms)
 - `DS_OBJECTSTORE_RETRY_MAX_MS`: max backoff for retries (default 2s)
@@ -110,24 +116,65 @@ MockR2 env vars (only when using `--object-store local`):
 - `DS_MOCK_R2_SPILL_DIR`
 
 Indexing note:
-- Full mode runs indexing in the server process via background timer loops.
-- There is no separate indexing daemon or worker-thread pool today.
-- Bundled companion builds are cooperative and single-pass, so large `.fts`
-  backfills should still let lightweight HTTP endpoints continue to respond.
-- The three background managers share one async-index gate, so they compete for
-  the same bounded pool instead of each expanding independently.
+- Full mode runs indexing in the server process. There is no separate indexing
+  daemon or external indexing service.
+- The main process now owns one `GlobalIndexManager`, one shared
+  `IndexBuildWorkerPool`, and one shared `IndexSegmentLocalityManager`.
+- Heavy segment-backed build compute is dispatched to generic worker jobs:
+  - routing-key L0 build
+  - routing-key lexicon L0 build
+  - exact-secondary L0 build
+  - bundled companion per-segment build
+- Routing, lexicon, exact, and companion family adapters still own
+  family-specific backlog discovery and compaction rules, but they no longer
+  own separate timers or dedicated worker pools.
+- All four families share one async-index gate, so they compete for the same
+  bounded top-level permit pool instead of each expanding independently.
 - Background routing, exact, lexicon, and companion builders also yield inside
   segment scans. When a foreground read or search request is active, those
   background loops deliberately back off harder so the server can service the
   request promptly even on 1–2 GiB presets.
-- Routing, exact, and lexicon compactions also defer for a short recent-foreground
-  window, so a burst of keyed reads or searches does not immediately hand the
-  event loop back to a large compaction pass between requests.
+- The global index manager does not keep a dedicated scheduler priority lane
+  for one async family over another. It round-robins work kinds across routing
+  build/compaction, lexicon build/compaction, exact build/compaction, and
+  bundled-companion build, and each family simply yields its turn when nothing
+  is runnable.
+- `GET /v1/server/_mem` runtime counts now expose:
+  - `segment_required_for_indexing_files`
+  - `runtime_bytes.disk_caches.segment_required_for_indexing_bytes`
+- Every async index action now records one local SQLite row in
+  `async_index_actions` with:
+  - `action_kind`
+  - `seq`
+  - `begin_time_ms`
+  - `end_time_ms`
+  - `duration_ms`
+  - input and output counts/bytes
+  - family-specific `detail_json`
+- This log is informational only:
+  - it is not mirrored to object storage
+  - it is not restored by `--bootstrap-from-r2`
+  - stream delete clears the rows for that stream
+- The intended target is that each logged async action completes in under
+  `1000 ms`. A useful inspection query is:
+
+```sql
+SELECT seq, stream, action_kind, status, duration_ms, input_count, input_size_bytes, output_size_bytes, detail_json
+FROM async_index_actions
+ORDER BY seq DESC
+LIMIT 50;
+```
+- If `429 index_building_behind` is active, background indexing still keeps
+  running; the reject path is there to let indexing drain and release required
+  local segment leases, not to pause indexing.
 
 Deleted-stream note:
 - `DELETE /v1/stream/{name}` is a tombstone plus local acceleration scrub, not a synchronous remote object purge.
-- The delete transaction removes routing, exact, lexicon, and bundled-companion state for that stream immediately.
-- Startup also scans tombstoned streams and repeats the same scrub before async-index loops start.
+- The delete transaction removes routing, exact, lexicon, and bundled-companion state for that stream immediately, and also clears per-stream object-store request-accounting counters.
+- The same delete scrub also clears local `async_index_actions` rows for that
+  stream.
+- The delete path clears the same request counters again after the tombstone manifest publish, so recreating the same stream name starts from zeroed request-accounting state.
+- Startup also scans tombstoned streams and repeats the same scrub before async-index loops start, so stale deleted-stream counters or async-index rows do not survive a restart.
 - If a deleted stream ever contributes async-index work after restart, treat that as a bug.
 
 ## SQLite PRAGMAs
@@ -187,22 +234,22 @@ presets:
 
 - `256 MiB`:
   - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `512 MiB`:
   - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `1024 MiB`:
   - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `2`, segmenter workers `1`
 - `2048 MiB`:
   - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `4`, segmenter workers `1`
 - `4096 MiB`:
   - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
-  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, uploads `4`, segmenter workers `2`
+  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, index builders `2`, uploads `4`, segmenter workers `2`
 - `8192 MiB`:
   - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
-  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, uploads `8`, segmenter workers `4`
+  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, index builders `4`, uploads `8`, segmenter workers `4`
 
 ## Diagnosing stalls
 
@@ -223,10 +270,17 @@ When throughput drops, check in this order:
 - Check object store latency and error rates.
 - Inspect `GET /v1/server/_details` and `tieredstore.upload.pending_segments`.
 - Remember the uploader preserves a contiguous uploaded prefix per stream:
-  - it always retries the earliest missing segment for that stream first
+  - it always starts from the earliest missing segment for that stream
+  - it may upload the earliest few pending segments in parallel, up to the
+    configured upload concurrency
   - later segments from the same stream are not allowed to bypass that gap
   - so one old upload timeout can keep `uploaded_through` and WAL GC pinned
     until that exact missing segment succeeds
+- `GET /v1/server/_details` now exposes `runtime.uploads.path`, which includes:
+  - the last segment-selection duration and selected-window size
+  - segment PUT / mark-uploaded timing totals and last values
+  - manifest build / PUT / commit timing totals and last values
+  - attempt / success / failure / timeout counters for segment and manifest work
 
 4) Bundled companion lag (search coverage behind uploads)
 - Check `/_details` or `/_index_status` for bundled companion coverage.

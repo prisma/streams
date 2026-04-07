@@ -1,4 +1,4 @@
-import type { GetOptions, ObjectStore, PutResult } from "./interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 function disabled(op: string, key?: string): never {
@@ -6,11 +6,11 @@ function disabled(op: string, key?: string): never {
 }
 
 export class NullObjectStore implements ObjectStore {
-  async put(key: string, _data: Uint8Array, _opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+  async put(key: string, _data: Uint8Array, _opts?: PutOptions): Promise<PutResult> {
     return disabled("put", key);
   }
 
-  async putFile(key: string, _path: string, _size: number, _opts?: { contentType?: string }): Promise<PutResult> {
+  async putFile(key: string, _path: string, _size: number, _opts?: PutFileOptions): Promise<PutResult> {
     return disabled("putFile", key);
   }
 

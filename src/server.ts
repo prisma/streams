@@ -112,8 +112,7 @@ function applyAutoTune(overrideMb: number | null): void {
   process.env.DS_READ_CONCURRENCY = String(tune.readConcurrency);
   process.env.DS_SEARCH_CONCURRENCY = String(tune.searchConcurrency);
   process.env.DS_ASYNC_INDEX_CONCURRENCY = String(tune.asyncIndexConcurrency);
-  process.env.DS_INDEX_BUILD_CONCURRENCY = String(tune.indexBuildConcurrency);
-  process.env.DS_INDEX_COMPACT_CONCURRENCY = String(tune.indexCompactConcurrency);
+  process.env.DS_INDEX_BUILDERS = String(tune.indexBuilders);
   process.env.DS_SEGMENTER_WORKERS = String(tune.segmenterWorkers);
   process.env.DS_UPLOAD_CONCURRENCY = String(tune.uploadConcurrency);
   process.env.DS_SEARCH_COMPANION_BATCH_SEGMENTS = String(tune.searchCompanionBatchSegments);
@@ -232,18 +231,10 @@ function applyAutoTune(overrideMb: number | null): void {
     )}`
   );
   console.log(
-    `DS_INDEX_BUILD_CONCURRENCY presets: ${formatPresetList(
+    `DS_INDEX_BUILDERS presets: ${formatPresetList(
       presets,
       preset,
-      (p) => tuneForPreset(p).indexBuildConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INDEX_COMPACT_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).indexCompactConcurrency,
+      (p) => tuneForPreset(p).indexBuilders,
       (v) => String(v)
     )}`
   );

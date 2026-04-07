@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { LexiconIndexRunRow, LexiconIndexStateRow, SegmentRow, SqliteDurableStore } from "../db/db";
@@ -9,13 +8,17 @@ import { iterateBlockRecordsResult } from "../segment/format";
 import { SegmentDiskCache } from "../segment/cache";
 import { loadSegmentBytesCached } from "../segment/cached_segment";
 import { RestartStringTableView } from "../search/binary/restart_strings";
-import { retry } from "../util/retry";
+import { retry, retryAbortable } from "../util/retry";
 import { dsError } from "../util/ds_error.ts";
 import { streamHash16Hex, lexiconRunObjectKey } from "../util/stream_paths";
 import { yieldToEventLoop } from "../util/yield";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
 import { LexiconFileCache } from "./lexicon_file_cache";
+import type { IndexSegmentLocalityManager } from "./segment_locality";
+import { IndexBuildWorkerPool } from "./index_build_worker_pool";
+import type { LexiconCompactionRunSource } from "./lexicon_compaction_build";
+import { beginAsyncIndexAction } from "./async_index_actions";
 import {
   buildLexiconRunPayload,
   decodeLexiconRunResult,
@@ -88,11 +91,15 @@ export class LexiconIndexManager {
   private readonly retireMinMs: number;
   private readonly fileCache?: LexiconFileCache;
   private readonly foregroundActivity?: ForegroundActivityTracker;
-  private readonly queue = new Set<string>();
+  private readonly buildWorkers: IndexBuildWorkerPool;
+  private readonly ownsBuildWorkers: boolean;
+  private readonly segmentLocality?: IndexSegmentLocalityManager;
+  private readonly buildQueue = new Set<string>();
+  private readonly compactionQueue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly compacting = new Set<string>();
-  private timer: any | null = null;
-  private running = false;
+  private runningBuildTick = false;
+  private runningCompactionTick = false;
 
   constructor(
     private readonly cfg: Config,
@@ -104,7 +111,9 @@ export class LexiconIndexManager {
     private readonly metrics: Metrics | undefined,
     private readonly registry: SchemaRegistryStore | undefined,
     private readonly asyncGate: ConcurrencyGate,
-    foregroundActivity?: ForegroundActivityTracker
+    foregroundActivity?: ForegroundActivityTracker,
+    segmentLocality?: IndexSegmentLocalityManager,
+    buildWorkers?: IndexBuildWorkerPool
   ) {
     this.span = cfg.indexL0SpanSegments;
     this.compactionFanout = cfg.indexCompactionFanout;
@@ -112,6 +121,10 @@ export class LexiconIndexManager {
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
     this.retireMinMs = Math.max(0, cfg.indexRetireMinMs);
     this.foregroundActivity = foregroundActivity;
+    this.segmentLocality = segmentLocality;
+    this.ownsBuildWorkers = !buildWorkers;
+    this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
+    if (this.ownsBuildWorkers) this.buildWorkers.start();
     this.fileCache =
       cfg.lexiconIndexCacheMaxBytes > 0
         ? new LexiconFileCache(`${cfg.rootDir}/cache/lexicon`, cfg.lexiconIndexCacheMaxBytes, cfg.lexiconMappedCacheEntries)
@@ -127,21 +140,20 @@ export class LexiconIndexManager {
   }
 
   start(): void {
-    if (this.span <= 0 || this.timer) return;
-    this.timer = setInterval(() => {
-      void this.tick();
-    }, this.cfg.indexCheckIntervalMs);
+    // Scheduling is owned by the global index manager.
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.runningBuildTick = false;
+    this.runningCompactionTick = false;
+    if (this.ownsBuildWorkers) this.buildWorkers.stop();
     this.fileCache?.clearMapped();
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
-    this.queue.add(stream);
+    this.buildQueue.add(stream);
+    this.compactionQueue.add(stream);
   }
 
   getLocalCacheBytes(stream: string): number {
@@ -212,48 +224,72 @@ export class LexiconIndexManager {
     });
   }
 
-  private async tick(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+  async tick(): Promise<void> {
+    await Promise.all([this.runOneBuildTask(), this.runOneCompactionTask()]);
+  }
+
+  async runOneBuildTask(): Promise<boolean> {
+    if (this.runningBuildTick) return false;
+    const stream = this.takeNextStream(this.buildQueue);
+    if (!stream) return false;
+    this.runningBuildTick = true;
     try {
-      const streams = Array.from(this.queue);
-      this.queue.clear();
-      for (const stream of streams) {
-        if (!this.isRoutingLexiconConfigured(stream)) {
-          const hadState =
-            this.db.getLexiconIndexState(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME) != null ||
-            this.db.listLexiconIndexRunsAll(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME).length > 0;
-          if (hadState) {
-            this.db.deleteLexiconIndexSource(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
-            this.onMetadataChanged?.(stream);
-            if (this.publishManifest) {
-              try {
-                await this.publishManifest(stream);
-              } catch {
-                // retry on next enqueue
-              }
+      if (!this.isRoutingLexiconConfigured(stream)) {
+        const hadState =
+          this.db.getLexiconIndexState(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME) != null ||
+          this.db.listLexiconIndexRunsAll(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME).length > 0;
+        if (hadState) {
+          this.db.deleteLexiconIndexSource(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
+          this.onMetadataChanged?.(stream);
+          if (this.publishManifest) {
+            try {
+              await this.publishManifest(stream);
+            } catch {
+              // retry on next enqueue
             }
           }
-          continue;
         }
-        const buildRes = await this.maybeBuildRuns(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
-        if (Result.isError(buildRes)) {
-          // eslint-disable-next-line no-console
-          console.error("lexicon build failed", stream, buildRes.error.message);
-          this.queue.add(stream);
-          continue;
-        }
-        const compactRes = await this.maybeCompactRuns(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
-        if (Result.isError(compactRes)) {
-          // eslint-disable-next-line no-console
-          console.error("lexicon compaction failed", stream, compactRes.error.message);
-          this.queue.add(stream);
-          continue;
-        }
+        this.compactionQueue.delete(stream);
+        return true;
       }
+      const buildRes = await this.maybeBuildRuns(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
+      if (Result.isError(buildRes)) {
+        console.error("lexicon build failed", stream, buildRes.error.message);
+        this.buildQueue.add(stream);
+      }
+      return true;
     } finally {
-      this.running = false;
+      this.runningBuildTick = false;
     }
+  }
+
+  async runOneCompactionTask(): Promise<boolean> {
+    if (this.runningCompactionTick) return false;
+    const stream = this.takeNextStream(this.compactionQueue);
+    if (!stream) return false;
+    this.runningCompactionTick = true;
+    try {
+      if (!this.isRoutingLexiconConfigured(stream)) {
+        this.buildQueue.delete(stream);
+        return true;
+      }
+      const compactRes = await this.maybeCompactRuns(stream, ROUTING_KEY_SOURCE_KIND, ROUTING_KEY_SOURCE_NAME);
+      if (Result.isError(compactRes)) {
+        console.error("lexicon compaction failed", stream, compactRes.error.message);
+        this.compactionQueue.add(stream);
+      }
+      return true;
+    } finally {
+      this.runningCompactionTick = false;
+    }
+  }
+
+  private takeNextStream(queue: Set<string>): string | null {
+    const next = queue.values().next();
+    if (next.done) return null;
+    const stream = next.value as string;
+    queue.delete(stream);
+    return stream;
   }
 
   private async maybeBuildRuns(
@@ -281,21 +317,80 @@ export class LexiconIndexManager {
           if (!segment || !segment.r2_etag) return Result.ok(undefined);
           segments.push(segment);
         }
-        const runRes = await this.buildL0RunResult(stream, sourceKind, sourceName, startSegment, segments);
-        if (Result.isError(runRes)) return runRes;
-        const persistRes = await this.persistRunResult(runRes.value, stream);
-        if (Result.isError(persistRes)) return persistRes;
+        const segmentLeaseRes = this.segmentLocality
+          ? await this.segmentLocality.acquireLexiconWindowResult(stream, segments)
+          : Result.err({ kind: "missing_segment" as const, message: "routing-key lexicon indexing requires a segment disk cache" });
+        if (Result.isError(segmentLeaseRes)) {
+          if (segmentLeaseRes.error.kind === "index_cache_overloaded") {
+            this.buildQueue.add(stream);
+            this.onMetadataChanged?.(stream);
+            return Result.ok(undefined);
+          }
+          return invalidLexiconIndex(segmentLeaseRes.error.message);
+        }
+        const segmentLease = segmentLeaseRes.value;
+        const action = beginAsyncIndexAction(this.db, {
+          stream,
+          actionKind: "lexicon_l0_build",
+          targetKind: sourceKind,
+          targetName: sourceName,
+          inputKind: "segment",
+          inputCount: segments.length,
+          inputSizeBytes: segments.reduce((sum, segment) => sum + BigInt(segment.size_bytes), 0n),
+          startSegment,
+          endSegment,
+          detail: {
+            input_payload_bytes: segments.reduce((sum, segment) => sum + Number(segment.payload_bytes), 0),
+            level: 0,
+          },
+        });
+        let runRes;
+        try {
+          runRes = await this.buildWorkers.buildResult({
+            kind: "lexicon_l0_build",
+            input: {
+              stream,
+              sourceKind,
+              sourceName,
+              startSegment,
+              span: this.span,
+              segments: segmentLease.localSegments.map((segment) => ({
+                segmentIndex: segment.segmentIndex,
+                localPath: segment.localPath,
+              })),
+            },
+          });
+        } finally {
+          segmentLease.release();
+        }
+        if (Result.isError(runRes)) {
+          action.fail(runRes.error.message);
+          return invalidLexiconIndex(runRes.error.message);
+        }
+        if (runRes.value.kind !== "lexicon_l0_build") {
+          action.fail("unexpected worker result kind");
+          return invalidLexiconIndex("unexpected worker result kind");
+        }
+        const persistRes = await this.persistRunPayloadResult(runRes.value.output.meta, runRes.value.output.payload, stream);
+        if (Result.isError(persistRes)) {
+          action.fail(persistRes.error.message, {
+            detail: {
+              output_record_count: runRes.value.output.meta.recordCount,
+            },
+          });
+          return persistRes;
+        }
         this.db.insertLexiconIndexRun({
-          run_id: runRes.value.meta.runId,
+          run_id: runRes.value.output.meta.runId,
           stream,
           source_kind: sourceKind,
           source_name: sourceName,
-          level: runRes.value.meta.level,
-          start_segment: runRes.value.meta.startSegment,
-          end_segment: runRes.value.meta.endSegment,
-          object_key: runRes.value.meta.objectKey,
+          level: runRes.value.output.meta.level,
+          start_segment: runRes.value.output.meta.startSegment,
+          end_segment: runRes.value.output.meta.endSegment,
+          object_key: runRes.value.output.meta.objectKey,
           size_bytes: persistRes.value,
-          record_count: runRes.value.meta.recordCount,
+          record_count: runRes.value.output.meta.recordCount,
         });
         this.db.updateLexiconIndexedThrough(stream, sourceKind, sourceName, endSegment + 1);
         this.onMetadataChanged?.(stream);
@@ -307,8 +402,16 @@ export class LexiconIndexManager {
           }
         }
         if (this.db.countUploadedSegments(stream) >= endSegment + 1 + this.span) {
-          this.queue.add(stream);
+          this.buildQueue.add(stream);
         }
+        this.compactionQueue.add(stream);
+        action.succeed({
+          outputCount: 1,
+          outputSizeBytes: BigInt(persistRes.value),
+          detail: {
+            output_record_count: runRes.value.output.meta.recordCount,
+          },
+        });
         return Result.ok(undefined);
       });
     } catch (error) {
@@ -325,10 +428,6 @@ export class LexiconIndexManager {
   ): Promise<Result<void, LexiconIndexError>> {
     if (this.compactionFanout <= 1) return Result.ok(undefined);
     if (this.compacting.has(stream)) return Result.ok(undefined);
-    if (this.foregroundActivity?.wasActiveWithin(2000)) {
-      this.queue.add(stream);
-      return Result.ok(undefined);
-    }
     this.compacting.add(stream);
     try {
       return await this.asyncGate.run(async () => {
@@ -337,10 +436,35 @@ export class LexiconIndexManager {
           await this.gcRetiredRuns(stream, sourceKind, sourceName);
           return Result.ok(undefined);
         }
+        const action = beginAsyncIndexAction(this.db, {
+          stream,
+          actionKind: "lexicon_compaction_build",
+          targetKind: sourceKind,
+          targetName: sourceName,
+          inputKind: "run",
+          inputCount: group.runs.length,
+          inputSizeBytes: group.runs.reduce((sum, run) => sum + BigInt(run.size_bytes), 0n),
+          startSegment: group.runs[0]?.start_segment ?? null,
+          endSegment: group.runs[group.runs.length - 1]?.end_segment ?? null,
+          detail: {
+            level_from: group.level,
+            level_to: group.level + 1,
+          },
+        });
         const runRes = await this.buildCompactedRunResult(stream, sourceKind, sourceName, group.level + 1, group.runs);
-        if (Result.isError(runRes)) return runRes;
+        if (Result.isError(runRes)) {
+          action.fail(runRes.error.message);
+          return runRes;
+        }
         const persistRes = await this.persistRunResult(runRes.value, stream);
-        if (Result.isError(persistRes)) return persistRes;
+        if (Result.isError(persistRes)) {
+          action.fail(persistRes.error.message, {
+            detail: {
+              output_record_count: runRes.value.meta.recordCount,
+            },
+          });
+          return persistRes;
+        }
         this.db.insertLexiconIndexRun({
           run_id: runRes.value.meta.runId,
           stream,
@@ -368,7 +492,14 @@ export class LexiconIndexManager {
           }
         }
         await this.gcRetiredRuns(stream, sourceKind, sourceName);
-        this.queue.add(stream);
+        this.compactionQueue.add(stream);
+        action.succeed({
+          outputCount: 1,
+          outputSizeBytes: BigInt(persistRes.value),
+          detail: {
+            output_record_count: runRes.value.meta.recordCount,
+          },
+        });
         return Result.ok(undefined);
       });
     } catch (error) {
@@ -414,32 +545,6 @@ export class LexiconIndexManager {
     return span;
   }
 
-  private async buildL0RunResult(
-    stream: string,
-    sourceKind: string,
-    sourceName: string,
-    startSegment: number,
-    segments: SegmentRow[]
-  ): Promise<Result<LexiconRun, LexiconIndexError>> {
-    const keys = new Set<string>();
-    for (const segment of segments) {
-      const segmentBytesRes = await this.loadSegmentBytesResult(segment);
-      if (Result.isError(segmentBytesRes)) return segmentBytesRes;
-      let processedRecords = 0;
-      for (const recordRes of iterateBlockRecordsResult(segmentBytesRes.value)) {
-        if (Result.isError(recordRes)) return invalidLexiconIndex(recordRes.error.message);
-        if (recordRes.value.routingKey.byteLength === 0) continue;
-        keys.add(TEXT_DECODER.decode(recordRes.value.routingKey));
-        processedRecords += 1;
-        if (processedRecords % 256 === 0) {
-          await this.yieldBackgroundWork();
-        }
-      }
-      await this.yieldBackgroundWork();
-    }
-    return Result.ok(this.createRun(stream, sourceKind, sourceName, 0, startSegment, startSegment + this.span - 1, Array.from(keys).sort(compareKeys)));
-  }
-
   private async buildCompactedRunResult(
     stream: string,
     sourceKind: string,
@@ -447,66 +552,79 @@ export class LexiconIndexManager {
     level: number,
     runs: LexiconIndexRunRow[]
   ): Promise<Result<LexiconRun, LexiconIndexError>> {
-    const merged = await this.listKeysFromRunsResult(runs, null, Number.MAX_SAFE_INTEGER, {
-      lexiconRunGetMs: 0,
-      lexiconDecodeMs: 0,
-      lexiconEnumerateMs: 0,
-      lexiconMergeMs: 0,
-      fallbackScanMs: 0,
-      fallbackSegmentGetMs: 0,
-      fallbackWalScanMs: 0,
-      lexiconRunsLoaded: 0,
-    });
-    if (Result.isError(merged)) return merged;
-    return Result.ok(
-      this.createRun(
+    const sourcesRes = await this.prepareCompactionSourcesResult(runs);
+    if (Result.isError(sourcesRes)) return sourcesRes;
+    const buildRes = await this.buildWorkers.buildResult({
+      kind: "lexicon_compaction_build",
+      input: {
         stream,
         sourceKind,
         sourceName,
         level,
-        runs[0]!.start_segment,
-        runs[runs.length - 1]!.end_segment,
-        merged.value
-      )
-    );
-  }
-
-  private createRun(
-    stream: string,
-    sourceKind: string,
-    sourceName: string,
-    level: number,
-    startSegment: number,
-    endSegment: number,
-    keys: string[]
-  ): LexiconRun {
-    const streamHash = streamHash16Hex(stream);
-    const runId = `${sourceKind}-${sourceName || "default"}-l${level}-${startSegment.toString().padStart(16, "0")}-${endSegment
-      .toString()
-      .padStart(16, "0")}-${Date.now()}`;
-    const objectKey = lexiconRunObjectKey(streamHash, sourceKind, sourceName, runId);
-    const payloadBytes = buildLexiconRunPayload(keys);
-    return {
-      meta: {
-        runId,
-        level,
-        startSegment,
-        endSegment,
-        objectKey,
-        recordCount: keys.length,
+        inputs: sourcesRes.value,
       },
-      payloadBytes,
-      terms: new RestartStringTableView(payloadBytes),
-    };
+    });
+    if (Result.isError(buildRes)) return invalidLexiconIndex(buildRes.error.message);
+    if (buildRes.value.kind !== "lexicon_compaction_build") return invalidLexiconIndex("unexpected worker result kind");
+    const runRes = decodeLexiconRunResult(buildRes.value.output.payload);
+    if (Result.isError(runRes)) return invalidLexiconIndex(runRes.error.message);
+    const run = runRes.value;
+    run.meta.runId = buildRes.value.output.meta.runId;
+    run.meta.level = buildRes.value.output.meta.level;
+    run.meta.startSegment = buildRes.value.output.meta.startSegment;
+    run.meta.endSegment = buildRes.value.output.meta.endSegment;
+    run.meta.objectKey = buildRes.value.output.meta.objectKey;
+    run.meta.recordCount = buildRes.value.output.meta.recordCount;
+    return Result.ok(run);
   }
 
-  private async persistRunResult(run: LexiconRun, stream: string): Promise<Result<number, LexiconIndexError>> {
-    const payloadRes = encodeLexiconRunResult(run);
-    if (Result.isError(payloadRes)) return invalidLexiconIndex(payloadRes.error.message);
-    const payload = payloadRes.value;
+  private async prepareCompactionSourcesResult(
+    runs: LexiconIndexRunRow[]
+  ): Promise<Result<LexiconCompactionRunSource[], LexiconIndexError>> {
+    const sources: LexiconCompactionRunSource[] = [];
+    for (const meta of runs) {
+      const sourceRes = await this.prepareCompactionSourceResult(meta);
+      if (Result.isError(sourceRes)) return sourceRes;
+      sources.push(sourceRes.value);
+    }
+    return Result.ok(sources);
+  }
+
+  private async prepareCompactionSourceResult(meta: LexiconIndexRunRow): Promise<Result<LexiconCompactionRunSource, LexiconIndexError>> {
+    if (this.fileCache) {
+      const localPathRes = await this.fileCache.ensureLocalFileResult({
+        objectKey: meta.object_key,
+        expectedSize: meta.size_bytes,
+        loadBytes: () =>
+          retry(
+            async () => {
+              const data = await this.os.get(meta.object_key);
+              if (!data) throw dsError(`missing lexicon run ${meta.object_key}`);
+              return data;
+            },
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          ),
+      });
+      if (Result.isError(localPathRes)) return invalidLexiconIndex(localPathRes.error.message);
+      return Result.ok({
+        runId: meta.run_id,
+        startSegment: meta.start_segment,
+        endSegment: meta.end_segment,
+        localPath: localPathRes.value,
+      });
+    }
     try {
-      await retry(
-        () => this.os.put(run.meta.objectKey, payload, { contentLength: payload.byteLength }),
+      const bytes = await retry(
+        async () => {
+          const data = await this.os.get(meta.object_key);
+          if (!data) throw dsError(`missing lexicon run ${meta.object_key}`);
+          return data;
+        },
         {
           retries: this.cfg.objectStoreRetries,
           baseDelayMs: this.cfg.objectStoreBaseDelayMs,
@@ -514,7 +632,39 @@ export class LexiconIndexManager {
           timeoutMs: this.cfg.objectStoreTimeoutMs,
         }
       );
-      this.fileCache?.storeBytesResult(run.meta.objectKey, payload);
+      return Result.ok({
+        runId: meta.run_id,
+        startSegment: meta.start_segment,
+        endSegment: meta.end_segment,
+        bytes,
+      });
+    } catch (error) {
+      return invalidLexiconIndex(errorMessage(error));
+    }
+  }
+
+  private async persistRunResult(run: LexiconRun, stream: string): Promise<Result<number, LexiconIndexError>> {
+    const payloadRes = encodeLexiconRunResult(run);
+    if (Result.isError(payloadRes)) return invalidLexiconIndex(payloadRes.error.message);
+    return await this.persistRunPayloadResult(run.meta, payloadRes.value, stream);
+  }
+
+  private async persistRunPayloadResult(
+    meta: LexiconRun["meta"],
+    payload: Uint8Array,
+    stream: string
+  ): Promise<Result<number, LexiconIndexError>> {
+    try {
+      await retryAbortable(
+        (signal) => this.os.put(meta.objectKey, payload, { contentLength: payload.byteLength, signal }),
+        {
+          retries: this.cfg.objectStoreRetries,
+          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+          timeoutMs: this.cfg.objectStoreTimeoutMs,
+        }
+      );
+      this.fileCache?.storeBytesResult(meta.objectKey, payload);
       this.metrics?.record("tieredstore.lexicon.bytes.written", payload.byteLength, "bytes", { source: ROUTING_KEY_SOURCE_KIND }, stream);
       return Result.ok(payload.byteLength);
     } catch (error) {

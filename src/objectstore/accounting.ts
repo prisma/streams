@@ -1,5 +1,5 @@
 import type { SqliteDurableStore } from "../db/db";
-import type { GetOptions, ObjectStore, PutResult } from "./interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 
 type ClassifiedRequest = {
   streamHash: string;
@@ -39,14 +39,14 @@ export class AccountingObjectStore implements ObjectStore {
     private readonly db: SqliteDurableStore
   ) {}
 
-  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+  async put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult> {
     const res = await this.inner.put(key, data, opts);
     const classified = classifyKey(key);
     if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", data.byteLength);
     return res;
   }
 
-  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+  async putFile(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult> {
     if (!this.inner.putFile) {
       const bytes = await Bun.file(path).bytes();
       const res = await this.inner.put(key, bytes, {

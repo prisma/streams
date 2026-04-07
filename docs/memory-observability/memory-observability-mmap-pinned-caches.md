@@ -1,6 +1,18 @@
 # Memory Observability: Mmap Pinned Caches
 
-This counter group tracks the mmap-backed cache entries that become pinned and can prevent full cache-budget eviction.
+This counter group tracks mmap-backed cache entries that stay resident in the
+process after a local file has been mmapped.
+
+Current nuance:
+
+- for lexicon, companion, and run-disk caches, pinned mmap entries still block
+  on-disk eviction
+- for the main segment cache, mmap residency no longer implies on-disk
+  non-evictability; the on-disk file may be evicted while the mapping stays
+  resident in-process
+- segment files needed by segment-backed indexing jobs use a separate
+  `required for indexing` lease and are the actual non-evictable segment-cache
+  entries during routing, lexicon, exact, and companion backfill
 
 Observability names:
 - `tieredstore.mem.leak_candidate.segment_cache.pinned_entries`
@@ -16,9 +28,7 @@ Where implemented:
 - `src/index/secondary_indexer.ts:194-214` exposes exact-index run-disk cache pinned/mapped stats.
 
 Behavior source lines:
-- `src/segment/cache.ts:29` pinned key set declaration.
-- `src/segment/cache.ts:113-138` pinned keys are added on mapped reads.
-- `src/segment/cache.ts:191-207` removals/eviction skip pinned keys.
+- `src/segment/cache.ts` segment cache mmap residency and required-for-indexing lease tracking.
 - `src/index/lexicon_file_cache.ts:43` pinned key set declaration.
 - `src/index/lexicon_file_cache.ts:103-117` pinned keys are added on mapped loads.
 - `src/search/companion_file_cache.ts:48` pinned key set declaration.

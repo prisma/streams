@@ -32,9 +32,6 @@ function markAppendIdle(app: ReturnType<typeof createApp>): void {
 async function driveExactIndexer(app: ReturnType<typeof createApp>): Promise<void> {
   const secondaryIndexer = (app.deps.indexer as any).secondaryIndex;
   if (!secondaryIndexer) return;
-  for (let attempt = 0; attempt < 3000; attempt++) {
-    if (!(secondaryIndexer as any).shouldPauseExactBackgroundWork(STREAM)) break;
-  }
   secondaryIndexer.enqueue(STREAM);
   await secondaryIndexer.tick?.();
 }
@@ -122,8 +119,8 @@ describe("exact secondary index backfill", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       let app = createApp(buildCfg, store);

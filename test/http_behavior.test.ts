@@ -6,7 +6,7 @@ import { Result } from "better-result";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
-import type { GetOptions, ObjectStore, PutResult } from "../src/objectstore/interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "../src/objectstore/interface";
 import { encodeOffset, parseOffset } from "../src/offset";
 import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter } from "../src/segment/format";
 
@@ -99,11 +99,11 @@ class RecordingStore implements ObjectStore {
     this.getCalls.length = 0;
   }
 
-  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+  async put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult> {
     return this.inner.put(key, data, opts);
   }
 
-  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+  async putFile(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult> {
     return this.inner.putFile ? this.inner.putFile(key, path, size, opts) : this.inner.put(key, await Bun.file(path).bytes(), opts);
   }
 
@@ -512,7 +512,6 @@ describe("http behavior", () => {
           "tieredstore.mem.leak_candidate.notifier.latest_seq_streams": expect.any(Number),
           "tieredstore.mem.leak_candidate.notifier.details_version_streams": expect.any(Number),
           "tieredstore.mem.leak_candidate.metrics.series": expect.any(Number),
-          "tieredstore.mem.leak_candidate.secondary_index.stream_idle_ticks_streams": expect.any(Number),
           "tieredstore.mem.leak_candidate.mock_r2.in_memory_bytes": expect.any(Number),
           "tieredstore.mem.leak_candidate.mock_r2.object_count": expect.any(Number),
         },
@@ -874,6 +873,42 @@ describe("http behavior", () => {
         error: { code: "overloaded", message: "ingest queue full" },
       });
     });
+  });
+
+  test("overload responses surface indexing-behind details", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-http-overloaded-index-"));
+    const app = createApp(makeConfig(root), new MockR2Store());
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    const baseUrl = `http://localhost:${server.port}`;
+    app.deps.backpressure?.setOverloadReason("test-indexing", {
+      code: "index_building_behind",
+      message: "routing indexing is too far behind to retain the next 16 required segment files locally",
+    });
+    try {
+      await fetch(`${baseUrl}/v1/stream/overloaded-index`, {
+        method: "PUT",
+        headers: { "content-type": "text/plain" },
+      });
+
+      const r = await fetch(`${baseUrl}/v1/stream/overloaded-index`, {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "ab",
+      });
+
+      expect(r.status).toBe(429);
+      expect(await r.json()).toEqual({
+        error: {
+          code: "index_building_behind",
+          message: "routing indexing is too far behind to retain the next 16 required segment files locally",
+        },
+      });
+    } finally {
+      app.deps.backpressure?.setOverloadReason("test-indexing", null);
+      server.stop();
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("memory pressure state no longer rejects append requests", { timeout: 5_000 }, async () => {

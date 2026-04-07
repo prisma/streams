@@ -1,7 +1,13 @@
+export type OverloadReason = {
+  code: string;
+  message: string;
+};
+
 export class BackpressureGate {
   private readonly maxBytes: number;
   private currentBytes: number;
   private reservedBytes: number;
+  private readonly overloadReasons = new Map<string, OverloadReason>();
 
   constructor(maxBytes: number, initialBytes: number) {
     this.maxBytes = maxBytes;
@@ -59,7 +65,21 @@ export class BackpressureGate {
     return this.maxBytes;
   }
 
+  setOverloadReason(source: string, reason: OverloadReason | null): void {
+    if (reason) {
+      this.overloadReasons.set(source, reason);
+      return;
+    }
+    this.overloadReasons.delete(source);
+  }
+
+  getOverloadReason(): OverloadReason | null {
+    const first = this.overloadReasons.values().next();
+    return first.done ? null : first.value;
+  }
+
   isOverLimit(): boolean {
+    if (this.getOverloadReason()) return true;
     if (this.maxBytes <= 0) return false;
     return this.currentBytes + this.reservedBytes >= this.maxBytes;
   }

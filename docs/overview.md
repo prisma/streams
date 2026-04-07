@@ -205,6 +205,10 @@ bun run test:conformance
 - [profile-evlog.md](./profile-evlog.md): `evlog` profile reference
 - [indexing-architecture.md](./indexing-architecture.md): current exact +
   `.col` + `.fts` + `.agg` + `.mblk` indexing model
+- [unified-index-worker-architecture.md](./unified-index-worker-architecture.md):
+  shipped global index manager, shared worker pool, and segment-leasing design
+- [routing-lexicon-index-acceleration-architecture.md](./routing-lexicon-index-acceleration-architecture.md):
+  proposed architecture and phased plan for 100x-class routing/lexicon indexing speedup
 - [aggregation-rollups.md](./aggregation-rollups.md): schema-owned rollup and
   `_aggregate` model
 - [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants

@@ -214,14 +214,18 @@ It remains:
 - cross-segment
 - compacted into separate run objects
 
-Exact build is lower priority than bundled companions:
+Exact secondary build and compaction now run through the same global
+round-robin background scheduler as routing, routing-key lexicon, and bundled
+companions.
 
-- bundled companions must catch up first
-- the stream must not have an in-progress cut or pending upload segment
-- the stream must be append-idle before exact build or compaction is allowed to
-  resume
+That means:
 
-This keeps active ingest focused on raw publish plus bundled-family coverage.
+- there is no dedicated scheduler priority lane for bundled companions over
+  exact work
+- exact work participates in the same shared async-index concurrency budget as
+  the other families
+- fairness comes from the global work-kind round-robin plus each family's own
+  runnable/not-runnable checks, not from family-specific priority rules
 
 ## Current Limits
 

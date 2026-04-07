@@ -17,9 +17,10 @@ import { dsError } from "../util/ds_error.ts";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
-import { retry } from "../util/retry";
+import { retry, retryAbortable } from "../util/retry";
 import { yieldToEventLoop } from "../util/yield";
 import { searchCompanionObjectKey, streamHash16Hex } from "../util/stream_paths";
+import { beginAsyncIndexAction } from "../index/async_index_actions";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
   PSCIX2_MAX_TOC_BYTES,
@@ -56,6 +57,8 @@ import {
 import type { AggMeasureState, AggSectionInput, AggWindowGroup, AggSectionView } from "./agg_format";
 import type { SearchRollupConfig } from "../schema/registry";
 import type { CompanionSectionLookupStats } from "../index/indexer";
+import type { IndexSegmentLocalityManager } from "../index/segment_locality";
+import { IndexBuildWorkerPool } from "../index/index_build_worker_pool";
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
 
@@ -182,8 +185,10 @@ export class SearchCompanionManager {
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
-  private timer: any | null = null;
-  private running = false;
+  private runningBuildTick = false;
+  private readonly segmentLocality?: IndexSegmentLocalityManager;
+  private readonly buildWorkers: IndexBuildWorkerPool;
+  private readonly ownsBuildWorkers: boolean;
 
   constructor(
     private readonly cfg: Config,
@@ -196,13 +201,19 @@ export class SearchCompanionManager {
     private readonly metrics?: Metrics,
     memorySampler?: RuntimeMemorySampler,
     asyncGate?: ConcurrencyGate,
-    foregroundActivity?: ForegroundActivityTracker
+    foregroundActivity?: ForegroundActivityTracker,
+    segmentLocality?: IndexSegmentLocalityManager,
+    buildWorkers?: IndexBuildWorkerPool
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
     this.segmentCache = segmentCache;
     this.memorySampler = memorySampler;
     this.asyncGate = asyncGate ?? new ConcurrencyGate(1);
     this.foregroundActivity = foregroundActivity;
+    this.segmentLocality = segmentLocality;
+    this.ownsBuildWorkers = !buildWorkers;
+    this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
+    if (this.ownsBuildWorkers) this.buildWorkers.start();
     this.fileCache = new CompanionFileCache(
       `${cfg.rootDir}/cache/companions`,
       cfg.searchCompanionFileCacheMaxBytes,
@@ -220,15 +231,12 @@ export class SearchCompanionManager {
   }
 
   start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => {
-      void this.tick();
-    }, this.cfg.indexCheckIntervalMs);
+    // Scheduling is owned by the global index manager.
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.runningBuildTick = false;
+    if (this.ownsBuildWorkers) this.buildWorkers.stop();
     this.fileCache.clearMapped();
   }
 
@@ -388,31 +396,43 @@ export class SearchCompanionManager {
     return Result.ok(bytes.subarray(section.offset, section.offset + section.length));
   }
 
-  private async tick(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
+  async tick(): Promise<void> {
+    if (this.metrics) {
+      this.metrics.record("tieredstore.companion.build.queue_len", this.queue.size, "count");
+      this.metrics.record("tieredstore.companion.builds_inflight", this.building.size, "count");
+    }
+    await this.runOneBuildTask();
+  }
+
+  async runOneBuildTask(): Promise<boolean> {
+    if (this.runningBuildTick) return false;
+    const stream = this.takeNextStream();
+    if (!stream) return false;
+    this.runningBuildTick = true;
     try {
-      if (this.metrics) {
-        this.metrics.record("tieredstore.companion.build.queue_len", this.queue.size, "count");
-        this.metrics.record("tieredstore.companion.builds_inflight", this.building.size, "count");
-      }
-      const streams = Array.from(new Set([...this.db.listSearchCompanionPlanStreams(), ...this.queue]));
-      this.queue.clear();
-      for (const stream of streams) {
-        try {
-          const buildRes = await this.buildPendingSegmentsResult(stream);
-          if (Result.isError(buildRes)) {
-            console.error("bundled companion build failed", stream, buildRes.error.message);
-            this.queue.add(stream);
-          }
-        } catch (e: unknown) {
-          console.error("bundled companion tick failed", stream, e);
+      try {
+        const buildRes = await this.buildPendingSegmentsResult(stream);
+        if (Result.isError(buildRes)) {
+          console.error("bundled companion build failed", stream, buildRes.error.message);
           this.queue.add(stream);
         }
+      } catch (e: unknown) {
+        console.error("bundled companion tick failed", stream, e);
+        this.queue.add(stream);
       }
+      return true;
     } finally {
-      this.running = false;
+      this.runningBuildTick = false;
     }
+  }
+
+  private takeNextStream(): string | null {
+    const streams = new Set([...this.db.listSearchCompanionPlanStreams(), ...this.queue]);
+    const next = streams.values().next();
+    if (next.done) return null;
+    const stream = next.value as string;
+    this.queue.delete(stream);
+    return stream;
   }
 
   private async buildPendingSegmentsResult(stream: string): Promise<Result<void, CompanionBuildError>> {
@@ -467,23 +487,87 @@ export class SearchCompanionManager {
         const seg = this.db.getSegmentByIndex(stream, nextSegmentIndex);
         if (!seg || !seg.r2_etag) continue;
         const startedAt = Date.now();
-        const companionRes = await this.asyncGate.run(async () =>
-          this.memorySampler
-            ? await this.memorySampler.track(
-                "companion",
-                { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
-                () => this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
-              )
-            : await this.buildEncodedBundledCompanionResult(regRes.value, desiredPlan, planRow.generation, seg)
-        );
-        if (Result.isError(companionRes)) return companionRes;
+        const segmentLeaseRes = this.segmentLocality
+          ? await this.segmentLocality.acquireWindowResult(stream, [seg], "search companion indexing")
+          : Result.err({ kind: "missing_segment" as const, message: "search companion indexing requires a segment disk cache" });
+        if (Result.isError(segmentLeaseRes)) {
+          if (segmentLeaseRes.error.kind === "index_cache_overloaded") {
+            this.queue.add(stream);
+            this.onMetadataChanged?.(stream);
+            return Result.ok(undefined);
+          }
+          return invalidCompanionBuild(segmentLeaseRes.error.message);
+        }
+        const action = beginAsyncIndexAction(this.db, {
+          stream,
+          actionKind: "companion_build",
+          targetKind: "bundled_companion",
+          inputKind: "segment",
+          inputCount: 1,
+          inputSizeBytes: BigInt(seg.size_bytes),
+          startSegment: seg.segment_index,
+          endSegment: seg.segment_index,
+          detail: {
+            input_payload_bytes: Number(seg.payload_bytes),
+            plan_generation: planRow.generation,
+          },
+        });
+        let companionRes;
+        try {
+          companionRes = await this.asyncGate.run(async () =>
+            this.memorySampler
+              ? await this.memorySampler.track(
+                  "companion",
+                  { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
+                  () =>
+                    this.buildWorkers.buildResult({
+                      kind: "companion_build",
+                      input: {
+                        registry: regRes.value,
+                        plan: desiredPlan,
+                        planGeneration: planRow.generation,
+                        segment: {
+                          stream,
+                          segmentIndex: seg.segment_index,
+                          startOffset: seg.start_offset,
+                          localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                        },
+                      },
+                    })
+                )
+              : await this.buildWorkers.buildResult({
+                  kind: "companion_build",
+                  input: {
+                    registry: regRes.value,
+                    plan: desiredPlan,
+                    planGeneration: planRow.generation,
+                    segment: {
+                      stream,
+                      segmentIndex: seg.segment_index,
+                      startOffset: seg.start_offset,
+                      localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                    },
+                  },
+                })
+          );
+        } finally {
+          segmentLeaseRes.value.release();
+        }
+        if (Result.isError(companionRes)) {
+          action.fail(companionRes.error.message);
+          return invalidCompanionBuild(companionRes.error.message);
+        }
+        if (companionRes.value.kind !== "companion_build") {
+          action.fail("unexpected worker result kind");
+          return invalidCompanionBuild("unexpected worker result kind");
+        }
         const objectId = Buffer.from(randomBytes(8)).toString("hex");
         const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), seg.segment_index, objectId);
-        const payload = companionRes.value.payload;
-        const sectionSizes = companionRes.value.sectionSizes;
+        const payload = companionRes.value.output.payload;
+        const sectionSizes = companionRes.value.output.sectionSizes;
         try {
-          await retry(
-            () => this.os.put(objectKey, payload, { contentLength: payload.byteLength }),
+          await retryAbortable(
+            (signal) => this.os.put(objectKey, payload, { contentLength: payload.byteLength, signal }),
             {
               retries: this.cfg.objectStoreRetries,
               baseDelayMs: this.cfg.objectStoreBaseDelayMs,
@@ -492,13 +576,18 @@ export class SearchCompanionManager {
             }
           );
         } catch (e: unknown) {
+          action.fail(String((e as any)?.message ?? e), {
+            detail: {
+              section_kinds: companionRes.value.output.sectionKinds,
+            },
+          });
           return invalidCompanionBuild(String((e as any)?.message ?? e));
         }
         const cacheRes = this.fileCache.storeBytesResult(objectKey, payload);
         if (Result.isError(cacheRes)) {
           console.warn("bundled companion local cache populate failed", objectKey, cacheRes.error.message);
         }
-        const sectionKinds = companionRes.value.sectionKinds;
+        const sectionKinds = companionRes.value.output.sectionKinds;
         this.db.upsertSearchSegmentCompanion(
           stream,
           seg.segment_index,
@@ -507,8 +596,8 @@ export class SearchCompanionManager {
           JSON.stringify(sectionKinds),
           JSON.stringify(sectionSizes),
           payload.byteLength,
-          companionRes.value.primaryTimestampMinMs,
-          companionRes.value.primaryTimestampMaxMs
+          companionRes.value.output.primaryTimestampMinMs,
+          companionRes.value.output.primaryTimestampMaxMs
         );
         builtCount += 1;
         if (this.metrics) {
@@ -516,6 +605,13 @@ export class SearchCompanionManager {
           this.metrics.record("tieredstore.companion.build.latency", Number(elapsedNs), "ns", undefined, stream);
           this.metrics.record("tieredstore.companion.objects.built", 1, "count", undefined, stream);
         }
+        action.succeed({
+          outputCount: 1,
+          outputSizeBytes: BigInt(payload.byteLength),
+          detail: {
+            section_kinds: sectionKinds,
+          },
+        });
       }
 
       if (stale.length > builtCount) this.queue.add(stream);

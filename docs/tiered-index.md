@@ -127,13 +127,12 @@ The caches are optional and bounded. They are safe to delete.
 ### Configuration
 
 - `DS_INDEX_L0_SPAN` (default 16)
-- `DS_INDEX_BUILD_CONCURRENCY` (default 4)
+- `DS_INDEX_BUILDERS` (default 1; auto-tuned by memory preset)
 - `DS_INDEX_CHECK_MS` (default 1000)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES` (disk cache)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES` (memory cache)
 - `DS_INDEX_COMPACTION_FANOUT` (default 16)
 - `DS_INDEX_MAX_LEVEL` (default 4)
-- `DS_INDEX_COMPACT_CONCURRENCY` (default 4)
 - `DS_INDEX_RETIRE_GEN_WINDOW` (default 2)
 - `DS_INDEX_RETIRE_MIN_MS` (default 300000)
 

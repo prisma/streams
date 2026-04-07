@@ -66,34 +66,80 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
 4) Uploader
 - Selects pending segments from SQLite and uploads with bounded concurrency.
-- For each stream, it prioritizes the earliest non-uploaded segment only.
-- Later segments from the same stream do not bypass an older missing segment.
+- For each stream, it selects the earliest contiguous non-uploaded prefix,
+  capped by the current upload concurrency.
+- Later segments from the same stream do not bypass an older missing gap, but
+  the earliest few pending segments may upload in parallel.
 - Uploads segments first, then publishes a new manifest generation.
 - Advances uploaded_through only after manifest upload succeeds, then GC WAL rows.
+- `GET /v1/server/_details` exposes uploader path telemetry for:
+  - segment selection
+  - segment PUT timing
+  - mark-uploaded timing
+  - manifest build / PUT / commit timing
 
-5) Index managers
-- The full server starts four in-process indexing managers:
-  - routing-key
-  - routing-key lexicon
-  - exact secondary
-  - bundled companions (`.col`, `.fts`, `.agg`, `.mblk`) via `SearchCompanionManager`
-- They run on a timer (`DS_INDEX_CHECK_MS`) inside the main server process.
-- They are asynchronous background loops, not dedicated worker threads or
-  separate processes.
-- They share one top-level async-index concurrency gate, so routing,
-  routing-key lexicon, exact, and bundled-companion work compete for the same
-  bounded budget.
+5) Global index manager
+- The full server now starts one `GlobalIndexManager` in the main process.
+- It owns:
+  - the only indexing timer (`DS_INDEX_CHECK_MS`)
+  - one shared `IndexBuildWorkerPool`, sized by `DS_INDEX_BUILDERS`
+  - one shared `IndexSegmentLocalityManager`
+  - four family adapters:
+    - routing-key
+    - routing-key lexicon
+    - exact secondary
+    - bundled companions (`.col`, `.fts`, `.agg`, `.mblk`) via `SearchCompanionManager`
+- The main process still owns scheduling, SQLite state changes, and manifest
+  publication.
+- All heavy index-build computation now runs on the shared worker pool:
+  - routing-key L0 run build
+  - routing-key run compaction
+  - routing-key lexicon L0 run build
+  - routing-key lexicon run compaction
+  - exact secondary L0 run build
+  - exact secondary run compaction
+  - bundled companion per-segment build
+- Workers only read leased local files and return immutable artifact bytes or
+  section payloads. They do not mutate SQLite or publish manifests.
+- The family adapters still own family-specific backlog discovery, queueing,
+  and compaction rules, but they no longer own independent timers or dedicated
+  worker pools.
+- The global manager schedules distinct background work kinds in round-robin
+  order:
+  - routing build
+  - routing-key lexicon build
+  - exact secondary build
+  - bundled companion build
+  - routing compaction
+  - routing-key lexicon compaction
+  - exact secondary compaction
+- There is no separate scheduler priority lane for one async work kind over
+  another. If a family is not currently runnable, it simply yields its turn and
+  the scheduler advances to the next work kind.
+- All indexing families still share one top-level async-index concurrency gate,
+  so routing, routing-key lexicon, exact, and bundled-companion work compete
+  for the same bounded budget.
 - Background index work yields cooperatively at bounded per-record / per-block
   intervals, and it backs off further while foreground read and search
   requests are active. Foreground latency should not depend on one whole index
   build segment finishing first.
-- Routing, exact, and lexicon compactions also defer briefly after recent
-  foreground traffic so a request burst is not interrupted by an immediate
-  large compaction pass.
-- `DS_INDEX_BUILD_CONCURRENCY` controls parallel segment-processing tasks
-  inside one exact-family run build.
-- `DS_INDEX_COMPACT_CONCURRENCY` controls parallel run-loading tasks inside
-  one exact-family compaction job.
+- `DS_INDEX_BUILDERS` controls how many generic index-build worker threads are
+  started.
+
+Remaining main-thread indexing work:
+
+- selecting the next runnable background work item
+- acquiring and releasing segment-cache leases
+- cheap SQLite metadata reads to discover backlog
+- persisting finished run / companion rows
+- retiring superseded runs
+- manifest publication
+- append admission / `429 index_building_behind` decisions
+- object-store GET/PUT initiation for cache misses and artifact publication
+
+The main thread may still fetch an uncached immutable run object into the local
+run cache before dispatching a compaction worker, but it no longer decodes or
+merges that run on the main event loop.
 
 6) Reader
 - Merges historical data from segments (local cache or R2) with tail data in SQLite.
@@ -163,6 +209,8 @@ Per stream, SQLite stores:
   catalog
 - plan-relative bundled companion ordinals resolved through the current desired
   plan generation
+- local `async_index_actions` history for routing, lexicon, exact-secondary,
+  and bundled-companion build/compaction work
 - profile-owned processing progress and other rebuildable helper state
 
 In full mode, manifest objects, segment objects, and schema objects in object
@@ -172,7 +220,9 @@ unuploaded WAL tail and runtime helper state, which is not fully mirrored to
 object storage. Published logical stream size is restored from the manifest,
 and if it is missing a background reconciliation pass can rebuild it from
 published segments plus retained WAL. Profiles and schemas only shape how a
-stream is interpreted.
+stream is interpreted. The `async_index_actions` table is part of this local
+runtime-only state: it is informational, not published, and not restored by
+`--bootstrap-from-r2`.
 
 ## Stream Deletion Enforcement
 
@@ -185,13 +235,18 @@ scrub:
   - exact secondary index state and runs
   - routing-key lexicon state and runs
   - bundled search companion plans and per-segment companion rows
+  - per-stream object-store request-accounting rows
+  - local `async_index_actions` rows
+- after the delete publishes its tombstone manifest, the server clears the
+  per-stream request-accounting rows again so recreating the same stream name
+  does not inherit historical PUT/GET counters
 - the request path does not synchronously delete already-published remote
   segment, manifest, schema, or index objects
 
 Startup re-enforces the same invariant before background loops start. On boot,
 the server scans tombstoned streams and re-runs the acceleration scrub so older
 builds, crashes, or manual SQLite edits cannot leave orphaned async-index state
-behind for deleted streams.
+or per-stream request-accounting rows behind for deleted streams.
 
 ## Data flow
 
@@ -224,11 +279,47 @@ behind for deleted streams.
    - but one stream's published prefix is preserved: later segments do not jump
      ahead of an earlier missing segment
 2. Upload segment bytes to object store using the TieredStore key layout.
+   - timed-out object-store writes abort the underlying PUT attempt; the uploader does not intentionally leave a timed-out upload running in the background and then retry the same object key
 3. Generate and upload a new manifest generation for that stream:
    - use the append‑only segment meta arrays
    - include **only the contiguous uploaded prefix**
 4. Mark segment uploaded, advance uploaded_through, and delete WAL rows with
    offset <= uploaded_through in one transaction.
+
+### Indexing locality and leases
+
+All segment-backed indexing work now uses one shared segment-locality manager.
+
+Current lease rules:
+
+- any worker job that depends on segment files acquires a lease before dispatch
+- leased segment-cache entries are marked **required for indexing**
+- required-for-indexing entries are never evicted while leased
+- leases are released in `finally` on success, failure, timeout, or worker
+  exit
+
+Current lease sizes:
+
+- routing-key L0: one `DS_INDEX_L0_SPAN` uploaded-segment window (`16` by default)
+- routing-key lexicon L0: one `DS_INDEX_L0_SPAN` uploaded-segment window
+- exact secondary L0: one `DS_INDEX_L0_SPAN` uploaded-segment window
+- bundled companion build: one uploaded segment at a time
+
+This keeps segment-backed indexing off the main event loop without changing the
+manifest/state machine:
+
+- workers depend on local files, not remote range reads
+- the main process still owns indexed watermarks, run or companion catalog
+  inserts, and manifest publication
+- higher-level compaction still works from immutable run objects, not source
+  segments
+
+The on-disk segment cache budget remains authoritative. Required-for-indexing
+leases do not allow the cache to grow past `DS_SEGMENT_CACHE_MAX_BYTES`. If the
+next required indexing window cannot be retained locally, append admission may
+return `429` with `error.code = "index_building_behind"` until indexing catches
+up enough to release older required windows. Background indexing continues in
+that state so the node can recover automatically.
 
 ### Read
 - For offsets < uploaded_through: read from segments via a full-object local cache.
@@ -351,7 +442,8 @@ Memory pressure is no longer a direct reject path. Instead, it is sampled and
 can reduce search and async-index concurrency, never below `1`.
 
 Overload behavior is still explicit (429/503) rather than unbounded buffering,
-but `429` now reflects queue/backlog pressure, not a separate memory gate.
+but `429` now reflects queue/backlog pressure or index-locality pressure, not a
+separate memory gate.
 
 Caches (segment data cache, schema/lens caches, companion caches) are
 size-limited and only cover active streams.

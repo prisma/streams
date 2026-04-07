@@ -7,6 +7,9 @@ The long-term target still lives in
 [aspirational-indexing-architecture.md](./aspirational-indexing-architecture.md).
 The planned low-latency read model for heavy-ingest periods lives in
 [low-latency-reads-under-ingest.md](./low-latency-reads-under-ingest.md).
+The detailed shipped design for the global index manager, shared worker pool,
+and shared segment-locality rules lives in
+[unified-index-worker-architecture.md](./unified-index-worker-architecture.md).
 
 ## Summary
 
@@ -73,6 +76,12 @@ and remote serving structures, not durable record stores.
 4. Published search state is recovered from manifests and object-store objects.
 5. Missing or stale search coverage must fall back to source-segment or WAL-tail
    scan instead of returning false negatives.
+6. Routing-key L0 builds depend on one local 16-segment window and therefore
+   participate in the segment-cache eviction and overload rules.
+7. Every async build or compaction action is logged locally in SQLite with
+   start/end timestamps, duration, input size, output size, and family-specific
+   detail so slow paths can be analyzed without reconstructing timelines from
+   process logs.
 
 ## Schema Contract
 
@@ -175,6 +184,31 @@ Current support notes:
 The routing-key family is unchanged. It remains the hot path for exact routing
 key lookup and `/pk/<key>` reads.
 
+Current L0 build implementation:
+
+- the main process still schedules routing-key work, advances
+  `indexed_through`, inserts run rows, and republishes the manifest
+- the expensive 16-segment L0 build is dispatched through the shared generic
+  index-build worker pool
+- the worker reads only leased local files for that window; it does not issue
+  remote segment range reads or keep the main event loop busy hashing routing
+  keys
+- before dispatch, the shared segment-locality manager marks the next L0
+  window's segment-cache entries as **required for indexing**
+- required-for-indexing segment files are not evictable until that build
+  finishes
+- when the build finishes, those leases are released immediately because higher
+  levels compact immutable runs, not source segments
+
+Local cache-pressure rule:
+
+- the segment-cache budget is still hard-capped by `DS_SEGMENT_CACHE_MAX_BYTES`
+- required-for-indexing leases do not bypass that cap
+- if the next routing or routing-key lexicon window cannot be retained locally,
+  the server may reject new appends with `429` / `error.code = "index_building_behind"`
+  while that backlog drains
+- background index work continues in that state so the backlog can recover
+
 ### Routing-key lexicon family
 
 The routing-key lexicon family is a separate immutable run family for
@@ -186,6 +220,8 @@ Current implementation:
 - immutable stream-level `.lex` runs, not per-segment companions
 - L0 build span matches the other tiered indexes: 16 uploaded segments
 - asynchronous background build after upload
+- L0 build compute runs through the shared generic index-build worker pool over
+  a leased local 16-segment window, just like the routing-key L0 builder
 - higher-level immutable compaction using the same contiguous-run policy as the
   other tiered index families
 - manifest-published state and run lists
@@ -295,6 +331,9 @@ Exact-index rebuild is now config-aware:
 - if the schema changes that exact field on an existing stream, the current
   exact state is treated as stale
 - exact queries fall back to raw scans until background rebuild catches up
+- exact L0 build compute runs through the same shared generic index-build
+  worker pool and the same shared segment-locality manager as the routing and
+  lexicon families
 
 ### `.col` family
 
@@ -313,6 +352,10 @@ Current implementation:
 - bundled companion backfill is oldest-missing-first and batched, so `.col`
   coverage grows contiguously across the uploaded segment prefix
 - query-time `.col` reads decode only the requested bundled section
+- bundled companion build compute runs through the same shared generic
+  index-build worker pool
+- companion jobs lease one uploaded segment at a time through the shared
+  segment-locality manager
 
 Current responsibilities:
 
@@ -458,36 +501,55 @@ without rebuilding the already-published search catalogs locally first.
 
 ## Runtime Model
 
-All indexing is currently asynchronous **in-process** work. There is no
-separate search worker service and no dedicated worker-thread pool for search.
+All indexing is currently asynchronous **in-process** work, but the heavy
+segment-backed build compute is no longer performed on the main Bun thread.
 
-The full server starts these background managers:
+The full server starts one `GlobalIndexManager`, which owns:
 
-- `IndexManager` for routing-key runs
-- `SecondaryIndexManager` for exact secondary runs
-- `SearchCompanionManager` for bundled `.cix` companions and historical
-  backfill
+- the only indexing timer (`DS_INDEX_CHECK_MS`)
+- one shared `IndexBuildWorkerPool`
+- one shared `IndexSegmentLocalityManager`
+- four family adapters:
+  - `IndexManager` for routing-key runs
+  - `LexiconIndexManager` for routing-key lexicon runs
+  - `SecondaryIndexManager` for exact secondary runs
+  - `SearchCompanionManager` for bundled `.cix` companions and historical
+    backfill
 
-These wake on `DS_INDEX_CHECK_MS`.
+Current worker-job kinds are:
 
-Relevant concurrency knobs:
+- `routing_l0_build`
+- `routing_compaction_build`
+- `lexicon_l0_build`
+- `lexicon_compaction_build`
+- `secondary_l0_build`
+- `secondary_compaction_build`
+- `companion_build`
 
-- `DS_INDEX_BUILD_CONCURRENCY`
-- `DS_INDEX_COMPACT_CONCURRENCY`
+Current concurrency knobs:
+
+- `DS_INDEX_BUILDERS`
 - `DS_INDEX_CHECK_MS`
 - `DS_ASYNC_INDEX_CONCURRENCY`
 
-These are in-process async concurrency limits, not separate OS workers.
+`DS_INDEX_BUILDERS` is the global worker-thread count for generic index-build
+jobs, and it is selected by the memory auto-tune preset by default.
 
 `DS_ASYNC_INDEX_CONCURRENCY` is the shared top-level permit pool across:
 
 - routing-key L0 build / compaction
+- routing-key lexicon L0 build / compaction
 - exact-secondary L0 build / compaction
 - bundled companion build / backfill
 
-Each manager still has its own inner build/compaction fanout knobs, but no
-manager can monopolize more top-level concurrent jobs than the shared async
-gate allows.
+Each family adapter still owns family-specific backlog discovery and
+compaction rules, but no family owns its own timer or dedicated build-worker
+pool anymore.
+
+The global manager schedules distinct background work kinds in round-robin
+order. It does not reserve a dedicated priority lane for one async family over
+another; if a work kind has nothing runnable for its turn, the scheduler simply
+advances to the next kind.
 
 `SearchCompanionManager` also emits progress metrics so companion lag can be
 observed independently of the exact family:
@@ -511,7 +573,14 @@ memory pressure:
 For a point-in-time view of the same state plus the configured auto-tune
 budget, use `GET /v1/server/_details`.
 
-On startup, the full server enqueues all streams into the index controller so
+For per-action history, inspect the local `async_index_actions` SQLite table.
+It records each routing, lexicon, exact-secondary, and bundled-companion build
+or compaction action. This log is local only: manifests do not publish it,
+`--bootstrap-from-r2` does not restore it, and stream delete clears the rows for
+that stream. The intended operating target is that one logged async action
+completes in under `1000 ms`.
+
+On startup, the full server enqueues all streams into the global index manager so
 existing streams can catch up automatically after bootstrap, schema changes, or
 bundled companion plan changes.
 
@@ -754,17 +823,13 @@ endpoints:
 
 Current exact-index scheduling:
 
-- bundled companions are the first background priority for uploaded segments
 - all async index families share one bounded gate and yield cooperatively inside
   segment scans; when a foreground read or search is active, those background
   loops back off further instead of monopolizing the event loop
-- routing, exact, and lexicon compactions also wait for a short quiet window
-  after foreground traffic before resuming
-- exact secondary-index build and compaction only run after bundled companions
-  are caught up, the stream has no in-progress segment cut or pending upload
-  segment, and the stream has been append-idle for about ten minutes so exact
-  work does not re-enter the ingest hot path during long but temporary quiet
-  gaps
+- exact secondary-index build and compaction participate in the same global
+  round-robin scheduler as routing, routing-key lexicon, and bundled
+  companions; there is no separate exact-family priority lane or append-idle
+  gate anymore
 - byte-at-rest and object-count accounting for index families
 - lag in both segments and milliseconds for routing, routing-key lexicon,
   exact, and bundled-family

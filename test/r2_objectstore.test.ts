@@ -43,6 +43,17 @@ class FakeS3File {
     return bytes.byteLength;
   }
 
+  presign(opts?: { method?: string; type?: string }): string {
+    const url = `https://example.test/${encodeURIComponent(this.key)}`;
+    FakeS3Client.presigned.set(url, {
+      client: this.client,
+      key: this.key,
+      type: opts?.type ?? "",
+      method: opts?.method ?? "GET",
+    });
+    return url;
+  }
+
   async stat(): Promise<{ size: number; etag: string; type: string; lastModified: Date }> {
     const entry = this.client.entries.get(this.key);
     if (!entry) throw new Error("missing");
@@ -61,6 +72,7 @@ class FakeS3File {
 
 class FakeS3Client {
   static instances: FakeS3Client[] = [];
+  static presigned = new Map<string, { client: FakeS3Client; key: string; type: string; method: string }>();
 
   readonly entries = new Map<string, Entry>();
   readonly options: Record<string, unknown> | undefined;
@@ -94,15 +106,44 @@ class FakeS3Client {
 }
 
 const originalS3Client = Bun.S3Client;
+const originalFetch = globalThis.fetch;
 
 describe("R2ObjectStore", () => {
   beforeEach(() => {
     FakeS3Client.instances = [];
+    FakeS3Client.presigned = new Map();
     (Bun as any).S3Client = FakeS3Client;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const presigned = FakeS3Client.presigned.get(url);
+      if (!presigned) return new Response("missing presigned url", { status: 404 });
+      if (presigned.method !== "PUT") return new Response("bad method", { status: 405 });
+      const body = init?.body;
+      let bytes = new Uint8Array(0);
+      if (body instanceof Uint8Array) {
+        bytes = body;
+      } else if (body instanceof Blob) {
+        bytes = new Uint8Array(await body.arrayBuffer());
+      } else if (body instanceof ArrayBuffer) {
+        bytes = new Uint8Array(body);
+      } else if (typeof body === "string") {
+        bytes = new TextEncoder().encode(body);
+      }
+      presigned.client.entries.set(presigned.key, {
+        data: bytes,
+        etag: `"etag-${presigned.key}"`,
+        type: presigned.type,
+      });
+      return new Response(null, {
+        status: 200,
+        headers: { etag: `"etag-${presigned.key}"` },
+      });
+    }) as typeof globalThis.fetch;
   });
 
   afterEach(() => {
     (Bun as any).S3Client = originalS3Client;
+    globalThis.fetch = originalFetch;
   });
 
   test("uses Bun.S3Client for R2 reads and writes", async () => {

@@ -63,7 +63,7 @@ describe("index runs", () => {
       uploadConcurrency: 2,
       indexL0SpanSegments: 2,
       indexCheckIntervalMs: 50,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
     });
     const os = new MockR2Store();
@@ -118,6 +118,7 @@ describe("index runs", () => {
       expect(res!.indexedThrough).toBe(2);
       expect(res!.segments.has(1)).toBe(true);
       expect(res!.segments.has(0)).toBe(false);
+      expect(app.deps.reader.cacheStats()?.requiredEntryCount).toBe(0);
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

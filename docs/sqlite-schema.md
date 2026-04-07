@@ -361,7 +361,46 @@ Notes:
 
 ---
 
-### 2.15 `stream_profiles`
+### 2.15 `async_index_actions`
+Node-local log of async index actions.
+
+Columns:
+- `seq INTEGER PRIMARY KEY AUTOINCREMENT`
+- `stream TEXT NOT NULL`
+- `action_kind TEXT NOT NULL`
+- `target_kind TEXT NULL`
+- `target_name TEXT NULL`
+- `input_kind TEXT NOT NULL`
+- `input_count INTEGER NOT NULL`
+- `input_size_bytes INTEGER NOT NULL`
+- `output_count INTEGER NOT NULL`
+- `output_size_bytes INTEGER NOT NULL`
+- `start_segment INTEGER NULL`
+- `end_segment INTEGER NULL`
+- `begin_time_ms INTEGER NOT NULL`
+- `end_time_ms INTEGER NULL`
+- `duration_ms INTEGER NULL`
+- `status TEXT NOT NULL`
+- `error_message TEXT NULL`
+- `detail_json TEXT NOT NULL`
+
+Indexes:
+- `CREATE INDEX async_index_actions_stream_seq_idx ON async_index_actions(stream, seq DESC);`
+- `CREATE INDEX async_index_actions_kind_seq_idx ON async_index_actions(action_kind, seq DESC);`
+
+Notes:
+- every routing, lexicon, exact-secondary, and bundled-companion async build or
+  compaction action records one row here
+- this is local observability only; it is not published to object storage and is
+  not restored by `--bootstrap-from-r2`
+- stream delete clears these rows so recreating the same stream name starts with
+  a fresh local history
+- the intended operating target is that each logged async index action should
+  complete in under `1000 ms`
+
+---
+
+### 2.16 `stream_profiles`
 Stores non-generic profile configuration.
 
 Columns:
@@ -377,7 +416,7 @@ Notes:
 
 ---
 
-### 2.15 `stream_touch_state`
+### 2.17 `stream_touch_state`
 Rebuildable helper state for touch-enabled `state-protocol` streams.
 
 Columns:
@@ -395,7 +434,7 @@ Notes:
 
 ---
 
-### 2.16 `producer_state`
+### 2.18 `producer_state`
 Local idempotence and gap-detection state for producer-aware appends.
 
 Columns:
@@ -412,7 +451,7 @@ Notes:
 
 ---
 
-### 2.13 `live_templates`
+### 2.19 `live_templates`
 Runtime template registry for touch-enabled `state-protocol` streams.
 
 Columns:

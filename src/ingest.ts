@@ -27,7 +27,8 @@ export type AppendSuccess = {
 };
 
 export type AppendError =
-  | { kind: "not_found" | "gone" | "content_type_mismatch" | "overloaded" | "internal" }
+  | { kind: "not_found" | "gone" | "content_type_mismatch" | "internal" }
+  | { kind: "overloaded"; code?: string; message?: string }
   | { kind: "stream_seq"; expected: string; received: string }
   | { kind: "closed"; lastOffset: bigint }
   | { kind: "producer_stale_epoch"; producerEpoch: number }
@@ -60,6 +61,7 @@ export class IngestQueue {
   private scheduled = false;
   private queuedBytes = 0;
   private lastBacklogWarnMs = 0;
+  private lastHardOverloadWarnMs = 0;
 
   // Prepared statements local to the ingestor.
   private readonly stmts: {
@@ -148,6 +150,12 @@ export class IngestQueue {
   }, opts?: { bypassBackpressure?: boolean; priority?: "high" | "normal" }): Promise<AppendResult> {
     const bytes = args.rows.reduce((acc, r) => acc + r.payload.byteLength, 0);
     if (!opts?.bypassBackpressure) {
+      const hardOverload = this.gate?.getOverloadReason();
+      if (hardOverload) {
+        if (this.metrics) this.metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: hardOverload.code });
+        this.warnHardOverload(hardOverload.message);
+        return Promise.resolve(Result.err({ kind: "overloaded", code: hardOverload.code, message: hardOverload.message }));
+      }
       if (this.q.length >= this.cfg.ingestMaxQueueRequests || this.queuedBytes + bytes > this.cfg.ingestMaxQueueBytes) {
         if (this.metrics) this.metrics.record("tieredstore.backpressure.over_limit", 1, "count", { reason: "queue" });
         return Promise.resolve(Result.err({ kind: "overloaded" }));
@@ -220,6 +228,14 @@ export class IngestQueue {
       `[backpressure] local backlog ${formatBytes(current)} exceeds limit ${formatBytes(max)}; rejecting appends (DS_LOCAL_BACKLOG_MAX_BYTES)`;
     // eslint-disable-next-line no-console
     console.warn(msg);
+  }
+
+  private warnHardOverload(message: string): void {
+    const now = Date.now();
+    if (now - this.lastHardOverloadWarnMs < 10_000) return;
+    this.lastHardOverloadWarnMs = now;
+    // eslint-disable-next-line no-console
+    console.warn(`[backpressure] ${message}`);
   }
 
   async flush(): Promise<void> {

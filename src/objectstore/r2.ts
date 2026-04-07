@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { createReadStream } from "node:fs";
-import type { GetOptions, ObjectStore, PutResult } from "./interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 export type R2Config = {
@@ -47,6 +48,14 @@ function isMissingObjectError(err: unknown): boolean {
   );
 }
 
+function isAbortError(err: unknown): boolean {
+  const record = err as Record<string, unknown> | null | undefined;
+  const name = String(record?.name ?? "");
+  const code = String(record?.code ?? "");
+  const message = String(record?.message ?? err ?? "").toLowerCase();
+  return name === "AbortError" || code === "ABORT_ERR" || message.includes("aborted");
+}
+
 export class R2ObjectStore implements ObjectStore {
   private readonly client: Bun.S3Client;
 
@@ -69,21 +78,42 @@ export class R2ObjectStore implements ObjectStore {
     throw dsError(`R2 ${op} failed for ${key}: ${message}`);
   }
 
-  async put(key: string, data: Uint8Array, opts: { contentType?: string; contentLength?: number } = {}): Promise<PutResult> {
+  private async putWithFetch(key: string, body: Blob, opts: PutOptions = {}): Promise<PutResult> {
+    const file = this.file(key);
+    const url = file.presign({ method: "PUT", type: opts.contentType });
+    const headers = new Headers();
+    if (opts.contentType) headers.set("content-type", opts.contentType);
     try {
-      await this.file(key).write(data, { type: opts.contentType });
-      const stat = await this.file(key).stat();
-      return { etag: stripQuotes(stat.etag) || sha256Hex(data) };
+      const res = await fetch(url, {
+        method: "PUT",
+        body,
+        headers,
+        signal: opts.signal,
+      });
+      if (!res.ok) throw dsError(`HTTP ${res.status}`);
+      return { etag: stripQuotes(res.headers.get("etag")) };
+    } catch (err) {
+      if (opts.signal?.aborted && isAbortError(err)) {
+        throw (opts.signal.reason instanceof Error ? opts.signal.reason : dsError(String(opts.signal.reason ?? "aborted")));
+      }
+      if (isAbortError(err)) throw dsError("aborted");
+      throw err;
+    }
+  }
+
+  async put(key: string, data: Uint8Array, opts: PutOptions = {}): Promise<PutResult> {
+    try {
+      const res = await this.putWithFetch(key, new Blob([Buffer.from(data)]), opts);
+      return { etag: res.etag || sha256Hex(data) };
     } catch (err) {
       this.wrapError("PUT", key, err);
     }
   }
 
-  async putFile(key: string, path: string, _size: number, opts: { contentType?: string } = {}): Promise<PutResult> {
+  async putFile(key: string, path: string, _size: number, opts: PutFileOptions = {}): Promise<PutResult> {
     try {
-      await this.file(key).write(Bun.file(path), { type: opts.contentType });
-      const stat = await this.file(key).stat();
-      return { etag: stripQuotes(stat.etag) || (await sha256FileHex(path)) };
+      const res = await this.putWithFetch(key, Bun.file(path), opts);
+      return { etag: res.etag || (await sha256FileHex(path)) };
     } catch (err) {
       this.wrapError("PUT", key, err);
     }

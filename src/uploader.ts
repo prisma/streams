@@ -8,7 +8,7 @@ import { buildManifestResult } from "./manifest";
 import { manifestObjectKey, segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
 import { readU64LE } from "./util/endian";
 import { SegmentDiskCache } from "./segment/cache";
-import { retry } from "./util/retry";
+import { retryAbortable } from "./util/retry";
 import { LruCache } from "./util/lru";
 import type { StatsCollector } from "./stats";
 import type { BackpressureGate } from "./backpressure";
@@ -24,6 +24,7 @@ export type UploaderController = {
     inflight_segment_bytes: number;
     manifest_inflight_streams: number;
   };
+  getRuntimeStats?: () => UploaderRuntimeStats;
   setHooks(hooks: UploaderHooks | undefined): void;
   publishManifest(stream: string): Promise<void>;
 };
@@ -32,6 +33,91 @@ export type UploaderHooks = {
   onSegmentsUploaded?: (stream: string) => void;
   onMetadataChanged?: (stream: string) => void;
 };
+
+export type UploaderRuntimeStats = {
+  last_tick_ms: number | null;
+  last_select_ms: number | null;
+  last_selected_segments: number;
+  last_selected_streams: number;
+  segment_attempts_total: number;
+  segment_success_total: number;
+  segment_failure_total: number;
+  segment_timeout_total: number;
+  segment_last_put_ms: number | null;
+  segment_avg_put_ms: number | null;
+  segment_max_put_ms: number | null;
+  segment_last_mark_uploaded_ms: number | null;
+  segment_avg_mark_uploaded_ms: number | null;
+  segment_max_mark_uploaded_ms: number | null;
+  segment_last_total_ms: number | null;
+  segment_avg_total_ms: number | null;
+  segment_max_total_ms: number | null;
+  manifest_attempts_total: number;
+  manifest_success_total: number;
+  manifest_failure_total: number;
+  manifest_timeout_total: number;
+  manifest_last_build_ms: number | null;
+  manifest_avg_build_ms: number | null;
+  manifest_max_build_ms: number | null;
+  manifest_last_put_ms: number | null;
+  manifest_avg_put_ms: number | null;
+  manifest_max_put_ms: number | null;
+  manifest_last_commit_ms: number | null;
+  manifest_avg_commit_ms: number | null;
+  manifest_max_commit_ms: number | null;
+  manifest_last_total_ms: number | null;
+  manifest_avg_total_ms: number | null;
+  manifest_max_total_ms: number | null;
+};
+
+type DurationStats = {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  lastMs: number | null;
+};
+
+function createDurationStats(): DurationStats {
+  return { count: 0, totalMs: 0, maxMs: 0, lastMs: null };
+}
+
+function recordDuration(stats: DurationStats, ms: number): void {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  stats.count += 1;
+  stats.totalMs += safeMs;
+  stats.maxMs = Math.max(stats.maxMs, safeMs);
+  stats.lastMs = safeMs;
+}
+
+function averageDuration(stats: DurationStats): number | null {
+  if (stats.count <= 0) return null;
+  return stats.totalMs / stats.count;
+}
+
+function maxDuration(stats: DurationStats): number | null {
+  if (stats.count <= 0) return null;
+  return stats.maxMs;
+}
+
+function isTimeoutError(err: unknown): boolean {
+  const message = String((err as any)?.message ?? err ?? "").toLowerCase();
+  const code = String((err as any)?.code ?? "");
+  return message.includes("timeout") || code === "ETIMEDOUT";
+}
+
+function countSegmentsThroughOffset(segmentOffsets: Uint8Array, segmentCount: number, uploadedThrough: bigint): number {
+  if (uploadedThrough < 0n || segmentCount <= 0) return 0;
+  const target = uploadedThrough + 1n;
+  let lo = 0;
+  let hi = segmentCount;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const endPlusOne = readU64LE(segmentOffsets, mid * 8);
+    if (endPlusOne <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
 
 export class Uploader {
   private readonly config: Config;
@@ -49,6 +135,25 @@ export class Uploader {
   private hooks?: UploaderHooks;
   private readonly manifestInflight = new Set<string>();
   private inflightSegmentBytes = 0;
+  private lastTickMs: number | null = null;
+  private lastSelectMs: number | null = null;
+  private lastSelectedSegments = 0;
+  private lastSelectedStreams = 0;
+  private segmentAttemptsTotal = 0;
+  private segmentSuccessTotal = 0;
+  private segmentFailureTotal = 0;
+  private segmentTimeoutTotal = 0;
+  private readonly segmentPutMs = createDurationStats();
+  private readonly segmentMarkUploadedMs = createDurationStats();
+  private readonly segmentTotalMs = createDurationStats();
+  private manifestAttemptsTotal = 0;
+  private manifestSuccessTotal = 0;
+  private manifestFailureTotal = 0;
+  private manifestTimeoutTotal = 0;
+  private readonly manifestBuildMs = createDurationStats();
+  private readonly manifestPutMs = createDurationStats();
+  private readonly manifestCommitMs = createDurationStats();
+  private readonly manifestTotalMs = createDurationStats();
 
   constructor(
     config: Config,
@@ -101,18 +206,63 @@ export class Uploader {
     };
   }
 
+  getRuntimeStats(): UploaderRuntimeStats {
+    return {
+      last_tick_ms: this.lastTickMs,
+      last_select_ms: this.lastSelectMs,
+      last_selected_segments: this.lastSelectedSegments,
+      last_selected_streams: this.lastSelectedStreams,
+      segment_attempts_total: this.segmentAttemptsTotal,
+      segment_success_total: this.segmentSuccessTotal,
+      segment_failure_total: this.segmentFailureTotal,
+      segment_timeout_total: this.segmentTimeoutTotal,
+      segment_last_put_ms: this.segmentPutMs.lastMs,
+      segment_avg_put_ms: averageDuration(this.segmentPutMs),
+      segment_max_put_ms: maxDuration(this.segmentPutMs),
+      segment_last_mark_uploaded_ms: this.segmentMarkUploadedMs.lastMs,
+      segment_avg_mark_uploaded_ms: averageDuration(this.segmentMarkUploadedMs),
+      segment_max_mark_uploaded_ms: maxDuration(this.segmentMarkUploadedMs),
+      segment_last_total_ms: this.segmentTotalMs.lastMs,
+      segment_avg_total_ms: averageDuration(this.segmentTotalMs),
+      segment_max_total_ms: maxDuration(this.segmentTotalMs),
+      manifest_attempts_total: this.manifestAttemptsTotal,
+      manifest_success_total: this.manifestSuccessTotal,
+      manifest_failure_total: this.manifestFailureTotal,
+      manifest_timeout_total: this.manifestTimeoutTotal,
+      manifest_last_build_ms: this.manifestBuildMs.lastMs,
+      manifest_avg_build_ms: averageDuration(this.manifestBuildMs),
+      manifest_max_build_ms: maxDuration(this.manifestBuildMs),
+      manifest_last_put_ms: this.manifestPutMs.lastMs,
+      manifest_avg_put_ms: averageDuration(this.manifestPutMs),
+      manifest_max_put_ms: maxDuration(this.manifestPutMs),
+      manifest_last_commit_ms: this.manifestCommitMs.lastMs,
+      manifest_avg_commit_ms: averageDuration(this.manifestCommitMs),
+      manifest_max_commit_ms: maxDuration(this.manifestCommitMs),
+      manifest_last_total_ms: this.manifestTotalMs.lastMs,
+      manifest_avg_total_ms: averageDuration(this.manifestTotalMs),
+      manifest_max_total_ms: maxDuration(this.manifestTotalMs),
+    };
+  }
+
   private async tick(): Promise<void> {
     if (this.stopping) return;
     if (this.running) return;
     this.running = true;
+    const tickStart = performance.now();
     try {
-      const pending = this.db.pendingUploadHeads(1000);
+      const selectStart = performance.now();
+      const pending = this.db.pendingUploadWindow(Math.max(1000, this.config.uploadConcurrency * 16), this.config.uploadConcurrency);
+      this.lastSelectMs = performance.now() - selectStart;
+      this.lastSelectedSegments = 0;
+      this.lastSelectedStreams = 0;
       if (pending.length === 0) return;
 
       // Upload with bounded concurrency.
       const queue = pending.filter((s) => !this.inflight.has(s.segment_id) && !this.failures.shouldSkip(s.stream));
+      this.lastSelectedSegments = queue.length;
       if (queue.length === 0) return;
       const streams = new Set(queue.map((s) => s.stream));
+      this.lastSelectedStreams = streams.size;
 
       const workers: Promise<void>[] = [];
       for (let i = 0; i < this.config.uploadConcurrency; i++) {
@@ -131,19 +281,10 @@ export class Uploader {
         }
       }
 
-      // Publish manifests for affected streams.
+      // Publish manifests for affected streams without blocking the next upload tick.
       for (const stream of streams) {
         if (this.failures.shouldSkip(stream)) continue;
-        try {
-          await this.publishManifest(stream);
-        } catch (e) {
-          const msg = String((e as any)?.message ?? e);
-          const lower = msg.toLowerCase();
-          if (!this.stopping && !lower.includes("database has closed") && !lower.includes("closed database") && !lower.includes("statement has finalized")) {
-            // eslint-disable-next-line no-console
-            console.error("manifest publish failed", stream, e);
-          }
-        }
+        this.scheduleManifestPublish(stream);
       }
     } catch (e) {
       const msg = String((e as any)?.message ?? e);
@@ -153,6 +294,7 @@ export class Uploader {
         console.error("uploader tick error", e);
       }
     } finally {
+      this.lastTickMs = performance.now() - tickStart;
       this.running = false;
     }
   }
@@ -184,6 +326,17 @@ export class Uploader {
     }
   }
 
+  private scheduleManifestPublish(stream: string): void {
+    void this.publishManifest(stream).catch((e) => {
+      const msg = String((e as any)?.message ?? e);
+      const lower = msg.toLowerCase();
+      if (!this.stopping && !lower.includes("database has closed") && !lower.includes("closed database") && !lower.includes("statement has finalized")) {
+        // eslint-disable-next-line no-console
+        console.error("manifest publish failed", stream, e);
+      }
+    });
+  }
+
   private async uploadOne(seg: SegmentRow): Promise<void> {
     if (this.stopping) return;
     const shash = streamHash16Hex(seg.stream);
@@ -193,30 +346,44 @@ export class Uploader {
       segment_index: seg.segment_index,
       size_bytes: seg.size_bytes,
     });
+    const attemptStart = performance.now();
+    this.segmentAttemptsTotal += 1;
     try {
-      const res = await retry(
-        async () => {
-          if (this.os.putFile) {
-            return this.os.putFile(objectKey, seg.local_path, seg.size_bytes);
+      const putStart = performance.now();
+      let res;
+      try {
+        res = await retryAbortable(
+          async (signal) => {
+            if (this.os.putFile) {
+              return this.os.putFile(objectKey, seg.local_path, seg.size_bytes, { signal });
+            }
+            const bytes = new Uint8Array(await readFile(seg.local_path));
+            return this.os.put(objectKey, bytes, { contentLength: seg.size_bytes, signal });
+          },
+          {
+            retries: this.config.objectStoreRetries,
+            baseDelayMs: this.config.objectStoreBaseDelayMs,
+            maxDelayMs: this.config.objectStoreMaxDelayMs,
+            timeoutMs: this.config.objectStoreTimeoutMs,
           }
-          const bytes = new Uint8Array(await readFile(seg.local_path));
-          return this.os.put(objectKey, bytes, { contentLength: seg.size_bytes });
-        },
-        {
-          retries: this.config.objectStoreRetries,
-          baseDelayMs: this.config.objectStoreBaseDelayMs,
-          maxDelayMs: this.config.objectStoreMaxDelayMs,
-          timeoutMs: this.config.objectStoreTimeoutMs,
-        }
-      );
+        );
+      } finally {
+        recordDuration(this.segmentPutMs, performance.now() - putStart);
+      }
+      const markStart = performance.now();
       this.db.markSegmentUploaded(seg.segment_id, res.etag, this.db.nowMs());
+      recordDuration(this.segmentMarkUploadedMs, performance.now() - markStart);
+      this.segmentSuccessTotal += 1;
       this.hooks?.onMetadataChanged?.(seg.stream);
       if (this.stats) this.stats.recordUploadedBytes(seg.size_bytes);
       if (this.gate) this.gate.adjustOnUpload(seg.size_bytes);
     } catch (e) {
+      this.segmentFailureTotal += 1;
+      if (isTimeoutError(e)) this.segmentTimeoutTotal += 1;
       this.failures.recordFailure(seg.stream);
       throw e;
     } finally {
+      recordDuration(this.segmentTotalMs, performance.now() - attemptStart);
       leaveUploadPhase?.();
     }
   }
@@ -225,6 +392,8 @@ export class Uploader {
     if (this.stopping) return;
     if (this.manifestInflight.has(stream)) return;
     this.manifestInflight.add(stream);
+    const publishStart = performance.now();
+    this.manifestAttemptsTotal += 1;
     try {
       const srow = this.db.getStream(stream);
       if (!srow) return;
@@ -249,11 +418,17 @@ export class Uploader {
         this.db.setUploadedSegmentCount(stream, uploadedPrefix);
       }
 
+      const previouslyPublishedPrefix = countSegmentsThroughOffset(meta.segment_offsets, meta.segment_count, srow.uploaded_through);
       const uploadedThrough =
         uploadedPrefix === 0 ? -1n : readU64LE(meta.segment_offsets, (uploadedPrefix - 1) * 8) - 1n;
-      const unpublishedWalBytes = this.db.getWalBytesAfterOffset(stream, uploadedThrough);
-      const publishedLogicalSizeBytes =
-        srow.logical_size_bytes > unpublishedWalBytes ? srow.logical_size_bytes - unpublishedWalBytes : 0n;
+      const publishedLogicalSizeBytes = this.db.getSegmentPayloadBytesRange(stream, 0, uploadedPrefix);
+      const newlyPublishedLogicalSizeBytes = this.db.getSegmentPayloadBytesRange(
+        stream,
+        previouslyPublishedPrefix,
+        uploadedPrefix
+      );
+      const newlyPublishedRows =
+        uploadedThrough > srow.uploaded_through ? uploadedThrough - srow.uploaded_through : 0n;
 
       const manifestRow = this.db.getManifestRow(stream);
       const generation = manifestRow.generation + 1;
@@ -285,6 +460,7 @@ export class Uploader {
           throw dsError(`invalid profile_json for ${stream}`);
         }
       }
+      const buildStart = performance.now();
       const manifestRes = buildManifestResult({
         streamName: stream,
         streamRow: srow,
@@ -310,14 +486,16 @@ export class Uploader {
         throw dsError(manifestRes.error.message);
       }
       const manifest = manifestRes.value;
+      recordDuration(this.manifestBuildMs, performance.now() - buildStart);
 
       const shash = streamHash16Hex(stream);
       const mKey = manifestObjectKey(shash);
       const body = new TextEncoder().encode(JSON.stringify(manifest));
       let putRes;
+      const putStart = performance.now();
       try {
-        putRes = await retry(
-          () => this.os.put(mKey, body),
+        putRes = await retryAbortable(
+          (signal) => this.os.put(mKey, body, { signal }),
           {
             retries: this.config.objectStoreRetries,
             baseDelayMs: this.config.objectStoreBaseDelayMs,
@@ -325,13 +503,18 @@ export class Uploader {
             timeoutMs: this.config.objectStoreTimeoutMs,
           }
         );
-      } catch (e) {
-        this.failures.recordFailure(stream);
-        throw e;
+      } finally {
+        recordDuration(this.manifestPutMs, performance.now() - putStart);
       }
 
       // Commit point: advance uploaded_through and delete WAL prefix.
-      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough, body.byteLength);
+      const commitStart = performance.now();
+      this.db.commitManifest(stream, generation, putRes.etag, this.db.nowMs(), uploadedThrough, body.byteLength, {
+        deletedRows: newlyPublishedRows,
+        deletedBytes: newlyPublishedLogicalSizeBytes,
+      });
+      recordDuration(this.manifestCommitMs, performance.now() - commitStart);
+      this.manifestSuccessTotal += 1;
       this.hooks?.onMetadataChanged?.(stream);
 
       // Local disk cleanup: delete newly uploaded segment files.
@@ -350,7 +533,13 @@ export class Uploader {
           }
         }
       }
+    } catch (e) {
+      this.manifestFailureTotal += 1;
+      if (isTimeoutError(e)) this.manifestTimeoutTotal += 1;
+      this.failures.recordFailure(stream);
+      throw e;
     } finally {
+      recordDuration(this.manifestTotalMs, performance.now() - publishStart);
       this.manifestInflight.delete(stream);
     }
   }

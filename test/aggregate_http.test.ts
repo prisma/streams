@@ -158,8 +158,8 @@ describe("_aggregate http", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
         searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
@@ -298,8 +298,8 @@ describe("_aggregate http", () => {
         uploadIntervalMs: 10,
         uploadConcurrency: 2,
         indexCheckIntervalMs: 10,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const app = createApp(cfg);
       try {
@@ -410,8 +410,8 @@ describe("_aggregate http", () => {
         uploadConcurrency: 2,
         indexCheckIntervalMs: 10,
         indexL0SpanSegments: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const queryCfg = makeConfig(root, {
         segmentMaxBytes: 1_000_000,
@@ -419,8 +419,8 @@ describe("_aggregate http", () => {
         segmentCheckIntervalMs: 60_000,
         uploadIntervalMs: 60_000,
         indexCheckIntervalMs: 60_000,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       let app = createApp(buildCfg, store);
       try {
@@ -502,8 +502,8 @@ describe("_aggregate http", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
         searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
@@ -578,8 +578,8 @@ describe("_aggregate http", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 60_000,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
       const app = createApp(cfg);
       try {

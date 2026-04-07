@@ -21,7 +21,7 @@ export type Config = {
   lexiconIndexCacheMaxBytes: number;
   lexiconMappedCacheEntries: number;
   indexL0SpanSegments: number;
-  indexBuildConcurrency: number;
+  indexBuilders: number;
   indexCheckIntervalMs: number;
   searchCompanionBuildBatchSegments: number;
   searchCompanionYieldBlocks: number;
@@ -34,7 +34,6 @@ export type Config = {
   searchWalOverlayMaxBytes: number;
   indexCompactionFanout: number;
   indexMaxLevel: number;
-  indexCompactionConcurrency: number;
   indexRetireGenWindow: number;
   indexRetireMinMs: number;
   readMaxBytes: number;
@@ -90,7 +89,7 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_LEXICON_INDEX_CACHE_MAX_BYTES",
   "DS_LEXICON_MMAP_CACHE_ENTRIES",
   "DS_INDEX_L0_SPAN",
-  "DS_INDEX_BUILD_CONCURRENCY",
+  "DS_INDEX_BUILDERS",
   "DS_INDEX_CHECK_MS",
   "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
   "DS_SEARCH_COMPANION_YIELD_BLOCKS",
@@ -103,7 +102,6 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_SEARCH_WAL_OVERLAY_MAX_BYTES",
   "DS_INDEX_COMPACTION_FANOUT",
   "DS_INDEX_MAX_LEVEL",
-  "DS_INDEX_COMPACT_CONCURRENCY",
   "DS_INDEX_RETIRE_GEN_WINDOW",
   "DS_INDEX_RETIRE_MIN_MS",
   "DS_READ_MAX_BYTES",
@@ -177,6 +175,26 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_RK_BLOCK_BYTES",
   "DS_RK_SEED",
   "DS_RK_R2_GET_DELAY_MS",
+  "DS_ROUTING_KEY_MEMORY",
+  "DS_ROUTING_KEY_MEMORY_TOTAL_BYTES",
+  "DS_ROUTING_KEY_MEMORY_INDEXED_TOTAL_BYTES",
+  "DS_ROUTING_KEY_MEMORY_PAYLOAD_BYTES",
+  "DS_ROUTING_KEY_MEMORY_BATCH_ROWS",
+  "DS_ROUTING_KEY_MEMORY_SEGMENT_BYTES",
+  "DS_ROUTING_KEY_MEMORY_INDEXED_SEGMENT_BYTES",
+  "DS_ROUTING_KEY_MEMORY_INDEXED_SEGMENT_CACHE_BYTES",
+  "DS_ROUTING_KEY_MEMORY_MIN_SEGMENTS",
+  "DS_ROUTING_KEY_MEMORY_INDEXED_MIN_SEGMENTS",
+  "DS_ROUTING_KEY_MEMORY_INDEX_SPAN",
+  "DS_ROUTING_KEY_MEMORY_INDEXED_INDEX_SPAN",
+  "DS_ROUTING_KEY_MEMORY_KEY_CARDINALITY",
+  "DS_ROUTING_KEY_MEMORY_REPEATS",
+  "DS_ROUTING_KEY_MEMORY_SAMPLE_INTERVAL_MS",
+  "DS_ROUTING_KEY_MEMORY_TIMEOUT_MS",
+  "DS_ROUTING_KEY_MEMORY_ALLOWED_EXTRA_BYTES",
+  "DS_ROUTING_KEY_MEMORY_ALLOWED_EXTRA_BYTES_WITH_INDEXING",
+  "DS_ROUTING_KEY_MEMORY_CHILD_MODE",
+  "DS_ROUTING_KEY_MEMORY_CHILD_VARIANT",
   "DS_LARGE_INDEX_FILTER",
   "DS_LARGE_INDEX_FILTER_TOTAL_BYTES",
   "DS_LARGE_INDEX_FILTER_PAYLOAD_BYTES",
@@ -301,7 +319,6 @@ export function loadConfig(): Config {
         : 64 * 1024 * 1024),
     lexiconMappedCacheEntries: envNum("DS_LEXICON_MMAP_CACHE_ENTRIES", 64),
     indexL0SpanSegments: envNum("DS_INDEX_L0_SPAN", 16),
-    indexBuildConcurrency: envNum("DS_INDEX_BUILD_CONCURRENCY", 4),
     indexCheckIntervalMs: envNum("DS_INDEX_CHECK_MS", 1000),
     searchCompanionBuildBatchSegments: envNum("DS_SEARCH_COMPANION_BATCH_SEGMENTS", 4),
     searchCompanionYieldBlocks: envNum("DS_SEARCH_COMPANION_YIELD_BLOCKS", 4),
@@ -314,7 +331,6 @@ export function loadConfig(): Config {
     searchWalOverlayMaxBytes,
     indexCompactionFanout: envNum("DS_INDEX_COMPACTION_FANOUT", 16),
     indexMaxLevel: envNum("DS_INDEX_MAX_LEVEL", 4),
-    indexCompactionConcurrency: envNum("DS_INDEX_COMPACT_CONCURRENCY", 4),
     indexRetireGenWindow: envNum("DS_INDEX_RETIRE_GEN_WINDOW", 2),
     indexRetireMinMs: envNum("DS_INDEX_RETIRE_MIN_MS", 5 * 60 * 1000),
     readMaxBytes: envNum("DS_READ_MAX_BYTES", 1 * 1024 * 1024),
@@ -334,10 +350,11 @@ export function loadConfig(): Config {
     readConcurrency: envNum("DS_READ_CONCURRENCY", 4),
     searchConcurrency: envNum("DS_SEARCH_CONCURRENCY", 2),
     asyncIndexConcurrency: envNum("DS_ASYNC_INDEX_CONCURRENCY", 1),
+    indexBuilders: envNum("DS_INDEX_BUILDERS", 1),
     heapSnapshotPath: process.env.DS_HEAP_SNAPSHOT_PATH?.trim() || null,
     memorySamplerPath: process.env.DS_MEMORY_SAMPLER_PATH?.trim() || null,
     memorySamplerIntervalMs: envNum("DS_MEMORY_SAMPLER_INTERVAL_MS", 1_000),
-    objectStoreTimeoutMs: envNum("DS_OBJECTSTORE_TIMEOUT_MS", 5000),
+    objectStoreTimeoutMs: envNum("DS_OBJECTSTORE_TIMEOUT_MS", 30000),
     objectStoreRetries: envNum("DS_OBJECTSTORE_RETRIES", 3),
     objectStoreBaseDelayMs: envNum("DS_OBJECTSTORE_RETRY_BASE_MS", 50),
     objectStoreMaxDelayMs: envNum("DS_OBJECTSTORE_RETRY_MAX_MS", 2000),

@@ -85,7 +85,7 @@ describe("routing key lexicon", () => {
       uploadConcurrency: 2,
       indexCheckIntervalMs: 10,
       indexL0SpanSegments: 16,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });
@@ -120,7 +120,7 @@ describe("routing key lexicon", () => {
       uploadConcurrency: 2,
       indexCheckIntervalMs: 10,
       indexL0SpanSegments: 1,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });
@@ -172,7 +172,7 @@ describe("routing key lexicon", () => {
       uploadConcurrency: 2,
       indexCheckIntervalMs: 10,
       indexL0SpanSegments: 1,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });
@@ -211,7 +211,7 @@ describe("routing key lexicon", () => {
       uploadConcurrency: 2,
       indexCheckIntervalMs: 10,
       indexL0SpanSegments: 1,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });
@@ -274,7 +274,7 @@ describe("routing key lexicon", () => {
       indexCheckIntervalMs: 5,
       indexL0SpanSegments: 1,
       indexCompactionFanout: 1_000_000,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 8 * 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });
@@ -331,7 +331,7 @@ describe("routing key lexicon", () => {
       uploadConcurrency: 2,
       indexCheckIntervalMs: 10,
       indexL0SpanSegments: 1,
-      segmentCacheMaxBytes: 0,
+      segmentCacheMaxBytes: 1024 * 1024,
       segmentFooterCacheEntries: 0,
       metricsFlushIntervalMs: 0,
     });

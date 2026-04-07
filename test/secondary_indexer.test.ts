@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { SecondaryIndexManager } from "../src/index/secondary_indexer";
+import { IndexSegmentLocalityManager } from "../src/index/segment_locality";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 
 function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
@@ -22,114 +23,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-function waitForExactIdleGate(manager: SecondaryIndexManager, stream: string, attempts = 3000): boolean {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    if (!(manager as any).shouldPauseExactBackgroundWork(stream)) return true;
-  }
-  return false;
-}
-
 describe("secondary indexer", () => {
-  test("pauses exact background work while a stream still has local backlog", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ds-secondary-index-pause-"));
-    const cfg = makeConfig(root, {
-      segmentMaxBytes: 60,
-      segmentCheckIntervalMs: 25,
-      uploadIntervalMs: 25,
-      uploadConcurrency: 2,
-      indexL0SpanSegments: 2,
-      indexCheckIntervalMs: 25,
-      segmentCacheMaxBytes: 0,
-      segmentFooterCacheEntries: 0,
-    });
-    const store = new MockR2Store();
-    const app = createApp(cfg, store);
-    try {
-      const createRes = await app.fetch(
-        new Request("http://local/v1/stream/evlog", {
-          method: "PUT",
-          headers: { "content-type": "application/json" },
-        })
-      );
-      expect([201, 204]).toContain(createRes.status);
-
-      const schemaRes = await app.fetch(
-        new Request("http://local/v1/stream/evlog/_schema", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            schema: {
-              type: "object",
-              properties: {
-                eventTime: { type: "string" },
-                service: { type: "string" },
-              },
-              required: ["eventTime", "service"],
-            },
-            search: {
-              primaryTimestampField: "eventTime",
-              fields: {
-                eventTime: {
-                  kind: "date",
-                  bindings: [{ version: 1, jsonPointer: "/eventTime" }],
-                  exact: true,
-                  column: true,
-                  exists: true,
-                  sortable: true,
-                },
-                service: {
-                  kind: "keyword",
-                  bindings: [{ version: 1, jsonPointer: "/service" }],
-                  normalizer: "lowercase_v1",
-                  exact: true,
-                },
-              },
-            },
-          }),
-        })
-      );
-      expect(schemaRes.status).toBe(200);
-
-      const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
-      app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs() - 600_000n, "evlog");
-      expect(waitForExactIdleGate(manager, "evlog")).toBe(true);
-
-      app.deps.db.db.query(`UPDATE streams SET logical_size_bytes=logical_size_bytes+1 WHERE stream=?;`).run("evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
-
-      app.deps.db.db
-        .query(`UPDATE streams SET pending_rows=1, pending_bytes=1, last_append_ms=? WHERE stream=?;`)
-        .run(app.deps.db.nowMs(), "evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
-
-      app.deps.db.db
-        .query(`UPDATE streams SET pending_rows=1, pending_bytes=1, last_append_ms=?, segment_in_progress=0 WHERE stream=?;`)
-        .run(app.deps.db.nowMs() - 600_000n, "evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
-
-      app.deps.db.db.query(`UPDATE streams SET pending_rows=0, pending_bytes=0, segment_in_progress=1 WHERE stream=?;`).run("evlog");
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
-
-      app.deps.db.db.query(`UPDATE streams SET segment_in_progress=0 WHERE stream=?;`).run("evlog");
-      app.deps.db.createSegmentRow({
-        segmentId: "seg-0",
-        stream: "evlog",
-        segmentIndex: 0,
-        startOffset: 0n,
-        endOffset: 0n,
-        blockCount: 1,
-        lastAppendMs: app.deps.db.nowMs(),
-        payloadBytes: 1n,
-        sizeBytes: 1,
-        localPath: `${root}/seg-0.bin`,
-      });
-      expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
-    } finally {
-      app.close();
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   test("builds exact-match runs for schema-owned indexes", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-secondary-index-"));
     const cfg = makeConfig(root, {
@@ -139,8 +33,8 @@ describe("secondary indexer", () => {
       uploadConcurrency: 2,
       indexL0SpanSegments: 2,
       indexCheckIntervalMs: 25,
-      segmentCacheMaxBytes: 0,
-      segmentFooterCacheEntries: 0,
+      segmentCacheMaxBytes: 64 * 1024 * 1024,
+      segmentFooterCacheEntries: 128,
     });
     const store = new MockR2Store();
     const app = createApp(cfg, store);
@@ -219,9 +113,21 @@ describe("secondary indexer", () => {
         await sleep(50);
       }
 
-      const manager = new SecondaryIndexManager(cfg, app.deps.db, store, app.deps.registry);
+      const locality = new IndexSegmentLocalityManager(app.deps.segmentDiskCache!, store);
+      const manager = new SecondaryIndexManager(
+        cfg,
+        app.deps.db,
+        store,
+        app.deps.registry,
+        app.deps.segmentDiskCache,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        locality
+      );
       app.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app.deps.db.nowMs() - 600_000n, "evlog");
-      expect(waitForExactIdleGate(manager, "evlog")).toBe(true);
       manager.enqueue("evlog");
       await (manager as any).tick?.();
       const deadline = Date.now() + 10_000;

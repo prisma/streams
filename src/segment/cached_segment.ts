@@ -37,11 +37,14 @@ export async function loadSegmentSource(
   }
 
   const objectKey = segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index);
+  const mappedCached = diskCache?.getMapped(objectKey);
+  if (mappedCached && diskCache) {
+    diskCache.recordHit();
+    return { kind: "mapped", path: mappedCached.path, bytes: mappedCached.bytes };
+  }
   if (diskCache && diskCache.has(objectKey)) {
     diskCache.recordHit();
     diskCache.touch(objectKey);
-    const mapped = diskCache.getMapped(objectKey);
-    if (mapped) return { kind: "mapped", path: mapped.path, bytes: mapped.bytes };
     const cachedPath = diskCache.getPath(objectKey);
     if (existsSync(cachedPath)) return { kind: "bytes", bytes: readFileSync(cachedPath) };
     diskCache.remove(objectKey);

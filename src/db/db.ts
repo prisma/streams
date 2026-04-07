@@ -1,6 +1,8 @@
+import { statSync } from "node:fs";
 import { initSchema } from "./schema.ts";
 import { openSqliteDatabase, type SqliteDatabase, type SqliteStatement } from "../sqlite/adapter.ts";
 import { Result } from "better-result";
+import { streamHash16Hex } from "../util/stream_paths";
 
 export const STREAM_FLAG_DELETED = 1 << 0;
 // Internal companion touch stream. Hidden from listing and not eligible for segmentation.
@@ -156,8 +158,32 @@ export type SearchSegmentCompanionRow = {
   updated_at_ms: bigint;
 };
 
+export type AsyncIndexActionStatus = "running" | "succeeded" | "failed";
+
+export type AsyncIndexActionRow = {
+  seq: bigint;
+  stream: string;
+  action_kind: string;
+  target_kind: string | null;
+  target_name: string | null;
+  input_kind: string;
+  input_count: number;
+  input_size_bytes: bigint;
+  output_count: number;
+  output_size_bytes: bigint;
+  start_segment: number | null;
+  end_segment: number | null;
+  begin_time_ms: bigint;
+  end_time_ms: bigint | null;
+  duration_ms: bigint | null;
+  status: AsyncIndexActionStatus;
+  error_message: string | null;
+  detail_json: string;
+};
+
 export class SqliteDurableStore {
   public readonly db: SqliteDatabase;
+  private readonly dbPath: string;
   private dbstatReady: boolean | null = null;
 
   // Prepared statements.
@@ -189,16 +215,22 @@ export class SqliteDurableStore {
     findSegmentForOffset: SqliteStatement;
     nextSegmentIndex: SqliteStatement;
     markSegmentUploaded: SqliteStatement;
-    pendingUploadHeads: SqliteStatement;
+    pendingUploadWindow: SqliteStatement;
     recentSegmentCompressionWindow: SqliteStatement;
     countPendingSegments: SqliteStatement;
     tryClaimSegment: SqliteStatement;
     countSegmentsForStream: SqliteStatement;
+    getStreamSegmentStorageSummary: SqliteStatement;
 
     getManifest: SqliteStatement;
     upsertManifest: SqliteStatement;
     setSchemaUploadedSize: SqliteStatement;
     recordObjectStoreRequest: SqliteStatement;
+    deleteObjectStoreRequestsByHash: SqliteStatement;
+    insertAsyncIndexAction: SqliteStatement;
+    completeAsyncIndexAction: SqliteStatement;
+    listAsyncIndexActionsForStream: SqliteStatement;
+    deleteAsyncIndexActionsForStream: SqliteStatement;
 
     getIndexState: SqliteStatement;
     upsertIndexState: SqliteStatement;
@@ -206,6 +238,8 @@ export class SqliteDurableStore {
     listIndexRuns: SqliteStatement;
     listIndexRunsAll: SqliteStatement;
     listRetiredIndexRuns: SqliteStatement;
+    countActiveIndexRuns: SqliteStatement;
+    countRetiredIndexRuns: SqliteStatement;
     insertIndexRun: SqliteStatement;
     retireIndexRun: SqliteStatement;
     deleteIndexRun: SqliteStatement;
@@ -218,6 +252,8 @@ export class SqliteDurableStore {
     listSecondaryIndexRuns: SqliteStatement;
     listSecondaryIndexRunsAll: SqliteStatement;
     listRetiredSecondaryIndexRuns: SqliteStatement;
+    countActiveSecondaryIndexRuns: SqliteStatement;
+    countRetiredSecondaryIndexRuns: SqliteStatement;
     insertSecondaryIndexRun: SqliteStatement;
     retireSecondaryIndexRun: SqliteStatement;
     deleteSecondaryIndexRun: SqliteStatement;
@@ -232,6 +268,8 @@ export class SqliteDurableStore {
     listLexiconIndexRuns: SqliteStatement;
     listLexiconIndexRunsAll: SqliteStatement;
     listRetiredLexiconIndexRuns: SqliteStatement;
+    countActiveLexiconIndexRuns: SqliteStatement;
+    countRetiredLexiconIndexRuns: SqliteStatement;
     insertLexiconIndexRun: SqliteStatement;
     retireLexiconIndexRun: SqliteStatement;
     deleteLexiconIndexRun: SqliteStatement;
@@ -274,6 +312,7 @@ export class SqliteDurableStore {
   };
 
   constructor(path: string, opts: { cacheBytes?: number; skipMigrations?: boolean } = {}) {
+    this.dbPath = path;
     this.db = openSqliteDatabase(path);
     initSchema(this.db, { skipMigrations: opts.skipMigrations });
     if (opts.cacheBytes && opts.cacheBytes > 0) {
@@ -431,17 +470,18 @@ export class SqliteDurableStore {
       markSegmentUploaded: this.db.query(
         `UPDATE segments SET r2_etag=?, uploaded_at_ms=? WHERE segment_id=?;`
       ),
-      pendingUploadHeads: this.db.query(
+      pendingUploadWindow: this.db.query(
         `SELECT segment_id, stream, segment_index, start_offset, end_offset, block_count, last_append_ms, payload_bytes, size_bytes,
                 local_path, created_at_ms, uploaded_at_ms, r2_etag
-         FROM segments s
-         WHERE s.uploaded_at_ms IS NULL
-           AND s.segment_index = (
-             SELECT MIN(s2.segment_index)
-             FROM segments s2
-             WHERE s2.stream = s.stream AND s2.uploaded_at_ms IS NULL
-           )
-         ORDER BY s.created_at_ms ASC, s.stream ASC
+         FROM (
+           SELECT segment_id, stream, segment_index, start_offset, end_offset, block_count, last_append_ms, payload_bytes, size_bytes,
+                  local_path, created_at_ms, uploaded_at_ms, r2_etag,
+                  ROW_NUMBER() OVER (PARTITION BY stream ORDER BY segment_index ASC) AS pending_rank
+           FROM segments
+           WHERE uploaded_at_ms IS NULL
+         ) s
+         WHERE s.pending_rank <= ?
+         ORDER BY s.pending_rank ASC, s.created_at_ms ASC, s.stream ASC
          LIMIT ?;`
       ),
       recentSegmentCompressionWindow: this.db.query(
@@ -459,6 +499,14 @@ export class SqliteDurableStore {
       ),
       countPendingSegments: this.db.query(`SELECT COUNT(*) as cnt FROM segments WHERE uploaded_at_ms IS NULL;`),
       countSegmentsForStream: this.db.query(`SELECT COUNT(*) as cnt FROM segments WHERE stream=?;`),
+      getStreamSegmentStorageSummary: this.db.query(
+        `SELECT
+           COUNT(*) as segment_count,
+           COALESCE(SUM(CASE WHEN r2_etag IS NOT NULL THEN size_bytes ELSE 0 END), 0) as uploaded_bytes,
+           COALESCE(SUM(CASE WHEN uploaded_at_ms IS NULL THEN size_bytes ELSE 0 END), 0) as pending_sealed_bytes
+         FROM segments
+         WHERE stream=?;`
+      ),
       tryClaimSegment: this.db.query(
         `UPDATE streams SET segment_in_progress=1, updated_at_ms=? WHERE stream=? AND segment_in_progress=0;`
       ),
@@ -507,6 +555,12 @@ export class SqliteDurableStore {
         `SELECT run_id, stream, level, start_segment, end_segment, object_key, size_bytes, filter_len, record_count, retired_gen, retired_at_ms
          FROM index_runs WHERE stream=? AND retired_gen IS NOT NULL
          ORDER BY retired_at_ms ASC;`
+      ),
+      countActiveIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt FROM index_runs WHERE stream=? AND retired_gen IS NULL;`
+      ),
+      countRetiredIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt FROM index_runs WHERE stream=? AND retired_gen IS NOT NULL;`
       ),
       insertIndexRun: this.db.query(
         `INSERT OR IGNORE INTO index_runs(run_id, stream, level, start_segment, end_segment, object_key, size_bytes, filter_len, record_count, retired_gen, retired_at_ms)
@@ -560,6 +614,16 @@ export class SqliteDurableStore {
          FROM secondary_index_runs
          WHERE stream=? AND index_name=? AND retired_gen IS NOT NULL
          ORDER BY retired_at_ms ASC;`
+      ),
+      countActiveSecondaryIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt
+         FROM secondary_index_runs
+         WHERE stream=? AND index_name=? AND retired_gen IS NULL;`
+      ),
+      countRetiredSecondaryIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt
+         FROM secondary_index_runs
+         WHERE stream=? AND index_name=? AND retired_gen IS NOT NULL;`
       ),
       insertSecondaryIndexRun: this.db.query(
         `INSERT OR IGNORE INTO secondary_index_runs(run_id, stream, index_name, level, start_segment, end_segment, object_key, size_bytes, filter_len, record_count, retired_gen, retired_at_ms)
@@ -616,6 +680,16 @@ export class SqliteDurableStore {
          FROM lexicon_index_runs
          WHERE stream=? AND source_kind=? AND source_name=? AND retired_gen IS NOT NULL
          ORDER BY retired_at_ms ASC;`
+      ),
+      countActiveLexiconIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt
+         FROM lexicon_index_runs
+         WHERE stream=? AND source_kind=? AND source_name=? AND retired_gen IS NULL;`
+      ),
+      countRetiredLexiconIndexRuns: this.db.query(
+        `SELECT COUNT(*) as cnt
+         FROM lexicon_index_runs
+         WHERE stream=? AND source_kind=? AND source_name=? AND retired_gen IS NOT NULL;`
       ),
       insertLexiconIndexRun: this.db.query(
         `INSERT OR IGNORE INTO lexicon_index_runs(run_id, stream, source_kind, source_name, level, start_segment, end_segment, object_key, size_bytes, record_count, retired_gen, retired_at_ms)
@@ -765,6 +839,30 @@ export class SqliteDurableStore {
            bytes=objectstore_request_counts.bytes + excluded.bytes,
            updated_at_ms=excluded.updated_at_ms;`
       ),
+      deleteObjectStoreRequestsByHash: this.db.query(`DELETE FROM objectstore_request_counts WHERE stream_hash=?;`),
+      insertAsyncIndexAction: this.db.query(
+        `INSERT INTO async_index_actions(
+           stream, action_kind, target_kind, target_name, input_kind, input_count, input_size_bytes,
+           output_count, output_size_bytes, start_segment, end_segment, begin_time_ms, end_time_ms,
+           duration_ms, status, error_message, detail_json
+         )
+         VALUES(?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, NULL, NULL, ?, NULL, ?);`
+      ),
+      completeAsyncIndexAction: this.db.query(
+        `UPDATE async_index_actions
+         SET output_count=?, output_size_bytes=?, end_time_ms=?, duration_ms=?, status=?, error_message=?, detail_json=?
+         WHERE seq=?;`
+      ),
+      listAsyncIndexActionsForStream: this.db.query(
+        `SELECT seq, stream, action_kind, target_kind, target_name, input_kind, input_count, input_size_bytes,
+                output_count, output_size_bytes, start_segment, end_segment, begin_time_ms, end_time_ms,
+                duration_ms, status, error_message, detail_json
+         FROM async_index_actions
+         WHERE stream=?
+         ORDER BY seq DESC
+         LIMIT ?;`
+      ),
+      deleteAsyncIndexActionsForStream: this.db.query(`DELETE FROM async_index_actions WHERE stream=?;`),
     };
   }
 
@@ -887,6 +985,29 @@ export class SqliteDurableStore {
       created_at_ms: this.toBigInt(row.created_at_ms),
       uploaded_at_ms: row.uploaded_at_ms == null ? null : this.toBigInt(row.uploaded_at_ms),
       r2_etag: row.r2_etag == null ? null : String(row.r2_etag),
+    };
+  }
+
+  private coerceAsyncIndexActionRow(row: any): AsyncIndexActionRow {
+    return {
+      seq: this.toBigInt(row.seq),
+      stream: String(row.stream),
+      action_kind: String(row.action_kind),
+      target_kind: row.target_kind == null ? null : String(row.target_kind),
+      target_name: row.target_name == null ? null : String(row.target_name),
+      input_kind: String(row.input_kind),
+      input_count: Number(row.input_count ?? 0),
+      input_size_bytes: this.toBigInt(row.input_size_bytes ?? 0),
+      output_count: Number(row.output_count ?? 0),
+      output_size_bytes: this.toBigInt(row.output_size_bytes ?? 0),
+      start_segment: row.start_segment == null ? null : Number(row.start_segment),
+      end_segment: row.end_segment == null ? null : Number(row.end_segment),
+      begin_time_ms: this.toBigInt(row.begin_time_ms),
+      end_time_ms: row.end_time_ms == null ? null : this.toBigInt(row.end_time_ms),
+      duration_ms: row.duration_ms == null ? null : this.toBigInt(row.duration_ms),
+      status: String(row.status) as AsyncIndexActionStatus,
+      error_message: row.error_message == null ? null : String(row.error_message),
+      detail_json: String(row.detail_json ?? "{}"),
     };
   }
 
@@ -1059,6 +1180,7 @@ export class SqliteDurableStore {
   }
 
   deleteAccelerationState(stream: string): void {
+    const streamHash = streamHash16Hex(stream);
     const tx = this.db.transaction(() => {
       this.stmts.deleteIndexRunsForStream.run(stream);
       this.stmts.deleteIndexStateForStream.run(stream);
@@ -1068,14 +1190,21 @@ export class SqliteDurableStore {
       this.stmts.deleteLexiconIndexStatesForStream.run(stream);
       this.stmts.deleteSearchSegmentCompanions.run(stream);
       this.stmts.deleteSearchCompanionPlan.run(stream);
+      this.stmts.deleteObjectStoreRequestsByHash.run(streamHash);
+      this.stmts.deleteAsyncIndexActionsForStream.run(stream);
     });
     tx();
+  }
+
+  clearObjectStoreRequestCounts(stream: string): void {
+    this.stmts.deleteObjectStoreRequestsByHash.run(streamHash16Hex(stream));
   }
 
   deleteStream(stream: string): boolean {
     const existing = this.getStream(stream);
     if (!existing) return false;
     const now = this.nowMs();
+    const streamHash = streamHash16Hex(stream);
     const tx = this.db.transaction(() => {
       this.stmts.setDeleted.run(STREAM_FLAG_DELETED, now, stream);
       this.stmts.deleteIndexRunsForStream.run(stream);
@@ -1086,6 +1215,8 @@ export class SqliteDurableStore {
       this.stmts.deleteLexiconIndexStatesForStream.run(stream);
       this.stmts.deleteSearchSegmentCompanions.run(stream);
       this.stmts.deleteSearchCompanionPlan.run(stream);
+      this.stmts.deleteObjectStoreRequestsByHash.run(streamHash);
+      this.stmts.deleteAsyncIndexActionsForStream.run(stream);
     });
     tx();
     return true;
@@ -1097,6 +1228,7 @@ export class SqliteDurableStore {
   }
 
   hardDeleteStream(stream: string): boolean {
+    const streamHash = streamHash16Hex(stream);
     const tx = this.db.transaction(() => {
       const existing = this.getStream(stream);
       if (!existing) return false;
@@ -1117,6 +1249,8 @@ export class SqliteDurableStore {
       this.db.query(`DELETE FROM search_companion_plans WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM search_segment_companions WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM stream_segment_meta WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM objectstore_request_counts WHERE stream_hash=?;`).run(streamHash);
+      this.db.query(`DELETE FROM async_index_actions WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM streams WHERE stream=?;`).run(stream);
       return true;
     });
@@ -1387,6 +1521,18 @@ export class SqliteDurableStore {
     return this.estimateMetaBytes();
   }
 
+  getSqliteSharedTotalBytes(): number {
+    let total = 0;
+    for (const path of [this.dbPath, `${this.dbPath}-wal`, `${this.dbPath}-shm`]) {
+      try {
+        total += statSync(path).size;
+      } catch {
+        // Ignore absent sqlite sidecar files.
+      }
+    }
+    return total;
+  }
+
   /**
    * Append rows into WAL inside a transaction.
    *
@@ -1581,8 +1727,8 @@ export class SqliteDurableStore {
     return row ? this.coerceSegmentRow(row) : null;
   }
 
-  pendingUploadHeads(limit: number): SegmentRow[] {
-    const rows = this.stmts.pendingUploadHeads.all(limit) as any[];
+  pendingUploadWindow(limit: number, perStreamLimit: number): SegmentRow[] {
+    const rows = this.stmts.pendingUploadWindow.all(Math.max(1, perStreamLimit), limit) as any[];
     return rows.map((r) => this.coerceSegmentRow(r));
   }
 
@@ -1604,6 +1750,31 @@ export class SqliteDurableStore {
   countSegmentsForStream(stream: string): number {
     const row = this.stmts.countSegmentsForStream.get(stream) as any;
     return row ? Number(row.cnt) : 0;
+  }
+
+  getSegmentPayloadBytesRange(stream: string, startSegmentIndex: number, endSegmentIndexExclusive: number): bigint {
+    if (endSegmentIndexExclusive <= startSegmentIndex) return 0n;
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(payload_bytes), 0) AS bytes
+         FROM segments
+         WHERE stream=? AND segment_index >= ? AND segment_index < ?;`
+      )
+      .get(stream, startSegmentIndex, endSegmentIndexExclusive) as any;
+    return this.toBigInt(row?.bytes ?? 0);
+  }
+
+  getStreamSegmentStorageSummary(stream: string): {
+    segmentCount: number;
+    uploadedSegmentBytes: bigint;
+    pendingSealedSegmentBytes: bigint;
+  } {
+    const row = this.stmts.getStreamSegmentStorageSummary.get(stream) as any;
+    return {
+      segmentCount: Number(row?.segment_count ?? 0),
+      uploadedSegmentBytes: this.toBigInt(row?.uploaded_bytes ?? 0),
+      pendingSealedSegmentBytes: this.toBigInt(row?.pending_sealed_bytes ?? 0),
+    };
   }
 
   getSegmentMeta(stream: string): SegmentMetaRow | null {
@@ -1850,6 +2021,16 @@ export class SqliteDurableStore {
     }));
   }
 
+  countActiveIndexRuns(stream: string): number {
+    const row = this.stmts.countActiveIndexRuns.get(stream) as any;
+    return Number(row?.cnt ?? 0);
+  }
+
+  countRetiredIndexRuns(stream: string): number {
+    const row = this.stmts.countRetiredIndexRuns.get(stream) as any;
+    return Number(row?.cnt ?? 0);
+  }
+
   insertIndexRun(row: Omit<IndexRunRow, "retired_gen" | "retired_at_ms">): void {
     this.stmts.insertIndexRun.run(
       row.run_id,
@@ -1991,6 +2172,16 @@ export class SqliteDurableStore {
     }));
   }
 
+  countActiveSecondaryIndexRuns(stream: string, indexName: string): number {
+    const row = this.stmts.countActiveSecondaryIndexRuns.get(stream, indexName) as any;
+    return Number(row?.cnt ?? 0);
+  }
+
+  countRetiredSecondaryIndexRuns(stream: string, indexName: string): number {
+    const row = this.stmts.countRetiredSecondaryIndexRuns.get(stream, indexName) as any;
+    return Number(row?.cnt ?? 0);
+  }
+
   insertSecondaryIndexRun(row: Omit<SecondaryIndexRunRow, "retired_gen" | "retired_at_ms">): void {
     this.stmts.insertSecondaryIndexRun.run(
       row.run_id,
@@ -2117,6 +2308,16 @@ export class SqliteDurableStore {
       retired_gen: row.retired_gen == null ? null : Number(row.retired_gen),
       retired_at_ms: row.retired_at_ms == null ? null : this.toBigInt(row.retired_at_ms),
     }));
+  }
+
+  countActiveLexiconIndexRuns(stream: string, sourceKind: string, sourceName: string): number {
+    const row = this.stmts.countActiveLexiconIndexRuns.get(stream, sourceKind, sourceName) as any;
+    return Number(row?.cnt ?? 0);
+  }
+
+  countRetiredLexiconIndexRuns(stream: string, sourceKind: string, sourceName: string): number {
+    const row = this.stmts.countRetiredLexiconIndexRuns.get(stream, sourceKind, sourceName) as any;
+    return Number(row?.cnt ?? 0);
   }
 
   insertLexiconIndexRun(row: Omit<LexiconIndexRunRow, "retired_gen" | "retired_at_ms">): void {
@@ -2263,7 +2464,11 @@ export class SqliteDurableStore {
     etag: string,
     uploadedAtMs: bigint,
     uploadedThrough: bigint,
-    sizeBytes: number
+    sizeBytes: number,
+    opts?: {
+      deletedRows?: bigint;
+      deletedBytes?: bigint;
+    }
   ): void {
     const tx = this.db.transaction(() => {
       this.stmts.upsertManifest.run(stream, generation, generation, uploadedAtMs, etag, sizeBytes);
@@ -2275,6 +2480,21 @@ export class SqliteDurableStore {
         gcThrough = processedThrough < gcThrough ? processedThrough : gcThrough;
       }
       if (gcThrough < 0n) return;
+
+      const fastPathRows = opts?.deletedRows ?? 0n;
+      const fastPathBytes = opts?.deletedBytes ?? 0n;
+      if (gcThrough === uploadedThrough && fastPathRows > 0n) {
+        this.db.query(`DELETE FROM wal WHERE stream = ? AND offset <= ?;`).run(stream, this.bindInt(gcThrough));
+        const now = this.nowMs();
+        this.db.query(
+          `UPDATE streams
+           SET wal_bytes = CASE WHEN wal_bytes >= ? THEN wal_bytes - ? ELSE 0 END,
+               wal_rows = CASE WHEN wal_rows >= ? THEN wal_rows - ? ELSE 0 END,
+               updated_at_ms = ?
+           WHERE stream = ?;`
+        ).run(fastPathBytes, fastPathBytes, fastPathRows, fastPathRows, now, stream);
+        return;
+      }
 
       const { deletedRows: rows, deletedBytes: bytes } = this.deleteWalThroughWithStats(stream, gcThrough, {
         maxRows: BASE_WAL_GC_CHUNK_OFFSETS,
@@ -2297,6 +2517,68 @@ export class SqliteDurableStore {
   recordObjectStoreRequestByHash(streamHash: string, artifact: string, op: string, bytes = 0, count = 1): void {
     if (!streamHash || !artifact || !op) return;
     this.stmts.recordObjectStoreRequest.run(streamHash, artifact, op, count, bytes, this.nowMs());
+  }
+
+  beginAsyncIndexAction(input: {
+    stream: string;
+    actionKind: string;
+    targetKind?: string | null;
+    targetName?: string | null;
+    inputKind: string;
+    inputCount: number;
+    inputSizeBytes: bigint;
+    startSegment?: number | null;
+    endSegment?: number | null;
+    detailJson?: string;
+  }): bigint {
+    const res = this.stmts.insertAsyncIndexAction.run(
+      input.stream,
+      input.actionKind,
+      input.targetKind ?? null,
+      input.targetName ?? null,
+      input.inputKind,
+      input.inputCount,
+      this.bindInt(input.inputSizeBytes),
+      input.startSegment ?? null,
+      input.endSegment ?? null,
+      this.nowMs(),
+      "running",
+      input.detailJson ?? "{}"
+    ) as any;
+    return this.toBigInt(res.lastInsertRowid);
+  }
+
+  completeAsyncIndexAction(input: {
+    seq: bigint;
+    status: Exclude<AsyncIndexActionStatus, "running">;
+    outputCount?: number;
+    outputSizeBytes?: bigint;
+    endedAtMs?: bigint;
+    errorMessage?: string | null;
+    detailJson?: string;
+  }): void {
+    const endedAtMs = input.endedAtMs ?? this.nowMs();
+    const row = this.db
+      .query(`SELECT begin_time_ms, detail_json FROM async_index_actions WHERE seq=? LIMIT 1;`)
+      .get(this.bindInt(input.seq)) as any;
+    const beginTimeMs = row?.begin_time_ms == null ? endedAtMs : this.toBigInt(row.begin_time_ms);
+    const priorDetailJson = row?.detail_json == null ? "{}" : String(row.detail_json);
+    const durationMs = endedAtMs >= beginTimeMs ? endedAtMs - beginTimeMs : 0n;
+    this.stmts.completeAsyncIndexAction.run(
+      input.outputCount ?? 0,
+      this.bindInt(input.outputSizeBytes ?? 0n),
+      endedAtMs,
+      this.bindInt(durationMs),
+      input.status,
+      input.errorMessage ?? null,
+      input.detailJson ?? priorDetailJson,
+      this.bindInt(input.seq)
+    );
+  }
+
+  listAsyncIndexActions(stream: string, limit: number): AsyncIndexActionRow[] {
+    const rows = this.stmts.listAsyncIndexActionsForStream.all(stream, limit) as any[];
+    return rows.map((row) => this.coerceAsyncIndexActionRow(row));
   }
 
   getObjectStoreRequestSummaryByHash(streamHash: string): {

@@ -139,8 +139,8 @@ describe("bundled companions and backfill", () => {
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       let app = createApp(buildCfg, store);
@@ -331,8 +331,8 @@ describe("bundled companions and backfill", () => {
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
         searchCompanionBuildBatchSegments: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       let app = createApp(buildCfg, store);
@@ -439,8 +439,8 @@ describe("bundled companions and backfill", () => {
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
         searchCompanionBuildBatchSegments: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       const app = createApp(cfg, store);
@@ -548,8 +548,8 @@ describe("bundled companions and backfill", () => {
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
         searchCompanionBuildBatchSegments: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       const app = createApp(cfg, store);
@@ -699,8 +699,8 @@ describe("bundled companions and backfill", () => {
         indexL0SpanSegments: 2,
         indexCheckIntervalMs: 10,
         searchCompanionBuildBatchSegments: 2,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       let app = createApp(cfg, store);
@@ -800,8 +800,8 @@ describe("bundled companions and backfill", () => {
         indexCheckIntervalMs: 60_000,
         searchCompanionBuildBatchSegments: 1,
         searchCompanionYieldBlocks: 1,
-        segmentCacheMaxBytes: 0,
-        segmentFooterCacheEntries: 0,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
       });
 
       const app = createApp(cfg, store);

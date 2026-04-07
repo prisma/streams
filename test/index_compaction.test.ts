@@ -40,9 +40,8 @@ describe("index compaction", () => {
         indexL0SpanSegments: 2,
         indexCompactionFanout: 2,
         indexMaxLevel: 1,
-        indexCompactionConcurrency: 1,
         indexCheckIntervalMs: 25,
-        segmentCacheMaxBytes: 0,
+        segmentCacheMaxBytes: 1024 * 1024,
         segmentFooterCacheEntries: 0,
       });
 

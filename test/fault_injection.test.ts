@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
-import type { GetOptions, ObjectStore, PutResult } from "../src/objectstore/interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "../src/objectstore/interface";
 import { dsError } from "../src/util/ds_error";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
@@ -44,14 +44,67 @@ class GapPreservingStore implements ObjectStore {
     if (idx === 0) throw dsError(`forced segment upload timeout for ${key}`);
   }
 
-  async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
+  async put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult> {
     this.maybeFail(key);
     return this.inner.put(key, data, opts);
   }
 
-  async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
+  async putFile(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult> {
     this.maybeFail(key);
     return this.inner.putFile!(key, path, size, opts);
+  }
+
+  async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
+    return this.inner.get(key, opts);
+  }
+
+  async head(key: string): Promise<{ etag: string; size: number } | null> {
+    return this.inner.head(key);
+  }
+
+  async delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return this.inner.list(prefix);
+  }
+}
+
+class DelayedCountingStore implements ObjectStore {
+  readonly attemptedSegmentIndexes: number[] = [];
+  maxConcurrentSegmentPuts = 0;
+  private activeSegmentPuts = 0;
+  private readonly inner = new MockR2Store();
+
+  constructor(private readonly delayMs: number) {}
+
+  private captureSegmentIndex(key: string): number | null {
+    const match = key.match(/\/segments\/([0-9]{16})\.bin$/);
+    if (!match) return null;
+    return Number(match[1]);
+  }
+
+  private async withDelay<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const idx = this.captureSegmentIndex(key);
+    if (idx == null) return fn();
+    this.attemptedSegmentIndexes.push(idx);
+    this.activeSegmentPuts += 1;
+    this.maxConcurrentSegmentPuts = Math.max(this.maxConcurrentSegmentPuts, this.activeSegmentPuts);
+    try {
+      await sleep(this.delayMs);
+      return await fn();
+    } finally {
+      this.activeSegmentPuts = Math.max(0, this.activeSegmentPuts - 1);
+    }
+  }
+
+  async put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult> {
+    return this.withDelay(key, () => this.inner.put(key, data, opts));
+  }
+
+  async putFile(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult> {
+    return this.withDelay(key, () => this.inner.putFile!(key, path, size, opts));
   }
 
   async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
@@ -146,7 +199,53 @@ describe("fault injection", () => {
       }
 
       expect(os.attemptedSegmentIndexes.length).toBeGreaterThan(0);
-      expect(new Set(os.attemptedSegmentIndexes)).toEqual(new Set([0]));
+      expect(os.attemptedSegmentIndexes).toContain(0);
+      expect(os.attemptedSegmentIndexes.every((idx) => idx <= 1)).toBe(true);
+
+      server.stop();
+      app.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("uploader uses full configured concurrency for one stream", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-upload-concurrency-"));
+    try {
+      const cfg = makeConfig(root, {
+        uploadConcurrency: 4,
+        uploadIntervalMs: 250,
+        objectStoreRetries: 0,
+      });
+      const os = new DelayedCountingStore(150);
+      const app = createApp(cfg, os);
+      const server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      await fetch(`${baseUrl}/v1/stream/concurrency_test`, { method: "PUT" });
+
+      const payload = new Uint8Array(600);
+      payload.fill(3);
+      for (let i = 0; i < 16; i++) {
+        const r = await fetch(`${baseUrl}/v1/stream/concurrency_test`, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream" },
+          body: payload,
+        });
+        expect(r.status).toBe(204);
+      }
+
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (os.maxConcurrentSegmentPuts >= 4) break;
+        await sleep(50);
+      }
+
+      expect(os.maxConcurrentSegmentPuts).toBeGreaterThanOrEqual(4);
+      expect(new Set(os.attemptedSegmentIndexes).has(0)).toBe(true);
+      expect(new Set(os.attemptedSegmentIndexes).has(1)).toBe(true);
+      expect(new Set(os.attemptedSegmentIndexes).has(2)).toBe(true);
+      expect(new Set(os.attemptedSegmentIndexes).has(3)).toBe(true);
 
       server.stop();
       app.close();

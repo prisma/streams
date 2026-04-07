@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, readSync, copyFileSync, createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
-import type { GetOptions, ObjectStore, PutResult } from "./interface";
+import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 export type MockR2Faults = {
@@ -37,6 +37,28 @@ type StoredObject = {
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((res) => setTimeout(res, ms));
+}
+
+function abortError(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return dsError("aborted");
+}
+
+async function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw abortError(signal);
+  if (ms <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export class MockR2Store implements ObjectStore {
@@ -95,14 +117,15 @@ export class MockR2Store implements ObjectStore {
     if (every && count % every === 0) throw dsError(msg ?? "MockR2: injected timeout");
   }
 
-  async put(key: string, bytes: Uint8Array): Promise<PutResult> {
+  async put(key: string, bytes: Uint8Array, opts: PutOptions = {}): Promise<PutResult> {
     this.putCount++;
     if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
       throw dsError(`MockR2: injected PUT failure for ${key}`);
     }
     this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
     this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
-    await sleep(this.faults.putDelayMs ?? 0);
+    await sleepWithSignal(this.faults.putDelayMs ?? 0, opts.signal);
+    if (opts.signal?.aborted) throw abortError(opts.signal);
 
     const copy = new Uint8Array(bytes);
     const etag = this.mkEtag(copy);
@@ -127,14 +150,15 @@ export class MockR2Store implements ObjectStore {
     return { etag };
   }
 
-  async putFile(key: string, path: string, size: number): Promise<PutResult> {
+  async putFile(key: string, path: string, size: number, opts: PutFileOptions = {}): Promise<PutResult> {
     this.putCount++;
     if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
       throw dsError(`MockR2: injected PUT failure for ${key}`);
     }
     this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
     this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
-    await sleep(this.faults.putDelayMs ?? 0);
+    await sleepWithSignal(this.faults.putDelayMs ?? 0, opts.signal);
+    if (opts.signal?.aborted) throw abortError(opts.signal);
 
     const etag = await this.hashFile(path);
 

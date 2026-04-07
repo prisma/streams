@@ -20,13 +20,15 @@ export type SegmentCacheStats = {
   mappedBytes: number;
   mappedEntryCount: number;
   pinnedEntryCount: number;
+  requiredEntryCount: number;
+  requiredBytes: number;
 };
 
 export class SegmentDiskCache {
   private readonly rootDir: string;
   private readonly maxBytes: number;
   private readonly entries = new Map<string, { path: string; size: number }>();
-  private readonly pinnedKeys = new Set<string>();
+  private readonly requiredForIndexingRefs = new Map<string, number>();
   private readonly mappedFiles: LruCache<string, MappedSegmentFile>;
   private totalBytes = 0;
   private hits = 0;
@@ -94,26 +96,31 @@ export class SegmentDiskCache {
   }
 
   get(objectKey: string): Uint8Array | null {
+    const mapped = this.mappedFiles.get(objectKey);
+    if (mapped) {
+      this.recordHit();
+      this.touch(objectKey);
+      return mapped.bytes;
+    }
     if (!this.has(objectKey)) {
       this.recordMiss();
       return null;
     }
     this.recordHit();
     this.touch(objectKey);
-    const mapped = this.getMapped(objectKey);
-    if (mapped) return mapped.bytes;
+    const remapped = this.getMapped(objectKey);
+    if (remapped) return remapped.bytes;
     const path = this.getPath(objectKey);
     return readFileSync(path);
   }
 
   getMapped(objectKey: string): MappedSegmentFile | null {
-    if (!this.has(objectKey)) return null;
     const cached = this.mappedFiles.get(objectKey);
     if (cached) {
-      this.pinnedKeys.add(objectKey);
       this.touch(objectKey);
       return cached;
     }
+    if (!this.has(objectKey)) return null;
 
     const path = this.getPath(objectKey);
     let sizeBytes: number;
@@ -134,7 +141,6 @@ export class SegmentDiskCache {
 
     const mapped = { objectKey, path, bytes, sizeBytes };
     this.mappedFiles.set(objectKey, mapped);
-    this.pinnedKeys.add(objectKey);
     this.touch(objectKey);
     return mapped;
   }
@@ -143,7 +149,9 @@ export class SegmentDiskCache {
     if (this.maxBytes <= 0) return false;
     const sizeBytes = bytes.byteLength;
     if (sizeBytes > this.maxBytes) return false;
-    this.evictIfNeeded(sizeBytes);
+    const existing = this.entries.get(objectKey);
+    const incomingBytes = existing ? Math.max(0, sizeBytes - existing.size) : sizeBytes;
+    if (!this.evictIfNeeded(incomingBytes)) return false;
     const dest = this.getPath(objectKey);
     mkdirSync(dirname(dest), { recursive: true });
     const tmp = `${dest}.tmp-${Date.now()}`;
@@ -158,7 +166,6 @@ export class SegmentDiskCache {
       }
       return false;
     }
-    const existing = this.entries.get(objectKey);
     if (existing) this.totalBytes = Math.max(0, this.totalBytes - existing.size);
     this.mappedFiles.delete(objectKey);
     this.entries.set(objectKey, { path: dest, size: sizeBytes });
@@ -170,7 +177,9 @@ export class SegmentDiskCache {
   putFromLocal(objectKey: string, localPath: string, sizeBytes: number): boolean {
     if (this.maxBytes <= 0) return false;
     if (sizeBytes > this.maxBytes) return false;
-    this.evictIfNeeded(sizeBytes);
+    const existing = this.entries.get(objectKey);
+    const incomingBytes = existing ? Math.max(0, sizeBytes - existing.size) : sizeBytes;
+    if (!this.evictIfNeeded(incomingBytes)) return false;
     const dest = this.getPath(objectKey);
     mkdirSync(dirname(dest), { recursive: true });
     try {
@@ -178,7 +187,6 @@ export class SegmentDiskCache {
     } catch {
       return false;
     }
-    const existing = this.entries.get(objectKey);
     if (existing) this.totalBytes = Math.max(0, this.totalBytes - existing.size);
     this.mappedFiles.delete(objectKey);
     this.entries.set(objectKey, { path: dest, size: sizeBytes });
@@ -188,55 +196,57 @@ export class SegmentDiskCache {
   }
 
   remove(objectKey: string): void {
-    if (this.pinnedKeys.has(objectKey)) return;
-    const entry = this.entries.get(objectKey);
-    if (!entry) return;
-    try {
-      unlinkSync(entry.path);
-    } catch {
-      // ignore
-    }
-    this.totalBytes = Math.max(0, this.totalBytes - entry.size);
-    this.entries.delete(objectKey);
+    if (this.isRequiredForIndexing(objectKey)) return;
+    this.deleteEntry(objectKey, { dropMapped: true });
   }
 
-  private evictIfNeeded(incomingBytes: number): void {
-    while (this.totalBytes + incomingBytes > this.maxBytes && this.entries.size > 0) {
-      const oldestKey = this.entries.keys().next().value as string;
-      if (this.pinnedKeys.has(oldestKey)) {
-        let removed = false;
-        for (const candidateKey of this.entries.keys()) {
-          if (this.pinnedKeys.has(candidateKey)) continue;
-          const candidate = this.entries.get(candidateKey);
-          if (!candidate) continue;
-          try {
-            unlinkSync(candidate.path);
-          } catch {
-            // ignore
-          }
-          this.totalBytes = Math.max(0, this.totalBytes - candidate.size);
-          this.entries.delete(candidateKey);
-          this.mappedFiles.delete(candidateKey);
-          this.evictions += 1;
-          removed = true;
-          break;
-        }
-        if (!removed) break;
-        continue;
-      }
-      const entry = this.entries.get(oldestKey);
-      if (entry) {
-        try {
-          unlinkSync(entry.path);
-        } catch {
-          // ignore
-        }
-        this.totalBytes = Math.max(0, this.totalBytes - entry.size);
-        this.mappedFiles.delete(oldestKey);
-        this.evictions += 1;
-      }
-      this.entries.delete(oldestKey);
+  markRequiredForIndexing(objectKey: string): boolean {
+    if (!this.has(objectKey)) return false;
+    this.requiredForIndexingRefs.set(objectKey, (this.requiredForIndexingRefs.get(objectKey) ?? 0) + 1);
+    this.touch(objectKey);
+    return true;
+  }
+
+  releaseRequiredForIndexing(objectKey: string): void {
+    const current = this.requiredForIndexingRefs.get(objectKey) ?? 0;
+    if (current <= 1) {
+      this.requiredForIndexingRefs.delete(objectKey);
+      return;
     }
+    this.requiredForIndexingRefs.set(objectKey, current - 1);
+  }
+
+  isRequiredForIndexing(objectKey: string): boolean {
+    return (this.requiredForIndexingRefs.get(objectKey) ?? 0) > 0;
+  }
+
+  private deleteEntry(objectKey: string, opts?: { dropMapped?: boolean }): void {
+    const entry = this.entries.get(objectKey);
+    if (entry) {
+      try {
+        unlinkSync(entry.path);
+      } catch {
+        // ignore
+      }
+      this.totalBytes = Math.max(0, this.totalBytes - entry.size);
+      this.entries.delete(objectKey);
+    }
+    if (opts?.dropMapped) this.mappedFiles.delete(objectKey);
+  }
+
+  private evictIfNeeded(incomingBytes: number): boolean {
+    while (this.totalBytes + incomingBytes > this.maxBytes && this.entries.size > 0) {
+      let candidateKey: string | null = null;
+      for (const objectKey of this.entries.keys()) {
+        if (this.isRequiredForIndexing(objectKey)) continue;
+        candidateKey = objectKey;
+        break;
+      }
+      if (!candidateKey) break;
+      this.deleteEntry(candidateKey, { dropMapped: false });
+      this.evictions += 1;
+    }
+    return this.totalBytes + incomingBytes <= this.maxBytes;
   }
 
   stats(): SegmentCacheStats {
@@ -245,6 +255,14 @@ export class SegmentDiskCache {
     for (const mapped of this.mappedFiles.values()) {
       mappedBytes += mapped.sizeBytes;
       mappedEntryCount += 1;
+    }
+    let requiredBytes = 0;
+    let requiredEntryCount = 0;
+    for (const objectKey of this.requiredForIndexingRefs.keys()) {
+      const entry = this.entries.get(objectKey);
+      if (!entry) continue;
+      requiredBytes += entry.size;
+      requiredEntryCount += 1;
     }
     return {
       hits: this.hits,
@@ -256,7 +274,9 @@ export class SegmentDiskCache {
       entryCount: this.entries.size,
       mappedBytes,
       mappedEntryCount,
-      pinnedEntryCount: this.pinnedKeys.size,
+      pinnedEntryCount: mappedEntryCount,
+      requiredEntryCount,
+      requiredBytes,
     };
   }
 

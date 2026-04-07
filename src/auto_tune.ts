@@ -13,8 +13,7 @@ export type AutoTuneConfig = {
   readConcurrency: number;
   searchConcurrency: number;
   asyncIndexConcurrency: number;
-  indexBuildConcurrency: number;
-  indexCompactConcurrency: number;
+  indexBuilders: number;
   segmenterWorkers: number;
   uploadConcurrency: number;
   searchCompanionBatchSegments: number;
@@ -52,10 +51,9 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     // Keep <=2 GiB presets single-lane for background work. These hosts do not
     // have enough headroom for append, segment cut, upload, and companion work
     // to overlap aggressively under the GH Archive "all" workload.
-    indexBuildConcurrency: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    indexCompactConcurrency: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
+    indexBuilders: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
     segmenterWorkers: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    uploadConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
+    uploadConcurrency: p >= 8192 ? 8 : p >= 2048 ? 4 : p >= 1024 ? 2 : 1,
     searchCompanionBatchSegments: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
     searchCompanionYieldBlocks: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
   };
