@@ -26,6 +26,7 @@ import { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { RoutingCompactionRunSource } from "./routing_compaction_build";
 import { beginAsyncIndexAction } from "./async_index_actions";
+import { RoutingLexiconL0BuildCoordinator } from "./routing_lexicon_l0_build_coordinator";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
@@ -100,6 +101,7 @@ export class IndexManager {
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
   private readonly segmentLocality?: IndexSegmentLocalityManager;
+  private readonly routingLexiconBuilds: RoutingLexiconL0BuildCoordinator;
 
   constructor(
     cfg: Config,
@@ -114,7 +116,8 @@ export class IndexManager {
     asyncGate?: ConcurrencyGate,
     foregroundActivity?: ForegroundActivityTracker,
     segmentLocality?: IndexSegmentLocalityManager,
-    buildWorkers?: IndexBuildWorkerPool
+    buildWorkers?: IndexBuildWorkerPool,
+    routingLexiconBuilds?: RoutingLexiconL0BuildCoordinator
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -136,6 +139,7 @@ export class IndexManager {
     this.ownsBuildWorkers = !buildWorkers;
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
+    this.routingLexiconBuilds = routingLexiconBuilds ?? new RoutingLexiconL0BuildCoordinator(this.buildWorkers);
     this.runCache = new IndexRunCache(cfg.indexRunMemoryCacheBytes);
     this.runDiskCache = cfg.indexRunCacheMaxBytes > 0 ? new SegmentDiskCache(`${cfg.rootDir}/cache/index`, cfg.indexRunCacheMaxBytes) : undefined;
   }
@@ -397,35 +401,35 @@ export class IndexManager {
         try {
           runPayloadRes = this.memorySampler
             ? await this.memorySampler.track(
-                "routing_l0",
+                "routing_lexicon_l0",
                 { stream, start_segment: start, end_segment: end },
                 () =>
-                  this.buildWorkers.buildResult({
-                    kind: "routing_l0_build",
-                    input: {
-                      stream,
-                      startSegment: start,
-                      span: this.span,
-                      secret: state.index_secret,
-                      segments: segmentLease.localSegments.map((segment) => ({
-                        segmentIndex: segment.segmentIndex,
-                        localPath: segment.localPath,
-                      })),
-                    },
+                  this.routingLexiconBuilds.buildWindowResult({
+                    stream,
+                    sourceKind: "routing_key",
+                    sourceName: "",
+                    cacheToken: Buffer.from(state.index_secret).toString("hex"),
+                    startSegment: start,
+                    span: this.span,
+                    secret: state.index_secret,
+                    segments: segmentLease.localSegments.map((segment) => ({
+                      segmentIndex: segment.segmentIndex,
+                      localPath: segment.localPath,
+                    })),
                   })
               )
-            : await this.buildWorkers.buildResult({
-                kind: "routing_l0_build",
-                input: {
-                  stream,
-                  startSegment: start,
-                  span: this.span,
-                  secret: state.index_secret,
-                  segments: segmentLease.localSegments.map((segment) => ({
-                    segmentIndex: segment.segmentIndex,
-                    localPath: segment.localPath,
-                  })),
-                },
+            : await this.routingLexiconBuilds.buildWindowResult({
+              stream,
+              sourceKind: "routing_key",
+              sourceName: "",
+              cacheToken: Buffer.from(state.index_secret).toString("hex"),
+              startSegment: start,
+                span: this.span,
+                secret: state.index_secret,
+                segments: segmentLease.localSegments.map((segment) => ({
+                  segmentIndex: segment.segmentIndex,
+                  localPath: segment.localPath,
+                })),
               });
         } finally {
           segmentLease.release();
@@ -434,11 +438,7 @@ export class IndexManager {
           action.fail(runPayloadRes.error.message);
           return invalidIndexBuild(runPayloadRes.error.message);
         }
-        if (runPayloadRes.value.kind !== "routing_l0_build") {
-          action.fail("unexpected worker result kind");
-          return invalidIndexBuild("unexpected worker result kind");
-        }
-        const run = runPayloadRes.value.output;
+        const run = runPayloadRes.value.output.routing;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunPayloadResult(run.meta, run.payload, stream);
         if (Result.isError(persistRes)) {
@@ -446,6 +446,7 @@ export class IndexManager {
             detail: {
               output_record_count: run.meta.recordCount,
               output_filter_len: run.meta.filterLen,
+              shared_build_cache_status: runPayloadRes.value.cacheStatus,
             },
           });
           return persistRes;
@@ -486,6 +487,7 @@ export class IndexManager {
           detail: {
             output_record_count: run.meta.recordCount,
             output_filter_len: run.meta.filterLen,
+            shared_build_cache_status: runPayloadRes.value.cacheStatus,
           },
         });
         return Result.ok(undefined);

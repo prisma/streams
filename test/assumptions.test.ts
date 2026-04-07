@@ -105,6 +105,27 @@ function seedAsyncIndexAction(db: SqliteDurableStore, stream: string): void {
   });
 }
 
+function seedSegmentBuildAction(db: SqliteDurableStore, stream: string): void {
+  const seq = db.beginSegmentBuildAction({
+    stream,
+    actionKind: "segment_build",
+    inputKind: "wal",
+    segmentIndex: 0,
+    startOffset: 0n,
+    detailJson: JSON.stringify({ pending_rows_before: 1 }),
+  });
+  db.completeSegmentBuildAction({
+    seq,
+    status: "succeeded",
+    inputCount: 1,
+    inputSizeBytes: 128n,
+    outputCount: 1,
+    outputSizeBytes: 64n,
+    endOffset: 0n,
+    detailJson: JSON.stringify({ block_count: 1 }),
+  });
+}
+
 function expectAccelerationStateCleared(db: SqliteDurableStore, stream: string): void {
   expect(db.getIndexState(stream)).toBeNull();
   expect(db.listIndexRuns(stream)).toHaveLength(0);
@@ -129,6 +150,10 @@ function expectObjectStoreCountersCleared(db: SqliteDurableStore, stream: string
 
 function expectAsyncIndexActionsCleared(db: SqliteDurableStore, stream: string): void {
   expect(db.listAsyncIndexActions(stream, 10)).toHaveLength(0);
+}
+
+function expectSegmentBuildActionsCleared(db: SqliteDurableStore, stream: string): void {
+  expect(db.listSegmentBuildActions(stream, 10)).toHaveLength(0);
 }
 
 describe("assumptions", () => {
@@ -531,6 +556,7 @@ describe("assumptions", () => {
     seedAccelerationState(app.deps.db, "del");
     seedObjectStoreCounters(app.deps.db, "del");
     seedAsyncIndexAction(app.deps.db, "del");
+    seedSegmentBuildAction(app.deps.db, "del");
     expect(app.deps.db.getIndexState("del")).not.toBeNull();
     expect(app.deps.db.listSecondaryIndexStates("del")).toHaveLength(1);
     expect(app.deps.db.listLexiconIndexStates("del")).toHaveLength(1);
@@ -550,6 +576,7 @@ describe("assumptions", () => {
     expectAccelerationStateCleared(app.deps.db, "del");
     expectObjectStoreCountersCleared(app.deps.db, "del");
     expectAsyncIndexActionsCleared(app.deps.db, "del");
+    expectSegmentBuildActionsCleared(app.deps.db, "del");
 
     server.stop();
     app.close();
@@ -589,6 +616,7 @@ describe("assumptions", () => {
       seedAccelerationState(app.deps.db, "stale");
       seedObjectStoreCounters(app.deps.db, "stale");
       seedAsyncIndexAction(app.deps.db, "stale");
+      seedSegmentBuildAction(app.deps.db, "stale");
       expect(app.deps.db.getIndexState("stale")).not.toBeNull();
       expect(app.deps.db.listSecondaryIndexStates("stale")).toHaveLength(1);
       expect(app.deps.db.listLexiconIndexStates("stale")).toHaveLength(1);
@@ -606,6 +634,7 @@ describe("assumptions", () => {
       expectAccelerationStateCleared(restarted.deps.db, "stale");
       expectObjectStoreCountersCleared(restarted.deps.db, "stale");
       expectAsyncIndexActionsCleared(restarted.deps.db, "stale");
+      expectSegmentBuildActionsCleared(restarted.deps.db, "stale");
     } finally {
       restarted.close();
       rmSync(root, { recursive: true, force: true });

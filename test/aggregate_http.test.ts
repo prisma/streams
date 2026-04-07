@@ -598,6 +598,7 @@ describe("_aggregate http", () => {
           })
         );
         expect(res.status).toBe(200);
+        app.deps.indexer?.stop();
 
         for (const event of [
           { eventTime: "2026-03-25T10:01:10.000Z", service: "api", duration: 150, message: "uploaded suffix event" },

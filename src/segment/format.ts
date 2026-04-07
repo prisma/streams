@@ -1,8 +1,8 @@
 import { Result } from "better-result";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { Bloom256 } from "../util/bloom256";
+import { Bloom256, bloom256MaskForKey } from "../util/bloom256";
 import { crc32c } from "../util/crc32c";
-import { concatBytes, readU32BE, readU64BE, writeU32BE, writeU64BE } from "../util/endian";
+import { readU32BE, readU64BE, writeU32BE, writeU64BE } from "../util/endian";
 import { dsError } from "../util/ds_error.ts";
 
 export type SegmentRecord = {
@@ -78,6 +78,28 @@ const FOOTER_VERSION = 1;
 const FOOTER_ENTRY_BYTES = 40; // 8+8+4+4+8+8
 const FOOTER_TRAILER_BYTES = 8; // u32 len + 4-byte magic
 
+type BloomMaskCacheEntry = {
+  key: Uint8Array;
+  mask: Uint8Array;
+};
+
+function hashRoutingKey32(keyUtf8: Uint8Array): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < keyUtf8.byteLength; i++) {
+    h ^= keyUtf8[i]!;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export function encodeRecord(rec: SegmentRecord): Uint8Array {
   const keyLen = rec.routingKey.byteLength;
   const dataLen = rec.payload.byteLength;
@@ -100,30 +122,69 @@ export function encodeBlockResult(records: SegmentRecord[]): Result<Uint8Array, 
   if (records.length === 0) return invalidSegment("empty block");
 
   const bloom = new Bloom256();
-  for (const r of records) bloom.add(r.routingKey);
+  const bloomMaskCache = new Map<number, BloomMaskCacheEntry[]>();
+  let uncompressedLen = 0;
+  for (const r of records) {
+    if (r.routingKey.byteLength > 0) {
+      const hash = hashRoutingKey32(r.routingKey);
+      let bucket = bloomMaskCache.get(hash);
+      let mask: Uint8Array | null = null;
+      if (bucket) {
+        for (const entry of bucket) {
+          if (sameBytes(entry.key, r.routingKey)) {
+            mask = entry.mask;
+            break;
+          }
+        }
+      } else {
+        bucket = [];
+        bloomMaskCache.set(hash, bucket);
+      }
+      if (!mask) {
+        mask = bloom256MaskForKey(r.routingKey);
+        bucket.push({ key: r.routingKey, mask });
+      }
+      bloom.orMask(mask);
+    }
+    uncompressedLen += 8 + 4 + r.routingKey.byteLength + 4 + r.payload.byteLength;
+  }
 
-  const recBytes = records.map(encodeRecord);
-  const uncompressed = concatBytes(recBytes);
+  const uncompressed = new Uint8Array(uncompressedLen);
+  const uncompressedView = new DataView(uncompressed.buffer, uncompressed.byteOffset, uncompressed.byteLength);
+  let off = 0;
+  for (const r of records) {
+    uncompressedView.setBigUint64(off, r.appendNs, false);
+    off += 8;
+    uncompressedView.setUint32(off, r.routingKey.byteLength >>> 0, false);
+    off += 4;
+    uncompressed.set(r.routingKey, off);
+    off += r.routingKey.byteLength;
+    uncompressedView.setUint32(off, r.payload.byteLength >>> 0, false);
+    off += 4;
+    uncompressed.set(r.payload, off);
+    off += r.payload.byteLength;
+  }
   const compressed = new Uint8Array(zstdCompressSync(uncompressed));
   const crc = crc32c(compressed);
 
-  const header = new Uint8Array(DSB3_HEADER_BYTES);
-  header[0] = "D".charCodeAt(0);
-  header[1] = "S".charCodeAt(0);
-  header[2] = "B".charCodeAt(0);
-  header[3] = "3".charCodeAt(0);
-  writeU32BE(header, 4, uncompressed.byteLength);
-  writeU32BE(header, 8, compressed.byteLength);
-  writeU32BE(header, 12, records.length);
-  header.set(bloom.toBytes(), 16);
-
   const firstTs = records[0].appendNs;
   const lastTs = records[records.length - 1].appendNs;
-  writeU64BE(header, 48, firstTs);
-  writeU64BE(header, 56, lastTs);
-  writeU32BE(header, 64, crc);
+  const out = new Uint8Array(DSB3_HEADER_BYTES + compressed.byteLength);
+  out[0] = "D".charCodeAt(0);
+  out[1] = "S".charCodeAt(0);
+  out[2] = "B".charCodeAt(0);
+  out[3] = "3".charCodeAt(0);
+  const outView = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  outView.setUint32(4, uncompressed.byteLength >>> 0, false);
+  outView.setUint32(8, compressed.byteLength >>> 0, false);
+  outView.setUint32(12, records.length >>> 0, false);
+  out.set(bloom.toBytes(), 16);
+  outView.setBigUint64(48, firstTs, false);
+  outView.setBigUint64(56, lastTs, false);
+  outView.setUint32(64, crc >>> 0, false);
+  out.set(compressed, DSB3_HEADER_BYTES);
 
-  return Result.ok(concatBytes([header, compressed]));
+  return Result.ok(out);
 }
 
 export function decodeBlock(blockBytes: Uint8Array): DecodedBlock {
@@ -306,6 +367,54 @@ export function* iterateBlockRecordsResult(
     }
     off += totalLen;
   }
+}
+
+export function forEachRoutingKeyResult(
+  segmentBytes: Uint8Array,
+  visit: (routingKey: Uint8Array) => void
+): Result<void, SegmentFormatError> {
+  const parsed = parseFooter(segmentBytes);
+  const limit = parsed ? parsed.footerStart : segmentBytes.byteLength;
+  let off = 0;
+  while (off < limit) {
+    if (off + DSB3_HEADER_BYTES > limit) {
+      return invalidSegment("truncated segment (block header)");
+    }
+    const headerRes = parseBlockHeaderResult(segmentBytes.subarray(off, off + DSB3_HEADER_BYTES));
+    if (Result.isError(headerRes)) return headerRes;
+    const header = headerRes.value;
+    const totalLen = DSB3_HEADER_BYTES + header.compressedLen;
+    if (off + totalLen > limit) {
+      return invalidSegment("truncated segment (block payload)");
+    }
+    const blockBytes = segmentBytes.subarray(off, off + totalLen);
+    const uncompressedRes = decompressBlockPayloadResult(blockBytes, header);
+    if (Result.isError(uncompressedRes)) return uncompressedRes;
+    const uncompressed = uncompressedRes.value;
+    let recOff = 0;
+    for (let recordIndex = 0; recordIndex < header.recordCount; recordIndex++) {
+      if (recOff + 8 + 4 > uncompressed.byteLength) {
+        return invalidSegment("truncated record");
+      }
+      recOff += 8; // appendNs
+      const keyLen = readU32BE(uncompressed, recOff);
+      recOff += 4;
+      if (recOff + keyLen + 4 > uncompressed.byteLength) {
+        return invalidSegment("truncated key");
+      }
+      const routingKey = uncompressed.subarray(recOff, recOff + keyLen);
+      recOff += keyLen;
+      const dataLen = readU32BE(uncompressed, recOff);
+      recOff += 4;
+      if (recOff + dataLen > uncompressed.byteLength) {
+        return invalidSegment("truncated payload");
+      }
+      recOff += dataLen;
+      visit(routingKey);
+    }
+    off += totalLen;
+  }
+  return Result.ok(undefined);
 }
 
 export function* iterateBlocks(segmentBytes: Uint8Array): Generator<IterateBlockEntry, void, void> {

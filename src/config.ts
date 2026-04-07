@@ -293,6 +293,8 @@ export function loadConfig(): Config {
     clampBytes(Math.max(512 * 1024 * 1024, Math.floor(localBacklogMaxBytes * 0.1)), 256 * 1024 * 1024, 4 * 1024 * 1024 * 1024);
   const segmentMaxBytes = envNum("DS_SEGMENT_MAX_BYTES", 16 * 1024 * 1024);
   const searchWalOverlayMaxBytes = envBytes("DS_SEARCH_WAL_OVERLAY_MAX_BYTES") ?? segmentMaxBytes;
+  const indexBuilders = envNum("DS_INDEX_BUILDERS", 1);
+  const asyncIndexConcurrency = envNum("DS_ASYNC_INDEX_CONCURRENCY", indexBuilders);
   return {
     autoTuneRequestedMemoryMb,
     autoTunePresetMb,
@@ -301,7 +303,7 @@ export function loadConfig(): Config {
     rootDir,
     dbPath: process.env.DS_DB_PATH ?? `${rootDir}/wal.sqlite`,
     segmentMaxBytes,
-    blockMaxBytes: envNum("DS_BLOCK_MAX_BYTES", 256 * 1024),
+    blockMaxBytes: envNum("DS_BLOCK_MAX_BYTES", 1024 * 1024),
     segmentTargetRows: envNum("DS_SEGMENT_TARGET_ROWS", 100_000),
     segmentMaxIntervalMs: envNum("DS_SEGMENT_MAX_INTERVAL_MS", 0),
     segmentCheckIntervalMs: envNum("DS_SEGMENT_CHECK_MS", 250),
@@ -349,8 +351,8 @@ export function loadConfig(): Config {
     workerSqliteCacheBytes,
     readConcurrency: envNum("DS_READ_CONCURRENCY", 4),
     searchConcurrency: envNum("DS_SEARCH_CONCURRENCY", 2),
-    asyncIndexConcurrency: envNum("DS_ASYNC_INDEX_CONCURRENCY", 1),
-    indexBuilders: envNum("DS_INDEX_BUILDERS", 1),
+    asyncIndexConcurrency,
+    indexBuilders,
     heapSnapshotPath: process.env.DS_HEAP_SNAPSHOT_PATH?.trim() || null,
     memorySamplerPath: process.env.DS_MEMORY_SAMPLER_PATH?.trim() || null,
     memorySamplerIntervalMs: envNum("DS_MEMORY_SAMPLER_INTERVAL_MS", 1_000),

@@ -1,8 +1,14 @@
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Config } from "../config";
+import type { SqliteDurableStore } from "../db/db";
 import { detectHostRuntime } from "../runtime/host_runtime.ts";
 import type { SegmenterHooks, SegmenterMemoryStats, SegmenterOptions } from "./segmenter";
+import {
+  SegmenterControlCoordinator,
+  type SegmenterControlRequest,
+  type SegmenterControlResponse,
+} from "./segmenter_control";
 
 export type SegmenterController = {
   start: () => void;
@@ -13,10 +19,12 @@ export type SegmenterController = {
 type WorkerMessage =
   | { type: "sealed"; stream: string; payloadBytes: number; segmentBytes: number }
   | { type: "memory"; workerId: number; stats: SegmenterMemoryStats }
-  | { type: "stopped" };
+  | { type: "stopped" }
+  | SegmenterControlRequest;
 
 export class SegmenterWorkerPool implements SegmenterController {
   private readonly config: Config;
+  private readonly control: SegmenterControlCoordinator;
   private readonly workerCount: number;
   private readonly opts: SegmenterOptions;
   private readonly hooks?: SegmenterHooks;
@@ -24,8 +32,9 @@ export class SegmenterWorkerPool implements SegmenterController {
   private readonly workerMemory = new Map<number, { stats: SegmenterMemoryStats; reportedAtMs: number }>();
   private started = false;
 
-  constructor(config: Config, workerCount: number, opts: SegmenterOptions = {}, hooks?: SegmenterHooks) {
+  constructor(config: Config, db: SqliteDurableStore, workerCount: number, opts: SegmenterOptions = {}, hooks?: SegmenterHooks) {
     this.config = config;
+    this.control = new SegmenterControlCoordinator(config, db);
     this.workerCount = Math.max(0, Math.floor(workerCount));
     this.opts = opts;
     this.hooks = hooks;
@@ -101,6 +110,8 @@ export class SegmenterWorkerPool implements SegmenterController {
           stats: msg.stats,
           reportedAtMs: Date.now(),
         });
+      } else if (msg?.type === "segmenter-control-request") {
+        void this.handleControlRequest(worker, msg);
       }
     });
 
@@ -120,5 +131,14 @@ export class SegmenterWorkerPool implements SegmenterController {
     });
 
     this.workers.push(worker);
+  }
+
+  private async handleControlRequest(worker: Worker, msg: SegmenterControlRequest): Promise<void> {
+    const response: SegmenterControlResponse = await this.control.handleRequest(msg);
+    try {
+      worker.postMessage(response);
+    } catch {
+      // ignore
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { mkdirSync, openSync, closeSync, writeSync, fsyncSync, renameSync, existsSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
+import { isMainThread } from "node:worker_threads";
 import type { Config } from "../config";
 import type { SqliteDurableStore } from "../db/db";
 import { encodeBlock, encodeFooter, type BlockIndexEntry, type SegmentRecord } from "./format";
@@ -8,6 +9,8 @@ import { localSegmentPath, streamHash16Hex } from "../util/stream_paths";
 import { LruCache } from "../util/lru";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { yieldToEventLoop } from "../util/yield";
+import { beginSegmentBuildAction } from "./segment_build_actions";
+import type { SegmentCommitArgs, SegmenterControl } from "./segmenter_control";
 
 export type SegmenterOptions = {
   minCandidateBytes?: number; // default: segmentMaxBytes
@@ -19,6 +22,7 @@ export type SegmenterOptions = {
 
 export type SegmenterHooks = {
   onSegmentSealed?: (stream: string, payloadBytes: number, segmentBytes: number) => void;
+  control?: SegmenterControl;
 };
 
 export type SegmenterMemoryStats = {
@@ -31,6 +35,11 @@ export type SegmenterMemoryStats = {
 
 const SEGMENT_COMPRESSION_WINDOW = 8;
 const MIN_COMPRESSED_FILL_RATIO = 0.5;
+const SHOULD_COOPERATIVELY_YIELD_WITHIN_SEGMENT_BUILD = isMainThread;
+type BusyRetryMetrics = {
+  attempts: number;
+  waitMs: number;
+};
 
 export class Segmenter {
   private readonly config: Config;
@@ -136,7 +145,7 @@ export class Segmenter {
     return code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT" || errno === 5 || errno === 517;
   }
 
-  private async runWithBusyRetry<T>(fn: () => T): Promise<T> {
+  private async runWithBusyRetry<T>(fn: () => T, metrics?: BusyRetryMetrics): Promise<T> {
     const maxBusyMs = Math.max(0, this.config.ingestBusyTimeoutMs);
     if (maxBusyMs <= 0) return fn();
     const startMs = Date.now();
@@ -150,6 +159,10 @@ export class Segmenter {
         if (elapsed >= maxBusyMs) throw e;
         const delay = Math.min(200, 5 * 2 ** attempt);
         attempt += 1;
+        if (metrics) {
+          metrics.attempts += 1;
+          metrics.waitMs += delay;
+        }
         await new Promise((res) => setTimeout(res, delay));
       }
     }
@@ -194,7 +207,8 @@ export class Segmenter {
     if (startOffset > maxOffset) return;
 
     // Claim.
-    if (!this.db.tryClaimSegment(stream)) return;
+    const claimed = this.hooks?.control ? await this.hooks.control.tryClaimSegment(stream) : this.db.tryClaimSegment(stream);
+    if (!claimed) return;
 
     try {
       this.activeBuildStream = stream;
@@ -210,91 +224,177 @@ export class Segmenter {
         segment_index: segmentIndex,
       });
       mkdirSync(dirname(localPath), { recursive: true });
+      const payloadSealTargetBytes = this.resolvePayloadSealTargetBytes(stream);
+      const rowSealTarget = BigInt(this.opts.minCandidateRows);
+      const action = beginSegmentBuildAction(this.db, {
+        stream,
+        actionKind: "segment_build",
+        inputKind: "wal",
+        segmentIndex,
+        startOffset,
+        detail: {
+          pending_rows_before: Number(row.pending_rows),
+          pending_bytes_before: Number(row.pending_bytes),
+          seal_target_bytes: Number(payloadSealTargetBytes),
+          row_seal_target: this.opts.minCandidateRows,
+          max_rows_per_segment: this.opts.maxRowsPerSegment,
+          block_max_bytes: this.config.blockMaxBytes,
+        },
+      });
 
       // Build blocks and stream-write to temp file.
       const fd = openSync(tmpPath, "w");
       try {
+        const buildStartedAtMs = Date.now();
         let blockRecords: SegmentRecord[] = [];
         let blockBytesApprox = 0;
         let fileBytes = 0;
         let blockCount = 0;
         let blockFirstOffset = startOffset;
         const blockIndex: BlockIndexEntry[] = [];
+        let blockEncodeMs = 0;
+        let footerEncodeMs = 0;
+        let writeMs = 0;
+        let fsyncMs = 0;
+        let renameMs = 0;
+        let commitMs = 0;
+        let walFetchMs = 0;
+        let walMaterializeMs = 0;
+        let walLoopMs = 0;
+        const busyRetryMetrics: BusyRetryMetrics = {
+          attempts: 0,
+          waitMs: 0,
+        };
 
         // Decide endOffset by scanning WAL rows until threshold.
         // IMPORTANT: pending_bytes tracks WAL payload bytes only (not record/block overhead).
-        const payloadSealTargetBytes = this.resolvePayloadSealTargetBytes(stream);
-        const rowSealTarget = BigInt(this.opts.minCandidateRows);
         let payloadBytes = 0n;
         let rowsSealed = 0n;
         let endOffset = startOffset - 1n;
         let lastAppendMs = 0n;
+        let stopReason:
+          | "payload_bytes"
+          | "row_target"
+          | "max_rows"
+          | "exhausted_pending"
+          | "no_rows"
+          | "error" = "exhausted_pending";
 
         let lastYieldMs = Date.now();
         let recordsSinceYield = 0;
-        for (const rec of this.db.iterWalRange(stream, startOffset, maxOffset)) {
-          const offset = BigInt(rec.offset);
-          const payload: Uint8Array = rec.payload;
-          const routingKey: Uint8Array | null = rec.routing_key ?? null;
-          const appendMs = BigInt(rec.ts_ms);
-          lastAppendMs = appendMs;
+        const walIterator = this.db.iterWalRange(stream, startOffset, maxOffset)[Symbol.iterator]();
+        try {
+          for (;;) {
+            const walFetchStartedAtMs = Date.now();
+            const next = walIterator.next();
+            walFetchMs += Date.now() - walFetchStartedAtMs;
+            if (next.done) break;
+            const walLoopStartedAtMs = Date.now();
+            const rec = next.value;
+            const walMaterializeStartedAtMs = Date.now();
+            const offset = BigInt(rec.offset);
+            const payload: Uint8Array = rec.payload;
+            const routingKey: Uint8Array | null = rec.routing_key ?? null;
+            const appendMs = BigInt(rec.ts_ms);
+            lastAppendMs = appendMs;
 
-          const keyBytes = routingKey ?? new Uint8Array(0);
-          const segRec: SegmentRecord = {
-            appendNs: appendMs * 1_000_000n,
-            routingKey: keyBytes,
-            payload,
-          };
-          const recSize = 8 + 4 + keyBytes.byteLength + 4 + payload.byteLength;
+            const keyBytes = routingKey ?? new Uint8Array(0);
+            const segRec: SegmentRecord = {
+              appendNs: appendMs * 1_000_000n,
+              routingKey: keyBytes,
+              payload,
+            };
+            const recSize = 8 + 4 + keyBytes.byteLength + 4 + payload.byteLength;
+            walMaterializeMs += Date.now() - walMaterializeStartedAtMs;
 
-          if (blockRecords.length > 0 && blockBytesApprox + recSize > this.config.blockMaxBytes) {
-            const blockOffset = fileBytes;
-            const block = encodeBlock(blockRecords);
-            const compressedLen = readU32BE(block, 8);
-            blockIndex.push({
-              blockOffset,
-              firstOffset: blockFirstOffset,
-              recordCount: blockRecords.length,
-              compressedLen,
-              firstAppendNs: blockRecords[0].appendNs,
-              lastAppendNs: blockRecords[blockRecords.length - 1].appendNs,
-            });
-            writeSync(fd, block);
-            fileBytes += block.byteLength;
-            blockCount += 1;
-            blockRecords = [];
-            blockBytesApprox = 0;
-            await yieldToEventLoop();
+            if (blockRecords.length > 0 && blockBytesApprox + recSize > this.config.blockMaxBytes) {
+              const blockOffset = fileBytes;
+              const encodeStartedAtMs = Date.now();
+              const block = encodeBlock(blockRecords);
+              blockEncodeMs += Date.now() - encodeStartedAtMs;
+              const compressedLen = readU32BE(block, 8);
+              blockIndex.push({
+                blockOffset,
+                firstOffset: blockFirstOffset,
+                recordCount: blockRecords.length,
+                compressedLen,
+                firstAppendNs: blockRecords[0].appendNs,
+                lastAppendNs: blockRecords[blockRecords.length - 1].appendNs,
+              });
+              const writeStartedAtMs = Date.now();
+              writeSync(fd, block);
+              writeMs += Date.now() - writeStartedAtMs;
+              fileBytes += block.byteLength;
+              blockCount += 1;
+              blockRecords = [];
+              blockBytesApprox = 0;
+              if (SHOULD_COOPERATIVELY_YIELD_WITHIN_SEGMENT_BUILD) {
+                await yieldToEventLoop();
+              }
+            }
+
+            if (blockRecords.length === 0) blockFirstOffset = offset;
+            blockRecords.push(segRec);
+            blockBytesApprox += recSize;
+
+            payloadBytes += BigInt(payload.byteLength);
+            rowsSealed += 1n;
+            endOffset = offset;
+            this.activePayloadBytes = Number(payloadBytes);
+            this.activeRows = Number(rowsSealed);
+            this.activeSegmentBytesEstimate = fileBytes + blockBytesApprox;
+
+            recordsSinceYield += 1;
+            if (
+              SHOULD_COOPERATIVELY_YIELD_WITHIN_SEGMENT_BUILD &&
+              (recordsSinceYield >= 512 || Date.now() - lastYieldMs >= 10)
+            ) {
+              await yieldToEventLoop();
+              lastYieldMs = Date.now();
+              recordsSinceYield = 0;
+            }
+
+            walLoopMs += Date.now() - walLoopStartedAtMs;
+            if (payloadBytes >= payloadSealTargetBytes) {
+              stopReason = "payload_bytes";
+              break;
+            }
+            if (rowsSealed >= rowSealTarget) {
+              stopReason = "row_target";
+              break;
+            }
+            if (rowsSealed >= BigInt(this.opts.maxRowsPerSegment)) {
+              stopReason = "max_rows";
+              break;
+            }
           }
-
-          if (blockRecords.length === 0) blockFirstOffset = offset;
-          blockRecords.push(segRec);
-          blockBytesApprox += recSize;
-
-          payloadBytes += BigInt(payload.byteLength);
-          rowsSealed += 1n;
-          endOffset = offset;
-          this.activePayloadBytes = Number(payloadBytes);
-          this.activeRows = Number(rowsSealed);
-          this.activeSegmentBytesEstimate = fileBytes + blockBytesApprox;
-
-          recordsSinceYield += 1;
-          if (recordsSinceYield >= 512 || Date.now() - lastYieldMs >= 10) {
-            await yieldToEventLoop();
-            lastYieldMs = Date.now();
-            recordsSinceYield = 0;
+        } finally {
+          try {
+            walIterator.return?.();
+          } catch {
+            // ignore
           }
-
-          if (payloadBytes >= payloadSealTargetBytes) break;
-          if (rowsSealed >= rowSealTarget) break;
-          if (rowsSealed >= BigInt(this.opts.maxRowsPerSegment)) break;
         }
 
-        if (rowsSealed === 0n) return;
+        if (rowsSealed === 0n) {
+          action.fail("segment build saw no WAL rows", {
+            inputCount: 0,
+            inputSizeBytes: 0n,
+            outputCount: 0,
+            outputSizeBytes: 0n,
+            endOffset: null,
+            detail: {
+              stop_reason: "no_rows",
+            },
+          });
+          return;
+        }
 
         if (blockRecords.length > 0) {
           const blockOffset = fileBytes;
+          const encodeStartedAtMs = Date.now();
           const block = encodeBlock(blockRecords);
+          blockEncodeMs += Date.now() - encodeStartedAtMs;
           const compressedLen = readU32BE(block, 8);
           blockIndex.push({
             blockOffset,
@@ -304,37 +404,79 @@ export class Segmenter {
             firstAppendNs: blockRecords[0].appendNs,
             lastAppendNs: blockRecords[blockRecords.length - 1].appendNs,
           });
+          const writeStartedAtMs = Date.now();
           writeSync(fd, block);
+          writeMs += Date.now() - writeStartedAtMs;
           fileBytes += block.byteLength;
           blockCount += 1;
         }
 
+        const footerStartedAtMs = Date.now();
         const footer = encodeFooter(blockIndex);
+        footerEncodeMs += Date.now() - footerStartedAtMs;
+        const footerWriteStartedAtMs = Date.now();
         writeSync(fd, footer);
+        writeMs += Date.now() - footerWriteStartedAtMs;
         fileBytes += footer.byteLength;
         this.activeSegmentBytesEstimate = fileBytes;
 
+        const fsyncStartedAtMs = Date.now();
         fsyncSync(fd);
+        fsyncMs += Date.now() - fsyncStartedAtMs;
 
         const segmentId = `${shash}-${segmentIndex}-${startOffset.toString()}-${endOffset.toString()}`;
+        const renameStartedAtMs = Date.now();
         renameSync(tmpPath, localPath);
+        renameMs += Date.now() - renameStartedAtMs;
 
         if (!this.stopping) {
           try {
-            await this.runWithBusyRetry(() => {
-              this.db.commitSealedSegment({
-                segmentId,
-                stream,
-                segmentIndex,
-                startOffset,
-                endOffset,
-                blockCount,
-                lastAppendMs,
-                sizeBytes: fileBytes,
-                localPath,
-                payloadBytes,
-                rowsSealed,
-              });
+            const commitStartedAtMs = Date.now();
+            const commitArgs: SegmentCommitArgs = {
+              segmentId,
+              stream,
+              segmentIndex,
+              startOffset,
+              endOffset,
+              blockCount,
+              lastAppendMs,
+              sizeBytes: fileBytes,
+              localPath,
+              payloadBytes,
+              rowsSealed,
+            };
+            if (this.hooks?.control) {
+              await this.hooks.control.commitSealedSegment(commitArgs);
+            } else {
+              await this.runWithBusyRetry(() => {
+                this.db.commitSealedSegment(commitArgs);
+              }, busyRetryMetrics);
+            }
+            commitMs += Date.now() - commitStartedAtMs;
+            action.succeed({
+              inputCount: Number(rowsSealed),
+              inputSizeBytes: payloadBytes,
+              outputCount: 1,
+              outputSizeBytes: BigInt(fileBytes),
+              endOffset,
+              detail: {
+                block_count: blockCount,
+                last_append_ms: Number(lastAppendMs),
+                stop_reason: stopReason,
+                compression_ratio: Number(payloadBytes) > 0 ? Number(fileBytes) / Number(payloadBytes) : 0,
+                wal_fetch_ms: walFetchMs,
+                wal_materialize_ms: walMaterializeMs,
+                wal_loop_ms: walLoopMs,
+                block_encode_ms: blockEncodeMs,
+                footer_encode_ms: footerEncodeMs,
+                write_ms: writeMs,
+                fsync_ms: fsyncMs,
+                rename_ms: renameMs,
+                commit_ms: commitMs,
+                busy_retry_attempts: busyRetryMetrics.attempts,
+                busy_retry_wait_ms: busyRetryMetrics.waitMs,
+                build_before_commit_ms: Date.now() - buildStartedAtMs - commitMs,
+              },
             });
             if (this.hooks?.onSegmentSealed) this.hooks.onSegmentSealed(stream, Number(payloadBytes), fileBytes);
           } catch (e) {
@@ -343,9 +485,68 @@ export class Segmenter {
             } catch {
               // ignore
             }
+            action.fail(String((e as any)?.message ?? e), {
+              inputCount: Number(rowsSealed),
+              inputSizeBytes: payloadBytes,
+              outputCount: 0,
+              outputSizeBytes: BigInt(fileBytes),
+              endOffset,
+              detail: {
+                block_count: blockCount,
+                last_append_ms: Number(lastAppendMs),
+                stop_reason: "error",
+                wal_fetch_ms: walFetchMs,
+                wal_materialize_ms: walMaterializeMs,
+                wal_loop_ms: walLoopMs,
+                block_encode_ms: blockEncodeMs,
+                footer_encode_ms: footerEncodeMs,
+                write_ms: writeMs,
+                fsync_ms: fsyncMs,
+                rename_ms: renameMs,
+                commit_ms: commitMs,
+                busy_retry_attempts: busyRetryMetrics.attempts,
+                busy_retry_wait_ms: busyRetryMetrics.waitMs,
+              },
+            });
             throw e;
           }
+        } else {
+          action.fail("segment build stopped before commit", {
+            inputCount: Number(rowsSealed),
+            inputSizeBytes: payloadBytes,
+            outputCount: 0,
+            outputSizeBytes: BigInt(fileBytes),
+            endOffset,
+            detail: {
+              block_count: blockCount,
+              last_append_ms: Number(lastAppendMs),
+              stop_reason: "error",
+              wal_fetch_ms: walFetchMs,
+              wal_materialize_ms: walMaterializeMs,
+              wal_loop_ms: walLoopMs,
+              block_encode_ms: blockEncodeMs,
+              footer_encode_ms: footerEncodeMs,
+              write_ms: writeMs,
+              fsync_ms: fsyncMs,
+              rename_ms: renameMs,
+              commit_ms: commitMs,
+              busy_retry_attempts: busyRetryMetrics.attempts,
+              busy_retry_wait_ms: busyRetryMetrics.waitMs,
+            },
+          });
         }
+      } catch (e) {
+        action.fail(String((e as any)?.message ?? e), {
+          inputCount: this.activeRows,
+          inputSizeBytes: BigInt(this.activePayloadBytes),
+          outputCount: 0,
+          outputSizeBytes: BigInt(this.activeSegmentBytesEstimate),
+          endOffset: null,
+          detail: {
+            stop_reason: "error",
+          },
+        });
+        throw e;
       } finally {
         closeSync(fd);
         this.cleanupTmp(tmpPath);
@@ -359,7 +560,8 @@ export class Segmenter {
       // Release claim.
       if (!this.stopping) {
         try {
-          this.db.setSegmentInProgress(stream, 0);
+          if (this.hooks?.control) await this.hooks.control.releaseSegmentClaim(stream);
+          else this.db.setSegmentInProgress(stream, 0);
         } catch {
           // ignore
         }

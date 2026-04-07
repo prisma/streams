@@ -2,7 +2,7 @@ import { parentPort } from "node:worker_threads";
 import { Result } from "better-result";
 import { buildRoutingL0RunPayloadResult } from "./routing_l0_build";
 import { buildRoutingCompactionPayloadResult } from "./routing_compaction_build";
-import { buildLexiconL0RunPayloadResult } from "./lexicon_l0_build";
+import { buildRoutingLexiconL0RunPayloadResult } from "./routing_lexicon_l0_build";
 import { buildLexiconCompactionPayloadResult } from "./lexicon_compaction_build";
 import { buildSecondaryL0RunPayloadResult } from "./secondary_l0_build";
 import { buildSecondaryCompactionPayloadResult } from "./secondary_compaction_build";
@@ -28,8 +28,8 @@ function buildResult(job: IndexBuildJobInput): Result<IndexBuildJobOutput, { mes
       const res = buildRoutingCompactionPayloadResult(job.input);
       return Result.isError(res) ? Result.err({ message: res.error.message }) : Result.ok({ kind: job.kind, output: res.value });
     }
-    case "lexicon_l0_build": {
-      const res = buildLexiconL0RunPayloadResult(job.input);
+    case "routing_lexicon_l0_build": {
+      const res = buildRoutingLexiconL0RunPayloadResult(job.input);
       return Result.isError(res) ? Result.err({ message: res.error.message }) : Result.ok({ kind: job.kind, output: res.value });
     }
     case "lexicon_compaction_build": {

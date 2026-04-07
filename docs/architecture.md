@@ -81,7 +81,8 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 5) Global index manager
 - The full server now starts one `GlobalIndexManager` in the main process.
 - It owns:
-  - the only indexing timer (`DS_INDEX_CHECK_MS`)
+  - one continuous backlog-drain loop plus `DS_INDEX_CHECK_MS` as a safety
+    wake-up interval
   - one shared `IndexBuildWorkerPool`, sized by `DS_INDEX_BUILDERS`
   - one shared `IndexSegmentLocalityManager`
   - four family adapters:
@@ -92,13 +93,19 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - The main process still owns scheduling, SQLite state changes, and manifest
   publication.
 - All heavy index-build computation now runs on the shared worker pool:
-  - routing-key L0 run build
+  - combined routing-key + routing-key lexicon L0 run build
   - routing-key run compaction
-  - routing-key lexicon L0 run build
   - routing-key lexicon run compaction
   - exact secondary L0 run build
   - exact secondary run compaction
   - bundled companion per-segment build
+- Routing-key and routing-key lexicon L0 build now share one worker pass over
+  the same leased 16-segment window. The worker emits both immutable payloads,
+  and the main thread persists them through the two family-specific state
+  machines independently.
+- That shared routing+lexicon L0 worker path scans only routing keys from the
+  segment blocks and caches distinct-key fingerprints for the whole window, so
+  repeated low-cardinality keys are not re-hashed for every record.
 - Workers only read leased local files and return immutable artifact bytes or
   section payloads. They do not mutate SQLite or publish manifests.
 - The family adapters still own family-specific backlog discovery, queueing,
@@ -119,6 +126,8 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - All indexing families still share one top-level async-index concurrency gate,
   so routing, routing-key lexicon, exact, and bundled-companion work compete
   for the same bounded budget.
+- If `DS_ASYNC_INDEX_CONCURRENCY` is unset, it defaults to
+  `DS_INDEX_BUILDERS` so the shared gate matches worker-pool width by default.
 - Background index work yields cooperatively at bounded per-record / per-block
   intervals, and it backs off further while foreground read and search
   requests are active. Foreground latency should not depend on one whole index
@@ -209,6 +218,7 @@ Per stream, SQLite stores:
   catalog
 - plan-relative bundled companion ordinals resolved through the current desired
   plan generation
+- local `segment_build_actions` history for WAL-to-segment sealing work
 - local `async_index_actions` history for routing, lexicon, exact-secondary,
   and bundled-companion build/compaction work
 - profile-owned processing progress and other rebuildable helper state
@@ -220,9 +230,9 @@ unuploaded WAL tail and runtime helper state, which is not fully mirrored to
 object storage. Published logical stream size is restored from the manifest,
 and if it is missing a background reconciliation pass can rebuild it from
 published segments plus retained WAL. Profiles and schemas only shape how a
-stream is interpreted. The `async_index_actions` table is part of this local
-runtime-only state: it is informational, not published, and not restored by
-`--bootstrap-from-r2`.
+stream is interpreted. The `async_index_actions` and `segment_build_actions`
+tables are part of this local runtime-only state: they are informational, not
+published, and not restored by `--bootstrap-from-r2`.
 
 ## Stream Deletion Enforcement
 
@@ -236,6 +246,7 @@ scrub:
   - routing-key lexicon state and runs
   - bundled search companion plans and per-segment companion rows
   - per-stream object-store request-accounting rows
+  - local `segment_build_actions` rows
   - local `async_index_actions` rows
 - after the delete publishes its tombstone manifest, the server clears the
   per-stream request-accounting rows again so recreating the same stream name
@@ -272,6 +283,14 @@ or per-stream request-accounting rows behind for deleted streams.
    - update sealed_through / pending_* counters
 3. Clear segment_in_progress.
 
+When `DS_SEGMENTER_WORKERS > 0`, the expensive WAL scan, block encode, and file
+write still run in worker threads, but the SQLite control writes do not. Worker
+segmenters send `tryClaimSegment`, `commitSealedSegment`, and release-claim
+requests back to a small main-thread coordinator that uses the primary SQLite
+connection. This keeps the heavy compute off-thread while avoiding cross-
+connection writer contention between worker-local SQLite handles and the main
+ingest writer.
+
 ### Upload
 1. Uploader selects the earliest `uploaded_at_ms IS NULL` segment for each
    stream.
@@ -281,7 +300,7 @@ or per-stream request-accounting rows behind for deleted streams.
 2. Upload segment bytes to object store using the TieredStore key layout.
    - timed-out object-store writes abort the underlying PUT attempt; the uploader does not intentionally leave a timed-out upload running in the background and then retry the same object key
 3. Generate and upload a new manifest generation for that stream:
-   - use the append‑only segment meta arrays
+   - use the append-only segment meta arrays
    - include **only the contiguous uploaded prefix**
 4. Mark segment uploaded, advance uploaded_through, and delete WAL rows with
    offset <= uploaded_through in one transaction.

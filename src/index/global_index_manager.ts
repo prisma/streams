@@ -10,11 +10,14 @@ import { IndexManager } from "./indexer";
 import { LexiconIndexManager } from "./lexicon_indexer";
 import { SecondaryIndexManager } from "./secondary_indexer";
 import { SearchCompanionManager } from "../search/companion_manager";
+import { yieldToEventLoop } from "../util/yield";
 
 export class GlobalIndexManager implements StreamIndexLookup {
   private readonly queue = new Set<string>();
   private timer: any | null = null;
+  private active = false;
   private running = false;
+  private scheduled = false;
   private roundRobinCursor = 0;
 
   constructor(
@@ -27,6 +30,7 @@ export class GlobalIndexManager implements StreamIndexLookup {
   ) {}
 
   start(): void {
+    this.active = true;
     this.buildWorkers.start();
     this.routingIndex.start();
     this.secondaryIndex.start();
@@ -36,11 +40,14 @@ export class GlobalIndexManager implements StreamIndexLookup {
     this.timer = setInterval(() => {
       void this.tick();
     }, this.cfg.indexCheckIntervalMs);
+    this.scheduleTick();
   }
 
   stop(): void {
+    this.active = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.scheduled = false;
     this.routingIndex.stop();
     this.secondaryIndex.stop();
     this.companionIndex.stop();
@@ -50,35 +57,52 @@ export class GlobalIndexManager implements StreamIndexLookup {
 
   enqueue(stream: string): void {
     this.queue.add(stream);
+    this.scheduleTick();
   }
 
   async tick(): Promise<void> {
+    if (!this.active) return;
     if (this.running) return;
     this.running = true;
     try {
-      const streams = Array.from(this.queue);
-      this.queue.clear();
-      for (const stream of streams) {
-        this.routingIndex.enqueue(stream);
-        this.secondaryIndex.enqueue(stream);
-        this.companionIndex.enqueue(stream);
-        this.lexiconIndex.enqueue(stream);
+      while (this.active) {
+        const streams = Array.from(this.queue);
+        this.queue.clear();
+        for (const stream of streams) {
+          this.routingIndex.enqueue(stream);
+          this.secondaryIndex.enqueue(stream);
+          this.companionIndex.enqueue(stream);
+          this.lexiconIndex.enqueue(stream);
+        }
+        const workKinds: Array<() => Promise<boolean>> = [
+          () => this.routingIndex.runOneBuildTask(),
+          () => this.lexiconIndex.runOneBuildTask(),
+          () => this.secondaryIndex.runOneBuildTask(),
+          () => this.companionIndex.runOneBuildTask(),
+          () => this.routingIndex.runOneCompactionTask(),
+          () => this.lexiconIndex.runOneCompactionTask(),
+          () => this.secondaryIndex.runOneCompactionTask(),
+        ];
+        const ordered = workKinds.map((_, index) => workKinds[(index + this.roundRobinCursor) % workKinds.length]!);
+        this.roundRobinCursor = (this.roundRobinCursor + 1) % workKinds.length;
+        const progressed = (await Promise.all(ordered.map((run) => run()))).some(Boolean);
+        if (!progressed && this.queue.size === 0) break;
+        await yieldToEventLoop();
       }
-      const workKinds: Array<() => Promise<unknown>> = [
-        () => this.routingIndex.runOneBuildTask(),
-        () => this.lexiconIndex.runOneBuildTask(),
-        () => this.secondaryIndex.runOneBuildTask(),
-        () => this.companionIndex.runOneBuildTask(),
-        () => this.routingIndex.runOneCompactionTask(),
-        () => this.lexiconIndex.runOneCompactionTask(),
-        () => this.secondaryIndex.runOneCompactionTask(),
-      ];
-      const ordered = workKinds.map((_, index) => workKinds[(index + this.roundRobinCursor) % workKinds.length]!);
-      this.roundRobinCursor = (this.roundRobinCursor + 1) % workKinds.length;
-      await Promise.all(ordered.map((run) => run()));
     } finally {
       this.running = false;
+      if (this.active && this.queue.size > 0) this.scheduleTick();
     }
+  }
+
+  private scheduleTick(): void {
+    if (!this.active) return;
+    if (this.running || this.scheduled) return;
+    this.scheduled = true;
+    queueMicrotask(() => {
+      this.scheduled = false;
+      void this.tick();
+    });
   }
 
   candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array) {

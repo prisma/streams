@@ -220,8 +220,13 @@ Current implementation:
 - immutable stream-level `.lex` runs, not per-segment companions
 - L0 build span matches the other tiered indexes: 16 uploaded segments
 - asynchronous background build after upload
-- L0 build compute runs through the shared generic index-build worker pool over
-  a leased local 16-segment window, just like the routing-key L0 builder
+- routing-key and routing-key lexicon L0 build compute now share one generic
+  worker pass over the same leased local 16-segment window; the worker emits
+  both `.idx` and `.lex` payloads and the main thread persists them through
+  the two family-specific state machines independently
+- that shared L0 worker scans routing keys only and caches distinct-key
+  fingerprints for the whole window, so repeated low-cardinality keys are not
+  re-hashed for every record
 - higher-level immutable compaction using the same contiguous-run policy as the
   other tiered index families
 - manifest-published state and run lists
@@ -506,7 +511,7 @@ segment-backed build compute is no longer performed on the main Bun thread.
 
 The full server starts one `GlobalIndexManager`, which owns:
 
-- the only indexing timer (`DS_INDEX_CHECK_MS`)
+- one continuous backlog-drain loop plus `DS_INDEX_CHECK_MS` as a safety wake-up interval
 - one shared `IndexBuildWorkerPool`
 - one shared `IndexSegmentLocalityManager`
 - four family adapters:
@@ -518,9 +523,8 @@ The full server starts one `GlobalIndexManager`, which owns:
 
 Current worker-job kinds are:
 
-- `routing_l0_build`
+- `routing_lexicon_l0_build`
 - `routing_compaction_build`
-- `lexicon_l0_build`
 - `lexicon_compaction_build`
 - `secondary_l0_build`
 - `secondary_compaction_build`
@@ -542,6 +546,10 @@ jobs, and it is selected by the memory auto-tune preset by default.
 - exact-secondary L0 build / compaction
 - bundled companion build / backfill
 
+If `DS_ASYNC_INDEX_CONCURRENCY` is unset, it defaults to
+`DS_INDEX_BUILDERS` so the gate width matches the worker-pool width by
+default.
+
 Each family adapter still owns family-specific backlog discovery and
 compaction rules, but no family owns its own timer or dedicated build-worker
 pool anymore.
@@ -549,7 +557,9 @@ pool anymore.
 The global manager schedules distinct background work kinds in round-robin
 order. It does not reserve a dedicated priority lane for one async family over
 another; if a work kind has nothing runnable for its turn, the scheduler simply
-advances to the next kind.
+advances to the next kind. Under backlog, it keeps draining until no work kind
+makes progress, yielding cooperatively between rounds instead of waiting for the
+next timer interval before attempting another window.
 
 `SearchCompanionManager` also emits progress metrics so companion lag can be
 observed independently of the exact family:

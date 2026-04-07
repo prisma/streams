@@ -1,4 +1,5 @@
 import { Result } from "better-result";
+import { randomBytes } from "node:crypto";
 import type { Config } from "../config";
 import type { LexiconIndexRunRow, LexiconIndexStateRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { Metrics } from "../metrics";
@@ -19,6 +20,7 @@ import type { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { LexiconCompactionRunSource } from "./lexicon_compaction_build";
 import { beginAsyncIndexAction } from "./async_index_actions";
+import { RoutingLexiconL0BuildCoordinator } from "./routing_lexicon_l0_build_coordinator";
 import {
   buildLexiconRunPayload,
   decodeLexiconRunResult,
@@ -94,6 +96,7 @@ export class LexiconIndexManager {
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
   private readonly segmentLocality?: IndexSegmentLocalityManager;
+  private readonly routingLexiconBuilds: RoutingLexiconL0BuildCoordinator;
   private readonly buildQueue = new Set<string>();
   private readonly compactionQueue = new Set<string>();
   private readonly building = new Set<string>();
@@ -113,7 +116,8 @@ export class LexiconIndexManager {
     private readonly asyncGate: ConcurrencyGate,
     foregroundActivity?: ForegroundActivityTracker,
     segmentLocality?: IndexSegmentLocalityManager,
-    buildWorkers?: IndexBuildWorkerPool
+    buildWorkers?: IndexBuildWorkerPool,
+    routingLexiconBuilds?: RoutingLexiconL0BuildCoordinator
   ) {
     this.span = cfg.indexL0SpanSegments;
     this.compactionFanout = cfg.indexCompactionFanout;
@@ -125,6 +129,7 @@ export class LexiconIndexManager {
     this.ownsBuildWorkers = !buildWorkers;
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
+    this.routingLexiconBuilds = routingLexiconBuilds ?? new RoutingLexiconL0BuildCoordinator(this.buildWorkers);
     this.fileCache =
       cfg.lexiconIndexCacheMaxBytes > 0
         ? new LexiconFileCache(`${cfg.rootDir}/cache/lexicon`, cfg.lexiconIndexCacheMaxBytes, cfg.lexiconMappedCacheEntries)
@@ -307,6 +312,16 @@ export class LexiconIndexManager {
           state = this.db.getLexiconIndexState(stream, sourceKind, sourceName);
         }
         if (!state) return Result.ok(undefined);
+        let routingState = this.db.getIndexState(stream);
+        if (!routingState) {
+          const secret = randomBytes(16);
+          this.db.upsertIndexState(stream, secret, 0);
+          routingState = this.db.getIndexState(stream);
+        }
+        if (!routingState) {
+          this.buildQueue.add(stream);
+          return Result.ok(undefined);
+        }
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < state.indexed_through + this.span) return Result.ok(undefined);
         const startSegment = state.indexed_through;
@@ -346,19 +361,18 @@ export class LexiconIndexManager {
         });
         let runRes;
         try {
-          runRes = await this.buildWorkers.buildResult({
-            kind: "lexicon_l0_build",
-            input: {
-              stream,
-              sourceKind,
-              sourceName,
-              startSegment,
-              span: this.span,
-              segments: segmentLease.localSegments.map((segment) => ({
-                segmentIndex: segment.segmentIndex,
-                localPath: segment.localPath,
-              })),
-            },
+          runRes = await this.routingLexiconBuilds.buildWindowResult({
+            stream,
+            sourceKind,
+            sourceName,
+            cacheToken: Buffer.from(routingState.index_secret).toString("hex"),
+            startSegment,
+            span: this.span,
+            secret: routingState.index_secret,
+            segments: segmentLease.localSegments.map((segment) => ({
+              segmentIndex: segment.segmentIndex,
+              localPath: segment.localPath,
+            })),
           });
         } finally {
           segmentLease.release();
@@ -367,30 +381,28 @@ export class LexiconIndexManager {
           action.fail(runRes.error.message);
           return invalidLexiconIndex(runRes.error.message);
         }
-        if (runRes.value.kind !== "lexicon_l0_build") {
-          action.fail("unexpected worker result kind");
-          return invalidLexiconIndex("unexpected worker result kind");
-        }
-        const persistRes = await this.persistRunPayloadResult(runRes.value.output.meta, runRes.value.output.payload, stream);
+        const lexiconRun = runRes.value.output.lexicon;
+        const persistRes = await this.persistRunPayloadResult(lexiconRun.meta, lexiconRun.payload, stream);
         if (Result.isError(persistRes)) {
           action.fail(persistRes.error.message, {
             detail: {
-              output_record_count: runRes.value.output.meta.recordCount,
+              output_record_count: lexiconRun.meta.recordCount,
+              shared_build_cache_status: runRes.value.cacheStatus,
             },
           });
           return persistRes;
         }
         this.db.insertLexiconIndexRun({
-          run_id: runRes.value.output.meta.runId,
+          run_id: lexiconRun.meta.runId,
           stream,
           source_kind: sourceKind,
           source_name: sourceName,
-          level: runRes.value.output.meta.level,
-          start_segment: runRes.value.output.meta.startSegment,
-          end_segment: runRes.value.output.meta.endSegment,
-          object_key: runRes.value.output.meta.objectKey,
+          level: lexiconRun.meta.level,
+          start_segment: lexiconRun.meta.startSegment,
+          end_segment: lexiconRun.meta.endSegment,
+          object_key: lexiconRun.meta.objectKey,
           size_bytes: persistRes.value,
-          record_count: runRes.value.output.meta.recordCount,
+          record_count: lexiconRun.meta.recordCount,
         });
         this.db.updateLexiconIndexedThrough(stream, sourceKind, sourceName, endSegment + 1);
         this.onMetadataChanged?.(stream);
@@ -409,7 +421,8 @@ export class LexiconIndexManager {
           outputCount: 1,
           outputSizeBytes: BigInt(persistRes.value),
           detail: {
-            output_record_count: runRes.value.output.meta.recordCount,
+            output_record_count: lexiconRun.meta.recordCount,
+            shared_build_cache_status: runRes.value.cacheStatus,
           },
         });
         return Result.ok(undefined);

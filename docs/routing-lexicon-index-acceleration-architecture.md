@@ -1,9 +1,10 @@
 # Routing And Lexicon Index Acceleration Architecture
 
-Status: proposed architecture
+Status: partially shipped acceleration architecture
 
-This document proposes a concrete architecture and rollout plan to deliver a
-major throughput increase for routing-key and routing-key lexicon indexing.
+This document records the routing-key and routing-key lexicon acceleration plan
+and distinguishes between what is already shipped and what remains for later
+phases.
 
 The current shipped model is documented in:
 
@@ -39,31 +40,46 @@ Out of scope:
 - making index artifacts the source of truth
 - changing read correctness guarantees for unindexed tails
 
-## Current Bottlenecks
+## Shipped Changes
 
-1. Timer-bound progress.
-   Index managers run on periodic ticks and usually advance one build window
-   per family iteration.
+The current runtime already ships these changes from the plan:
 
-2. Shared async-index gate contention.
-   Routing, lexicon, exact, and bundled companions compete for one top-level
-   async-index budget.
+- one `GlobalIndexManager` that drains backlog continuously under load instead
+  of advancing only once per timer interval
+- a shared generic worker pool sized by `DS_INDEX_BUILDERS`
+- `DS_ASYNC_INDEX_CONCURRENCY` defaulting to `DS_INDEX_BUILDERS` when unset, so
+  the async gate is aligned with worker capacity by default
+- one combined routing+lexicon L0 worker pass that reads each leased
+  16-segment window once and emits both `.idx` and `.lex`
+- a routing-key-only block scan in that combined worker, so L0 build no longer
+  materializes append timestamps or payload slices that routing/lexicon do not
+  use
+- per-window distinct-key fingerprint caching in that combined worker, so
+  repeated routing keys are hashed once and reused across repeated records and
+  across the paired lexicon build
+- local `async_index_actions` observability rows for all async index actions
 
-3. Duplicate segment rescans.
-   Routing and lexicon both read, decompress, and iterate the same segment
-   windows independently.
+Those changes remove the largest timer/gating inefficiencies and the duplicate
+segment rescans that routing and lexicon previously paid independently.
 
-4. CPU-heavy per-record hot loops.
-   Routing build uses JS `BigInt` hashing and map-heavy accumulation for every
-   keyed record.
+## Remaining Bottlenecks
 
-5. Repeated lexicon term decode work.
+1. CPU-heavy hot loops still exist for high-cardinality windows.
+   The worker no longer hashes every repeated record, but it still uses JS
+   `BigInt` SipHash and map-heavy accumulation for each distinct key that
+   reaches the routing path.
+
+2. Repeated lexicon term decode work.
    Lexicon merge/list paths repeatedly decode restart-string terms in
    random-access patterns.
 
-6. Manifest and metadata chatter.
+3. Manifest and metadata chatter.
    Frequent small publish/update cycles add overhead relative to useful index
    progress.
+
+4. Segment payload rereads still exist at the L0 boundary.
+   Routing+lexicon now share one scan, but they still reconstruct index state
+   from full segment payloads instead of segment-time sidecars.
 
 ## Target Architecture
 
@@ -84,6 +100,12 @@ The scheduler round-robins those work kinds. It does not reserve a dedicated
 priority lane for routing or lexicon work, and it does not keep a separate
 catch-up-vs-compaction priority system.
 
+Shipped implementation detail:
+
+- under backlog, the global manager now keeps draining until no family makes
+  progress, yielding cooperatively between rounds and retaining
+  `DS_INDEX_CHECK_MS` only as a safety wake-up interval
+
 Design rule:
 
 - under backlog, progress should be bounded by worker capacity and the shared
@@ -94,7 +116,8 @@ Design rule:
 All indexing families now compete for the same bounded background budget:
 
 - one global `DS_INDEX_BUILDERS` worker-pool size
-- one shared async-index concurrency gate
+- one shared async-index concurrency gate that defaults to
+  `DS_INDEX_BUILDERS` when unset
 - one shared segment-locality lease manager
 
 That preserves fairness between unrelated families without moving heavy
@@ -110,6 +133,12 @@ For each uploaded window:
   - lexicon L0 payload (`.lex`)
 
 This removes duplicate segment scan/decode costs.
+
+Shipped implementation detail:
+
+- the combined worker job is `routing_lexicon_l0_build`
+- the main thread still persists routing and lexicon results independently, so
+  manifest visibility and family-specific state machines remain unchanged
 
 ### 4. Hot-Loop Compute Rewrite
 
@@ -162,17 +191,25 @@ Deliverables:
 - repeatable backlog-drain benchmark suite
 - stable KPI dashboard for segments/s and bytes/s
 
+Status:
+
+- partially shipped
+
 Expected gain:
 
-- none (measurement only)
+- measurement only
 
 ### Phase 1: Scheduler And Gate Throughput
+
+Status:
+
+- shipped, except there is intentionally no family-specific priority lane
 
 Deliverables:
 
 - event-driven drain loop under backlog
-- explicit L0-first scheduling policy
-- family-isolated background budgeting
+- round-robin family scheduling with cooperative yielding
+- shared bounded async-index gate aligned with builder count by default
 
 Expected gain:
 
@@ -181,10 +218,16 @@ Expected gain:
 
 ### Phase 2: Single-Pass Combined Worker Build
 
+Status:
+
+- shipped for routing-key and routing-key lexicon L0 builds
+
 Deliverables:
 
 - one worker pass that emits routing and lexicon L0 outputs together
 - removal of duplicate segment decode loops
+- routing-key-only segment scans for the shared L0 path
+- per-window distinct-key fingerprint reuse across routing and lexicon outputs
 
 Expected gain:
 
@@ -192,17 +235,28 @@ Expected gain:
 
 ### Phase 3: Hot-Loop Compute Optimizations
 
+Status:
+
+- partially shipped
+
 Deliverables:
 
 - native/WASM hash path
 - typed-array aggregation path
 - streaming lexicon merge cursors
+- shipped subset:
+  - distinct-key fingerprint caching for the combined routing+lexicon L0 build
+  - removal of per-record append/payload materialization in that same path
 
 Expected gain:
 
 - **3x-10x** for CPU-heavy windows
 
 ### Phase 4: Segment Sidecar Architecture
+
+Status:
+
+- not shipped
 
 Deliverables:
 
@@ -215,6 +269,10 @@ Expected gain:
 - architecture-level step needed for sustained **~100x** on large backlogs
 
 ### Phase 5: Batched Publish Path
+
+Status:
+
+- not shipped
 
 Deliverables:
 

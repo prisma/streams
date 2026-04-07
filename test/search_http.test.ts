@@ -839,6 +839,7 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
+        app.deps.indexer?.stop();
 
         for (const event of [
           {

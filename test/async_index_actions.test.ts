@@ -120,11 +120,13 @@ describe("async index action observability", () => {
       ]);
 
       for (const kind of ["routing_l0_build", "routing_compaction_build", "lexicon_l0_build", "lexicon_compaction_build"]) {
-        const action = actions.find((row) => row.action_kind === kind);
+        const action = actions.find((row) => row.action_kind === kind && row.status === "succeeded");
         expect(action).toBeTruthy();
         expectActionShape(action);
       }
     } finally {
+      app.deps.indexer?.stop();
+      await sleep(20);
       app.close();
       rmSync(root, { recursive: true, force: true });
     }
@@ -211,11 +213,13 @@ describe("async index action observability", () => {
       ]);
 
       for (const kind of ["secondary_l0_build", "secondary_compaction_build", "companion_build"]) {
-        const action = actions.find((row) => row.action_kind === kind);
+        const action = actions.find((row) => row.action_kind === kind && row.status === "succeeded");
         expect(action).toBeTruthy();
         expectActionShape(action);
       }
     } finally {
+      app.deps.indexer?.stop();
+      await sleep(20);
       app.close();
       rmSync(root, { recursive: true, force: true });
     }

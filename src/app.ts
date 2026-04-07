@@ -21,6 +21,7 @@ import { sumRuntimeMemoryValues } from "./runtime_memory";
 import { IndexSegmentLocalityManager } from "./index/segment_locality";
 import { IndexBuildWorkerPool } from "./index/index_build_worker_pool";
 import { GlobalIndexManager } from "./index/global_index_manager";
+import { RoutingLexiconL0BuildCoordinator } from "./index/routing_lexicon_l0_build_coordinator";
 
 export type { App } from "./app_core";
 
@@ -45,6 +46,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       const uploader = new Uploader(config, db, store, diskCache, stats, backpressure, undefined, memorySampler);
       const indexSegmentLocality = new IndexSegmentLocalityManager(diskCache, store, backpressure);
       const indexBuildWorkers = new IndexBuildWorkerPool(Math.max(1, config.indexBuilders));
+      const routingLexiconBuilds = new RoutingLexiconL0BuildCoordinator(indexBuildWorkers);
       const routingIndexer = new IndexManager(
         config,
         db,
@@ -58,7 +60,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         asyncIndexGate,
         foregroundActivity,
         indexSegmentLocality,
-        indexBuildWorkers
+        indexBuildWorkers,
+        routingLexiconBuilds
       );
       const secondaryIndexer = new SecondaryIndexManager(
         config,
@@ -101,7 +104,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         asyncIndexGate,
         foregroundActivity,
         indexSegmentLocality,
-        indexBuildWorkers
+        indexBuildWorkers,
+        routingLexiconBuilds
       );
       const indexer = new GlobalIndexManager(
         config,
@@ -118,7 +122,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       const reader = new StreamReader(config, db, store, registry, diskCache, indexer, memorySampler, memory);
       const segmenter =
         config.segmenterWorkers > 0
-          ? new SegmenterWorkerPool(config, config.segmenterWorkers, {}, segmenterHooks)
+          ? new SegmenterWorkerPool(config, db, config.segmenterWorkers, {}, segmenterHooks)
           : new Segmenter(config, db, {}, segmenterHooks, memorySampler);
 
       return {

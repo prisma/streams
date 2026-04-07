@@ -181,6 +181,28 @@ export type AsyncIndexActionRow = {
   detail_json: string;
 };
 
+export type SegmentBuildActionStatus = "running" | "succeeded" | "failed";
+
+export type SegmentBuildActionRow = {
+  seq: bigint;
+  stream: string;
+  action_kind: string;
+  input_kind: string;
+  input_count: number;
+  input_size_bytes: bigint;
+  output_count: number;
+  output_size_bytes: bigint;
+  segment_index: number | null;
+  start_offset: bigint | null;
+  end_offset: bigint | null;
+  begin_time_ms: bigint;
+  end_time_ms: bigint | null;
+  duration_ms: bigint | null;
+  status: SegmentBuildActionStatus;
+  error_message: string | null;
+  detail_json: string;
+};
+
 export class SqliteDurableStore {
   public readonly db: SqliteDatabase;
   private readonly dbPath: string;
@@ -231,6 +253,10 @@ export class SqliteDurableStore {
     completeAsyncIndexAction: SqliteStatement;
     listAsyncIndexActionsForStream: SqliteStatement;
     deleteAsyncIndexActionsForStream: SqliteStatement;
+    insertSegmentBuildAction: SqliteStatement;
+    completeSegmentBuildAction: SqliteStatement;
+    listSegmentBuildActionsForStream: SqliteStatement;
+    deleteSegmentBuildActionsForStream: SqliteStatement;
 
     getIndexState: SqliteStatement;
     upsertIndexState: SqliteStatement;
@@ -863,6 +889,28 @@ export class SqliteDurableStore {
          LIMIT ?;`
       ),
       deleteAsyncIndexActionsForStream: this.db.query(`DELETE FROM async_index_actions WHERE stream=?;`),
+      insertSegmentBuildAction: this.db.query(
+        `INSERT INTO segment_build_actions(
+           stream, action_kind, input_kind, input_count, input_size_bytes, output_count, output_size_bytes,
+           segment_index, start_offset, end_offset, begin_time_ms, end_time_ms, duration_ms, status, error_message, detail_json
+         )
+         VALUES(?, ?, ?, 0, 0, 0, 0, ?, ?, NULL, ?, NULL, NULL, ?, NULL, ?);`
+      ),
+      completeSegmentBuildAction: this.db.query(
+        `UPDATE segment_build_actions
+         SET input_count=?, input_size_bytes=?, output_count=?, output_size_bytes=?, end_offset=?,
+             end_time_ms=?, duration_ms=?, status=?, error_message=?, detail_json=?
+         WHERE seq=?;`
+      ),
+      listSegmentBuildActionsForStream: this.db.query(
+        `SELECT seq, stream, action_kind, input_kind, input_count, input_size_bytes, output_count, output_size_bytes,
+                segment_index, start_offset, end_offset, begin_time_ms, end_time_ms, duration_ms, status, error_message, detail_json
+         FROM segment_build_actions
+         WHERE stream=?
+         ORDER BY seq DESC
+         LIMIT ?;`
+      ),
+      deleteSegmentBuildActionsForStream: this.db.query(`DELETE FROM segment_build_actions WHERE stream=?;`),
     };
   }
 
@@ -1006,6 +1054,28 @@ export class SqliteDurableStore {
       end_time_ms: row.end_time_ms == null ? null : this.toBigInt(row.end_time_ms),
       duration_ms: row.duration_ms == null ? null : this.toBigInt(row.duration_ms),
       status: String(row.status) as AsyncIndexActionStatus,
+      error_message: row.error_message == null ? null : String(row.error_message),
+      detail_json: String(row.detail_json ?? "{}"),
+    };
+  }
+
+  private coerceSegmentBuildActionRow(row: any): SegmentBuildActionRow {
+    return {
+      seq: this.toBigInt(row.seq),
+      stream: String(row.stream),
+      action_kind: String(row.action_kind),
+      input_kind: String(row.input_kind),
+      input_count: Number(row.input_count ?? 0),
+      input_size_bytes: this.toBigInt(row.input_size_bytes ?? 0),
+      output_count: Number(row.output_count ?? 0),
+      output_size_bytes: this.toBigInt(row.output_size_bytes ?? 0),
+      segment_index: row.segment_index == null ? null : Number(row.segment_index),
+      start_offset: row.start_offset == null ? null : this.toBigInt(row.start_offset),
+      end_offset: row.end_offset == null ? null : this.toBigInt(row.end_offset),
+      begin_time_ms: this.toBigInt(row.begin_time_ms),
+      end_time_ms: row.end_time_ms == null ? null : this.toBigInt(row.end_time_ms),
+      duration_ms: row.duration_ms == null ? null : this.toBigInt(row.duration_ms),
+      status: String(row.status) as SegmentBuildActionStatus,
       error_message: row.error_message == null ? null : String(row.error_message),
       detail_json: String(row.detail_json ?? "{}"),
     };
@@ -1192,6 +1262,7 @@ export class SqliteDurableStore {
       this.stmts.deleteSearchCompanionPlan.run(stream);
       this.stmts.deleteObjectStoreRequestsByHash.run(streamHash);
       this.stmts.deleteAsyncIndexActionsForStream.run(stream);
+      this.stmts.deleteSegmentBuildActionsForStream.run(stream);
     });
     tx();
   }
@@ -1217,6 +1288,7 @@ export class SqliteDurableStore {
       this.stmts.deleteSearchCompanionPlan.run(stream);
       this.stmts.deleteObjectStoreRequestsByHash.run(streamHash);
       this.stmts.deleteAsyncIndexActionsForStream.run(stream);
+      this.stmts.deleteSegmentBuildActionsForStream.run(stream);
     });
     tx();
     return true;
@@ -1251,6 +1323,7 @@ export class SqliteDurableStore {
       this.db.query(`DELETE FROM stream_segment_meta WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM objectstore_request_counts WHERE stream_hash=?;`).run(streamHash);
       this.db.query(`DELETE FROM async_index_actions WHERE stream=?;`).run(stream);
+      this.db.query(`DELETE FROM segment_build_actions WHERE stream=?;`).run(stream);
       this.db.query(`DELETE FROM streams WHERE stream=?;`).run(stream);
       return true;
     });
@@ -1601,60 +1674,20 @@ export class SqliteDurableStore {
   *iterWalRange(stream: string, startOffset: bigint, endOffset: bigint, routingKey?: Uint8Array): Generator<any, void, void> {
     const start = this.bindInt(startOffset);
     const end = this.bindInt(endOffset);
-    const stmt = routingKey
-      ? this.db.prepare(
-          `SELECT offset, ts_ms, routing_key, content_type, payload
-           FROM wal
-           WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
-           ORDER BY offset ASC;`
-        )
-      : this.db.prepare(
-          `SELECT offset, ts_ms, routing_key, content_type, payload
-           FROM wal
-           WHERE stream = ? AND offset >= ? AND offset <= ?
-           ORDER BY offset ASC;`
-        );
-    try {
-      const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
-      for (const row of it) {
-        yield row;
-      }
-    } finally {
-      try {
-        stmt.finalize?.();
-      } catch {
-        // ignore
-      }
+    const stmt = routingKey ? this.stmts.streamWalRangeByKey : this.stmts.streamWalRange;
+    const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
+    for (const row of it) {
+      yield row;
     }
   }
 
   *iterWalRangeDesc(stream: string, startOffset: bigint, endOffset: bigint, routingKey?: Uint8Array): Generator<any, void, void> {
     const start = this.bindInt(startOffset);
     const end = this.bindInt(endOffset);
-    const stmt = routingKey
-      ? this.db.prepare(
-          `SELECT offset, ts_ms, routing_key, content_type, payload
-           FROM wal
-           WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
-           ORDER BY offset DESC;`
-        )
-      : this.db.prepare(
-          `SELECT offset, ts_ms, routing_key, content_type, payload
-           FROM wal
-           WHERE stream = ? AND offset >= ? AND offset <= ?
-           ORDER BY offset DESC;`
-        );
-    try {
-      const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
-      for (const row of it) {
-        yield row;
-      }
-    } finally {
-      try {
-        stmt.finalize?.();
-      } catch {
-        // ignore
-      }
+    const stmt = routingKey ? this.stmts.streamWalRangeDescByKey : this.stmts.streamWalRangeDesc;
+    const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
+    for (const row of it) {
+      yield row;
     }
   }
 
@@ -2579,6 +2612,66 @@ export class SqliteDurableStore {
   listAsyncIndexActions(stream: string, limit: number): AsyncIndexActionRow[] {
     const rows = this.stmts.listAsyncIndexActionsForStream.all(stream, limit) as any[];
     return rows.map((row) => this.coerceAsyncIndexActionRow(row));
+  }
+
+  beginSegmentBuildAction(input: {
+    stream: string;
+    actionKind: string;
+    inputKind: string;
+    segmentIndex?: number | null;
+    startOffset?: bigint | null;
+    detailJson?: string;
+  }): bigint {
+    const res = this.stmts.insertSegmentBuildAction.run(
+      input.stream,
+      input.actionKind,
+      input.inputKind,
+      input.segmentIndex ?? null,
+      input.startOffset == null ? null : this.bindInt(input.startOffset),
+      this.nowMs(),
+      "running",
+      input.detailJson ?? "{}"
+    ) as any;
+    return this.toBigInt(res.lastInsertRowid);
+  }
+
+  completeSegmentBuildAction(input: {
+    seq: bigint;
+    status: Exclude<SegmentBuildActionStatus, "running">;
+    inputCount?: number;
+    inputSizeBytes?: bigint;
+    outputCount?: number;
+    outputSizeBytes?: bigint;
+    endOffset?: bigint | null;
+    endedAtMs?: bigint;
+    errorMessage?: string | null;
+    detailJson?: string;
+  }): void {
+    const endedAtMs = input.endedAtMs ?? this.nowMs();
+    const row = this.db
+      .query(`SELECT begin_time_ms, detail_json FROM segment_build_actions WHERE seq=? LIMIT 1;`)
+      .get(this.bindInt(input.seq)) as any;
+    const beginTimeMs = row?.begin_time_ms == null ? endedAtMs : this.toBigInt(row.begin_time_ms);
+    const priorDetailJson = row?.detail_json == null ? "{}" : String(row.detail_json);
+    const durationMs = endedAtMs >= beginTimeMs ? endedAtMs - beginTimeMs : 0n;
+    this.stmts.completeSegmentBuildAction.run(
+      input.inputCount ?? 0,
+      this.bindInt(input.inputSizeBytes ?? 0n),
+      input.outputCount ?? 0,
+      this.bindInt(input.outputSizeBytes ?? 0n),
+      input.endOffset == null ? null : this.bindInt(input.endOffset),
+      endedAtMs,
+      this.bindInt(durationMs),
+      input.status,
+      input.errorMessage ?? null,
+      input.detailJson ?? priorDetailJson,
+      this.bindInt(input.seq)
+    );
+  }
+
+  listSegmentBuildActions(stream: string, limit: number): SegmentBuildActionRow[] {
+    const rows = this.stmts.listSegmentBuildActionsForStream.all(stream, limit) as any[];
+    return rows.map((row) => this.coerceSegmentBuildActionRow(row));
   }
 
   getObjectStoreRequestSummaryByHash(streamHash: string): {

@@ -1582,6 +1582,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   };
 
   let closing = false;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  let dbClosed = false;
   const fetch = async (req: Request): Promise<Response> => {
     if (closing) {
       return unavailable();
@@ -2847,6 +2849,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
   };
 
   const close = () => {
+    if (closing) return;
     closing = true;
     touch.stop();
     uploader.stop(true);
@@ -2858,7 +2861,16 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     ingest.stop();
     memorySampler?.stop();
     memory.stop();
-    db.close();
+    if (closeTimer) clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      if (dbClosed) return;
+      dbClosed = true;
+      try {
+        db.close();
+      } catch {
+        // ignore best-effort shutdown races
+      }
+    }, 100);
   };
 
   return {

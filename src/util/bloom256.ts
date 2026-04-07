@@ -7,25 +7,55 @@ import { dsError } from "./ds_error.ts";
  * Correctness rule: bloom filter may have false positives but MUST NOT have false negatives.
  */
 
-const BITS = 256n;
-const MASK64 = (1n << 64n) - 1n;
+const BLOOM_BITS_MASK = 255;
 
-function fnv1a64(data: Uint8Array): bigint {
-  let h = 14695981039346656037n;
-  for (const b of data) {
-    h ^= BigInt(b);
-    h = (h * 1099511628211n) & MASK64;
+function fnv1a32(data: Uint8Array): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < data.byteLength; i++) {
+    h ^= data[i]!;
+    h = Math.imul(h, 16777619) >>> 0;
   }
-  return h;
+  return h >>> 0;
 }
 
-function mix64(x: bigint): bigint {
-  // SplitMix64-esque mix.
-  x = (x + 0x9e3779b97f4a7c15n) & MASK64;
-  x = (x ^ (x >> 30n)) * 0xbf58476d1ce4e5b9n & MASK64;
-  x = (x ^ (x >> 27n)) * 0x94d049bb133111ebn & MASK64;
-  x = x ^ (x >> 31n);
-  return x & MASK64;
+function mix32(x: number): number {
+  let h = (x ^ 0x9e3779b9) >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x7feb352d) >>> 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x846ca68b) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+function setProbeBits(bits: Uint8Array, h1: number, h2: number): void {
+  const step = (h2 | 1) >>> 0;
+  for (let i = 0; i < 3; i++) {
+    const idx = (h1 + Math.imul(i, step)) & BLOOM_BITS_MASK;
+    const byte = idx >> 3;
+    const bit = idx & 7;
+    bits[byte] |= 1 << bit;
+  }
+}
+
+function hasProbeBits(bits: Uint8Array, h1: number, h2: number): boolean {
+  const step = (h2 | 1) >>> 0;
+  for (let i = 0; i < 3; i++) {
+    const idx = (h1 + Math.imul(i, step)) & BLOOM_BITS_MASK;
+    const byte = idx >> 3;
+    const bit = idx & 7;
+    if ((bits[byte] & (1 << bit)) === 0) return false;
+  }
+  return true;
+}
+
+export function bloom256MaskForKey(keyUtf8: Uint8Array): Uint8Array {
+  const bits = new Uint8Array(32);
+  if (keyUtf8.byteLength === 0) return bits;
+  const h1 = fnv1a32(keyUtf8);
+  const h2 = mix32(h1);
+  setProbeBits(bits, h1, h2);
+  return bits;
 }
 
 export class Bloom256 {
@@ -40,28 +70,24 @@ export class Bloom256 {
     return new Uint8Array(this.bits);
   }
 
+  orMask(mask: Uint8Array): void {
+    if (mask.byteLength !== 32) throw dsError("bloom mask must be 32 bytes");
+    for (let i = 0; i < 32; i++) {
+      this.bits[i] |= mask[i]!;
+    }
+  }
+
   add(keyUtf8: Uint8Array): void {
     if (keyUtf8.byteLength === 0) return;
-    const h1 = fnv1a64(keyUtf8);
-    const h2 = mix64(h1 ^ 0xa0761d6478bd642fn);
-    for (let i = 0; i < 3; i++) {
-      const idx = Number((h1 + BigInt(i) * h2) % BITS); // 0..2047
-      const byte = idx >> 3;
-      const bit = idx & 7;
-      this.bits[byte] |= 1 << bit;
-    }
+    const h1 = fnv1a32(keyUtf8);
+    const h2 = mix32(h1);
+    setProbeBits(this.bits, h1, h2);
   }
 
   maybeHas(keyUtf8: Uint8Array): boolean {
     if (keyUtf8.byteLength === 0) return true;
-    const h1 = fnv1a64(keyUtf8);
-    const h2 = mix64(h1 ^ 0xa0761d6478bd642fn);
-    for (let i = 0; i < 3; i++) {
-      const idx = Number((h1 + BigInt(i) * h2) % BITS);
-      const byte = idx >> 3;
-      const bit = idx & 7;
-      if ((this.bits[byte] & (1 << bit)) === 0) return false;
-    }
-    return true;
+    const h1 = fnv1a32(keyUtf8);
+    const h2 = mix32(h1);
+    return hasProbeBits(this.bits, h1, h2);
   }
 }

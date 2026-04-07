@@ -4,6 +4,8 @@ import { GlobalIndexManager } from "../src/index/global_index_manager";
 type StubFamily = {
   enqueued: string[];
   ops: string[];
+  buildResults: boolean[];
+  compactResults: boolean[];
   start: () => void;
   stop: () => void;
   enqueue: (stream: string) => void;
@@ -11,10 +13,12 @@ type StubFamily = {
   runOneCompactionTask: () => Promise<boolean>;
 };
 
-function makeStubFamily(ops: string[], buildName: string, compactName: string): StubFamily {
+function makeStubFamily(ops: string[], buildName: string, compactName: string, buildResults: boolean[], compactResults: boolean[]): StubFamily {
   return {
     enqueued: [],
     ops,
+    buildResults,
+    compactResults,
     start() {
       // no-op
     },
@@ -26,17 +30,17 @@ function makeStubFamily(ops: string[], buildName: string, compactName: string): 
     },
     async runOneBuildTask() {
       ops.push(buildName);
-      return true;
+      return this.buildResults.shift() ?? false;
     },
     async runOneCompactionTask() {
       ops.push(compactName);
-      return true;
+      return this.compactResults.shift() ?? false;
     },
   };
 }
 
 describe("GlobalIndexManager", () => {
-  test("round-robins indexing work kinds across ticks", async () => {
+  test("round-robins indexing work kinds across rounds and drains until idle", async () => {
     const ops: string[] = [];
     const workers = {
       start() {
@@ -46,10 +50,11 @@ describe("GlobalIndexManager", () => {
         ops.push("workers:stop");
       },
     };
-    const routing = makeStubFamily(ops, "routing:build", "routing:compact");
-    const secondary = makeStubFamily(ops, "secondary:build", "secondary:compact");
+    const routing = makeStubFamily(ops, "routing:build", "routing:compact", [true, false], [true, false]);
+    const secondary = makeStubFamily(ops, "secondary:build", "secondary:compact", [true, false], [true, false]);
     const companion = {
       enqueued: [] as string[],
+      buildResults: [true, false],
       start() {
         // no-op
       },
@@ -61,10 +66,10 @@ describe("GlobalIndexManager", () => {
       },
       async runOneBuildTask() {
         ops.push("companion:build");
-        return true;
+        return this.buildResults.shift() ?? false;
       },
     };
-    const lexicon = makeStubFamily(ops, "lexicon:build", "lexicon:compact");
+    const lexicon = makeStubFamily(ops, "lexicon:build", "lexicon:compact", [true, false], [true, false]);
 
     const manager = new GlobalIndexManager(
       { indexCheckIntervalMs: 10 } as any,
@@ -78,12 +83,11 @@ describe("GlobalIndexManager", () => {
     manager.start();
     manager.enqueue("stream-a");
     await manager.tick();
-    const firstTickOps = ops.slice();
     expect(routing.enqueued).toEqual(["stream-a"]);
     expect(secondary.enqueued).toEqual(["stream-a"]);
     expect(companion.enqueued).toEqual(["stream-a"]);
     expect(lexicon.enqueued).toEqual(["stream-a"]);
-    expect(firstTickOps.slice(1)).toEqual([
+    expect(ops.slice(1)).toEqual([
       "routing:build",
       "lexicon:build",
       "secondary:build",
@@ -91,11 +95,6 @@ describe("GlobalIndexManager", () => {
       "routing:compact",
       "lexicon:compact",
       "secondary:compact",
-    ]);
-
-    ops.length = 0;
-    await manager.tick();
-    expect(ops).toEqual([
       "lexicon:build",
       "secondary:build",
       "companion:build",

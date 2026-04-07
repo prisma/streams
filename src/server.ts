@@ -99,6 +99,7 @@ function applyAutoTune(overrideMb: number | null): void {
   process.env.DS_AUTO_TUNE_EFFECTIVE_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_SEGMENT_MAX_BYTES = String(tune.segmentMaxMiB * 1024 * 1024);
+  process.env.DS_BLOCK_MAX_BYTES = String(tune.blockMaxKiB * 1024);
   process.env.DS_SEGMENT_TARGET_ROWS = String(tune.segmentTargetRows);
   process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
   process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
@@ -128,6 +129,14 @@ function applyAutoTune(overrideMb: number | null): void {
       presets,
       preset,
       (p) => tuneForPreset(p).segmentMaxMiB,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_BLOCK_MAX_KIB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).blockMaxKiB,
       (v) => String(v)
     )}`
   );

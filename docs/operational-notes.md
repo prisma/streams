@@ -10,11 +10,11 @@ runtime overview and command surface, see `overview.md`.
 - `DS_ROOT`: data directory (default `./ds-data`)
 - `DS_DB_PATH`: SQLite file path (default `${DS_ROOT}/wal.sqlite`)
 - `DS_SEGMENT_MAX_BYTES`: segment seal threshold (default 16 MiB; auto-tune preserves 16 MiB on every preset)
-- `DS_BLOCK_MAX_BYTES`: max uncompressed bytes per DSB3 block (default 256 KiB)
+- `DS_BLOCK_MAX_BYTES`: max uncompressed bytes per DSB3 block (default 1 MiB; auto-tune preserves 1 MiB on every preset)
 - `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 100k; auto-tune preserves 100k rows on every preset)
 - `DS_SEGMENT_MAX_INTERVAL_MS`: max time between segment cuts (default 0; 0 disables time-based sealing)
 - `DS_SEGMENT_CHECK_MS`: segmenter tick interval (default 250ms)
-- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1–2 GiB presets)
+- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1 GiB and `2` on 2–8 GiB presets)
 - `DS_UPLOAD_CHECK_MS`: uploader tick interval (default 250ms)
 - `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1 GiB, `4` on 2–4 GiB, and `8` on 8 GiB)
 - `DS_BASE_WAL_GC_CHUNK_OFFSETS`: max base-WAL rows deleted per GC sweep/manifest commit transaction (default 1,000,000)
@@ -49,7 +49,7 @@ runtime overview and command surface, see `overview.md`.
 - `DS_WORKER_SQLITE_CACHE_BYTES` / `DS_WORKER_SQLITE_CACHE_MB`: SQLite page cache budget for worker threads like segmenters and touch processors (defaults to a much smaller fraction of the main cache, capped at 32 MiB)
 - `DS_READ_CONCURRENCY`: max concurrent `GET /v1/stream/...` read operations admitted at once (default 4)
 - `DS_SEARCH_CONCURRENCY`: max concurrent `_search` and `_aggregate` request executions admitted at once (default 2)
-- `DS_ASYNC_INDEX_CONCURRENCY`: shared permit pool for routing, exact, and bundled-companion background work (default 1)
+- `DS_ASYNC_INDEX_CONCURRENCY`: shared permit pool for routing, routing-key lexicon, exact, and bundled-companion background work (defaults to `DS_INDEX_BUILDERS` when unset)
 - `DS_MEMORY_LIMIT_MB` / `DS_MEMORY_LIMIT_BYTES`: memory-pressure threshold used to reduce search / async-index concurrency and trigger best-effort GC / heap snapshots (default disabled)
 - `DS_HEAP_SNAPSHOT_PATH`: optional heap snapshot path to write when the memory-pressure threshold is exceeded; unset by default
 
@@ -59,7 +59,7 @@ Concurrency/load-shedding note:
   - ingest/create requests are admitted through `DS_INGEST_CONCURRENCY`
   - read requests are admitted through `DS_READ_CONCURRENCY`
   - `_search` and `_aggregate` requests are admitted through `DS_SEARCH_CONCURRENCY`
-  - routing-key indexing, exact indexing, and bundled-companion builds share one `DS_ASYNC_INDEX_CONCURRENCY` gate
+  - routing-key indexing, routing-key lexicon indexing, exact indexing, and bundled-companion builds share one `DS_ASYNC_INDEX_CONCURRENCY` gate
   - the global index manager schedules routing, lexicon, exact, and bundled-companion build/compaction work kinds in round-robin order onto the shared `DS_INDEX_BUILDERS` pool
 - The memory sampler is now only an adaptive signal:
   - on macOS it confirms high RSS with physical memory from `top -stats pid,mem`
@@ -121,8 +121,7 @@ Indexing note:
 - The main process now owns one `GlobalIndexManager`, one shared
   `IndexBuildWorkerPool`, and one shared `IndexSegmentLocalityManager`.
 - Heavy segment-backed build compute is dispatched to generic worker jobs:
-  - routing-key L0 build
-  - routing-key lexicon L0 build
+  - combined routing-key + routing-key lexicon L0 build
   - exact-secondary L0 build
   - bundled companion per-segment build
 - Routing, lexicon, exact, and companion family adapters still own
@@ -130,6 +129,11 @@ Indexing note:
   own separate timers or dedicated worker pools.
 - All four families share one async-index gate, so they compete for the same
   bounded top-level permit pool instead of each expanding independently.
+- Under backlog, the global index manager keeps draining runnable work kinds
+  until no family makes progress, yielding cooperatively between rounds and
+  using `DS_INDEX_CHECK_MS` only as a safety wake-up interval.
+- Routing-key and routing-key lexicon L0 builds now share one worker pass over
+  the same leased 16-segment window and emit both immutable outputs together.
 - Background routing, exact, lexicon, and companion builders also yield inside
   segment scans. When a foreground read or search request is active, those
   background loops deliberately back off harder so the server can service the
@@ -164,6 +168,41 @@ FROM async_index_actions
 ORDER BY seq DESC
 LIMIT 50;
 ```
+- Every segment build now also records one local SQLite row in
+  `segment_build_actions` with:
+  - `action_kind`
+  - `seq`
+  - `begin_time_ms`
+  - `end_time_ms`
+  - `duration_ms`
+  - input row count / payload bytes
+  - output segment bytes
+  - start/end offsets and segment index
+  - segment-build-specific `detail_json`
+- This log is also informational only:
+  - it is not mirrored to object storage
+  - it is not restored by `--bootstrap-from-r2`
+  - stream delete clears the rows for that stream
+- Segment-build telemetry on worker-thread presets now reflects the actual
+  worker hot path:
+  - DSB3 block encoding uses one preallocated uncompressed buffer and one final
+    output buffer per block
+  - the worker-thread segmenter path does not inject timer-based cooperative
+    yields inside a single segment build
+  - the main-thread segmenter path still retains cooperative yields so request
+    handling is not starved when `DS_SEGMENTER_WORKERS=0`
+  - `detail_json` now splits the hot path into WAL fetch, row materialization,
+    full WAL loop, block encode, write, fsync, rename, commit, and busy-retry
+    wait so the next optimization pass can target the dominant stage
+- A useful inspection query is:
+
+```sql
+SELECT seq, stream, action_kind, status, duration_ms, input_count, input_size_bytes, output_size_bytes,
+       segment_index, start_offset, end_offset, detail_json
+FROM segment_build_actions
+ORDER BY seq DESC
+LIMIT 50;
+```
 - If `429 index_building_behind` is active, background indexing still keeps
   running; the reject path is there to let indexing drain and release required
   local segment leases, not to pause indexing.
@@ -172,6 +211,8 @@ Deleted-stream note:
 - `DELETE /v1/stream/{name}` is a tombstone plus local acceleration scrub, not a synchronous remote object purge.
 - The delete transaction removes routing, exact, lexicon, and bundled-companion state for that stream immediately, and also clears per-stream object-store request-accounting counters.
 - The same delete scrub also clears local `async_index_actions` rows for that
+  stream.
+- The same delete scrub also clears local `segment_build_actions` rows for that
   stream.
 - The delete path clears the same request counters again after the tombstone manifest publish, so recreating the same stream name starts from zeroed request-accounting state.
 - Startup also scans tombstoned streams and repeats the same scrub before async-index loops start, so stale deleted-stream counters or async-index rows do not survive a restart.
@@ -192,7 +233,7 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 
 ### Low memory (0.5–1 GB RAM)
 - `DS_SEGMENT_MAX_BYTES=8MiB`
-- `DS_BLOCK_MAX_BYTES=128KiB`
+- `DS_BLOCK_MAX_BYTES=1MiB`
 - `DS_UPLOAD_CONCURRENCY=2`
 - `DS_INGEST_MAX_BATCH_BYTES=4MiB`
 - `DS_READ_MAX_BYTES=512KiB`
@@ -200,7 +241,7 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 
 ### Medium (1–4 GB RAM)
 - `DS_SEGMENT_MAX_BYTES=16MiB`
-- `DS_BLOCK_MAX_BYTES=256KiB`
+- `DS_BLOCK_MAX_BYTES=1MiB`
 - `DS_UPLOAD_CONCURRENCY=2–8`
 - `DS_INGEST_MAX_BATCH_BYTES=4–8MiB`
 - `DS_READ_MAX_BYTES=1–4MiB`
@@ -233,21 +274,27 @@ Segment geometry across presets:
 presets:
 
 - `256 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
   - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `512 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
   - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `1024 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
   - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `2`, segmenter workers `1`
 - `2048 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `4`, segmenter workers `1`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `4`, segmenter workers `2`
 - `4096 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
   - concurrency: ingest `4`, read `8`, search `4`, async index `2`, index builders `2`, uploads `4`, segmenter workers `2`
 - `8192 MiB`:
+  - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
   - concurrency: ingest `8`, read `16`, search `8`, async index `4`, index builders `4`, uploads `8`, segmenter workers `4`
 

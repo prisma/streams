@@ -10,6 +10,17 @@ Current implementation status:
 - Routing-key L0 build compute now runs through the shared generic
   `DS_INDEX_BUILDERS` worker pool; the main process still owns scheduling,
   SQLite state, and manifest publication.
+- Routing-key and routing-key lexicon L0 builds now share one worker pass over
+  the same leased 16 uploaded segments. The worker emits both immutable
+  payloads together, and the main thread persists them independently through
+  the routing and lexicon family state machines.
+- That shared worker pass now uses a routing-key-only segment scan for L0
+  build work. It does not materialize append timestamps, payload slices, or
+  full per-record objects while walking the segment blocks.
+- Within one routing+lexicon L0 window, the worker now hashes each distinct
+  routing key only once and reuses that fingerprint across repeated records and
+  across the paired lexicon build. Low-cardinality streams no longer pay a
+  keyed-hash + `Map<bigint, ...>` update on every record in the window.
 - Routing-key compaction build compute now also runs through the same generic
   worker pool; the main process still owns run retirement, SQLite state, and
   manifest publication.

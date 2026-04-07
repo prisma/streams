@@ -6,6 +6,34 @@ Current behavior:
 
 - Segment sealing uses a fixed `16 MiB` / `100,000`-row geometry across
   auto-tune presets.
+- DSB3 block size is also fixed across auto-tune presets at `1 MiB`, so build
+  and read behavior does not vary by memory class.
+- The hot block-encoding path now assembles each DSB3 block in a single
+  preallocated uncompressed buffer and a single final output buffer. It does
+  not allocate one intermediate `Uint8Array` per record and then concatenate
+  them before compression.
+- Per-block bloom construction now caches the 32-byte probe mask for each
+  distinct routing key within the block. Repeated low-cardinality keys therefore
+  do not pay the bloom hash again for every record.
+- When segment sealing runs inside `DS_SEGMENTER_WORKERS`, the worker-thread
+  build loop no longer pays timer-based cooperative yields after every flushed
+  block or every `512` rows. The main-thread segmenter path still keeps those
+  yields for foreground safety.
+- Worker-thread segmenters now treat SQLite as read-mostly. They perform the
+  heavy WAL scan, block encode, and local file write themselves, but route
+  `tryClaimSegment`, `commitSealedSegment`, and claim release back through the
+  main-thread SQLite connection to avoid cross-connection writer lock contention
+  with ingest.
+- Every committed segment build now records one local SQLite row in
+  `segment_build_actions`, including duration, input row count, input payload
+  bytes, output segment bytes, start/end offsets, and a build-specific
+  `detail_json`.
+- The segment-build `detail_json` now breaks out:
+  - WAL fetch time
+  - row-materialization / per-row loop time
+  - block encode time
+  - write / fsync / rename time
+  - commit time and any explicit busy-retry wait
 - The segmenter keeps a trailing window over the latest `8` sealed segments for
   the same stream and computes a cheap compressed/logical ratio from stored
   metadata (`size_bytes` / `payload_bytes`).
@@ -79,3 +107,21 @@ measure read latency at the HTTP layer, or build a small custom driver that:
 2) Forces a segment seal
 3) Issues keyed and unkeyed reads
 4) Measures response latency and bytes read
+
+For segment-build tuning on a live node, start with:
+
+```sql
+SELECT seq, stream, duration_ms, input_count, input_size_bytes, output_size_bytes, detail_json
+FROM segment_build_actions
+ORDER BY seq DESC
+LIMIT 50;
+```
+
+For a local reproduction of the worker-thread hot path, run:
+
+```sh
+bun test test/segment_build_perf.test.ts --timeout 30000
+```
+
+That test benchmarks a representative `simple-1`-shaped segment build against
+an embedded legacy baseline and asserts at least a `25%` speedup.

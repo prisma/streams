@@ -9,7 +9,7 @@ import { dsError } from "../util/ds_error.ts";
  *  - local metadata store (streams/segments/manifests/schemas)
  */
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export const DEFAULT_PRAGMAS_SQL = `
 PRAGMA journal_mode = WAL;
@@ -324,6 +324,34 @@ CREATE INDEX IF NOT EXISTS async_index_actions_kind_seq_idx
   ON async_index_actions(action_kind, seq DESC);
 `;
 
+const CREATE_SEGMENT_BUILD_ACTION_TABLES_SQL = `
+CREATE TABLE IF NOT EXISTS segment_build_actions (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  stream TEXT NOT NULL,
+  action_kind TEXT NOT NULL,
+  input_kind TEXT NOT NULL,
+  input_count INTEGER NOT NULL DEFAULT 0,
+  input_size_bytes INTEGER NOT NULL DEFAULT 0,
+  output_count INTEGER NOT NULL DEFAULT 0,
+  output_size_bytes INTEGER NOT NULL DEFAULT 0,
+  segment_index INTEGER NULL,
+  start_offset INTEGER NULL,
+  end_offset INTEGER NULL,
+  begin_time_ms INTEGER NOT NULL,
+  end_time_ms INTEGER NULL,
+  duration_ms INTEGER NULL,
+  status TEXT NOT NULL,
+  error_message TEXT NULL,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS segment_build_actions_stream_seq_idx
+  ON segment_build_actions(stream, seq DESC);
+
+CREATE INDEX IF NOT EXISTS segment_build_actions_kind_seq_idx
+  ON segment_build_actions(action_kind, seq DESC);
+`;
+
 const CREATE_TABLES_V4_SUFFIX_SQL = (suffix: string): string => `
 CREATE TABLE streams_${suffix} (
   stream TEXT PRIMARY KEY,
@@ -447,6 +475,7 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
     db.exec(CREATE_SEARCH_COMPANION_TABLES_SQL);
     db.exec(CREATE_OBJECTSTORE_REQUEST_TABLES_SQL);
     db.exec(CREATE_ASYNC_INDEX_ACTION_TABLES_SQL);
+    db.exec(CREATE_SEGMENT_BUILD_ACTION_TABLES_SQL);
     db.query("INSERT INTO schema_version(version) VALUES (?);").run(SCHEMA_VERSION);
     return;
   }
@@ -503,6 +532,8 @@ export function initSchema(db: SqliteDatabase, opts: { skipMigrations?: boolean 
       migrateV23ToV24(db);
     } else if (version === 24) {
       migrateV24ToV25(db);
+    } else if (version === 25) {
+      migrateV25ToV26(db);
     } else {
       throw dsError(`unexpected schema version: ${version} (expected ${SCHEMA_VERSION})`);
     }
@@ -960,6 +991,14 @@ function migrateV24ToV25(db: SqliteDatabase): void {
   const tx = db.transaction(() => {
     db.exec(CREATE_ASYNC_INDEX_ACTION_TABLES_SQL);
     db.exec(`UPDATE schema_version SET version = 25;`);
+  });
+  tx();
+}
+
+function migrateV25ToV26(db: SqliteDatabase): void {
+  const tx = db.transaction(() => {
+    db.exec(CREATE_SEGMENT_BUILD_ACTION_TABLES_SQL);
+    db.exec(`UPDATE schema_version SET version = 26;`);
   });
   tx();
 }

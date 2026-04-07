@@ -400,7 +400,48 @@ Notes:
 
 ---
 
-### 2.16 `stream_profiles`
+### 2.16 `segment_build_actions`
+Node-local log of WAL-to-segment build actions.
+
+Columns:
+- `seq INTEGER PRIMARY KEY AUTOINCREMENT`
+- `stream TEXT NOT NULL`
+- `action_kind TEXT NOT NULL`
+- `input_kind TEXT NOT NULL`
+- `input_count INTEGER NOT NULL`
+- `input_size_bytes INTEGER NOT NULL`
+- `output_count INTEGER NOT NULL`
+- `output_size_bytes INTEGER NOT NULL`
+- `segment_index INTEGER NULL`
+- `start_offset INTEGER NULL`
+- `end_offset INTEGER NULL`
+- `begin_time_ms INTEGER NOT NULL`
+- `end_time_ms INTEGER NULL`
+- `duration_ms INTEGER NULL`
+- `status TEXT NOT NULL`
+- `error_message TEXT NULL`
+- `detail_json TEXT NOT NULL`
+
+Indexes:
+- `CREATE INDEX segment_build_actions_stream_seq_idx ON segment_build_actions(stream, seq DESC);`
+- `CREATE INDEX segment_build_actions_kind_seq_idx ON segment_build_actions(action_kind, seq DESC);`
+
+Notes:
+- every committed segment build records one row here
+- input counts/bytes track WAL rows and payload bytes consumed by the build
+- output bytes track the resulting local segment file size
+- `detail_json` stores build-shaping details such as pending backlog before the
+  build, seal target, block count, compression ratio, stop reason, WAL fetch /
+  row-materialization timing, and any busy-retry wait observed before the final
+  metadata commit
+- this is local observability only; it is not published to object storage and is
+  not restored by `--bootstrap-from-r2`
+- stream delete clears these rows so recreating the same stream name starts with
+  a fresh local history
+
+---
+
+### 2.17 `stream_profiles`
 Stores non-generic profile configuration.
 
 Columns:
@@ -416,7 +457,7 @@ Notes:
 
 ---
 
-### 2.17 `stream_touch_state`
+### 2.18 `stream_touch_state`
 Rebuildable helper state for touch-enabled `state-protocol` streams.
 
 Columns:

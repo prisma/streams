@@ -84,7 +84,7 @@ async function runOnce(workerCount: number): Promise<{ mbps: number; durationMs:
     lastOffsets.set(stream, offset - 1n);
   }
   const start = Date.now();
-  const segmenter = workerCount > 0 ? new SegmenterWorkerPool(cfg, workerCount) : new Segmenter(cfg, db);
+  const segmenter = workerCount > 0 ? new SegmenterWorkerPool(cfg, db, workerCount) : new Segmenter(cfg, db);
   segmenter.start();
   const deadlineMs = 180_000;
   for (const [stream, lastOffset] of lastOffsets.entries()) {

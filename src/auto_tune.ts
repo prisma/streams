@@ -1,5 +1,6 @@
 export type AutoTuneConfig = {
   segmentMaxMiB: number;
+  blockMaxKiB: number;
   segmentTargetRows: number;
   sqliteCacheMb: number;
   workerSqliteCacheMb: number;
@@ -33,6 +34,10 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     // 100k-row seal thresholds so upload throughput is not dominated by many
     // tiny compressed segment objects.
     segmentMaxMiB: 16,
+    // Block geometry is also fixed across presets. This keeps the segment build
+    // path and read trade-offs predictable instead of introducing another
+    // memory-preset-specific format knob.
+    blockMaxKiB: 1024,
     segmentTargetRows: 100_000,
     sqliteCacheMb: Math.max(8, Math.floor(p / 16)),
     workerSqliteCacheMb: Math.max(8, Math.min(32, Math.floor(p / 128))),
@@ -52,7 +57,7 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     // have enough headroom for append, segment cut, upload, and companion work
     // to overlap aggressively under the GH Archive "all" workload.
     indexBuilders: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    segmenterWorkers: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
+    segmenterWorkers: p >= 8192 ? 4 : p >= 2048 ? 2 : 1,
     uploadConcurrency: p >= 8192 ? 8 : p >= 2048 ? 4 : p >= 1024 ? 2 : 1,
     searchCompanionBatchSegments: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
     searchCompanionYieldBlocks: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,

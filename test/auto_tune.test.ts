@@ -5,8 +5,10 @@ describe("auto tune presets", () => {
   test("keeps ingest batch and queue budgets conservative on small presets", () => {
     expect(memoryLimitForPreset(256)).toBe(300);
     expect(tuneForPreset(256).segmentMaxMiB).toBe(16);
+    expect(tuneForPreset(256).blockMaxKiB).toBe(1024);
     expect(tuneForPreset(256).segmentTargetRows).toBe(100_000);
     expect(tuneForPreset(1024).segmentMaxMiB).toBe(16);
+    expect(tuneForPreset(1024).blockMaxKiB).toBe(1024);
     expect(tuneForPreset(1024).segmentTargetRows).toBe(100_000);
     expect(tuneForPreset(1024).ingestBatchMb).toBe(4);
     expect(tuneForPreset(1024).ingestQueueMb).toBe(16);
@@ -28,16 +30,18 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(2048).readConcurrency).toBe(4);
     expect(tuneForPreset(2048).searchConcurrency).toBe(2);
     expect(tuneForPreset(2048).asyncIndexConcurrency).toBe(1);
-    expect(tuneForPreset(2048).segmenterWorkers).toBe(1);
+    expect(tuneForPreset(2048).segmenterWorkers).toBe(2);
     expect(tuneForPreset(2048).uploadConcurrency).toBe(4);
     expect(tuneForPreset(2048).indexBuilders).toBe(1);
     expect(tuneForPreset(2048).lexiconIndexCacheMb).toBe(64);
     expect(tuneForPreset(2048).searchCompanionBatchSegments).toBe(1);
     expect(tuneForPreset(2048).searchCompanionYieldBlocks).toBe(1);
+    expect(tuneForPreset(2048).blockMaxKiB).toBe(1024);
   });
 
   test("preserves larger ingest presets on bigger hosts", () => {
     expect(tuneForPreset(4096).segmentMaxMiB).toBe(16);
+    expect(tuneForPreset(4096).blockMaxKiB).toBe(1024);
     expect(tuneForPreset(4096).segmentTargetRows).toBe(100_000);
     expect(tuneForPreset(4096).ingestBatchMb).toBe(16);
     expect(tuneForPreset(4096).ingestQueueMb).toBe(64);
@@ -51,5 +55,14 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(4096).lexiconIndexCacheMb).toBe(128);
     expect(tuneForPreset(4096).searchCompanionBatchSegments).toBe(2);
     expect(tuneForPreset(4096).searchCompanionYieldBlocks).toBe(2);
+  });
+
+  test("keeps DSB3 block size fixed across presets", () => {
+    expect(tuneForPreset(256).blockMaxKiB).toBe(1024);
+    expect(tuneForPreset(512).blockMaxKiB).toBe(1024);
+    expect(tuneForPreset(1024).blockMaxKiB).toBe(1024);
+    expect(tuneForPreset(2048).blockMaxKiB).toBe(1024);
+    expect(tuneForPreset(4096).blockMaxKiB).toBe(1024);
+    expect(tuneForPreset(8192).blockMaxKiB).toBe(1024);
   });
 });
