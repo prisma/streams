@@ -129,6 +129,7 @@ type GhArchiveSchemaBuildOptions = {
   onlyIndex?: GhArchiveOnlyIndexSelector | null;
   onlyIndexes?: GhArchiveOnlyIndexSelector[];
   routingOnly?: boolean;
+  routingAndTimeOnly?: boolean;
   bareStream?: boolean;
 };
 
@@ -601,6 +602,7 @@ export function resolveGhArchiveStreamTargets(
     goldenStream?: boolean;
     goldenStreamName?: string;
     goldenStreamNoRoutingKey?: boolean;
+    goldenStreamRoutingAndTimeOnly?: boolean;
     goldenStreamFullIndex?: boolean;
   } = {}
 ): GhArchiveDemoStreamTarget[] {
@@ -609,7 +611,13 @@ export function resolveGhArchiveStreamTargets(
       {
         stream: opts.goldenStreamName ?? GH_ARCHIVE_DEFAULT_GOLDEN_STREAM,
         selector: null,
-        schema: opts.goldenStreamNoRoutingKey ? { bareStream: true } : opts.goldenStreamFullIndex ? {} : { routingOnly: true },
+        schema: opts.goldenStreamNoRoutingKey
+          ? { bareStream: true }
+          : opts.goldenStreamFullIndex
+            ? {}
+            : opts.goldenStreamRoutingAndTimeOnly
+              ? { routingAndTimeOnly: true }
+              : { routingOnly: true },
       },
     ];
   }
@@ -638,6 +646,56 @@ export function buildGhArchiveRoutingOnlyUpdate(): Record<string, unknown> {
     routingKey: {
       jsonPointer: "/repoName",
       required: false,
+    },
+  };
+}
+
+export function buildGhArchiveRoutingAndTimeOnlyUpdate(): Record<string, unknown> {
+  return {
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "ghArchiveId",
+        "eventTime",
+        "eventType",
+        "public",
+        "isBot",
+        "commitCount",
+        "payloadBytes",
+        "payloadKb",
+        "archiveHour",
+      ],
+      properties: {
+        ghArchiveId: { type: "string" },
+        eventTime: { type: "string", format: "date-time" },
+        eventType: { type: "string" },
+        public: { type: "boolean" },
+        isBot: { type: "boolean" },
+        actorLogin: { type: ["string", "null"] },
+        repoName: { type: ["string", "null"] },
+        repoOwner: { type: ["string", "null"] },
+        orgLogin: { type: ["string", "null"] },
+        action: { type: ["string", "null"] },
+        refType: { type: ["string", "null"] },
+        title: { type: ["string", "null"] },
+        message: { type: ["string", "null"] },
+        body: { type: ["string", "null"] },
+        archiveHour: { type: "string" },
+        commitCount: { type: "integer", minimum: 0 },
+        payloadBytes: { type: "integer", minimum: 0 },
+        payloadKb: { type: "number", minimum: 0 },
+      },
+    },
+    routingKey: {
+      jsonPointer: "/repoName",
+      required: false,
+    },
+    search: {
+      primaryTimestampField: "eventTime",
+      fields: {
+        eventTime: buildMinimalTimestampSearchField(),
+      },
     },
   };
 }
@@ -1036,6 +1094,15 @@ async function createConfiguredStream(
     return;
   }
 
+  if (opts.routingAndTimeOnly) {
+    await fetchJson(client, `${streamUrl(baseUrl, stream)}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildGhArchiveRoutingAndTimeOnlyUpdate()),
+    });
+    return;
+  }
+
   if (opts.bareStream) {
     return;
   }
@@ -1187,6 +1254,7 @@ export async function runGhArchiveDemo(
   const goldenStream = hasFlag(args, "--golden-stream");
   const goldenStreamName = parseStringArg(args, "--golden-stream-name", GH_ARCHIVE_DEFAULT_GOLDEN_STREAM);
   const goldenStreamNoRoutingKey = hasFlag(args, "--golden-stream-no-routing-key");
+  const goldenStreamRoutingAndTimeOnly = hasFlag(args, "--golden-stream-routing-and-time-only");
   const goldenStreamFullIndex = hasFlag(args, "--golden-stream-full-index");
   const resumeStream = hasFlag(args, "--resume-stream");
   const onlyIndexes = parseOnlyIndexArgs(args);
@@ -1199,8 +1267,17 @@ export async function runGhArchiveDemo(
   if (goldenStreamNoRoutingKey && !goldenStream) {
     throw dsError("--golden-stream-no-routing-key requires --golden-stream");
   }
+  if (goldenStreamRoutingAndTimeOnly && !goldenStream) {
+    throw dsError("--golden-stream-routing-and-time-only requires --golden-stream");
+  }
   if (goldenStreamFullIndex && !goldenStream) {
     throw dsError("--golden-stream-full-index requires --golden-stream");
+  }
+  if (goldenStreamRoutingAndTimeOnly && goldenStreamNoRoutingKey) {
+    throw dsError("--golden-stream-routing-and-time-only cannot be combined with --golden-stream-no-routing-key");
+  }
+  if (goldenStreamRoutingAndTimeOnly && goldenStreamFullIndex) {
+    throw dsError("--golden-stream-routing-and-time-only cannot be combined with --golden-stream-full-index");
   }
   if (goldenStreamFullIndex && goldenStreamNoRoutingKey) {
     throw dsError("--golden-stream-full-index cannot be combined with --golden-stream-no-routing-key");
@@ -1211,6 +1288,7 @@ export async function runGhArchiveDemo(
     goldenStream,
     goldenStreamName,
     goldenStreamNoRoutingKey,
+    goldenStreamRoutingAndTimeOnly,
     goldenStreamFullIndex,
   });
   const client: GhArchiveHttpClient = {

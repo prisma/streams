@@ -70,6 +70,12 @@ Optional flags:
   - `routingKey: { jsonPointer: "/repoName", required: false }`
   - `search.primaryTimestampField = "eventTime"`
   - the full GH Archive exact/column/fts/rollup search config on that one stream
+- `--golden-stream-routing-and-time-only`
+  Only valid with `--golden-stream`. Creates exactly one stream with:
+  - `routingKey: { jsonPointer: "/repoName", required: false }`
+  - `search.primaryTimestampField = "eventTime"`
+  - only the `eventTime` search field
+  It does not install exact, FTS, rollup, or other secondary search fields.
 - `--golden-stream-no-routing-key`
   Only valid with `--golden-stream`. Leaves the stream completely bare:
   no schema, no routing key, and no search config.

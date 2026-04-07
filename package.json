@@ -46,6 +46,7 @@
     "test": "bun test",
     "test:ci": "node scripts/run-bun-tests-sequential.mjs",
     "test:large-index-filter": "DS_LARGE_INDEX_FILTER=1 DS_LARGE_INDEX_FILTER_SEGMENT_BYTES=16777216 bun test test/large_index_filter.test.ts",
+    "test:routing-key-memory": "DS_ROUTING_KEY_MEMORY=1 bun test test/routing_key_memory_overhead.test.ts",
     "typecheck": "tsc --noEmit",
     "test:node-local-package": "node scripts/test-node-local-package.mjs",
     "test:bun-local-package": "node scripts/test-bun-local-package.mjs",
@@ -59,7 +60,8 @@
     "demo:ingest": "bun run experiments/demo/wal_demo_ingest.ts",
     "demo:subscribe": "bun run experiments/demo/wal_demo_subscribe.ts",
     "demo:live-fields": "bun run experiments/demo/live_fields_app.ts",
-    "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts"
+    "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts",
+    "demo:simple": "bun run experiments/demo/simple_ingester.ts"
   },
   "exports": {
     "./local": {

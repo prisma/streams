@@ -11,6 +11,7 @@ import {
   GH_ARCHIVE_ONLY_INDEX_SELECTORS,
   buildGhArchiveArchiveUrl,
   buildGhArchiveIndexedStreamName,
+  buildGhArchiveRoutingAndTimeOnlyUpdate,
   buildGhArchiveRoutingOnlyUpdate,
   buildGhArchiveSchemaUpdate,
   buildGhArchiveStreamName,
@@ -226,6 +227,18 @@ describe("gharchive demo", () => {
     expect(parsed.value.search).toBeUndefined();
   });
 
+  test("supports a routing-and-time-only schema mode for golden-stream", () => {
+    const parsed = parseSchemaUpdateResult(buildGhArchiveRoutingAndTimeOnlyUpdate());
+    expect(Result.isOk(parsed)).toBe(true);
+    if (Result.isError(parsed)) return;
+    expect(parsed.value.routingKey).toEqual({ jsonPointer: "/repoName", required: false });
+    expect(parsed.value.search?.primaryTimestampField).toBe("eventTime");
+    expect(Object.keys(parsed.value.search?.fields ?? {})).toEqual(["eventTime"]);
+    expect(parsed.value.search?.fields.eventTime.column).toBeUndefined();
+    expect(parsed.value.search?.fields.eventTime.sortable).toBeUndefined();
+    expect(parsed.value.search?.rollups).toBeUndefined();
+  });
+
   test("supports a full-index golden-stream target mode", () => {
     const targets = resolveGhArchiveStreamTargets("ignored", "all", {
       goldenStream: true,
@@ -237,6 +250,21 @@ describe("gharchive demo", () => {
         stream: "stream-3",
         selector: null,
         schema: {},
+      },
+    ]);
+  });
+
+  test("supports a routing-and-time-only golden-stream target mode", () => {
+    const targets = resolveGhArchiveStreamTargets("ignored", "all", {
+      goldenStream: true,
+      goldenStreamName: "stream-4",
+      goldenStreamRoutingAndTimeOnly: true,
+    });
+    expect(targets).toEqual([
+      {
+        stream: "stream-4",
+        selector: null,
+        schema: { routingAndTimeOnly: true },
       },
     ]);
   });
@@ -768,6 +796,56 @@ describe("gharchive demo", () => {
         expect(details.schema.search).toBeUndefined();
         expect(details.index_status.routing_key_index.configured).toBe(false);
         expect(details.index_status.routing_key_lexicon.configured).toBe(false);
+        expect(details.index_status.exact_indexes).toEqual([]);
+        expect(details.index_status.search_families).toEqual([]);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    20_000
+  );
+
+  test(
+    "runs end to end in golden-stream routing-and-time-only mode",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-gharchive-demo-golden-routing-time-"));
+      const baseUrl = "http://127.0.0.1:8787";
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 512,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 0,
+        segmentFooterCacheEntries: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        const summary = await runGhArchiveDemo([
+          "day",
+          "--url",
+          baseUrl,
+          "--golden-stream",
+          "--golden-stream-name",
+          "golden-stream-5",
+          "--golden-stream-routing-and-time-only",
+        ], {
+          fetchImpl: makeDemoFetch(app, baseUrl),
+        });
+
+        expect(summary.streamCount).toBe(1);
+        expect(summary.streams).toEqual(["golden-stream-5"]);
+
+        const detailsRes = await app.fetch(new Request("http://local/v1/stream/golden-stream-5/_details", { method: "GET" }));
+        expect(detailsRes.status).toBe(200);
+        const details = await detailsRes.json();
+        expect(details.schema.routingKey).toEqual({ jsonPointer: "/repoName", required: false });
+        expect(details.schema.search.primaryTimestampField).toBe("eventTime");
+        expect(Object.keys(details.schema.search.fields)).toEqual(["eventTime"]);
+        expect(details.index_status.routing_key_index.configured).toBe(true);
+        expect(details.index_status.routing_key_lexicon.configured).toBe(true);
         expect(details.index_status.exact_indexes).toEqual([]);
         expect(details.index_status.search_families).toEqual([]);
       } finally {
