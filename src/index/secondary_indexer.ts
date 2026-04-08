@@ -43,6 +43,7 @@ import type { CompanionSectionKind } from "../search/companion_format";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
+const SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG = 2;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY = 2;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 4;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
@@ -52,8 +53,7 @@ const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "sp
 const EVLOG_EXACT_BATCH_GROUPS = [
   ["level", "service", "environment"],
   ["timestamp"],
-  ["requestId"],
-  ["traceId"],
+  ["requestId", "traceId"],
   ["spanId"],
   ["path"],
   ["method", "status", "duration"],
@@ -94,6 +94,11 @@ export function secondaryCompactionFanout(indexName: string, configuredFanout: n
   if (configuredFanout <= 1) return configuredFanout;
   if (!EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return configuredFanout;
   return Math.max(2, Math.min(configuredFanout, SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY));
+}
+
+export function secondaryBuildDispatchConcurrency(profile: string | null | undefined, batchCount: number): number {
+  if ((profile ?? null) !== "evlog") return 1;
+  return Math.max(1, Math.min(SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG, batchCount));
 }
 
 function binarySearch(values: bigint[], needle: bigint): number {
@@ -350,26 +355,63 @@ export class SecondaryIndexManager {
           }
         }
       }
-      for (const index of configured) {
-        try {
-          const buildRes = await this.maybeBuildRuns(stream, index);
-          if (Result.isError(buildRes)) {
-            this.buildQueue.add(stream);
-            break;
-          }
-        } catch (e) {
-          const msg = String((e as any)?.message ?? e).toLowerCase();
-          if (!msg.includes("database has closed") && !msg.includes("closed database") && !msg.includes("statement has finalized")) {
-            console.error("secondary index build failed", stream, index.name, e);
-          }
-          this.buildQueue.add(stream);
-          break;
-        }
+      const batchLeaders = this.selectBuildBatchLeaders(stream, configured, registry.search?.profile ?? null);
+      let failed = false;
+      const gate = new ConcurrencyGate(secondaryBuildDispatchConcurrency(registry.search?.profile ?? null, batchLeaders.length));
+      await Promise.all(
+        batchLeaders.map((index) =>
+          gate.run(async () => {
+            if (failed) return;
+            try {
+              const buildRes = await this.maybeBuildRuns(stream, index);
+              if (Result.isError(buildRes)) failed = true;
+            } catch (e) {
+              const msg = String((e as any)?.message ?? e).toLowerCase();
+              if (
+                !msg.includes("database has closed") &&
+                !msg.includes("closed database") &&
+                !msg.includes("statement has finalized")
+              ) {
+                console.error("secondary index build failed", stream, index.name, e);
+              }
+              failed = true;
+            }
+          })
+        )
+      );
+      if (failed) {
+        this.buildQueue.add(stream);
       }
       return true;
     } finally {
       this.runningBuildTick = false;
     }
+  }
+
+  private selectBuildBatchLeaders(
+    stream: string,
+    configured: SecondaryIndexField[],
+    profile: string | null
+  ): SecondaryIndexField[] {
+    const states = new Map(this.db.listSecondaryIndexStates(stream).map((state) => [state.index_name, state.indexed_through]));
+    const leaders: SecondaryIndexField[] = [];
+    const seen = new Set<string>();
+    for (const configuredIndex of configured) {
+      const indexedThrough = states.get(configuredIndex.name) ?? 0;
+      const peerIndexes = configured.filter((entry) => (states.get(entry.name) ?? 0) === indexedThrough);
+      const batchIndexes =
+        profile === "evlog"
+          ? this.getEvlogPeerBatch(configuredIndex.name, peerIndexes)
+          : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
+      const batchKey = batchIndexes
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b))
+        .join(",");
+      if (seen.has(batchKey)) continue;
+      seen.add(batchKey);
+      leaders.push(configuredIndex);
+    }
+    return leaders;
   }
 
   async runOneCompactionTask(): Promise<boolean> {

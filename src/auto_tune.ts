@@ -52,11 +52,11 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     ingestConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
     readConcurrency: p >= 8192 ? 16 : p >= 4096 ? 8 : p >= 1024 ? 4 : 2,
     searchConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
-    asyncIndexConcurrency: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    // Keep <=2 GiB presets single-lane for background work. These hosts do not
-    // have enough headroom for append, segment cut, upload, and companion work
-    // to overlap aggressively under the GH Archive "all" workload.
-    indexBuilders: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
+    // The exact/companion worker paths are now file-backed and no longer hold
+    // large transient buffers in anonymous RSS, so 2 GiB hosts can sustain a
+    // second async index lane without breaching the current live memory target.
+    asyncIndexConcurrency: p >= 8192 ? 4 : p >= 2048 ? 2 : 1,
+    indexBuilders: p >= 8192 ? 4 : p >= 2048 ? 2 : 1,
     segmenterWorkers: p >= 8192 ? 4 : p >= 2048 ? 2 : 1,
     uploadConcurrency: p >= 8192 ? 8 : p >= 2048 ? 4 : p >= 1024 ? 2 : 1,
     searchCompanionBatchSegments: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,

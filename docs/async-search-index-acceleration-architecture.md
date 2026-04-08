@@ -24,28 +24,28 @@ It also uses the latest production evidence from `evlog-1`:
 
 - unified `search_segment_build` is shipped and standalone companion builds no
   longer race exact on fresh `evlog` segments
-- exact secondary L0 is now the main steady-state indexing cost on the live
-  box, but the current shipped `evlog` exact L0 jobs are now all under `5s` on
-  the live node:
-  - `level,service,environment`: about `1.35-1.72s`
-  - `method,status,duration`: about `2.37-3.84s`
-  - `requestId`: about `2.5-3.6s`
-  - `spanId`: about `2.5-4.4s`
-  - `timestamp`: about `1.4-2.2s`
+- exact secondary L0 is still the main steady-state indexing cost on the live
+  box, but the slow path is now concentrated in one owner batch instead of the
+  whole exact family:
+  - `level,service,environment`: about `1.9s`
+  - `timestamp`: about `1.8s`
+  - `requestId`: about `3.0s`
+  - `traceId`: about `2.3s`
+  - `spanId`: about `3.3s`
+  - `path`: about `4.5s`
+  - `method,status,duration`: about `7.1-7.3s`
 - bundled companion build is no longer the fresh-segment bottleneck because its
   work is piggybacked from exact on fresh `evlog` segments
-- exact compaction for high-cardinality fields such as `requestId` is still the
-  main compaction outlier, but the worker-side merge CPU is no longer the
-  dominant phase
-- the latest exact-compaction telemetry shows:
-  - `source_prepare_ms` in the low single-digit seconds
-  - `worker_build_ms` under `1s` for fresh `requestId` level-0->1 compaction
-  - `finalize_ms` still around `10s`, which is now the main compaction
-    bottleneck
+- the latest exact-compaction telemetry shows the high-cardinality compaction
+  path is no longer the dominant outlier:
+  - warm `requestId` compaction is about `4.1s`
+  - fresh `path` / `spanId` / `traceId` compactions are now about `1.6-2.6s`
+  - compaction source preparation is effectively free on warm cache and no
+    longer the main memory-risk path
 - the server has already been OOM-killed more than once with anonymous RSS in
   the `3+ GiB` range, so RSS shape still matters as much as raw wall time
-- the latest bundled `.fts` memory-shape fix brought current RSS back down into
-  the `300 MiB` range with restart-window spikes staying under `1 GiB`
+- the latest bundled `.fts` memory-shape fix plus direct-to-file exact source
+  staging brought fresh-process RSS back into the target band
 - the latest exact-L0 persist rewrite overlapped piggyback companion staging
   with exact-run upload and removed a duplicate standalone companion upload,
   which lowered the owner-batch wall time modestly but proved that exact L0 is
@@ -58,9 +58,19 @@ It also uses the latest production evidence from `evlog-1`:
   stable fresh companion owner on `evlog`, so lagging batches such as
   `level,service,environment` no longer inherit companion work just because
   they happen to be the current slowest exact frontier
-- after that fix, the live node is now staying below the RSS safety target as
-  well: recent current RSS is about `589 MiB` with restart-window high-water
-  about `600 MiB`
+- the newest `evlog` exact dispatch change now advances unique same-frontier
+  exact batches concurrently on the same stream, bounded to `2` lanes on
+  `2 GiB+` presets
+- the `2 GiB` auto-tune preset now also uses `2` async-index permits and
+  `2` generic index-build workers so that bounded per-stream exact dispatch can
+  actually overlap on the smallest supported production host class
+- on the live `2 GiB` box, that change improved aggregate exact frontier
+  progress over the same `30s` window from `11` indexed-segment advances to
+  `14` while the uploaded head still advanced by `7` segments, which is about
+  a `27%` throughput improvement
+- after the same restart, current RSS sat around `298-632 MiB` with
+  restart-window high-water about `892 MiB`, so the node stayed below the
+  `1 GiB` spike target while running two async exact lanes
 
 ## Summary
 
@@ -136,23 +146,20 @@ search backlog problem.
 
 The next big wins are now more targeted:
 
-1. **High-cardinality exact compaction should get comfortably below `5s`.**
-   The remaining outlier is now `requestId`, with recent live samples still
-   around `5.6s`.
-2. **High-cardinality exact fields should adopt shard mode or an equivalent
-   size-bounding strategy.** `requestId`, `traceId`, `spanId`, and `path`
-   still create oversized compaction artifacts and upload variance even after
-   the streaming merge rewrite.
-3. **Unified search-build handoff should stay file-backed and ownership-aware.**
+1. **The `method,status,duration` owner batch should get comfortably below
+   `5s`.** It is now the only regular exact-L0 batch still above the target on
+   the live node.
+2. **Unified search-build handoff should stay file-backed and ownership-aware.**
    The coordinator must not retain large completed payloads in anonymous RSS,
    and each consumer must get explicit ownership of any temp files it uses.
-4. **Cold high-cardinality exact compaction is now the next outlier.** Warm
-   `requestId` compaction is back under `5s`, but cold `path` / `spanId` /
-   `traceId` compactions with many cache fills can still exceed the target.
-5. **Steady-state RSS is now healthy again, but it must stay that way.** The
-   direct-to-file source path dropped the live server from roughly `1.16 GiB`
-   current RSS to roughly `464 MiB` after restart, with a fresh high-water
-   around `590 MiB`.
+3. **Exact frontier catch-up still matters more than single-job latency.**
+   Exact compaction is now back under the `5s` ceiling, but the exact frontier
+   is still far behind the uploaded head. The next wins should reduce total
+   exact owner-batch work per segment and keep both async lanes busy.
+4. **Steady-state RSS is now healthy again, but it must stay that way.** The
+   latest live restart stayed in roughly the `300-600 MiB` band with
+   restart-window high-water below `900 MiB`. Future exact-L0 work must not
+   give that margin back.
 
 So the recommended architecture is now staged:
 
@@ -164,11 +171,11 @@ So the recommended architecture is now staged:
 - keep standalone companion builds as stale-hole repair only below the exact
   frontier
 - keep the shipped streaming exact compaction path
-- keep the shipped exact-L0 fast path, because live `evlog` exact-L0 jobs are
-  now all under `5s`
-- then reduce high-cardinality exact compaction wall time and artifact size
-- then add shard mode or another hard size-bound for the worst exact fields
-- then continue reducing retained anonymous RSS from exact-run source handling
+- keep the shipped exact-L0 fast path and the new two-lane `2 GiB` dispatch,
+  because most live `evlog` exact-L0 jobs are now under `5s`
+- then reduce the `method,status,duration` owner-batch wall time below `5s`
+- then continue improving exact frontier catch-up without giving back the RSS
+  gains
 
 ## Objective
 
@@ -249,19 +256,30 @@ The newest shipped change tightens the unified exact side further:
 That removes one important anonymous-RSS spike source and cuts wasted exact
 work on `evlog` significantly.
 
-### 2. Exact secondary L0 is now the main steady-state cost
+### 2. Exact secondary L0 is now mostly a throughput problem, not a family-wide latency problem
 
-The current exact L0 batch remains expensive even after the raw-byte extractor
-work:
+The current exact L0 shape is much better than the original `11-13s` jobs:
 
-- fresh live jobs are still about `11-13s`
-- exact coverage is far behind the uploaded head
-- the slowest exact fields can remain stalled while faster fields inch forward
+- `level,service,environment`: about `1.9s`
+- `timestamp`: about `1.8s`
+- `requestId`: about `3.0s`
+- `traceId`: about `2.3s`
+- `spanId`: about `3.3s`
+- `path`: about `4.5s`
+- `method,status,duration`: about `7.1-7.3s`
 
-That makes exact L0 throughput, not companion extraction, the main steady-state
-reason indexing is not catching up.
+So the exact family is no longer broadly too slow. The remaining problem is:
 
-### 3. RequestId compaction is now streaming, but it is still too expensive
+- the companion-owning `method,status,duration` batch is still too slow
+- aggregate exact frontier progress is still below the uploaded-head growth
+  rate unless the host can overlap more than one exact batch
+
+That is why the latest shipped change enables bounded parallel dispatch of
+unique `evlog` exact batches on the same stream and raises the `2 GiB` preset
+to `2` async-index lanes / `2` index-build workers. On the live node that
+improved exact frontier progress by about `27%` over the same `30s` window.
+
+### 3. High-cardinality exact compaction is now in-bounds
 
 `secondary_compaction_build.ts` now:
 
@@ -286,21 +304,17 @@ the source side and make synchronous cleanup cheaper:
   bounded parallelism instead of serial waits
 
 So the current exact-compaction OOM risk is no longer "N large input runs plus
-one large merged output all live in JS memory at once." The remaining risks are
-now dominated by worker-side merge state for the worst high-cardinality fields,
-especially `requestId`.
+one large merged output all live in JS memory at once." The latest live
+compactions are now under the `5s` ceiling as well:
 
-The newest phase timing makes the remaining problem even clearer:
+- `path`: about `1.6s`
+- `spanId`: about `2.4s`
+- `traceId`: about `2.6s`
+- `requestId`: about `3.9-4.1s`
 
-- `worker_build_ms` is now sub-second for a fresh `requestId` compaction sample
-- `source_prepare_ms` is meaningful but not dominant
-- `finalize_ms` is still around `10s`
-
-So the next step for exact compaction is no longer "fix the merge algorithm."
-It is:
-
-1. make the remaining publish/finalize path cheaper
-2. then add shard mode for the worst fields
+That means exact compaction is no longer the first optimization target. Shard
+mode for the highest-cardinality exact fields is still a valid future design,
+but it is now a scale / variance hedge rather than the immediate blocker.
 
 The newest shipped source-staging change also split the source path by field
 shape:
@@ -340,21 +354,30 @@ those completed results could linger in anonymous RSS after the worker finished.
 
 Production telemetry now shows two remaining issues instead:
 
-- exact L0 is still too slow when it builds even the correct frontier batch
-- exact compaction worker time is acceptable while finalization on the main
-  thread is still too slow
+- the `method,status,duration` exact-L0 owner batch is still too slow
+- aggregate exact frontier catch-up still needs more work than single-job
+  latency alone
 
-### 5. The scheduler is no longer the primary bottleneck
+### 5. The scheduler is no longer the primary bottleneck, but the `2 GiB` preset can no longer stay single-lane
 
 The round-robin global scheduler is a good fairness mechanism.
 It is not the first thing to change now.
 
-The main remaining cost is inside the work items:
+The main remaining cost is still inside the work items, especially the exact
+owner batch. But the live `evlog-1` evidence also showed that one async lane on
+the `2 GiB` preset was now artificially suppressing exact catch-up after the
+RSS fixes landed.
 
-- exact L0 still takes too long per batch
-- exact compaction finalization still spends too long on main-thread post-build
-  work
-- high-cardinality exact fields still create too much compaction variance
+So the scheduler itself does not need another redesign, but the smallest
+production preset does need enough async capacity to overlap two exact batches
+for the same stream. That is now shipped:
+
+- unique same-frontier `evlog` exact batches can dispatch in parallel on one
+  stream
+- the `2 GiB` preset now provides `2` async-index permits and `2` index-build
+  workers
+- the shared global async gate still bounds total background overlap across all
+  families
 
 It is still true that `evlog` would benefit from one unified per-segment search
 build in the long term, but the scheduler does not need another redesign before
@@ -1188,27 +1211,32 @@ Observed result so far:
   insufficient win
 - the newest publish-gating change made the non-owner exact batches much
   cheaper:
-  - `timestamp` dropped from about `3.0s` into about `1.6-3.1s`
-  - `method,status,duration` now lands around `2.6-4.6s`
-  - `requestId` now lands around `3.3s`
+  - `timestamp` now lands around `1.8-2.0s`
+  - `requestId` now lands around `3.0s`
+  - `traceId` now lands around `2.3s`
+  - `spanId` now lands around `3.3s`
+  - `path` now lands around `4.5s`
 - the newest fixed-owner change made the lagging `level,service,environment`
   batch much cheaper as well:
   - before: about `6.0-7.0s`
-  - after: about `1.45-1.72s`
+  - after: about `1.9s`
   - local perf proof: the same lagging batch is more than `25%` faster when it
     does not rebuild companion payloads
-- the current live `evlog` exact L0 band is now fully below `5s`
-- on the live node, the current RSS after these exact-L0 and compaction
-  changes is back in the `400-500 MiB` range with restart-window high-water in
-  the `450-560 MiB` range, which is far below the prior `3+ GiB` OOM shape
+- the newest bounded-dispatch + `2 GiB` async-lane increase improved exact
+  frontier progress over the same `30s` live window from `11` indexed-segment
+  advances to `14` while the uploaded head still moved by `7` segments
+- the remaining exact-L0 outlier is now only the companion-owning
+  `method,status,duration` batch at about `7.1-7.3s`
+- on the live node, the latest restart kept current RSS in roughly the
+  `300-650 MiB` band with restart-window high-water below `900 MiB`, which is
+  far below the prior `3+ GiB` OOM shape
 
 Remaining goals:
 
+- the `method,status,duration` owner batch should get under `5s`
 - exact coverage should stop falling behind the uploaded head
-- steady-state RSS should spend more time in the low-to-mid `300 MiB` range
-  instead of the current `400-500 MiB` band
-- exact compaction should stay under `5s` without relying on a fresh restart or
-  a cold exact-run disk cache
+- steady-state RSS should spend more time in the `300-500 MiB` band instead of
+  the current `300-650 MiB` band
 
 ### Phase 7: optional durable search-source sidecar
 

@@ -29,10 +29,10 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(2048).ingestConcurrency).toBe(2);
     expect(tuneForPreset(2048).readConcurrency).toBe(4);
     expect(tuneForPreset(2048).searchConcurrency).toBe(2);
-    expect(tuneForPreset(2048).asyncIndexConcurrency).toBe(1);
+    expect(tuneForPreset(2048).asyncIndexConcurrency).toBe(2);
     expect(tuneForPreset(2048).segmenterWorkers).toBe(2);
     expect(tuneForPreset(2048).uploadConcurrency).toBe(4);
-    expect(tuneForPreset(2048).indexBuilders).toBe(1);
+    expect(tuneForPreset(2048).indexBuilders).toBe(2);
     expect(tuneForPreset(2048).lexiconIndexCacheMb).toBe(64);
     expect(tuneForPreset(2048).searchCompanionBatchSegments).toBe(1);
     expect(tuneForPreset(2048).searchCompanionYieldBlocks).toBe(1);

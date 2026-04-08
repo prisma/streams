@@ -21,7 +21,7 @@ runtime overview and command surface, see `overview.md`.
 - `DS_BASE_WAL_GC_INTERVAL_MS`: minimum delay between touch-manager base-WAL GC sweeps per stream (default 1000ms)
 - `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
-- `DS_INDEX_BUILDERS`: global worker-thread count for generic index-build jobs (default 1; auto-tune uses `1` on 256–2048 MiB presets, `2` on 4096 MiB, and `4` on 8192 MiB)
+- `DS_INDEX_BUILDERS`: global worker-thread count for generic index-build jobs (default 1; auto-tune uses `1` on 256–1024 MiB presets, `2` on 2048–4096 MiB, and `4` on 8192 MiB)
 - `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
@@ -49,7 +49,7 @@ runtime overview and command surface, see `overview.md`.
 - `DS_WORKER_SQLITE_CACHE_BYTES` / `DS_WORKER_SQLITE_CACHE_MB`: SQLite page cache budget for worker threads like segmenters and touch processors (defaults to a much smaller fraction of the main cache, capped at 32 MiB)
 - `DS_READ_CONCURRENCY`: max concurrent `GET /v1/stream/...` read operations admitted at once (default 4)
 - `DS_SEARCH_CONCURRENCY`: max concurrent `_search` and `_aggregate` request executions admitted at once (default 2)
-- `DS_ASYNC_INDEX_CONCURRENCY`: shared permit pool for routing, routing-key lexicon, exact, and bundled-companion background work (defaults to `DS_INDEX_BUILDERS` when unset)
+- `DS_ASYNC_INDEX_CONCURRENCY`: shared permit pool for routing, routing-key lexicon, exact, and bundled-companion background work (defaults to `DS_INDEX_BUILDERS` when unset; auto-tune now uses `2` on the 2048 MiB preset as well)
 - `DS_MEMORY_LIMIT_MB` / `DS_MEMORY_LIMIT_BYTES`: memory-pressure threshold used to reduce search / async-index concurrency and trigger best-effort GC / heap snapshots (default disabled)
 - `DS_HEAP_SNAPSHOT_PATH`: optional heap snapshot path to write when the memory-pressure threshold is exceeded; unset by default
 
@@ -137,12 +137,16 @@ Indexing note:
 - Exact-secondary L0 builds now scan one leased uploaded segment at a time and
   emit one run per aligned exact field, rather than replaying the same segment
   once per exact field.
-- The exact L0 scheduler currently caps one async exact action at one field,
-  which keeps the high-cardinality `requestId`/`traceId`/`spanId`/`path`
-  batch from becoming one oversized worker job.
-- Those per-field exact runs are uploaded together as one batch, so exact
-  backfill is no longer gated by one serialized sequence of remote PUTs per
-  segment window.
+- The exact L0 scheduler now advances unique same-frontier batches instead of
+  replaying one field at a time forever. On `evlog` it uses deterministic
+  batches such as `level,service,environment`, `timestamp`,
+  `requestId,traceId`, `spanId`, `path`, and `method,status,duration`.
+- On `2 GiB+` presets, those unique `evlog` exact batches can now dispatch in
+  up to `2` parallel lanes on the same stream while still sharing the global
+  `DS_ASYNC_INDEX_CONCURRENCY` gate.
+- Those per-batch exact runs are still uploaded together as one batch, so
+  exact backfill is no longer gated by one serialized sequence of remote PUTs
+  per segment window.
 - Exact-secondary L0 runs also skip binary-fuse filter construction entirely.
   Query-time pruning still works by direct fingerprint search on those small L0
   runs, and compaction can add filters again on higher levels.
@@ -308,7 +312,7 @@ presets:
 - `2048 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `4`, segmenter workers `2`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `2`, index builders `2`, uploads `4`, segmenter workers `2`
 - `4096 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
   - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
