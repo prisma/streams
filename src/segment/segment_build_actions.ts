@@ -30,6 +30,18 @@ function mergeDetail(base: SegmentBuildActionDetail | undefined, extra: SegmentB
   });
 }
 
+function shouldIgnoreSegmentBuildTelemetryError(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message ?? error ?? "").toLowerCase();
+  const code = String((error as { code?: unknown })?.code ?? "");
+  return (
+    code === "SQLITE_IOERR_VNODE" ||
+    message.includes("disk i/o error") ||
+    message.includes("database has closed") ||
+    message.includes("closed database") ||
+    message.includes("statement has finalized")
+  );
+}
+
 export class SegmentBuildActionTracker {
   private finished = false;
 
@@ -55,6 +67,7 @@ export class SegmentBuildActionTracker {
         detailJson: mergeDetail(this.startDetail, finish.detail),
       });
     } catch (error) {
+      if (shouldIgnoreSegmentBuildTelemetryError(error)) return;
       console.warn("[segment-build-actions] failed to complete succeeded telemetry row", error);
     }
   }
@@ -76,6 +89,7 @@ export class SegmentBuildActionTracker {
         detailJson: mergeDetail(this.startDetail, finish.detail),
       });
     } catch (error) {
+      if (shouldIgnoreSegmentBuildTelemetryError(error)) return;
       console.warn("[segment-build-actions] failed to complete failed telemetry row", error);
     }
   }
@@ -93,6 +107,7 @@ export function beginSegmentBuildAction(db: SqliteDurableStore, input: SegmentBu
     });
     return new SegmentBuildActionTracker(db, seq, input.detail);
   } catch (error) {
+    if (shouldIgnoreSegmentBuildTelemetryError(error)) return new SegmentBuildActionTracker(db, null, input.detail);
     console.warn("[segment-build-actions] failed to begin telemetry row", error);
     return new SegmentBuildActionTracker(db, null, input.detail);
   }

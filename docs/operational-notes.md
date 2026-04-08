@@ -134,6 +134,26 @@ Indexing note:
   using `DS_INDEX_CHECK_MS` only as a safety wake-up interval.
 - Routing-key and routing-key lexicon L0 builds now share one worker pass over
   the same leased 16-segment window and emit both immutable outputs together.
+- Exact-secondary L0 builds now scan one leased uploaded segment at a time and
+  emit one run per aligned exact field, rather than replaying the same segment
+  once per exact field.
+- The exact L0 scheduler currently caps one async exact action at one field,
+  which keeps the high-cardinality `requestId`/`traceId`/`spanId`/`path`
+  batch from becoming one oversized worker job.
+- Those per-field exact runs are uploaded together as one batch, so exact
+  backfill is no longer gated by one serialized sequence of remote PUTs per
+  segment window.
+- Exact-secondary L0 runs also skip binary-fuse filter construction entirely.
+  Query-time pruning still works by direct fingerprint search on those small L0
+  runs, and compaction can add filters again on higher levels.
+- Bundled companion builds compile search-field accessors once per schema
+  version and reuse them for the whole segment build.
+- When a bundled companion plan has no rollups, the worker skips the per-record
+  raw-value `Map<string, unknown[]>` materialization step and routes compiled
+  field values directly into `.col` / `.fts` builders.
+- High-cardinality keyword-prefix `.fts` fields also use a singleton-posting
+  encoder fast path, which avoids per-term posting-writer allocation for
+  `requestId` / `traceId` / `spanId`-style evlog fields.
 - Background routing, exact, lexicon, and companion builders also yield inside
   segment scans. When a foreground read or search request is active, those
   background loops deliberately back off harder so the server can service the

@@ -92,10 +92,12 @@ describe("cached segment scan perf fixture", () => {
     expect(readFileSync(FIXTURE_PATH).byteLength).toBe(FIXTURE_SIZE);
   });
 
-  test("legacy syscall-heavy hot-key scan takes >100ms over 50 scans", () => {
-    const result = timeLoop(50, () => legacyHotKeyScan(FIXTURE_PATH, FIXTURE_SIZE, HOT_KEY));
-    expect(result.decodedBlocks).toBeGreaterThan(0);
-    expect(result.totalMs).toBeGreaterThan(100);
+  test("legacy syscall-heavy hot-key scan remains materially slower than the mapped path", () => {
+    const legacy = timeLoop(50, () => legacyHotKeyScan(FIXTURE_PATH, FIXTURE_SIZE, HOT_KEY));
+    const mapped = timeLoop(50, () => mappedHotKeyScan(FIXTURE_PATH, HOT_KEY));
+    expect(legacy.decodedBlocks).toBeGreaterThan(0);
+    expect(mapped.decodedBlocks).toBeGreaterThan(0);
+    expect(legacy.avgMs).toBeGreaterThan(mapped.avgMs * 1.2);
   });
 
   test("mapped one-pass hot-key scan stays below 10ms average", () => {

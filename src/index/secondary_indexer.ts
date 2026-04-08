@@ -1,9 +1,10 @@
 import { randomBytes } from "node:crypto";
+import { unlinkSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { SecondaryIndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
-import { SchemaRegistryStore } from "../schema/registry";
+import { SchemaRegistryStore, type SchemaRegistry } from "../schema/registry";
 import { SegmentDiskCache } from "../segment/cache";
 import { loadSegmentBytesCached } from "../segment/cached_segment";
 import { retry, retryAbortable } from "../util/retry";
@@ -31,10 +32,24 @@ import {
 } from "./secondary_schema";
 import type { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
-import type { SecondaryCompactionRunSource } from "./secondary_compaction_build";
+import type { SecondaryCompactionBuildOutput, SecondaryCompactionRunSource } from "./secondary_compaction_build";
 import { beginAsyncIndexAction } from "./async_index_actions";
+import { uploadRunPayloadsBoundedResult } from "./run_payload_upload";
+import { writeIndexRunOutputFileResult } from "./index_run_output_file";
+import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "../search/companion_plan";
+import { SearchSegmentBuildCoordinator } from "../search/search_segment_build_coordinator";
+import { collectUnifiedSearchBuildExactIndexes, type SearchSegmentBuildOutput } from "../search/search_segment_build";
+import type { CompanionSectionKind } from "../search/companion_format";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
+const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
+const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY = 2;
+type UnifiedCompanionSink = (
+  stream: string,
+  segmentIndex: number,
+  planGeneration: number,
+  output: NonNullable<SearchSegmentBuildOutput["companion"]>
+) => Promise<Result<{ sectionKinds: CompanionSectionKind[] }, { kind: string; message: string }>>;
 
 function invalidIndexBuild<T = never>(message: string): Result<T, SecondaryIndexBuildError> {
   return Result.err({ kind: "invalid_index_build", message });
@@ -80,6 +95,8 @@ export class SecondaryIndexManager {
   private readonly segmentLocality?: IndexSegmentLocalityManager;
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
+  private readonly searchSegmentBuilds?: SearchSegmentBuildCoordinator;
+  private unifiedCompanionSink?: UnifiedCompanionSink;
 
   constructor(
     cfg: Config,
@@ -93,7 +110,8 @@ export class SecondaryIndexManager {
     asyncGate?: ConcurrencyGate,
     foregroundActivity?: ForegroundActivityTracker,
     segmentLocality?: IndexSegmentLocalityManager,
-    buildWorkers?: IndexBuildWorkerPool
+    buildWorkers?: IndexBuildWorkerPool,
+    searchSegmentBuilds?: SearchSegmentBuildCoordinator
   ) {
     this.cfg = cfg;
     this.db = db;
@@ -109,7 +127,8 @@ export class SecondaryIndexManager {
     this.ownsBuildWorkers = !buildWorkers;
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
-    this.span = cfg.indexL0SpanSegments;
+    this.searchSegmentBuilds = searchSegmentBuilds;
+    this.span = cfg.indexL0SpanSegments > 0 ? 1 : 0;
     this.compactionFanout = cfg.indexCompactionFanout;
     this.maxLevel = cfg.indexMaxLevel;
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
@@ -218,6 +237,50 @@ export class SecondaryIndexManager {
     await Promise.all([this.runOneBuildTask(), this.runOneCompactionTask()]);
   }
 
+  setUnifiedCompanionSink(sink: UnifiedCompanionSink): void {
+    this.unifiedCompanionSink = sink;
+  }
+
+  async persistUnifiedExactRunsFromSearchBuild(
+    stream: string,
+    registry: SchemaRegistry,
+    segmentIndex: number,
+    runs: SearchSegmentBuildOutput["exactRuns"]
+  ): Promise<
+    Result<
+      | null
+      | {
+          persistedIndexNames: string[];
+          outputSizeBytes: bigint;
+          outputRecordCounts: Record<string, number>;
+          outputFilterLens: Record<string, number>;
+        },
+      SecondaryIndexBuildError
+    >
+  > {
+    if (this.span <= 0 || runs.length === 0) return Result.ok(null);
+    const configured = getConfiguredSecondaryIndexes(registry);
+    if (configured.length === 0) return Result.ok(null);
+    const stateByName = new Map(this.db.listSecondaryIndexStates(stream).map((state) => [state.index_name, state]));
+    const targetIndexes = configured.filter((configuredIndex) => {
+      const state = stateByName.get(configuredIndex.name);
+      if (!state) return false;
+      if (state.config_hash !== hashSecondaryIndexField(configuredIndex)) return false;
+      return state.indexed_through === segmentIndex;
+    });
+    if (targetIndexes.length === 0) return Result.ok(null);
+    const targetIndexNames = new Set(targetIndexes.map((entry) => entry.name));
+    const outputRuns = runs.filter((entry) => targetIndexNames.has(entry.indexName));
+    if (outputRuns.length === 0) return Result.ok(null);
+
+    const persistRes = await this.persistExactRuns(stream, outputRuns, targetIndexes, stateByName, segmentIndex + 1);
+    if (Result.isError(persistRes)) return persistRes;
+    return Result.ok({
+      persistedIndexNames: targetIndexes.map((entry) => entry.name),
+      ...persistRes.value,
+    });
+  }
+
   async runOneBuildTask(): Promise<boolean> {
     if (this.runningBuildTick) return false;
     const stream = this.takeNextStream(this.buildQueue);
@@ -307,6 +370,17 @@ export class SecondaryIndexManager {
     return stream;
   }
 
+  private getCurrentCompanionPlan(stream: string, registry: SchemaRegistry): {
+    generation: number;
+    plan: SearchCompanionPlan;
+  } | null {
+    const desiredPlan = buildDesiredSearchCompanionPlan(registry);
+    const desiredHash = hashSearchCompanionPlan(desiredPlan);
+    const current = this.db.getSearchCompanionPlan(stream);
+    if (!current || current.plan_hash !== desiredHash) return null;
+    return { generation: current.generation, plan: desiredPlan };
+  }
+
   private async maybeBuildRuns(stream: string, index: SecondaryIndexField): Promise<Result<void, SecondaryIndexBuildError>> {
     if (this.span <= 0) return Result.ok(undefined);
     const key = `${stream}:${index.name}`;
@@ -317,15 +391,24 @@ export class SecondaryIndexManager {
       if (Result.isError(registryRes)) return invalidIndexBuild(registryRes.error.message);
       const registry = registryRes.value;
       return await this.asyncGate.run(async () => {
-        const configHash = hashSecondaryIndexField(index);
-        let state = this.db.getSecondaryIndexState(stream, index.name);
-        if (!state) {
-          this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
-          state = this.db.getSecondaryIndexState(stream, index.name);
-        } else if (state.config_hash !== configHash) {
-          this.db.deleteSecondaryIndex(stream, index.name);
-          this.db.upsertSecondaryIndexState(stream, index.name, randomBytes(16), configHash, 0);
-          state = this.db.getSecondaryIndexState(stream, index.name);
+        const configured = getConfiguredSecondaryIndexes(registry);
+        let manifestChanged = false;
+        const stateByName = new Map<string, NonNullable<ReturnType<SqliteDurableStore["getSecondaryIndexState"]>>>();
+        for (const configuredIndex of configured) {
+          const configHash = hashSecondaryIndexField(configuredIndex);
+          let state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
+          if (!state) {
+            this.db.upsertSecondaryIndexState(stream, configuredIndex.name, randomBytes(16), configHash, 0);
+            state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
+          } else if (state.config_hash !== configHash) {
+            this.db.deleteSecondaryIndex(stream, configuredIndex.name);
+            this.db.upsertSecondaryIndexState(stream, configuredIndex.name, randomBytes(16), configHash, 0);
+            state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
+            manifestChanged = true;
+          }
+          if (state) stateByName.set(configuredIndex.name, state);
+        }
+        if (manifestChanged) {
           this.onMetadataChanged?.(stream);
           if (this.publishManifest) {
             try {
@@ -335,10 +418,16 @@ export class SecondaryIndexManager {
             }
           }
         }
+
+        const state = stateByName.get(index.name);
         if (!state) return Result.ok(undefined);
         const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
+        const peerIndexes = configured.filter((configuredIndex) => stateByName.get(configuredIndex.name)?.indexed_through === indexedThrough);
+        const batchIndexes =
+          registry.search?.profile === "evlog" ? peerIndexes : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
+        if (batchIndexes.length === 0) return Result.ok(undefined);
         const start = indexedThrough;
         const end = start + this.span - 1;
         const segments: SegmentRow[] = [];
@@ -348,7 +437,11 @@ export class SecondaryIndexManager {
           segments.push(seg);
         }
         const segmentLeaseRes = this.segmentLocality
-          ? await this.segmentLocality.acquireWindowResult(stream, segments, `exact indexing (${index.name})`)
+          ? await this.segmentLocality.acquireWindowResult(
+              stream,
+              segments,
+              `exact indexing (${batchIndexes.map((entry) => entry.name).join(", ")})`
+            )
           : Result.err({ kind: "missing_segment" as const, message: "exact indexing requires a segment disk cache" });
         if (Result.isError(segmentLeaseRes)) {
           if (segmentLeaseRes.error.kind === "index_cache_overloaded") {
@@ -362,58 +455,162 @@ export class SecondaryIndexManager {
         const action = beginAsyncIndexAction(this.db, {
           stream,
           actionKind: "secondary_l0_build",
-          targetKind: "secondary_index",
-          targetName: index.name,
+          targetKind: "secondary_index_batch",
+          targetName: batchIndexes.map((entry) => entry.name).join(","),
           inputKind: "segment",
           inputCount: segments.length,
           inputSizeBytes: segments.reduce((sum, segment) => sum + BigInt(segment.size_bytes), 0n),
           startSegment: start,
           endSegment: end,
           detail: {
+            index_count: batchIndexes.length,
+            index_names: batchIndexes.map((entry) => entry.name),
             level: 0,
             input_payload_bytes: segments.reduce((sum, segment) => sum + Number(segment.payload_bytes), 0),
           },
         });
+        const currentCompanionPlan = this.getCurrentCompanionPlan(stream, registry);
+        const useUnifiedSearchBuild =
+          this.searchSegmentBuilds != null && this.span === 1 && registry.search?.profile === "evlog";
+        const unifiedExactIndexes = useUnifiedSearchBuild
+          ? collectUnifiedSearchBuildExactIndexes(registry, (indexName) => {
+              const state = stateByName.get(indexName);
+              if (!state) return null;
+              return {
+                configHash: state.config_hash,
+                secret: state.index_secret,
+              };
+            })
+          : [];
+        const batchIndexNames = new Set(batchIndexes.map((entry) => entry.name));
         let runRes;
+        let sharedBuildCacheStatus: "miss" | "shared_inflight" | "cache_hit" | null = null;
+        let piggybackCompanionSectionKinds: CompanionSectionKind[] = [];
         try {
-          runRes = this.memorySampler
-            ? await this.memorySampler.track(
-                "exact_l0",
-                { stream, index_name: index.name, start_segment: start, end_segment: end },
-                () =>
-                  this.buildWorkers.buildResult({
-                    kind: "secondary_l0_build",
-                    input: {
+          runRes = useUnifiedSearchBuild
+            ? await (this.memorySampler
+                ? this.memorySampler.track(
+                    "exact_l0",
+                    {
                       stream,
-                      index,
-                      registry,
-                      startSegment: start,
-                      span: this.span,
-                      secret: state.index_secret,
-                      segments: segmentLeaseRes.value.localSegments.map((segment) => ({
-                        segmentIndex: segment.segmentIndex,
-                        startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
-                        localPath: segment.localPath,
-                      })),
+                      index_name: batchIndexes.map((entry) => entry.name).join(","),
+                      start_segment: start,
+                      end_segment: end,
                     },
-                  })
-              )
-            : await this.buildWorkers.buildResult({
-                kind: "secondary_l0_build",
-                input: {
-                  stream,
-                  index,
-                  registry,
-                  startSegment: start,
-                  span: this.span,
-                  secret: state.index_secret,
-                  segments: segmentLeaseRes.value.localSegments.map((segment) => ({
-                    segmentIndex: segment.segmentIndex,
-                    startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
-                    localPath: segment.localPath,
-                  })),
-                },
-              });
+                    async () => {
+                      const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
+                        stream,
+                        registry,
+                        exactIndexes: unifiedExactIndexes,
+                        plan: currentCompanionPlan?.plan ?? null,
+                        planGeneration: currentCompanionPlan?.generation ?? null,
+                        segment: {
+                          segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
+                          startOffset: segments[0]!.start_offset,
+                          localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                        },
+                      });
+                      if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
+                      sharedBuildCacheStatus = sharedRes.value.cacheStatus;
+                      if (this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
+                        const persistCompanionRes = await this.unifiedCompanionSink(
+                          stream,
+                          segmentLeaseRes.value.localSegments[0]!.segmentIndex,
+                          currentCompanionPlan.generation,
+                          sharedRes.value.output.companion
+                        );
+                        if (Result.isError(persistCompanionRes)) return Result.err(persistCompanionRes.error);
+                        piggybackCompanionSectionKinds = persistCompanionRes.value.sectionKinds;
+                      }
+                      return Result.ok({
+                        kind: "secondary_l0_build" as const,
+                        output: {
+                          runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
+                        },
+                      });
+                    }
+                  )
+                : (async () => {
+                    const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
+                      stream,
+                      registry,
+                      exactIndexes: unifiedExactIndexes,
+                      plan: currentCompanionPlan?.plan ?? null,
+                      planGeneration: currentCompanionPlan?.generation ?? null,
+                      segment: {
+                        segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
+                        startOffset: segments[0]!.start_offset,
+                        localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                      },
+                    });
+                    if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
+                    sharedBuildCacheStatus = sharedRes.value.cacheStatus;
+                    if (this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
+                      const persistCompanionRes = await this.unifiedCompanionSink(
+                        stream,
+                        segmentLeaseRes.value.localSegments[0]!.segmentIndex,
+                        currentCompanionPlan.generation,
+                        sharedRes.value.output.companion
+                      );
+                      if (Result.isError(persistCompanionRes)) return Result.err(persistCompanionRes.error);
+                      piggybackCompanionSectionKinds = persistCompanionRes.value.sectionKinds;
+                    }
+                    return Result.ok({
+                      kind: "secondary_l0_build" as const,
+                      output: {
+                        runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
+                      },
+                    });
+                  })())
+            : this.memorySampler
+              ? await this.memorySampler.track(
+                  "exact_l0",
+                  {
+                    stream,
+                    index_name: batchIndexes.map((entry) => entry.name).join(","),
+                    start_segment: start,
+                    end_segment: end,
+                  },
+                  () =>
+                    this.buildWorkers.buildResult({
+                      kind: "secondary_l0_build",
+                      input: {
+                        stream,
+                        registry,
+                        startSegment: start,
+                        span: this.span,
+                        outputDir: `${this.cfg.rootDir}/tmp/secondary-index-builds`,
+                        indexes: batchIndexes.map((configuredIndex) => ({
+                          index: configuredIndex,
+                          secret: stateByName.get(configuredIndex.name)!.index_secret,
+                        })),
+                        segments: segmentLeaseRes.value.localSegments.map((segment) => ({
+                          segmentIndex: segment.segmentIndex,
+                          startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
+                          localPath: segment.localPath,
+                        })),
+                      },
+                    })
+                )
+              : await this.buildWorkers.buildResult({
+                  kind: "secondary_l0_build",
+                  input: {
+                    stream,
+                    registry,
+                    startSegment: start,
+                    span: this.span,
+                    outputDir: `${this.cfg.rootDir}/tmp/secondary-index-builds`,
+                    indexes: batchIndexes.map((configuredIndex) => ({
+                      index: configuredIndex,
+                      secret: stateByName.get(configuredIndex.name)!.index_secret,
+                    })),
+                    segments: segmentLeaseRes.value.localSegments.map((segment) => ({
+                      segmentIndex: segment.segmentIndex,
+                      startOffset: segments.find((row) => row.segment_index === segment.segmentIndex)!.start_offset,
+                      localPath: segment.localPath,
+                    })),
+                  },
+                });
         } finally {
           segmentLeaseRes.value.release();
         }
@@ -425,49 +622,22 @@ export class SecondaryIndexManager {
           action.fail("unexpected worker result kind");
           return invalidIndexBuild("unexpected worker result kind");
         }
-        const run = runRes.value.output;
-        const persistRes = await this.persistRunPayloadResult(run.meta, run.payload);
-        if (Result.isError(persistRes)) {
-          action.fail(persistRes.error.message, {
-            detail: {
-              output_record_count: run.meta.recordCount,
-              output_filter_len: run.meta.filterLen,
-            },
-          });
-          return persistRes;
-        }
-        const sizeBytes = persistRes.value;
-        this.db.insertSecondaryIndexRun({
-          run_id: run.meta.runId,
-          stream,
-          index_name: index.name,
-          level: run.meta.level,
-          start_segment: run.meta.startSegment,
-          end_segment: run.meta.endSegment,
-          object_key: run.meta.objectKey,
-          size_bytes: sizeBytes,
-          filter_len: run.meta.filterLen,
-          record_count: run.meta.recordCount,
-        });
+        const outputRuns = runRes.value.output.runs;
         const nextIndexedThrough = end + 1;
-        this.db.updateSecondaryIndexedThrough(stream, index.name, nextIndexedThrough);
-        state.indexed_through = nextIndexedThrough;
-        this.onMetadataChanged?.(stream);
-        if (this.publishManifest) {
-          try {
-            await this.publishManifest(stream);
-          } catch {
-            // ignore and retry later
-          }
+        const persistRes = await this.persistExactRuns(stream, outputRuns, batchIndexes, stateByName, nextIndexedThrough);
+        if (Result.isError(persistRes)) {
+          action.fail(persistRes.error.message);
+          return invalidIndexBuild(persistRes.error.message);
         }
-        if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.buildQueue.add(stream);
-        this.compactionQueue.add(stream);
         action.succeed({
-          outputCount: 1,
-          outputSizeBytes: BigInt(sizeBytes),
+          outputCount: outputRuns.length,
+          outputSizeBytes: persistRes.value.outputSizeBytes,
           detail: {
-            output_record_count: run.meta.recordCount,
-            output_filter_len: run.meta.filterLen,
+            index_names: batchIndexes.map((entry) => entry.name),
+            output_record_counts: persistRes.value.outputRecordCounts,
+            output_filter_lens: persistRes.value.outputFilterLens,
+            shared_build_cache_status: sharedBuildCacheStatus,
+            piggyback_companion_section_kinds: piggybackCompanionSectionKinds,
           },
         });
         return Result.ok(undefined);
@@ -513,18 +683,28 @@ export class SecondaryIndexManager {
           action.fail(runRes.error.message);
           return runRes;
         }
-        const run = runRes.value;
-        const persistRes = await this.persistRunResult(run);
+        const run = runRes.value.run;
+        const artifactPersistStartedAt = Date.now();
+        const persistRes = await this.persistRunArtifactResult(run);
+        const artifactPersistMs = Date.now() - artifactPersistStartedAt;
         if (Result.isError(persistRes)) {
           action.fail(persistRes.error.message, {
             detail: {
               output_record_count: run.meta.recordCount,
               output_filter_len: run.meta.filterLen,
+              source_prepare_ms: runRes.value.sourcePrepareMs,
+              worker_build_ms: runRes.value.workerBuildMs,
+              artifact_persist_ms: artifactPersistMs,
+              source_cache_hits: runRes.value.sourceCacheHitCount,
+              source_cache_fills: runRes.value.sourceCacheFillCount,
+              source_temp_spills: runRes.value.sourceTempSpillCount,
+              source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
             },
           });
           return persistRes;
         }
         const sizeBytes = persistRes.value;
+        const finalizeStartedAt = Date.now();
         this.db.insertSecondaryIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -557,12 +737,21 @@ export class SecondaryIndexManager {
         }
         await this.gcRetiredRuns(stream, indexName);
         this.compactionQueue.add(stream);
+        const finalizeMs = Date.now() - finalizeStartedAt;
         action.succeed({
           outputCount: 1,
           outputSizeBytes: BigInt(sizeBytes),
           detail: {
             output_record_count: run.meta.recordCount,
             output_filter_len: run.meta.filterLen,
+            source_prepare_ms: runRes.value.sourcePrepareMs,
+            worker_build_ms: runRes.value.workerBuildMs,
+            artifact_persist_ms: artifactPersistMs,
+            finalize_ms: finalizeMs,
+            source_cache_hits: runRes.value.sourceCacheHitCount,
+            source_cache_fills: runRes.value.sourceCacheFillCount,
+            source_temp_spills: runRes.value.sourceTempSpillCount,
+            source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
           },
         });
         return Result.ok(undefined);
@@ -570,6 +759,119 @@ export class SecondaryIndexManager {
     } finally {
       this.compacting.delete(key);
     }
+  }
+
+  private async persistExactRuns(
+    stream: string,
+    outputRuns: Array<
+      | {
+          indexName: string;
+          storage: "file";
+          localPath: string;
+          sizeBytes: number;
+          meta: {
+            runId: string;
+            level: number;
+            startSegment: number;
+            endSegment: number;
+            objectKey: string;
+            filterLen: number;
+            recordCount: number;
+          };
+        }
+      | {
+          indexName: string;
+          storage: "bytes";
+          payload: Uint8Array;
+          meta: {
+            runId: string;
+            level: number;
+            startSegment: number;
+            endSegment: number;
+            objectKey: string;
+            filterLen: number;
+            recordCount: number;
+          };
+        }
+    >,
+    targetIndexes: SecondaryIndexField[],
+    stateByName: Map<string, ReturnType<SqliteDurableStore["listSecondaryIndexStates"]>[number]>,
+    nextIndexedThrough: number
+  ): Promise<
+    Result<
+      {
+        outputSizeBytes: bigint;
+        outputRecordCounts: Record<string, number>;
+        outputFilterLens: Record<string, number>;
+      },
+      SecondaryIndexBuildError
+    >
+  > {
+    const persistRes = await uploadRunPayloadsBoundedResult({
+      tasks: outputRuns.map((run) =>
+        run.storage === "file"
+          ? { objectKey: run.meta.objectKey, localPath: run.localPath, sizeBytes: run.sizeBytes }
+          : { objectKey: run.meta.objectKey, payload: run.payload }
+      ),
+      os: this.os,
+      concurrency: outputRuns.length,
+      retries: this.cfg.objectStoreRetries,
+      baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+      maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+      timeoutMs: this.cfg.objectStoreTimeoutMs,
+    });
+    if (Result.isError(persistRes)) return invalidIndexBuild(persistRes.error.message);
+
+    let outputSizeBytes = 0n;
+    const outputRecordCounts: Record<string, number> = {};
+    const outputFilterLens: Record<string, number> = {};
+    for (let index = 0; index < outputRuns.length; index += 1) {
+      const run = outputRuns[index]!;
+      const sizeBytes = persistRes.value[index] ?? (run.storage === "file" ? run.sizeBytes : run.payload.byteLength);
+      outputSizeBytes += BigInt(sizeBytes);
+      outputRecordCounts[run.indexName] = run.meta.recordCount;
+      outputFilterLens[run.indexName] = run.meta.filterLen;
+      if (run.storage === "file") {
+        const cached = this.runDiskCache?.putFromLocal(run.meta.objectKey, run.localPath, run.sizeBytes) ?? false;
+        if (!cached) {
+          try {
+            unlinkSync(run.localPath);
+          } catch {
+            // ignore temp cleanup failures
+          }
+        }
+      } else {
+        this.runDiskCache?.put(run.meta.objectKey, run.payload);
+      }
+      this.db.insertSecondaryIndexRun({
+        run_id: run.meta.runId,
+        stream,
+        index_name: run.indexName,
+        level: run.meta.level,
+        start_segment: run.meta.startSegment,
+        end_segment: run.meta.endSegment,
+        object_key: run.meta.objectKey,
+        size_bytes: sizeBytes,
+        filter_len: run.meta.filterLen,
+        record_count: run.meta.recordCount,
+      });
+    }
+    for (const configuredIndex of targetIndexes) {
+      this.db.updateSecondaryIndexedThrough(stream, configuredIndex.name, nextIndexedThrough);
+      const currentState = stateByName.get(configuredIndex.name);
+      if (currentState) currentState.indexed_through = nextIndexedThrough;
+    }
+    this.onMetadataChanged?.(stream);
+    if (this.publishManifest) {
+      try {
+        await this.publishManifest(stream);
+      } catch {
+        // ignore and retry later
+      }
+    }
+    if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.buildQueue.add(stream);
+    this.compactionQueue.add(stream);
+    return Result.ok({ outputSizeBytes, outputRecordCounts, outputFilterLens });
   }
 
   private findCompactionGroup(stream: string, indexName: string): { level: number; runs: SecondaryIndexRunRow[] } | null {
@@ -613,54 +915,145 @@ export class SecondaryIndexManager {
     indexName: string,
     level: number,
     inputs: SecondaryIndexRunRow[]
-  ): Promise<Result<IndexRun, SecondaryIndexBuildError>> {
-    const sourcesRes = await this.prepareCompactionSourcesResult(inputs);
-    if (Result.isError(sourcesRes)) return sourcesRes;
-    const buildRes = await this.buildWorkers.buildResult({
-      kind: "secondary_compaction_build",
-      input: {
-        stream,
-        indexName,
-        level,
-        inputs: sourcesRes.value,
+  ): Promise<
+    Result<
+      {
+        run: SecondaryCompactionBuildOutput;
+        sourcePrepareMs: number;
+        workerBuildMs: number;
+        sourceCacheHitCount: number;
+        sourceCacheFillCount: number;
+        sourceTempSpillCount: number;
+        sourceFetchConcurrency: number;
       },
-    });
-    if (Result.isError(buildRes)) return invalidIndexBuild(buildRes.error.message);
-    if (buildRes.value.kind !== "secondary_compaction_build") return invalidIndexBuild("unexpected worker result kind");
-    const runRes = decodeIndexRunResult(buildRes.value.output.payload);
-    if (Result.isError(runRes)) return invalidIndexBuild(runRes.error.message);
-    const run = runRes.value;
-    run.meta.runId = buildRes.value.output.meta.runId;
-    run.meta.level = buildRes.value.output.meta.level;
-    run.meta.startSegment = buildRes.value.output.meta.startSegment;
-    run.meta.endSegment = buildRes.value.output.meta.endSegment;
-    run.meta.objectKey = buildRes.value.output.meta.objectKey;
-    run.meta.filterLen = buildRes.value.output.meta.filterLen;
-    run.meta.recordCount = buildRes.value.output.meta.recordCount;
-    return Result.ok(run);
+      SecondaryIndexBuildError
+    >
+  > {
+    const sourcePrepareStartedAt = Date.now();
+    const sourcesRes = await this.prepareCompactionSourcesResult(inputs);
+    const sourcePrepareMs = Date.now() - sourcePrepareStartedAt;
+    if (Result.isError(sourcesRes)) return sourcesRes;
+    try {
+      const workerBuildStartedAt = Date.now();
+      const buildRes = await this.buildWorkers.buildResult({
+        kind: "secondary_compaction_build",
+        input: {
+          stream,
+          indexName,
+          level,
+          outputDir: `${this.cfg.rootDir}/tmp/secondary-index-builds`,
+          inputs: sourcesRes.value.sources,
+        },
+      });
+      const workerBuildMs = Date.now() - workerBuildStartedAt;
+      if (Result.isError(buildRes)) return invalidIndexBuild(buildRes.error.message);
+      if (buildRes.value.kind !== "secondary_compaction_build") return invalidIndexBuild("unexpected worker result kind");
+      return Result.ok({
+        run: buildRes.value.output,
+        sourcePrepareMs,
+        workerBuildMs,
+        sourceCacheHitCount: sourcesRes.value.cacheHitCount,
+        sourceCacheFillCount: sourcesRes.value.cacheFillCount,
+        sourceTempSpillCount: sourcesRes.value.tempSpillCount,
+        sourceFetchConcurrency: sourcesRes.value.fetchConcurrency,
+      });
+    } finally {
+      sourcesRes.value.cleanup();
+    }
   }
 
   private async prepareCompactionSourcesResult(
     inputs: SecondaryIndexRunRow[]
-  ): Promise<Result<SecondaryCompactionRunSource[], SecondaryIndexBuildError>> {
-    const sources: SecondaryCompactionRunSource[] = [];
-    for (const meta of inputs) {
-      const sourceRes = await this.prepareCompactionSourceResult(meta);
-      if (Result.isError(sourceRes)) return sourceRes;
-      sources.push(sourceRes.value);
+  ): Promise<
+    Result<
+      {
+        sources: SecondaryCompactionRunSource[];
+        cacheHitCount: number;
+        cacheFillCount: number;
+        tempSpillCount: number;
+        fetchConcurrency: number;
+        cleanup: () => void;
+      },
+      SecondaryIndexBuildError
+    >
+  > {
+    const sources = new Array<SecondaryCompactionRunSource>(inputs.length);
+    const tempPaths: string[] = [];
+    let cacheHitCount = 0;
+    let cacheFillCount = 0;
+    let tempSpillCount = 0;
+    let firstError: SecondaryIndexBuildError | null = null;
+    const fetchConcurrency = Math.max(
+      1,
+      Math.min(SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY, inputs.length || 1)
+    );
+    const gate = new ConcurrencyGate(fetchConcurrency);
+
+    await Promise.all(
+      inputs.map((meta, index) =>
+        gate.run(async () => {
+          if (firstError) return;
+          const sourceRes = await this.prepareCompactionSourceResult(meta);
+          if (Result.isError(sourceRes)) {
+            firstError = sourceRes.error;
+            return;
+          }
+          sources[index] = sourceRes.value.source;
+          if (sourceRes.value.location === "cache_hit") cacheHitCount += 1;
+          if (sourceRes.value.location === "cache_fill") cacheFillCount += 1;
+          if (sourceRes.value.location === "temp_spill") {
+            tempSpillCount += 1;
+            tempPaths.push(sourceRes.value.source.localPath!);
+          }
+        })
+      )
+    );
+
+    const cleanup = () => {
+      for (const tempPath of tempPaths) {
+        try {
+          unlinkSync(tempPath);
+        } catch {
+          // ignore temp cleanup failures
+        }
+      }
+    };
+
+    if (firstError) {
+      cleanup();
+      return Result.err(firstError);
     }
-    return Result.ok(sources);
+
+    return Result.ok({
+      sources,
+      cacheHitCount,
+      cacheFillCount,
+      tempSpillCount,
+      fetchConcurrency,
+      cleanup,
+    });
   }
 
   private async prepareCompactionSourceResult(
     meta: SecondaryIndexRunRow
-  ): Promise<Result<SecondaryCompactionRunSource, SecondaryIndexBuildError>> {
+  ): Promise<
+    Result<
+      {
+        source: SecondaryCompactionRunSource;
+        location: "cache_hit" | "cache_fill" | "temp_spill";
+      },
+      SecondaryIndexBuildError
+    >
+  > {
     if (this.runDiskCache?.has(meta.object_key)) {
       return Result.ok({
-        runId: meta.run_id,
-        startSegment: meta.start_segment,
-        endSegment: meta.end_segment,
-        localPath: this.runDiskCache.getPath(meta.object_key),
+        source: {
+          runId: meta.run_id,
+          startSegment: meta.start_segment,
+          endSegment: meta.end_segment,
+          localPath: this.runDiskCache.getPath(meta.object_key),
+        },
+        location: "cache_hit",
       });
     }
     try {
@@ -679,17 +1072,30 @@ export class SecondaryIndexManager {
       );
       if (this.runDiskCache?.put(meta.object_key, bytes)) {
         return Result.ok({
+          source: {
+            runId: meta.run_id,
+            startSegment: meta.start_segment,
+            endSegment: meta.end_segment,
+            localPath: this.runDiskCache.getPath(meta.object_key),
+          },
+          location: "cache_fill",
+        });
+      }
+      const spillRes = writeIndexRunOutputFileResult(
+        `${this.cfg.rootDir}/tmp/secondary-index-sources`,
+        `secondary-source-${meta.run_id}`,
+        bytes
+      );
+      if (Result.isError(spillRes)) return invalidIndexBuild(spillRes.error.message);
+      return Result.ok({
+        source: {
           runId: meta.run_id,
           startSegment: meta.start_segment,
           endSegment: meta.end_segment,
-          localPath: this.runDiskCache.getPath(meta.object_key),
-        });
-      }
-      return Result.ok({
-        runId: meta.run_id,
-        startSegment: meta.start_segment,
-        endSegment: meta.end_segment,
-        bytes,
+          localPath: spillRes.value.localPath,
+          deleteAfterUse: true,
+        },
+        location: "temp_spill",
       });
     } catch (e: unknown) {
       return invalidIndexBuild(String((e as any)?.message ?? e));
@@ -728,6 +1134,52 @@ export class SecondaryIndexManager {
     const payloadRes = encodeIndexRunResult(run);
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
     return await this.persistRunPayloadResult(run.meta, payloadRes.value, run);
+  }
+
+  private async persistRunArtifactResult(run: SecondaryCompactionBuildOutput): Promise<Result<number, SecondaryIndexBuildError>> {
+    if (run.storage === "file") {
+      try {
+        if (this.os.putFile) {
+          await retryAbortable(
+            (signal) => this.os.putFile!(run.meta.objectKey, run.localPath, run.sizeBytes, { signal }),
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          );
+        } else {
+          const payload = await Bun.file(run.localPath).bytes();
+          await retryAbortable(
+            (signal) => this.os.put(run.meta.objectKey, payload, { contentLength: payload.byteLength, signal }),
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          );
+        }
+      } catch (e: unknown) {
+        try {
+          unlinkSync(run.localPath);
+        } catch {
+          // ignore temp cleanup failures
+        }
+        return invalidIndexBuild(String((e as any)?.message ?? e));
+      }
+      const cached = this.runDiskCache?.putFromLocal(run.meta.objectKey, run.localPath, run.sizeBytes) ?? false;
+      if (!cached) {
+        try {
+          unlinkSync(run.localPath);
+        } catch {
+          // ignore temp cleanup failures
+        }
+      }
+      return Result.ok(run.sizeBytes);
+    }
+    return await this.persistRunPayloadResult(run.meta, run.payload);
   }
 
   private async persistRunPayloadResult(

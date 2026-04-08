@@ -96,18 +96,49 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
   - combined routing-key + routing-key lexicon L0 run build
   - routing-key run compaction
   - routing-key lexicon run compaction
-  - exact secondary L0 run build
+  - unified evlog `search_segment_build` for exact-secondary L0 plus bundled
+    companion per-segment work
+  - non-evlog exact secondary L0 run build
   - exact secondary run compaction
-  - bundled companion per-segment build
+  - non-evlog bundled companion per-segment build
 - Routing-key and routing-key lexicon L0 build now share one worker pass over
   the same leased 16-segment window. The worker emits both immutable payloads,
   and the main thread persists them through the two family-specific state
   machines independently.
+- On `evlog` streams, exact-secondary L0 and bundled companion work now share
+  one `search_segment_build` worker pass over the same leased uploaded
+  segment.
+- That shared worker extracts the exact, `.col`, and `.fts` field set once
+  from raw JSON bytes, emits all aligned exact L0 payloads for the segment,
+  and also emits the bundled companion payload.
+- The exact-secondary and companion managers still persist through their own
+  state machines, but they now reuse the same worker result when both lag on
+  the same uploaded segment.
+- Non-`evlog` exact-secondary streams still use the family-specific exact L0
+  worker job.
+- Exact-secondary L0 runs now omit binary-fuse filters entirely. Exact lookups
+  still work because the read path can binary-search those small immutable L0
+  runs directly, and compaction remains free to add filters on higher levels.
 - That shared routing+lexicon L0 worker path scans only routing keys from the
   segment blocks and caches distinct-key fingerprints for the whole window, so
   repeated low-cardinality keys are not re-hashed for every record.
-- Workers only read leased local files and return immutable artifact bytes or
-  section payloads. They do not mutate SQLite or publish manifests.
+- Bundled companion builds now compile search-field accessors once per schema
+  version and reuse them across the whole segment, so companion extraction does
+  not reparse JSON pointers for every record.
+- On no-rollup bundled-companion builds, workers now visit compiled field
+  accessors directly instead of materializing a per-record raw-value map, and
+  keyword-heavy `.fts` fields use a singleton-posting encoder fast path. That
+  cuts both temporary allocation pressure and build wall time on `evlog`-style
+  high-cardinality request logs.
+- On `evlog`, that raw-byte path is now shared with exact-secondary extraction
+  inside `search_segment_build`, so the same uploaded segment is no longer
+  scanned separately for exact and companion acceleration.
+- Bundled companion, exact-secondary L0, and exact-secondary compaction workers
+  now write final artifacts to temp files and return file metadata to the main
+  thread, so uploads and disk-cache population do not require large
+  worker-to-main-thread byte copies.
+- Workers only read leased local files and emit immutable artifact files or
+  small metadata payloads. They do not mutate SQLite or publish manifests.
 - The family adapters still own family-specific backlog discovery, queueing,
   and compaction rules, but they no longer own independent timers or dedicated
   worker pools.

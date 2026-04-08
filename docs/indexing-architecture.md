@@ -339,6 +339,15 @@ Exact-index rebuild is now config-aware:
 - exact L0 build compute runs through the same shared generic index-build
   worker pool and the same shared segment-locality manager as the routing and
   lexicon families
+- on `evlog`, exact L0 now shares one unified `search_segment_build` worker
+  pass with bundled companion build for the same uploaded segment
+- that shared worker emits every exact run aligned to the segment plus the
+  bundled `.cix`, so the segment is not scanned twice for exact and search
+  acceleration
+- non-`evlog` exact L0 keeps the family-specific exact worker path
+- exact-secondary L0 runs do not build binary-fuse filters; lookups binary-search
+  those L0 runs directly, while higher compaction levels may still publish
+  filters for denser runs
 
 ### `.col` family
 
@@ -361,6 +370,9 @@ Current implementation:
   index-build worker pool
 - companion jobs lease one uploaded segment at a time through the shared
   segment-locality manager
+- on `evlog`, `.col` and `.fts` now share the same unified worker pass with the
+  exact-secondary family, so the uploaded segment is decoded once for all three
+  outputs
 
 Current responsibilities:
 
@@ -606,6 +618,17 @@ Current bundled-companion rules:
 - each bundled companion build loads one segment and builds enabled families
   sequentially, so `col`, `fts`, `agg`, and `mblk` do not keep their heaviest
   in-memory state live at the same time
+- per-record search-field extraction now compiles field accessors once per
+  schema version and reuses them across the whole segment build instead of
+  reparsing JSON pointers for every record
+- when a bundled companion plan has no rollups, the worker streams compiled
+  field values directly into `.col` / `.fts` builders instead of first building
+  a per-record raw-value map
+- `.fts` term dictionaries use deterministic code-unit lexical order, not
+  locale-aware collation, so build cost does not scale with locale comparison
+  overhead on high-cardinality ASCII-heavy fields
+- high-cardinality singleton keyword-prefix fields use a dedicated `.fts`
+  posting encoder fast path instead of allocating one posting writer per term
 - family payloads are plan-relative and do not repeat field or rollup names
 - query-time companion reads cache raw `.cix` bytes plus the parsed section
   table and decode only the requested section family on demand

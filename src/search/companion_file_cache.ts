@@ -1,5 +1,6 @@
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -103,6 +104,43 @@ export class CompanionFileCache {
     this.entries.delete(objectKey);
     this.entries.set(objectKey, nextEntry);
     this.totalBytes += bytes.byteLength;
+    this.touch(objectKey);
+    return Result.ok(path);
+  }
+
+  storeFileResult(objectKey: string, sourcePath: string, sizeBytes: number): Result<string, CompanionFileCacheError> {
+    if (this.maxBytes <= 0) return invalidCompanionCache("search companion file cache must have a positive size budget");
+    if (sizeBytes > this.maxBytes) {
+      return invalidCompanionCache(`companion cache object exceeds budget: ${objectKey}`);
+    }
+    const sourceStat = this.safeStat(sourcePath);
+    if (!sourceStat) return invalidCompanionCache(`missing companion source file ${sourcePath}`);
+    if (sourceStat.size !== sizeBytes) {
+      return invalidCompanionCache(`unexpected companion source size for ${objectKey}`);
+    }
+    this.pruneForBudget(Date.now(), sizeBytes, false);
+    const path = this.pathFor(objectKey);
+    mkdirSync(dirname(path), { recursive: true });
+    const existing = this.entries.get(objectKey);
+    if (existing) this.totalBytes = Math.max(0, this.totalBytes - existing.size);
+    try {
+      if (sourcePath === path) {
+        // already in place
+      } else {
+        try {
+          renameSync(sourcePath, path);
+        } catch {
+          copyFileSync(sourcePath, path);
+          unlinkSync(sourcePath);
+        }
+      }
+    } catch (e: unknown) {
+      return invalidCompanionCache(String((e as any)?.message ?? e));
+    }
+    const nextEntry = { path, size: sizeBytes, mtimeMs: Date.now() };
+    this.entries.delete(objectKey);
+    this.entries.set(objectKey, nextEntry);
+    this.totalBytes += sizeBytes;
     this.touch(objectKey);
     return Result.ok(path);
   }

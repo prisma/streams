@@ -5,6 +5,10 @@ import { readUVarint, writeUVarint } from "./varint";
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export class RestartStringTableView {
   private readonly termCount: number;
   private readonly restartInterval: number;
@@ -63,7 +67,7 @@ export class RestartStringTableView {
       const mid = (low + high) >> 1;
       const current = this.decodeTermAt(mid);
       if (current == null) return null;
-      const cmp = current.localeCompare(term);
+      const cmp = compareStrings(current, term);
       if (cmp === 0) return mid;
       if (cmp < 0) low = mid + 1;
       else high = mid - 1;
@@ -92,7 +96,7 @@ export class RestartStringTableView {
     while (low < high) {
       const mid = (low + high) >> 1;
       const current = this.decodeTermAt(mid);
-      if (current != null && current.localeCompare(target) < 0) low = mid + 1;
+      if (current != null && compareStrings(current, target) < 0) low = mid + 1;
       else high = mid;
     }
     return low;

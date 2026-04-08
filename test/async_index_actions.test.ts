@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import { runEvlogIngester } from "../experiments/demo/evlog_ingester";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -29,6 +30,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function makeDemoFetch(app: ReturnType<typeof createApp>, baseUrl: string): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (!url.startsWith(baseUrl)) {
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+    if (input instanceof Request) return app.fetch(new Request(input, init));
+    return app.fetch(new Request(url, init));
+  }) as typeof fetch;
+}
+
 async function waitForActionKinds(
   app: ReturnType<typeof createApp>,
   stream: string,
@@ -47,6 +59,22 @@ async function waitForActionKinds(
     await sleep(50);
   }
   throw new Error(`timeout waiting for async index actions: ${kinds.join(", ")}`);
+}
+
+async function waitForCondition(
+  app: ReturnType<typeof createApp>,
+  stream: string,
+  predicate: () => boolean,
+  timeoutMs = 15_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    app.deps.indexer?.enqueue(stream);
+    await (app.deps.indexer as any)?.tick?.();
+    if (predicate()) return;
+    await sleep(50);
+  }
+  throw new Error("timeout waiting for condition");
 }
 
 function expectActionShape(action: any): void {
@@ -216,7 +244,75 @@ describe("async index action observability", () => {
         const action = actions.find((row) => row.action_kind === kind && row.status === "succeeded");
         expect(action).toBeTruthy();
         expectActionShape(action);
+        if (action?.action_kind === "secondary_compaction_build") {
+          const detail = JSON.parse(action.detail_json);
+          expect(typeof detail.source_prepare_ms).toBe("number");
+          expect(typeof detail.worker_build_ms).toBe("number");
+          expect(typeof detail.artifact_persist_ms).toBe("number");
+          expect(typeof detail.source_fetch_concurrency).toBe("number");
+        }
       }
+    } finally {
+      app.deps.indexer?.stop();
+      await sleep(20);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("evlog unified search build piggybacks companion coverage from exact actions on fresh streams", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-async-index-evlog-shared-"));
+    const cfg = makeConfig(root, {
+      segmentMaxBytes: 2_048,
+      segmentTargetRows: 1,
+      searchCompanionBuildBatchSegments: 1,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      indexCheckIntervalMs: 10,
+      uploadConcurrency: 2,
+      indexL0SpanSegments: 1,
+      segmentCacheMaxBytes: 32 * 1024 * 1024,
+      segmentFooterCacheEntries: 64,
+    });
+    const app = createApp(cfg, new MockR2Store());
+    const baseUrl = "http://127.0.0.1:8787";
+    try {
+      const summary = await runEvlogIngester(
+        ["--url", baseUrl, "--stream", "evlog-telemetry", "--batch-size", "20", "--max-batches", "2", "--reset"],
+        { fetchImpl: makeDemoFetch(app, baseUrl) }
+      );
+      expect(summary.appendedEvents).toBe(40);
+
+      await waitForCondition(
+        app,
+        "evlog-telemetry",
+        () => {
+          const actions = app.deps.db.listAsyncIndexActions("evlog-telemetry", 200);
+          const companionRows = app.deps.db.listSearchSegmentCompanions("evlog-telemetry");
+          const hasSecondary = actions.some((row) => row.action_kind === "secondary_l0_build" && row.status === "succeeded");
+          return hasSecondary && companionRows.length > 0;
+        },
+        30_000
+      );
+
+      const actions = app.deps.db.listAsyncIndexActions("evlog-telemetry", 200);
+      const detailPayloads = actions
+        .filter((row) => row.status === "succeeded" && row.action_kind === "secondary_l0_build")
+        .map((row) => {
+          try {
+            return JSON.parse(row.detail_json);
+          } catch {
+            return {};
+          }
+        });
+      const piggybackedCompanionSections = detailPayloads.flatMap((detail) =>
+        Array.isArray(detail.piggyback_companion_section_kinds) ? detail.piggyback_companion_section_kinds : []
+      );
+      const companionBuilds = actions.filter((row) => row.status === "succeeded" && row.action_kind === "companion_build");
+
+      expect(app.deps.db.listSearchSegmentCompanions("evlog-telemetry").length).toBeGreaterThan(0);
+      expect(piggybackedCompanionSections.length).toBeGreaterThan(0);
+      expect(companionBuilds.length).toBe(0);
     } finally {
       app.deps.indexer?.stop();
       await sleep(20);

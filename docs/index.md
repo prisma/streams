@@ -40,6 +40,7 @@ and tooling.
 - [metrics.md](./metrics.md) — shipped metrics profile, canonical metrics stream shape, and query architecture
 - [gharchive-demo.md](./gharchive-demo.md) — self-contained GH Archive demo stream with search fields and Studio-friendly rollups
 - [simple-ingester-demo.md](./simple-ingester-demo.md) — synthetic long-soak demo with routing-key-only indexing on a single field
+- [evlog-ingester-demo.md](./evlog-ingester-demo.md) — synthetic `evlog` demo stream that exercises routing, exact, `.col`, and `.fts` async backfill
 - [daily-ingest-report-with-more-fts.md](./daily-ingest-report-with-more-fts.md) — completed `gharchive-demo day` ingest report with `title`, `message`, and `body` back on the `.fts` path
 - [week-ingest-report.md](./week-ingest-report.md) — completed `gharchive-demo week` ingest report against R2-backed full mode
 

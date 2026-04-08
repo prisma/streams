@@ -7,6 +7,7 @@ import { buildLexiconCompactionPayloadResult } from "./lexicon_compaction_build"
 import { buildSecondaryL0RunPayloadResult } from "./secondary_l0_build";
 import { buildSecondaryCompactionPayloadResult } from "./secondary_compaction_build";
 import { buildEncodedBundledCompanionPayloadResult } from "../search/companion_build";
+import { buildSearchSegmentResult } from "../search/search_segment_build";
 import type { IndexBuildJobInput, IndexBuildJobOutput } from "./index_build_job";
 import { dsError } from "../util/ds_error";
 
@@ -46,6 +47,10 @@ function buildResult(job: IndexBuildJobInput): Result<IndexBuildJobOutput, { mes
     }
     case "companion_build": {
       const res = buildEncodedBundledCompanionPayloadResult(job.input);
+      return Result.isError(res) ? Result.err({ message: res.error.message }) : Result.ok({ kind: job.kind, output: res.value });
+    }
+    case "search_segment_build": {
+      const res = buildSearchSegmentResult(job.input);
       return Result.isError(res) ? Result.err({ message: res.error.message }) : Result.ok({ kind: job.kind, output: res.value });
     }
   }

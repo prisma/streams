@@ -1,5 +1,6 @@
 import { Result } from "better-result";
 import type { SearchFieldKind } from "../schema/registry";
+import { compareSearchStrings } from "./schema";
 import { decodeDocIds, encodeDocSet } from "./binary/docset";
 import { BinaryCursor, BinaryPayloadError, BinaryWriter, concatBytes, readU16, readU32 } from "./binary/codec";
 import { RestartStringTableView, encodeRestartStringTable } from "./binary/restart_strings";
@@ -84,6 +85,17 @@ type FieldDirectoryEntry = {
   postingsDataOffset: number;
   postingsDataLength: number;
 };
+
+export function appendKeywordPostingDoc(postings: FtsTermInput | undefined, docId: number): FtsTermInput {
+  if (!postings) return { doc_ids: [docId] };
+  const docIds = postings.doc_ids;
+  if (docIds.length === 0 || docIds[docIds.length - 1] !== docId) docIds.push(docId);
+  return postings;
+}
+
+export function ftsTermDocCount(postings: FtsTermInput): number {
+  return postings.doc_ids.length;
+}
 
 class U32LeView {
   private readonly view: DataView;
@@ -244,22 +256,25 @@ export function encodeFtsSegmentCompanion(input: FtsSectionInput, plan: SearchCo
 
   for (const planField of orderedFields) {
     const field = input.fields[planField.name]!;
-    const terms = Object.keys(field.terms).sort((a, b) => a.localeCompare(b));
+    const terms = Object.keys(field.terms).sort(compareSearchStrings);
     const dict = encodeRestartStringTable(terms);
     const encodedDocSet = encodeDocSet(input.doc_count, field.exists_docs);
-    const dfWriter = new BinaryWriter();
-    const postingOffsetWriter = new BinaryWriter();
-    const postingsWriter = new BinaryWriter();
+    const singletonPayload = encodeSingletonFieldPayloadResult(field, terms);
+    const dfWriter = singletonPayload ? null : new BinaryWriter();
+    const postingOffsetWriter = singletonPayload ? null : new BinaryWriter();
+    const postingsWriter = singletonPayload ? null : new BinaryWriter();
     let postingOffset = 0;
-    for (const term of terms) {
-      const postings = field.terms[term] ?? { doc_ids: [] };
-      dfWriter.writeU32(postings.doc_ids.length);
-      postingOffsetWriter.writeU32(postingOffset);
-      const payload = encodePostingList(postings, field.positions === true);
-      postingsWriter.writeBytes(payload);
-      postingOffset += payload.byteLength;
+    if (!singletonPayload) {
+      for (const term of terms) {
+        const postings = field.terms[term] ?? { doc_ids: [] };
+        dfWriter!.writeU32(ftsTermDocCount(postings));
+        postingOffsetWriter!.writeU32(postingOffset);
+        const payload = encodePostingList(postings, field.positions === true);
+        postingsWriter!.writeBytes(payload);
+        postingOffset += payload.byteLength;
+      }
+      postingOffsetWriter!.writeU32(postingOffset);
     }
-    postingOffsetWriter.writeU32(postingOffset);
     fieldPayloads.push({
       entry: {
         fieldOrdinal: planField.ordinal,
@@ -274,17 +289,17 @@ export function encodeFtsSegmentCompanion(input: FtsSectionInput, plan: SearchCo
         dictOffset: 0,
         dictLength: dict.byteLength,
         dfOffset: 0,
-        dfLength: dfWriter.length,
+        dfLength: singletonPayload ? singletonPayload.dfs.byteLength : dfWriter!.length,
         postingsOffsetTableOffset: 0,
-        postingsOffsetTableLength: postingOffsetWriter.length,
+        postingsOffsetTableLength: singletonPayload ? singletonPayload.postingOffsets.byteLength : postingOffsetWriter!.length,
         postingsDataOffset: 0,
-        postingsDataLength: postingsWriter.length,
+        postingsDataLength: singletonPayload ? singletonPayload.postings.byteLength : postingsWriter!.length,
       },
       exists: encodedDocSet.payload,
       dict,
-      dfs: dfWriter.finish(),
-      postingOffsets: postingOffsetWriter.finish(),
-      postings: postingsWriter.finish(),
+      dfs: singletonPayload ? singletonPayload.dfs : dfWriter!.finish(),
+      postingOffsets: singletonPayload ? singletonPayload.postingOffsets : postingOffsetWriter!.finish(),
+      postings: singletonPayload ? singletonPayload.postings : postingsWriter!.finish(),
     });
   }
 
@@ -377,6 +392,9 @@ export function decodeFtsSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
 }
 
 function encodePostingList(postings: FtsTermInput, withPositions: boolean): Uint8Array {
+  if (!withPositions && postings.doc_ids.length === 1) {
+    return encodeSingletonPostingList(postings.doc_ids[0] ?? 0);
+  }
   const writer = new BinaryWriter();
   const docIds = postings.doc_ids;
   const freqs = postings.freqs ?? [];
@@ -413,6 +431,50 @@ function encodePostingList(postings: FtsTermInput, withPositions: boolean): Uint
     writer.writeBytes(posWriter.finish());
   }
   return writer.finish();
+}
+
+function encodeSingletonPostingList(docId: number): Uint8Array {
+  const bytes = new Uint8Array(21);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  view.setUint16(0, 1, true);
+  bytes[2] = 0;
+  bytes[3] = 0;
+  view.setUint32(4, docId, true);
+  view.setUint32(8, 0, true);
+  view.setUint32(12, 1, true);
+  view.setUint32(16, 0, true);
+  bytes[20] = 1;
+  return bytes;
+}
+
+function encodeSingletonFieldPayloadResult(
+  field: FtsFieldInput,
+  terms: string[]
+): { dfs: Uint8Array; postingOffsets: Uint8Array; postings: Uint8Array } | null {
+  if (field.positions === true || terms.length === 0) return null;
+  const dfs = new Uint8Array(terms.length * 4);
+  const postingOffsets = new Uint8Array((terms.length + 1) * 4);
+  const postings = new Uint8Array(terms.length * 21);
+  const dfsView = new DataView(dfs.buffer, dfs.byteOffset, dfs.byteLength);
+  const offsetView = new DataView(postingOffsets.buffer, postingOffsets.byteOffset, postingOffsets.byteLength);
+  const postingsView = new DataView(postings.buffer, postings.byteOffset, postings.byteLength);
+  for (let index = 0; index < terms.length; index += 1) {
+    const postingsEntry = field.terms[terms[index]!] ?? { doc_ids: [] };
+    if (postingsEntry.doc_ids.length !== 1) return null;
+    dfsView.setUint32(index * 4, 1, true);
+    const baseOffset = index * 21;
+    offsetView.setUint32(index * 4, baseOffset, true);
+    postingsView.setUint16(baseOffset, 1, true);
+    postings[baseOffset + 2] = 0;
+    postings[baseOffset + 3] = 0;
+    postingsView.setUint32(baseOffset + 4, postingsEntry.doc_ids[0] ?? 0, true);
+    postingsView.setUint32(baseOffset + 8, 0, true);
+    postingsView.setUint32(baseOffset + 12, 1, true);
+    postingsView.setUint32(baseOffset + 16, 0, true);
+    postings[baseOffset + 20] = 1;
+  }
+  offsetView.setUint32(terms.length * 4, terms.length * 21, true);
+  return { dfs, postingOffsets, postings };
 }
 
 function slicePayload(bytes: Uint8Array, offset: number, length: number, message: string): Uint8Array {

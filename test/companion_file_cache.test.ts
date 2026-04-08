@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Result } from "better-result";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CompanionFileCache } from "../src/search/companion_file_cache";
@@ -133,6 +133,27 @@ describe("CompanionFileCache", () => {
       expect(existsSync(firstPath)).toBeTrue();
       expect(existsSync(secondPath)).toBeTrue();
       expect(cache.bytesForObjectKeyPrefix("streams/a/companions/")).toBe(8);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("moves a built companion file into the cache without rewriting bytes", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-companion-file-cache-"));
+    try {
+      const cache = new CompanionFileCache(join(root, "cache"), 1024, 60_000, 4);
+      const sourcePath = join(root, "tmp", "segment-0.cix");
+      mkdirSync(join(root, "tmp"), { recursive: true });
+      const payload = new Uint8Array([1, 2, 3, 4, 5, 6]);
+      writeFileSync(sourcePath, payload);
+
+      const storeRes = cache.storeFileResult("streams/a/segments/one.cix", sourcePath, payload.byteLength);
+      expect(Result.isError(storeRes)).toBeFalse();
+      if (Result.isError(storeRes)) return;
+
+      expect(existsSync(sourcePath)).toBeFalse();
+      expect(existsSync(storeRes.value)).toBeTrue();
+      expect(readFileSync(storeRes.value)).toEqual(payload);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

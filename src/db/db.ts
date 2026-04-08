@@ -8,6 +8,23 @@ export const STREAM_FLAG_DELETED = 1 << 0;
 // Internal companion touch stream. Hidden from listing and not eligible for segmentation.
 export const STREAM_FLAG_TOUCH = 1 << 1;
 
+const WAL_RANGE_SQL = `SELECT offset, ts_ms, routing_key, content_type, payload
+         FROM wal
+         WHERE stream = ? AND offset >= ? AND offset <= ?
+         ORDER BY offset ASC;`;
+const WAL_RANGE_BY_KEY_SQL = `SELECT offset, ts_ms, routing_key, content_type, payload
+         FROM wal
+         WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
+         ORDER BY offset ASC;`;
+const WAL_RANGE_DESC_SQL = `SELECT offset, ts_ms, routing_key, content_type, payload
+         FROM wal
+         WHERE stream = ? AND offset >= ? AND offset <= ?
+         ORDER BY offset DESC;`;
+const WAL_RANGE_DESC_BY_KEY_SQL = `SELECT offset, ts_ms, routing_key, content_type, payload
+         FROM wal
+         WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
+         ORDER BY offset DESC;`;
+
 const BASE_WAL_GC_CHUNK_OFFSETS = (() => {
   const raw = process.env.DS_BASE_WAL_GC_CHUNK_OFFSETS;
   if (raw == null || raw.trim() === "") return 1_000_000;
@@ -226,11 +243,6 @@ export class SqliteDurableStore {
     candidateStreamsNoInterval: SqliteStatement;
     listExpiredStreams: SqliteStatement;
 
-    streamWalRange: SqliteStatement;
-    streamWalRangeByKey: SqliteStatement;
-    streamWalRangeDesc: SqliteStatement;
-    streamWalRangeDescByKey: SqliteStatement;
-
     createSegment: SqliteStatement;
     listSegmentsForStream: SqliteStatement;
     getSegmentByIndex: SqliteStatement;
@@ -440,31 +452,6 @@ export class SqliteDurableStore {
            AND expires_at_ms <= ?
          ORDER BY expires_at_ms ASC
          LIMIT ?;`
-      ),
-
-      streamWalRange: this.db.query(
-        `SELECT offset, ts_ms, routing_key, content_type, payload
-         FROM wal
-         WHERE stream = ? AND offset >= ? AND offset <= ?
-         ORDER BY offset ASC;`
-      ),
-      streamWalRangeByKey: this.db.query(
-        `SELECT offset, ts_ms, routing_key, content_type, payload
-         FROM wal
-         WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
-         ORDER BY offset ASC;`
-      ),
-      streamWalRangeDesc: this.db.query(
-        `SELECT offset, ts_ms, routing_key, content_type, payload
-         FROM wal
-         WHERE stream = ? AND offset >= ? AND offset <= ?
-         ORDER BY offset DESC;`
-      ),
-      streamWalRangeDescByKey: this.db.query(
-        `SELECT offset, ts_ms, routing_key, content_type, payload
-         FROM wal
-         WHERE stream = ? AND offset >= ? AND offset <= ? AND routing_key = ?
-         ORDER BY offset DESC;`
       ),
 
       createSegment: this.db.query(
@@ -1674,20 +1661,36 @@ export class SqliteDurableStore {
   *iterWalRange(stream: string, startOffset: bigint, endOffset: bigint, routingKey?: Uint8Array): Generator<any, void, void> {
     const start = this.bindInt(startOffset);
     const end = this.bindInt(endOffset);
-    const stmt = routingKey ? this.stmts.streamWalRangeByKey : this.stmts.streamWalRange;
-    const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
-    for (const row of it) {
-      yield row;
+    const stmt = this.db.prepare(routingKey ? WAL_RANGE_BY_KEY_SQL : WAL_RANGE_SQL);
+    try {
+      const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
+      for (const row of it) {
+        yield row;
+      }
+    } finally {
+      try {
+        stmt.finalize?.();
+      } catch {
+        // ignore
+      }
     }
   }
 
   *iterWalRangeDesc(stream: string, startOffset: bigint, endOffset: bigint, routingKey?: Uint8Array): Generator<any, void, void> {
     const start = this.bindInt(startOffset);
     const end = this.bindInt(endOffset);
-    const stmt = routingKey ? this.stmts.streamWalRangeDescByKey : this.stmts.streamWalRangeDesc;
-    const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
-    for (const row of it) {
-      yield row;
+    const stmt = this.db.prepare(routingKey ? WAL_RANGE_DESC_BY_KEY_SQL : WAL_RANGE_DESC_SQL);
+    try {
+      const it = routingKey ? (stmt.iterate(stream, start, end, routingKey) as any) : (stmt.iterate(stream, start, end) as any);
+      for (const row of it) {
+        yield row;
+      }
+    } finally {
+      try {
+        stmt.finalize?.();
+      } catch {
+        // ignore
+      }
     }
   }
 

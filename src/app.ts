@@ -22,6 +22,7 @@ import { IndexSegmentLocalityManager } from "./index/segment_locality";
 import { IndexBuildWorkerPool } from "./index/index_build_worker_pool";
 import { GlobalIndexManager } from "./index/global_index_manager";
 import { RoutingLexiconL0BuildCoordinator } from "./index/routing_lexicon_l0_build_coordinator";
+import { SearchSegmentBuildCoordinator } from "./search/search_segment_build_coordinator";
 
 export type { App } from "./app_core";
 
@@ -47,6 +48,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
       const indexSegmentLocality = new IndexSegmentLocalityManager(diskCache, store, backpressure);
       const indexBuildWorkers = new IndexBuildWorkerPool(Math.max(1, config.indexBuilders));
       const routingLexiconBuilds = new RoutingLexiconL0BuildCoordinator(indexBuildWorkers);
+      const searchSegmentBuilds = new SearchSegmentBuildCoordinator(indexBuildWorkers);
       const routingIndexer = new IndexManager(
         config,
         db,
@@ -75,7 +77,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         asyncIndexGate,
         foregroundActivity,
         indexSegmentLocality,
-        indexBuildWorkers
+        indexBuildWorkers,
+        searchSegmentBuilds
       );
       const companionIndexer = new SearchCompanionManager(
         config,
@@ -90,7 +93,14 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         asyncIndexGate,
         foregroundActivity,
         indexSegmentLocality,
-        indexBuildWorkers
+        indexBuildWorkers,
+        searchSegmentBuilds
+      );
+      companionIndexer.setUnifiedExactRunSink((stream, registry, segmentIndex, runs) =>
+        secondaryIndexer.persistUnifiedExactRunsFromSearchBuild(stream, registry, segmentIndex, runs)
+      );
+      secondaryIndexer.setUnifiedCompanionSink((stream, segmentIndex, planGeneration, output) =>
+        companionIndexer.persistUnifiedCompanionOutput(stream, segmentIndex, planGeneration, output)
       );
       const lexiconIndexer = new LexiconIndexManager(
         config,

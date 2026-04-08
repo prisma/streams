@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { unlinkSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type {
@@ -41,10 +42,19 @@ import type { ColFieldInput, ColScalar, ColSectionInput, ColSectionView } from "
 import {
   analyzeTextValue,
   canonicalizeColumnValue,
-  extractRawSearchValuesForFieldsResult,
+  compileSearchFieldAccessorsResult,
+  extractRawSearchValuesWithCompiledAccessorsResult,
   normalizeKeywordValue,
+  type CompiledSearchFieldAccessor,
 } from "./schema";
-import type { FtsFieldInput, FtsSectionInput, FtsSectionView, FtsTermInput } from "./fts_format";
+import {
+  appendKeywordPostingDoc,
+  ftsTermDocCount,
+  type FtsFieldInput,
+  type FtsSectionInput,
+  type FtsSectionView,
+  type FtsTermInput,
+} from "./fts_format";
 import { buildMetricsBlockRecord } from "../profiles/metrics/normalize";
 import type { MetricsBlockSectionInput, MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import { parseDurationMsResult } from "../util/duration";
@@ -59,8 +69,36 @@ import type { SearchRollupConfig } from "../schema/registry";
 import type { CompanionSectionLookupStats } from "../index/indexer";
 import type { IndexSegmentLocalityManager } from "../index/segment_locality";
 import { IndexBuildWorkerPool } from "../index/index_build_worker_pool";
+import { schemaVersionForOffset } from "../schema/read_json";
+import { SearchSegmentBuildCoordinator } from "./search_segment_build_coordinator";
+import { collectUnifiedSearchBuildExactIndexes, type SearchSegmentBuildOutput } from "./search_segment_build";
+import { getConfiguredSecondaryIndexes, hashSecondaryIndexField } from "../index/secondary_schema";
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
+type UnifiedExactRunSink = (
+  stream: string,
+  registry: SchemaRegistry,
+  segmentIndex: number,
+  runs: SearchSegmentBuildOutput["exactRuns"]
+) => Promise<Result<{ persistedIndexNames: string[] } | null, { kind: string; message: string }>>;
+type CompanionPersistOutput =
+  | {
+      storage: "bytes";
+      payload: Uint8Array;
+      sectionKinds: CompanionSectionKind[];
+      sectionSizes: Record<string, number>;
+      primaryTimestampMinMs: bigint | null;
+      primaryTimestampMaxMs: bigint | null;
+    }
+  | {
+      storage: "file";
+      localPath: string;
+      sizeBytes: number;
+      sectionKinds: CompanionSectionKind[];
+      sectionSizes: Record<string, number>;
+      primaryTimestampMinMs: bigint | null;
+      primaryTimestampMaxMs: bigint | null;
+    };
 
 function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionBuildError> {
   return Result.err({ kind: "invalid_companion_build", message });
@@ -176,6 +214,11 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
   }
 }
 
+function filterStandaloneCompanionSegments(stale: number[], exactFrontier: number | null): number[] {
+  if (exactFrontier == null) return stale;
+  return stale.filter((segmentIndex) => segmentIndex < exactFrontier);
+}
+
 export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
@@ -189,6 +232,8 @@ export class SearchCompanionManager {
   private readonly segmentLocality?: IndexSegmentLocalityManager;
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
+  private readonly searchSegmentBuilds?: SearchSegmentBuildCoordinator;
+  private unifiedExactRunSink?: UnifiedExactRunSink;
 
   constructor(
     private readonly cfg: Config,
@@ -203,7 +248,8 @@ export class SearchCompanionManager {
     asyncGate?: ConcurrencyGate,
     foregroundActivity?: ForegroundActivityTracker,
     segmentLocality?: IndexSegmentLocalityManager,
-    buildWorkers?: IndexBuildWorkerPool
+    buildWorkers?: IndexBuildWorkerPool,
+    searchSegmentBuilds?: SearchSegmentBuildCoordinator
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
     this.segmentCache = segmentCache;
@@ -214,6 +260,7 @@ export class SearchCompanionManager {
     this.ownsBuildWorkers = !buildWorkers;
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
+    this.searchSegmentBuilds = searchSegmentBuilds;
     this.fileCache = new CompanionFileCache(
       `${cfg.rootDir}/cache/companions`,
       cfg.searchCompanionFileCacheMaxBytes,
@@ -238,6 +285,41 @@ export class SearchCompanionManager {
     this.runningBuildTick = false;
     if (this.ownsBuildWorkers) this.buildWorkers.stop();
     this.fileCache.clearMapped();
+  }
+
+  setUnifiedExactRunSink(sink: UnifiedExactRunSink): void {
+    this.unifiedExactRunSink = sink;
+  }
+
+  async persistUnifiedCompanionOutput(
+    stream: string,
+    segmentIndex: number,
+    planGeneration: number,
+    output: CompanionPersistOutput
+  ): Promise<Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError>> {
+    const current = this.db.getSearchSegmentCompanion(stream, segmentIndex);
+    if (current && current.plan_generation === planGeneration) {
+      return Result.ok({ sectionKinds: parseSectionKinds(current).size > 0 ? Array.from(parseSectionKinds(current)) : output.sectionKinds });
+    }
+    return this.persistCompanionOutput(stream, segmentIndex, planGeneration, output);
+  }
+
+  private companionUnifiedSearchExactFrontier(stream: string, registry: SchemaRegistry, plan: SearchCompanionPlan): number | null {
+    if (!this.searchSegmentBuilds) return null;
+    if (registry.search?.profile !== "evlog") return null;
+    if (plan.families.agg || plan.families.mblk) return null;
+    const configuredExactIndexes = getConfiguredSecondaryIndexes(registry);
+    if (configuredExactIndexes.length === 0) return null;
+    let minIndexedThrough = Number.POSITIVE_INFINITY;
+    for (const configuredIndex of configuredExactIndexes) {
+      const state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
+      if (!state || state.config_hash !== hashSecondaryIndexField(configuredIndex)) {
+        minIndexedThrough = Math.min(minIndexedThrough, 0);
+        continue;
+      }
+      minIndexedThrough = Math.min(minIndexedThrough, state.indexed_through);
+    }
+    return Number.isFinite(minIndexedThrough) ? minIndexedThrough : null;
   }
 
   enqueue(stream: string): void {
@@ -475,13 +557,15 @@ export class SearchCompanionManager {
         const current = this.db.getSearchSegmentCompanion(stream, segmentIndex);
         if (!current || current.plan_generation !== planRow.generation) stale.push(segmentIndex);
       }
+      const unifiedExactFrontier = this.companionUnifiedSearchExactFrontier(stream, regRes.value, desiredPlan);
+      const standaloneStale = filterStandaloneCompanionSegments(stale, unifiedExactFrontier);
       if (this.metrics) {
         this.metrics.record("tieredstore.companion.lag.segments", stale.length, "count", undefined, stream);
       }
       if (stale.length === 0) return Result.ok(undefined);
 
       const batchLimit = Math.max(1, this.cfg.searchCompanionBuildBatchSegments);
-      const batch = stale.slice(0, batchLimit);
+      const batch = standaloneStale.slice(0, batchLimit);
       let builtCount = 0;
       for (const nextSegmentIndex of batch) {
         const seg = this.db.getSegmentByIndex(stream, nextSegmentIndex);
@@ -513,42 +597,131 @@ export class SearchCompanionManager {
           },
         });
         let companionRes;
+        let sharedBuildCacheStatus: "miss" | "shared_inflight" | "cache_hit" | null = null;
+        let piggybackExactIndexNames: string[] = [];
         try {
+          const exactIndexesForSegment = collectUnifiedSearchBuildExactIndexes(regRes.value, (indexName) => {
+            const state = this.db.getSecondaryIndexState(stream, indexName);
+            if (!state) return null;
+            return {
+              configHash: state.config_hash,
+              secret: state.index_secret,
+            };
+          });
+          const useUnifiedSearchBuild =
+            this.searchSegmentBuilds != null &&
+            regRes.value.search?.profile === "evlog" &&
+            !desiredPlan.families.agg &&
+            !desiredPlan.families.mblk;
           companionRes = await this.asyncGate.run(async () =>
-            this.memorySampler
-              ? await this.memorySampler.track(
-                  "companion",
-                  { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
-                  () =>
-                    this.buildWorkers.buildResult({
-                      kind: "companion_build",
-                      input: {
+            useUnifiedSearchBuild
+              ? await (this.memorySampler
+                  ? this.memorySampler.track(
+                      "companion",
+                      { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
+                      async () => {
+                        const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
+                          stream,
+                          registry: regRes.value,
+                          exactIndexes: exactIndexesForSegment,
+                          plan: desiredPlan,
+                          planGeneration: planRow.generation,
+                          segment: {
+                            segmentIndex: seg.segment_index,
+                            startOffset: seg.start_offset,
+                            localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                          },
+                        });
+                        if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
+                        sharedBuildCacheStatus = sharedRes.value.cacheStatus;
+                        if (this.unifiedExactRunSink && sharedRes.value.output.exactRuns.length > 0) {
+                          const exactPersistRes = await this.unifiedExactRunSink(
+                            stream,
+                            regRes.value,
+                            seg.segment_index,
+                            sharedRes.value.output.exactRuns
+                          );
+                          if (Result.isError(exactPersistRes)) return Result.err(exactPersistRes.error);
+                          piggybackExactIndexNames = exactPersistRes.value?.persistedIndexNames ?? [];
+                        }
+                        if (!sharedRes.value.output.companion) {
+                          return Result.err({ kind: "worker_pool_failure" as const, message: "unified search build did not return companion output" });
+                        }
+                        return Result.ok({
+                          kind: "companion_build" as const,
+                          output: sharedRes.value.output.companion,
+                        });
+                      }
+                    )
+                  : (async () => {
+                      const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
+                        stream,
                         registry: regRes.value,
+                        exactIndexes: exactIndexesForSegment,
                         plan: desiredPlan,
                         planGeneration: planRow.generation,
                         segment: {
-                          stream,
                           segmentIndex: seg.segment_index,
                           startOffset: seg.start_offset,
                           localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
                         },
+                      });
+                      if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
+                      sharedBuildCacheStatus = sharedRes.value.cacheStatus;
+                      if (this.unifiedExactRunSink && sharedRes.value.output.exactRuns.length > 0) {
+                        const exactPersistRes = await this.unifiedExactRunSink(
+                          stream,
+                          regRes.value,
+                          seg.segment_index,
+                          sharedRes.value.output.exactRuns
+                        );
+                        if (Result.isError(exactPersistRes)) return Result.err(exactPersistRes.error);
+                        piggybackExactIndexNames = exactPersistRes.value?.persistedIndexNames ?? [];
+                      }
+                      if (!sharedRes.value.output.companion) {
+                        return Result.err({ kind: "worker_pool_failure" as const, message: "unified search build did not return companion output" });
+                      }
+                      return Result.ok({
+                        kind: "companion_build" as const,
+                        output: sharedRes.value.output.companion,
+                      });
+                    })())
+              : this.memorySampler
+                ? await this.memorySampler.track(
+                    "companion",
+                    { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
+                    () =>
+                      this.buildWorkers.buildResult({
+                        kind: "companion_build",
+                        input: {
+                          registry: regRes.value,
+                          plan: desiredPlan,
+                          planGeneration: planRow.generation,
+                          outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+                          segment: {
+                            stream,
+                            segmentIndex: seg.segment_index,
+                            startOffset: seg.start_offset,
+                            localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                          },
+                        },
+                      })
+                  )
+                : await this.buildWorkers.buildResult({
+                    kind: "companion_build",
+                    input: {
+                      registry: regRes.value,
+                      plan: desiredPlan,
+                      planGeneration: planRow.generation,
+                      outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+                      segment: {
+                        stream,
+                        segmentIndex: seg.segment_index,
+                        startOffset: seg.start_offset,
+                        localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
                       },
-                    })
-                )
-              : await this.buildWorkers.buildResult({
-                  kind: "companion_build",
-                  input: {
-                    registry: regRes.value,
-                    plan: desiredPlan,
-                    planGeneration: planRow.generation,
-                    segment: {
-                      stream,
-                      segmentIndex: seg.segment_index,
-                      startOffset: seg.start_offset,
-                      localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
                     },
-                  },
-                })
+                  })
           );
         } finally {
           segmentLeaseRes.value.release();
@@ -563,42 +736,67 @@ export class SearchCompanionManager {
         }
         const objectId = Buffer.from(randomBytes(8)).toString("hex");
         const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), seg.segment_index, objectId);
-        const payload = companionRes.value.output.payload;
-        const sectionSizes = companionRes.value.output.sectionSizes;
+        const output = companionRes.value.output;
+        const sectionSizes = output.sectionSizes;
+        const outputSizeBytes = output.storage === "file" ? output.sizeBytes : output.payload.byteLength;
         try {
-          await retryAbortable(
-            (signal) => this.os.put(objectKey, payload, { contentLength: payload.byteLength, signal }),
-            {
-              retries: this.cfg.objectStoreRetries,
-              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-              timeoutMs: this.cfg.objectStoreTimeoutMs,
-            }
-          );
+          if (output.storage === "file" && this.os.putFile) {
+            await retryAbortable(
+              (signal) => this.os.putFile!(objectKey, output.localPath, output.sizeBytes, { signal }),
+              {
+                retries: this.cfg.objectStoreRetries,
+                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+                timeoutMs: this.cfg.objectStoreTimeoutMs,
+              }
+            );
+          } else if (output.storage === "file") {
+            const payload = await Bun.file(output.localPath).bytes();
+            await retryAbortable(
+              (signal) => this.os.put(objectKey, payload, { contentLength: payload.byteLength, signal }),
+              {
+                retries: this.cfg.objectStoreRetries,
+                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+                timeoutMs: this.cfg.objectStoreTimeoutMs,
+              }
+            );
+          } else {
+            await retryAbortable(
+              (signal) => this.os.put(objectKey, output.payload, { contentLength: output.payload.byteLength, signal }),
+              {
+                retries: this.cfg.objectStoreRetries,
+                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+                timeoutMs: this.cfg.objectStoreTimeoutMs,
+              }
+            );
+          }
         } catch (e: unknown) {
           action.fail(String((e as any)?.message ?? e), {
             detail: {
-              section_kinds: companionRes.value.output.sectionKinds,
+              section_kinds: output.sectionKinds,
             },
           });
+          if (output.storage === "file") {
+            try {
+              unlinkSync(output.localPath);
+            } catch {
+              // ignore temp cleanup failures
+            }
+          }
           return invalidCompanionBuild(String((e as any)?.message ?? e));
         }
-        const cacheRes = this.fileCache.storeBytesResult(objectKey, payload);
-        if (Result.isError(cacheRes)) {
-          console.warn("bundled companion local cache populate failed", objectKey, cacheRes.error.message);
+        const persistCompanionRes = await this.persistCompanionOutput(stream, seg.segment_index, planRow.generation, output);
+        if (Result.isError(persistCompanionRes)) {
+          action.fail(persistCompanionRes.error.message, {
+            detail: {
+              section_kinds: output.sectionKinds,
+            },
+          });
+          return persistCompanionRes;
         }
-        const sectionKinds = companionRes.value.output.sectionKinds;
-        this.db.upsertSearchSegmentCompanion(
-          stream,
-          seg.segment_index,
-          objectKey,
-          planRow.generation,
-          JSON.stringify(sectionKinds),
-          JSON.stringify(sectionSizes),
-          payload.byteLength,
-          companionRes.value.output.primaryTimestampMinMs,
-          companionRes.value.output.primaryTimestampMaxMs
-        );
+        const sectionKinds = persistCompanionRes.value.sectionKinds;
         builtCount += 1;
         if (this.metrics) {
           const elapsedNs = BigInt(Date.now() - startedAt) * 1_000_000n;
@@ -607,14 +805,17 @@ export class SearchCompanionManager {
         }
         action.succeed({
           outputCount: 1,
-          outputSizeBytes: BigInt(payload.byteLength),
+          outputSizeBytes: BigInt(outputSizeBytes),
           detail: {
             section_kinds: sectionKinds,
+            output_storage: output.storage,
+            shared_build_cache_status: sharedBuildCacheStatus,
+            piggyback_exact_index_names: piggybackExactIndexNames,
           },
         });
       }
 
-      if (stale.length > builtCount) this.queue.add(stream);
+      if (standaloneStale.length > builtCount) this.queue.add(stream);
       if (builtCount === 0) return Result.ok(undefined);
 
       this.onMetadataChanged?.(stream);
@@ -630,6 +831,79 @@ export class SearchCompanionManager {
     } finally {
       this.building.delete(stream);
     }
+  }
+
+  private async persistCompanionOutput(
+    stream: string,
+    segmentIndex: number,
+    planGeneration: number,
+    output: CompanionPersistOutput
+  ): Promise<Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError>> {
+    const objectId = randomBytes(8).toString("hex");
+    const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), segmentIndex, objectId);
+    const outputSizeBytes = output.storage === "file" ? output.sizeBytes : output.payload.byteLength;
+    const sectionSizes = output.sectionSizes;
+    try {
+      if (output.storage === "file") {
+        if (!this.os.putFile) return invalidCompanionBuild("object store does not support file uploads");
+        await retryAbortable(
+          async (signal) => this.os.putFile!(objectKey, output.localPath, output.sizeBytes, { signal }),
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+      } else {
+        await retryAbortable(
+          async (signal) => this.os.put(objectKey, output.payload, { signal }),
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+      }
+    } catch (e: unknown) {
+      if (output.storage === "file") {
+        try {
+          unlinkSync(output.localPath);
+        } catch {
+          // ignore temp cleanup failures
+        }
+      }
+      return invalidCompanionBuild(String((e as any)?.message ?? e));
+    }
+
+    const cacheRes =
+      output.storage === "file"
+        ? this.fileCache.storeFileResult(objectKey, output.localPath, output.sizeBytes)
+        : this.fileCache.storeBytesResult(objectKey, output.payload);
+    if (Result.isError(cacheRes)) {
+      console.warn("bundled companion local cache populate failed", objectKey, cacheRes.error.message);
+      if (output.storage === "file") {
+        try {
+          unlinkSync(output.localPath);
+        } catch {
+          // ignore temp cleanup failures
+        }
+      }
+    }
+
+    this.db.upsertSearchSegmentCompanion(
+      stream,
+      segmentIndex,
+      objectKey,
+      planGeneration,
+      JSON.stringify(output.sectionKinds),
+      JSON.stringify(sectionSizes),
+      outputSizeBytes,
+      output.primaryTimestampMinMs,
+      output.primaryTimestampMaxMs
+    );
+    return Result.ok({ sectionKinds: output.sectionKinds });
   }
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, CompanionBuildError>> {
@@ -697,6 +971,7 @@ export class SearchCompanionManager {
   ): Promise<
     Result<
       {
+        storage: "bytes";
         payload: Uint8Array;
         sectionKinds: CompanionSectionKind[];
         sectionSizes: Record<string, number>;
@@ -729,6 +1004,7 @@ export class SearchCompanionManager {
       for (const fieldName of builder.fieldNames) requiredFieldNames.add(fieldName);
     }
     const fieldNameList = Array.from(requiredFieldNames).sort((a, b) => a.localeCompare(b));
+    const compiledByVersion = new Map<number, CompiledSearchFieldAccessor[]>();
     const leaveScan = this.memorySampler?.enter("companion_scan_records", {
       stream: seg.stream,
       segment_index: seg.segment_index,
@@ -737,7 +1013,18 @@ export class SearchCompanionManager {
       let rawSearchValues: Map<string, unknown[]> | null = null;
       if (parsedOk && fieldNameList.length > 0) {
         const leaveExtract = this.memorySampler?.enter("companion_extract_raw", { doc_count: docCount });
-        const rawValuesRes = extractRawSearchValuesForFieldsResult(registry, offset, parsed, fieldNameList);
+        const version = schemaVersionForOffset(registry, offset);
+        let accessors = compiledByVersion.get(version);
+        if (!accessors) {
+          const compiledRes = compileSearchFieldAccessorsResult(registry, fieldNameList, version);
+          if (Result.isError(compiledRes)) {
+            leaveExtract?.();
+            return invalidCompanionBuild(compiledRes.error.message);
+          }
+          accessors = compiledRes.value;
+          compiledByVersion.set(version, accessors);
+        }
+        const rawValuesRes = extractRawSearchValuesWithCompiledAccessorsResult(parsed, accessors);
         leaveExtract?.();
         if (Result.isError(rawValuesRes)) return invalidCompanionBuild(rawValuesRes.error.message);
         rawSearchValues = rawValuesRes.value;
@@ -841,6 +1128,7 @@ export class SearchCompanionManager {
     }
 
     return Result.ok({
+      storage: "bytes",
       payload: encodeBundledSegmentCompanionFromPayloads({
         stream: seg.stream,
         segment_index: seg.segment_index,
@@ -862,6 +1150,9 @@ export class SearchCompanionManager {
   ): Promise<Result<BundledSegmentCompanion, CompanionBuildError>> {
     const encodedRes = await this.buildEncodedBundledCompanionResult(registry, plan, planGeneration, seg);
     if (Result.isError(encodedRes)) return encodedRes;
+    if (encodedRes.value.storage !== "bytes") {
+      return invalidCompanionBuild("decoded companion build requires in-memory payload output");
+    }
     const decodedRes = decodeBundledSegmentCompanionResult(encodedRes.value.payload, plan);
     if (Result.isError(decodedRes)) return invalidCompanionBuild(decodedRes.error.message);
     return Result.ok(decodedRes.value);
@@ -967,10 +1258,7 @@ export class SearchCompanionManager {
       fieldCompanion.exists_docs.push(docCount);
       if (builder.config.kind === "keyword") {
         for (const value of textValues) {
-          const postings = fieldCompanion.terms[value] ?? { doc_ids: [] };
-          const docIds = postings.doc_ids;
-          if (docIds.length === 0 || docIds[docIds.length - 1] !== docCount) docIds.push(docCount);
-          fieldCompanion.terms[value] = postings;
+          fieldCompanion.terms[value] = appendKeywordPostingDoc(fieldCompanion.terms[value], docCount);
         }
         continue;
       }
@@ -978,13 +1266,13 @@ export class SearchCompanionManager {
       for (const value of textValues) {
         const tokens = analyzeTextValue(value, builder.config.analyzer);
         for (const token of tokens) {
-          const postings = fieldCompanion.terms[token] ?? {
-            doc_ids: [],
-            freqs: fieldCompanion.positions ? [] : undefined,
-            positions: fieldCompanion.positions ? [] : undefined,
-          };
-          const docIds = postings.doc_ids;
-          const lastIndex = docIds.length - 1;
+        const postings = fieldCompanion.terms[token] ?? {
+          doc_ids: [],
+          freqs: fieldCompanion.positions ? [] : undefined,
+          positions: fieldCompanion.positions ? [] : undefined,
+        };
+        const docIds = postings.doc_ids!;
+        const lastIndex = docIds.length - 1;
           if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
             docIds.push(docCount);
             if (fieldCompanion.positions) {
@@ -1059,7 +1347,7 @@ export class SearchCompanionManager {
     for (const builder of ftsBuilders.values()) {
       for (const postings of Object.values(builder.companion.terms)) {
         ftsTerms += 1;
-        ftsPostings += postings.doc_ids.length;
+        ftsPostings += ftsTermDocCount(postings);
         ftsPositions += postings.positions?.length ?? 0;
       }
     }

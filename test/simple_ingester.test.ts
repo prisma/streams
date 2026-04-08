@@ -63,6 +63,7 @@ describe("simple ingester", () => {
       const cfg = makeConfig(root, {
         segmentMaxBytes: 1024,
         segmentCheckIntervalMs: 10,
+        segmenterWorkers: 0,
         uploadIntervalMs: 10,
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
@@ -124,6 +125,7 @@ describe("simple ingester", () => {
       const cfg = makeConfig(root, {
         segmentMaxBytes: 1024,
         segmentCheckIntervalMs: 10,
+        segmenterWorkers: 0,
         uploadIntervalMs: 10,
         uploadConcurrency: 2,
         indexL0SpanSegments: 2,
