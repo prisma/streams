@@ -25,8 +25,13 @@ It also uses the latest production evidence from `evlog-1`:
 - unified `search_segment_build` is shipped and standalone companion builds no
   longer race exact on fresh `evlog` segments
 - exact secondary L0 is now the main steady-state indexing cost on the live
-  box, with the fresh companion-owning owner batch still around `5.3-7.5s`
-  while the other exact batches now mostly land in the `1.6-4.6s` range
+  box, but the current shipped `evlog` exact L0 jobs are now all under `5s` on
+  the live node:
+  - `level,service,environment`: about `1.35-1.72s`
+  - `method,status,duration`: about `2.37-3.84s`
+  - `requestId`: about `2.5-3.6s`
+  - `spanId`: about `2.5-4.4s`
+  - `timestamp`: about `1.4-2.2s`
 - bundled companion build is no longer the fresh-segment bottleneck because its
   work is piggybacked from exact on fresh `evlog` segments
 - exact compaction for high-cardinality fields such as `requestId` is still the
@@ -53,6 +58,9 @@ It also uses the latest production evidence from `evlog-1`:
   stable fresh companion owner on `evlog`, so lagging batches such as
   `level,service,environment` no longer inherit companion work just because
   they happen to be the current slowest exact frontier
+- after that fix, the live node is now staying below the RSS safety target as
+  well: recent current RSS is about `589 MiB` with restart-window high-water
+  about `600 MiB`
 
 ## Summary
 
@@ -1129,16 +1137,18 @@ Observed result so far:
   - after: about `1.45-1.72s`
   - local perf proof: the same lagging batch is more than `25%` faster when it
     does not rebuild companion payloads
+- the current live `evlog` exact L0 band is now fully below `5s`
 - on the live node, the current RSS after these exact-L0 changes is back in
-  the `200-700 MiB` range with restart-window high-water staying under
-  about `870 MiB`, which is far below the prior `3+ GiB` OOM shape
+  the `500-600 MiB` range with restart-window high-water around `600 MiB`,
+  which is far below the prior `3+ GiB` OOM shape
 
 Remaining goals:
 
 - exact coverage should stop falling behind the uploaded head
-- the fresh companion-owning owner batch should also get under `5s`
 - steady-state RSS should spend more time in the `300-500 MiB` range instead of
-  the upper `600-700 MiB` range
+  the current upper `500-600 MiB` range
+- exact compaction should be kept comfortably under `5s` even for the worst
+  `requestId` / `spanId` cases
 
 ### Phase 7: optional durable search-source sidecar
 
