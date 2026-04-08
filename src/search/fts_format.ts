@@ -8,7 +8,8 @@ import { readUVarint, writeUVarint } from "./binary/varint";
 import type { SearchCompanionPlan } from "./companion_plan";
 
 export type FtsTermInput = {
-  doc_ids: number[];
+  doc_id?: number;
+  doc_ids?: number[];
   freqs?: number[];
   positions?: number[];
 };
@@ -87,14 +88,22 @@ type FieldDirectoryEntry = {
 };
 
 export function appendKeywordPostingDoc(postings: FtsTermInput | undefined, docId: number): FtsTermInput {
-  if (!postings) return { doc_ids: [docId] };
+  if (!postings) return { doc_id: docId };
   const docIds = postings.doc_ids;
-  if (docIds.length === 0 || docIds[docIds.length - 1] !== docId) docIds.push(docId);
+  if (docIds) {
+    if (docIds.length === 0 || docIds[docIds.length - 1] !== docId) docIds.push(docId);
+    return postings;
+  }
+  const existingDocId = postings.doc_id;
+  if (existingDocId == null || existingDocId === docId) return postings;
+  postings.doc_ids = [existingDocId, docId];
+  delete postings.doc_id;
   return postings;
 }
 
 export function ftsTermDocCount(postings: FtsTermInput): number {
-  return postings.doc_ids.length;
+  if (postings.doc_ids) return postings.doc_ids.length;
+  return postings.doc_id == null ? 0 : 1;
 }
 
 class U32LeView {
@@ -392,11 +401,14 @@ export function decodeFtsSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
 }
 
 function encodePostingList(postings: FtsTermInput, withPositions: boolean): Uint8Array {
-  if (!withPositions && postings.doc_ids.length === 1) {
-    return encodeSingletonPostingList(postings.doc_ids[0] ?? 0);
+  if (!withPositions) {
+    if (postings.doc_id != null) return encodeSingletonPostingList(postings.doc_id);
+    if ((postings.doc_ids?.length ?? 0) === 1) {
+      return encodeSingletonPostingList(postings.doc_ids?.[0] ?? 0);
+    }
   }
   const writer = new BinaryWriter();
-  const docIds = postings.doc_ids;
+  const docIds = postings.doc_ids ?? (postings.doc_id == null ? [] : [postings.doc_id]);
   const freqs = postings.freqs ?? [];
   const positions = postings.positions ?? [];
   let positionOffset = 0;
@@ -459,15 +471,20 @@ function encodeSingletonFieldPayloadResult(
   const offsetView = new DataView(postingOffsets.buffer, postingOffsets.byteOffset, postingOffsets.byteLength);
   const postingsView = new DataView(postings.buffer, postings.byteOffset, postings.byteLength);
   for (let index = 0; index < terms.length; index += 1) {
-    const postingsEntry = field.terms[terms[index]!] ?? { doc_ids: [] };
-    if (postingsEntry.doc_ids.length !== 1) return null;
+    const postingsEntry = field.terms[terms[index]!] ?? {};
+    const singletonDocId = postingsEntry.doc_ids
+      ? postingsEntry.doc_ids.length === 1
+        ? (postingsEntry.doc_ids[0] ?? null)
+        : null
+      : (postingsEntry.doc_id ?? null);
+    if (singletonDocId == null) return null;
     dfsView.setUint32(index * 4, 1, true);
     const baseOffset = index * 21;
     offsetView.setUint32(index * 4, baseOffset, true);
     postingsView.setUint16(baseOffset, 1, true);
     postings[baseOffset + 2] = 0;
     postings[baseOffset + 3] = 0;
-    postingsView.setUint32(baseOffset + 4, postingsEntry.doc_ids[0] ?? 0, true);
+    postingsView.setUint32(baseOffset + 4, singletonDocId, true);
     postingsView.setUint32(baseOffset + 8, 0, true);
     postingsView.setUint32(baseOffset + 12, 1, true);
     postingsView.setUint32(baseOffset + 16, 0, true);

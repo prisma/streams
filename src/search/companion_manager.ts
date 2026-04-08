@@ -597,9 +597,19 @@ export class SearchCompanionManager {
           },
         });
         let companionRes;
-        let sharedBuildCacheStatus: "miss" | "shared_inflight" | "cache_hit" | null = null;
+        let sharedBuildCacheStatus: "miss" | "shared_inflight" | null = null;
         let piggybackExactIndexNames: string[] = [];
         try {
+          const exactIndexNamesForSegment = new Set(
+            getConfiguredSecondaryIndexes(regRes.value)
+              .filter((configuredIndex) => {
+                const state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
+                if (!state) return false;
+                if (state.config_hash !== hashSecondaryIndexField(configuredIndex)) return false;
+                return state.indexed_through === seg.segment_index;
+              })
+              .map((configuredIndex) => configuredIndex.name)
+          );
           const exactIndexesForSegment = collectUnifiedSearchBuildExactIndexes(regRes.value, (indexName) => {
             const state = this.db.getSecondaryIndexState(stream, indexName);
             if (!state) return null;
@@ -607,7 +617,7 @@ export class SearchCompanionManager {
               configHash: state.config_hash,
               secret: state.index_secret,
             };
-          });
+          }, (indexName) => exactIndexNamesForSegment.has(indexName));
           const useUnifiedSearchBuild =
             this.searchSegmentBuilds != null &&
             regRes.value.search?.profile === "evlog" &&
@@ -626,6 +636,7 @@ export class SearchCompanionManager {
                           exactIndexes: exactIndexesForSegment,
                           plan: desiredPlan,
                           planGeneration: planRow.generation,
+                          outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                           segment: {
                             segmentIndex: seg.segment_index,
                             startOffset: seg.start_offset,
@@ -660,6 +671,7 @@ export class SearchCompanionManager {
                         exactIndexes: exactIndexesForSegment,
                         plan: desiredPlan,
                         planGeneration: planRow.generation,
+                        outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                         segment: {
                           segmentIndex: seg.segment_index,
                           startOffset: seg.start_offset,

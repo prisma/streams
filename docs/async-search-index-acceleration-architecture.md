@@ -25,7 +25,8 @@ It also uses the latest production evidence from `evlog-1`:
 - unified `search_segment_build` is shipped and standalone companion builds no
   longer race exact on fresh `evlog` segments
 - exact secondary L0 is now the main steady-state indexing cost on the live
-  box, currently about `11-13s` per batch job
+  box, with the companion-owning owner batch still around `7-9s` while the
+  other exact batches now mostly land in the `2-5s` range
 - bundled companion build is no longer the fresh-segment bottleneck because its
   work is piggybacked from exact on fresh `evlog` segments
 - exact compaction for high-cardinality fields such as `requestId` is still the
@@ -38,6 +39,8 @@ It also uses the latest production evidence from `evlog-1`:
     bottleneck
 - the server has already been OOM-killed more than once with anonymous RSS in
   the `3+ GiB` range, so RSS shape still matters as much as raw wall time
+- the latest bundled `.fts` memory-shape fix brought current RSS back down into
+  the `300 MiB` range with restart-window spikes staying under `1 GiB`
 
 ## Summary
 
@@ -69,6 +72,21 @@ Several important changes are already shipped:
 9. exact secondary compaction still deletes retired run objects synchronously,
    but those deletes are now executed with bounded parallelism instead of
    one-by-one serial waits
+10. lagging exact batches now skip companion rebuild entirely when the current
+    companion generation is already present for that segment, so slow exact
+    catch-up work no longer redoes `.col` / `.fts` payloads that are already
+    current
+11. `evlog` exact L0 no longer treats every same-frontier exact field as one
+    monolithic batch; the high-cardinality fields are now split into smaller
+    deterministic sub-batches and only one owner batch is allowed to build the
+    fresh companion payload for a segment
+12. keyword `.fts` postings now use a compact singleton representation until a
+    term actually appears in more than one document, instead of allocating a
+    one-element `doc_ids` array for every unique `requestId` / `traceId` /
+    `spanId` / `path` term
+13. text `.fts` accumulation now aggregates token positions once per document
+    before touching the shared postings map, so `message` / `why` / `fix` /
+    `error.message` no longer pay one global postings mutation per token
 
 Those changes removed the worst duplicate segment scan and took standalone
 companion off the fresh-segment critical path, but they did not solve the whole
@@ -76,32 +94,33 @@ search backlog problem.
 
 The next big wins are now more targeted:
 
-1. **Exact compaction finalization should get faster without changing the
-   semantics.** The worker merge is now cheap enough that main-thread
-   finalization, especially retired run cleanup and related publish-side work,
-   dominates compaction wall time.
-2. **Exact secondary L0 must get materially faster.** It is now the main
+1. **Exact secondary L0 must get materially faster.** It is now the main
    steady-state indexing cost and the reason exact coverage is not catching up.
-3. **High-cardinality exact fields should adopt shard mode.** `requestId`,
+2. **High-cardinality exact fields should adopt shard mode.** `requestId`,
    `traceId`, and `spanId` still create oversized runs and compaction variance
    even after the streaming merge rewrite.
-4. **Unified search-build handoff should eventually become file-backed again
-   once shared-result ownership is explicit.** The current shipped pass
-   prioritizes scan elimination over zero-copy handoff.
+3. **Exact compaction finalization should get faster without changing the
+   semantics.** The worker merge is now cheap enough that main-thread
+   finalization, especially publish-side work for the new run group, dominates
+   compaction wall time even after synchronous retired-run cleanup was sped up.
+4. **Unified search-build handoff should stay file-backed and ownership-aware.**
+   The coordinator must not retain large completed payloads in anonymous RSS,
+   and each consumer must get explicit ownership of any temp files it uses.
 
 So the recommended architecture is now staged:
 
 - keep the current global worker pool and round-robin scheduler
 - keep the shipped raw-byte path and the new unified per-segment `evlog`
   search build
+- keep unified search-build outputs file-backed and scoped to the exact
+  frontier batch or exact-ready segment set that actually needs them
 - keep standalone companion builds as stale-hole repair only below the exact
   frontier
 - keep the shipped streaming exact compaction path
-- move exact compaction finalization out of the latency-critical path
 - then optimize exact L0 throughput
 - then add shard mode for the worst high-cardinality exact fields
-- then restore file-backed unified search-build handoff without reintroducing
-  duplicate scans or fragile temp-file ownership between managers
+- then continue reducing exact compaction finalization time without deferring
+  correctness-critical cleanup out of band
 
 ## Objective
 
@@ -161,6 +180,27 @@ That change is now shipped for fresh `evlog` segments: standalone companion
 build only repairs stale holes below the minimum exact frontier. So this is no
 longer the next major optimization target.
 
+The newest shipped change tightens the unified exact side further:
+
+- exact L0 no longer asks the shared `search_segment_build` worker to build the
+  full configured exact set when only a smaller frontier batch is actually
+  being advanced
+- lagging exact batches now also skip companion generation when the current
+  companion row for that segment is already present, which is the common live
+  `evlog` catch-up case once companion and the faster exact group are ahead of
+  the slowest exact fields
+- same-frontier `evlog` exact work is now split into deterministic sub-batches:
+  `level,service,environment`, then `timestamp`, then one-field batches for
+  `requestId`, `traceId`, `spanId`, and `path`, plus the existing
+  `method,status,duration` batch
+- companion piggyback only asks for exact outputs that are actually exact-ready
+  for the current segment
+- unified worker outputs are file-backed, and the shared coordinator only
+  deduplicates inflight work instead of caching completed payloads in memory
+
+That removes one important anonymous-RSS spike source and cuts wasted exact
+work on `evlog` significantly.
+
 ### 2. Exact secondary L0 is now the main steady-state cost
 
 The current exact L0 batch remains expensive even after the raw-byte extractor
@@ -184,8 +224,8 @@ reason indexing is not catching up.
 That removes the worst previous OOM shape, where `requestId` compaction could
 accumulate a very large decoded input plus merged output in anonymous RSS.
 
-The latest shipped change also removes the remaining large-input fallback on
-the source side:
+The latest shipped changes also remove the remaining large-input fallback on
+the source side and make synchronous cleanup cheaper:
 
 - if a compaction input run is already resident in the exact-run disk cache,
   compaction reads it in place
@@ -194,6 +234,8 @@ the source side:
 - if the cache cannot admit it, compaction now spills it to a temp local file
   and merges from that file instead of passing a large `Uint8Array` into the
   worker
+- retired exact-run object deletion stays synchronous, but now runs with
+  bounded parallelism instead of serial waits
 
 So the current exact-compaction OOM risk is no longer "N large input runs plus
 one large merged output all live in JS memory at once." The remaining risks are
@@ -209,10 +251,10 @@ The newest phase timing makes the remaining problem even clearer:
 So the next step for exact compaction is no longer "fix the merge algorithm."
 It is:
 
-1. make synchronous finalization cheaper, especially retired-run cleanup
+1. make the remaining publish/finalize path cheaper
 2. then add shard mode for the worst fields
 
-### 4. File-backed outputs helped, but main-thread finalization is still too expensive
+### 4. File-backed outputs helped, but exact L0 and finalization still need work
 
 Bundled companion outputs are now file-backed:
 
@@ -221,9 +263,19 @@ Bundled companion outputs are now file-backed:
 - the same file is moved into the companion disk cache
 
 That change reduced one class of transient memory copies, and it is worth
-keeping for RSS safety. But production telemetry now shows a different
-remaining issue: exact compaction worker time is acceptable while finalization
-on the main thread is still too slow.
+keeping for RSS safety.
+
+The same file-backed handoff now also applies to unified `search_segment_build`
+outputs, and the coordinator no longer retains completed shared results in a
+TTL cache. That matters because the exact L0 path previously overbuilt exact
+outputs for fields that were not even part of the current frontier batch, and
+those completed results could linger in anonymous RSS after the worker finished.
+
+Production telemetry now shows two remaining issues instead:
+
+- exact L0 is still too slow when it builds even the correct frontier batch
+- exact compaction worker time is acceptable while finalization on the main
+  thread is still too slow
 
 ### 5. The scheduler is no longer the primary bottleneck
 
@@ -932,6 +984,12 @@ Delivered for both bundled companions and exact-secondary artifacts:
 - exact-secondary L0 and compaction workers write `.irn` outputs to temp files
 - main thread uploads with `putFile()`
 - the same file is moved into the corresponding local disk cache
+- unified `search_segment_build` now also writes exact and companion outputs to
+  temp files when a caller provides an output directory
+- the shared `search_segment_build` coordinator now only deduplicates inflight
+  builds and no longer keeps a completed-result TTL cache in anonymous memory
+- unified exact work is now scoped to the exact frontier batch or exact-ready
+  segment set instead of always building the full configured exact set
 
 Expected gain:
 
@@ -970,25 +1028,58 @@ Deliverables:
 
 - delete retired exact-run objects with bounded parallelism instead of serial
   waits
-- keep manifest publication on the critical path only when required for
-  visibility
+- keep manifest publication and other visibility-critical updates on the
+  critical path
 - shard-aware exact runs for `requestId`, `traceId`, and `spanId`
 
-Expected gain:
+Observed result so far:
 
-- materially faster exact compaction critical-path latency
-- much lower compaction variance on the shard-mode fields
-- lower risk that compaction finalization monopolizes the main thread
+- fresh `requestId` compaction improved again from about `17.1s` to about
+  `3.5-4.0s`
+- `finalize_ms` on the fresh `requestId` sample dropped from about `10.7s` to
+  about `0.9-1.0s`
+- remaining compaction work is now mostly source preparation plus any residual
+  publish-side work
+
+Remaining deliverables:
+
+- shard-aware exact runs for `requestId`, `traceId`, and `spanId`
 
 ### Phase 6: exact L0 throughput rewrite
 
 Deliverables:
 
 - faster exact L0 accumulation and encoding on `evlog`
+- avoid building exact outputs for fields that are not actually in the current
+  frontier batch
+- skip companion generation on lagging exact batches when companion for the
+  current segment is already at the current plan generation
+- split same-frontier high-cardinality `evlog` exact fields into smaller
+  deterministic batches so peak per-job wall time and peak RSS both come down
 - explicit phase telemetry inside exact L0 so scan, accumulate, encode, and
   persist costs are separable
 
-Expected gain:
+Observed result so far:
+
+- unified exact work now only builds the actual frontier batch instead of the
+  full configured exact set
+- the local focused benchmark for the `method,status,duration` frontier batch
+  is more than `25%` faster than building the full exact set for the same
+  segment
+- the local focused benchmark for a lagging `method,status,duration` batch is
+  also more than `25%` faster when companion rebuild is skipped for a segment
+  that already has the current companion generation
+- the local focused benchmark for the fresh high-cardinality `evlog` exact
+  group is also more than `25%` faster on peak per-job time when that work is
+  split into deterministic sub-batches with a single companion-owning batch
+- the local focused benchmark for `evlog` fast-byte companion build is more
+  than `25%` faster than the legacy fast-byte path that still allocates a
+  singleton `doc_ids` array for every unique keyword term
+- on the live node, that singleton-postings change cut current RSS from about
+  `2.42 GiB` to about `337 MiB` and reduced post-restart RSS high-water from
+  about `2.42 GiB` to about `670 MiB` while `evlog-1` indexing continued
+
+Remaining goals:
 
 - exact coverage should stop falling behind the uploaded head
 - exact L0 median should move toward the sub-`5s` target

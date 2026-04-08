@@ -45,6 +45,15 @@ type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string }
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY = 2;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
+const EVLOG_EXACT_BATCH_GROUPS = [
+  ["level", "service", "environment"],
+  ["timestamp"],
+  ["requestId"],
+  ["traceId"],
+  ["spanId"],
+  ["path"],
+  ["method", "status", "duration"],
+] as const;
 type UnifiedCompanionSink = (
   stream: string,
   segmentIndex: number,
@@ -382,6 +391,34 @@ export class SecondaryIndexManager {
     return { generation: current.generation, plan: desiredPlan };
   }
 
+  private getEvlogPeerBatch(indexName: string, peerIndexes: SecondaryIndexField[]): SecondaryIndexField[] {
+    for (const group of EVLOG_EXACT_BATCH_GROUPS) {
+      const batch = peerIndexes.filter((configuredIndex) => (group as readonly string[]).includes(configuredIndex.name));
+      if (batch.some((configuredIndex) => configuredIndex.name === indexName)) return batch;
+    }
+    return peerIndexes.filter((configuredIndex) => configuredIndex.name === indexName);
+  }
+
+  private shouldBuildCompanionForSegment(
+    stream: string,
+    segmentIndex: number,
+    companionPlanGeneration: number | null,
+    peerIndexes: SecondaryIndexField[],
+    batchIndexes: SecondaryIndexField[]
+  ): boolean {
+    if (!this.unifiedCompanionSink || companionPlanGeneration == null) return false;
+    const currentCompanion = this.db.getSearchSegmentCompanion(stream, segmentIndex);
+    if (currentCompanion && currentCompanion.plan_generation === companionPlanGeneration) return false;
+    for (const group of EVLOG_EXACT_BATCH_GROUPS) {
+      const ownerBatch = peerIndexes.filter((configuredIndex) => (group as readonly string[]).includes(configuredIndex.name));
+      if (ownerBatch.length > 0) {
+        return ownerBatch.some((configuredIndex) => batchIndexes.some((entry) => entry.name === configuredIndex.name));
+      }
+    }
+    const fallbackOwnerName = peerIndexes.map((configuredIndex) => configuredIndex.name).sort((a, b) => a.localeCompare(b))[0];
+    return batchIndexes.some((entry) => entry.name === fallbackOwnerName);
+  }
+
   private async maybeBuildRuns(stream: string, index: SecondaryIndexField): Promise<Result<void, SecondaryIndexBuildError>> {
     if (this.span <= 0) return Result.ok(undefined);
     const key = `${stream}:${index.name}`;
@@ -427,7 +464,9 @@ export class SecondaryIndexManager {
         if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const peerIndexes = configured.filter((configuredIndex) => stateByName.get(configuredIndex.name)?.indexed_through === indexedThrough);
         const batchIndexes =
-          registry.search?.profile === "evlog" ? peerIndexes : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
+          registry.search?.profile === "evlog"
+            ? this.getEvlogPeerBatch(index.name, peerIndexes)
+            : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
         if (batchIndexes.length === 0) return Result.ok(undefined);
         const start = indexedThrough;
         const end = start + this.span - 1;
@@ -471,8 +510,16 @@ export class SecondaryIndexManager {
           },
         });
         const currentCompanionPlan = this.getCurrentCompanionPlan(stream, registry);
+        const shouldBuildCompanion = this.shouldBuildCompanionForSegment(
+          stream,
+          start,
+          currentCompanionPlan?.generation ?? null,
+          peerIndexes,
+          batchIndexes
+        );
         const useUnifiedSearchBuild =
           this.searchSegmentBuilds != null && this.span === 1 && registry.search?.profile === "evlog";
+        const batchIndexNames = new Set(batchIndexes.map((entry) => entry.name));
         const unifiedExactIndexes = useUnifiedSearchBuild
           ? collectUnifiedSearchBuildExactIndexes(registry, (indexName) => {
               const state = stateByName.get(indexName);
@@ -481,11 +528,10 @@ export class SecondaryIndexManager {
                 configHash: state.config_hash,
                 secret: state.index_secret,
               };
-            })
+            }, (indexName) => batchIndexNames.has(indexName))
           : [];
-        const batchIndexNames = new Set(batchIndexes.map((entry) => entry.name));
         let runRes;
-        let sharedBuildCacheStatus: "miss" | "shared_inflight" | "cache_hit" | null = null;
+        let sharedBuildCacheStatus: "miss" | "shared_inflight" | null = null;
         let piggybackCompanionSectionKinds: CompanionSectionKind[] = [];
         try {
           runRes = useUnifiedSearchBuild
@@ -503,8 +549,9 @@ export class SecondaryIndexManager {
                         stream,
                         registry,
                         exactIndexes: unifiedExactIndexes,
-                        plan: currentCompanionPlan?.plan ?? null,
-                        planGeneration: currentCompanionPlan?.generation ?? null,
+                        plan: shouldBuildCompanion ? (currentCompanionPlan?.plan ?? null) : null,
+                        planGeneration: shouldBuildCompanion ? (currentCompanionPlan?.generation ?? null) : null,
+                        outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                         segment: {
                           segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
                           startOffset: segments[0]!.start_offset,
@@ -513,7 +560,7 @@ export class SecondaryIndexManager {
                       });
                       if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
                       sharedBuildCacheStatus = sharedRes.value.cacheStatus;
-                      if (this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
+                      if (shouldBuildCompanion && this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
                         const persistCompanionRes = await this.unifiedCompanionSink(
                           stream,
                           segmentLeaseRes.value.localSegments[0]!.segmentIndex,
@@ -536,8 +583,9 @@ export class SecondaryIndexManager {
                       stream,
                       registry,
                       exactIndexes: unifiedExactIndexes,
-                      plan: currentCompanionPlan?.plan ?? null,
-                      planGeneration: currentCompanionPlan?.generation ?? null,
+                      plan: shouldBuildCompanion ? (currentCompanionPlan?.plan ?? null) : null,
+                      planGeneration: shouldBuildCompanion ? (currentCompanionPlan?.generation ?? null) : null,
+                      outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                       segment: {
                         segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
                         startOffset: segments[0]!.start_offset,
@@ -546,7 +594,7 @@ export class SecondaryIndexManager {
                     });
                     if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
                     sharedBuildCacheStatus = sharedRes.value.cacheStatus;
-                    if (this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
+                    if (shouldBuildCompanion && this.unifiedCompanionSink && currentCompanionPlan?.generation != null && sharedRes.value.output.companion) {
                       const persistCompanionRes = await this.unifiedCompanionSink(
                         stream,
                         segmentLeaseRes.value.localSegments[0]!.segmentIndex,

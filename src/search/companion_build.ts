@@ -291,27 +291,33 @@ function recordFtsBuilders(builders: Map<string, FtsFieldBuilder>, rawSearchValu
     }
     let position = 0;
     for (const value of textValues) {
+      const tokenPositions = new Map<string, number[]>();
       visitAnalyzedTextValue(value, builder.config.analyzer, (token) => {
+        const positions = tokenPositions.get(token);
+        if (positions) positions.push(position);
+        else tokenPositions.set(token, [position]);
+        position += 1;
+      });
+      for (const [token, positions] of tokenPositions) {
         const postings = fieldCompanion.terms[token] ?? {
           doc_ids: [],
           freqs: fieldCompanion.positions ? [] : undefined,
           positions: fieldCompanion.positions ? [] : undefined,
         };
-        const docIds = postings.doc_ids;
+        const docIds = postings.doc_ids ?? (postings.doc_ids = []);
         const lastIndex = docIds.length - 1;
         if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
           docIds.push(docCount);
           if (fieldCompanion.positions) {
-            postings.freqs!.push(1);
-            postings.positions!.push(position);
+            postings.freqs!.push(positions.length);
+            postings.positions!.push(...positions);
           }
         } else if (fieldCompanion.positions) {
-          postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
-          postings.positions!.push(position);
+          postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + positions.length;
+          postings.positions!.push(...positions);
         }
         fieldCompanion.terms[token] = postings;
-        position += 1;
-      });
+      }
     }
   }
 }
@@ -495,7 +501,7 @@ function recordFastColumnAndFtsValue(
       freqs: fieldCompanion.positions ? [] : undefined,
       positions: fieldCompanion.positions ? [] : undefined,
     };
-    const docIds = postings.doc_ids;
+    const docIds = postings.doc_ids ?? (postings.doc_ids = []);
     const lastIndex = docIds.length - 1;
     if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
       docIds.push(docCount);
@@ -572,28 +578,34 @@ function appendEvlogTextFtsValue(builder: FtsFieldBuilder | undefined, rawValue:
   if (!builder || typeof rawValue !== "string") return;
   const fieldCompanion = builder.companion;
   fieldCompanion.exists_docs.push(docCount);
+  const tokenPositions = new Map<string, number[]>();
   let position = 0;
   visitAnalyzedTextValue(rawValue, builder.config.analyzer, (token) => {
+    const positions = tokenPositions.get(token);
+    if (positions) positions.push(position);
+    else tokenPositions.set(token, [position]);
+    position += 1;
+  });
+  for (const [token, positions] of tokenPositions) {
     const postings = fieldCompanion.terms[token] ?? {
       doc_ids: [],
       freqs: fieldCompanion.positions ? [] : undefined,
       positions: fieldCompanion.positions ? [] : undefined,
     };
-    const docIds = postings.doc_ids;
+    const docIds = postings.doc_ids ?? (postings.doc_ids = []);
     const lastIndex = docIds.length - 1;
     if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
       docIds.push(docCount);
       if (fieldCompanion.positions) {
-        postings.freqs!.push(1);
-        postings.positions!.push(position);
+        postings.freqs!.push(positions.length);
+        postings.positions!.push(...positions);
       }
     } else if (fieldCompanion.positions) {
-      postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
-      postings.positions!.push(position);
+      postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + positions.length;
+      postings.positions!.push(...positions);
     }
     fieldCompanion.terms[token] = postings;
-    position += 1;
-  });
+  }
 }
 
 function recordEvlogByteScanColumnAndFtsBuildersResult(

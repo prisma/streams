@@ -154,4 +154,201 @@ describe("search segment build perf", () => {
     },
     120_000
   );
+
+  test(
+    "building only the frontier exact batch is at least 25% faster than building the full exact set",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-segment-exact-"));
+      try {
+        const registry = buildEvlogDefaultRegistry("evlog-1");
+        const segment = writeEvlogSegment(root, 48_000);
+        const plan = buildDesiredSearchCompanionPlan(registry);
+        const exactIndexes = getConfiguredSecondaryIndexes(registry).map((index, indexOrdinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(indexOrdinal + 1),
+        }));
+        const frontierBatch = exactIndexes.filter((entry) => ["method", "status", "duration"].includes(entry.index.name));
+
+        const buildAllExact = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes,
+            plan,
+            planGeneration: 1,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        const buildFrontierBatch = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: frontierBatch,
+            plan,
+            planGeneration: 1,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        buildAllExact();
+        buildFrontierBatch();
+
+        const allExactSamples: number[] = [];
+        const frontierBatchSamples: number[] = [];
+        for (let i = 0; i < 4; i += 1) {
+          let startedAt = performance.now();
+          buildAllExact();
+          allExactSamples.push(performance.now() - startedAt);
+
+          startedAt = performance.now();
+          buildFrontierBatch();
+          frontierBatchSamples.push(performance.now() - startedAt);
+        }
+
+        expect(average(frontierBatchSamples)).toBeLessThan(average(allExactSamples) * 0.75);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
+  test(
+    "skipping companion rebuild on a lagging exact batch is at least 25% faster than rebuilding it",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-segment-skip-companion-"));
+      try {
+        const registry = buildEvlogDefaultRegistry("evlog-1");
+        const segment = writeEvlogSegment(root, 48_000);
+        const plan = buildDesiredSearchCompanionPlan(registry);
+        const exactIndexes = getConfiguredSecondaryIndexes(registry).map((index, indexOrdinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(indexOrdinal + 1),
+        }));
+        const laggingBatch = exactIndexes.filter((entry) => ["method", "status", "duration"].includes(entry.index.name));
+
+        const buildWithCompanion = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: laggingBatch,
+            plan,
+            planGeneration: 1,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        const buildWithoutCompanion = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: laggingBatch,
+            plan: null,
+            planGeneration: null,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        buildWithCompanion();
+        buildWithoutCompanion();
+
+        const withCompanionSamples: number[] = [];
+        const withoutCompanionSamples: number[] = [];
+        for (let i = 0; i < 4; i += 1) {
+          let startedAt = performance.now();
+          buildWithCompanion();
+          withCompanionSamples.push(performance.now() - startedAt);
+
+          startedAt = performance.now();
+          buildWithoutCompanion();
+          withoutCompanionSamples.push(performance.now() - startedAt);
+        }
+
+        expect(average(withoutCompanionSamples)).toBeLessThan(average(withCompanionSamples) * 0.75);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
+  test(
+    "splitting the fresh high-cardinality evlog exact batch into deterministic sub-batches cuts peak job time by at least 25%",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-segment-split-evlog-batch-"));
+      try {
+        const registry = buildEvlogDefaultRegistry("evlog-1");
+        const segment = writeEvlogSegment(root, 48_000);
+        const plan = buildDesiredSearchCompanionPlan(registry);
+        const exactIndexes = getConfiguredSecondaryIndexes(registry).map((index, indexOrdinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(indexOrdinal + 1),
+        }));
+        const largeBatch = exactIndexes.filter((entry) =>
+          ["timestamp", "level", "service", "environment", "requestId", "traceId", "spanId", "path"].includes(entry.index.name)
+        );
+        const splitBatches = [
+          ["level", "service", "environment"],
+          ["timestamp"],
+          ["requestId"],
+          ["traceId"],
+          ["spanId"],
+          ["path"],
+        ].map((names) => exactIndexes.filter((entry) => names.includes(entry.index.name)));
+
+        const buildMonolithic = (): number => {
+          const startedAt = performance.now();
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: largeBatch,
+            plan,
+            planGeneration: 1,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+          return performance.now() - startedAt;
+        };
+
+        const buildSplitPeak = (): number => {
+          let maxDuration = 0;
+          for (const [index, batch] of splitBatches.entries()) {
+            const startedAt = performance.now();
+            const res = buildSearchSegmentResult({
+              stream: segment.stream,
+              registry,
+              exactIndexes: batch,
+              plan: index === 0 ? plan : null,
+              planGeneration: index === 0 ? 1 : null,
+              segment,
+            });
+            if (Result.isError(res)) throw new Error(res.error.message);
+            maxDuration = Math.max(maxDuration, performance.now() - startedAt);
+          }
+          return maxDuration;
+        };
+
+        buildMonolithic();
+        buildSplitPeak();
+
+        const monolithicSamples: number[] = [];
+        const splitPeakSamples: number[] = [];
+        for (let i = 0; i < 4; i += 1) {
+          monolithicSamples.push(buildMonolithic());
+          splitPeakSamples.push(buildSplitPeak());
+        }
+
+        expect(average(splitPeakSamples)).toBeLessThan(average(monolithicSamples) * 0.75);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
 });

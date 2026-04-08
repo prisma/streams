@@ -27,6 +27,7 @@ import {
 import { siphash24 } from "../util/siphash";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { encodeIndexRunResult, RUN_TYPE_MASK16 } from "../index/run_format";
+import { writeIndexRunOutputFileResult } from "../index/index_run_output_file";
 import { getConfiguredSecondaryIndexes, hashSecondaryIndexField, type SecondaryIndexField } from "../index/secondary_schema";
 
 type SearchSegmentBuildError = {
@@ -67,6 +68,7 @@ export type SearchSegmentBuildInput = {
   exactIndexes: SearchSegmentExactBuildInput[];
   plan: SearchCompanionPlan | null;
   planGeneration: number | null;
+  outputDir?: string;
   segment: {
     segmentIndex: number;
     startOffset: bigint;
@@ -76,10 +78,12 @@ export type SearchSegmentBuildInput = {
 
 export function collectUnifiedSearchBuildExactIndexes(
   registry: SchemaRegistry,
-  resolveState: (indexName: string) => { configHash: string; secret: Uint8Array } | null
+  resolveState: (indexName: string) => { configHash: string; secret: Uint8Array } | null,
+  includeIndexName: (indexName: string) => boolean = () => true
 ): SearchSegmentExactBuildInput[] {
   if (registry.search?.profile !== "evlog") return [];
   return getConfiguredSecondaryIndexes(registry)
+    .filter((configuredIndex) => includeIndexName(configuredIndex.name))
     .map((configuredIndex) => {
       const state = resolveState(configuredIndex.name);
       if (!state) return null;
@@ -104,19 +108,35 @@ export type SearchSegmentBuildOutput = {
       filterLen: number;
       recordCount: number;
     };
-    storage: "bytes";
-    payload: Uint8Array;
-  }>;
-  companion:
-    | null
+  } & (
     | {
         storage: "bytes";
         payload: Uint8Array;
+      }
+    | {
+        storage: "file";
+        localPath: string;
+        sizeBytes: number;
+      }
+  )>;
+  companion:
+    | null
+    | ({
         sectionKinds: CompanionSectionKind[];
         sectionSizes: Record<string, number>;
         primaryTimestampMinMs: bigint | null;
         primaryTimestampMaxMs: bigint | null;
-      };
+      } & (
+        | {
+            storage: "bytes";
+            payload: Uint8Array;
+          }
+        | {
+            storage: "file";
+            localPath: string;
+            sizeBytes: number;
+          }
+      ));
 };
 
 function invalidSearchSegmentBuild<T = never>(message: string): Result<T, SearchSegmentBuildError> {
@@ -236,28 +256,34 @@ function appendTextFtsValue(builder: FtsFieldBuilder | undefined, rawValue: unkn
   if (!builder || typeof rawValue !== "string") return;
   const fieldCompanion = builder.companion;
   fieldCompanion.exists_docs.push(docCount);
+  const tokenPositions = new Map<string, number[]>();
   let position = 0;
   visitAnalyzedTextValue(rawValue, builder.config.analyzer, (token) => {
+    const positions = tokenPositions.get(token);
+    if (positions) positions.push(position);
+    else tokenPositions.set(token, [position]);
+    position += 1;
+  });
+  for (const [token, positions] of tokenPositions) {
     const postings = fieldCompanion.terms[token] ?? {
       doc_ids: [],
       freqs: fieldCompanion.positions ? [] : undefined,
       positions: fieldCompanion.positions ? [] : undefined,
     };
-    const docIds = postings.doc_ids;
+    const docIds = postings.doc_ids ?? (postings.doc_ids = []);
     const lastIndex = docIds.length - 1;
     if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
       docIds.push(docCount);
       if (fieldCompanion.positions) {
-        postings.freqs!.push(1);
-        postings.positions!.push(position);
+        postings.freqs!.push(positions.length);
+        postings.positions!.push(...positions);
       }
     } else if (fieldCompanion.positions) {
-      postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
-      postings.positions!.push(position);
+      postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + positions.length;
+      postings.positions!.push(...positions);
     }
     fieldCompanion.terms[token] = postings;
-    position += 1;
-  });
+  }
 }
 
 export function supportsUnifiedSearchSegmentBuild(input: SearchSegmentBuildInput): boolean {
@@ -374,12 +400,28 @@ export function buildSearchSegmentResult(
       masks: new Array(fingerprints.length).fill(1),
     });
     if (Result.isError(payloadRes)) return invalidSearchSegmentBuild(payloadRes.error.message);
-    exactRuns.push({
-      indexName: state.index.name,
-      meta,
-      storage: "bytes",
-      payload: payloadRes.value,
-    });
+    if (input.outputDir) {
+      const fileRes = writeIndexRunOutputFileResult(
+        input.outputDir,
+        `${state.index.name}-search-l0-${input.segment.segmentIndex}`,
+        payloadRes.value
+      );
+      if (Result.isError(fileRes)) return invalidSearchSegmentBuild(fileRes.error.message);
+      exactRuns.push({
+        indexName: state.index.name,
+        meta,
+        storage: "file",
+        localPath: fileRes.value.localPath,
+        sizeBytes: fileRes.value.sizeBytes,
+      });
+    } else {
+      exactRuns.push({
+        indexName: state.index.name,
+        meta,
+        storage: "bytes",
+        payload: payloadRes.value,
+      });
+    }
   }
 
   let companion: SearchSegmentBuildOutput["companion"] = null;
@@ -405,19 +447,38 @@ export function buildSearchSegmentResult(
     if (input.plan.families.fts) {
       addSection(encodeCompanionSectionPayload("fts", finalizeFtsSection(ftsBuilders, docCount), input.plan));
     }
-    companion = {
-      storage: "bytes",
-      payload: encodeBundledSegmentCompanionFromPayloads({
-        stream: input.stream,
-        segment_index: input.segment.segmentIndex,
-        plan_generation: input.planGeneration ?? 0,
-        sections: sectionPayloads,
-      }),
-      sectionKinds,
-      sectionSizes,
-      primaryTimestampMinMs,
-      primaryTimestampMaxMs,
-    };
+    const companionPayload = encodeBundledSegmentCompanionFromPayloads({
+      stream: input.stream,
+      segment_index: input.segment.segmentIndex,
+      plan_generation: input.planGeneration ?? 0,
+      sections: sectionPayloads,
+    });
+    if (input.outputDir) {
+      const fileRes = writeIndexRunOutputFileResult(
+        input.outputDir,
+        `search-companion-${input.segment.segmentIndex}`,
+        companionPayload
+      );
+      if (Result.isError(fileRes)) return invalidSearchSegmentBuild(fileRes.error.message);
+      companion = {
+        storage: "file",
+        localPath: fileRes.value.localPath,
+        sizeBytes: fileRes.value.sizeBytes,
+        sectionKinds,
+        sectionSizes,
+        primaryTimestampMinMs,
+        primaryTimestampMaxMs,
+      };
+    } else {
+      companion = {
+        storage: "bytes",
+        payload: companionPayload,
+        sectionKinds,
+        sectionSizes,
+        primaryTimestampMinMs,
+        primaryTimestampMaxMs,
+      };
+    }
   }
 
   return Result.ok({

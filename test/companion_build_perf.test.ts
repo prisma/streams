@@ -20,6 +20,7 @@ import {
   compileSearchFieldAccessorsResult,
   extractRawSearchValuesWithCompiledAccessorsResult,
   normalizeKeywordValue,
+  visitAnalyzedTextValue,
   visitFastScalarJsonValuesFromBytesWithTrieResult,
 } from "../src/search/schema";
 import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter, iterateBlockRecordsResult } from "../src/segment/format";
@@ -483,6 +484,127 @@ function buildLegacyEvlogBundledCompanionPayloadResult(input: {
   });
 }
 
+function recordLegacyEvlogByteScanColumnAndFtsBuildersResult(
+  payload: Uint8Array,
+  trie: FastScalarAccessorTrie,
+  colBuilders: Map<string, ColumnFieldBuilder>,
+  ftsBuilders: Map<string, FtsFieldBuilder>,
+  docCount: number
+): Result<void, { kind: "invalid_companion_build"; message: string }> {
+  const visitRes = visitFastScalarJsonValuesFromBytesWithTrieResult(payload, trie, (accessor, rawValue) => {
+    switch (accessor.fieldName) {
+      case "timestamp":
+      case "status":
+      case "duration": {
+        const builder = colBuilders.get(accessor.fieldName);
+        if (!builder || builder.invalid) return;
+        const normalized = canonicalizeColumnValue(builder.config, rawValue);
+        if (normalized == null) return;
+        builder.docIds.push(docCount);
+        builder.values.push(normalized);
+        return;
+      }
+      case "level":
+      case "service":
+      case "environment":
+      case "requestId":
+      case "traceId":
+      case "spanId":
+      case "path":
+      case "method": {
+        const builder = ftsBuilders.get(accessor.fieldName);
+        if (!builder) return;
+        const normalized = normalizeKeywordValue(rawValue, builder.config.normalizer);
+        if (normalized == null) return;
+        builder.companion.exists_docs.push(docCount);
+        const postings = builder.companion.terms[normalized] ?? { doc_ids: [] };
+        const docIds = postings.doc_ids;
+        if (docIds.length === 0 || docIds[docIds.length - 1] !== docCount) docIds.push(docCount);
+        builder.companion.terms[normalized] = postings;
+        return;
+      }
+      case "message":
+      case "why":
+      case "fix":
+      case "error.message": {
+        const builder = ftsBuilders.get(accessor.fieldName);
+        if (!builder || typeof rawValue !== "string") return;
+        const fieldCompanion = builder.companion;
+        fieldCompanion.exists_docs.push(docCount);
+        let position = 0;
+        visitAnalyzedTextValue(rawValue, builder.config.analyzer, (token) => {
+          const postings = fieldCompanion.terms[token] ?? {
+            doc_ids: [],
+            freqs: fieldCompanion.positions ? [] : undefined,
+            positions: fieldCompanion.positions ? [] : undefined,
+          };
+          const docIds = postings.doc_ids;
+          const lastIndex = docIds.length - 1;
+          if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
+            docIds.push(docCount);
+            if (fieldCompanion.positions) {
+              postings.freqs!.push(1);
+              postings.positions!.push(position);
+            }
+          } else if (fieldCompanion.positions) {
+            postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
+            postings.positions!.push(position);
+          }
+          fieldCompanion.terms[token] = postings;
+          position += 1;
+        });
+        return;
+      }
+    }
+  });
+  if (Result.isError(visitRes)) return Result.err({ kind: "invalid_companion_build", message: visitRes.error.message });
+  return Result.ok(undefined);
+}
+
+function buildLegacyFastEvlogBundledCompanionPayloadResult(input: {
+  registry: SchemaRegistry;
+  segment: LocalSegment;
+  planGeneration: number;
+}) {
+  const plan = buildDesiredSearchCompanionPlan(input.registry);
+  const segmentBytes = readFileSync(input.segment.localPath);
+  const colBuilders = createLegacyColBuilders(input.registry);
+  const ftsBuilders = createLegacyFtsBuilders(input.registry);
+  const requiredFieldNames = new Set<string>();
+  for (const fieldName of colBuilders.keys()) requiredFieldNames.add(fieldName);
+  for (const fieldName of ftsBuilders.keys()) requiredFieldNames.add(fieldName);
+  const fieldNameList = Array.from(requiredFieldNames).sort(compareStrings);
+  const fastByteScanPlanByVersion = new Map<number, FastScalarAccessorTrie>();
+  let docCount = 0;
+  let offset = input.segment.startOffset;
+  for (const recRes of iterateBlockRecordsResult(segmentBytes)) {
+    if (Result.isError(recRes)) throw new Error(recRes.error.message);
+    const version = schemaVersionForOffset(input.registry, offset);
+    let trie = fastByteScanPlanByVersion.get(version);
+    if (!trie) {
+      const compiledRes = compileSearchFieldAccessorsResult(input.registry, fieldNameList, version);
+      if (Result.isError(compiledRes)) throw new Error(compiledRes.error.message);
+      const trieRes = buildFastScalarAccessorTrieResult(compiledRes.value);
+      if (Result.isError(trieRes)) throw new Error(trieRes.error.message);
+      trie = trieRes.value;
+      fastByteScanPlanByVersion.set(version, trie);
+    }
+    const recordRes = recordLegacyEvlogByteScanColumnAndFtsBuildersResult(recRes.value.payload, trie, colBuilders, ftsBuilders, docCount);
+    if (Result.isError(recordRes)) throw new Error(recordRes.error.message);
+    offset += 1n;
+    docCount += 1;
+  }
+  return encodeBundledSegmentCompanionFromPayloads({
+    stream: input.segment.stream,
+    segment_index: input.segment.segmentIndex,
+    plan_generation: input.planGeneration,
+    sections: [
+      encodeCompanionSectionPayload("col", finalizeLegacyColSection(input.registry, colBuilders, docCount), plan),
+      { kind: "fts" as const, payload: encodeLegacyFtsSectionPayload(finalizeLegacyFtsSection(ftsBuilders, docCount), plan) },
+    ],
+  });
+}
+
 function collectSegmentPayloads(segment: LocalSegment): Uint8Array[] {
   const payloads: Uint8Array[] = [];
   const segmentFileBytes = readFileSync(segment.localPath);
@@ -623,6 +745,40 @@ describe("bundled companion build performance", () => {
 
       expect(currentElapsedMs).toBeLessThan(legacyElapsedMs * 0.75);
       expect(warmLegacy.byteLength).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("evlog fast-byte companion builds are at least 25% faster than the legacy singleton-array postings path", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-companion-fast-singleton-"));
+    try {
+      const registry = buildEvlogDefaultRegistry("evlog-1");
+      const segment = writeEvlogSegment(root, 64_000);
+      const input = {
+        registry,
+        plan: buildDesiredSearchCompanionPlan(registry),
+        planGeneration: 1,
+        segment,
+      } as const;
+
+      const warmCurrent = buildEncodedBundledCompanionPayloadResult(input);
+      expect(Result.isOk(warmCurrent)).toBe(true);
+      buildLegacyFastEvlogBundledCompanionPayloadResult({ registry, segment, planGeneration: 1 });
+
+      const currentSamples = Array.from({ length: 3 }, () => {
+        const started = performance.now();
+        const res = buildEncodedBundledCompanionPayloadResult(input);
+        expect(Result.isOk(res)).toBe(true);
+        return performance.now() - started;
+      });
+      const legacySamples = Array.from({ length: 3 }, () => {
+        const started = performance.now();
+        buildLegacyFastEvlogBundledCompanionPayloadResult({ registry, segment, planGeneration: 1 });
+        return performance.now() - started;
+      });
+
+      expect(average(currentSamples)).toBeLessThan(average(legacySamples) * 0.75);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

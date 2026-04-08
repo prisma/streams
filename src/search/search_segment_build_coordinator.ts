@@ -1,3 +1,5 @@
+import { copyFileSync } from "node:fs";
+import { dirname, extname, join, basename } from "node:path";
 import { Result } from "better-result";
 import type { IndexBuildWorkerError } from "../index/index_build_job";
 import { IndexBuildWorkerPool } from "../index/index_build_worker_pool";
@@ -5,42 +7,24 @@ import type { SearchSegmentBuildInput, SearchSegmentBuildOutput } from "./search
 
 export type SearchSegmentSharedBuildResult = {
   output: SearchSegmentBuildOutput;
-  cacheStatus: "miss" | "shared_inflight" | "cache_hit";
-};
-
-type CacheEntry = {
-  result: SearchSegmentBuildOutput;
-  expiresAt: number;
+  cacheStatus: "miss" | "shared_inflight";
 };
 
 export class SearchSegmentBuildCoordinator {
   private readonly inflight = new Map<string, Promise<Result<SearchSegmentBuildOutput, IndexBuildWorkerError>>>();
-  private readonly completed = new Map<string, CacheEntry>();
 
-  constructor(
-    private readonly workers: IndexBuildWorkerPool,
-    private readonly cacheTtlMs = 30_000,
-    private readonly maxCompletedEntries = 8
-  ) {}
+  constructor(private readonly workers: IndexBuildWorkerPool) {}
 
   async buildSegmentResult(
     input: SearchSegmentBuildInput
   ): Promise<Result<SearchSegmentSharedBuildResult, IndexBuildWorkerError>> {
-    this.pruneExpired();
     const key = this.cacheKey(input);
-    const cached = this.completed.get(key);
-    if (cached) {
-      return Result.ok({
-        output: cached.result,
-        cacheStatus: "cache_hit",
-      });
-    }
     const inflight = this.inflight.get(key);
     if (inflight) {
       const joined = await inflight;
       if (Result.isError(joined)) return joined;
       return Result.ok({
-        output: joined.value,
+        output: this.cloneSharedOutput(joined.value),
         cacheStatus: "shared_inflight",
       });
     }
@@ -49,8 +33,6 @@ export class SearchSegmentBuildCoordinator {
     try {
       const built = await promise;
       if (Result.isError(built)) return built;
-      this.completed.set(key, { result: built.value, expiresAt: Date.now() + this.cacheTtlMs });
-      this.pruneCompleted();
       return Result.ok({
         output: built.value,
         cacheStatus: "miss",
@@ -78,6 +60,7 @@ export class SearchSegmentBuildCoordinator {
       segment_index: input.segment.segmentIndex,
       start_offset: input.segment.startOffset.toString(),
       local_path: input.segment.localPath,
+      output_dir: input.outputDir ?? null,
       plan_hash: input.plan ? JSON.stringify(input.plan.summary) : null,
       exact_indexes: input.exactIndexes
         .map((entry) => ({
@@ -89,19 +72,35 @@ export class SearchSegmentBuildCoordinator {
     });
   }
 
-  private pruneExpired(): void {
-    const now = Date.now();
-    for (const [key, entry] of this.completed.entries()) {
-      if (entry.expiresAt <= now) this.completed.delete(key);
-    }
+  private cloneSharedOutput(output: SearchSegmentBuildOutput): SearchSegmentBuildOutput {
+    return {
+      exactRuns: output.exactRuns.map((run) =>
+        run.storage === "file"
+          ? {
+              ...run,
+              localPath: cloneTempFile(run.localPath),
+            }
+          : run
+      ),
+      companion:
+        output.companion == null
+          ? null
+          : output.companion.storage === "file"
+            ? {
+                ...output.companion,
+                localPath: cloneTempFile(output.companion.localPath),
+              }
+            : output.companion,
+    };
   }
+}
 
-  private pruneCompleted(): void {
-    this.pruneExpired();
-    while (this.completed.size > this.maxCompletedEntries) {
-      const oldest = this.completed.keys().next();
-      if (oldest.done) return;
-      this.completed.delete(oldest.value);
-    }
-  }
+function cloneTempFile(localPath: string): string {
+  const ext = extname(localPath);
+  const dir = dirname(localPath);
+  const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const base = basename(localPath, ext);
+  const clonePath = join(dir, `${base}-${nonce}${ext || ".tmp"}`);
+  copyFileSync(localPath, clonePath);
+  return clonePath;
 }
