@@ -25,8 +25,8 @@ It also uses the latest production evidence from `evlog-1`:
 - unified `search_segment_build` is shipped and standalone companion builds no
   longer race exact on fresh `evlog` segments
 - exact secondary L0 is now the main steady-state indexing cost on the live
-  box, with the companion-owning owner batch still around `7-9s` while the
-  other exact batches now mostly land in the `2-5s` range
+  box, with the slow lagging companion-owning batch still around `5.4-7.0s`
+  while the other exact batches now mostly land in the `1.6-4.6s` range
 - bundled companion build is no longer the fresh-segment bottleneck because its
   work is piggybacked from exact on fresh `evlog` segments
 - exact compaction for high-cardinality fields such as `requestId` is still the
@@ -41,6 +41,14 @@ It also uses the latest production evidence from `evlog-1`:
   the `3+ GiB` range, so RSS shape still matters as much as raw wall time
 - the latest bundled `.fts` memory-shape fix brought current RSS back down into
   the `300 MiB` range with restart-window spikes staying under `1 GiB`
+- the latest exact-L0 persist rewrite overlapped piggyback companion staging
+  with exact-run upload and removed a duplicate standalone companion upload,
+  which lowered the owner-batch wall time modestly but proved that exact L0 is
+  now mostly persist-bound, not worker-compute-bound
+- the newest exact-L0 publish gating change means non-owner exact batches only
+  publish the manifest when they actually advance the stream-wide minimum exact
+  frontier; the fresh companion-owning batch still publishes immediately so the
+  bundled companion row becomes remotely visible without a deferred side path
 
 ## Summary
 
@@ -87,6 +95,16 @@ Several important changes are already shipped:
 13. text `.fts` accumulation now aggregates token positions once per document
     before touching the shared postings map, so `message` / `why` / `fix` /
     `error.message` no longer pay one global postings mutation per token
+14. `evlog` text analysis now caches analyzer output per repeated field value
+    during a build, so companion and unified search builders no longer retokenize
+    identical log messages over and over inside one segment walk
+15. exact L0 now overlaps piggyback companion staging with exact-run upload and
+    finalize work, and standalone companion no longer uploads the same artifact
+    twice before it upserts metadata
+16. non-owner exact L0 batches now skip manifest publication unless they advance
+    the stream-wide minimum exact frontier; fresh companion-owning batches still
+    publish immediately so companion visibility does not wait for a separate
+    background loop
 
 Those changes removed the worst duplicate segment scan and took standalone
 companion off the fresh-segment critical path, but they did not solve the whole
@@ -99,11 +117,15 @@ The next big wins are now more targeted:
 2. **High-cardinality exact fields should adopt shard mode.** `requestId`,
    `traceId`, and `spanId` still create oversized runs and compaction variance
    even after the streaming merge rewrite.
-3. **Exact compaction finalization should get faster without changing the
-   semantics.** The worker merge is now cheap enough that main-thread
-   finalization, especially publish-side work for the new run group, dominates
-   compaction wall time even after synchronous retired-run cleanup was sped up.
-4. **Unified search-build handoff should stay file-backed and ownership-aware.**
+3. **Lagging exact batches still need a better companion-ownership rule.** The
+   newest publish gating made the non-owner batches much cheaper, but the
+   slowest lagging batch can still become the companion owner when the preferred
+   owner group is no longer at the same exact frontier.
+4. **Exact compaction finalization should keep getting faster without changing
+   the semantics.** The worker merge is now cheap enough that remaining
+   publish-side work for the new run group dominates compaction wall time even
+   after synchronous retired-run cleanup was sped up.
+5. **Unified search-build handoff should stay file-backed and ownership-aware.**
    The coordinator must not retain large completed payloads in anonymous RSS,
    and each consumer must get explicit ownership of any temp files it uses.
 
@@ -118,6 +140,8 @@ So the recommended architecture is now staged:
   frontier
 - keep the shipped streaming exact compaction path
 - then optimize exact L0 throughput
+- then fix lagging-batch companion ownership so the slowest exact frontier does
+  not inherit the fresh companion cost by default
 - then add shard mode for the worst high-cardinality exact fields
 - then continue reducing exact compaction finalization time without deferring
   correctness-critical cleanup out of band
@@ -1058,6 +1082,13 @@ Deliverables:
   deterministic batches so peak per-job wall time and peak RSS both come down
 - explicit phase telemetry inside exact L0 so scan, accumulate, encode, and
   persist costs are separable
+- cached text tokenization for repeated `evlog` text values
+- compact singleton storage for positioned text postings until a second
+  document actually appears for the term
+- overlap piggyback companion staging with exact-run upload/finalize so the
+  owner batch no longer pays those two persistence legs fully serially
+- skip manifest publication for non-owner exact batches unless they advance the
+  stream-wide minimum exact frontier
 
 Observed result so far:
 
@@ -1075,14 +1106,29 @@ Observed result so far:
 - the local focused benchmark for `evlog` fast-byte companion build is more
   than `25%` faster than the legacy fast-byte path that still allocates a
   singleton `doc_ids` array for every unique keyword term
-- on the live node, that singleton-postings change cut current RSS from about
-  `2.42 GiB` to about `337 MiB` and reduced post-restart RSS high-water from
-  about `2.42 GiB` to about `670 MiB` while `evlog-1` indexing continued
+- the local focused benchmark for repeated `evlog` text values is also more
+  than `25%` faster with cached analyzer output than with retokenizing every
+  repeated value
+- the live owner-batch phase timings now show exact L0 is persist-bound:
+  `build_ms` is often around `2.5-2.9s` while the overlapped persist window is
+  still around `2.7-4.3s`
+- on the live node, the persistence overlap lowered the slow owner batch from
+  the prior `7.8-9.1s` band into the `6.9-7.3s` band, which was a real but
+  insufficient win
+- the newest publish-gating change made the non-owner exact batches much
+  cheaper:
+  - `timestamp` dropped from about `3.0s` into about `1.6-3.1s`
+  - `method,status,duration` now lands around `2.6-4.6s`
+  - `requestId` now lands around `3.3s`
+- on the live node, the current RSS after these exact-L0 changes is back in
+  the `200-700 MiB` range with restart-window high-water staying under
+  `800 MiB`, which is far below the prior `3+ GiB` OOM shape
 
 Remaining goals:
 
 - exact coverage should stop falling behind the uploaded head
-- exact L0 median should move toward the sub-`5s` target
+- the slow lagging companion-owning batch should also get under `5s`
+- the preferred companion owner should not depend on the slowest exact frontier
 
 ### Phase 7: optional durable search-source sidecar
 

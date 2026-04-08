@@ -12,15 +12,15 @@ import {
   type EncodedCompanionSectionPayload,
 } from "./companion_format";
 import type { FtsFieldInput, FtsSectionInput, FtsTermInput } from "./fts_format";
-import { appendKeywordPostingDoc } from "./fts_format";
+import { appendKeywordPostingDoc, appendTextPostingPositions } from "./fts_format";
 import {
+  analyzeTextValueCached,
   buildFastScalarAccessorTrieResult,
   canonicalizeColumnValue,
   canonicalizeExactValue,
   compareSearchStrings,
   compileSearchFieldAccessorsResult,
   normalizeKeywordValue,
-  visitAnalyzedTextValue,
   visitFastScalarJsonValuesFromBytesWithTrieResult,
   type FastScalarAccessorTrie,
 } from "./schema";
@@ -56,6 +56,7 @@ type ColumnFieldBuilder = {
 type FtsFieldBuilder = {
   config: SearchFieldConfig;
   companion: FtsFieldInput;
+  tokenCache: Map<string, string[]>;
 };
 
 type FastPlan = {
@@ -179,6 +180,7 @@ function createFtsBuilders(registry: SchemaRegistry, plan: SearchCompanionPlan |
         exists_docs: [],
         terms: Object.create(null) as Record<string, FtsTermInput>,
       },
+      tokenCache: new Map<string, string[]>(),
     });
   }
   return builders;
@@ -257,32 +259,15 @@ function appendTextFtsValue(builder: FtsFieldBuilder | undefined, rawValue: unkn
   const fieldCompanion = builder.companion;
   fieldCompanion.exists_docs.push(docCount);
   const tokenPositions = new Map<string, number[]>();
-  let position = 0;
-  visitAnalyzedTextValue(rawValue, builder.config.analyzer, (token) => {
+  const tokens = analyzeTextValueCached(rawValue, builder.config.analyzer, builder.tokenCache);
+  for (let position = 0; position < tokens.length; position += 1) {
+    const token = tokens[position]!;
     const positions = tokenPositions.get(token);
     if (positions) positions.push(position);
     else tokenPositions.set(token, [position]);
-    position += 1;
-  });
+  }
   for (const [token, positions] of tokenPositions) {
-    const postings = fieldCompanion.terms[token] ?? {
-      doc_ids: [],
-      freqs: fieldCompanion.positions ? [] : undefined,
-      positions: fieldCompanion.positions ? [] : undefined,
-    };
-    const docIds = postings.doc_ids ?? (postings.doc_ids = []);
-    const lastIndex = docIds.length - 1;
-    if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
-      docIds.push(docCount);
-      if (fieldCompanion.positions) {
-        postings.freqs!.push(positions.length);
-        postings.positions!.push(...positions);
-      }
-    } else if (fieldCompanion.positions) {
-      postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + positions.length;
-      postings.positions!.push(...positions);
-    }
-    fieldCompanion.terms[token] = postings;
+    fieldCompanion.terms[token] = appendTextPostingPositions(fieldCompanion.terms[token], docCount, positions);
   }
 }
 

@@ -101,6 +101,55 @@ export function appendKeywordPostingDoc(postings: FtsTermInput | undefined, docI
   return postings;
 }
 
+export function appendTextPostingPositions(
+  postings: FtsTermInput | undefined,
+  docId: number,
+  positions: number[]
+): FtsTermInput {
+  if (positions.length === 0) return postings ?? {};
+  if (!postings) {
+    return {
+      doc_id: docId,
+      freqs: [positions.length],
+      positions: [...positions],
+    };
+  }
+  const docIds = postings.doc_ids;
+  if (docIds) {
+    const lastIndex = docIds.length - 1;
+    if (lastIndex < 0 || docIds[lastIndex] !== docId) {
+      docIds.push(docId);
+      (postings.freqs ??= []).push(positions.length);
+      (postings.positions ??= []).push(...positions);
+      return postings;
+    }
+    postings.freqs ??= [];
+    postings.positions ??= [];
+    postings.freqs[lastIndex] = (postings.freqs[lastIndex] ?? 0) + positions.length;
+    postings.positions.push(...positions);
+    return postings;
+  }
+  const existingDocId = postings.doc_id;
+  if (existingDocId == null) {
+    postings.doc_id = docId;
+    postings.freqs = [positions.length];
+    postings.positions = [...positions];
+    return postings;
+  }
+  postings.freqs ??= [0];
+  postings.positions ??= [];
+  if (existingDocId === docId) {
+    postings.freqs[0] = (postings.freqs[0] ?? 0) + positions.length;
+    postings.positions.push(...positions);
+    return postings;
+  }
+  postings.doc_ids = [existingDocId, docId];
+  delete postings.doc_id;
+  postings.freqs = [(postings.freqs[0] ?? 0), positions.length];
+  postings.positions = [...postings.positions, ...positions];
+  return postings;
+}
+
 export function ftsTermDocCount(postings: FtsTermInput): number {
   if (postings.doc_ids) return postings.doc_ids.length;
   return postings.doc_id == null ? 0 : 1;

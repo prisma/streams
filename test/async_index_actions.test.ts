@@ -255,6 +255,13 @@ describe("async index action observability", () => {
         const action = actions.find((row) => row.action_kind === kind && row.status === "succeeded");
         expect(action).toBeTruthy();
         expectActionShape(action);
+        if (action?.action_kind === "secondary_l0_build") {
+          const detail = JSON.parse(action.detail_json);
+          expect(typeof detail.build_ms).toBe("number");
+          expect(typeof detail.exact_persist_ms).toBe("number");
+          expect(typeof detail.piggyback_companion_persist_ms).toBe("number");
+          expect(typeof detail.manifest_published).toBe("boolean");
+        }
         if (action?.action_kind === "secondary_compaction_build") {
           const detail = JSON.parse(action.detail_json);
           expect(typeof detail.source_prepare_ms).toBe("number");
@@ -401,10 +408,13 @@ describe("async index action observability", () => {
       const piggybackedCompanionSections = detailPayloads.flatMap((detail) =>
         Array.isArray(detail.piggyback_companion_section_kinds) ? detail.piggyback_companion_section_kinds : []
       );
+      const manifestPublishedFlags = detailPayloads.map((detail) => detail.manifest_published).filter((value) => typeof value === "boolean");
       const companionBuilds = actions.filter((row) => row.status === "succeeded" && row.action_kind === "companion_build");
 
       expect(app.deps.db.listSearchSegmentCompanions("evlog-telemetry").length).toBeGreaterThan(0);
       expect(piggybackedCompanionSections.length).toBeGreaterThan(0);
+      expect(manifestPublishedFlags).toContain(false);
+      expect(manifestPublishedFlags).toContain(true);
       expect(companionBuilds.length).toBe(0);
     } finally {
       app.deps.indexer?.stop();

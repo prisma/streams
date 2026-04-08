@@ -14,6 +14,7 @@ import { decodeBundledSegmentCompanionResult, encodeBundledSegmentCompanionFromP
 import type { ColFieldInput, ColScalar, ColSectionInput } from "../src/search/col_format";
 import type { FtsFieldInput, FtsSectionInput } from "../src/search/fts_format";
 import {
+  analyzeTextValueCached,
   buildFastScalarAccessorTrieResult,
   analyzeTextValue,
   canonicalizeColumnValue,
@@ -619,6 +620,26 @@ function average(values: number[]): number {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function collectEvlogTextCorpus(segment: LocalSegment): string[] {
+  const payloadDecoder = new TextDecoder();
+  const values: string[] = [];
+  const segmentFileBytes = readFileSync(segment.localPath);
+  for (const recRes of iterateBlockRecordsResult(segmentFileBytes)) {
+    if (Result.isError(recRes)) throw new Error(recRes.error.message);
+    const parsed = JSON.parse(payloadDecoder.decode(recRes.value.payload)) as {
+      message?: string;
+      why?: string;
+      fix?: string;
+      context?: { error?: { message?: string } };
+    };
+    if (typeof parsed.message === "string") values.push(parsed.message);
+    if (typeof parsed.why === "string") values.push(parsed.why);
+    if (typeof parsed.fix === "string") values.push(parsed.fix);
+    if (typeof parsed.context?.error?.message === "string") values.push(parsed.context.error.message);
+  }
+  return values;
+}
+
 async function runCompanionStagingElapsedMs(args: {
   cache: CompanionFileCache;
   store: MockR2Store;
@@ -779,6 +800,41 @@ describe("bundled companion build performance", () => {
       });
 
       expect(average(currentSamples)).toBeLessThan(average(legacySamples) * 0.75);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("cached evlog text tokenization is at least 25% faster than uncached tokenization on a real segment corpus", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-companion-token-cache-"));
+    try {
+      const segment = writeEvlogSegment(root, 96_000);
+      const corpus = collectEvlogTextCorpus(segment);
+      expect(corpus.length).toBeGreaterThan(0);
+
+      const uncached = (): number => {
+        const started = performance.now();
+        let tokenCount = 0;
+        for (const value of corpus) tokenCount += analyzeTextValue(value, "unicode_word_v1").length;
+        expect(tokenCount).toBeGreaterThan(0);
+        return performance.now() - started;
+      };
+
+      const cached = (): number => {
+        const started = performance.now();
+        const cache = new Map<string, string[]>();
+        let tokenCount = 0;
+        for (const value of corpus) tokenCount += analyzeTextValueCached(value, "unicode_word_v1", cache).length;
+        expect(tokenCount).toBeGreaterThan(0);
+        return performance.now() - started;
+      };
+
+      uncached();
+      cached();
+
+      const uncachedSamples = Array.from({ length: 4 }, () => uncached());
+      const cachedSamples = Array.from({ length: 4 }, () => cached());
+      expect(average(cachedSamples)).toBeLessThan(average(uncachedSamples) * 0.75);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

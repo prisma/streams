@@ -128,6 +128,18 @@ export function analyzeTextValue(value: string, analyzer: SearchFieldConfig["ana
   return matches ? matches.filter((token) => token.length > 0) : [];
 }
 
+export function analyzeTextValueCached(
+  value: string,
+  analyzer: SearchFieldConfig["analyzer"],
+  cache: Map<string, string[]>
+): string[] {
+  const cached = cache.get(value);
+  if (cached) return cached;
+  const analyzed = analyzeTextValue(value, analyzer);
+  cache.set(value, analyzed);
+  return analyzed;
+}
+
 export function visitAnalyzedTextValue(
   value: string,
   analyzer: SearchFieldConfig["analyzer"],

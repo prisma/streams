@@ -40,7 +40,7 @@ import {
 import { CompanionFileCache } from "./companion_file_cache";
 import type { ColFieldInput, ColScalar, ColSectionInput, ColSectionView } from "./col_format";
 import {
-  analyzeTextValue,
+  analyzeTextValueCached,
   canonicalizeColumnValue,
   compileSearchFieldAccessorsResult,
   extractRawSearchValuesWithCompiledAccessorsResult,
@@ -49,6 +49,7 @@ import {
 } from "./schema";
 import {
   appendKeywordPostingDoc,
+  appendTextPostingPositions,
   ftsTermDocCount,
   type FtsFieldInput,
   type FtsSectionInput,
@@ -99,6 +100,15 @@ type CompanionPersistOutput =
       primaryTimestampMinMs: bigint | null;
       primaryTimestampMaxMs: bigint | null;
     };
+type PreparedCompanionPersist = {
+  objectKey: string;
+  planGeneration: number;
+  sectionKinds: CompanionSectionKind[];
+  sectionSizes: Record<string, number>;
+  outputSizeBytes: number;
+  primaryTimestampMinMs: bigint | null;
+  primaryTimestampMaxMs: bigint | null;
+};
 
 function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionBuildError> {
   return Result.err({ kind: "invalid_companion_build", message });
@@ -115,6 +125,7 @@ type ColumnFieldBuilder = {
 type FtsFieldBuilder = {
   config: SearchFieldConfig;
   companion: FtsFieldInput;
+  tokenCache: Map<string, string[]>;
 };
 
 type GroupBuilder = {
@@ -296,12 +307,32 @@ export class SearchCompanionManager {
     segmentIndex: number,
     planGeneration: number,
     output: CompanionPersistOutput
-  ): Promise<Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError>> {
+  ): Promise<
+    Result<
+      | null
+      | {
+          sectionKinds: CompanionSectionKind[];
+          finalize: () => Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError>;
+        },
+      CompanionBuildError
+    >
+  > {
     const current = this.db.getSearchSegmentCompanion(stream, segmentIndex);
     if (current && current.plan_generation === planGeneration) {
-      return Result.ok({ sectionKinds: parseSectionKinds(current).size > 0 ? Array.from(parseSectionKinds(current)) : output.sectionKinds });
+      return Result.ok({
+        sectionKinds: parseSectionKinds(current).size > 0 ? Array.from(parseSectionKinds(current)) : output.sectionKinds,
+        finalize: () =>
+          Result.ok({
+            sectionKinds: parseSectionKinds(current).size > 0 ? Array.from(parseSectionKinds(current)) : output.sectionKinds,
+          }),
+      });
     }
-    return this.persistCompanionOutput(stream, segmentIndex, planGeneration, output);
+    const preparedRes = await this.prepareCompanionOutputResult(stream, segmentIndex, planGeneration, output);
+    if (Result.isError(preparedRes)) return preparedRes;
+    return Result.ok({
+      sectionKinds: preparedRes.value.sectionKinds,
+      finalize: () => this.finalizePreparedCompanionPersist(stream, segmentIndex, preparedRes.value),
+    });
   }
 
   private companionUnifiedSearchExactFrontier(stream: string, registry: SchemaRegistry, plan: SearchCompanionPlan): number | null {
@@ -746,60 +777,17 @@ export class SearchCompanionManager {
           action.fail("unexpected worker result kind");
           return invalidCompanionBuild("unexpected worker result kind");
         }
-        const objectId = Buffer.from(randomBytes(8)).toString("hex");
-        const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), seg.segment_index, objectId);
         const output = companionRes.value.output;
-        const sectionSizes = output.sectionSizes;
-        const outputSizeBytes = output.storage === "file" ? output.sizeBytes : output.payload.byteLength;
-        try {
-          if (output.storage === "file" && this.os.putFile) {
-            await retryAbortable(
-              (signal) => this.os.putFile!(objectKey, output.localPath, output.sizeBytes, { signal }),
-              {
-                retries: this.cfg.objectStoreRetries,
-                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-                timeoutMs: this.cfg.objectStoreTimeoutMs,
-              }
-            );
-          } else if (output.storage === "file") {
-            const payload = await Bun.file(output.localPath).bytes();
-            await retryAbortable(
-              (signal) => this.os.put(objectKey, payload, { contentLength: payload.byteLength, signal }),
-              {
-                retries: this.cfg.objectStoreRetries,
-                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-                timeoutMs: this.cfg.objectStoreTimeoutMs,
-              }
-            );
-          } else {
-            await retryAbortable(
-              (signal) => this.os.put(objectKey, output.payload, { contentLength: output.payload.byteLength, signal }),
-              {
-                retries: this.cfg.objectStoreRetries,
-                baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-                maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-                timeoutMs: this.cfg.objectStoreTimeoutMs,
-              }
-            );
-          }
-        } catch (e: unknown) {
-          action.fail(String((e as any)?.message ?? e), {
+        const preparedCompanionRes = await this.prepareCompanionOutputResult(stream, seg.segment_index, planRow.generation, output);
+        if (Result.isError(preparedCompanionRes)) {
+          action.fail(preparedCompanionRes.error.message, {
             detail: {
               section_kinds: output.sectionKinds,
             },
           });
-          if (output.storage === "file") {
-            try {
-              unlinkSync(output.localPath);
-            } catch {
-              // ignore temp cleanup failures
-            }
-          }
-          return invalidCompanionBuild(String((e as any)?.message ?? e));
+          return preparedCompanionRes;
         }
-        const persistCompanionRes = await this.persistCompanionOutput(stream, seg.segment_index, planRow.generation, output);
+        const persistCompanionRes = this.finalizePreparedCompanionPersist(stream, seg.segment_index, preparedCompanionRes.value);
         if (Result.isError(persistCompanionRes)) {
           action.fail(persistCompanionRes.error.message, {
             detail: {
@@ -817,7 +805,7 @@ export class SearchCompanionManager {
         }
         action.succeed({
           outputCount: 1,
-          outputSizeBytes: BigInt(outputSizeBytes),
+          outputSizeBytes: BigInt(preparedCompanionRes.value.outputSizeBytes),
           detail: {
             section_kinds: sectionKinds,
             output_storage: output.storage,
@@ -845,12 +833,31 @@ export class SearchCompanionManager {
     }
   }
 
-  private async persistCompanionOutput(
+  private finalizePreparedCompanionPersist(
+    stream: string,
+    segmentIndex: number,
+    prepared: PreparedCompanionPersist
+  ): Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError> {
+    this.db.upsertSearchSegmentCompanion(
+      stream,
+      segmentIndex,
+      prepared.objectKey,
+      prepared.planGeneration,
+      JSON.stringify(prepared.sectionKinds),
+      JSON.stringify(prepared.sectionSizes),
+      prepared.outputSizeBytes,
+      prepared.primaryTimestampMinMs,
+      prepared.primaryTimestampMaxMs
+    );
+    return Result.ok({ sectionKinds: prepared.sectionKinds });
+  }
+
+  private async prepareCompanionOutputResult(
     stream: string,
     segmentIndex: number,
     planGeneration: number,
     output: CompanionPersistOutput
-  ): Promise<Result<{ sectionKinds: CompanionSectionKind[] }, CompanionBuildError>> {
+  ): Promise<Result<PreparedCompanionPersist, CompanionBuildError>> {
     const objectId = randomBytes(8).toString("hex");
     const objectKey = searchCompanionObjectKey(streamHash16Hex(stream), segmentIndex, objectId);
     const outputSizeBytes = output.storage === "file" ? output.sizeBytes : output.payload.byteLength;
@@ -903,19 +910,15 @@ export class SearchCompanionManager {
         }
       }
     }
-
-    this.db.upsertSearchSegmentCompanion(
-      stream,
-      segmentIndex,
+    return Result.ok({
       objectKey,
       planGeneration,
-      JSON.stringify(output.sectionKinds),
-      JSON.stringify(sectionSizes),
+      sectionKinds: output.sectionKinds,
+      sectionSizes,
       outputSizeBytes,
-      output.primaryTimestampMinMs,
-      output.primaryTimestampMaxMs
-    );
-    return Result.ok({ sectionKinds: output.sectionKinds });
+      primaryTimestampMinMs: output.primaryTimestampMinMs,
+      primaryTimestampMaxMs: output.primaryTimestampMaxMs,
+    });
   }
 
   private async loadSegmentBytesResult(seg: SegmentRow): Promise<Result<Uint8Array, CompanionBuildError>> {
@@ -1242,6 +1245,7 @@ export class SearchCompanionManager {
         exists_docs: [],
         terms: Object.create(null) as Record<string, FtsTermInput>,
       },
+      tokenCache: new Map<string, string[]>(),
     };
   }
 
@@ -1276,27 +1280,16 @@ export class SearchCompanionManager {
       }
       let position = 0;
       for (const value of textValues) {
-        const tokens = analyzeTextValue(value, builder.config.analyzer);
+        const tokenPositions = new Map<string, number[]>();
+        const tokens = analyzeTextValueCached(value, builder.config.analyzer, builder.tokenCache);
         for (const token of tokens) {
-        const postings = fieldCompanion.terms[token] ?? {
-          doc_ids: [],
-          freqs: fieldCompanion.positions ? [] : undefined,
-          positions: fieldCompanion.positions ? [] : undefined,
-        };
-        const docIds = postings.doc_ids!;
-        const lastIndex = docIds.length - 1;
-          if (lastIndex < 0 || docIds[lastIndex] !== docCount) {
-            docIds.push(docCount);
-            if (fieldCompanion.positions) {
-              postings.freqs!.push(1);
-              postings.positions!.push(position);
-            }
-          } else if (fieldCompanion.positions) {
-            postings.freqs![lastIndex] = (postings.freqs![lastIndex] ?? 0) + 1;
-            postings.positions!.push(position);
-          }
-          fieldCompanion.terms[token] = postings;
+          const positions = tokenPositions.get(token);
+          if (positions) positions.push(position);
+          else tokenPositions.set(token, [position]);
           position += 1;
+        }
+        for (const [token, positions] of tokenPositions) {
+          fieldCompanion.terms[token] = appendTextPostingPositions(fieldCompanion.terms[token], docCount, positions);
         }
       }
     }
