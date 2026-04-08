@@ -43,9 +43,11 @@ import type { CompanionSectionKind } from "../search/companion_format";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
-const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY = 2;
+const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY = 2;
+const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 4;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
 const EVLOG_EXACT_COMPANION_OWNER_GROUP = ["method", "status", "duration"] as const;
+const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "spanId", "path"]);
 const EVLOG_EXACT_BATCH_GROUPS = [
   ["level", "service", "environment"],
   ["timestamp"],
@@ -78,6 +80,13 @@ type UploadedExactRun = {
 
 function invalidIndexBuild<T = never>(message: string): Result<T, SecondaryIndexBuildError> {
   return Result.err({ kind: "invalid_index_build", message });
+}
+
+export function secondaryCompactionSourceFetchConcurrency(indexName: string, inputCount: number): number {
+  const cap = EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)
+    ? SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY
+    : SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY;
+  return Math.max(1, Math.min(cap, inputCount || 1));
 }
 
 function binarySearch(values: bigint[], needle: bigint): number {
@@ -1172,10 +1181,7 @@ export class SecondaryIndexManager {
     let cacheFillCount = 0;
     let tempSpillCount = 0;
     let firstError: SecondaryIndexBuildError | null = null;
-    const fetchConcurrency = Math.max(
-      1,
-      Math.min(SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY, inputs.length || 1)
-    );
+    const fetchConcurrency = secondaryCompactionSourceFetchConcurrency(inputs[0]?.index_name ?? "", inputs.length);
     const gate = new ConcurrencyGate(fetchConcurrency);
 
     await Promise.all(

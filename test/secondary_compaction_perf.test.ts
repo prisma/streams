@@ -6,9 +6,11 @@ import { performance } from "node:perf_hooks";
 import { Result } from "better-result";
 import { buildBinaryFuseResult } from "../src/index/binary_fuse";
 import { buildSecondaryCompactionPayloadResult } from "../src/index/secondary_compaction_build";
+import { secondaryCompactionSourceFetchConcurrency } from "../src/index/secondary_indexer";
 import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS, type IndexRun } from "../src/index/run_format";
 import type { SecondaryCompactionBuildInput, SecondaryCompactionRunSource } from "../src/index/secondary_compaction_build";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../src/util/stream_paths";
+import { ConcurrencyGate } from "../src/concurrency_gate";
 
 function writeMaskRun(root: string, stream: string, indexName: string, runId: string, startSegment: number, endSegment: number, fingerprints: bigint[]): SecondaryCompactionRunSource {
   const masks = new Array(fingerprints.length).fill(1);
@@ -194,7 +196,56 @@ function buildPreviousSecondaryCompactionPayloadResult(
   return Result.ok({ meta: decodedRes.value.meta, payload: payloadRes.value });
 }
 
+function average(values: number[]): number {
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 describe("secondary compaction performance", () => {
+  test("low-cardinality exact compaction source staging is at least 25% faster with the wider fetch concurrency", async () => {
+    async function simulateSourcePrepElapsedMs(indexName: string, inputCount: number, delayMs: number): Promise<number> {
+      const gate = new ConcurrencyGate(secondaryCompactionSourceFetchConcurrency(indexName, inputCount));
+      const startedAt = performance.now();
+      await Promise.all(
+        Array.from({ length: inputCount }, async () =>
+          gate.run(async () => {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          })
+        )
+      );
+      return performance.now() - startedAt;
+    }
+
+    async function simulateLegacySourcePrepElapsedMs(inputCount: number, delayMs: number): Promise<number> {
+      const gate = new ConcurrencyGate(2);
+      const startedAt = performance.now();
+      await Promise.all(
+        Array.from({ length: inputCount }, async () =>
+          gate.run(async () => {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+          })
+        )
+      );
+      return performance.now() - startedAt;
+    }
+
+    const inputCount = 16;
+    const delayMs = 40;
+
+    await simulateLegacySourcePrepElapsedMs(inputCount, delayMs);
+    await simulateSourcePrepElapsedMs("service", inputCount, delayMs);
+
+    const legacySamples: number[] = [];
+    const widenedSamples: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      legacySamples.push(await simulateLegacySourcePrepElapsedMs(inputCount, delayMs));
+      widenedSamples.push(await simulateSourcePrepElapsedMs("service", inputCount, delayMs));
+    }
+
+    expect(average(widenedSamples)).toBeLessThan(average(legacySamples) * 0.75);
+    expect(secondaryCompactionSourceFetchConcurrency("service", inputCount)).toBe(4);
+    expect(secondaryCompactionSourceFetchConcurrency("requestId", inputCount)).toBe(2);
+  }, 30_000);
+
   test("streaming exact compaction is at least 25% faster than the previous eager-decode implementation", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-secondary-compact-perf-"));
     try {

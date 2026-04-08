@@ -92,32 +92,37 @@ Several important changes are already shipped:
 9. exact secondary compaction still deletes retired run objects synchronously,
    but those deletes are now executed with bounded parallelism instead of
    one-by-one serial waits
-10. lagging exact batches now skip companion rebuild entirely when the current
+10. low-cardinality exact compaction source staging now uses wider bounded
+    fetch concurrency than the high-cardinality path, so `level`, `service`,
+    `environment`, `method`, `status`, and `duration` no longer spend multiple
+    seconds serializing cache fills that do not need the same RSS guardrails as
+    `requestId`, `traceId`, `spanId`, or `path`
+11. lagging exact batches now skip companion rebuild entirely when the current
     companion generation is already present for that segment, so slow exact
     catch-up work no longer redoes `.col` / `.fts` payloads that are already
     current
-11. `evlog` exact L0 no longer treats every same-frontier exact field as one
+12. `evlog` exact L0 no longer treats every same-frontier exact field as one
     monolithic batch; the high-cardinality fields are now split into smaller
     deterministic sub-batches and only one owner batch is allowed to build the
     fresh companion payload for a segment
-12. keyword `.fts` postings now use a compact singleton representation until a
+13. keyword `.fts` postings now use a compact singleton representation until a
     term actually appears in more than one document, instead of allocating a
     one-element `doc_ids` array for every unique `requestId` / `traceId` /
     `spanId` / `path` term
-13. text `.fts` accumulation now aggregates token positions once per document
+14. text `.fts` accumulation now aggregates token positions once per document
     before touching the shared postings map, so `message` / `why` / `fix` /
     `error.message` no longer pay one global postings mutation per token
-14. `evlog` text analysis now caches analyzer output per repeated field value
+15. `evlog` text analysis now caches analyzer output per repeated field value
     during a build, so companion and unified search builders no longer retokenize
     identical log messages over and over inside one segment walk
-15. exact L0 now overlaps piggyback companion staging with exact-run upload and
+16. exact L0 now overlaps piggyback companion staging with exact-run upload and
     finalize work, and standalone companion no longer uploads the same artifact
     twice before it upserts metadata
-16. non-owner exact L0 batches now skip manifest publication unless they advance
+17. non-owner exact L0 batches now skip manifest publication unless they advance
     the stream-wide minimum exact frontier; fresh companion-owning batches still
     publish immediately so companion visibility does not wait for a separate
     background loop
-17. `evlog` companion ownership is now fixed to the preferred
+18. `evlog` companion ownership is now fixed to the preferred
     `method,status,duration` batch whenever that group is configured, so lagging
     exact frontiers do not become accidental companion owners
 
@@ -127,18 +132,20 @@ search backlog problem.
 
 The next big wins are now more targeted:
 
-1. **Exact secondary L0 must get materially faster.** It is now the main
-   steady-state indexing cost and the reason exact coverage is not catching up.
-2. **High-cardinality exact fields should adopt shard mode.** `requestId`,
-   `traceId`, and `spanId` still create oversized runs and compaction variance
-   even after the streaming merge rewrite.
-3. **Exact compaction finalization should keep getting faster without changing
-   the semantics.** The worker merge is now cheap enough that remaining
-   publish-side work for the new run group dominates compaction wall time even
-   after synchronous retired-run cleanup was sped up.
-4. **Unified search-build handoff should stay file-backed and ownership-aware.**
+1. **High-cardinality exact compaction should get comfortably below `5s`.**
+   The remaining outlier is now `requestId`, with recent live samples still
+   around `5.6s`.
+2. **High-cardinality exact fields should adopt shard mode or an equivalent
+   size-bounding strategy.** `requestId`, `traceId`, `spanId`, and `path`
+   still create oversized compaction artifacts and upload variance even after
+   the streaming merge rewrite.
+3. **Unified search-build handoff should stay file-backed and ownership-aware.**
    The coordinator must not retain large completed payloads in anonymous RSS,
    and each consumer must get explicit ownership of any temp files it uses.
+4. **Steady-state RSS still needs work even when timings are good.** The live
+   node can still sit above `1 GiB` anonymous RSS with no active builds, which
+   points to retained allocator pressure from large exact-run payload handling
+   rather than scheduler pressure.
 
 So the recommended architecture is now staged:
 
@@ -150,10 +157,11 @@ So the recommended architecture is now staged:
 - keep standalone companion builds as stale-hole repair only below the exact
   frontier
 - keep the shipped streaming exact compaction path
-- then optimize exact L0 throughput
-- then add shard mode for the worst high-cardinality exact fields
-- then continue reducing exact compaction finalization time without deferring
-  correctness-critical cleanup out of band
+- keep the shipped exact-L0 fast path, because live `evlog` exact-L0 jobs are
+  now all under `5s`
+- then reduce high-cardinality exact compaction wall time and artifact size
+- then add shard mode or another hard size-bound for the worst exact fields
+- then continue reducing retained anonymous RSS from exact-run source handling
 
 ## Objective
 
@@ -286,6 +294,22 @@ It is:
 
 1. make the remaining publish/finalize path cheaper
 2. then add shard mode for the worst fields
+
+The newest shipped source-staging change also split the source path by field
+shape:
+
+- low-cardinality exact compactions now stage sources with bounded concurrency
+  `4`
+- high-cardinality exact compactions still use bounded concurrency `2`
+
+That change is now visible in live telemetry:
+
+- low-cardinality fresh compactions such as `service`, `level`, `environment`,
+  `method`, `status`, `duration`, and `timestamp` are now about `1.6-2.6s`
+  with `source_prepare_ms` at `0-440ms`
+- the latest high-cardinality outliers are still `path`, `spanId`, and
+  `requestId`, where source preparation is no longer dominant and the remaining
+  time is mostly artifact upload/persist plus a small publish/finalize tail
 
 ### 4. File-backed outputs helped, but exact L0 and finalization still need work
 
@@ -1073,6 +1097,18 @@ Observed result so far:
   about `0.9-1.0s`
 - remaining compaction work is now mostly source preparation plus any residual
   publish-side work
+- low-cardinality exact compactions now stage sources with fetch concurrency
+  `4`, while high-cardinality fields remain at `2`
+- recent live low-cardinality compactions are now:
+  - `service`: about `1.8s`
+  - `level`: about `1.8-2.6s`
+  - `environment`: about `2.2-2.7s`
+  - `method`: about `1.6-2.3s`
+  - `status`: about `1.9-2.6s`
+  - `duration`: about `2.0-2.1s`
+- the remaining compaction outlier is now high-cardinality `requestId` at
+  about `5.6s`, with the time dominated by `artifact_persist_ms` and only a
+  small `finalize_ms` tail
 
 Remaining deliverables:
 
