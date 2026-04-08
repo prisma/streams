@@ -46,6 +46,7 @@ const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY = 2;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 4;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
+const SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY = 2;
 const EVLOG_EXACT_COMPANION_OWNER_GROUP = ["method", "status", "duration"] as const;
 const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "spanId", "path"]);
 const EVLOG_EXACT_BATCH_GROUPS = [
@@ -87,6 +88,12 @@ export function secondaryCompactionSourceFetchConcurrency(indexName: string, inp
     ? SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY
     : SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY;
   return Math.max(1, Math.min(cap, inputCount || 1));
+}
+
+export function secondaryCompactionFanout(indexName: string, configuredFanout: number): number {
+  if (configuredFanout <= 1) return configuredFanout;
+  if (!EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return configuredFanout;
+  return Math.max(2, Math.min(configuredFanout, SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY));
 }
 
 function binarySearch(values: bigint[], needle: bigint): number {
@@ -819,7 +826,8 @@ export class SecondaryIndexManager {
 
   private async maybeCompactRuns(stream: string, indexName: string): Promise<Result<void, SecondaryIndexBuildError>> {
     if (this.span <= 0) return Result.ok(undefined);
-    if (this.compactionFanout <= 1) return Result.ok(undefined);
+    const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
+    if (compactionFanout <= 1) return Result.ok(undefined);
     const key = `${stream}:${indexName}`;
     if (this.compacting.has(key)) return Result.ok(undefined);
     this.compacting.add(key);
@@ -844,6 +852,7 @@ export class SecondaryIndexManager {
           detail: {
             level_from: level,
             level_to: level + 1,
+            compaction_fanout: compactionFanout,
           },
         });
         const runRes = await this.buildCompactedRunResult(stream, indexName, level + 1, runs);
@@ -867,6 +876,7 @@ export class SecondaryIndexManager {
               source_cache_fills: runRes.value.sourceCacheFillCount,
               source_temp_spills: runRes.value.sourceTempSpillCount,
               source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
+              compaction_fanout: compactionFanout,
             },
           });
           return persistRes;
@@ -926,6 +936,7 @@ export class SecondaryIndexManager {
             source_cache_fills: runRes.value.sourceCacheFillCount,
             source_temp_spills: runRes.value.sourceTempSpillCount,
             source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
+            compaction_fanout: compactionFanout,
             metadata_finalize_ms: metadataFinalizeMs,
             publish_manifest_ms: publishManifestMs,
             retired_gc_ms: retiredGcMs,
@@ -1074,7 +1085,8 @@ export class SecondaryIndexManager {
 
   private findCompactionGroup(stream: string, indexName: string): { level: number; runs: SecondaryIndexRunRow[] } | null {
     const runs = this.db.listSecondaryIndexRuns(stream, indexName);
-    if (runs.length < this.compactionFanout) return null;
+    const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
+    if (runs.length < compactionFanout) return null;
     const byLevel = new Map<number, SecondaryIndexRunRow[]>();
     for (const run of runs) {
       const arr = byLevel.get(run.level) ?? [];
@@ -1083,12 +1095,12 @@ export class SecondaryIndexManager {
     }
     for (let level = 0; level <= this.maxLevel; level++) {
       const levelRuns = byLevel.get(level);
-      if (!levelRuns || levelRuns.length < this.compactionFanout) continue;
-      const span = this.levelSpan(level);
-      for (let i = 0; i + this.compactionFanout <= levelRuns.length; i++) {
+      if (!levelRuns || levelRuns.length < compactionFanout) continue;
+      const span = this.levelSpan(indexName, level);
+      for (let i = 0; i + compactionFanout <= levelRuns.length; i++) {
         const base = levelRuns[i].start_segment;
         let ok = true;
-        for (let j = 0; j < this.compactionFanout; j++) {
+        for (let j = 0; j < compactionFanout; j++) {
           const run = levelRuns[i + j];
           const expectStart = base + j * span;
           if (run.start_segment !== expectStart || run.end_segment !== expectStart + span - 1) {
@@ -1096,15 +1108,16 @@ export class SecondaryIndexManager {
             break;
           }
         }
-        if (ok) return { level, runs: levelRuns.slice(i, i + this.compactionFanout) };
+        if (ok) return { level, runs: levelRuns.slice(i, i + compactionFanout) };
       }
     }
     return null;
   }
 
-  private levelSpan(level: number): number {
+  private levelSpan(indexName: string, level: number): number {
+    const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
     let span = this.span;
-    for (let i = 0; i < level; i++) span *= this.compactionFanout;
+    for (let i = 0; i < level; i++) span *= compactionFanout;
     return span;
   }
 

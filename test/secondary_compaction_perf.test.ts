@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { Result } from "better-result";
 import { buildBinaryFuseResult } from "../src/index/binary_fuse";
 import { buildSecondaryCompactionPayloadResult } from "../src/index/secondary_compaction_build";
-import { secondaryCompactionSourceFetchConcurrency } from "../src/index/secondary_indexer";
+import { secondaryCompactionFanout, secondaryCompactionSourceFetchConcurrency } from "../src/index/secondary_indexer";
 import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS, type IndexRun } from "../src/index/run_format";
 import type { SecondaryCompactionBuildInput, SecondaryCompactionRunSource } from "../src/index/secondary_compaction_build";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../src/util/stream_paths";
@@ -297,6 +297,62 @@ describe("secondary compaction performance", () => {
     expect(average(widenedSamples)).toBeLessThan(average(legacySamples) * 0.75);
     expect(secondaryCompactionSourceFetchConcurrency("service", inputCount)).toBe(4);
     expect(secondaryCompactionSourceFetchConcurrency("requestId", inputCount)).toBe(2);
+    expect(secondaryCompactionFanout("service", 4)).toBe(4);
+    expect(secondaryCompactionFanout("requestId", 4)).toBe(2);
+  }, 30_000);
+
+  test("high-cardinality exact compaction fan-in 2 is at least 25% faster per job than fan-in 4", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-compact-fanout-perf-"));
+    try {
+      const stream = "evlog-1";
+      const indexName = "spanId";
+      const uniquePerRun = 220_000;
+      const inputs: SecondaryCompactionRunSource[] = [];
+      for (let runIndex = 0; runIndex < 4; runIndex += 1) {
+        const fingerprints: bigint[] = [];
+        const base = BigInt(runIndex * uniquePerRun + 1);
+        for (let i = 0; i < uniquePerRun; i += 1) fingerprints.push(base + BigInt(i));
+        inputs.push(writeMaskRun(root, stream, indexName, `fanout-run-${runIndex}`, runIndex, runIndex, fingerprints));
+      }
+
+      const fanout4Input: SecondaryCompactionBuildInput = {
+        stream,
+        indexName,
+        level: 1,
+        inputs,
+        outputDir: join(root, "fanout4"),
+      };
+      const fanout2Input: SecondaryCompactionBuildInput = {
+        stream,
+        indexName,
+        level: 1,
+        inputs: inputs.slice(0, 2),
+        outputDir: join(root, "fanout2"),
+      };
+
+      const warm4 = buildSecondaryCompactionPayloadResult(fanout4Input);
+      const warm2 = buildSecondaryCompactionPayloadResult(fanout2Input);
+      expect(Result.isOk(warm4)).toBe(true);
+      expect(Result.isOk(warm2)).toBe(true);
+
+      const fanout4Samples: number[] = [];
+      const fanout2Samples: number[] = [];
+      for (let sample = 0; sample < 3; sample += 1) {
+        const started4 = performance.now();
+        const res4 = buildSecondaryCompactionPayloadResult(fanout4Input);
+        fanout4Samples.push(performance.now() - started4);
+        expect(Result.isOk(res4)).toBe(true);
+
+        const started2 = performance.now();
+        const res2 = buildSecondaryCompactionPayloadResult(fanout2Input);
+        fanout2Samples.push(performance.now() - started2);
+        expect(Result.isOk(res2)).toBe(true);
+      }
+
+      expect(average(fanout2Samples)).toBeLessThan(average(fanout4Samples) * 0.75);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }, 30_000);
 
   test("streaming exact compaction is at least 25% faster than the previous eager-decode implementation", () => {

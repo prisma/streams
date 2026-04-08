@@ -1121,8 +1121,18 @@ Observed result so far:
 - live server RSS also dropped from about `1.16 GiB` current / `1.16 GiB`
   high-water before that change to about `464 MiB` current / `590 MiB`
   restart-window high-water after it
-- the remaining outliers are now cold high-cardinality compactions such as
-  `path`, `spanId`, and `traceId` when they still need several cache fills
+- the next follow-up bounded high-cardinality exact compaction fan-in to `2`
+  while leaving low-cardinality fields on the default fan-in
+- the local focused benchmark for sparse high-cardinality compaction is more
+  than `25%` faster per job with fan-in `2` than with fan-in `4`
+- on the live node, that fan-in change pulled the remaining cold
+  high-cardinality compactions under `5s` as well:
+  - `path`: about `4.0s -> 1.6s`
+  - `spanId`: about `4.3s -> 2.4s`
+  - `traceId`: about `4.0s -> 2.6s`
+- the same live restart also kept current RSS around `400-500 MiB` with
+  restart-window high-water around `560 MiB`, compared with the unhealthy
+  pre-restart state around `2.0 GiB`
 
 Remaining deliverables:
 
@@ -1188,17 +1198,17 @@ Observed result so far:
   - local perf proof: the same lagging batch is more than `25%` faster when it
     does not rebuild companion payloads
 - the current live `evlog` exact L0 band is now fully below `5s`
-- on the live node, the current RSS after these exact-L0 changes is back in
-  the `500-600 MiB` range with restart-window high-water around `600 MiB`,
-  which is far below the prior `3+ GiB` OOM shape
+- on the live node, the current RSS after these exact-L0 and compaction
+  changes is back in the `400-500 MiB` range with restart-window high-water in
+  the `450-560 MiB` range, which is far below the prior `3+ GiB` OOM shape
 
 Remaining goals:
 
 - exact coverage should stop falling behind the uploaded head
-- steady-state RSS should spend more time in the `300-500 MiB` range instead of
-  the current upper `500-600 MiB` range
-- exact compaction should be kept comfortably under `5s` even for the worst
-  `requestId` / `spanId` cases
+- steady-state RSS should spend more time in the low-to-mid `300 MiB` range
+  instead of the current `400-500 MiB` band
+- exact compaction should stay under `5s` without relying on a fresh restart or
+  a cold exact-run disk cache
 
 ### Phase 7: optional durable search-source sidecar
 
