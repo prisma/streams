@@ -7,6 +7,17 @@ import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 import { runEvlogIngester } from "../experiments/demo/evlog_ingester";
 
+class SlowDeleteR2Store extends MockR2Store {
+  constructor(private readonly deleteDelayMs: number) {
+    super();
+  }
+
+  override async delete(key: string): Promise<void> {
+    await sleep(this.deleteDelayMs);
+    await super.delete(key);
+  }
+}
+
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
   return {
@@ -252,6 +263,88 @@ describe("async index action observability", () => {
           expect(typeof detail.source_fetch_concurrency).toBe("number");
         }
       }
+    } finally {
+      app.deps.indexer?.stop();
+      await sleep(20);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("secondary compaction deletes retired runs with bounded parallelism", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-async-index-secondary-gc-"));
+    const cfg = makeConfig(root, {
+      segmentMaxBytes: 220,
+      segmentTargetRows: 1,
+      searchCompanionBuildBatchSegments: 1,
+    });
+    const app = createApp(cfg, new SlowDeleteR2Store(600));
+    const stream = "search-observe-gc";
+    try {
+      const createRes = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        })
+      );
+      expect([200, 201]).toContain(createRes.status);
+
+      const schemaRes = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            schema: {
+              type: "object",
+              additionalProperties: true,
+            },
+            search: {
+              primaryTimestampField: "time",
+              fields: {
+                time: {
+                  kind: "date",
+                  bindings: [{ version: 1, jsonPointer: "/time" }],
+                  column: true,
+                  exists: true,
+                  sortable: true,
+                },
+                cardinality100: {
+                  kind: "keyword",
+                  bindings: [{ version: 1, jsonPointer: "/cardinality100" }],
+                  normalizer: "lowercase_v1",
+                  exact: true,
+                  prefix: true,
+                  exists: true,
+                },
+              },
+            },
+          }),
+        })
+      );
+      expect(schemaRes.status).toBe(200);
+
+      for (let i = 0; i < 4; i += 1) {
+        const appendRes = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              time: `2026-04-07T10:00:0${i}.000Z`,
+              cardinality100: `bucket-${i % 2}`,
+              randomString: `message ${i} ${"x".repeat(200)}`,
+            }),
+          })
+        );
+        expect(appendRes.status).toBe(204);
+      }
+
+      const actions = await waitForActionKinds(app, stream, ["secondary_compaction_build"]);
+      const action = actions.find((row) => row.action_kind === "secondary_compaction_build" && row.status === "succeeded");
+      expect(action).toBeTruthy();
+      expectActionShape(action);
+      const detail = JSON.parse(action!.detail_json);
+      expect(typeof detail.retired_gc_ms).toBe("number");
+      expect(detail.retired_gc_ms).toBeLessThan(1000);
     } finally {
       app.deps.indexer?.stop();
       await sleep(20);

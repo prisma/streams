@@ -66,6 +66,9 @@ Several important changes are already shipped:
    `source_prepare_ms`, `worker_build_ms`, `artifact_persist_ms`, and
    `finalize_ms` timings so we can distinguish cold-source loading from actual
    merge CPU cost on the live node
+9. exact secondary compaction still deletes retired run objects synchronously,
+   but those deletes are now executed with bounded parallelism instead of
+   one-by-one serial waits
 
 Those changes removed the worst duplicate segment scan and took standalone
 companion off the fresh-segment critical path, but they did not solve the whole
@@ -73,9 +76,10 @@ search backlog problem.
 
 The next big wins are now more targeted:
 
-1. **Exact compaction finalization should leave the critical path.** The worker
-   merge is now cheap enough that main-thread finalization, especially retired
-   run cleanup and related publish-side work, dominates compaction wall time.
+1. **Exact compaction finalization should get faster without changing the
+   semantics.** The worker merge is now cheap enough that main-thread
+   finalization, especially retired run cleanup and related publish-side work,
+   dominates compaction wall time.
 2. **Exact secondary L0 must get materially faster.** It is now the main
    steady-state indexing cost and the reason exact coverage is not catching up.
 3. **High-cardinality exact fields should adopt shard mode.** `requestId`,
@@ -205,7 +209,7 @@ The newest phase timing makes the remaining problem even clearer:
 So the next step for exact compaction is no longer "fix the merge algorithm."
 It is:
 
-1. move non-critical finalization work out of the critical path
+1. make synchronous finalization cheaper, especially retired-run cleanup
 2. then add shard mode for the worst fields
 
 ### 4. File-backed outputs helped, but main-thread finalization is still too expensive
@@ -964,8 +968,8 @@ Remaining deliverables:
 
 Deliverables:
 
-- retire old exact runs in metadata first and delete the objects later in a
-  separate background GC path
+- delete retired exact-run objects with bounded parallelism instead of serial
+  waits
 - keep manifest publication on the critical path only when required for
   visibility
 - shard-aware exact runs for `requestId`, `traceId`, and `spanId`

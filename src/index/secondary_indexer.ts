@@ -44,6 +44,7 @@ import type { CompanionSectionKind } from "../search/companion_format";
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY = 2;
+const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
 type UnifiedCompanionSink = (
   stream: string,
   segmentIndex: number,
@@ -704,7 +705,7 @@ export class SecondaryIndexManager {
           return persistRes;
         }
         const sizeBytes = persistRes.value;
-        const finalizeStartedAt = Date.now();
+        const metadataFinalizeStartedAt = Date.now();
         this.db.insertSecondaryIndexRun({
           run_id: run.meta.runId,
           stream,
@@ -728,16 +729,22 @@ export class SecondaryIndexManager {
           this.db.nowMs()
         );
         this.onMetadataChanged?.(stream);
+        const metadataFinalizeMs = Date.now() - metadataFinalizeStartedAt;
+        const publishManifestStartedAt = Date.now();
+        let publishManifestMs = 0;
         if (this.publishManifest) {
           try {
             await this.publishManifest(stream);
           } catch {
             // ignore and retry later
           }
+          publishManifestMs = Date.now() - publishManifestStartedAt;
         }
+        const retiredGcStartedAt = Date.now();
         await this.gcRetiredRuns(stream, indexName);
+        const retiredGcMs = Date.now() - retiredGcStartedAt;
         this.compactionQueue.add(stream);
-        const finalizeMs = Date.now() - finalizeStartedAt;
+        const finalizeMs = Date.now() - metadataFinalizeStartedAt;
         action.succeed({
           outputCount: 1,
           outputSizeBytes: BigInt(sizeBytes),
@@ -752,6 +759,9 @@ export class SecondaryIndexManager {
             source_cache_fills: runRes.value.sourceCacheFillCount,
             source_temp_spills: runRes.value.sourceTempSpillCount,
             source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
+            metadata_finalize_ms: metadataFinalizeMs,
+            publish_manifest_ms: publishManifestMs,
+            retired_gc_ms: retiredGcMs,
           },
         });
         return Result.ok(undefined);
@@ -1118,15 +1128,20 @@ export class SecondaryIndexManager {
       if (expiredByGen || expiredByTTL) toDelete.push(run);
     }
     if (toDelete.length === 0) return;
-    for (const run of toDelete) {
-      try {
-        await this.os.delete(run.object_key);
-      } catch {
-        // ignore deletion errors
-      }
-      this.runCache.remove(run.object_key);
-      this.runDiskCache?.remove(run.object_key);
-    }
+    const gate = new ConcurrencyGate(Math.max(1, SECONDARY_RETIRED_GC_DELETE_CONCURRENCY));
+    await Promise.all(
+      toDelete.map((run) =>
+        gate.run(async () => {
+          try {
+            await this.os.delete(run.object_key);
+          } catch {
+            // ignore deletion errors
+          }
+          this.runCache.remove(run.object_key);
+          this.runDiskCache?.remove(run.object_key);
+        })
+      )
+    );
     this.db.deleteSecondaryIndexRuns(toDelete.map((run) => run.run_id));
   }
 
