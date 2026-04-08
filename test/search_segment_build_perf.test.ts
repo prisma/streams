@@ -278,6 +278,67 @@ describe("search segment build perf", () => {
   );
 
   test(
+    "skipping companion rebuild on the lagging level,service,environment batch is at least 25% faster than rebuilding it",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-segment-skip-owner-companion-"));
+      try {
+        const registry = buildEvlogDefaultRegistry("evlog-1");
+        const segment = writeEvlogSegment(root, 48_000);
+        const plan = buildDesiredSearchCompanionPlan(registry);
+        const exactIndexes = getConfiguredSecondaryIndexes(registry).map((index, indexOrdinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(indexOrdinal + 1),
+        }));
+        const laggingBatch = exactIndexes.filter((entry) => ["level", "service", "environment"].includes(entry.index.name));
+
+        const buildWithCompanion = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: laggingBatch,
+            plan,
+            planGeneration: 1,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        const buildWithoutCompanion = (): void => {
+          const res = buildSearchSegmentResult({
+            stream: segment.stream,
+            registry,
+            exactIndexes: laggingBatch,
+            plan: null,
+            planGeneration: null,
+            segment,
+          });
+          if (Result.isError(res)) throw new Error(res.error.message);
+        };
+
+        buildWithCompanion();
+        buildWithoutCompanion();
+
+        const withCompanionSamples: number[] = [];
+        const withoutCompanionSamples: number[] = [];
+        for (let i = 0; i < 4; i += 1) {
+          let startedAt = performance.now();
+          buildWithCompanion();
+          withCompanionSamples.push(performance.now() - startedAt);
+
+          startedAt = performance.now();
+          buildWithoutCompanion();
+          withoutCompanionSamples.push(performance.now() - startedAt);
+        }
+
+        expect(average(withoutCompanionSamples)).toBeLessThan(average(withCompanionSamples) * 0.75);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120_000
+  );
+
+  test(
     "splitting the fresh high-cardinality evlog exact batch into deterministic sub-batches cuts peak job time by at least 25%",
     () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-segment-split-evlog-batch-"));

@@ -418,17 +418,18 @@ export class SecondaryIndexManager {
     stream: string,
     segmentIndex: number,
     companionPlanGeneration: number | null,
+    configuredIndexes: SecondaryIndexField[],
     peerIndexes: SecondaryIndexField[],
     batchIndexes: SecondaryIndexField[]
   ): boolean {
     if (!this.unifiedCompanionSink || companionPlanGeneration == null) return false;
     const currentCompanion = this.db.getSearchSegmentCompanion(stream, segmentIndex);
     if (currentCompanion && currentCompanion.plan_generation === companionPlanGeneration) return false;
-    const ownerBatch = peerIndexes.filter((configuredIndex) =>
+    const configuredOwnerBatch = configuredIndexes.filter((configuredIndex) =>
       (EVLOG_EXACT_COMPANION_OWNER_GROUP as readonly string[]).includes(configuredIndex.name)
     );
-    if (ownerBatch.length > 0) {
-      return ownerBatch.some((configuredIndex) => batchIndexes.some((entry) => entry.name === configuredIndex.name));
+    if (configuredOwnerBatch.length > 0) {
+      return configuredOwnerBatch.some((configuredIndex) => batchIndexes.some((entry) => entry.name === configuredIndex.name));
     }
     const fallbackOwnerName = peerIndexes.map((configuredIndex) => configuredIndex.name).sort((a, b) => a.localeCompare(b))[0];
     return batchIndexes.some((entry) => entry.name === fallbackOwnerName);
@@ -549,6 +550,7 @@ export class SecondaryIndexManager {
           stream,
           start,
           currentCompanionPlan?.generation ?? null,
+          configured,
           peerIndexes,
           batchIndexes
         );
