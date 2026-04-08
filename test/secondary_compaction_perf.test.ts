@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -11,6 +11,8 @@ import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_P
 import type { SecondaryCompactionBuildInput, SecondaryCompactionRunSource } from "../src/index/secondary_compaction_build";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 import { ConcurrencyGate } from "../src/concurrency_gate";
+import { SegmentDiskCache } from "../src/segment/cache";
+import { MockR2Store } from "../src/objectstore/mock_r2";
 
 function writeMaskRun(root: string, stream: string, indexName: string, runId: string, startSegment: number, endSegment: number, fingerprints: bigint[]): SecondaryCompactionRunSource {
   const masks = new Array(fingerprints.length).fill(1);
@@ -201,6 +203,57 @@ function average(values: number[]): number {
 }
 
 describe("secondary compaction performance", () => {
+  test("file-backed exact compaction source staging is at least 25% faster than the byte-buffer fallback", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-source-stage-"));
+    try {
+      const payload = new Uint8Array(32 * 1024 * 1024);
+      for (let i = 0; i < payload.byteLength; i += 1) payload[i] = i % 251;
+      const spillDir = join(root, "mock-r2");
+      const objectKey = "streams/0123456789abcdef0123456789abcdef/secondary-index/evlog-1/requestId/run.irn";
+      const store = new MockR2Store({ spillDir, maxInMemoryBytes: 1 });
+      await store.put(objectKey, payload);
+
+      async function stageLegacyOnce(sample: number): Promise<number> {
+        const cacheDir = join(root, `legacy-cache-${sample}`);
+        mkdirSync(cacheDir, { recursive: true });
+        const cache = new SegmentDiskCache(cacheDir, payload.byteLength * 2, 1);
+        const startedAt = performance.now();
+        const bytes = await store.get(objectKey);
+        if (!bytes) throw new Error("missing legacy bytes");
+        if (!cache.put(objectKey, bytes)) throw new Error("legacy cache put failed");
+        return performance.now() - startedAt;
+      }
+
+      async function stageFileBackedOnce(sample: number): Promise<number> {
+        const cacheDir = join(root, `file-cache-${sample}`);
+        const tempDir = join(root, `temps-${sample}`);
+        mkdirSync(cacheDir, { recursive: true });
+        mkdirSync(tempDir, { recursive: true });
+        const cache = new SegmentDiskCache(cacheDir, payload.byteLength * 2, 1);
+        const tempPath = join(tempDir, "run.irn");
+        const startedAt = performance.now();
+        const fileRes = await store.getFile!(objectKey, tempPath);
+        if (!fileRes) throw new Error("missing staged file");
+        if (!cache.putFromLocal(objectKey, tempPath, fileRes.size)) throw new Error("file-backed cache put failed");
+        return performance.now() - startedAt;
+      }
+
+      await stageLegacyOnce(-1);
+      await stageFileBackedOnce(-1);
+
+      const legacySamples: number[] = [];
+      const fileSamples: number[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        legacySamples.push(await stageLegacyOnce(i));
+        fileSamples.push(await stageFileBackedOnce(i));
+      }
+
+      expect(average(fileSamples)).toBeLessThan(average(legacySamples) * 0.75);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test("low-cardinality exact compaction source staging is at least 25% faster with the wider fetch concurrency", async () => {
     async function simulateSourcePrepElapsedMs(indexName: string, inputCount: number, delayMs: number): Promise<number> {
       const gate = new ConcurrencyGate(secondaryCompactionSourceFetchConcurrency(indexName, inputCount));

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { createReadStream } from "node:fs";
-import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
+import { createReadStream, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import type { GetFileResult, GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 export type R2Config = {
@@ -127,6 +128,22 @@ export class R2ObjectStore implements ObjectStore {
           ? file
           : file.slice(opts.range.start, opts.range.end == null ? undefined : opts.range.end + 1);
       return new Uint8Array(await body.arrayBuffer());
+    } catch (err) {
+      if (isMissingObjectError(err)) return null;
+      this.wrapError("GET", key, err);
+    }
+  }
+
+  async getFile(key: string, path: string, opts: GetOptions = {}): Promise<GetFileResult | null> {
+    try {
+      const file = this.file(key);
+      const body =
+        opts.range == null
+          ? file
+          : file.slice(opts.range.start, opts.range.end == null ? undefined : opts.range.end + 1);
+      mkdirSync(dirname(path), { recursive: true });
+      const size = await Bun.write(path, body);
+      return { size };
     } catch (err) {
       if (isMissingObjectError(err)) return null;
       this.wrapError("GET", key, err);

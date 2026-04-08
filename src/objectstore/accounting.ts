@@ -1,5 +1,7 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import type { SqliteDurableStore } from "../db/db";
-import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
+import type { GetFileResult, GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 
 type ClassifiedRequest = {
   streamHash: string;
@@ -67,6 +69,22 @@ export class AccountingObjectStore implements ObjectStore {
     const res = await this.inner.get(key, opts);
     const classified = classifyKey(key);
     if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "get", res?.byteLength ?? 0);
+    return res;
+  }
+
+  async getFile(key: string, path: string, opts?: GetOptions): Promise<GetFileResult | null> {
+    if (!this.inner.getFile) {
+      const bytes = await this.inner.get(key, opts);
+      if (!bytes) return null;
+      mkdirSync(dirname(path), { recursive: true });
+      await Bun.write(path, bytes);
+      const classified = classifyKey(key);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "get", bytes.byteLength);
+      return { size: bytes.byteLength };
+    }
+    const res = await this.inner.getFile(key, path, opts);
+    const classified = classifyKey(key);
+    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "get", res?.size ?? 0);
     return res;
   }
 

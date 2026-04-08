@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, readSync, copyFileSync, createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
-import type { GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
+import type { GetFileResult, GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 export type MockR2Faults = {
@@ -225,6 +225,57 @@ export class MockR2Store implements ObjectStore {
     }
 
     return out;
+  }
+
+  async getFile(key: string, path: string, opts: GetOptions = {}): Promise<GetFileResult | null> {
+    this.getCount++;
+    this.maybeFail(this.getCount, this.faults.failGetEvery, `MockR2: injected GET failure for ${key}`);
+    this.maybeTimeout(this.getCount, this.faults.timeoutGetEvery, `MockR2: injected GET timeout for ${key}`);
+    await sleep(this.faults.getDelayMs ?? 0);
+
+    const entry = this.data.get(key);
+    if (!entry) return null;
+
+    const range = opts.range;
+    const total = entry.size;
+    const start = range?.start ?? 0;
+    const end = range?.end ?? total - 1;
+    if (start >= total) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, new Uint8Array(0));
+      return { size: 0 };
+    }
+    const clampEnd = Math.min(end, total - 1);
+    const length = Math.max(0, clampEnd - start + 1);
+
+    mkdirSync(dirname(path), { recursive: true });
+    if (entry.path && start === 0 && length === total) {
+      copyFileSync(entry.path, path);
+      return { size: total };
+    }
+
+    let out: Uint8Array;
+    if (entry.bytes) {
+      out = entry.bytes.slice(start, start + length);
+    } else if (entry.path) {
+      const fd = openSync(entry.path, "r");
+      try {
+        const buf = new Uint8Array(length);
+        readSync(fd, buf, 0, length, start);
+        out = buf;
+      } finally {
+        closeSync(fd);
+      }
+    } else {
+      return null;
+    }
+
+    if (this.faults.partialGetEvery && this.getCount % this.faults.partialGetEvery === 0) {
+      out = out.slice(0, Math.max(0, Math.floor(out.byteLength / 2)));
+    }
+
+    writeFileSync(path, out);
+    return { size: out.byteLength };
   }
 
   async head(key: string): Promise<{ etag: string; size: number } | null> {

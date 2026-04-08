@@ -97,32 +97,36 @@ Several important changes are already shipped:
     `environment`, `method`, `status`, and `duration` no longer spend multiple
     seconds serializing cache fills that do not need the same RSS guardrails as
     `requestId`, `traceId`, `spanId`, or `path`
-11. lagging exact batches now skip companion rebuild entirely when the current
+11. uncached exact-compaction inputs now download straight to local files when
+    the object store supports it, so source staging no longer has to allocate a
+    large `Uint8Array` just to write the same bytes back out to the exact-run
+    disk cache or a temp spill file
+12. lagging exact batches now skip companion rebuild entirely when the current
     companion generation is already present for that segment, so slow exact
     catch-up work no longer redoes `.col` / `.fts` payloads that are already
     current
-12. `evlog` exact L0 no longer treats every same-frontier exact field as one
+13. `evlog` exact L0 no longer treats every same-frontier exact field as one
     monolithic batch; the high-cardinality fields are now split into smaller
     deterministic sub-batches and only one owner batch is allowed to build the
     fresh companion payload for a segment
-13. keyword `.fts` postings now use a compact singleton representation until a
+14. keyword `.fts` postings now use a compact singleton representation until a
     term actually appears in more than one document, instead of allocating a
     one-element `doc_ids` array for every unique `requestId` / `traceId` /
     `spanId` / `path` term
-14. text `.fts` accumulation now aggregates token positions once per document
+15. text `.fts` accumulation now aggregates token positions once per document
     before touching the shared postings map, so `message` / `why` / `fix` /
     `error.message` no longer pay one global postings mutation per token
-15. `evlog` text analysis now caches analyzer output per repeated field value
+16. `evlog` text analysis now caches analyzer output per repeated field value
     during a build, so companion and unified search builders no longer retokenize
     identical log messages over and over inside one segment walk
-16. exact L0 now overlaps piggyback companion staging with exact-run upload and
+17. exact L0 now overlaps piggyback companion staging with exact-run upload and
     finalize work, and standalone companion no longer uploads the same artifact
     twice before it upserts metadata
-17. non-owner exact L0 batches now skip manifest publication unless they advance
+18. non-owner exact L0 batches now skip manifest publication unless they advance
     the stream-wide minimum exact frontier; fresh companion-owning batches still
     publish immediately so companion visibility does not wait for a separate
     background loop
-18. `evlog` companion ownership is now fixed to the preferred
+19. `evlog` companion ownership is now fixed to the preferred
     `method,status,duration` batch whenever that group is configured, so lagging
     exact frontiers do not become accidental companion owners
 
@@ -142,10 +146,13 @@ The next big wins are now more targeted:
 3. **Unified search-build handoff should stay file-backed and ownership-aware.**
    The coordinator must not retain large completed payloads in anonymous RSS,
    and each consumer must get explicit ownership of any temp files it uses.
-4. **Steady-state RSS still needs work even when timings are good.** The live
-   node can still sit above `1 GiB` anonymous RSS with no active builds, which
-   points to retained allocator pressure from large exact-run payload handling
-   rather than scheduler pressure.
+4. **Cold high-cardinality exact compaction is now the next outlier.** Warm
+   `requestId` compaction is back under `5s`, but cold `path` / `spanId` /
+   `traceId` compactions with many cache fills can still exceed the target.
+5. **Steady-state RSS is now healthy again, but it must stay that way.** The
+   direct-to-file source path dropped the live server from roughly `1.16 GiB`
+   current RSS to roughly `464 MiB` after restart, with a fresh high-water
+   around `590 MiB`.
 
 So the recommended architecture is now staged:
 
@@ -301,6 +308,9 @@ shape:
 - low-cardinality exact compactions now stage sources with bounded concurrency
   `4`
 - high-cardinality exact compactions still use bounded concurrency `2`
+- uncached exact-compaction inputs now download directly to local files when
+  the object store supports it, and cache admission happens by rename instead
+  of `get()` + `Uint8Array` + `writeFile`
 
 That change is now visible in live telemetry:
 
@@ -1106,9 +1116,13 @@ Observed result so far:
   - `method`: about `1.6-2.3s`
   - `status`: about `1.9-2.6s`
   - `duration`: about `2.0-2.1s`
-- the remaining compaction outlier is now high-cardinality `requestId` at
-  about `5.6s`, with the time dominated by `artifact_persist_ms` and only a
-  small `finalize_ms` tail
+- warm `requestId` compaction improved from about `5.6s` to about `4.1s` after
+  direct-to-file source downloads shipped, which is about a `27%` reduction
+- live server RSS also dropped from about `1.16 GiB` current / `1.16 GiB`
+  high-water before that change to about `464 MiB` current / `590 MiB`
+  restart-window high-water after it
+- the remaining outliers are now cold high-cardinality compactions such as
+  `path`, `spanId`, and `traceId` when they still need several cache fills
 
 Remaining deliverables:
 

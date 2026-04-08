@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { unlinkSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { SecondaryIndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
@@ -1251,7 +1251,47 @@ export class SecondaryIndexManager {
         location: "cache_hit",
       });
     }
+    const tempOutputDir = `${this.cfg.rootDir}/tmp/secondary-index-sources`;
+    const tempLocalPath = `${tempOutputDir}/secondary-source-${meta.run_id}-${Date.now()}-${randomBytes(4).toString("hex")}.irn`;
     try {
+      if (this.os.getFile) {
+        mkdirSync(tempOutputDir, { recursive: true });
+        const fileRes = await retry(
+          async () => {
+            const result = await this.os.getFile!(meta.object_key, tempLocalPath);
+            if (!result) throw dsError(`missing secondary index run ${meta.object_key}`);
+            return result;
+          },
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+        const sizeBytes = fileRes.size > 0 ? fileRes.size : meta.size_bytes;
+        if (this.runDiskCache?.putFromLocal(meta.object_key, tempLocalPath, sizeBytes)) {
+          return Result.ok({
+            source: {
+              runId: meta.run_id,
+              startSegment: meta.start_segment,
+              endSegment: meta.end_segment,
+              localPath: this.runDiskCache.getPath(meta.object_key),
+            },
+            location: "cache_fill",
+          });
+        }
+        return Result.ok({
+          source: {
+            runId: meta.run_id,
+            startSegment: meta.start_segment,
+            endSegment: meta.end_segment,
+            localPath: tempLocalPath,
+            deleteAfterUse: true,
+          },
+          location: "temp_spill",
+        });
+      }
       const bytes = await retry(
         async () => {
           const data = await this.os.get(meta.object_key);
@@ -1293,6 +1333,11 @@ export class SecondaryIndexManager {
         location: "temp_spill",
       });
     } catch (e: unknown) {
+      try {
+        unlinkSync(tempLocalPath);
+      } catch {
+        // ignore temp cleanup failures
+      }
       return invalidIndexBuild(String((e as any)?.message ?? e));
     }
   }
