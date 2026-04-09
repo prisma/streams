@@ -518,8 +518,16 @@ without rebuilding the already-published search catalogs locally first.
 
 ## Runtime Model
 
-All indexing is currently asynchronous **in-process** work, but the heavy
-segment-backed build compute is no longer performed on the main Bun thread.
+All indexing is currently asynchronous work coordinated by the server process,
+but the heavy segment-backed build compute is no longer performed on the main
+Bun thread or in long-lived worker threads.
+
+The parent/subprocess handoff now uses an explicit JSON wire format with
+tagged `bigint` and `Uint8Array` values. The earlier `node:v8` wire format was
+removed after repeated local RSS soak tests showed that repeated
+`v8.serialize` / `v8.deserialize` traffic retained parent-process anonymous RSS
+across many exact/search jobs even when the heavy build compute itself was
+already process-isolated.
 
 The full server starts one `GlobalIndexManager`, which owns:
 

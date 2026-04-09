@@ -1,7 +1,16 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SqliteDurableStore } from "../db/db";
-import type { GetFileResult, GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
+import type {
+  GetFileResult,
+  GetOptions,
+  ObjectStore,
+  PutFileNoEtagOptions,
+  PutFileOptions,
+  PutNoEtagOptions,
+  PutOptions,
+  PutResult,
+} from "./interface";
 
 type ClassifiedRequest = {
   streamHash: string;
@@ -63,6 +72,37 @@ export class AccountingObjectStore implements ObjectStore {
     const classified = classifyKey(key);
     if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
     return res;
+  }
+
+  async putNoEtag(key: string, data: Uint8Array, opts?: PutNoEtagOptions): Promise<number> {
+    if (!this.inner.putNoEtag) {
+      await this.inner.put(key, data, { contentType: opts?.contentType, contentLength: opts?.contentLength });
+      const classified = classifyKey(key);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", data.byteLength);
+      return data.byteLength;
+    }
+    const size = await this.inner.putNoEtag(key, data, opts);
+    const classified = classifyKey(key);
+    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
+    return size;
+  }
+
+  async putFileNoEtag(key: string, path: string, size: number, opts?: PutFileNoEtagOptions): Promise<number> {
+    if (!this.inner.putFileNoEtag) {
+      if (this.inner.putFile) {
+        await this.inner.putFile(key, path, size, { contentType: opts?.contentType });
+      } else {
+        const bytes = await Bun.file(path).bytes();
+        await this.inner.put(key, bytes, { contentType: opts?.contentType, contentLength: size });
+      }
+      const classified = classifyKey(key);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
+      return size;
+    }
+    const written = await this.inner.putFileNoEtag(key, path, size, opts);
+    const classified = classifyKey(key);
+    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", written);
+    return written;
   }
 
   async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {

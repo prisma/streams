@@ -120,10 +120,18 @@ Indexing note:
   daemon or external indexing service.
 - The main process now owns one `GlobalIndexManager`, one shared
   `IndexBuildWorkerPool`, and one shared `IndexSegmentLocalityManager`.
-- Heavy segment-backed build compute is dispatched to generic worker jobs:
+- Heavy segment-backed build compute is dispatched through the generic build
+  pool, but each dispatched job now runs in its own short-lived Bun
+  subprocess so the long-lived server process does not retain the job's native
+  allocator RSS after completion:
   - combined routing-key + routing-key lexicon L0 build
   - exact-secondary L0 build
   - bundled companion per-segment build
+- The parent/subprocess handoff no longer uses `node:v8` serialization. The
+  current build pool writes explicit JSON with tagged `bigint` and
+  `Uint8Array` values because repeated local RSS soak tests showed that the
+  old `v8.serialize` / `v8.deserialize` path itself retained anonymous RSS in
+  the long-lived server process across many async exact/search jobs.
 - Routing, lexicon, exact, and companion family adapters still own
   family-specific backlog discovery and compaction rules, but they no longer
   own separate timers or dedicated worker pools.

@@ -2,16 +2,21 @@ import { copyFileSync } from "node:fs";
 import { dirname, extname, join, basename } from "node:path";
 import { Result } from "better-result";
 import type { IndexBuildWorkerError } from "../index/index_build_job";
+import type { IndexBuildJobTelemetry } from "../index/index_build_telemetry";
 import { IndexBuildWorkerPool } from "../index/index_build_worker_pool";
 import type { SearchSegmentBuildInput, SearchSegmentBuildOutput } from "./search_segment_build";
 
 export type SearchSegmentSharedBuildResult = {
   output: SearchSegmentBuildOutput;
   cacheStatus: "miss" | "shared_inflight";
+  jobTelemetry: IndexBuildJobTelemetry | null;
 };
 
 export class SearchSegmentBuildCoordinator {
-  private readonly inflight = new Map<string, Promise<Result<SearchSegmentBuildOutput, IndexBuildWorkerError>>>();
+  private readonly inflight = new Map<
+    string,
+    Promise<Result<{ output: SearchSegmentBuildOutput; jobTelemetry: IndexBuildJobTelemetry | null }, IndexBuildWorkerError>>
+  >();
 
   constructor(private readonly workers: IndexBuildWorkerPool) {}
 
@@ -24,8 +29,9 @@ export class SearchSegmentBuildCoordinator {
       const joined = await inflight;
       if (Result.isError(joined)) return joined;
       return Result.ok({
-        output: this.cloneSharedOutput(joined.value),
+        output: this.cloneSharedOutput(joined.value.output),
         cacheStatus: "shared_inflight",
+        jobTelemetry: joined.value.jobTelemetry,
       });
     }
     const promise = this.buildFreshResult(input);
@@ -34,24 +40,30 @@ export class SearchSegmentBuildCoordinator {
       const built = await promise;
       if (Result.isError(built)) return built;
       return Result.ok({
-        output: built.value,
+        output: built.value.output,
         cacheStatus: "miss",
+        jobTelemetry: built.value.jobTelemetry,
       });
     } finally {
       this.inflight.delete(key);
     }
   }
 
-  private async buildFreshResult(input: SearchSegmentBuildInput): Promise<Result<SearchSegmentBuildOutput, IndexBuildWorkerError>> {
+  private async buildFreshResult(
+    input: SearchSegmentBuildInput
+  ): Promise<Result<{ output: SearchSegmentBuildOutput; jobTelemetry: IndexBuildJobTelemetry | null }, IndexBuildWorkerError>> {
     const res = await this.workers.buildResult({
       kind: "search_segment_build",
       input,
     });
     if (Result.isError(res)) return res;
-    if (res.value.kind !== "search_segment_build") {
+    if (res.value.output.kind !== "search_segment_build") {
       return Result.err({ kind: "worker_pool_failure", message: "unexpected worker result kind" });
     }
-    return Result.ok(res.value.output);
+    return Result.ok({
+      output: res.value.output.output,
+      jobTelemetry: res.value.telemetry,
+    });
   }
 
   private cacheKey(input: SearchSegmentBuildInput): string {
@@ -61,6 +73,7 @@ export class SearchSegmentBuildCoordinator {
       start_offset: input.segment.startOffset.toString(),
       local_path: input.segment.localPath,
       output_dir: input.outputDir ?? null,
+      include_companion: input.includeCompanion !== false,
       plan_hash: input.plan ? JSON.stringify(input.plan.summary) : null,
       exact_indexes: input.exactIndexes
         .map((entry) => ({

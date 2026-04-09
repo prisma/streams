@@ -1,20 +1,26 @@
 import { Result } from "better-result";
 import type { IndexBuildWorkerError } from "./index_build_job";
+import type { IndexBuildJobTelemetry } from "./index_build_telemetry";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { RoutingLexiconL0BuildInput, RoutingLexiconL0BuildOutput } from "./routing_lexicon_l0_build";
 
 export type RoutingLexiconSharedBuildResult = {
   output: RoutingLexiconL0BuildOutput;
   cacheStatus: "miss" | "shared_inflight" | "cache_hit";
+  jobTelemetry: IndexBuildJobTelemetry | null;
 };
 
 type CacheEntry = {
   result: RoutingLexiconL0BuildOutput;
   expiresAt: number;
+  jobTelemetry: IndexBuildJobTelemetry | null;
 };
 
 export class RoutingLexiconL0BuildCoordinator {
-  private readonly inflight = new Map<string, Promise<Result<RoutingLexiconL0BuildOutput, IndexBuildWorkerError>>>();
+  private readonly inflight = new Map<
+    string,
+    Promise<Result<{ output: RoutingLexiconL0BuildOutput; jobTelemetry: IndexBuildJobTelemetry | null }, IndexBuildWorkerError>>
+  >();
   private readonly completed = new Map<string, CacheEntry>();
 
   constructor(
@@ -33,6 +39,7 @@ export class RoutingLexiconL0BuildCoordinator {
       return Result.ok({
         output: cached.result,
         cacheStatus: "cache_hit",
+        jobTelemetry: cached.jobTelemetry,
       });
     }
 
@@ -41,8 +48,9 @@ export class RoutingLexiconL0BuildCoordinator {
       const joined = await inflight;
       if (Result.isError(joined)) return joined;
       return Result.ok({
-        output: joined.value,
+        output: joined.value.output,
         cacheStatus: "shared_inflight",
+        jobTelemetry: joined.value.jobTelemetry,
       });
     }
 
@@ -52,13 +60,15 @@ export class RoutingLexiconL0BuildCoordinator {
       const built = await promise;
       if (Result.isError(built)) return built;
       this.completed.set(key, {
-        result: built.value,
+        result: built.value.output,
         expiresAt: Date.now() + this.cacheTtlMs,
+        jobTelemetry: built.value.jobTelemetry,
       });
       this.pruneCompleted();
       return Result.ok({
-        output: built.value,
+        output: built.value.output,
         cacheStatus: "miss",
+        jobTelemetry: built.value.jobTelemetry,
       });
     } finally {
       this.inflight.delete(key);
@@ -67,16 +77,19 @@ export class RoutingLexiconL0BuildCoordinator {
 
   private async buildFreshResult(
     input: RoutingLexiconL0BuildInput
-  ): Promise<Result<RoutingLexiconL0BuildOutput, IndexBuildWorkerError>> {
+  ): Promise<Result<{ output: RoutingLexiconL0BuildOutput; jobTelemetry: IndexBuildJobTelemetry | null }, IndexBuildWorkerError>> {
     const res = await this.workers.buildResult({
       kind: "routing_lexicon_l0_build",
       input,
     });
     if (Result.isError(res)) return res;
-    if (res.value.kind !== "routing_lexicon_l0_build") {
+    if (res.value.output.kind !== "routing_lexicon_l0_build") {
       return Result.err({ kind: "worker_pool_failure", message: "unexpected worker result kind" });
     }
-    return Result.ok(res.value.output);
+    return Result.ok({
+      output: res.value.output.output,
+      jobTelemetry: res.value.telemetry,
+    });
   }
 
   private cacheKey(input: RoutingLexiconL0BuildInput): string {

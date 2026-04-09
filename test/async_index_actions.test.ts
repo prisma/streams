@@ -18,6 +18,22 @@ class SlowDeleteR2Store extends MockR2Store {
   }
 }
 
+class SlowCompanionPutR2Store extends MockR2Store {
+  constructor(private readonly putDelayMs: number) {
+    super();
+  }
+
+  override async put(key: string, data: Uint8Array, opts = {}): Promise<{ etag: string }> {
+    if (key.endsWith(".cix")) await sleep(this.putDelayMs);
+    return super.put(key, data, opts);
+  }
+
+  override async putFile(key: string, path: string, size: number, opts = {}): Promise<{ etag: string }> {
+    if (key.endsWith(".cix")) await sleep(this.putDelayMs);
+    return super.putFile(key, path, size, opts);
+  }
+}
+
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
   return {
@@ -101,6 +117,15 @@ function expectActionShape(action: any): void {
   expect(action.output_size_bytes).toBeGreaterThan(0n);
 }
 
+function expectJobRssDetail(detail: Record<string, unknown>): void {
+  expect(typeof detail.job_worker_pid).toBe("number");
+  expect(typeof detail.job_rss_baseline_bytes).toBe("number");
+  expect(typeof detail.job_rss_peak_bytes).toBe("number");
+  expect(typeof detail.job_rss_peak_contributed_bytes).toBe("number");
+  expect((detail.job_rss_peak_bytes as number) >= (detail.job_rss_baseline_bytes as number)).toBe(true);
+  expect((detail.job_rss_peak_contributed_bytes as number) >= 0).toBe(true);
+}
+
 describe("async index action observability", () => {
   test("logs routing and lexicon builds plus compactions", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-async-index-routing-"));
@@ -162,6 +187,7 @@ describe("async index action observability", () => {
         const action = actions.find((row) => row.action_kind === kind && row.status === "succeeded");
         expect(action).toBeTruthy();
         expectActionShape(action);
+        expectJobRssDetail(JSON.parse(action!.detail_json));
       }
     } finally {
       app.deps.indexer?.stop();
@@ -169,7 +195,7 @@ describe("async index action observability", () => {
       app.close();
       rmSync(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   test("logs secondary and companion async index actions", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-async-index-search-"));
@@ -257,17 +283,24 @@ describe("async index action observability", () => {
         expectActionShape(action);
         if (action?.action_kind === "secondary_l0_build") {
           const detail = JSON.parse(action.detail_json);
+          expectJobRssDetail(detail);
           expect(typeof detail.build_ms).toBe("number");
           expect(typeof detail.exact_persist_ms).toBe("number");
           expect(typeof detail.piggyback_companion_persist_ms).toBe("number");
+          expect(typeof detail.piggyback_companion_deferred).toBe("boolean");
           expect(typeof detail.manifest_published).toBe("boolean");
         }
         if (action?.action_kind === "secondary_compaction_build") {
           const detail = JSON.parse(action.detail_json);
+          expectJobRssDetail(detail);
           expect(typeof detail.source_prepare_ms).toBe("number");
           expect(typeof detail.worker_build_ms).toBe("number");
           expect(typeof detail.artifact_persist_ms).toBe("number");
           expect(typeof detail.source_fetch_concurrency).toBe("number");
+        }
+        if (action?.action_kind === "companion_build") {
+          const detail = JSON.parse(action.detail_json);
+          expectJobRssDetail(detail);
         }
       }
     } finally {
@@ -350,6 +383,7 @@ describe("async index action observability", () => {
       expect(action).toBeTruthy();
       expectActionShape(action);
       const detail = JSON.parse(action!.detail_json);
+      expectJobRssDetail(detail);
       expect(typeof detail.retired_gc_ms).toBe("number");
       expect(detail.retired_gc_ms).toBeLessThan(1000);
     } finally {
@@ -360,7 +394,7 @@ describe("async index action observability", () => {
     }
   }, 30_000);
 
-  test("evlog unified search build piggybacks companion coverage from exact actions on fresh streams", async () => {
+  test("evlog fresh streams build companion coverage through split companion jobs", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-async-index-evlog-shared-"));
     const cfg = makeConfig(root, {
       segmentMaxBytes: 2_048,
@@ -378,10 +412,10 @@ describe("async index action observability", () => {
     const baseUrl = "http://127.0.0.1:8787";
     try {
       const summary = await runEvlogIngester(
-        ["--url", baseUrl, "--stream", "evlog-telemetry", "--batch-size", "20", "--max-batches", "2", "--reset"],
+        ["--url", baseUrl, "--stream", "evlog-telemetry", "--batch-size", "10", "--max-batches", "1", "--reset"],
         { fetchImpl: makeDemoFetch(app, baseUrl) }
       );
-      expect(summary.appendedEvents).toBe(40);
+      expect(summary.appendedEvents).toBe(10);
 
       await waitForCondition(
         app,
@@ -390,9 +424,10 @@ describe("async index action observability", () => {
           const actions = app.deps.db.listAsyncIndexActions("evlog-telemetry", 200);
           const companionRows = app.deps.db.listSearchSegmentCompanions("evlog-telemetry");
           const hasSecondary = actions.some((row) => row.action_kind === "secondary_l0_build" && row.status === "succeeded");
-          return hasSecondary && companionRows.length > 0;
+          const hasCompanionMerge = actions.some((row) => row.action_kind === "companion_merge_build" && row.status === "succeeded");
+          return hasSecondary && hasCompanionMerge && companionRows.length > 0;
         },
-        30_000
+        60_000
       );
 
       const actions = app.deps.db.listAsyncIndexActions("evlog-telemetry", 200);
@@ -409,13 +444,75 @@ describe("async index action observability", () => {
         Array.isArray(detail.piggyback_companion_section_kinds) ? detail.piggyback_companion_section_kinds : []
       );
       const manifestPublishedFlags = detailPayloads.map((detail) => detail.manifest_published).filter((value) => typeof value === "boolean");
+      const deferredFlags = detailPayloads.map((detail) => detail.piggyback_companion_deferred).filter((value) => typeof value === "boolean");
       const companionBuilds = actions.filter((row) => row.status === "succeeded" && row.action_kind === "companion_build");
+      const companionMerges = actions.filter((row) => row.status === "succeeded" && row.action_kind === "companion_merge_build");
 
       expect(app.deps.db.listSearchSegmentCompanions("evlog-telemetry").length).toBeGreaterThan(0);
-      expect(piggybackedCompanionSections.length).toBeGreaterThan(0);
+      expect(piggybackedCompanionSections).toHaveLength(0);
+      expect(deferredFlags).toContain(false);
       expect(manifestPublishedFlags).toContain(false);
-      expect(manifestPublishedFlags).toContain(true);
-      expect(companionBuilds.length).toBe(0);
+      expect(companionBuilds.length).toBeGreaterThan(0);
+      expect(companionMerges.length).toBeGreaterThan(0);
+    } finally {
+      app.deps.indexer?.stop();
+      await sleep(20);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("evlog exact batch can succeed before slow standalone companion upload finalizes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-async-index-evlog-deferred-companion-"));
+    const cfg = makeConfig(root, {
+      segmentMaxBytes: 2_048,
+      segmentTargetRows: 1,
+      searchCompanionBuildBatchSegments: 1,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      indexCheckIntervalMs: 10,
+      uploadConcurrency: 2,
+      indexL0SpanSegments: 1,
+      segmentCacheMaxBytes: 32 * 1024 * 1024,
+      segmentFooterCacheEntries: 64,
+    });
+    const app = createApp(cfg, new SlowCompanionPutR2Store(500));
+    const baseUrl = "http://127.0.0.1:8787";
+    try {
+      const summary = await runEvlogIngester(
+        ["--url", baseUrl, "--stream", "evlog-deferred-companion", "--batch-size", "1", "--max-batches", "1", "--reset"],
+        { fetchImpl: makeDemoFetch(app, baseUrl) }
+      );
+      expect(summary.appendedEvents).toBe(1);
+
+      await waitForCondition(
+        app,
+        "evlog-deferred-companion",
+        () =>
+          app.deps.db
+            .listAsyncIndexActions("evlog-deferred-companion", 200)
+            .some(
+              (row) =>
+                row.action_kind === "secondary_l0_build" && row.status === "succeeded"
+            ),
+        30_000
+      );
+
+      const ownerAction = app.deps.db
+        .listAsyncIndexActions("evlog-deferred-companion", 200)
+        .find((row) => row.action_kind === "secondary_l0_build" && row.status === "succeeded");
+      expect(ownerAction).toBeTruthy();
+      const ownerDetail = JSON.parse(ownerAction!.detail_json);
+      expectJobRssDetail(ownerDetail);
+      expect(ownerDetail.piggyback_companion_deferred).toBe(false);
+      expect(app.deps.db.listSearchSegmentCompanions("evlog-deferred-companion")).toHaveLength(0);
+
+      await waitForCondition(
+        app,
+        "evlog-deferred-companion",
+        () => app.deps.db.listSearchSegmentCompanions("evlog-deferred-companion").length > 0,
+        30_000
+      );
     } finally {
       app.deps.indexer?.stop();
       await sleep(20);

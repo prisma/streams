@@ -12,6 +12,14 @@ export type EncodedDocSet = {
   docIds: number[];
 };
 
+export function encodeAllDocSet(): EncodedDocSet {
+  return {
+    codec: DOCSET_CODEC_ALL,
+    payload: new Uint8Array(),
+    docIds: [],
+  };
+}
+
 export function encodeDocSet(docCount: number, docIds: number[]): EncodedDocSet {
   const sortedDocIds = [...docIds].sort((a, b) => a - b);
   if (sortedDocIds.length === docCount) {

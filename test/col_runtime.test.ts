@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Result } from "better-result";
 import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
-import { decodeColSegmentCompanionResult, encodeColSegmentCompanion, type ColSectionInput } from "../src/search/col_format";
+import {
+  decodeColSegmentCompanionResult,
+  encodeColSegmentCompanion,
+  encodeColSegmentCompanionChunks,
+  mergeEncodedColSectionChunksResult,
+  type ColSectionInput,
+} from "../src/search/col_format";
 import { filterDocIdsByColumnResult } from "../src/search/col_runtime";
 
 function buildCompanion() {
@@ -76,5 +82,88 @@ describe(".col runtime", () => {
     expect(Result.isOk(okHas)).toBe(true);
     if (Result.isError(okHas)) return;
     expect(Array.from(okHas.value).sort((a, b) => a - b)).toEqual([0, 2]);
+  });
+
+  test("merges interleaved doc-sharded column payloads without changing values", () => {
+    const plan = buildDesiredSearchCompanionPlan({
+      apiVersion: "durable.streams/schema-registry/v1",
+      schema: "s",
+      currentVersion: 1,
+      boundaries: [],
+      schemas: {},
+      lenses: {},
+      search: {
+        primaryTimestampField: "timestamp",
+        fields: {
+          timestamp: { kind: "date", bindings: [{ version: 1, jsonPointer: "/timestamp" }], column: true },
+        },
+      },
+    });
+    const left: ColSectionInput = {
+      doc_count: 4,
+      primary_timestamp_field: "timestamp",
+      fields: {
+        timestamp: {
+          kind: "date",
+          doc_ids: [0, 2],
+          values: [1000n, 3000n],
+          min: 1000n,
+          max: 3000n,
+        },
+      },
+    };
+    const right: ColSectionInput = {
+      doc_count: 4,
+      primary_timestamp_field: "timestamp",
+      fields: {
+        timestamp: {
+          kind: "date",
+          doc_ids: [1, 3],
+          values: [2000n, 4000n],
+          min: 2000n,
+          max: 4000n,
+        },
+      },
+    };
+
+    const merged = mergeEncodedColSectionChunksResult([
+      encodeColSegmentCompanionChunks(left, plan).chunks.reduce((acc, chunk) => {
+        const next = new Uint8Array(acc.byteLength + chunk.byteLength);
+        next.set(acc, 0);
+        next.set(chunk, acc.byteLength);
+        return next;
+      }, new Uint8Array()),
+      encodeColSegmentCompanionChunks(right, plan).chunks.reduce((acc, chunk) => {
+        const next = new Uint8Array(acc.byteLength + chunk.byteLength);
+        next.set(acc, 0);
+        next.set(chunk, acc.byteLength);
+        return next;
+      }, new Uint8Array()),
+    ]);
+    expect(Result.isOk(merged)).toBe(true);
+    if (Result.isError(merged)) return;
+
+    const encoded = merged.value.chunks.reduce((acc, chunk) => {
+      const next = new Uint8Array(acc.byteLength + chunk.byteLength);
+      next.set(acc, 0);
+      next.set(chunk, acc.byteLength);
+      return next;
+    }, new Uint8Array());
+    const decoded = decodeColSegmentCompanionResult(encoded, plan);
+    expect(Result.isOk(decoded)).toBe(true);
+    if (Result.isError(decoded)) return;
+
+    const field = decoded.value.getField("timestamp");
+    expect(field).not.toBeNull();
+    if (!field) return;
+    expect(field.docIds()).toEqual([0, 1, 2, 3]);
+    const values: Array<[number, bigint | number | boolean]> = [];
+    field.forEachValue((docId, value) => values.push([docId, value]));
+    expect(values).toEqual([
+      [0, 1000n],
+      [1, 2000n],
+      [2, 3000n],
+      [3, 4000n],
+    ]);
   });
 });

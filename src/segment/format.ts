@@ -1,3 +1,4 @@
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { Result } from "better-result";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { Bloom256, bloom256MaskForKey } from "../util/bloom256";
@@ -366,6 +367,296 @@ export function* iterateBlockRecordsResult(
       yield Result.ok({ blockOffset: off, recordIndex, appendNs, routingKey, payload });
     }
     off += totalLen;
+  }
+}
+
+function readExactFileRangeResult(
+  fd: number,
+  position: number,
+  length: number,
+  truncatedMessage: string
+): Result<Uint8Array, SegmentFormatError> {
+  const out = new Uint8Array(length);
+  let readOffset = 0;
+  while (readOffset < length) {
+    const bytesRead = readSync(fd, out, readOffset, length - readOffset, position + readOffset);
+    if (bytesRead <= 0) return invalidSegment(truncatedMessage);
+    readOffset += bytesRead;
+  }
+  return Result.ok(out);
+}
+
+function parseFooterFromFileResult(
+  fd: number,
+  fileSize: number
+): Result<ParsedFooter, SegmentFormatError> {
+  if (fileSize < FOOTER_TRAILER_BYTES) {
+    return Result.ok({ footer: null, footerStart: fileSize });
+  }
+  const trailerRes = readExactFileRangeResult(fd, fileSize - FOOTER_TRAILER_BYTES, FOOTER_TRAILER_BYTES, "truncated segment footer");
+  if (Result.isError(trailerRes)) return trailerRes;
+  const trailer = trailerRes.value;
+  const tailMagic = String.fromCharCode(trailer[4]!, trailer[5]!, trailer[6]!, trailer[7]!);
+  if (tailMagic !== FOOTER_MAGIC) {
+    return Result.ok({ footer: null, footerStart: fileSize });
+  }
+  const footerLen = readU32BE(trailer, 0);
+  if (footerLen <= 0 || footerLen + FOOTER_TRAILER_BYTES > fileSize) {
+    return invalidSegment("invalid segment footer length");
+  }
+  const footerStart = fileSize - FOOTER_TRAILER_BYTES - footerLen;
+  const footerBytesRes = readExactFileRangeResult(fd, footerStart, footerLen, "truncated segment footer");
+  if (Result.isError(footerBytesRes)) return footerBytesRes;
+  const footer = parseFooterBytes(footerBytesRes.value);
+  if (!footer) return invalidSegment("invalid segment footer");
+  return Result.ok({ footer, footerStart });
+}
+
+export function* iterateBlocksFromFileResult(
+  localPath: string
+): Generator<Result<IterateBlockEntry, SegmentFormatError>, void, void> {
+  let fd: number | null = null;
+  try {
+    fd = openSync(localPath, "r");
+    const fileSize = fstatSync(fd).size;
+    const parsedRes = parseFooterFromFileResult(fd, fileSize);
+    if (Result.isError(parsedRes)) {
+      yield parsedRes;
+      return;
+    }
+    const footer = parsedRes.value.footer;
+    if (footer) {
+      for (const entry of footer.blocks) {
+        const totalLen = DSB3_HEADER_BYTES + entry.compressedLen;
+        const blockBytesRes = readExactFileRangeResult(fd, entry.blockOffset, totalLen, "truncated segment (block payload)");
+        if (Result.isError(blockBytesRes)) {
+          yield blockBytesRes;
+          return;
+        }
+        const decodedRes = decodeBlockResult(blockBytesRes.value);
+        if (Result.isError(decodedRes)) {
+          yield decodedRes;
+          return;
+        }
+        yield Result.ok({ blockOffset: entry.blockOffset, blockBytes: blockBytesRes.value, decoded: decodedRes.value });
+      }
+      return;
+    }
+    let off = 0;
+    while (off < fileSize) {
+      const headerRes = readExactFileRangeResult(fd, off, DSB3_HEADER_BYTES, "truncated segment (block header)");
+      if (Result.isError(headerRes)) {
+        yield headerRes;
+        return;
+      }
+      const parsedHeaderRes = parseBlockHeaderResult(headerRes.value);
+      if (Result.isError(parsedHeaderRes)) {
+        yield parsedHeaderRes;
+        return;
+      }
+      const totalLen = DSB3_HEADER_BYTES + parsedHeaderRes.value.compressedLen;
+      const blockBytesRes = readExactFileRangeResult(fd, off, totalLen, "truncated segment (block payload)");
+      if (Result.isError(blockBytesRes)) {
+        yield blockBytesRes;
+        return;
+      }
+      const decodedRes = decodeBlockResult(blockBytesRes.value);
+      if (Result.isError(decodedRes)) {
+        yield decodedRes;
+        return;
+      }
+      yield Result.ok({ blockOffset: off, blockBytes: blockBytesRes.value, decoded: decodedRes.value });
+      off += totalLen;
+    }
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore close failures
+      }
+    }
+  }
+}
+
+export function* iterateBlockRecordsFromFileResult(
+  localPath: string
+): Generator<Result<IterateBlockRecordEntry, SegmentFormatError>, void, void> {
+  let fd: number | null = null;
+  try {
+    fd = openSync(localPath, "r");
+    const fileSize = fstatSync(fd).size;
+    const parsedRes = parseFooterFromFileResult(fd, fileSize);
+    if (Result.isError(parsedRes)) {
+      yield parsedRes;
+      return;
+    }
+    const footer = parsedRes.value.footer;
+    const limit = parsedRes.value.footerStart;
+    const offsets = footer
+      ? footer.blocks.map((entry) => ({
+          blockOffset: entry.blockOffset,
+          totalLen: DSB3_HEADER_BYTES + entry.compressedLen,
+        }))
+      : null;
+
+    const iterateBlockRange = function* (
+      blockOffset: number,
+      totalLen: number
+    ): Generator<Result<IterateBlockRecordEntry, SegmentFormatError>, void, void> {
+      const blockBytesRes = readExactFileRangeResult(fd!, blockOffset, totalLen, "truncated segment (block payload)");
+      if (Result.isError(blockBytesRes)) {
+        yield blockBytesRes;
+        return;
+      }
+      const headerRes = parseBlockHeaderResult(blockBytesRes.value.subarray(0, DSB3_HEADER_BYTES));
+      if (Result.isError(headerRes)) {
+        yield headerRes;
+        return;
+      }
+      const uncompressedRes = decompressBlockPayloadResult(blockBytesRes.value, headerRes.value);
+      if (Result.isError(uncompressedRes)) {
+        yield uncompressedRes;
+        return;
+      }
+      const uncompressed = uncompressedRes.value;
+      let recOff = 0;
+      for (let recordIndex = 0; recordIndex < headerRes.value.recordCount; recordIndex += 1) {
+        if (recOff + 8 + 4 > uncompressed.byteLength) {
+          yield invalidSegment("truncated record");
+          return;
+        }
+        const appendNs = readU64BE(uncompressed, recOff);
+        recOff += 8;
+        const keyLen = readU32BE(uncompressed, recOff);
+        recOff += 4;
+        if (recOff + keyLen + 4 > uncompressed.byteLength) {
+          yield invalidSegment("truncated key");
+          return;
+        }
+        const routingKey = uncompressed.subarray(recOff, recOff + keyLen);
+        recOff += keyLen;
+        const dataLen = readU32BE(uncompressed, recOff);
+        recOff += 4;
+        if (recOff + dataLen > uncompressed.byteLength) {
+          yield invalidSegment("truncated payload");
+          return;
+        }
+        const payload = uncompressed.subarray(recOff, recOff + dataLen);
+        recOff += dataLen;
+        yield Result.ok({ blockOffset, recordIndex, appendNs, routingKey, payload });
+      }
+    };
+
+    if (offsets) {
+      for (const entry of offsets) {
+        yield* iterateBlockRange(entry.blockOffset, entry.totalLen);
+      }
+      return;
+    }
+
+    let off = 0;
+    while (off < limit) {
+      const headerBytesRes = readExactFileRangeResult(fd, off, DSB3_HEADER_BYTES, "truncated segment (block header)");
+      if (Result.isError(headerBytesRes)) {
+        yield headerBytesRes;
+        return;
+      }
+      const headerRes = parseBlockHeaderResult(headerBytesRes.value);
+      if (Result.isError(headerRes)) {
+        yield headerRes;
+        return;
+      }
+      const totalLen = DSB3_HEADER_BYTES + headerRes.value.compressedLen;
+      yield* iterateBlockRange(off, totalLen);
+      off += totalLen;
+    }
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore close failures
+      }
+    }
+  }
+}
+
+export function visitBlockRecordPayloadsFromFileResult<TError>(
+  localPath: string,
+  visit: (payloadBytes: Uint8Array, payloadStart: number, payloadEnd: number) => Result<void, TError> | void
+): Result<void, SegmentFormatError | TError> {
+  let fd: number | null = null;
+  try {
+    fd = openSync(localPath, "r");
+    const fileSize = fstatSync(fd).size;
+    const parsedRes = parseFooterFromFileResult(fd, fileSize);
+    if (Result.isError(parsedRes)) return parsedRes;
+    const footer = parsedRes.value.footer;
+    const limit = parsedRes.value.footerStart;
+    const offsets = footer
+      ? footer.blocks.map((entry) => ({
+          blockOffset: entry.blockOffset,
+          totalLen: DSB3_HEADER_BYTES + entry.compressedLen,
+        }))
+      : null;
+
+    const visitBlockRange = (blockOffset: number, totalLen: number): Result<void, SegmentFormatError | TError> => {
+      const blockBytesRes = readExactFileRangeResult(fd!, blockOffset, totalLen, "truncated segment (block payload)");
+      if (Result.isError(blockBytesRes)) return blockBytesRes;
+      const headerRes = parseBlockHeaderResult(blockBytesRes.value.subarray(0, DSB3_HEADER_BYTES));
+      if (Result.isError(headerRes)) return headerRes;
+      const uncompressedRes = decompressBlockPayloadResult(blockBytesRes.value, headerRes.value);
+      if (Result.isError(uncompressedRes)) return uncompressedRes;
+      const uncompressed = uncompressedRes.value;
+      let recOff = 0;
+      for (let recordIndex = 0; recordIndex < headerRes.value.recordCount; recordIndex += 1) {
+        if (recOff + 8 + 4 > uncompressed.byteLength) return invalidSegment("truncated record");
+        recOff += 8;
+        const keyLen = readU32BE(uncompressed, recOff);
+        recOff += 4;
+        if (recOff + keyLen + 4 > uncompressed.byteLength) return invalidSegment("truncated key");
+        recOff += keyLen;
+        const dataLen = readU32BE(uncompressed, recOff);
+        recOff += 4;
+        if (recOff + dataLen > uncompressed.byteLength) return invalidSegment("truncated payload");
+        const payloadStart = recOff;
+        const payloadEnd = recOff + dataLen;
+        const visitRes = visit(uncompressed, payloadStart, payloadEnd);
+        if (visitRes && Result.isError(visitRes)) return visitRes;
+        recOff = payloadEnd;
+      }
+      return Result.ok(undefined);
+    };
+
+    if (offsets) {
+      for (const entry of offsets) {
+        const visitRes = visitBlockRange(entry.blockOffset, entry.totalLen);
+        if (Result.isError(visitRes)) return visitRes;
+      }
+      return Result.ok(undefined);
+    }
+
+    let off = 0;
+    while (off < limit) {
+      const headerBytesRes = readExactFileRangeResult(fd, off, DSB3_HEADER_BYTES, "truncated segment (block header)");
+      if (Result.isError(headerBytesRes)) return headerBytesRes;
+      const headerRes = parseBlockHeaderResult(headerBytesRes.value);
+      if (Result.isError(headerRes)) return headerRes;
+      const totalLen = DSB3_HEADER_BYTES + headerRes.value.compressedLen;
+      const visitRes = visitBlockRange(off, totalLen);
+      if (Result.isError(visitRes)) return visitRes;
+      off += totalLen;
+    }
+    return Result.ok(undefined);
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore close failures
+      }
+    }
   }
 }
 

@@ -93,14 +93,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
         asyncIndexGate,
         foregroundActivity,
         indexSegmentLocality,
-        indexBuildWorkers,
-        searchSegmentBuilds
-      );
-      companionIndexer.setUnifiedExactRunSink((stream, registry, segmentIndex, runs) =>
-        secondaryIndexer.persistUnifiedExactRunsFromSearchBuild(stream, registry, segmentIndex, runs)
-      );
-      secondaryIndexer.setUnifiedCompanionSink((stream, segmentIndex, planGeneration, output) =>
-        companionIndexer.persistUnifiedCompanionOutput(stream, segmentIndex, planGeneration, output)
+        indexBuildWorkers
       );
       const lexiconIndexer = new LexiconIndexManager(
         config,

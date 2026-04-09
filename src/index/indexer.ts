@@ -25,7 +25,7 @@ import type { RoutingKeyLexiconListResult } from "./lexicon_indexer";
 import { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { RoutingCompactionRunSource } from "./routing_compaction_build";
-import { beginAsyncIndexAction } from "./async_index_actions";
+import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "./async_index_actions";
 import { RoutingLexiconL0BuildCoordinator } from "./routing_lexicon_l0_build_coordinator";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
@@ -438,6 +438,7 @@ export class IndexManager {
           action.fail(runPayloadRes.error.message);
           return invalidIndexBuild(runPayloadRes.error.message);
         }
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runPayloadRes.value.jobTelemetry);
         const run = runPayloadRes.value.output.routing;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunPayloadResult(run.meta, run.payload, stream);
@@ -447,6 +448,7 @@ export class IndexManager {
               output_record_count: run.meta.recordCount,
               output_filter_len: run.meta.filterLen,
               shared_build_cache_status: runPayloadRes.value.cacheStatus,
+              ...buildTelemetryDetail,
             },
           });
           return persistRes;
@@ -488,6 +490,7 @@ export class IndexManager {
             output_record_count: run.meta.recordCount,
             output_filter_len: run.meta.filterLen,
             shared_build_cache_status: runPayloadRes.value.cacheStatus,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -530,7 +533,8 @@ export class IndexManager {
           action.fail(runRes.error.message);
           return runRes;
         }
-        const run = runRes.value;
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runRes.value.jobTelemetry);
+        const run = runRes.value.run;
         const elapsedNs = BigInt(Date.now() - t0) * 1_000_000n;
         const persistRes = await this.persistRunResult(run, stream);
         if (Result.isError(persistRes)) {
@@ -538,6 +542,7 @@ export class IndexManager {
             detail: {
               output_record_count: run.meta.recordCount,
               output_filter_len: run.meta.filterLen,
+              ...buildTelemetryDetail,
             },
           });
           return persistRes;
@@ -592,6 +597,7 @@ export class IndexManager {
           detail: {
             output_record_count: run.meta.recordCount,
             output_filter_len: run.meta.filterLen,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -641,7 +647,7 @@ export class IndexManager {
     stream: string,
     level: number,
     inputs: IndexRunRow[]
-  ): Promise<Result<IndexRun, IndexBuildError>> {
+  ): Promise<Result<{ run: IndexRun; jobTelemetry: import("./index_build_telemetry").IndexBuildJobTelemetry | null }, IndexBuildError>> {
     const sourcesRes = await this.prepareCompactionSourcesResult(inputs);
     if (Result.isError(sourcesRes)) return sourcesRes;
     const buildRes = await this.buildWorkers.buildResult({
@@ -653,18 +659,18 @@ export class IndexManager {
       },
     });
     if (Result.isError(buildRes)) return invalidIndexBuild(buildRes.error.message);
-    if (buildRes.value.kind !== "routing_compaction_build") return invalidIndexBuild("unexpected worker result kind");
-    const runRes = decodeIndexRunResult(buildRes.value.output.payload);
+    if (buildRes.value.output.kind !== "routing_compaction_build") return invalidIndexBuild("unexpected worker result kind");
+    const runRes = decodeIndexRunResult(buildRes.value.output.output.payload);
     if (Result.isError(runRes)) return invalidIndexBuild(runRes.error.message);
     const run = runRes.value;
-    run.meta.runId = buildRes.value.output.meta.runId;
-    run.meta.level = buildRes.value.output.meta.level;
-    run.meta.startSegment = buildRes.value.output.meta.startSegment;
-    run.meta.endSegment = buildRes.value.output.meta.endSegment;
-    run.meta.objectKey = buildRes.value.output.meta.objectKey;
-    run.meta.filterLen = buildRes.value.output.meta.filterLen;
-    run.meta.recordCount = buildRes.value.output.meta.recordCount;
-    return Result.ok(run);
+    run.meta.runId = buildRes.value.output.output.meta.runId;
+    run.meta.level = buildRes.value.output.output.meta.level;
+    run.meta.startSegment = buildRes.value.output.output.meta.startSegment;
+    run.meta.endSegment = buildRes.value.output.output.meta.endSegment;
+    run.meta.objectKey = buildRes.value.output.output.meta.objectKey;
+    run.meta.filterLen = buildRes.value.output.output.meta.filterLen;
+    run.meta.recordCount = buildRes.value.output.output.meta.recordCount;
+    return Result.ok({ run, jobTelemetry: buildRes.value.telemetry });
   }
 
   private async prepareCompactionSourcesResult(

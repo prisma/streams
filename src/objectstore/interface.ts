@@ -5,10 +5,14 @@ export type GetRange = { start: number; end?: number }; // end is inclusive; omi
 export type GetOptions = { range?: GetRange };
 export type PutOptions = { contentType?: string; contentLength?: number; signal?: AbortSignal };
 export type PutFileOptions = { contentType?: string; signal?: AbortSignal };
+export type PutNoEtagOptions = { contentType?: string; contentLength?: number };
+export type PutFileNoEtagOptions = { contentType?: string };
 
 export interface ObjectStore {
   put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult>;
   putFile?(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult>;
+  putNoEtag?(key: string, data: Uint8Array, opts?: PutNoEtagOptions): Promise<number>;
+  putFileNoEtag?(key: string, path: string, size: number, opts?: PutFileNoEtagOptions): Promise<number>;
   get(key: string, opts?: GetOptions): Promise<Uint8Array | null>;
   getFile?(key: string, path: string, opts?: GetOptions): Promise<GetFileResult | null>;
   head(key: string): Promise<{ etag: string; size: number } | null>;

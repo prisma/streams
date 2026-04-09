@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type {
@@ -21,7 +21,7 @@ import type { ForegroundActivityTracker } from "../foreground_activity";
 import { retry, retryAbortable } from "../util/retry";
 import { yieldToEventLoop } from "../util/yield";
 import { searchCompanionObjectKey, streamHash16Hex } from "../util/stream_paths";
-import { beginAsyncIndexAction } from "../index/async_index_actions";
+import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "../index/async_index_actions";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
   PSCIX2_MAX_TOC_BYTES,
@@ -71,17 +71,17 @@ import type { CompanionSectionLookupStats } from "../index/indexer";
 import type { IndexSegmentLocalityManager } from "../index/segment_locality";
 import { IndexBuildWorkerPool } from "../index/index_build_worker_pool";
 import { schemaVersionForOffset } from "../schema/read_json";
-import { SearchSegmentBuildCoordinator } from "./search_segment_build_coordinator";
-import { collectUnifiedSearchBuildExactIndexes, type SearchSegmentBuildOutput } from "./search_segment_build";
+import {
+  type CompanionBuildOutput,
+  type CompanionBuildPartialPlan,
+  type CompanionScratchSegment,
+  buildCompanionPartialPlans,
+  buildEvlogScratchSegmentsResult,
+} from "./companion_build";
+import { type PartialCompanionOutput } from "./companion_merge";
 import { getConfiguredSecondaryIndexes, hashSecondaryIndexField } from "../index/secondary_schema";
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
-type UnifiedExactRunSink = (
-  stream: string,
-  registry: SchemaRegistry,
-  segmentIndex: number,
-  runs: SearchSegmentBuildOutput["exactRuns"]
-) => Promise<Result<{ persistedIndexNames: string[] } | null, { kind: string; message: string }>>;
 type CompanionPersistOutput =
   | {
       storage: "bytes";
@@ -110,8 +110,16 @@ type PreparedCompanionPersist = {
   primaryTimestampMaxMs: bigint | null;
 };
 
+const COMPANION_MERGE_BATCH_PARTIAL_LIMIT = 8;
+const STANDALONE_COMPANION_MAX_EXACT_LAG_SEGMENTS = 32;
+
 function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionBuildError> {
   return Result.err({ kind: "invalid_companion_build", message });
+}
+
+function companionScratchKey(plan: SearchCompanionPlan): string {
+  const families = `${plan.families.col ? "col" : "nocol"}:${plan.families.fts ? "fts" : "nofts"}`;
+  return `${families}:${plan.fields.map((field) => field.name).sort().join(",")}`;
 }
 
 type ColumnFieldBuilder = {
@@ -243,8 +251,6 @@ export class SearchCompanionManager {
   private readonly segmentLocality?: IndexSegmentLocalityManager;
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
-  private readonly searchSegmentBuilds?: SearchSegmentBuildCoordinator;
-  private unifiedExactRunSink?: UnifiedExactRunSink;
 
   constructor(
     private readonly cfg: Config,
@@ -259,8 +265,7 @@ export class SearchCompanionManager {
     asyncGate?: ConcurrencyGate,
     foregroundActivity?: ForegroundActivityTracker,
     segmentLocality?: IndexSegmentLocalityManager,
-    buildWorkers?: IndexBuildWorkerPool,
-    searchSegmentBuilds?: SearchSegmentBuildCoordinator
+    buildWorkers?: IndexBuildWorkerPool
   ) {
     this.yieldBlocks = Math.max(1, cfg.searchCompanionYieldBlocks);
     this.segmentCache = segmentCache;
@@ -271,7 +276,6 @@ export class SearchCompanionManager {
     this.ownsBuildWorkers = !buildWorkers;
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
-    this.searchSegmentBuilds = searchSegmentBuilds;
     this.fileCache = new CompanionFileCache(
       `${cfg.rootDir}/cache/companions`,
       cfg.searchCompanionFileCacheMaxBytes,
@@ -296,10 +300,6 @@ export class SearchCompanionManager {
     this.runningBuildTick = false;
     if (this.ownsBuildWorkers) this.buildWorkers.stop();
     this.fileCache.clearMapped();
-  }
-
-  setUnifiedExactRunSink(sink: UnifiedExactRunSink): void {
-    this.unifiedExactRunSink = sink;
   }
 
   async persistUnifiedCompanionOutput(
@@ -336,7 +336,6 @@ export class SearchCompanionManager {
   }
 
   private companionUnifiedSearchExactFrontier(stream: string, registry: SchemaRegistry, plan: SearchCompanionPlan): number | null {
-    if (!this.searchSegmentBuilds) return null;
     if (registry.search?.profile !== "evlog") return null;
     if (plan.families.agg || plan.families.mblk) return null;
     const configuredExactIndexes = getConfiguredSecondaryIndexes(registry);
@@ -462,6 +461,313 @@ export class SearchCompanionManager {
     } catch (e: unknown) {
       return invalidCompanionBuild(String((e as any)?.message ?? e));
     }
+  }
+
+  private companionOutputSizeBytes(output: CompanionBuildOutput | CompanionPersistOutput): bigint {
+    return BigInt(output.storage === "file" ? output.sizeBytes : output.payload.byteLength);
+  }
+
+  private cleanupPartialOutputs(partials: PartialCompanionOutput[]): void {
+    for (const partial of partials) {
+      try {
+        unlinkSync(partial.localPath);
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+  }
+
+  private cleanupScratchSegments(scratchSegments: CompanionScratchSegment[]): void {
+    for (const scratch of scratchSegments) {
+      try {
+        unlinkSync(scratch.localPath);
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+  }
+
+  private async buildStandaloneCompanionJobResult(
+    stream: string,
+    seg: SegmentRow,
+    registry: SchemaRegistry,
+    plan: SearchCompanionPlan,
+    planGeneration: number,
+    localPath: string,
+    targetName: string | null,
+    keywordTermShard?: CompanionBuildPartialPlan["keywordTermShard"],
+    docIdShard?: CompanionBuildPartialPlan["docIdShard"]
+  ): Promise<Result<CompanionBuildOutput, CompanionBuildError>> {
+    const inputPayloadBytes = (() => {
+      try {
+        return statSync(localPath).size;
+      } catch {
+        return Number(seg.payload_bytes);
+      }
+    })();
+    const queuedAt = Date.now();
+    return await this.asyncGate.run(async () => {
+      const action = beginAsyncIndexAction(this.db, {
+        stream,
+        actionKind: "companion_build",
+        targetKind: "bundled_companion",
+        targetName,
+        inputKind: "segment",
+        inputCount: 1,
+        inputSizeBytes: BigInt(seg.size_bytes),
+        startSegment: seg.segment_index,
+        endSegment: seg.segment_index,
+        detail: {
+          input_payload_bytes: inputPayloadBytes,
+          plan_generation: planGeneration,
+          queue_wait_ms: Date.now() - queuedAt,
+        },
+      });
+      const companionRes = await (this.memorySampler
+        ? this.memorySampler.track(
+            "companion",
+            {
+              stream,
+              segment_index: seg.segment_index,
+              plan_generation: planGeneration,
+              target_name: targetName,
+            },
+            () =>
+              this.buildWorkers.buildResult({
+                kind: "companion_build",
+                input: {
+                  registry,
+                  plan,
+                  planGeneration,
+                  keywordTermShard,
+                  docIdShard,
+                  outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+                  segment: {
+                    stream,
+                    segmentIndex: seg.segment_index,
+                    startOffset: seg.start_offset,
+                    localPath,
+                  },
+                },
+              })
+          )
+        : this.buildWorkers.buildResult({
+            kind: "companion_build",
+            input: {
+              registry,
+              plan,
+              planGeneration,
+              keywordTermShard,
+              docIdShard,
+              outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+              segment: {
+                stream,
+                segmentIndex: seg.segment_index,
+                startOffset: seg.start_offset,
+                localPath,
+              },
+            },
+          }));
+      if (Result.isError(companionRes)) {
+        action.fail(companionRes.error.message);
+        return invalidCompanionBuild(companionRes.error.message);
+      }
+      if (companionRes.value.output.kind !== "companion_build") {
+        action.fail("unexpected worker result kind");
+        return invalidCompanionBuild("unexpected worker result kind");
+      }
+      const buildTelemetryDetail = asyncIndexActionMemoryDetail(companionRes.value.telemetry);
+      const output = companionRes.value.output.output;
+      action.succeed({
+        outputCount: 1,
+        outputSizeBytes: this.companionOutputSizeBytes(output),
+        detail: {
+          section_kinds: output.sectionKinds,
+          output_storage: output.storage,
+          ...buildTelemetryDetail,
+        },
+      });
+      return Result.ok(output);
+    });
+  }
+
+  private async buildCompanionMergeJobResult(
+    stream: string,
+    seg: SegmentRow,
+    planGeneration: number,
+    partials: PartialCompanionOutput[]
+  ): Promise<Result<CompanionPersistOutput, CompanionBuildError>> {
+    const queuedAt = Date.now();
+    return await this.asyncGate.run(async () => {
+      const action = beginAsyncIndexAction(this.db, {
+        stream,
+        actionKind: "companion_merge_build",
+        targetKind: "bundled_companion",
+        targetName: "merge",
+        inputKind: "companion_partial",
+        inputCount: partials.length,
+        inputSizeBytes: partials.reduce((sum, partial) => sum + BigInt(partial.sizeBytes), 0n),
+        startSegment: seg.segment_index,
+        endSegment: seg.segment_index,
+        detail: {
+          plan_generation: planGeneration,
+          partial_target_names: partials.map((partial) => partial.targetName),
+          queue_wait_ms: Date.now() - queuedAt,
+        },
+      });
+      const mergeRes = await (this.memorySampler
+        ? this.memorySampler.track(
+            "companion_merge",
+            {
+              stream,
+              segment_index: seg.segment_index,
+              plan_generation: planGeneration,
+            },
+            () =>
+              this.buildWorkers.buildResult({
+                kind: "companion_merge_build",
+                input: {
+                  stream,
+                  segmentIndex: seg.segment_index,
+                  planGeneration,
+                  outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+                  filePrefix: `segment-${seg.segment_index}`,
+                  partials,
+                },
+              })
+          )
+        : this.buildWorkers.buildResult({
+            kind: "companion_merge_build",
+            input: {
+              stream,
+              segmentIndex: seg.segment_index,
+              planGeneration,
+              outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+              filePrefix: `segment-${seg.segment_index}`,
+              partials,
+            },
+          }));
+      if (Result.isError(mergeRes)) {
+        action.fail(mergeRes.error.message);
+        return invalidCompanionBuild(mergeRes.error.message);
+      }
+      if (mergeRes.value.output.kind !== "companion_merge_build") {
+        action.fail("unexpected worker result kind");
+        return invalidCompanionBuild("unexpected worker result kind");
+      }
+      const buildTelemetryDetail = asyncIndexActionMemoryDetail(mergeRes.value.telemetry);
+      const output = mergeRes.value.output.output;
+      action.succeed({
+        outputCount: 1,
+        outputSizeBytes: this.companionOutputSizeBytes(output),
+        detail: {
+          section_kinds: output.sectionKinds,
+          output_storage: output.storage,
+          ...buildTelemetryDetail,
+        },
+      });
+      return Result.ok(output);
+    });
+  }
+
+  private partialCompanionFromOutput(targetName: string, output: CompanionPersistOutput): Result<PartialCompanionOutput, CompanionBuildError> {
+    if (output.storage !== "file") return invalidCompanionBuild("expected file-backed merged companion output");
+    return Result.ok({
+      targetName,
+      localPath: output.localPath,
+      sizeBytes: output.sizeBytes,
+      sectionKinds: output.sectionKinds,
+      sectionSizes: output.sectionSizes,
+      primaryTimestampMinMs: output.primaryTimestampMinMs,
+      primaryTimestampMaxMs: output.primaryTimestampMaxMs,
+    });
+  }
+
+  private persistOutputFromPartial(partial: PartialCompanionOutput): Result<CompanionPersistOutput, CompanionBuildError> {
+    const sectionSizes = partial.sectionSizes;
+    if (!sectionSizes) return invalidCompanionBuild("missing merged companion section sizes");
+    return Result.ok({
+      storage: "file",
+      localPath: partial.localPath,
+      sizeBytes: partial.sizeBytes,
+      sectionKinds: partial.sectionKinds,
+      sectionSizes,
+      primaryTimestampMinMs: partial.primaryTimestampMinMs,
+      primaryTimestampMaxMs: partial.primaryTimestampMaxMs,
+    });
+  }
+
+  private companionMergeGroupKey(partial: PartialCompanionOutput): string {
+    const name = partial.targetName;
+    if (name.startsWith("keyword-")) return `keyword:${name.slice("keyword-".length).replace(/-shard-\d+-of-\d+$/, "")}`;
+    if (name.startsWith("text-")) return `text:${name.slice("text-".length).replace(/-shard-\d+-of-\d+$/, "")}`;
+    if (name.startsWith("col-")) return `col:${name.slice("col-".length).replace(/-doc-\d+-of-\d+$/, "")}`;
+    return `merge:${name}`;
+  }
+
+  private buildCompanionMergeBatches(partials: PartialCompanionOutput[], round: number): PartialCompanionOutput[][] {
+    if (round === 0) {
+      return Array.from(
+        partials.reduce((groups, partial) => {
+          const key = this.companionMergeGroupKey(partial);
+          const bucket = groups.get(key) ?? [];
+          bucket.push(partial);
+          groups.set(key, bucket);
+          return groups;
+        }, new Map<string, PartialCompanionOutput[]>()).values()
+      );
+    }
+
+    const batches: PartialCompanionOutput[][] = [];
+    for (let start = 0; start < partials.length; start += COMPANION_MERGE_BATCH_PARTIAL_LIMIT) {
+      batches.push(partials.slice(start, start + COMPANION_MERGE_BATCH_PARTIAL_LIMIT));
+    }
+    return batches;
+  }
+
+  private async buildCompanionMergeTreeResult(
+    stream: string,
+    seg: SegmentRow,
+    planGeneration: number,
+    partials: PartialCompanionOutput[]
+  ): Promise<Result<CompanionPersistOutput, CompanionBuildError>> {
+    if (partials.length === 0) return invalidCompanionBuild("missing partial companion outputs");
+    if (partials.length === 1) return this.persistOutputFromPartial(partials[0]!);
+
+    let round = 0;
+    let current = partials;
+    while (current.length > 1) {
+      const next: PartialCompanionOutput[] = [];
+      const batches = this.buildCompanionMergeBatches(current, round);
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+        const batch = batches[batchIndex]!;
+        if (batch.length === 1) {
+          next.push(batch[0]!);
+          continue;
+        }
+        const mergeRes = await this.buildCompanionMergeJobResult(stream, seg, planGeneration, batch);
+        if (Result.isError(mergeRes)) {
+          this.cleanupPartialOutputs(next);
+          for (let remainingIndex = batchIndex + 1; remainingIndex < batches.length; remainingIndex += 1) {
+            this.cleanupPartialOutputs(batches[remainingIndex]!);
+          }
+          return mergeRes;
+        }
+        const partialRes = this.partialCompanionFromOutput(`merge-r${round}-b${batchIndex}`, mergeRes.value);
+        if (Result.isError(partialRes)) {
+          this.cleanupPartialOutputs(next);
+          for (let remainingIndex = batchIndex + 1; remainingIndex < batches.length; remainingIndex += 1) {
+            this.cleanupPartialOutputs(batches[remainingIndex]!);
+          }
+          return partialRes;
+        }
+        next.push(partialRes.value);
+      }
+      current = next;
+      round += 1;
+    }
+
+    return this.persistOutputFromPartial(current[0]!);
   }
 
   private async loadBundleResult(
@@ -590,6 +896,14 @@ export class SearchCompanionManager {
       }
       const unifiedExactFrontier = this.companionUnifiedSearchExactFrontier(stream, regRes.value, desiredPlan);
       const standaloneStale = filterStandaloneCompanionSegments(stale, unifiedExactFrontier);
+      if (
+        unifiedExactFrontier != null &&
+        standaloneStale.length > 0 &&
+        uploadedSegments - unifiedExactFrontier > STANDALONE_COMPANION_MAX_EXACT_LAG_SEGMENTS
+      ) {
+        this.queue.add(stream);
+        return Result.ok(undefined);
+      }
       if (this.metrics) {
         this.metrics.record("tieredstore.companion.lag.segments", stale.length, "count", undefined, stream);
       }
@@ -597,6 +911,7 @@ export class SearchCompanionManager {
 
       const batchLimit = Math.max(1, this.cfg.searchCompanionBuildBatchSegments);
       const batch = standaloneStale.slice(0, batchLimit);
+      const splitPartialPlans = buildCompanionPartialPlans(regRes.value.search?.profile, desiredPlan);
       let builtCount = 0;
       for (const nextSegmentIndex of batch) {
         const seg = this.db.getSegmentByIndex(stream, nextSegmentIndex);
@@ -613,187 +928,94 @@ export class SearchCompanionManager {
           }
           return invalidCompanionBuild(segmentLeaseRes.error.message);
         }
-        const action = beginAsyncIndexAction(this.db, {
-          stream,
-          actionKind: "companion_build",
-          targetKind: "bundled_companion",
-          inputKind: "segment",
-          inputCount: 1,
-          inputSizeBytes: BigInt(seg.size_bytes),
-          startSegment: seg.segment_index,
-          endSegment: seg.segment_index,
-          detail: {
-            input_payload_bytes: Number(seg.payload_bytes),
-            plan_generation: planRow.generation,
-          },
-        });
-        let companionRes;
-        let sharedBuildCacheStatus: "miss" | "shared_inflight" | null = null;
-        let piggybackExactIndexNames: string[] = [];
+        let output: CompanionPersistOutput;
         try {
-          const exactIndexNamesForSegment = new Set(
-            getConfiguredSecondaryIndexes(regRes.value)
-              .filter((configuredIndex) => {
-                const state = this.db.getSecondaryIndexState(stream, configuredIndex.name);
-                if (!state) return false;
-                if (state.config_hash !== hashSecondaryIndexField(configuredIndex)) return false;
-                return state.indexed_through === seg.segment_index;
-              })
-              .map((configuredIndex) => configuredIndex.name)
-          );
-          const exactIndexesForSegment = collectUnifiedSearchBuildExactIndexes(regRes.value, (indexName) => {
-            const state = this.db.getSecondaryIndexState(stream, indexName);
-            if (!state) return null;
-            return {
-              configHash: state.config_hash,
-              secret: state.index_secret,
-            };
-          }, (indexName) => exactIndexNamesForSegment.has(indexName));
-          const useUnifiedSearchBuild =
-            this.searchSegmentBuilds != null &&
-            regRes.value.search?.profile === "evlog" &&
-            !desiredPlan.families.agg &&
-            !desiredPlan.families.mblk;
-          companionRes = await this.asyncGate.run(async () =>
-            useUnifiedSearchBuild
-              ? await (this.memorySampler
-                  ? this.memorySampler.track(
-                      "companion",
-                      { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
-                      async () => {
-                        const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
-                          stream,
-                          registry: regRes.value,
-                          exactIndexes: exactIndexesForSegment,
-                          plan: desiredPlan,
-                          planGeneration: planRow.generation,
-                          outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
-                          segment: {
-                            segmentIndex: seg.segment_index,
-                            startOffset: seg.start_offset,
-                            localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
-                          },
-                        });
-                        if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
-                        sharedBuildCacheStatus = sharedRes.value.cacheStatus;
-                        if (this.unifiedExactRunSink && sharedRes.value.output.exactRuns.length > 0) {
-                          const exactPersistRes = await this.unifiedExactRunSink(
-                            stream,
-                            regRes.value,
-                            seg.segment_index,
-                            sharedRes.value.output.exactRuns
-                          );
-                          if (Result.isError(exactPersistRes)) return Result.err(exactPersistRes.error);
-                          piggybackExactIndexNames = exactPersistRes.value?.persistedIndexNames ?? [];
-                        }
-                        if (!sharedRes.value.output.companion) {
-                          return Result.err({ kind: "worker_pool_failure" as const, message: "unified search build did not return companion output" });
-                        }
-                        return Result.ok({
-                          kind: "companion_build" as const,
-                          output: sharedRes.value.output.companion,
-                        });
-                      }
-                    )
-                  : (async () => {
-                      const sharedRes = await this.searchSegmentBuilds!.buildSegmentResult({
-                        stream,
-                        registry: regRes.value,
-                        exactIndexes: exactIndexesForSegment,
-                        plan: desiredPlan,
-                        planGeneration: planRow.generation,
-                        outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
-                        segment: {
-                          segmentIndex: seg.segment_index,
-                          startOffset: seg.start_offset,
-                          localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
-                        },
-                      });
-                      if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
-                      sharedBuildCacheStatus = sharedRes.value.cacheStatus;
-                      if (this.unifiedExactRunSink && sharedRes.value.output.exactRuns.length > 0) {
-                        const exactPersistRes = await this.unifiedExactRunSink(
-                          stream,
-                          regRes.value,
-                          seg.segment_index,
-                          sharedRes.value.output.exactRuns
-                        );
-                        if (Result.isError(exactPersistRes)) return Result.err(exactPersistRes.error);
-                        piggybackExactIndexNames = exactPersistRes.value?.persistedIndexNames ?? [];
-                      }
-                      if (!sharedRes.value.output.companion) {
-                        return Result.err({ kind: "worker_pool_failure" as const, message: "unified search build did not return companion output" });
-                      }
-                      return Result.ok({
-                        kind: "companion_build" as const,
-                        output: sharedRes.value.output.companion,
-                      });
-                    })())
-              : this.memorySampler
-                ? await this.memorySampler.track(
-                    "companion",
-                    { stream, segment_index: seg.segment_index, plan_generation: planRow.generation },
-                    () =>
-                      this.buildWorkers.buildResult({
-                        kind: "companion_build",
-                        input: {
-                          registry: regRes.value,
-                          plan: desiredPlan,
-                          planGeneration: planRow.generation,
-                          outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
-                          segment: {
-                            stream,
-                            segmentIndex: seg.segment_index,
-                            startOffset: seg.start_offset,
-                            localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
-                          },
-                        },
-                      })
-                  )
-                : await this.buildWorkers.buildResult({
-                    kind: "companion_build",
-                    input: {
-                      registry: regRes.value,
-                      plan: desiredPlan,
-                      planGeneration: planRow.generation,
-                      outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
-                      segment: {
-                        stream,
-                        segmentIndex: seg.segment_index,
-                        startOffset: seg.start_offset,
-                        localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
-                      },
-                    },
-                  })
-          );
+          if (splitPartialPlans.length > 0) {
+            const uniqueScratchPlans = Array.from(
+              new Map(splitPartialPlans.map((partialPlan) => [companionScratchKey(partialPlan.plan), partialPlan])).values()
+            ).map((partialPlan) => ({ name: partialPlan.name, plan: partialPlan.plan }));
+            const scratchRes = buildEvlogScratchSegmentsResult(
+              {
+                registry: regRes.value,
+                plan: desiredPlan,
+                planGeneration: planRow.generation,
+                outputDir: `${this.cfg.rootDir}/tmp/companion-builds`,
+                segment: {
+                  stream,
+                  segmentIndex: seg.segment_index,
+                  startOffset: seg.start_offset,
+                  localPath: segmentLeaseRes.value.localSegments[0]!.localPath,
+                },
+              },
+              uniqueScratchPlans
+            );
+            if (Result.isError(scratchRes)) return scratchRes;
+            const scratchByKey = new Map(scratchRes.value.map((scratch) => [companionScratchKey(scratch.plan), scratch.localPath]));
+            const partialOutputs: PartialCompanionOutput[] = [];
+            try {
+              for (const partialPlan of splitPartialPlans) {
+                const partialRes = await this.buildStandaloneCompanionJobResult(
+                  stream,
+                  seg,
+                  regRes.value,
+                  partialPlan.plan,
+                  planRow.generation,
+                  scratchByKey.get(companionScratchKey(partialPlan.plan)) ?? segmentLeaseRes.value.localSegments[0]!.localPath,
+                  partialPlan.name,
+                  partialPlan.keywordTermShard,
+                  partialPlan.docIdShard
+                );
+                if (Result.isError(partialRes)) {
+                  this.cleanupPartialOutputs(partialOutputs);
+                  this.cleanupScratchSegments(scratchRes.value);
+                  return partialRes;
+                }
+                if (partialRes.value.storage !== "file") {
+                  this.cleanupPartialOutputs(partialOutputs);
+                  this.cleanupScratchSegments(scratchRes.value);
+                  return invalidCompanionBuild("expected file-backed split companion output");
+                }
+                partialOutputs.push({
+                  targetName: partialPlan.name,
+                  localPath: partialRes.value.localPath,
+                  sizeBytes: partialRes.value.sizeBytes,
+                  sectionKinds: partialRes.value.sectionKinds,
+                  sectionSizes: partialRes.value.sectionSizes,
+                  primaryTimestampMinMs: partialRes.value.primaryTimestampMinMs,
+                  primaryTimestampMaxMs: partialRes.value.primaryTimestampMaxMs,
+                });
+              }
+              const mergeRes = await this.buildCompanionMergeTreeResult(stream, seg, planRow.generation, partialOutputs);
+              this.cleanupScratchSegments(scratchRes.value);
+              if (Result.isError(mergeRes)) return mergeRes;
+              output = mergeRes.value;
+            } catch (error: unknown) {
+              this.cleanupPartialOutputs(partialOutputs);
+              this.cleanupScratchSegments(scratchRes.value);
+              throw error;
+            }
+          } else {
+            const buildRes = await this.buildStandaloneCompanionJobResult(
+              stream,
+              seg,
+              regRes.value,
+              desiredPlan,
+              planRow.generation,
+              segmentLeaseRes.value.localSegments[0]!.localPath,
+              null
+            );
+            if (Result.isError(buildRes)) return buildRes;
+            output = buildRes.value;
+          }
         } finally {
           segmentLeaseRes.value.release();
         }
-        if (Result.isError(companionRes)) {
-          action.fail(companionRes.error.message);
-          return invalidCompanionBuild(companionRes.error.message);
-        }
-        if (companionRes.value.kind !== "companion_build") {
-          action.fail("unexpected worker result kind");
-          return invalidCompanionBuild("unexpected worker result kind");
-        }
-        const output = companionRes.value.output;
         const preparedCompanionRes = await this.prepareCompanionOutputResult(stream, seg.segment_index, planRow.generation, output);
         if (Result.isError(preparedCompanionRes)) {
-          action.fail(preparedCompanionRes.error.message, {
-            detail: {
-              section_kinds: output.sectionKinds,
-            },
-          });
           return preparedCompanionRes;
         }
         const persistCompanionRes = this.finalizePreparedCompanionPersist(stream, seg.segment_index, preparedCompanionRes.value);
         if (Result.isError(persistCompanionRes)) {
-          action.fail(persistCompanionRes.error.message, {
-            detail: {
-              section_kinds: output.sectionKinds,
-            },
-          });
           return persistCompanionRes;
         }
         const sectionKinds = persistCompanionRes.value.sectionKinds;
@@ -803,16 +1025,6 @@ export class SearchCompanionManager {
           this.metrics.record("tieredstore.companion.build.latency", Number(elapsedNs), "ns", undefined, stream);
           this.metrics.record("tieredstore.companion.objects.built", 1, "count", undefined, stream);
         }
-        action.succeed({
-          outputCount: 1,
-          outputSizeBytes: BigInt(preparedCompanionRes.value.outputSizeBytes),
-          detail: {
-            section_kinds: sectionKinds,
-            output_storage: output.storage,
-            shared_build_cache_status: sharedBuildCacheStatus,
-            piggyback_exact_index_names: piggybackExactIndexNames,
-          },
-        });
       }
 
       if (standaloneStale.length > builtCount) this.queue.add(stream);

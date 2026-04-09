@@ -1,15 +1,27 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, unlinkSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Result } from "better-result";
 import type { SchemaRegistry, SearchFieldConfig, SearchRollupConfig } from "../schema/registry";
-import { iterateBlockRecordsResult } from "../segment/format";
 import {
+  DSB3_HEADER_BYTES,
+  encodeBlockResult,
+  encodeFooter,
+  iterateBlockRecordsFromFileResult,
+  iterateBlocksFromFileResult,
+  type BlockIndexEntry,
+  type SegmentRecord,
+} from "../segment/format";
+import {
+  encodeBundledSegmentCompanionChunksFromPayloads,
   encodeBundledSegmentCompanionFromPayloads,
+  encodeCompanionSectionChunkPayload,
   encodeCompanionSectionPayload,
   type CompanionSectionKind,
+  type EncodedCompanionSectionChunkPayload,
   type EncodedCompanionSectionPayload,
 } from "./companion_format";
-import type { SearchCompanionPlan } from "./companion_plan";
+import type { SearchCompanionPlan, SearchCompanionPlanField } from "./companion_plan";
 import type { ColFieldInput, ColScalar, ColSectionInput } from "./col_format";
 import {
   appendKeywordPostingDoc,
@@ -42,10 +54,15 @@ import {
 } from "./aggregate";
 import type { AggMeasureState, AggSectionInput } from "./agg_format";
 import { schemaVersionForOffset } from "../schema/read_json";
+import { mergePartialCompanionFilesResult, type PartialCompanionOutput } from "./companion_merge";
+import { writeCompanionOutputChunksResult } from "./companion_output_file";
 
 const PAYLOAD_DECODER = new TextDecoder();
+const PAYLOAD_ENCODER = new TextEncoder();
 const AGG_DIMENSION_SEPARATOR = "\u001f";
 const AGG_DIMENSION_NULL = "\u0000";
+const EMPTY_JSON_BYTES = PAYLOAD_ENCODER.encode("{}");
+const EMPTY_ROUTING_KEY = new Uint8Array(0);
 
 type CompanionBuildError = { kind: "invalid_companion_build"; message: string };
 type ColumnFieldBuilder = {
@@ -87,6 +104,14 @@ export type CompanionBuildInput = {
   registry: SchemaRegistry;
   plan: SearchCompanionPlan;
   planGeneration: number;
+  keywordTermShard?: {
+    count: number;
+    index: number;
+  };
+  docIdShard?: {
+    count: number;
+    index: number;
+  };
   outputDir?: string;
   segment: {
     stream: string;
@@ -115,35 +140,443 @@ export type CompanionBuildOutput =
       primaryTimestampMaxMs: bigint | null;
     };
 
+type PartialPlanSpec = {
+  name: string;
+  fields: string[];
+  col?: boolean;
+  fts?: boolean;
+  termShards?: number;
+  docShards?: number;
+};
+
+export type CompanionBuildPartialPlan = {
+  name: string;
+  plan: SearchCompanionPlan;
+  keywordTermShard?: {
+    count: number;
+    index: number;
+  };
+  docIdShard?: {
+    count: number;
+    index: number;
+  };
+};
+
+export type CompanionScratchSegment = {
+  name: string;
+  plan: SearchCompanionPlan;
+  localPath: string;
+};
+
+type ScratchSegmentWriter = {
+  finalPath: string;
+  tmpPath: string;
+  fd: number;
+  blockOffset: number;
+  footerEntries: BlockIndexEntry[];
+};
+
+type ScratchPlanState = {
+  name: string;
+  plan: SearchCompanionPlan;
+  writer: ScratchSegmentWriter;
+  localPath: string;
+};
+
+const EVLOG_PARTIAL_PLAN_SPECS: PartialPlanSpec[] = [
+  { name: "col-timestamp", fields: ["timestamp"], col: true, docShards: 2 },
+  { name: "col-status", fields: ["status"], col: true, docShards: 2 },
+  { name: "col-duration", fields: ["duration"], col: true, docShards: 2 },
+  { name: "keyword-level", fields: ["level"], fts: true },
+  { name: "keyword-service", fields: ["service"], fts: true },
+  { name: "keyword-environment", fields: ["environment"], fts: true },
+  { name: "keyword-method", fields: ["method"], fts: true },
+  { name: "keyword-requestId", fields: ["requestId"], fts: true, termShards: 4 },
+  { name: "keyword-traceId", fields: ["traceId"], fts: true, termShards: 4 },
+  { name: "keyword-spanId", fields: ["spanId"], fts: true, termShards: 4 },
+  { name: "keyword-path", fields: ["path"], fts: true, termShards: 4 },
+  { name: "text-message", fields: ["message"], fts: true, termShards: 4 },
+  { name: "text-error-message", fields: ["error.message"], fts: true, termShards: 4 },
+  { name: "text-why", fields: ["why"], fts: true, termShards: 4 },
+  { name: "text-fix", fields: ["fix"], fts: true, termShards: 4 },
+];
+
 function invalidCompanionBuild(message: string): Result<never, CompanionBuildError> {
   return Result.err({ kind: "invalid_companion_build", message });
 }
 
-function buildCompanionOutputFilePath(outputDir: string, segmentIndex: number): string {
-  const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
-  return join(outputDir, `segment-${segmentIndex}-${nonce}.cix`);
+function termBelongsToShard(
+  term: string,
+  shard: CompanionBuildInput["keywordTermShard"] | CompanionBuildPartialPlan["keywordTermShard"] | undefined
+): boolean {
+  if (!shard || shard.count <= 1) return true;
+  let hash = 2166136261;
+  for (let index = 0; index < term.length; index += 1) {
+    hash ^= term.charCodeAt(index)!;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % shard.count === shard.index;
 }
 
-function writeCompanionOutputFileResult(
-  outputDir: string,
-  segmentIndex: number,
-  payload: Uint8Array
-): Result<{ localPath: string; sizeBytes: number }, CompanionBuildError> {
-  mkdirSync(outputDir, { recursive: true });
-  const finalPath = buildCompanionOutputFilePath(outputDir, segmentIndex);
-  const tmpPath = `${finalPath}.tmp`;
-  try {
-    writeFileSync(tmpPath, payload);
-    renameSync(tmpPath, finalPath);
-    return Result.ok({ localPath: finalPath, sizeBytes: payload.byteLength });
-  } catch (error: unknown) {
+function docBelongsToShard(
+  docId: number,
+  shard: CompanionBuildInput["docIdShard"] | CompanionBuildPartialPlan["docIdShard"] | undefined
+): boolean {
+  if (!shard || shard.count <= 1) return true;
+  return docId % shard.count === shard.index;
+}
+
+function createSubsetCompanionPlan(
+  plan: SearchCompanionPlan,
+  fields: SearchCompanionPlanField[],
+  families: Pick<SearchCompanionPlan["families"], "col" | "fts">
+): SearchCompanionPlan {
+  return {
+    families: {
+      col: families.col,
+      fts: families.fts,
+      agg: false,
+      mblk: false,
+    },
+    fields,
+    rollups: [],
+    summary: plan.summary,
+  };
+}
+
+export function buildCompanionPartialPlans(
+  profile: string | undefined,
+  plan: SearchCompanionPlan
+): CompanionBuildPartialPlan[] {
+  if (profile !== "evlog") return [];
+  if (plan.families.agg || plan.families.mblk) return [];
+  const planFieldsByName = new Map(plan.fields.map((field) => [field.name, field]));
+  const partials: CompanionBuildPartialPlan[] = [];
+  const coveredFieldNames = new Set<string>();
+  for (const spec of EVLOG_PARTIAL_PLAN_SPECS) {
+    const fields = spec.fields
+      .map((fieldName) => planFieldsByName.get(fieldName))
+      .filter((field): field is SearchCompanionPlanField => field != null);
+    if (fields.length === 0) continue;
+    for (const field of fields) coveredFieldNames.add(field.name);
+    const subsetPlan = createSubsetCompanionPlan(plan, fields, {
+      col: spec.col === true && fields.some((field) => field.column),
+      fts: spec.fts === true && fields.some((field) => field.kind === "text" || (field.kind === "keyword" && field.prefix)),
+    });
+    const termShardCount = Math.max(1, spec.termShards ?? 1);
+    const docShardCount = Math.max(1, spec.docShards ?? 1);
+    for (let termShardIndex = 0; termShardIndex < termShardCount; termShardIndex += 1) {
+      for (let docShardIndex = 0; docShardIndex < docShardCount; docShardIndex += 1) {
+        const suffixParts: string[] = [];
+        if (termShardCount > 1) suffixParts.push(`shard-${termShardIndex + 1}-of-${termShardCount}`);
+        if (docShardCount > 1) suffixParts.push(`doc-${docShardIndex + 1}-of-${docShardCount}`);
+        partials.push({
+          name: suffixParts.length === 0 ? spec.name : `${spec.name}-${suffixParts.join("-")}`,
+          plan: subsetPlan,
+          keywordTermShard: termShardCount === 1 ? undefined : { count: termShardCount, index: termShardIndex },
+          docIdShard: docShardCount === 1 ? undefined : { count: docShardCount, index: docShardIndex },
+        });
+      }
+    }
+  }
+  const remainingFields = plan.fields.filter((field) => !coveredFieldNames.has(field.name));
+  if (remainingFields.length > 0) {
+    partials.push({
+      name: "remaining",
+      plan: createSubsetCompanionPlan(plan, remainingFields, {
+        col: remainingFields.some((field) => field.column),
+        fts: remainingFields.some((field) => field.kind === "text" || (field.kind === "keyword" && field.prefix)),
+      }),
+    });
+  }
+  if (partials.length <= 1) return [];
+  const pureShardSplit =
+    partials.length > 1 &&
+    partials.every(
+      (partial) =>
+        partial.plan.families.col === plan.families.col &&
+        partial.plan.families.fts === plan.families.fts &&
+        partial.plan.fields.length === plan.fields.length &&
+        partial.plan.fields.every((field, index) => field.name === plan.fields[index]?.name)
+    );
+  if (pureShardSplit) return [];
+  return partials.filter((partial) => partial.plan.families.col || partial.plan.families.fts);
+}
+
+function cleanupPartialCompanionFiles(partials: PartialCompanionOutput[]): void {
+  for (const partial of partials) {
     try {
-      unlinkSync(tmpPath);
+      rmSync(partial.localPath, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
+
+function cleanupScratchPlanStates(states: ScratchPlanState[]): void {
+  for (const state of states) {
+    try {
+      closeSync(state.writer.fd);
+    } catch {
+      // ignore close failures
+    }
+    try {
+      unlinkSync(state.writer.tmpPath);
     } catch {
       // ignore temp cleanup failures
     }
-    return invalidCompanionBuild(String((error as any)?.message ?? error));
+    try {
+      rmSync(state.localPath, { force: true });
+    } catch {
+      // ignore cleanup failures
+    }
   }
+}
+
+function openScratchSegmentWriterResult(
+  outputDir: string,
+  filePrefix: string
+): Result<ScratchSegmentWriter, CompanionBuildError> {
+  mkdirSync(outputDir, { recursive: true });
+  const nonce = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const finalPath = join(outputDir, `${filePrefix}-${nonce}.bin`);
+  const tmpPath = `${finalPath}.tmp`;
+  try {
+    return Result.ok({
+      finalPath,
+      tmpPath,
+      fd: openSync(tmpPath, "w"),
+      blockOffset: 0,
+      footerEntries: [],
+    });
+  } catch (error: unknown) {
+    return invalidCompanionBuild(String((error as Error)?.message ?? error));
+  }
+}
+
+function appendScratchSegmentBlockResult(
+  writer: ScratchSegmentWriter,
+  firstOffset: bigint,
+  records: SegmentRecord[]
+): Result<void, CompanionBuildError> {
+  const blockRes = encodeBlockResult(records);
+  if (Result.isError(blockRes)) return invalidCompanionBuild(blockRes.error.message);
+  const block = blockRes.value;
+  let written = 0;
+  try {
+    while (written < block.byteLength) {
+      written += writeSync(writer.fd, block, written, block.byteLength - written);
+    }
+    writer.footerEntries.push({
+      blockOffset: writer.blockOffset,
+      firstOffset,
+      recordCount: records.length,
+      compressedLen: block.byteLength - DSB3_HEADER_BYTES,
+      firstAppendNs: records[0]!.appendNs,
+      lastAppendNs: records[records.length - 1]!.appendNs,
+    });
+    writer.blockOffset += block.byteLength;
+    return Result.ok(undefined);
+  } catch (error: unknown) {
+    return invalidCompanionBuild(String((error as Error)?.message ?? error));
+  }
+}
+
+function finalizeScratchSegmentWriterResult(writer: ScratchSegmentWriter): Result<string, CompanionBuildError> {
+  const footer = encodeFooter(writer.footerEntries);
+  let written = 0;
+  try {
+    while (written < footer.byteLength) {
+      written += writeSync(writer.fd, footer, written, footer.byteLength - written);
+    }
+    closeSync(writer.fd);
+    renameSync(writer.tmpPath, writer.finalPath);
+    return Result.ok(writer.finalPath);
+  } catch (error: unknown) {
+    try {
+      closeSync(writer.fd);
+    } catch {
+      // ignore close failures
+    }
+    try {
+      unlinkSync(writer.tmpPath);
+    } catch {
+      // ignore temp cleanup failures
+    }
+    return invalidCompanionBuild(String((error as Error)?.message ?? error));
+  }
+}
+
+function setProjectedPathValue(target: Record<string, unknown>, path: string[], rawValue: unknown): void {
+  if (path.length === 0) return;
+  let current: Record<string, unknown> = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const segment = path[index]!;
+    const existing = current[segment];
+    if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+      current = existing as Record<string, unknown>;
+      continue;
+    }
+    const next: Record<string, unknown> = {};
+    current[segment] = next;
+    current = next;
+  }
+  const leaf = path[path.length - 1]!;
+  const existingLeaf = current[leaf];
+  if (existingLeaf === undefined) {
+    current[leaf] = rawValue;
+    return;
+  }
+  if (Array.isArray(existingLeaf)) {
+    existingLeaf.push(rawValue);
+    return;
+  }
+  current[leaf] = [existingLeaf, rawValue];
+}
+
+export function buildEvlogScratchSegmentsResult(
+  input: CompanionBuildInput,
+  partialPlans: Array<{ name: string; plan: SearchCompanionPlan }>
+): Result<CompanionScratchSegment[], CompanionBuildError> {
+  const scratchRoot = mkdtempSync(join(tmpdir(), `ds-companion-scratch-${input.segment.segmentIndex}-`));
+  const states: ScratchPlanState[] = [];
+  const fieldToGroupIndex = new Map<string, number>();
+  for (const [index, partialPlan] of partialPlans.entries()) {
+    for (const field of partialPlan.plan.fields) fieldToGroupIndex.set(field.name, index);
+    const writerRes = openScratchSegmentWriterResult(scratchRoot, `${partialPlan.name}-${input.segment.segmentIndex}`);
+    if (Result.isError(writerRes)) {
+      cleanupScratchPlanStates(states);
+      return writerRes;
+    }
+    states.push({
+      name: partialPlan.name,
+      plan: partialPlan.plan,
+      writer: writerRes.value,
+      localPath: writerRes.value.finalPath,
+    });
+  }
+
+  const combinedFieldNames = Array.from(fieldToGroupIndex.keys()).sort(compareSearchStrings);
+  const fastByteScanPlanByVersion = new Map<number, FastByteScanPlan>();
+  let offset = input.segment.startOffset;
+
+  for (const blockRes of iterateBlocksFromFileResult(input.segment.localPath)) {
+    if (Result.isError(blockRes)) {
+      cleanupScratchPlanStates(states);
+      return invalidCompanionBuild(blockRes.error.message);
+    }
+    const blockFirstOffset = offset;
+    const scratchBlockRecords = states.map(() => [] as SegmentRecord[]);
+    for (const record of blockRes.value.decoded.records) {
+      const version = schemaVersionForOffset(input.registry, offset);
+      let fastPlan = fastByteScanPlanByVersion.get(version);
+      if (!fastPlan) {
+        const compiledRes = compileSearchFieldAccessorsResult(input.registry, combinedFieldNames, version);
+        if (Result.isError(compiledRes)) {
+          cleanupScratchPlanStates(states);
+          return invalidCompanionBuild(compiledRes.error.message);
+        }
+        const trieRes = buildFastScalarAccessorTrieResult(compiledRes.value);
+        if (Result.isError(trieRes)) {
+          cleanupScratchPlanStates(states);
+          return invalidCompanionBuild(trieRes.error.message);
+        }
+        fastPlan = { trie: trieRes.value };
+        fastByteScanPlanByVersion.set(version, fastPlan);
+      }
+      const projectedRecords = states.map(() => ({} as Record<string, unknown>));
+      const visitCounts = states.map(() => 0);
+      const visitRes = visitFastScalarJsonValuesFromBytesWithTrieResult(record.payload, fastPlan.trie, (accessor, rawValue) => {
+        const groupIndex = fieldToGroupIndex.get(accessor.fieldName);
+        if (groupIndex == null) return;
+        setProjectedPathValue(projectedRecords[groupIndex]!, accessor.path, rawValue);
+        visitCounts[groupIndex] += 1;
+      });
+      if (Result.isError(visitRes)) {
+        cleanupScratchPlanStates(states);
+        return invalidCompanionBuild(visitRes.error.message);
+      }
+      for (let groupIndex = 0; groupIndex < states.length; groupIndex += 1) {
+        const payload =
+          visitCounts[groupIndex] === 0 ? EMPTY_JSON_BYTES : PAYLOAD_ENCODER.encode(JSON.stringify(projectedRecords[groupIndex]!));
+        scratchBlockRecords[groupIndex]!.push({
+          appendNs: record.appendNs,
+          routingKey: EMPTY_ROUTING_KEY,
+          payload,
+        });
+      }
+      offset += 1n;
+    }
+    for (let groupIndex = 0; groupIndex < states.length; groupIndex += 1) {
+      const writeRes = appendScratchSegmentBlockResult(states[groupIndex]!.writer, blockFirstOffset, scratchBlockRecords[groupIndex]!);
+      if (Result.isError(writeRes)) {
+        cleanupScratchPlanStates(states);
+        return writeRes;
+      }
+    }
+  }
+
+  for (const state of states) {
+    const finalizeRes = finalizeScratchSegmentWriterResult(state.writer);
+    if (Result.isError(finalizeRes)) {
+      cleanupScratchPlanStates(states);
+      return finalizeRes;
+    }
+    state.localPath = finalizeRes.value;
+  }
+  return Result.ok(states.map((state) => ({ name: state.name, plan: state.plan, localPath: state.localPath })));
+}
+
+function maybeBuildSplitEvlogCompanionResult(
+  input: CompanionBuildInput
+): Result<CompanionBuildOutput, CompanionBuildError> | null {
+  if (!input.outputDir) return null;
+  const partialPlans = buildCompanionPartialPlans(input.registry.search?.profile, input.plan);
+  if (partialPlans.length <= 1) return null;
+  const partials: PartialCompanionOutput[] = [];
+  for (const partialPlan of partialPlans) {
+    const partialRes = buildEncodedBundledCompanionPayloadResult({
+      ...input,
+      plan: partialPlan.plan,
+      keywordTermShard: partialPlan.keywordTermShard,
+      docIdShard: partialPlan.docIdShard,
+    });
+    if (Result.isError(partialRes)) {
+      cleanupPartialCompanionFiles(partials);
+      return partialRes;
+    }
+    if (partialRes.value.storage !== "file") {
+      cleanupPartialCompanionFiles(partials);
+      return invalidCompanionBuild("split evlog companion build requires file-backed partial outputs");
+    }
+    partials.push({
+      targetName: partialPlan.name,
+      localPath: partialRes.value.localPath,
+      sizeBytes: partialRes.value.sizeBytes,
+      sectionKinds: partialRes.value.sectionKinds,
+      primaryTimestampMinMs: partialRes.value.primaryTimestampMinMs,
+      primaryTimestampMaxMs: partialRes.value.primaryTimestampMaxMs,
+    });
+  }
+
+  const mergeRes = mergePartialCompanionFilesResult({
+    stream: input.segment.stream,
+    segmentIndex: input.segment.segmentIndex,
+    planGeneration: input.planGeneration,
+    outputDir: input.outputDir,
+    filePrefix: `segment-${input.segment.segmentIndex}`,
+    partials,
+  });
+  if (Result.isError(mergeRes)) return invalidCompanionBuild(mergeRes.error.message);
+  return Result.ok({
+    storage: "file",
+    localPath: mergeRes.value.localPath,
+    sizeBytes: mergeRes.value.sizeBytes,
+    sectionKinds: mergeRes.value.sectionKinds,
+    sectionSizes: mergeRes.value.sectionSizes,
+    primaryTimestampMinMs: mergeRes.value.primaryTimestampMinMs,
+    primaryTimestampMaxMs: mergeRes.value.primaryTimestampMaxMs,
+  });
 }
 
 function compareValues(left: bigint | number | boolean, right: bigint | number | boolean): number {
@@ -262,10 +695,24 @@ function createFtsFieldBuilder(field: SearchFieldConfig): FtsFieldBuilder {
       prefix: field.prefix === true ? true : undefined,
       positions: field.positions === true ? true : undefined,
       exists_docs: [],
+      _exists_prefix_count: 0,
       terms: Object.create(null) as Record<string, FtsTermInput>,
     },
     tokenCache: new Map<string, string[]>(),
   };
+}
+
+function recordFtsFieldExists(fieldCompanion: FtsFieldInput, docCount: number): void {
+  const prefixCount = fieldCompanion._exists_prefix_count;
+  if (typeof prefixCount === "number") {
+    if (prefixCount === docCount) {
+      fieldCompanion._exists_prefix_count = prefixCount + 1;
+      return;
+    }
+    fieldCompanion.exists_docs = Array.from({ length: prefixCount }, (_, index) => index);
+    delete fieldCompanion._exists_prefix_count;
+  }
+  fieldCompanion.exists_docs.push(docCount);
 }
 
 function createFtsBuilders(registry: SchemaRegistry): Map<string, FtsFieldBuilder> {
@@ -277,7 +724,12 @@ function createFtsBuilders(registry: SchemaRegistry): Map<string, FtsFieldBuilde
   return builders;
 }
 
-function recordFtsBuilders(builders: Map<string, FtsFieldBuilder>, rawSearchValues: Map<string, unknown[]>, docCount: number): void {
+function recordFtsBuilders(
+  builders: Map<string, FtsFieldBuilder>,
+  rawSearchValues: Map<string, unknown[]>,
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
+): void {
   for (const [fieldName, builder] of builders) {
     const fieldCompanion = builder.companion;
     const textValues: string[] = [];
@@ -290,22 +742,31 @@ function recordFtsBuilders(builders: Map<string, FtsFieldBuilder>, rawSearchValu
       }
     }
     if (textValues.length === 0) continue;
-    fieldCompanion.exists_docs.push(docCount);
+    recordFtsFieldExists(fieldCompanion, docCount);
     if (builder.config.kind === "keyword") {
       for (const value of textValues) {
+        if (!termBelongsToShard(value, keywordTermShard)) continue;
         fieldCompanion.terms[value] = appendKeywordPostingDoc(fieldCompanion.terms[value], docCount);
       }
       continue;
     }
+    let recordedExists = false;
     let position = 0;
     for (const value of textValues) {
       const tokenPositions = new Map<string, number[]>();
       const tokens = analyzeTextValueCached(value, builder.config.analyzer, builder.tokenCache);
       for (const token of tokens) {
+        const includeToken = termBelongsToShard(token, keywordTermShard);
         const positions = tokenPositions.get(token);
-        if (positions) positions.push(position);
-        else tokenPositions.set(token, [position]);
+        if (includeToken) {
+          if (positions) positions.push(position);
+          else tokenPositions.set(token, [position]);
+        }
         position += 1;
+      }
+      if (tokenPositions.size > 0 && !recordedExists) {
+        recordFtsFieldExists(fieldCompanion, docCount);
+        recordedExists = true;
       }
       for (const [token, positions] of tokenPositions) {
         fieldCompanion.terms[token] = appendTextPostingPositions(fieldCompanion.terms[token], docCount, positions);
@@ -453,7 +914,8 @@ function recordFastColumnAndFtsValue(
   rawValue: unknown,
   colBuilders: Map<string, ColumnFieldBuilder>,
   ftsBuilders: Map<string, FtsFieldBuilder>,
-  docCount: number
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
 ): void {
   const colBuilder = colBuilders.get(fieldName);
   if (colBuilder && !colBuilder.invalid) {
@@ -474,8 +936,9 @@ function recordFastColumnAndFtsValue(
   if (ftsBuilder.config.kind === "keyword") {
     const normalized = normalizeKeywordValue(rawValue, ftsBuilder.config.normalizer);
     if (normalized == null) return;
+    if (!termBelongsToShard(normalized, keywordTermShard)) return;
     if (!state.ftsSeenFields.has(fieldName)) {
-      fieldCompanion.exists_docs.push(docCount);
+      recordFtsFieldExists(fieldCompanion, docCount);
       state.ftsSeenFields.add(fieldName);
     }
     fieldCompanion.terms[normalized] = appendKeywordPostingDoc(fieldCompanion.terms[normalized], docCount);
@@ -483,17 +946,23 @@ function recordFastColumnAndFtsValue(
   }
   if (typeof rawValue !== "string") return;
   if (!state.ftsSeenFields.has(fieldName)) {
-    fieldCompanion.exists_docs.push(docCount);
+    recordFtsFieldExists(fieldCompanion, docCount);
     state.ftsSeenFields.add(fieldName);
   }
   const tokenPositions = new Map<string, number[]>();
   let position = state.ftsPositions.get(fieldName) ?? 0;
   const tokens = analyzeTextValueCached(rawValue, ftsBuilder.config.analyzer, ftsBuilder.tokenCache);
   for (const token of tokens) {
-    const positions = tokenPositions.get(token);
-    if (positions) positions.push(position);
-    else tokenPositions.set(token, [position]);
+    if (termBelongsToShard(token, keywordTermShard)) {
+      const positions = tokenPositions.get(token);
+      if (positions) positions.push(position);
+      else tokenPositions.set(token, [position]);
+    }
     position += 1;
+  }
+  if (tokenPositions.size === 0) {
+    state.ftsPositions.set(fieldName, position);
+    return;
   }
   for (const [token, positions] of tokenPositions) {
     fieldCompanion.terms[token] = appendTextPostingPositions(fieldCompanion.terms[token], docCount, positions);
@@ -525,11 +994,12 @@ function recordFastPathColumnAndFtsBuildersResult(
   accessors: ReadonlyArray<CompiledSearchFieldAccessor>,
   colBuilders: Map<string, ColumnFieldBuilder>,
   ftsBuilders: Map<string, FtsFieldBuilder>,
-  docCount: number
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
 ): Result<void, CompanionBuildError> {
   const state = createFastRecordState();
   const visitRes = visitRawSearchValuesWithCompiledAccessorsResult(parsed, accessors, (accessor, rawValue) => {
-    recordFastColumnAndFtsValue(state, accessor.fieldName, rawValue, colBuilders, ftsBuilders, docCount);
+    recordFastColumnAndFtsValue(state, accessor.fieldName, rawValue, colBuilders, ftsBuilders, docCount, keywordTermShard);
   });
   if (Result.isError(visitRes)) return invalidCompanionBuild(visitRes.error.message);
   finalizeFastRecordState(state, colBuilders, docCount);
@@ -548,26 +1018,40 @@ function appendEvlogColumnValue(builder: ColumnFieldBuilder | undefined, rawValu
   builder.values.push(normalized);
 }
 
-function appendEvlogKeywordFtsValue(builder: FtsFieldBuilder | undefined, rawValue: unknown, docCount: number): void {
+function appendEvlogKeywordFtsValue(
+  builder: FtsFieldBuilder | undefined,
+  rawValue: unknown,
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
+): void {
   if (!builder) return;
   const normalized = normalizeKeywordValue(rawValue, builder.config.normalizer);
   if (normalized == null) return;
+  if (!termBelongsToShard(normalized, keywordTermShard)) return;
   builder.companion.exists_docs.push(docCount);
   builder.companion.terms[normalized] = appendKeywordPostingDoc(builder.companion.terms[normalized], docCount);
 }
 
-function appendEvlogTextFtsValue(builder: FtsFieldBuilder | undefined, rawValue: unknown, docCount: number): void {
+function appendEvlogTextFtsValue(
+  builder: FtsFieldBuilder | undefined,
+  rawValue: unknown,
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
+): void {
   if (!builder || typeof rawValue !== "string") return;
   const fieldCompanion = builder.companion;
-  fieldCompanion.exists_docs.push(docCount);
   const tokenPositions = new Map<string, number[]>();
   const tokens = analyzeTextValueCached(rawValue, builder.config.analyzer, builder.tokenCache);
   for (let position = 0; position < tokens.length; position += 1) {
     const token = tokens[position]!;
-    const positions = tokenPositions.get(token);
-    if (positions) positions.push(position);
-    else tokenPositions.set(token, [position]);
+    if (termBelongsToShard(token, keywordTermShard)) {
+      const positions = tokenPositions.get(token);
+      if (positions) positions.push(position);
+      else tokenPositions.set(token, [position]);
+    }
   }
+  if (tokenPositions.size === 0) return;
+  fieldCompanion.exists_docs.push(docCount);
   for (const [token, positions] of tokenPositions) {
     fieldCompanion.terms[token] = appendTextPostingPositions(fieldCompanion.terms[token], docCount, positions);
   }
@@ -578,7 +1062,8 @@ function recordEvlogByteScanColumnAndFtsBuildersResult(
   plan: FastByteScanPlan,
   colBuilders: Map<string, ColumnFieldBuilder>,
   ftsBuilders: Map<string, FtsFieldBuilder>,
-  docCount: number
+  docCount: number,
+  keywordTermShard: CompanionBuildInput["keywordTermShard"]
 ): Result<void, CompanionBuildError> {
   const visitRes = visitFastScalarJsonValuesFromBytesWithTrieResult(payload, plan.trie, (accessor, rawValue) => {
     switch (accessor.fieldName) {
@@ -595,13 +1080,13 @@ function recordEvlogByteScanColumnAndFtsBuildersResult(
       case "spanId":
       case "path":
       case "method":
-        appendEvlogKeywordFtsValue(ftsBuilders.get(accessor.fieldName), rawValue, docCount);
+        appendEvlogKeywordFtsValue(ftsBuilders.get(accessor.fieldName), rawValue, docCount, keywordTermShard);
         return;
       case "message":
       case "why":
       case "fix":
       case "error.message":
-        appendEvlogTextFtsValue(ftsBuilders.get(accessor.fieldName), rawValue, docCount);
+        appendEvlogTextFtsValue(ftsBuilders.get(accessor.fieldName), rawValue, docCount, keywordTermShard);
         return;
       default:
         return;
@@ -612,7 +1097,8 @@ function recordEvlogByteScanColumnAndFtsBuildersResult(
 }
 
 export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildInput): Result<CompanionBuildOutput, CompanionBuildError> {
-  const segmentBytes = readFileSync(input.segment.localPath);
+  const splitRes = maybeBuildSplitEvlogCompanionResult(input);
+  if (splitRes) return splitRes;
   const colBuilders = input.plan.families.col ? createColBuilders(input.registry) : new Map<string, ColumnFieldBuilder>();
   const ftsBuilders = input.plan.families.fts ? createFtsBuilders(input.registry) : new Map<string, FtsFieldBuilder>();
   const aggBuildersRes = input.plan.families.agg ? createAggRollupBuildersResult(input.registry) : Result.ok(new Map<string, AggRollupBuilder>());
@@ -634,12 +1120,17 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
   const canUseEvlogByteFastPath = canUseFastPath && !metricsBuilder && input.registry.search?.profile === "evlog";
   let docCount = 0;
   let offset = input.segment.startOffset;
-  for (const recRes of iterateBlockRecordsResult(segmentBytes)) {
+  for (const recRes of iterateBlockRecordsFromFileResult(input.segment.localPath)) {
     if (Result.isError(recRes)) return invalidCompanionBuild(recRes.error.message);
     let parsed: unknown = null;
     let parsedOk = false;
     let rawSearchValues: Map<string, unknown[]> | null = null;
     if (canUseEvlogByteFastPath && fieldNameList.length > 0) {
+      if (!docBelongsToShard(docCount, input.docIdShard)) {
+        offset += 1n;
+        docCount += 1;
+        continue;
+      }
       const version = schemaVersionForOffset(input.registry, offset);
       let plan = fastByteScanPlanByVersion.get(version);
       if (!plan) {
@@ -651,9 +1142,21 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
         compiledByVersion.set(version, compiledRes.value);
         fastByteScanPlanByVersion.set(version, plan);
       }
-      const fastScanRes = recordEvlogByteScanColumnAndFtsBuildersResult(recRes.value.payload, plan, colBuilders, ftsBuilders, docCount);
+      const fastScanRes = recordEvlogByteScanColumnAndFtsBuildersResult(
+        recRes.value.payload,
+        plan,
+        colBuilders,
+        ftsBuilders,
+        docCount,
+        input.keywordTermShard
+      );
       if (Result.isError(fastScanRes)) return fastScanRes;
     } else {
+      if (!docBelongsToShard(docCount, input.docIdShard)) {
+        offset += 1n;
+        docCount += 1;
+        continue;
+      }
       try {
         parsed = JSON.parse(PAYLOAD_DECODER.decode(recRes.value.payload));
         parsedOk = true;
@@ -670,7 +1173,14 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
           compiledByVersion.set(version, accessors);
         }
         if (canUseFastPath) {
-          const fastPathRes = recordFastPathColumnAndFtsBuildersResult(parsed, accessors, colBuilders, ftsBuilders, docCount);
+          const fastPathRes = recordFastPathColumnAndFtsBuildersResult(
+            parsed,
+            accessors,
+            colBuilders,
+            ftsBuilders,
+            docCount,
+            input.keywordTermShard
+          );
           if (Result.isError(fastPathRes)) return fastPathRes;
         } else {
           const rawValuesRes = extractRawSearchValuesWithCompiledAccessorsResult(parsed, accessors);
@@ -680,7 +1190,7 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
       }
       if (!canUseFastPath && rawSearchValues) {
         recordColBuilders(colBuilders, rawSearchValues, docCount);
-        recordFtsBuilders(ftsBuilders, rawSearchValues, docCount);
+        recordFtsBuilders(ftsBuilders, rawSearchValues, docCount, input.keywordTermShard);
       }
       if (parsedOk && rawSearchValues) {
         for (const builder of aggBuilders.values()) {
@@ -700,6 +1210,7 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
   }
 
   const sectionPayloads: EncodedCompanionSectionPayload[] = [];
+  const sectionChunkPayloads: EncodedCompanionSectionChunkPayload[] = [];
   const sectionKinds: CompanionSectionKind[] = [];
   const sectionSizes: Record<string, number> = {};
   let primaryTimestampMinMs: bigint | null = null;
@@ -709,6 +1220,11 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
     sectionKinds.push(payload.kind);
     sectionSizes[payload.kind] = payload.payload.byteLength;
   };
+  const addChunkSection = (payload: EncodedCompanionSectionChunkPayload): void => {
+    sectionChunkPayloads.push(payload);
+    sectionKinds.push(payload.kind);
+    sectionSizes[payload.kind] = payload.sizeBytes;
+  };
 
   if (input.plan.families.col) {
     const colSection = finalizeColSection(input.registry, colBuilders, docCount);
@@ -716,27 +1232,33 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
     const primaryTimestampColumn = primaryTimestampField ? colSection.fields[primaryTimestampField] : undefined;
     primaryTimestampMinMs = typeof primaryTimestampColumn?.min === "bigint" ? primaryTimestampColumn.min : null;
     primaryTimestampMaxMs = typeof primaryTimestampColumn?.max === "bigint" ? primaryTimestampColumn.max : null;
-    addSection(encodeCompanionSectionPayload("col", colSection, input.plan));
+    if (input.outputDir) addChunkSection(encodeCompanionSectionChunkPayload("col", colSection, input.plan));
+    else addSection(encodeCompanionSectionPayload("col", colSection, input.plan));
   }
   if (input.plan.families.fts) {
-    addSection(encodeCompanionSectionPayload("fts", finalizeFtsSection(ftsBuilders, docCount), input.plan));
+    const ftsSection = finalizeFtsSection(ftsBuilders, docCount);
+    if (input.outputDir) addChunkSection(encodeCompanionSectionChunkPayload("fts", ftsSection, input.plan));
+    else addSection(encodeCompanionSectionPayload("fts", ftsSection, input.plan));
   }
   if (input.plan.families.agg) {
-    addSection(encodeCompanionSectionPayload("agg", finalizeAggSection(aggBuilders), input.plan));
+    const aggSection = finalizeAggSection(aggBuilders);
+    if (input.outputDir) addChunkSection(encodeCompanionSectionChunkPayload("agg", aggSection, input.plan));
+    else addSection(encodeCompanionSectionPayload("agg", aggSection, input.plan));
   }
   if (input.plan.families.mblk && metricsBuilder) {
-    addSection(encodeCompanionSectionPayload("mblk", finalizeMetricsBlockSection(metricsBuilder), input.plan));
+    const metricsSection = finalizeMetricsBlockSection(metricsBuilder);
+    if (input.outputDir) addChunkSection(encodeCompanionSectionChunkPayload("mblk", metricsSection, input.plan));
+    else addSection(encodeCompanionSectionPayload("mblk", metricsSection, input.plan));
   }
-
-  const payload = encodeBundledSegmentCompanionFromPayloads({
-    stream: input.segment.stream,
-    segment_index: input.segment.segmentIndex,
-    plan_generation: input.planGeneration,
-    sections: sectionPayloads,
-  });
   if (input.outputDir) {
-    const writeRes = writeCompanionOutputFileResult(input.outputDir, input.segment.segmentIndex, payload);
-    if (Result.isError(writeRes)) return writeRes;
+    const chunkSet = encodeBundledSegmentCompanionChunksFromPayloads({
+      stream: input.segment.stream,
+      segment_index: input.segment.segmentIndex,
+      plan_generation: input.planGeneration,
+      sections: sectionChunkPayloads,
+    });
+    const writeRes = writeCompanionOutputChunksResult(input.outputDir, `segment-${input.segment.segmentIndex}`, chunkSet.chunks, chunkSet.sizeBytes);
+    if (Result.isError(writeRes)) return invalidCompanionBuild(writeRes.error.message);
     return Result.ok({
       storage: "file",
       localPath: writeRes.value.localPath,
@@ -747,6 +1269,12 @@ export function buildEncodedBundledCompanionPayloadResult(input: CompanionBuildI
       primaryTimestampMaxMs,
     });
   }
+  const payload = encodeBundledSegmentCompanionFromPayloads({
+    stream: input.segment.stream,
+    segment_index: input.segment.segmentIndex,
+    plan_generation: input.planGeneration,
+    sections: sectionPayloads,
+  });
   return Result.ok({
     storage: "bytes",
     payload,

@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, closeSync, readSync, copyFileSync, createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
-import type { GetFileResult, GetOptions, ObjectStore, PutFileOptions, PutOptions, PutResult } from "./interface";
+import type {
+  GetFileResult,
+  GetOptions,
+  ObjectStore,
+  PutFileNoEtagOptions,
+  PutFileOptions,
+  PutNoEtagOptions,
+  PutOptions,
+  PutResult,
+} from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
 export type MockR2Faults = {
@@ -180,6 +189,16 @@ export class MockR2Store implements ObjectStore {
     }
 
     return { etag };
+  }
+
+  async putNoEtag(key: string, bytes: Uint8Array, opts: PutNoEtagOptions = {}): Promise<number> {
+    await this.put(key, bytes, { contentType: opts.contentType, contentLength: opts.contentLength });
+    return bytes.byteLength;
+  }
+
+  async putFileNoEtag(key: string, path: string, size: number, opts: PutFileNoEtagOptions = {}): Promise<number> {
+    await this.putFile(key, path, size, { contentType: opts.contentType });
+    return size;
   }
 
   async get(key: string, opts: GetOptions = {}): Promise<Uint8Array | null> {

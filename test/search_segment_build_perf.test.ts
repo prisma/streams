@@ -8,9 +8,7 @@ import { buildEvlogEvent } from "../experiments/demo/evlog_ingester";
 import { getConfiguredSecondaryIndexes } from "../src/index/secondary_schema";
 import { buildEvlogDefaultRegistry } from "../src/profiles/evlog/schema";
 import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
-import { buildEncodedBundledCompanionPayloadResult } from "../src/search/companion_build";
 import { buildSearchSegmentResult } from "../src/search/search_segment_build";
-import { buildSecondaryL0RunPayloadResult } from "../src/index/secondary_l0_build";
 import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter } from "../src/segment/format";
 
 type LocalSegment = { stream: string; segmentIndex: number; startOffset: bigint; localPath: string };
@@ -82,79 +80,6 @@ function average(values: number[]): number {
 }
 
 describe("search segment build perf", () => {
-  test(
-    "unified evlog search build is at least 25% faster than split exact + companion builds",
-    () => {
-      const root = mkdtempSync(join(tmpdir(), "ds-search-segment-build-"));
-      try {
-        const registry = buildEvlogDefaultRegistry("evlog-1");
-        const plan = buildDesiredSearchCompanionPlan(registry);
-        const segment = writeEvlogSegment(root, 36_000);
-        const exactIndexes = getConfiguredSecondaryIndexes(registry).map((index, indexOrdinal) => ({
-          index,
-          secret: new Uint8Array(16).fill(indexOrdinal + 1),
-        }));
-
-        const splitBuild = (): void => {
-          for (const exact of exactIndexes) {
-            const exactRes = buildSecondaryL0RunPayloadResult({
-              stream: segment.stream,
-              registry,
-              startSegment: segment.segmentIndex,
-              span: 1,
-              indexes: [exact],
-              segments: [segment],
-            });
-            if (Result.isError(exactRes)) throw new Error(exactRes.error.message);
-          }
-          const companionRes = buildEncodedBundledCompanionPayloadResult({
-            registry,
-            plan,
-            planGeneration: 1,
-            segment,
-          });
-          if (Result.isError(companionRes)) throw new Error(companionRes.error.message);
-        };
-
-        const unifiedBuild = (): void => {
-          const unifiedRes = buildSearchSegmentResult({
-            stream: segment.stream,
-            registry,
-            exactIndexes,
-            plan,
-            planGeneration: 1,
-            segment,
-          });
-          if (Result.isError(unifiedRes)) throw new Error(unifiedRes.error.message);
-          expect(unifiedRes.value.exactRuns).toHaveLength(exactIndexes.length);
-          expect(unifiedRes.value.companion).not.toBeNull();
-        };
-
-        splitBuild();
-        unifiedBuild();
-
-        const splitSamples: number[] = [];
-        const unifiedSamples: number[] = [];
-        for (let i = 0; i < 4; i += 1) {
-          const splitStart = performance.now();
-          splitBuild();
-          splitSamples.push(performance.now() - splitStart);
-
-          const unifiedStart = performance.now();
-          unifiedBuild();
-          unifiedSamples.push(performance.now() - unifiedStart);
-        }
-
-        const splitAvg = average(splitSamples);
-        const unifiedAvg = average(unifiedSamples);
-        expect(unifiedAvg).toBeLessThan(splitAvg * 0.75);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-    120_000
-  );
-
   test(
     "building only the frontier exact batch is at least 25% faster than building the full exact set",
     () => {

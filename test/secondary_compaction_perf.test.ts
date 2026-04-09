@@ -6,7 +6,11 @@ import { performance } from "node:perf_hooks";
 import { Result } from "better-result";
 import { buildBinaryFuseResult } from "../src/index/binary_fuse";
 import { buildSecondaryCompactionPayloadResult } from "../src/index/secondary_compaction_build";
-import { secondaryCompactionFanout, secondaryCompactionSourceFetchConcurrency } from "../src/index/secondary_indexer";
+import {
+  secondaryCompactionFanout,
+  secondaryCompactionMaxLevel,
+  secondaryCompactionSourceFetchConcurrency,
+} from "../src/index/secondary_indexer";
 import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS, type IndexRun } from "../src/index/run_format";
 import type { SecondaryCompactionBuildInput, SecondaryCompactionRunSource } from "../src/index/secondary_compaction_build";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../src/util/stream_paths";
@@ -295,10 +299,12 @@ describe("secondary compaction performance", () => {
     }
 
     expect(average(widenedSamples)).toBeLessThan(average(legacySamples) * 0.75);
-    expect(secondaryCompactionSourceFetchConcurrency("service", inputCount)).toBe(4);
+    expect(secondaryCompactionSourceFetchConcurrency("service", inputCount)).toBe(16);
     expect(secondaryCompactionSourceFetchConcurrency("requestId", inputCount)).toBe(2);
     expect(secondaryCompactionFanout("service", 4)).toBe(4);
     expect(secondaryCompactionFanout("requestId", 4)).toBe(2);
+    expect(secondaryCompactionMaxLevel("service", 6)).toBe(6);
+    expect(secondaryCompactionMaxLevel("requestId", 6)).toBe(0);
   }, 30_000);
 
   test("high-cardinality exact compaction fan-in 2 is at least 25% faster per job than fan-in 4", () => {

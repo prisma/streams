@@ -1,5 +1,5 @@
 import { Result } from "better-result";
-import { concatBytes, readU16BE, readU32BE, readU64BE, writeU16BE, writeU32BE, writeU64BE } from "../util/endian";
+import { concatBytes, readU16BE, readU32BE, readU64BE, writeU32BE, writeU64BE } from "../util/endian";
 import { decodeBinaryFuseResult, encodeBinaryFuse, type BinaryFuseFilter } from "./binary_fuse";
 import { dsError } from "../util/ds_error.ts";
 
@@ -55,10 +55,11 @@ export function encodeIndexRunResult(run: IndexRun): Result<Uint8Array, IndexRun
   if (run.runType === RUN_TYPE_MASK16) {
     if (!run.masks || run.masks.length !== recordCount) return invalidRun("mask run missing masks");
     dataBytes = new Uint8Array(recordCount * 10);
+    const dataView = new DataView(dataBytes.buffer, dataBytes.byteOffset, dataBytes.byteLength);
     for (let i = 0; i < recordCount; i++) {
       const off = i * 10;
-      writeU64BE(dataBytes, off, run.fingerprints[i]);
-      writeU16BE(dataBytes, off + 8, run.masks[i]);
+      dataView.setBigUint64(off, run.fingerprints[i]!, false);
+      dataView.setUint16(off + 8, run.masks[i]! & 0xffff, false);
     }
   } else if (run.runType === RUN_TYPE_POSTINGS) {
     if (!run.postings || run.postings.length !== recordCount) return invalidRun("postings run missing postings");
@@ -78,6 +79,7 @@ export function encodeIndexRunResult(run: IndexRun): Result<Uint8Array, IndexRun
   }
 
   const header = new Uint8Array(36);
+  const headerView = new DataView(header.buffer, header.byteOffset, header.byteLength);
   header[0] = INDEX_RUN_MAGIC.charCodeAt(0);
   header[1] = INDEX_RUN_MAGIC.charCodeAt(1);
   header[2] = INDEX_RUN_MAGIC.charCodeAt(2);
@@ -86,8 +88,8 @@ export function encodeIndexRunResult(run: IndexRun): Result<Uint8Array, IndexRun
   header[5] = run.runType & 0xff;
   header[6] = run.meta.level & 0xff;
   header[7] = 0;
-  writeU64BE(header, 8, BigInt(run.meta.startSegment));
-  writeU64BE(header, 16, BigInt(run.meta.endSegment));
+  headerView.setBigUint64(8, BigInt(run.meta.startSegment), false);
+  headerView.setBigUint64(16, BigInt(run.meta.endSegment), false);
   writeU32BE(header, 24, recordCount);
   writeU32BE(header, 28, filterBytes.byteLength);
   writeU32BE(header, 32, dataBytes.byteLength);

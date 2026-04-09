@@ -19,7 +19,7 @@ import { LexiconFileCache } from "./lexicon_file_cache";
 import type { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { LexiconCompactionRunSource } from "./lexicon_compaction_build";
-import { beginAsyncIndexAction } from "./async_index_actions";
+import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "./async_index_actions";
 import { RoutingLexiconL0BuildCoordinator } from "./routing_lexicon_l0_build_coordinator";
 import {
   buildLexiconRunPayload,
@@ -381,6 +381,7 @@ export class LexiconIndexManager {
           action.fail(runRes.error.message);
           return invalidLexiconIndex(runRes.error.message);
         }
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runRes.value.jobTelemetry);
         const lexiconRun = runRes.value.output.lexicon;
         const persistRes = await this.persistRunPayloadResult(lexiconRun.meta, lexiconRun.payload, stream);
         if (Result.isError(persistRes)) {
@@ -388,6 +389,7 @@ export class LexiconIndexManager {
             detail: {
               output_record_count: lexiconRun.meta.recordCount,
               shared_build_cache_status: runRes.value.cacheStatus,
+              ...buildTelemetryDetail,
             },
           });
           return persistRes;
@@ -423,6 +425,7 @@ export class LexiconIndexManager {
           detail: {
             output_record_count: lexiconRun.meta.recordCount,
             shared_build_cache_status: runRes.value.cacheStatus,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -469,30 +472,32 @@ export class LexiconIndexManager {
           action.fail(runRes.error.message);
           return runRes;
         }
-        const persistRes = await this.persistRunResult(runRes.value, stream);
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runRes.value.jobTelemetry);
+        const persistRes = await this.persistRunResult(runRes.value.run, stream);
         if (Result.isError(persistRes)) {
           action.fail(persistRes.error.message, {
             detail: {
-              output_record_count: runRes.value.meta.recordCount,
+              output_record_count: runRes.value.run.meta.recordCount,
+              ...buildTelemetryDetail,
             },
           });
           return persistRes;
         }
         this.db.insertLexiconIndexRun({
-          run_id: runRes.value.meta.runId,
+          run_id: runRes.value.run.meta.runId,
           stream,
           source_kind: sourceKind,
           source_name: sourceName,
-          level: runRes.value.meta.level,
-          start_segment: runRes.value.meta.startSegment,
-          end_segment: runRes.value.meta.endSegment,
-          object_key: runRes.value.meta.objectKey,
+          level: runRes.value.run.meta.level,
+          start_segment: runRes.value.run.meta.startSegment,
+          end_segment: runRes.value.run.meta.endSegment,
+          object_key: runRes.value.run.meta.objectKey,
           size_bytes: persistRes.value,
-          record_count: runRes.value.meta.recordCount,
+          record_count: runRes.value.run.meta.recordCount,
         });
         const state = this.db.getLexiconIndexState(stream, sourceKind, sourceName);
-        if (state && runRes.value.meta.endSegment + 1 > state.indexed_through) {
-          this.db.updateLexiconIndexedThrough(stream, sourceKind, sourceName, runRes.value.meta.endSegment + 1);
+        if (state && runRes.value.run.meta.endSegment + 1 > state.indexed_through) {
+          this.db.updateLexiconIndexedThrough(stream, sourceKind, sourceName, runRes.value.run.meta.endSegment + 1);
         }
         const manifestRow = this.db.getManifestRow(stream);
         this.db.retireLexiconIndexRuns(group.runs.map((run) => run.run_id), manifestRow.generation + 1, this.db.nowMs());
@@ -510,7 +515,8 @@ export class LexiconIndexManager {
           outputCount: 1,
           outputSizeBytes: BigInt(persistRes.value),
           detail: {
-            output_record_count: runRes.value.meta.recordCount,
+            output_record_count: runRes.value.run.meta.recordCount,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -564,7 +570,7 @@ export class LexiconIndexManager {
     sourceName: string,
     level: number,
     runs: LexiconIndexRunRow[]
-  ): Promise<Result<LexiconRun, LexiconIndexError>> {
+  ): Promise<Result<{ run: LexiconRun; jobTelemetry: import("./index_build_telemetry").IndexBuildJobTelemetry | null }, LexiconIndexError>> {
     const sourcesRes = await this.prepareCompactionSourcesResult(runs);
     if (Result.isError(sourcesRes)) return sourcesRes;
     const buildRes = await this.buildWorkers.buildResult({
@@ -578,17 +584,17 @@ export class LexiconIndexManager {
       },
     });
     if (Result.isError(buildRes)) return invalidLexiconIndex(buildRes.error.message);
-    if (buildRes.value.kind !== "lexicon_compaction_build") return invalidLexiconIndex("unexpected worker result kind");
-    const runRes = decodeLexiconRunResult(buildRes.value.output.payload);
+    if (buildRes.value.output.kind !== "lexicon_compaction_build") return invalidLexiconIndex("unexpected worker result kind");
+    const runRes = decodeLexiconRunResult(buildRes.value.output.output.payload);
     if (Result.isError(runRes)) return invalidLexiconIndex(runRes.error.message);
     const run = runRes.value;
-    run.meta.runId = buildRes.value.output.meta.runId;
-    run.meta.level = buildRes.value.output.meta.level;
-    run.meta.startSegment = buildRes.value.output.meta.startSegment;
-    run.meta.endSegment = buildRes.value.output.meta.endSegment;
-    run.meta.objectKey = buildRes.value.output.meta.objectKey;
-    run.meta.recordCount = buildRes.value.output.meta.recordCount;
-    return Result.ok(run);
+    run.meta.runId = buildRes.value.output.output.meta.runId;
+    run.meta.level = buildRes.value.output.output.meta.level;
+    run.meta.startSegment = buildRes.value.output.output.meta.startSegment;
+    run.meta.endSegment = buildRes.value.output.output.meta.endSegment;
+    run.meta.objectKey = buildRes.value.output.output.meta.objectKey;
+    run.meta.recordCount = buildRes.value.output.output.meta.recordCount;
+    return Result.ok({ run, jobTelemetry: buildRes.value.telemetry });
   }
 
   private async prepareCompactionSourcesResult(

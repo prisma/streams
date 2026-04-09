@@ -27,7 +27,7 @@ type FastJsonScalarExtraction = {
 };
 
 const FAST_JSON_DECODER = new TextDecoder();
-export const ANALYZED_TEXT_CACHE_MAX_ENTRIES = 1024;
+export const ANALYZED_TEXT_CACHE_MAX_ENTRIES = 128;
 export const ANALYZED_TEXT_CACHE_MAX_VALUE_CHARS = 256;
 
 export function resolveSearchAlias(search: SearchConfig | undefined, fieldName: string): string {

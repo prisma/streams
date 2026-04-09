@@ -1,6 +1,6 @@
 import { Result } from "better-result";
 import type { ObjectStore } from "../objectstore/interface";
-import { retryAbortable } from "../util/retry";
+import { retry, retryAbortable } from "../util/retry";
 import { ConcurrencyGate } from "../concurrency_gate";
 
 export type RunPayloadUploadTask =
@@ -42,8 +42,31 @@ export async function uploadRunPayloadsBoundedResult(input: {
         if (firstError) return;
         try {
           if ("payload" in task) {
-            await retryAbortable(
-              (signal) => input.os.put(task.objectKey, task.payload, { contentLength: task.payload.byteLength, signal }),
+            if (input.os.putNoEtag) {
+              sizes[index] = await retry(
+                () => input.os.putNoEtag!(task.objectKey, task.payload, { contentLength: task.payload.byteLength }),
+                {
+                  retries: input.retries,
+                  baseDelayMs: input.baseDelayMs,
+                  maxDelayMs: input.maxDelayMs,
+                  timeoutMs: input.timeoutMs,
+                }
+              );
+            } else {
+              await retryAbortable(
+                (signal) => input.os.put(task.objectKey, task.payload, { contentLength: task.payload.byteLength, signal }),
+                {
+                  retries: input.retries,
+                  baseDelayMs: input.baseDelayMs,
+                  maxDelayMs: input.maxDelayMs,
+                  timeoutMs: input.timeoutMs,
+                }
+              );
+              sizes[index] = task.payload.byteLength;
+            }
+          } else if (input.os.putFileNoEtag) {
+            sizes[index] = await retry(
+              () => input.os.putFileNoEtag!(task.objectKey, task.localPath, task.sizeBytes),
               {
                 retries: input.retries,
                 baseDelayMs: input.baseDelayMs,
@@ -51,7 +74,6 @@ export async function uploadRunPayloadsBoundedResult(input: {
                 timeoutMs: input.timeoutMs,
               }
             );
-            sizes[index] = task.payload.byteLength;
           } else if (input.os.putFile) {
             await retryAbortable(
               (signal) => input.os.putFile!(task.objectKey, task.localPath, task.sizeBytes, { signal }),
@@ -65,16 +87,28 @@ export async function uploadRunPayloadsBoundedResult(input: {
             sizes[index] = task.sizeBytes;
           } else {
             const payload = await Bun.file(task.localPath).bytes();
-            await retryAbortable(
-              (signal) => input.os.put(task.objectKey, payload, { contentLength: payload.byteLength, signal }),
-              {
-                retries: input.retries,
-                baseDelayMs: input.baseDelayMs,
-                maxDelayMs: input.maxDelayMs,
-                timeoutMs: input.timeoutMs,
-              }
-            );
-            sizes[index] = payload.byteLength;
+            if (input.os.putNoEtag) {
+              sizes[index] = await retry(
+                () => input.os.putNoEtag!(task.objectKey, payload, { contentLength: payload.byteLength }),
+                {
+                  retries: input.retries,
+                  baseDelayMs: input.baseDelayMs,
+                  maxDelayMs: input.maxDelayMs,
+                  timeoutMs: input.timeoutMs,
+                }
+              );
+            } else {
+              await retryAbortable(
+                (signal) => input.os.put(task.objectKey, payload, { contentLength: payload.byteLength, signal }),
+                {
+                  retries: input.retries,
+                  baseDelayMs: input.baseDelayMs,
+                  maxDelayMs: input.maxDelayMs,
+                  timeoutMs: input.timeoutMs,
+                }
+              );
+              sizes[index] = payload.byteLength;
+            }
           }
         } catch (error: unknown) {
           firstError = String((error as any)?.message ?? error);

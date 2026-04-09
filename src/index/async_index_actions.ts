@@ -1,4 +1,5 @@
 import type { SqliteDurableStore } from "../db/db";
+import type { IndexBuildJobTelemetry } from "./index_build_telemetry";
 
 export type AsyncIndexActionKind =
   | "routing_l0_build"
@@ -7,7 +8,8 @@ export type AsyncIndexActionKind =
   | "lexicon_compaction_build"
   | "secondary_l0_build"
   | "secondary_compaction_build"
-  | "companion_build";
+  | "companion_build"
+  | "companion_merge_build";
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -32,6 +34,16 @@ export type AsyncIndexActionFinish = {
   outputSizeBytes?: bigint;
   detail?: AsyncIndexActionDetail;
 };
+
+export function asyncIndexActionMemoryDetail(telemetry: IndexBuildJobTelemetry | null | undefined): AsyncIndexActionDetail {
+  if (!telemetry) return {};
+  return {
+    job_worker_pid: telemetry.workerPid,
+    job_rss_baseline_bytes: telemetry.workerRssBaselineBytes,
+    job_rss_peak_bytes: telemetry.workerRssPeakBytes,
+    job_rss_peak_contributed_bytes: telemetry.workerRssPeakContributedBytes,
+  };
+}
 
 function mergeDetail(base: AsyncIndexActionDetail | undefined, extra: AsyncIndexActionDetail | undefined): string {
   return JSON.stringify({

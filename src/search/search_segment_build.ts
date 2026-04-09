@@ -1,8 +1,7 @@
-import { readFileSync } from "node:fs";
 import { Result } from "better-result";
 import type { SchemaRegistry, SearchFieldConfig } from "../schema/registry";
 import { schemaVersionForOffset } from "../schema/read_json";
-import { iterateBlockRecordsResult } from "../segment/format";
+import { iterateBlockRecordsFromFileResult } from "../segment/format";
 import type { SearchCompanionPlan } from "./companion_plan";
 import type { ColFieldInput, ColScalar, ColSectionInput } from "./col_format";
 import {
@@ -29,6 +28,9 @@ import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_path
 import { encodeIndexRunResult, RUN_TYPE_MASK16 } from "../index/run_format";
 import { writeIndexRunOutputFileResult } from "../index/index_run_output_file";
 import { getConfiguredSecondaryIndexes, hashSecondaryIndexField, type SecondaryIndexField } from "../index/secondary_schema";
+import { buildEncodedBundledCompanionPayloadResult } from "./companion_build";
+
+const TERM_ENCODER = new TextEncoder();
 
 type SearchSegmentBuildError = {
   kind: "invalid_search_segment_build";
@@ -43,8 +45,17 @@ export type SearchSegmentExactBuildInput = {
 type ExactFieldState = {
   index: SecondaryIndexField;
   secret: Uint8Array;
-  canonicalTerms: Set<string>;
+  fingerprints: Set<bigint>;
 };
+
+function sortFingerprints(iterable: Iterable<bigint>): bigint[] {
+  const values = Array.from(iterable);
+  if (values.length <= 1) return values;
+  const typed = new BigUint64Array(values.length);
+  for (let index = 0; index < values.length; index += 1) typed[index] = values[index]!;
+  typed.sort();
+  return Array.from(typed);
+}
 
 type ColumnFieldBuilder = {
   config: SearchFieldConfig;
@@ -69,6 +80,7 @@ export type SearchSegmentBuildInput = {
   exactIndexes: SearchSegmentExactBuildInput[];
   plan: SearchCompanionPlan | null;
   planGeneration: number | null;
+  includeCompanion?: boolean;
   outputDir?: string;
   segment: {
     segmentIndex: number;
@@ -178,12 +190,26 @@ function createFtsBuilders(registry: SchemaRegistry, plan: SearchCompanionPlan |
         prefix: config.prefix === true ? true : undefined,
         positions: config.positions === true ? true : undefined,
         exists_docs: [],
+        _exists_prefix_count: 0,
         terms: Object.create(null) as Record<string, FtsTermInput>,
       },
       tokenCache: new Map<string, string[]>(),
     });
   }
   return builders;
+}
+
+function recordFtsFieldExists(fieldCompanion: FtsFieldInput, docCount: number): void {
+  const prefixCount = fieldCompanion._exists_prefix_count;
+  if (typeof prefixCount === "number") {
+    if (prefixCount === docCount) {
+      fieldCompanion._exists_prefix_count = prefixCount + 1;
+      return;
+    }
+    fieldCompanion.exists_docs = Array.from({ length: prefixCount }, (_, index) => index);
+    delete fieldCompanion._exists_prefix_count;
+  }
+  fieldCompanion.exists_docs.push(docCount);
 }
 
 function finalizeColSection(registry: SchemaRegistry, builders: Map<string, ColumnFieldBuilder>, docCount: number): ColSectionInput {
@@ -226,13 +252,13 @@ function finalizeFtsSection(builders: Map<string, FtsFieldBuilder>, docCount: nu
 function appendNormalizedKeywordFtsValue(builder: FtsFieldBuilder | undefined, normalized: string, docCount: number): void {
   if (!builder) return;
   const fieldCompanion = builder.companion;
-  fieldCompanion.exists_docs.push(docCount);
+  recordFtsFieldExists(fieldCompanion, docCount);
   fieldCompanion.terms[normalized] = appendKeywordPostingDoc(fieldCompanion.terms[normalized], docCount);
 }
 
 function addExactCanonical(state: ExactFieldState | undefined, canonical: string | null): void {
   if (!state || canonical == null) return;
-  state.canonicalTerms.add(canonical);
+  state.fingerprints.add(siphash24(state.secret, TERM_ENCODER.encode(canonical)));
 }
 
 function addExactRawValue(state: ExactFieldState | undefined, rawValue: unknown): void {
@@ -257,7 +283,7 @@ function appendColumnAndExactValue(
 function appendTextFtsValue(builder: FtsFieldBuilder | undefined, rawValue: unknown, docCount: number): void {
   if (!builder || typeof rawValue !== "string") return;
   const fieldCompanion = builder.companion;
-  fieldCompanion.exists_docs.push(docCount);
+  recordFtsFieldExists(fieldCompanion, docCount);
   const tokenPositions = new Map<string, number[]>();
   const tokens = analyzeTextValueCached(rawValue, builder.config.analyzer, builder.tokenCache);
   for (let position = 0; position < tokens.length; position += 1) {
@@ -284,19 +310,22 @@ export function buildSearchSegmentResult(
     return invalidSearchSegmentBuild("unified search segment build only supports evlog col/fts search plans");
   }
 
-  const segmentBytes = readFileSync(input.segment.localPath);
+  const includeCompanion = input.includeCompanion !== false && input.plan != null;
+  const buildCompanionSeparately = Boolean(input.outputDir && includeCompanion);
   const exactStates = new Map<string, ExactFieldState>(
     input.exactIndexes.map((entry) => [
       entry.index.name,
       {
         index: entry.index,
         secret: entry.secret,
-        canonicalTerms: new Set<string>(),
+        fingerprints: new Set<bigint>(),
       },
     ])
   );
-  const colBuilders = createColBuilders(input.registry, input.plan);
-  const ftsBuilders = createFtsBuilders(input.registry, input.plan);
+  const colBuilders =
+    buildCompanionSeparately || !includeCompanion ? new Map<string, ColumnFieldBuilder>() : createColBuilders(input.registry, input.plan);
+  const ftsBuilders =
+    buildCompanionSeparately || !includeCompanion ? new Map<string, FtsFieldBuilder>() : createFtsBuilders(input.registry, input.plan);
   const requiredFieldNames = new Set<string>();
   for (const fieldName of exactStates.keys()) requiredFieldNames.add(fieldName);
   for (const fieldName of colBuilders.keys()) requiredFieldNames.add(fieldName);
@@ -306,7 +335,7 @@ export function buildSearchSegmentResult(
 
   let docCount = 0;
   let offset = input.segment.startOffset;
-  for (const recRes of iterateBlockRecordsResult(segmentBytes)) {
+  for (const recRes of iterateBlockRecordsFromFileResult(input.segment.localPath)) {
     if (Result.isError(recRes)) return invalidSearchSegmentBuild(recRes.error.message);
     const version = schemaVersionForOffset(input.registry, offset);
     let fastPlan = planByVersion.get(version);
@@ -362,9 +391,7 @@ export function buildSearchSegmentResult(
   const exactRuns: SearchSegmentBuildOutput["exactRuns"] = [];
   const streamHash = streamHash16Hex(input.stream);
   for (const state of exactStates.values()) {
-    const fingerprints = Array.from(state.canonicalTerms, (canonical) => siphash24(state.secret, new TextEncoder().encode(canonical))).sort((a, b) =>
-      a < b ? -1 : a > b ? 1 : 0
-    );
+    const fingerprints = sortFingerprints(state.fingerprints);
     const runId = `${state.index.name}-l0-${input.segment.segmentIndex.toString().padStart(16, "0")}-${input.segment.segmentIndex
       .toString()
       .padStart(16, "0")}-${Date.now()}`;
@@ -410,51 +437,51 @@ export function buildSearchSegmentResult(
   }
 
   let companion: SearchSegmentBuildOutput["companion"] = null;
-  if (input.plan) {
-    const sectionPayloads: EncodedCompanionSectionPayload[] = [];
-    const sectionKinds: CompanionSectionKind[] = [];
-    const sectionSizes: Record<string, number> = {};
-    const addSection = (payload: EncodedCompanionSectionPayload): void => {
-      sectionPayloads.push(payload);
-      sectionKinds.push(payload.kind);
-      sectionSizes[payload.kind] = payload.payload.byteLength;
-    };
-    let primaryTimestampMinMs: bigint | null = null;
-    let primaryTimestampMaxMs: bigint | null = null;
-    if (input.plan.families.col) {
-      const colSection = finalizeColSection(input.registry, colBuilders, docCount);
-      const primaryTimestampField = colSection.primary_timestamp_field;
-      const primaryTimestampColumn = primaryTimestampField ? colSection.fields[primaryTimestampField] : undefined;
-      primaryTimestampMinMs = typeof primaryTimestampColumn?.min === "bigint" ? primaryTimestampColumn.min : null;
-      primaryTimestampMaxMs = typeof primaryTimestampColumn?.max === "bigint" ? primaryTimestampColumn.max : null;
-      addSection(encodeCompanionSectionPayload("col", colSection, input.plan));
-    }
-    if (input.plan.families.fts) {
-      addSection(encodeCompanionSectionPayload("fts", finalizeFtsSection(ftsBuilders, docCount), input.plan));
-    }
-    const companionPayload = encodeBundledSegmentCompanionFromPayloads({
-      stream: input.stream,
-      segment_index: input.segment.segmentIndex,
-      plan_generation: input.planGeneration ?? 0,
-      sections: sectionPayloads,
-    });
-    if (input.outputDir) {
-      const fileRes = writeIndexRunOutputFileResult(
-        input.outputDir,
-        `search-companion-${input.segment.segmentIndex}`,
-        companionPayload
-      );
-      if (Result.isError(fileRes)) return invalidSearchSegmentBuild(fileRes.error.message);
-      companion = {
-        storage: "file",
-        localPath: fileRes.value.localPath,
-        sizeBytes: fileRes.value.sizeBytes,
-        sectionKinds,
-        sectionSizes,
-        primaryTimestampMinMs,
-        primaryTimestampMaxMs,
-      };
+  if (includeCompanion && input.plan) {
+    if (buildCompanionSeparately) {
+      const companionRes = buildEncodedBundledCompanionPayloadResult({
+        registry: input.registry,
+        plan: input.plan,
+        planGeneration: input.planGeneration ?? 0,
+        outputDir: input.outputDir,
+        segment: {
+          stream: input.stream,
+          segmentIndex: input.segment.segmentIndex,
+          startOffset: input.segment.startOffset,
+          localPath: input.segment.localPath,
+        },
+      });
+      if (Result.isError(companionRes)) return invalidSearchSegmentBuild(companionRes.error.message);
+      companion = companionRes.value;
     } else {
+      const sectionPayloads: EncodedCompanionSectionPayload[] = [];
+      const sectionKinds: CompanionSectionKind[] = [];
+      const sectionSizes: Record<string, number> = {};
+      const addSection = (payload: EncodedCompanionSectionPayload): void => {
+        sectionPayloads.push(payload);
+        sectionKinds.push(payload.kind);
+        sectionSizes[payload.kind] = payload.payload.byteLength;
+      };
+      let primaryTimestampMinMs: bigint | null = null;
+      let primaryTimestampMaxMs: bigint | null = null;
+      if (input.plan.families.col) {
+        const colSection = finalizeColSection(input.registry, colBuilders, docCount);
+        const primaryTimestampField = colSection.primary_timestamp_field;
+        const primaryTimestampColumn = primaryTimestampField ? colSection.fields[primaryTimestampField] : undefined;
+        primaryTimestampMinMs = typeof primaryTimestampColumn?.min === "bigint" ? primaryTimestampColumn.min : null;
+        primaryTimestampMaxMs = typeof primaryTimestampColumn?.max === "bigint" ? primaryTimestampColumn.max : null;
+        addSection(encodeCompanionSectionPayload("col", colSection, input.plan));
+      }
+      if (input.plan.families.fts) {
+        const ftsSection = finalizeFtsSection(ftsBuilders, docCount);
+        addSection(encodeCompanionSectionPayload("fts", ftsSection, input.plan));
+      }
+      const companionPayload = encodeBundledSegmentCompanionFromPayloads({
+        stream: input.stream,
+        segment_index: input.segment.segmentIndex,
+        plan_generation: input.planGeneration ?? 0,
+        sections: sectionPayloads,
+      });
       companion = {
         storage: "bytes",
         payload: companionPayload,

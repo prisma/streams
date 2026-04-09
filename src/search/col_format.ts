@@ -1,8 +1,10 @@
 import { Result } from "better-result";
+import { createBitset, bitsetSet } from "./bitset";
 import type { SearchFieldKind } from "../schema/registry";
 import { decodeDocIds, encodeDocSet } from "./binary/docset";
 import { BinaryCursor, BinaryPayloadError, BinaryWriter, concatBytes, readF64, readI64, readU16, readU32 } from "./binary/codec";
 import type { SearchCompanionPlan } from "./companion_plan";
+import { readUVarint, writeUVarint } from "./binary/varint";
 
 export type ColScalar = bigint | number | boolean;
 
@@ -35,12 +37,38 @@ type ColFieldDirectoryEntry = {
   maxValue: ColScalar | null;
 };
 
+type EncodedColFieldPayload = {
+  entry: ColFieldDirectoryEntry;
+  exists: Uint8Array;
+  values: Uint8Array;
+  pages: Uint8Array;
+};
+
 type ColPageEntry = {
   firstDocId: number;
   valueStartIndex: number;
   min: ColScalar;
   max: ColScalar;
 };
+
+type DocIdCursorState =
+  | {
+      codec: "all";
+      nextDocId: number;
+      docCount: number;
+    }
+  | {
+      codec: "bitset";
+      nextDocId: number;
+      docCount: number;
+      payload: Uint8Array;
+    }
+  | {
+      codec: "delta";
+      cursor: BinaryCursor;
+      previousDocId: number;
+      emittedCount: number;
+    };
 
 const PAGE_SIZE = 256;
 
@@ -179,10 +207,17 @@ export function compareColScalars(left: ColScalar, right: ColScalar): number {
 }
 
 export function encodeColSegmentCompanion(input: ColSectionInput, plan: SearchCompanionPlan): Uint8Array {
+  return concatBytes(encodeColSegmentCompanionChunks(input, plan).chunks);
+}
+
+export function encodeColSegmentCompanionChunks(
+  input: ColSectionInput,
+  plan: SearchCompanionPlan
+): { chunks: Uint8Array[]; sizeBytes: number } {
   const orderedFields = plan.fields
     .filter((field) => input.fields[field.name] && (field.kind === "integer" || field.kind === "float" || field.kind === "date" || field.kind === "bool"))
     .sort((a, b) => a.ordinal - b.ordinal);
-  const fieldPayloads: Array<{ entry: ColFieldDirectoryEntry; exists: Uint8Array; values: Uint8Array; pages: Uint8Array }> = [];
+  const fieldPayloads: EncodedColFieldPayload[] = [];
   for (const planField of orderedFields) {
     const field = input.fields[planField.name]!;
     const encodedDocSet = encodeDocSet(input.doc_count, field.doc_ids);
@@ -209,12 +244,20 @@ export function encodeColSegmentCompanion(input: ColSectionInput, plan: SearchCo
     });
   }
 
+  const primaryTimestampOrdinal =
+    input.primary_timestamp_field == null ? 0xffff : (plan.fields.find((field) => field.name === input.primary_timestamp_field)?.ordinal ?? 0xffff);
+  return encodeColSectionChunksFromFieldPayloads(input.doc_count, primaryTimestampOrdinal, fieldPayloads);
+}
+
+function encodeColSectionChunksFromFieldPayloads(
+  docCount: number,
+  primaryTimestampOrdinal: number,
+  fieldPayloads: EncodedColFieldPayload[]
+): { chunks: Uint8Array[]; sizeBytes: number } {
   const header = new BinaryWriter();
-  header.writeU32(input.doc_count);
+  header.writeU32(docCount);
   header.writeU16(fieldPayloads.length);
-  header.writeU16(
-    input.primary_timestamp_field == null ? 0xffff : (plan.fields.find((field) => field.name === input.primary_timestamp_field)?.ordinal ?? 0xffff)
-  );
+  header.writeU16(primaryTimestampOrdinal);
 
   const directoryBase = header.length + DIRECTORY_ENTRY_BYTES * fieldPayloads.length;
   let payloadOffset = directoryBase;
@@ -249,7 +292,195 @@ export function encodeColSegmentCompanion(input: ColSectionInput, plan: SearchCo
     directory.writeBytes(encodeScalarInline(payload.entry.kind, payload.entry.maxValue));
   }
 
-  return concatBytes([header.finish(), directory.finish(), ...fieldPayloads.flatMap((payload) => [payload.exists, payload.values, payload.pages])]);
+  const chunks = [header.finish(), directory.finish(), ...fieldPayloads.flatMap((payload) => [payload.exists, payload.values, payload.pages])];
+  return { chunks, sizeBytes: payloadOffset };
+}
+
+export function mergeEncodedColSectionChunksResult(
+  bytesParts: Uint8Array[]
+): Result<{ chunks: Uint8Array[]; sizeBytes: number; primaryTimestampOrdinal: number }, ColFormatError> {
+  if (bytesParts.length === 0) return Result.ok({ chunks: [new Uint8Array(0)], sizeBytes: 0, primaryTimestampOrdinal: 0xffff });
+  const fieldPayloads: EncodedColFieldPayload[] = [];
+  let docCount: number | null = null;
+  let primaryTimestampOrdinal = 0xffff;
+  for (const bytes of bytesParts) {
+    const partDocCount = readU32(bytes, 0);
+    if (docCount == null) docCount = partDocCount;
+    else if (docCount !== partDocCount) return invalidCol("mismatched .col2 doc_count while merging partial companions");
+    const partPrimaryTimestampOrdinal = readU16(bytes, 6);
+    if (partPrimaryTimestampOrdinal !== 0xffff) {
+      if (primaryTimestampOrdinal !== 0xffff && primaryTimestampOrdinal !== partPrimaryTimestampOrdinal) {
+        return invalidCol("mismatched .col2 primary timestamp field while merging partial companions");
+      }
+      primaryTimestampOrdinal = partPrimaryTimestampOrdinal;
+    }
+    const fieldCount = readU16(bytes, 4);
+    const directoryOffset = 8;
+    for (let index = 0; index < fieldCount; index += 1) {
+      const entryOffset = directoryOffset + index * DIRECTORY_ENTRY_BYTES;
+      if (entryOffset + DIRECTORY_ENTRY_BYTES > bytes.byteLength) return invalidCol("invalid .col2 directory");
+      const flags = bytes[entryOffset + 3]!;
+      const entry: ColFieldDirectoryEntry = {
+        fieldOrdinal: readU16(bytes, entryOffset),
+        kind: CODE_KIND[bytes[entryOffset + 2]!] ?? "keyword",
+        presentCount: readU32(bytes, entryOffset + 4),
+        existsCodec: bytes[entryOffset + 8]!,
+        existsOffset: 0,
+        existsLength: readU32(bytes, entryOffset + 16),
+        valuesOffset: 0,
+        valuesLength: readU32(bytes, entryOffset + 24),
+        pageIndexOffset: 0,
+        pageIndexLength: readU32(bytes, entryOffset + 32),
+        minValue: (flags & FLAG_HAS_MINMAX) !== 0 ? decodeScalarInline(CODE_KIND[bytes[entryOffset + 2]!] ?? "keyword", bytes.subarray(entryOffset + 36, entryOffset + 44)) : null,
+        maxValue: (flags & FLAG_HAS_MINMAX) !== 0 ? decodeScalarInline(CODE_KIND[bytes[entryOffset + 2]!] ?? "keyword", bytes.subarray(entryOffset + 44, entryOffset + 52)) : null,
+      };
+      if (entry.kind !== "integer" && entry.kind !== "float" && entry.kind !== "date" && entry.kind !== "bool") {
+        return invalidCol("invalid .col2 field kind while merging partial companions");
+      }
+      fieldPayloads.push({
+        entry,
+        exists: slicePayload(bytes, readU32(bytes, entryOffset + 12), entry.existsLength, "invalid .col2 exists payload"),
+        values: slicePayload(bytes, readU32(bytes, entryOffset + 20), entry.valuesLength, "invalid .col2 values payload"),
+        pages:
+          entry.pageIndexLength > 0
+            ? slicePayload(bytes, readU32(bytes, entryOffset + 28), entry.pageIndexLength, "invalid .col2 page index")
+            : new Uint8Array(),
+      });
+    }
+  }
+  fieldPayloads.sort((left, right) => left.entry.fieldOrdinal - right.entry.fieldOrdinal);
+  const mergedFieldPayloads: EncodedColFieldPayload[] = [];
+  for (const payload of fieldPayloads) {
+    const previous = mergedFieldPayloads[mergedFieldPayloads.length - 1];
+    if (!previous || previous.entry.fieldOrdinal !== payload.entry.fieldOrdinal) {
+      mergedFieldPayloads.push(payload);
+      continue;
+    }
+    const mergedPayloadRes = mergeColFieldPayloadsResult(docCount ?? 0, previous, payload);
+    if (Result.isError(mergedPayloadRes)) return mergedPayloadRes;
+    mergedFieldPayloads[mergedFieldPayloads.length - 1] = mergedPayloadRes.value;
+  }
+  const encoded = encodeColSectionChunksFromFieldPayloads(docCount ?? 0, primaryTimestampOrdinal, mergedFieldPayloads);
+  return Result.ok({ ...encoded, primaryTimestampOrdinal });
+}
+
+function mergeColFieldPayloadsResult(
+  docCount: number,
+  left: EncodedColFieldPayload,
+  right: EncodedColFieldPayload
+): Result<EncodedColFieldPayload, ColFormatError> {
+  if (left.entry.fieldOrdinal !== right.entry.fieldOrdinal) return invalidCol("mismatched .col2 field ordinal while merging partial companions");
+  if (left.entry.kind !== right.entry.kind) return invalidCol("mismatched .col2 field kind while merging partial companions");
+  const kind = left.entry.kind;
+  const width = valueWidth(kind);
+  const estimatedPresentCount = left.entry.presentCount + right.entry.presentCount;
+  const leftDocs = createDocIdCursorState(docCount, left.entry.existsCodec, left.exists);
+  const rightDocs = createDocIdCursorState(docCount, right.entry.existsCodec, right.exists);
+  let leftDocId = nextDocId(leftDocs);
+  let rightDocId = nextDocId(rightDocs);
+  let leftValueOffset = 0;
+  let rightValueOffset = 0;
+  let mergedCount = 0;
+  let previousDocId = -1;
+  const deltaBytes = new Uint8Array(Math.max(1, estimatedPresentCount * 5));
+  let deltaLength = 0;
+  const values = new Uint8Array(Math.max(1, estimatedPresentCount * width));
+  const valuesView = new DataView(values.buffer, values.byteOffset, values.byteLength);
+  let valuesLength = 0;
+  const bitset = createBitset(docCount);
+  const pageBytes = estimatedPresentCount > PAGE_SIZE ? new Uint8Array(Math.ceil(estimatedPresentCount / PAGE_SIZE) * PAGE_ENTRY_BYTES) : new Uint8Array(0);
+  const pageView = pageBytes.byteLength > 0 ? new DataView(pageBytes.buffer, pageBytes.byteOffset, pageBytes.byteLength) : null;
+  let pageLength = 0;
+  let pageStartDocId = -1;
+  let pageStartIndex = 0;
+  let pageMin: ColScalar | null = null;
+  let pageMax: ColScalar | null = null;
+  let pageCount = 0;
+  const flushPage = (): void => {
+    if (pageCount === 0) return;
+    if (!pageView) return;
+    pageView.setUint32(pageLength, pageStartDocId, true);
+    pageView.setUint32(pageLength + 4, pageStartIndex, true);
+    writeScalarInlineToBuffer(pageBytes, pageLength + 8, kind, pageMin);
+    writeScalarInlineToBuffer(pageBytes, pageLength + 16, kind, pageMax);
+    pageLength += PAGE_ENTRY_BYTES;
+    pageCount = 0;
+    pageMin = null;
+    pageMax = null;
+  };
+  while (leftDocId != null || rightDocId != null) {
+    const takeLeft = rightDocId == null || (leftDocId != null && leftDocId < rightDocId);
+    const docId = takeLeft ? leftDocId! : rightDocId!;
+    if (docId === previousDocId) return invalidCol("duplicate .col2 doc_id while merging partial companions");
+    const value = takeLeft ? decodeValue(kind, left.values, leftValueOffset) : decodeValue(kind, right.values, rightValueOffset);
+    if (takeLeft) {
+      leftValueOffset += width;
+      leftDocId = nextDocId(leftDocs);
+    } else {
+      rightValueOffset += width;
+      rightDocId = nextDocId(rightDocs);
+    }
+    bitsetSet(bitset, docId);
+    if (mergedCount === 0) {
+      deltaLength = writeUVarintToBytes(deltaBytes, deltaLength, docId);
+      pageStartDocId = docId;
+      pageStartIndex = 0;
+      pageMin = value;
+      pageMax = value;
+      pageCount = 1;
+    } else {
+      deltaLength = writeUVarintToBytes(deltaBytes, deltaLength, docId - previousDocId);
+      if (pageCount === 0) {
+        pageStartDocId = docId;
+        pageStartIndex = mergedCount;
+        pageMin = value;
+        pageMax = value;
+        pageCount = 1;
+      } else {
+        if (compareColScalars(value, pageMin!) < 0) pageMin = value;
+        if (compareColScalars(value, pageMax!) > 0) pageMax = value;
+        pageCount += 1;
+      }
+    }
+    valuesLength = writeScalarValueToBuffer(values, valuesView, valuesLength, kind, value);
+    mergedCount += 1;
+    if (pageCount === PAGE_SIZE) flushPage();
+    previousDocId = docId;
+  }
+  if (mergedCount > PAGE_SIZE) flushPage();
+  let minValue = left.entry.minValue;
+  if (right.entry.minValue != null && (minValue == null || compareColScalars(right.entry.minValue, minValue) < 0)) {
+    minValue = right.entry.minValue;
+  }
+  let maxValue = left.entry.maxValue;
+  if (right.entry.maxValue != null && (maxValue == null || compareColScalars(right.entry.maxValue, maxValue) > 0)) {
+    maxValue = right.entry.maxValue;
+  }
+  const deltaPayload = deltaBytes.slice(0, deltaLength);
+  const bitsetPayload = new Uint8Array(bitset);
+  const useAllDocSet = mergedCount === docCount;
+  const useDelta = !useAllDocSet && mergedCount > 0 && deltaPayload.byteLength < bitsetPayload.byteLength;
+  const valuesPayload = values.slice(0, valuesLength);
+  const pages = mergedCount > PAGE_SIZE ? pageBytes.slice(0, pageLength) : new Uint8Array();
+  return Result.ok({
+    entry: {
+      fieldOrdinal: left.entry.fieldOrdinal,
+      kind,
+      presentCount: mergedCount,
+      existsCodec: useAllDocSet ? 0 : useDelta ? 2 : 1,
+      existsOffset: 0,
+      existsLength: useAllDocSet ? 0 : useDelta ? deltaPayload.byteLength : bitsetPayload.byteLength,
+      valuesOffset: 0,
+      valuesLength: valuesPayload.byteLength,
+      pageIndexOffset: 0,
+      pageIndexLength: pages.byteLength,
+      minValue,
+      maxValue,
+    },
+    exists: useAllDocSet ? new Uint8Array() : useDelta ? deltaPayload : bitsetPayload,
+    values: valuesPayload,
+    pages,
+  });
 }
 
 export function decodeColSegmentCompanionResult(bytes: Uint8Array, plan: SearchCompanionPlan): Result<ColSectionView, ColFormatError> {
@@ -306,13 +537,31 @@ export function decodeColSegmentCompanionResult(bytes: Uint8Array, plan: SearchC
 }
 
 function encodeFieldValues(kind: SearchFieldKind, values: ColScalar[]): Uint8Array {
-  const writer = new BinaryWriter();
-  for (const value of values) {
-    if (kind === "integer" || kind === "date") writer.writeI64(value as bigint);
-    else if (kind === "float") writer.writeF64(value as number);
-    else if (kind === "bool") writer.writeU8((value as boolean) ? 1 : 0);
+  const width = valueWidth(kind);
+  const payload = new Uint8Array(Math.max(1, values.length * width));
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  let offset = 0;
+  for (const value of values) offset = writeScalarValueToBuffer(payload, view, offset, kind, value);
+  return payload.subarray(0, offset);
+}
+
+function writeScalarValueToBuffer(
+  bytes: Uint8Array,
+  view: DataView,
+  offset: number,
+  kind: SearchFieldKind,
+  value: ColScalar
+): number {
+  if (kind === "integer" || kind === "date") {
+    view.setBigInt64(offset, BigInt.asIntN(64, value as bigint), true);
+    return offset + 8;
   }
-  return writer.finish();
+  if (kind === "float") {
+    view.setFloat64(offset, value as number, true);
+    return offset + 8;
+  }
+  bytes[offset] = (value as boolean) ? 1 : 0;
+  return offset + 1;
 }
 
 function encodePageIndex(kind: SearchFieldKind, docIds: number[], values: ColScalar[]): Uint8Array {
@@ -366,6 +615,63 @@ function decodeValue(kind: SearchFieldKind, bytes: Uint8Array, offset: number): 
   if (kind === "integer" || kind === "date") return readI64(bytes, offset);
   if (kind === "float") return readF64(bytes, offset);
   return bytes[offset] === 1;
+}
+
+function writeScalarInlineToBuffer(bytes: Uint8Array, offset: number, kind: SearchFieldKind, value: ColScalar | null): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, 8);
+  if (kind === "integer" || kind === "date") {
+    view.setBigInt64(0, BigInt.asIntN(64, value == null ? 0n : (value as bigint)), true);
+    return;
+  }
+  if (kind === "float") {
+    view.setFloat64(0, value == null ? Number.NaN : (value as number), true);
+    return;
+  }
+  if (kind === "bool") {
+    bytes[offset] = value == null ? 0xff : (value as boolean) ? 1 : 0;
+    bytes.fill(0, offset + 1, offset + 8);
+    return;
+  }
+  bytes.fill(0, offset, offset + 8);
+}
+
+function writeUVarintToBytes(bytes: Uint8Array, offset: number, value: number): number {
+  let remaining = value >>> 0;
+  while (remaining >= 0x80) {
+    bytes[offset++] = (remaining & 0x7f) | 0x80;
+    remaining >>>= 7;
+  }
+  bytes[offset++] = remaining;
+  return offset;
+}
+
+function createDocIdCursorState(docCount: number, codec: number, payload: Uint8Array): DocIdCursorState {
+  if (codec === 0) return { codec: "all", nextDocId: 0, docCount };
+  if (codec === 1) return { codec: "bitset", nextDocId: 0, docCount, payload };
+  if (codec === 2) return { codec: "delta", cursor: new BinaryCursor(payload), previousDocId: 0, emittedCount: 0 };
+  throw new BinaryPayloadError(`unknown docset codec ${codec}`);
+}
+
+function nextDocId(state: DocIdCursorState): number | null {
+  if (state.codec === "all") {
+    if (state.nextDocId >= state.docCount) return null;
+    return state.nextDocId++;
+  }
+  if (state.codec === "bitset") {
+    while (state.nextDocId < state.docCount) {
+      const candidate = state.nextDocId++;
+      const byteIndex = candidate >>> 3;
+      const bitMask = 1 << (candidate & 7);
+      if ((state.payload[byteIndex] ?? 0) & bitMask) return candidate;
+    }
+    return null;
+  }
+  if (state.cursor.remaining() <= 0) return null;
+  const delta = Number(readUVarint(state.cursor));
+  const next = state.emittedCount === 0 ? delta : state.previousDocId + delta;
+  state.previousDocId = next;
+  state.emittedCount += 1;
+  return next;
 }
 
 function valueWidth(kind: SearchFieldKind): number {

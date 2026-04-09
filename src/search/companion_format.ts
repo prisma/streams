@@ -1,7 +1,13 @@
 import { Result } from "better-result";
 import { decodeAggSegmentCompanionResult, encodeAggSegmentCompanion, type AggSectionInput, type AggSectionView } from "./agg_format";
-import { decodeColSegmentCompanionResult, encodeColSegmentCompanion, type ColSectionInput, type ColSectionView } from "./col_format";
-import { decodeFtsSegmentCompanionResult, encodeFtsSegmentCompanion, type FtsSectionInput, type FtsSectionView } from "./fts_format";
+import { decodeColSegmentCompanionResult, encodeColSegmentCompanion, encodeColSegmentCompanionChunks, type ColSectionInput, type ColSectionView } from "./col_format";
+import {
+  decodeFtsSegmentCompanionResult,
+  encodeFtsSegmentCompanion,
+  encodeFtsSegmentCompanionChunks,
+  type FtsSectionInput,
+  type FtsSectionView,
+} from "./fts_format";
 import {
   decodeMetricsBlockSegmentCompanionResult,
   encodeMetricsBlockSegmentCompanion,
@@ -83,6 +89,17 @@ export type EncodedCompanionSectionPayload = {
   payload: Uint8Array;
 };
 
+export type EncodedCompanionSectionChunkPayload = {
+  kind: CompanionSectionKind;
+  version: number;
+  compression: number;
+  flags: number;
+  dirLength: number;
+  logicalLength: number;
+  sizeBytes: number;
+  chunks: Uint8Array[];
+};
+
 type CompanionFormatError = { kind: "invalid_companion"; message: string };
 
 function invalidCompanion<T = never>(message: string): Result<T, CompanionFormatError> {
@@ -120,6 +137,27 @@ export function encodeCompanionSectionPayload(
   plan: SearchCompanionPlan
 ): EncodedCompanionSectionPayload {
   return encodeSectionPayload(kind, section, plan);
+}
+
+export function encodeCompanionSectionChunkPayload(
+  kind: CompanionSectionKind,
+  section: CompanionSectionInputMap[CompanionSectionKind],
+  plan: SearchCompanionPlan
+): EncodedCompanionSectionChunkPayload {
+  if (kind === "col") {
+    const chunkSet = encodeColSegmentCompanionChunks(section as ColSectionInput, plan);
+    return { kind, version: 2, compression: 0, flags: 0, dirLength: 8, logicalLength: chunkSet.sizeBytes, sizeBytes: chunkSet.sizeBytes, chunks: chunkSet.chunks };
+  }
+  if (kind === "fts") {
+    const chunkSet = encodeFtsSegmentCompanionChunks(section as FtsSectionInput, plan);
+    return { kind, version: 2, compression: 0, flags: 0, dirLength: 8, logicalLength: chunkSet.sizeBytes, sizeBytes: chunkSet.sizeBytes, chunks: chunkSet.chunks };
+  }
+  if (kind === "agg") {
+    const payload = encodeAggSegmentCompanion(section as AggSectionInput, plan);
+    return { kind, version: 2, compression: 0, flags: 0, dirLength: 4, logicalLength: payload.byteLength, sizeBytes: payload.byteLength, chunks: [payload] };
+  }
+  const payload = encodeMetricsBlockSegmentCompanion(section as MetricsBlockSectionInput);
+  return { kind, version: 2, compression: 0, flags: 0, dirLength: 20, logicalLength: payload.byteLength, sizeBytes: payload.byteLength, chunks: [payload] };
 }
 
 function decodeSectionResult(
@@ -174,6 +212,31 @@ export function encodeBundledSegmentCompanionFromPayloads(companion: {
   plan_generation: number;
   sections: EncodedCompanionSectionPayload[];
 }): Uint8Array {
+  return concatBytes(
+    encodeBundledSegmentCompanionChunksFromPayloads({
+      stream: companion.stream,
+      segment_index: companion.segment_index,
+      plan_generation: companion.plan_generation,
+      sections: companion.sections.map((section) => ({
+        kind: section.kind,
+        version: section.version,
+        compression: section.compression,
+        flags: section.flags,
+        dirLength: section.dirLength,
+        logicalLength: section.logicalLength,
+        sizeBytes: section.payload.byteLength,
+        chunks: [section.payload],
+      })),
+    }).chunks
+  );
+}
+
+export function encodeBundledSegmentCompanionChunksFromPayloads(companion: {
+  stream: string;
+  segment_index: number;
+  plan_generation: number;
+  sections: EncodedCompanionSectionChunkPayload[];
+}): { chunks: Uint8Array[]; sizeBytes: number } {
   const writer = new BinaryWriter();
   writer.writeBytes(MAGIC);
   writer.writeU16(MAJOR_VERSION);
@@ -193,12 +256,13 @@ export function encodeBundledSegmentCompanionFromPayloads(companion: {
     sectionTable.writeU8(section.compression);
     sectionTable.writeU8(section.flags);
     sectionTable.writeU64(BigInt(payloadOffset));
-    sectionTable.writeU64(BigInt(section.payload.byteLength));
+    sectionTable.writeU64(BigInt(section.sizeBytes));
     sectionTable.writeU32(section.dirLength);
     sectionTable.writeU32(section.logicalLength);
-    payloadOffset += section.payload.byteLength;
+    payloadOffset += section.sizeBytes;
   }
-  return concatBytes([writer.finish(), sectionTable.finish(), ...companion.sections.map((section) => section.payload)]);
+  const chunks = [writer.finish(), sectionTable.finish(), ...companion.sections.flatMap((section) => section.chunks)];
+  return { chunks, sizeBytes: payloadOffset };
 }
 
 export function decodeBundledSegmentCompanionTocResult(bytes: Uint8Array): Result<CompanionToc, CompanionFormatError> {

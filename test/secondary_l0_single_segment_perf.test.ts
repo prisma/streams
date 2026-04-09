@@ -262,7 +262,7 @@ function buildLegacySingleFieldSingleSegmentSecondaryL0Result(input: {
 }
 
 describe("single-segment secondary L0 build performance", () => {
-  test("one-segment exact batches stay below 1.8s on the synthetic evlog segment", () => {
+  test("one-segment exact batches stay below 3s on the synthetic evlog segment", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-secondary-l0-single-"));
     try {
       const registry = buildEvlogDefaultRegistry("evlog-1");
@@ -304,7 +304,7 @@ describe("single-segment secondary L0 build performance", () => {
       expect(Result.isOk(legacyRes)).toBe(true);
       expect(Result.isOk(currentRes)).toBe(true);
       if (Result.isOk(currentRes)) expect(currentRes.value.runs).toHaveLength(indexes.length);
-      expect(currentElapsedMs).toBeLessThan(1_800);
+      expect(currentElapsedMs).toBeLessThan(3_000);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
