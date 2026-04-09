@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import type { SegmentRow } from "../db/db";
 import type { ObjectStore } from "../objectstore/interface";
 import type { SegmentDiskCache } from "./cache";
@@ -51,6 +52,32 @@ export async function loadSegmentSource(
   }
 
   if (diskCache) diskCache.recordMiss();
+
+  if (diskCache && os.getFile) {
+    const tempPath = `${diskCache.getPath(objectKey)}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      mkdirSync(dirname(tempPath), { recursive: true });
+      const fileRes = await retry(
+        async () => {
+          const res = await os.getFile!(objectKey, tempPath);
+          if (!res) throw dsError(`object store missing segment: ${objectKey}`);
+          return res;
+        },
+        retryOpts ?? { retries: 0, baseDelayMs: 0, maxDelayMs: 0, timeoutMs: 0 }
+      );
+      if (diskCache.putFromLocal(objectKey, tempPath, fileRes.size)) {
+        const mapped = diskCache.getMapped(objectKey);
+        if (mapped) return { kind: "mapped", path: mapped.path, bytes: mapped.bytes };
+        return { kind: "bytes", bytes: readFileSync(diskCache.getPath(objectKey)) };
+      }
+      const bytes = readFileSync(tempPath);
+      rmSync(tempPath, { force: true });
+      return { kind: "bytes", bytes };
+    } catch (err) {
+      rmSync(tempPath, { force: true });
+      throw err;
+    }
+  }
 
   const bytes = await retry(
     async () => {

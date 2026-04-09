@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SegmentDiskCache } from "../src/segment/cache";
 import { loadSegmentSource } from "../src/segment/cached_segment";
 import { MockR2Store } from "../src/objectstore/mock_r2";
+import type { GetFileResult, GetOptions } from "../src/objectstore/interface";
 import { segmentObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 
 describe("segment disk cache", () => {
@@ -146,6 +147,46 @@ describe("segment disk cache", () => {
       } as any;
       const localSource = await loadSegmentSource(new MockR2Store(), localSeg, cache);
       expect(localSource.kind === "mapped" || localSource.kind === "bytes").toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("remote cache fills prefer getFile when the object store supports it", async () => {
+    class CountingStore extends MockR2Store {
+      getCalls = 0;
+      getFileCalls = 0;
+
+      override async get(key: string, opts: GetOptions = {}): Promise<Uint8Array | null> {
+        this.getCalls += 1;
+        return await super.get(key, opts);
+      }
+
+      override async getFile(key: string, path: string, opts: GetOptions = {}): Promise<GetFileResult | null> {
+        this.getFileCalls += 1;
+        return await super.getFile(key, path, opts);
+      }
+    }
+
+    const root = mkdtempSync(join(tmpdir(), "ds-cache-"));
+    try {
+      const cache = new SegmentDiskCache(root, 1024 * 1024, 4);
+      const store = new CountingStore();
+      const key = segmentObjectKey(streamHash16Hex("remote"), 0);
+      const payload = new Uint8Array([7, 8, 9, 10]);
+      await store.put(key, payload);
+
+      const remoteSeg = {
+        stream: "remote",
+        segment_index: 0,
+        local_path: "",
+      } as any;
+      const source = await loadSegmentSource(store, remoteSeg, cache);
+
+      expect(store.getFileCalls).toBe(1);
+      expect(store.getCalls).toBe(0);
+      expect(Array.from(source.bytes)).toEqual(Array.from(payload));
+      expect(cache.has(key)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

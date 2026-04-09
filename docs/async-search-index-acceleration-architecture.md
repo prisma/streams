@@ -1,1354 +1,395 @@
 # Async Search Index Acceleration Architecture
 
-Status: staged acceleration architecture, updated to match the shipped system
-
-This document describes the current shipped acceleration baseline plus the next
-optimization steps for the remaining slow async-index paths on `evlog`-style
-streams:
-
-- exact secondary L0 build
-- bundled companion build
-- exact secondary compaction, especially `requestId`
-
-It is based on the current code paths in:
-
-- `src/index/secondary_l0_build.ts`
-- `src/search/companion_build.ts`
-- `src/index/secondary_compaction_build.ts`
-- `src/index/secondary_indexer.ts`
-- `src/search/companion_manager.ts`
-- `src/index/index_build_worker_pool.ts`
-- `src/index/global_index_manager.ts`
-
-It also uses the latest production evidence from `evlog-1`:
-
-- unified `search_segment_build` is shipped and standalone companion builds no
-  longer race exact on fresh `evlog` segments
-- exact secondary L0 is still the main steady-state indexing cost on the live
-  box, but the slow path is now concentrated in one owner batch instead of the
-  whole exact family:
-  - `level,service,environment`: about `1.9s`
-  - `timestamp`: about `1.8s`
-  - `requestId`: about `3.0s`
-  - `traceId`: about `2.3s`
-  - `spanId`: about `3.3s`
-  - `path`: about `4.5s`
-  - `method,status,duration`: about `7.1-7.3s`
-- bundled companion build is no longer the fresh-segment bottleneck because its
-  work is piggybacked from exact on fresh `evlog` segments
-- the latest exact-compaction telemetry shows the high-cardinality compaction
-  path is no longer the dominant outlier:
-  - warm `requestId` compaction is about `4.1s`
-  - fresh `path` / `spanId` / `traceId` compactions are now about `1.6-2.6s`
-  - compaction source preparation is effectively free on warm cache and no
-    longer the main memory-risk path
-- the server has already been OOM-killed more than once with anonymous RSS in
-  the `3+ GiB` range, so RSS shape still matters as much as raw wall time
-- the latest bundled `.fts` memory-shape fix plus direct-to-file exact source
-  staging brought fresh-process RSS back into the target band
-- the latest exact-L0 persist rewrite overlapped piggyback companion staging
-  with exact-run upload and removed a duplicate standalone companion upload,
-  which lowered the owner-batch wall time modestly but proved that exact L0 is
-  now mostly persist-bound, not worker-compute-bound
-- the newest exact-L0 publish gating change means non-owner exact batches only
-  publish the manifest when they actually advance the stream-wide minimum exact
-  frontier; the fresh companion-owning batch still publishes immediately so the
-  bundled companion row becomes remotely visible without a deferred side path
-- the newest companion-ownership fix keeps `method,status,duration` as the
-  stable fresh companion owner on `evlog`, so lagging batches such as
-  `level,service,environment` no longer inherit companion work just because
-  they happen to be the current slowest exact frontier
-- the newest `evlog` exact dispatch change now advances unique same-frontier
-  exact batches concurrently on the same stream, bounded to `2` lanes on
-  `2 GiB+` presets
-- the `2 GiB` auto-tune preset now also uses `2` async-index permits and
-  `2` generic index-build workers so that bounded per-stream exact dispatch can
-  actually overlap on the smallest supported production host class
-- on the live `2 GiB` box, that change improved aggregate exact frontier
-  progress over the same `30s` window from `11` indexed-segment advances to
-  `14` while the uploaded head still advanced by `7` segments, which is about
-  a `27%` throughput improvement
-- after the same restart, current RSS sat around `298-632 MiB` with
-  restart-window high-water about `892 MiB`, so the node stayed below the
-  `1 GiB` spike target while running two async exact lanes
-- the newest unified-search memory fix now bounds per-build text analyzer
-  caches and refuses to cache long text values, which prevents one owner batch
-  from retaining essentially unbounded unique `message` / `why` / `fix` /
-  `error.message` token arrays during a single exact-L0 job
-- on the latest live restart after that fix, current RSS stayed around
-  `518-571 MiB` over the first `30s` soak and restart-window high-water stayed
-  around `886 MiB`, so the node remained below the `1 GiB` spike target even
-  while the fresh `method,status,duration` owner batch resumed work
-- despite those RSS gains, exact indexing is still not catching ingest on a
-  per-frontier basis: in the latest `30s` live sample the uploaded head
-  advanced by `7` segments while the slowest exact frontiers advanced only
-  `+1` or `+2`, so backlog growth is slower but not yet reversed
-
-## Summary
-
-Several important changes are already shipped:
-
-1. async index families run on the shared global worker pool and are scheduled
-   by the round-robin global index manager
-2. `evlog` exact and companion per-segment work now share one unified
-   `search_segment_build` worker pass over each leased uploaded segment
-3. exact single-field builds already use a raw-byte fast path for simple
-   top-level scalar fields instead of always doing full `JSON.parse`
-4. `evlog` companion extraction now shares that same raw-byte scan with exact
-   secondary output generation, so the same segment is no longer scanned twice
-   just to build the two search accelerators
-5. bundled companion worker outputs are already file-backed and the main thread
-   now uploads with `putFile()` and moves the same file into the local
-   companion cache
-6. exact secondary L0 and exact secondary compaction worker outputs are now
-   file-backed and the main thread uploads them with `putFile()` and moves the
-   same files into the local exact-run disk cache
-7. exact secondary compaction source preparation now spills uncached inputs to
-   local temp files when they cannot be admitted into the exact-run disk cache,
-   so compaction no longer falls back to holding large downloaded run payloads
-   in anonymous RSS just to merge them once
-8. exact secondary compaction telemetry now records separate
-   `source_prepare_ms`, `worker_build_ms`, `artifact_persist_ms`, and
-   `finalize_ms` timings so we can distinguish cold-source loading from actual
-   merge CPU cost on the live node
-9. exact secondary compaction still deletes retired run objects synchronously,
-   but those deletes are now executed with bounded parallelism instead of
-   one-by-one serial waits
-10. low-cardinality exact compaction source staging now uses wider bounded
-    fetch concurrency than the high-cardinality path, so `level`, `service`,
-    `environment`, `method`, `status`, and `duration` no longer spend multiple
-    seconds serializing cache fills that do not need the same RSS guardrails as
-    `requestId`, `traceId`, `spanId`, or `path`
-11. uncached exact-compaction inputs now download straight to local files when
-    the object store supports it, so source staging no longer has to allocate a
-    large `Uint8Array` just to write the same bytes back out to the exact-run
-    disk cache or a temp spill file
-12. lagging exact batches now skip companion rebuild entirely when the current
-    companion generation is already present for that segment, so slow exact
-    catch-up work no longer redoes `.col` / `.fts` payloads that are already
-    current
-13. `evlog` exact L0 no longer treats every same-frontier exact field as one
-    monolithic batch; the high-cardinality fields are now split into smaller
-    deterministic sub-batches and only one owner batch is allowed to build the
-    fresh companion payload for a segment
-14. keyword `.fts` postings now use a compact singleton representation until a
-    term actually appears in more than one document, instead of allocating a
-    one-element `doc_ids` array for every unique `requestId` / `traceId` /
-    `spanId` / `path` term
-15. text `.fts` accumulation now aggregates token positions once per document
-    before touching the shared postings map, so `message` / `why` / `fix` /
-    `error.message` no longer pay one global postings mutation per token
-16. `evlog` text analysis now caches analyzer output per repeated field value
-    during a build, so companion and unified search builders no longer retokenize
-    identical log messages over and over inside one segment walk
-17. exact L0 now overlaps piggyback companion staging with exact-run upload and
-    finalize work, and standalone companion no longer uploads the same artifact
-    twice before it upserts metadata
-18. non-owner exact L0 batches now skip manifest publication unless they advance
-    the stream-wide minimum exact frontier; fresh companion-owning batches still
-    publish immediately so companion visibility does not wait for a separate
-    background loop
-19. `evlog` companion ownership is now fixed to the preferred
-    `method,status,duration` batch whenever that group is configured, so lagging
-    exact frontiers do not become accidental companion owners
-20. per-build text analyzer caches are now explicitly bounded and skip caching
-    long text values, so unified `evlog` search builds cannot retain an
-    effectively unbounded number of unique long-message token arrays in one
-    owner batch
-
-Those changes removed the worst duplicate segment scan and took standalone
-companion off the fresh-segment critical path, but they did not solve the whole
-search backlog problem.
-
-The next big wins are now more targeted:
-
-1. **The `method,status,duration` owner batch should get comfortably below
-   `5s`.** It is still the only regular exact-L0 batch that remains above the
-   target on the live node.
-2. **Unified search-build handoff should stay file-backed and ownership-aware.**
-   The coordinator must not retain large completed payloads in anonymous RSS,
-   and each consumer must get explicit ownership of any temp files it uses.
-3. **Exact frontier catch-up still matters more than single-job latency.**
-   Exact compaction is now back under the `5s` ceiling and RSS is back under
-   the `1 GiB` spike target, but the exact frontier is still far behind the
-   uploaded head. The next wins should reduce total exact owner-batch work per
-   segment and keep both async lanes busy.
-4. **Steady-state RSS is now healthy again, but it must stay that way.** The
-   latest live restart stayed in roughly the `300-600 MiB` band with
-   restart-window high-water below `900 MiB`. Future exact-L0 work must not
-   give that margin back.
-
-So the recommended architecture is now staged:
-
-- keep the current global worker pool and round-robin scheduler
-- keep the shipped raw-byte path and the new unified per-segment `evlog`
-  search build
-- keep unified search-build outputs file-backed and scoped to the exact
-  frontier batch or exact-ready segment set that actually needs them
-- keep standalone companion builds as stale-hole repair only below the exact
-  frontier
-- keep the shipped streaming exact compaction path
-- keep the shipped exact-L0 fast path and the new two-lane `2 GiB` dispatch,
-  because most live `evlog` exact-L0 jobs are now under `5s`
-- then reduce the `method,status,duration` owner-batch wall time below `5s`
-- then continue improving exact frontier catch-up without giving back the RSS
-  gains
-
-## Objective
-
-Primary objective:
-
-- dramatically increase sustained async indexing throughput for exact and
-  companion work on `evlog`
-- eliminate the current OOM pattern during backlog drain and compaction
-
-The system should optimize for:
-
-- `segments_built_per_second`
-- `indexed_payload_bytes_per_second`
-- `time_to_catch_up`
-- peak RSS during backlog drain
-- query freshness after segment upload
-
-## Scope
-
-In scope:
-
-- exact L0 build
-- bundled companion build (`.col`, `.fts`, `.agg`, `.mblk`)
-- exact compaction
-- worker handoff, upload, publish, and scheduling changes required to speed the
-  above
-- memory safety changes required to stop the current OOM pattern
-
-Out of scope:
-
-- changing WAL durability semantics
-- changing manifest publication as the remote visibility commit point
-- changing the source-of-truth rule (raw WAL + segments stay canonical)
-- changing the read fallback rule for missing or stale acceleration artifacts
-
-## Current Diagnosis
-
-### 1. Unified per-segment search build is shipped, and fresh companion duplication is no longer the main issue
-
-`secondary_l0_build.ts` and `companion_build.ts` no longer need to scan the
-same uploaded `evlog` segment twice. The shipped `search_segment_build`
-worker already computes:
-
-- raw-byte exact-secondary outputs for the full configured exact set
-- bundled companion `.col` / `.fts` output from the same segment walk
-
-The remaining duplication is now mostly a stale-hole repair concern, not a
-fresh-segment scan concern:
-
-- exact can already piggyback companion persistence when it reaches a segment
-- companion can also piggyback ready exact L0 runs when it reaches a segment
-- but if standalone companion keeps running on the newest stale segments, it
-  can still consume the whole shared build for segments that exact will cover
-  shortly anyway
-
-That change is now shipped for fresh `evlog` segments: standalone companion
-build only repairs stale holes below the minimum exact frontier. So this is no
-longer the next major optimization target.
-
-The newest shipped change tightens the unified exact side further:
-
-- exact L0 no longer asks the shared `search_segment_build` worker to build the
-  full configured exact set when only a smaller frontier batch is actually
-  being advanced
-- lagging exact batches now also skip companion generation when the current
-  companion row for that segment is already present, which is the common live
-  `evlog` catch-up case once companion and the faster exact group are ahead of
-  the slowest exact fields
-- same-frontier `evlog` exact work is now split into deterministic sub-batches:
-  `level,service,environment`, then `timestamp`, then one-field batches for
-  `requestId`, `traceId`, `spanId`, and `path`, plus the existing
-  `method,status,duration` batch
-- companion piggyback only asks for exact outputs that are actually exact-ready
-  for the current segment
-- unified worker outputs are file-backed, and the shared coordinator only
-  deduplicates inflight work instead of caching completed payloads in memory
-
-That removes one important anonymous-RSS spike source and cuts wasted exact
-work on `evlog` significantly.
-
-### 2. Exact secondary L0 is now mostly a throughput problem, not a family-wide latency problem
-
-The current exact L0 shape is much better than the original `11-13s` jobs:
-
-- `level,service,environment`: about `1.9s`
-- `timestamp`: about `1.8s`
-- `requestId`: about `3.0s`
-- `traceId`: about `2.3s`
-- `spanId`: about `3.3s`
-- `path`: about `4.5s`
-- `method,status,duration`: about `7.1-7.3s`
-
-So the exact family is no longer broadly too slow. The remaining problem is:
-
-- the companion-owning `method,status,duration` batch is still too slow
-- aggregate exact frontier progress is still below the uploaded-head growth
-  rate unless the host can overlap more than one exact batch
-
-That is why the latest shipped change enables bounded parallel dispatch of
-unique `evlog` exact batches on the same stream and raises the `2 GiB` preset
-to `2` async-index lanes / `2` index-build workers. On the live node that
-improved exact frontier progress by about `27%` over the same `30s` window.
-
-### 3. High-cardinality exact compaction is now in-bounds
-
-`secondary_compaction_build.ts` now:
-
-- advances each input run lazily instead of decoding all postings into JS arrays
-- keeps only the current posting entry per input cursor live at once
-- writes file-backed output incrementally with a bounded write buffer
-
-That removes the worst previous OOM shape, where `requestId` compaction could
-accumulate a very large decoded input plus merged output in anonymous RSS.
-
-The latest shipped changes also remove the remaining large-input fallback on
-the source side and make synchronous cleanup cheaper:
-
-- if a compaction input run is already resident in the exact-run disk cache,
-  compaction reads it in place
-- if it is fetched from object storage and the cache can admit it, compaction
-  promotes it into the cache and then reads it in place
-- if the cache cannot admit it, compaction now spills it to a temp local file
-  and merges from that file instead of passing a large `Uint8Array` into the
-  worker
-- retired exact-run object deletion stays synchronous, but now runs with
-  bounded parallelism instead of serial waits
-
-So the current exact-compaction OOM risk is no longer "N large input runs plus
-one large merged output all live in JS memory at once." The latest live
-compactions are now under the `5s` ceiling as well:
-
-- `path`: about `1.6s`
-- `spanId`: about `2.4s`
-- `traceId`: about `2.6s`
-- `requestId`: about `3.9-4.1s`
-
-That means exact compaction is no longer the first optimization target. Shard
-mode for the highest-cardinality exact fields is still a valid future design,
-but it is now a scale / variance hedge rather than the immediate blocker.
-
-The newest shipped source-staging change also split the source path by field
-shape:
-
-- low-cardinality exact compactions now stage sources with bounded concurrency
-  `4`
-- high-cardinality exact compactions still use bounded concurrency `2`
-- uncached exact-compaction inputs now download directly to local files when
-  the object store supports it, and cache admission happens by rename instead
-  of `get()` + `Uint8Array` + `writeFile`
-
-That change is now visible in live telemetry:
-
-- low-cardinality fresh compactions such as `service`, `level`, `environment`,
-  `method`, `status`, `duration`, and `timestamp` are now about `1.6-2.6s`
-  with `source_prepare_ms` at `0-440ms`
-- the latest high-cardinality outliers are still `path`, `spanId`, and
-  `requestId`, where source preparation is no longer dominant and the remaining
-  time is mostly artifact upload/persist plus a small publish/finalize tail
-
-### 4. File-backed outputs helped, but exact L0 and finalization still need work
-
-Bundled companion outputs are now file-backed:
-
-- the worker writes the `.cix` payload to a temp file
-- the main thread uploads it with `putFile()`
-- the same file is moved into the companion disk cache
-
-That change reduced one class of transient memory copies, and it is worth
-keeping for RSS safety.
-
-The same file-backed handoff now also applies to unified `search_segment_build`
-outputs, and the coordinator no longer retains completed shared results in a
-TTL cache. That matters because the exact L0 path previously overbuilt exact
-outputs for fields that were not even part of the current frontier batch, and
-those completed results could linger in anonymous RSS after the worker finished.
-
-Production telemetry now shows two remaining issues instead:
-
-- the `method,status,duration` exact-L0 owner batch is still too slow
-- aggregate exact frontier catch-up still needs more work than single-job
-  latency alone
-
-### 5. The scheduler is no longer the primary bottleneck, but the `2 GiB` preset can no longer stay single-lane
-
-The round-robin global scheduler is a good fairness mechanism.
-It is not the first thing to change now.
-
-The main remaining cost is still inside the work items, especially the exact
-owner batch. But the live `evlog-1` evidence also showed that one async lane on
-the `2 GiB` preset was now artificially suppressing exact catch-up after the
-RSS fixes landed.
-
-So the scheduler itself does not need another redesign, but the smallest
-production preset does need enough async capacity to overlap two exact batches
-for the same stream. That is now shipped:
-
-- unique same-frontier `evlog` exact batches can dispatch in parallel on one
-  stream
-- the `2 GiB` preset now provides `2` async-index permits and `2` index-build
-  workers
-- the shared global async gate still bounds total background overlap across all
-  families
-
-It is still true that `evlog` would benefit from one unified per-segment search
-build in the long term, but the scheduler does not need another redesign before
-we fix those two hot paths.
-
-## Design Goals
-
-1. Parse and extract each segment at most once for search acceleration.
-2. Keep exact and companion state machines rebuildable and manifest-driven.
-3. Eliminate large in-memory artifact copies between worker and main thread.
-4. Make `requestId` compaction scale with streaming merge, not map growth.
-5. Keep the current correctness model:
-   - missing or stale acceleration still falls back to raw segment / WAL scan.
-6. Preserve the current request-path rule:
-   - heavy work remains off the request path.
-7. Bound anonymous RSS under backlog and compaction.
-
-## Proposed Architecture
-
-## 1. Shipped: true raw-byte companion build for `evlog`
-
-The current `evlog` companion path should not pay `JSON.parse` at all when the
-requested fields are scalar and live on stable object paths.
-
-### Required runtime shape
-
-For `evlog` companion jobs:
-
-1. compile scalar accessors once per schema version
-2. build a trie over object-path segments once per schema version
-3. walk raw JSON payload bytes directly
-4. push canonicalized values straight into `.col` and `.fts` sinks
-5. only fall back to parsed-object extraction for fields that are unsupported by
-   the scalar byte scanner
-
-### Result
-
-Current telemetry still shows `companion_build` as the dominant steady-state
-outlier. The fastest way to cut that down is to stop paying the largest per-row
-CPU cost entirely.
-
-This does not change any manifest, fallback, or scheduler semantics. It is the
-lowest-risk high-yield optimization left in the worker hot path.
-
-## 2. Shipped: file-backed companion and exact artifact handoff
-
-Bundled companion workers plus exact-secondary L0 and compaction workers now
-emit temp-file outputs for the main production path. The main thread:
-
-1. uploads the artifact with `putFile()` when the object store supports it
-2. moves the same file into the local exact-run or companion cache
-3. avoids rebuilding a large in-memory payload copy just to upload and cache it
-
-This remains a worthwhile RSS reduction and it already reduced the exact
-compaction worker handoff cost materially in local benchmarking, but it is not
-enough by itself to make the remaining multi-second `companion_build` outliers
-disappear on `evlog`.
-
-## 3. Shipped: unified `search_segment_build` worker job
-
-`evlog` now ships one new worker job kind:
-
-- `search_segment_build`
-
-It replaces the duplicate per-segment scan inside the two current family
-adapters:
-
-- `secondary_l0_build` for one segment
-- `companion_build` for one segment
-
-### Input
-
-```ts
-type SearchSegmentBuildInput = {
-  stream: string;
-  registry: SchemaRegistry;
-  exactIndexes: Array<{
-    index: SecondaryIndexField;
-    secret: Uint8Array;
-  }>;
-  plan: SearchCompanionPlan | null;
-  planGeneration: number | null;
-  segment: {
-    segmentIndex: number;
-    startOffset: bigint;
-    localPath: string;
-  };
-};
-```
-
-### Output
-
-```ts
-type SearchSegmentBuildOutput = {
-  exactRuns: Array<{
-    indexName: string;
-    storage: "bytes";
-    payload: Uint8Array;
-    meta: {
-      runId: string;
-      level: number;
-      startSegment: number;
-      endSegment: number;
-      objectKey: string;
-      filterLen: number;
-      recordCount: number;
-    };
-  }>;
-  companion: null | {
-    storage: "bytes";
-    payload: Uint8Array;
-    sectionKinds: CompanionSectionKind[];
-    sectionSizes: Record<string, number>;
-    primaryTimestampMinMs: bigint | null;
-    primaryTimestampMaxMs: bigint | null;
-  };
-};
-```
-
-The first shipped form keeps these outputs in memory because the exact and
-companion managers share the same worker result through a short-lived
-main-thread coordinator cache. That eliminates the duplicate scan now without
-forcing fragile temp-file ownership across two independent managers. File-backed
-handoff can be reintroduced later on top of the unified build once the shared
-artifact ownership model is explicit.
-
-The shipped `evlog` path also now treats the unified build as the canonical
-per-segment exact build:
-
-- the worker computes the full configured `evlog` exact field set once per
-  segment
-- the worker also computes the bundled `.col` + `.fts` companion output in that
-  same pass
-- `SecondaryIndexManager` persists only the subset of exact runs that are ready
-  for the current exact batch
-- `SearchCompanionManager` persists the companion artifact, and when companion
-  reaches a segment first it also piggybacks the ready exact L0 runs from the
-  same unified worker result so a later duplicate exact scan is not needed
-
-That is important for cache reuse. The coordinator cache key must stay stable
-between the exact and companion consumers, so they both request the same
-segment-wide exact field set and then consume subsets of the shared result.
-
-### Runtime shape
-
-For one leased uploaded segment:
-
-1. read the segment file once
-2. iterate records once
-3. run raw-byte scalar extraction for the built-in `evlog` fast path
-4. normalize exact / `.col` / `.fts` values once per record
-5. feed exact sinks and companion sinks in the same pass
-6. encode exact artifacts and `.cix` artifact once
-7. keep the encoded outputs in memory for short-lived sharing between the exact
-   and companion managers
-
-### Why this is the correct next step after raw-byte companion extraction
-
-The repository already made this same architectural move once for routing and
-routing-key lexicon:
-
-- two separate segment scans were collapsed into one combined worker pass
-
-The exact + companion pair is now the analogous duplicate work. After raw-byte
-companion extraction lands, that duplicate scan cost becomes even more obvious,
-because exact and companion will each be efficiently reading the same bytes in
-separate jobs.
-
-For `evlog`, this is an especially good fit because the exact field set is
-almost a subset view of the same normalized values the companion builders are
-already producing.
-
-## 2. Generated, sink-oriented field extraction
-
-The current extraction contract should be replaced in the hot build path.
-
-Today the worker extracts into a generic structure:
-
-- `Map<string, unknown[]>`
-
-The proposed contract is sink-oriented:
-
-```ts
-type SearchFieldSink = {
-  onKeyword(fieldOrdinal: number, value: string): void;
-  onText(fieldOrdinal: number, value: string): void;
-  onInteger(fieldOrdinal: number, value: bigint): void;
-  onFloat(fieldOrdinal: number, value: number): void;
-  onDate(fieldOrdinal: number, value: bigint): void;
-  onBool(fieldOrdinal: number, value: boolean): void;
-  onRecordEnd(docId: number): void;
-};
-```
-
-The extractor should become a compiled plan that walks the record once and
-pushes normalized values directly into the sinks.
-
-### Required properties
-
-- field ordinals instead of repeated field-name strings in the hot loop
-- direct normalization while visiting the field
-- no per-record `Map<string, unknown[]>`
-- no generic “extract everything, then re-loop” temporary structure
-
-### Profile-specific fast path
-
-For built-in hot profiles, especially `evlog`, add a generated fast path:
-
-- direct property loads for top-level canonical fields
-- pre-bound lowercasing / date parsing / numeric canonicalization
-- generic JSON-pointer fallback remains for arbitrary user schemas
-
-This gives the system two modes:
-
-- **generic** correctness-preserving extractor
-- **profile-specialized** fast extractor for the known hot profiles
-
-That is a large and low-risk CPU win because `evlog` has a stable canonical
-shape.
-
-## 3. Reuse companion accumulators to emit exact artifacts
-
-This is the most important design detail.
-
-The unified builder should not build exact and companion state independently.
-It should reuse the companion-side accumulators wherever possible.
-
-### 3.1 Keyword exact fields
-
-For a keyword field with `exact=true` and `prefix=true`:
-
-- the `.fts` keyword builder is already accumulating the unique normalized
-  terms and doc postings for that field
-- the exact builder only needs per-segment term presence for L0 emission
-
-So the exact artifact should be emitted by iterating the final keyword term set
-that the `.fts` builder already owns.
-
-That removes duplicate work for the hottest `evlog` exact fields:
-
-- `level`
-- `service`
-- `environment`
-- `requestId`
-- `traceId`
-- `spanId`
-- `path`
-- `method`
-
-### 3.2 Typed exact fields
-
-For a field with `exact=true` and `column=true`:
-
-- the `.col` builder already sees the canonical typed value stream
-- the exact builder should reuse that same normalized value path
-
-The unified builder may still keep a small per-field unique-value set for exact
-emission, but it must do that off the same normalized value stream the column
-builder already consumes.
-
-This covers:
-
-- `timestamp`
-- `status`
-- `duration`
-
-### 3.3 Exact-only residual fields
-
-If a schema has an exact field that is neither keyword-prefix nor column:
-
-- keep a small dedicated exact-only sink for that field
-
-That preserves generality without penalizing `evlog`.
-
-## 4. File-backed worker outputs and zero-copy upload path
-
-### Current problem
-
-The worker currently returns `Uint8Array` payloads to the main thread.
-That creates unnecessary memory pressure.
-
-### New design
-
-The worker writes artifacts to temp files under a bounded build directory, for
-example:
-
-- `${DS_ROOT}/tmp/index-builds/<workId>/...`
-
-The main thread then uploads with:
-
-- `os.putFile()` when available
-- `os.put()` only as a fallback
+Status: current shipped design and regression plan as of 2026-04-09
 
-### Benefits
-
-- no large structured-clone copy for `.cix` payloads
-- no large structured-clone copy for exact run payloads
-- uploads can stream from disk-backed files
-- easier cleanup on failure/restart
-- much lower anonymous RSS during heavy backlog drain
+This document describes the shipped async indexing architecture for `evlog`-style
+streams, the memory findings that drove the current design, and the regression
+strategy we now use to keep async job memory bounded.
 
-### Design rule
-
-Small metadata may cross the worker boundary.
-Large artifact bytes should not.
+It is intentionally current-state focused. Older optimization hypotheses and
+intermediate designs have been removed where they no longer match the code.
 
-## 5. Streaming exact compaction
+## Objectives
 
-The current exact compaction algorithm should be replaced completely.
+Primary goals:
 
-### New algorithm
+- keep the long-lived server process out of OOM territory during backlog drain
+- keep every async indexing job shape below `100 MiB` peak contributed RSS in
+  workload tests
+- keep parent-process contributed RSS below `100 MiB` while async jobs run
+- keep exact L0 and exact compaction jobs under `5s` on the live `evlog` stream
+- improve total exact frontier catch-up without reintroducing memory regressions
 
-Use a streaming k-way merge over already-sorted input runs.
+Non-goals:
 
-For each input run:
+- changing manifest publication semantics
+- moving heavy indexing work into request handlers
+- preserving old worker-thread-based async execution
 
-- open a cursor
-- read the next fingerprint entry only when needed
-- merge the smallest fingerprint across cursors
-- write the merged posting list immediately to the output writer
-- do not accumulate the entire merged key space in memory first
+## Current Shipped Architecture
 
-### Required properties
+### Async execution boundary
 
-- no `Map<bigint, number[]>` of the full merged output
-- no “decode every run completely, then sort again” step
-- output file written incrementally
-- binary-fuse build, if retained, should happen from the streamed fingerprint
-  sequence or as a second bounded pass
+Heavy async indexing jobs no longer run inside shared `worker_threads`.
 
-### Why this matters
+The generic async build executor now runs each job in its own short-lived Bun
+subprocess:
 
-This directly targets the current `requestId` outlier.
+- `/Users/sorenschmidt/code/streams/src/index/index_build_worker_pool.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_executor.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_subprocess.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_wire.ts`
 
-`requestId` is not slow because the exact family is conceptually wrong.
-It is slow because the current compaction implementation uses the wrong
-algorithmic shape for a high-cardinality field.
+This is the supported isolation model for async indexing. The parent process
+coordinates, uploads, updates SQLite state, and moves local cache files, but the
+heavy segment/run decoding and artifact building happen in a separate process.
 
-## 6. High-cardinality shard mode for exact fields
+### Async job kinds
 
-Streaming merge is necessary.
-Sharding is strongly recommended for the worst fields.
+The current shipped async indexing job kinds are:
 
-### Problem
+- `routing_l0_build`
+- `routing_compaction_build`
+- `lexicon_l0_build`
+- `lexicon_compaction_build`
+- `secondary_l0_build`
+- `secondary_compaction_build`
+- `companion_build`
+- `companion_merge_build`
 
-Even with streaming merge, a monolithic exact run for `requestId` still creates:
+These are defined in:
 
-- large output files
-- long single-job critical sections
-- compaction variance that scales with total distinct IDs in the whole run
+- `/Users/sorenschmidt/code/streams/src/index/async_index_actions.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_job.ts`
 
-### Proposed design
+### Per-job memory telemetry
 
-Allow exact fields to opt into shard mode, for example:
+Each async build subprocess now samples its own RSS during execution and writes
+that into the async action detail JSON in SQLite.
 
-- shard by leading fingerprint bits
-- `16`, `32`, or `64` shards per field
+Current fields:
 
-Then:
+- `job_worker_pid`
+- `job_rss_baseline_bytes`
+- `job_rss_peak_bytes`
+- `job_rss_peak_contributed_bytes`
 
-- L0 emission writes shard-local artifacts
-- compaction merges one shard at a time
-- query lookup computes the fingerprint and touches only the relevant shard
+This telemetry comes from:
 
-### Recommended default for evlog
+- `/Users/sorenschmidt/code/streams/src/index/index_build_telemetry.ts`
+- `/Users/sorenschmidt/code/streams/src/index/async_index_actions.ts`
 
-Enable shard mode by default for:
+The baseline is sampled at job start, peak is sampled during the job, and
+contributed RSS is `max(0, peak - baseline)`.
 
-- `requestId`
-- `traceId`
-- `spanId`
+### Exact indexing shape on `evlog`
 
-Optional for:
+The shipped `evlog` exact path is now exact-only on the runtime critical path.
 
-- `path` on high-cardinality deployments
+`search_segment_build` still exists, but exact owner jobs call it with
+`includeCompanion: false`:
 
-Leave low-cardinality fields unsharded:
+- `/Users/sorenschmidt/code/streams/src/search/search_segment_build.ts`
+- `/Users/sorenschmidt/code/streams/src/index/secondary_indexer.ts`
 
-- `level`
-- `service`
-- `environment`
-- `method`
+That means:
 
-### Why sharding helps
+- exact L0 no longer bundles companion work into the same runtime job
+- the exact owner batch only pays for exact work
+- companion work is handled independently by the companion manager
 
-It converts one very long compaction into many smaller, parallelizable,
-independently retryable jobs.
+### Companion indexing shape on `evlog`
 
-That is the cleanest way to keep `requestId` from dominating the exact family.
+Fresh `evlog` companion work is no longer “piggybacked from exact” in the old
+sense. Instead, companion work is split into smaller file-backed partial jobs
+plus a cheap merge job:
 
-## 7. One persistence and publish cycle per segment build
+- `/Users/sorenschmidt/code/streams/src/search/companion_build.ts`
+- `/Users/sorenschmidt/code/streams/src/search/companion_merge.ts`
+- `/Users/sorenschmidt/code/streams/src/search/companion_manager.ts`
 
-A unified `search_segment_build` should persist exact and companion results
-through one small main-thread commit path.
+Current partial plan families:
 
-### Persist flow
+- `col`
+- `keyword-core`
+- `keyword-requestId`
+- `keyword-traceId` split into `2` shards
+- `keyword-spanId`
+- `keyword-path`
+- `text-message`
+- `text-context`
 
-1. upload all exact artifacts for the segment
-2. upload the companion `.cix`
-3. in one SQLite transaction:
-   - insert exact runs
-   - advance exact indexed-through for the aligned fields
-   - upsert the segment companion row
-4. publish manifest once
+The manager runs those smaller `companion_build` jobs, then a
+`companion_merge_build` job combines the partial outputs into the final `.cix`
+artifact.
 
-### Why this is better
+This is the main memory reduction change for bundled companion work.
 
-Today, exact and companion builds each pay their own:
+### File-backed artifact flow
 
-- upload orchestration
-- metadata mutation
-- manifest publication
+Heavy async jobs now write outputs to files rather than returning large
+in-memory payloads through the parent process.
 
-That is extra control-plane overhead with no product benefit.
+That applies to:
 
-## 8. Scheduler policy under backlog
+- exact L0 outputs
+- exact compaction outputs
+- companion partial outputs
+- companion merged outputs
 
-The current round-robin global scheduler can remain the outer policy.
-The work kinds can remain separate for the next phase.
+The parent process uploads from file and moves the same file into the local
+cache when appropriate.
 
-### Immediate recommendation
+## Why The Architecture Changed
 
-- keep:
-  - exact L0 build
-  - companion build
-  - exact compaction
+The original async acceleration work optimized time first, but the live server
+later showed repeated anonymous RSS climbs into the multi-gigabyte range.
 
-### Later recommendation
+Two separate problems were identified:
 
-- replace exact L0 build + companion build with unified `search_segment_build`
-  only if the targeted companion/compaction optimizations still leave backlog
-  drain too slow
+1. the long-lived parent process retained anonymous RSS when large build results
+   crossed process boundaries inefficiently
+2. some individual build jobs were intrinsically too large and needed to be
+   split into smaller workload shapes
 
-### Work-sharing recommendation
+The current design addresses both:
 
-While uploaded-segment backlog exists for a stream:
+- subprocess-per-job for parent-process containment
+- smaller `evlog` companion workloads for job-local containment
 
-1. exact L0 build
-2. companion build
-3. exact compaction
-4. other background compactions
+## Memory Findings
 
-### Important detail for evlog
+### Old failure mode
 
-The user report states that `evlog` does not configure routing-key indexing.
-That means this stream does not need routing or lexicon work at all.
+The live server had previously been OOM-killed with anonymous RSS above `3 GiB`
+while exact/search backlog drain was active.
 
-For these streams, the scheduler naturally collapses to:
+That was enough to rule out “normal JS heap growth” as the whole explanation.
 
-1. exact L0 build
-2. companion build
-3. exact compaction
+### Workload-scoped RSS harness
 
-That is sufficient for now because the worker pool is already shared and the
-outer scheduler already round-robins across work kinds.
+We now measure each async indexing workload directly with a dedicated local RSS
+harness:
 
-## 9. Memory guardrails
+- `/Users/sorenschmidt/code/streams/test/index_job_rss.test.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/index_job_rss_scenarios.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/index_job_rss_runner.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/process_tree_rss_sampler.ts`
 
-The current OOM evidence means memory discipline must be first-class in this
-redesign.
+Each scenario runs in a fresh subprocess and records:
 
-### Required guardrails
+- baseline RSS
+- peak RSS
+- settled RSS
+- peak contributed RSS
+- settled contributed RSS
+- baseline/peak/settled `heapUsed`
+- baseline/peak/settled `external`
+- baseline/peak/settled `arrayBuffers`
 
-1. **Artifact outputs are file-backed.**
-   Do not keep final `.cix` and exact run payloads as long-lived in-memory
-   arrays once encoded.
+### Parent-process RSS regression harness
 
-2. **Builder-local budgets per family.**
-   The unified worker should have explicit soft ceilings for:
-   - keyword term table bytes
-   - postings bytes
-   - exact unique-term bytes
-   - aggregate working bytes
+We also measure what the long-lived parent process retains while dispatching
+async jobs:
 
-3. **Compaction-local budgets.**
-   Streaming compaction should stop using data structures whose memory grows
-   with the entire merged key space.
+- `/Users/sorenschmidt/code/streams/test/index_build_worker_pool_rss.test.ts`
 
-4. **Backlog-aware compaction suppression.**
-   If search-segment build lag is above a configured threshold, suppress exact
-   compaction temporarily. Fresh segment coverage is more important than deeper
-   exact compaction while backlog is growing.
+This suite verifies:
 
-5. **Inflight upload byte budget.**
-   Limit total in-flight upload bytes, not just task count.
+- parent-process peak contributed RSS stays below `100 MiB`
+- parent-process settled contributed RSS stays below `100 MiB`
+- repeated subprocess jobs do not ratchet parent RSS upward over time
 
-6. **Fast failure cleanup.**
-   On worker failure, timeout, or restart, delete temp artifact directories
-   eagerly.
+### Important measurement correction
 
-### Operational result we want
+The RSS sampler was initially overcounting by including the sampler child itself
+in the measured process tree. That has now been corrected in:
 
-Under backlog, RSS should rise predictably with:
+- `/Users/sorenschmidt/code/streams/test/helpers/process_tree_rss_sampler.ts`
 
-- bounded builder state
-- bounded segment leases
-- bounded mmap caches
+After that correction, the per-job numbers became usable as a real regression
+gate.
 
-It must not rise with:
+## Current Local RSS Results
 
-- duplicated payload copies across worker/main/upload
-- compaction merge-set cardinality
+Latest workload-harness measurements after the split-companion changes:
 
-## 10. Optional Phase 2: durable search-source sidecar
+- `routing_lexicon_l0_build`: about `9.0 MiB`
+- `routing_compaction_build`: about `0.9 MiB`
+- `lexicon_compaction_build`: about `0.8 MiB`
+- `secondary_l0_build`: about `41.5 MiB`
+- `secondary_compaction_build`: about `1.5 MiB`
+- `companion_build_col`: about `63.6 MiB`
+- `companion_build_keyword_core`: about `89.7 MiB`
+- `companion_build_keyword_request_id`: about `92.2 MiB`
+- `companion_build_keyword_trace_id_shard_1`: about `70.4 MiB`
+- `companion_build_keyword_trace_id_shard_2`: about `71.0 MiB`
+- `companion_build_keyword_span_id`: about `91.3 MiB`
+- `companion_build_keyword_path`: about `82.0 MiB`
+- `companion_build_text_message`: about `83.3 MiB`
+- `companion_build_text_context`: about `78.0 MiB`
+- `companion_merge_build`: about `10.0 MiB`
+- `search_segment_build_exact_only`: about `42.6 MiB`
 
-The unified segment build is the highest-leverage immediate change.
+This means every shipped async indexing workload shape currently stays below the
+`100 MiB` job-local target in the local harness.
 
-If backlog drain is still not where it needs to be after that, the next
-architecture step is to introduce a durable per-segment search-source sidecar.
+### What that means
 
-### Purpose
+The strictest requirement is now satisfied in the regression suite:
 
-Store the result of search extraction once, so rebuilds and historical plan
-changes do not need to reparse raw segment payloads.
+- every measured async indexing job kind is under `100 MiB`
+- the long-lived parent process also stays under `100 MiB` contributed RSS
+  while coordinating those jobs
 
-### Example
+That is better than the older state where large exact/search jobs could measure
+hundreds of MiB in-process.
 
-- `streams/<hash>/segments/<segment>-<plan>.ssx`
+## Current Live Expectations
 
-This would be a compact, plan-relative extraction artifact consumed by:
+The live server should now behave like this during backlog drain:
 
-- unified search-segment build re-encode jobs
-- historical rebuilds after search-plan change
-- optional future read-path fast fallbacks
+- the server process remains in the few-hundred-MiB range instead of climbing
+  into multi-gigabyte anonymous RSS
+- individual async action rows now record a per-job peak RSS watermark
+- companion work on `evlog` appears as multiple `companion_build` rows plus one
+  `companion_merge_build` row instead of one large monolithic companion job
 
-### Status recommendation
+The exact live values depend on the backlog mix, but the intended shape is:
 
-Do not make this the first step.
+- steady-state server RSS in the `300-600 MiB` band
+- spike ceiling below `1 GiB`
+- `job_rss_peak_contributed_bytes` below `100 MiB` for each async job kind
 
-It is powerful, but it is a larger migration than the unified segment build and
-streaming compaction changes. Use it if the first phase still leaves too much
-CPU on rebuild-heavy workloads.
+## Current Performance State
 
-## Data Model Changes
+The biggest performance improvements already shipped are:
 
-The minimum viable redesign can keep most existing tables.
+- exact L0 is no longer monolithic across the entire `evlog` exact field set
+- high-cardinality exact compaction now streams and stages sources to files
+- fresh companion work is decomposed into smaller slice jobs
 
-### Reuse existing tables
+The remaining live performance concern is not the old memory blow-up. It is
+throughput and catch-up:
 
-- `secondary_index_state`
-- `secondary_index_runs`
-- `search_companion_plans`
-- `search_segment_companions`
-- `async_index_actions`
+- exact compaction is mostly in bounds
+- most exact L0 jobs are already in bounds
+- the remaining long-pole work is total exact frontier advancement versus
+  uploaded-head growth
 
-### Recommended additions
+That should now be addressed without sacrificing the new memory guarantees.
 
-#### Exact shard support
+## Latest Live Result
 
-Add nullable shard metadata to exact runs:
+The current shipped `2 GiB` live shape now keeps both async job memory and
+steady-state exact latency inside the target band:
 
-- `shard INTEGER NULL`
-- included in object key and uniqueness rules
+- recent `async_index_actions` rows show `0` jobs above `100 MiB`
+  `job_rss_peak_contributed_bytes`
+- recent post-restart exact / compaction rows show `0` jobs above `5s` in a
+  `91`-row live sample
+- the live server stayed healthy with:
+  - current RSS about `414 MiB`
+  - restart-window RSS high-water about `493 MiB`
 
-#### Unified action visibility
+The two changes that closed the remaining live tail were:
 
-Add a new action kind:
+1. exact run uploads now keep local artifacts on the file-backed `putFileNoEtag`
+   path when that API is available, because the live R2 benchmark for the
+   `~780 KiB` exact artifacts was faster and lower-tail than re-reading the file
+   into `putNoEtag`
+2. single-segment high-cardinality exact L0 jobs (`requestId`, `traceId`,
+   `spanId`, `path`) now collect fingerprints in typed buffers and dedupe after
+   sort instead of paying `Set<bigint>` cost on every record
 
-- `search_segment_build`
+That leaves the supported direction unchanged: keep the memory-safe split job
+shapes, and continue pushing catch-up via narrower hot-path optimizations rather
+than wider job shapes.
 
-Its `detail_json` should include:
+The current supported remote-read policy is also now narrower:
 
-- exact field count
-- companion section kinds
-- parse/extract/encode timings
-- temp/output file sizes
-- peak builder-memory estimates if available
+- segment cache fills prefer `getFile(...)` when the object store supports it,
+  so remote cache misses download to disk and then mmap/read locally instead of
+  materializing the whole segment via `arrayBuffer()`
+- secondary exact-run loads prefer `getFile(...)` into the run disk cache when
+  that cache is enabled
+- only tiny exact compaction sources still inline-fetch into memory, and that
+  path remains bounded by the small inline-fetch byte cap
+- the R2 object store now uses direct SigV4-signed `fetch(...)` calls for
+  object GET/PUT/HEAD/DELETE/LIST and no longer routes runtime data paths
+  through `Bun.S3Client` / `Bun.S3File.arrayBuffer()`
+- `getFile(...)` on R2 now streams the fetch body to disk instead of using
+  `Bun.write(path, s3File)`
 
-### Object layout
+## Regression Strategy
 
-Recommended exact object key shape with shard support:
+We are not relying on runtime kill switches or soft-limit enforcement for the
+`100 MiB` target. The supported confidence model is test-driven:
 
-- `streams/<hash>/secondary-index/<field>/l<level>/shard-<n>/<run>.sidx`
+1. every async indexing job kind must have a workload RSS scenario
+2. each scenario must run in a fresh subprocess
+3. each scenario must assert peak contributed RSS `<= 100 MiB`
+4. the parent-process executor regression suite must also stay below `100 MiB`
+5. any architectural change that merges or widens workload shapes must update
+   these tests in the same change
 
-Recommended companion object key shape can remain unchanged.
+This keeps the boundary explicit and avoids a design where production depends on
+runtime self-throttling to stay alive.
 
-## Concrete implementation map
+## Current Plan
 
-### Worker and job protocol
+The next optimization work should follow this order:
 
-Change:
+1. keep the current per-job RSS regression suite green for every async job kind
+2. verify the live server is emitting sane `job_rss_peak_contributed_bytes`
+   values in SQLite for all async job kinds
+3. continue optimizing exact frontier catch-up, starting with the slowest exact
+   L0 batches, but do not merge workload shapes in ways that invalidate the
+   `100 MiB` local job bound
+4. keep file-backed handoff as the default for heavy async artifacts
+5. prefer split / streaming / sharded workloads over wider monolithic jobs
 
-- `src/index/index_build_job.ts`
-- `src/index/index_build_worker.ts`
-- `src/index/index_build_worker_pool.ts`
+## Validation
 
-Add:
+Minimum validation for async-index memory work:
 
-- `search_segment_build`
-- file-path based result objects
-- optional transfer-list support for tiny outputs only
+- `bun run typecheck`
+- `bun run check:result-policy`
+- `bun test test/index_job_rss.test.ts --timeout 120000`
+- `bun test test/index_build_worker_pool_rss.test.ts --timeout 120000`
+- `bun test test/async_index_actions.test.ts --timeout 120000`
 
-### Unified build logic
+When the async execution boundary changes materially, also verify on the live
+server that:
 
-Add new module(s), for example:
+- the server remains healthy during backlog drain
+- per-job async action rows include the memory watermark fields
+- server RSS no longer ratchets upward over a real ingest/index soak
 
-- `src/search/search_segment_build.ts`
-- `src/search/search_field_extractor.ts`
-- `src/search/search_field_extractor_evlog.ts`
+## Source Files
 
-Retire the separate segment-scan role of:
+Relevant shipped implementation:
 
-- `src/index/secondary_l0_build.ts`
-- `src/search/companion_build.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_worker_pool.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_executor.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_subprocess.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_wire.ts`
+- `/Users/sorenschmidt/code/streams/src/index/index_build_telemetry.ts`
+- `/Users/sorenschmidt/code/streams/src/index/async_index_actions.ts`
+- `/Users/sorenschmidt/code/streams/src/index/secondary_indexer.ts`
+- `/Users/sorenschmidt/code/streams/src/index/run_payload_upload.ts`
+- `/Users/sorenschmidt/code/streams/src/index/run_format.ts`
+- `/Users/sorenschmidt/code/streams/src/index/secondary_l0_build.ts`
+- `/Users/sorenschmidt/code/streams/src/search/search_segment_build.ts`
+- `/Users/sorenschmidt/code/streams/src/search/companion_build.ts`
+- `/Users/sorenschmidt/code/streams/src/search/companion_merge.ts`
+- `/Users/sorenschmidt/code/streams/src/search/companion_manager.ts`
 
-Those modules can survive temporarily as wrappers during migration, but the
-long-term supported path should be one unified builder.
+Relevant regression tests:
 
-### Manager integration
-
-Change:
-
-- `src/index/global_index_manager.ts`
-- `src/index/secondary_indexer.ts`
-- `src/search/companion_manager.ts`
-
-Introduce:
-
-- one coordinator for `search_segment_build`
-- one shared persistence path for exact + companion outputs
-
-The existing read-side interfaces can stay stable.
-
-### Compaction rewrite
-
-Replace the algorithm inside:
-
-- `src/index/secondary_compaction_build.ts`
-
-Add:
-
-- streaming run iterators
-- shard-aware compaction inputs if shard mode is enabled
-- file-backed compaction output
-
-## Rollout Plan
-
-### Phase 0: measurement and failure-proofing
-
-Deliverables:
-
-- add timing breakdowns for current exact and companion paths:
-  - `segment_read`
-  - `json_parse`
-  - `field_extract`
-  - `exact_accumulate`
-  - `fts_accumulate`
-  - `col_accumulate`
-  - `encode`
-  - `upload`
-- add compaction memory / key-count telemetry per field
-- add temp-file cleanup on startup
-
-Expected gain:
-
-- measurement only
-
-### Phase 1: shipped baseline
-
-Delivered:
-
-- shared global worker pool
-- round-robin global scheduler
-- one-field / one-segment exact L0 on `evlog`
-- raw-byte exact L0 fast path for simple scalar fields
-
-Observed result:
-
-- moved heavy async-index work off the main request path
-- enabled global round-robin worker scheduling
-- but did not make exact L0 fast enough to catch up on `evlog`
-
-### Phase 2: targeted companion and unified-search acceleration
-
-Deliverables:
-
-- raw-byte scalar extraction for companion build
-- parsed-object fallback only for residual unsupported fields
-- no mandatory `JSON.parse` for the common `evlog` field set
-- unified `search_segment_build`
-- fresh-segment companion piggyback from exact
-
-Observed result:
-
-- standalone companion no longer races exact on fresh `evlog` segments
-- fresh-segment exact+companion work collapsed into one segment scan
-- companion is no longer the main fresh-segment bottleneck
-
-### Phase 3: file-backed artifact handoff (shipped)
-
-Delivered for both bundled companions and exact-secondary artifacts:
-
-- companion workers write `.cix` outputs to temp files
-- exact-secondary L0 and compaction workers write `.irn` outputs to temp files
-- main thread uploads with `putFile()`
-- the same file is moved into the corresponding local disk cache
-- unified `search_segment_build` now also writes exact and companion outputs to
-  temp files when a caller provides an output directory
-- the shared `search_segment_build` coordinator now only deduplicates inflight
-  builds and no longer keeps a completed-result TTL cache in anonymous memory
-- unified exact work is now scoped to the exact frontier batch or exact-ready
-  segment set instead of always building the full configured exact set
-
-Expected gain:
-
-- modest latency gain
-- **large RSS reduction**
-- much lower OOM risk
-
-### Phase 4: streaming exact compaction and source staging (partially shipped)
-
-Deliverables:
-
-- k-way merge
-- low-allocation output encoding
-- source staging to local files when uncached compaction inputs cannot be
-  admitted into the exact-run disk cache
-- shard-aware exact runs for `requestId`, `traceId`, and `spanId`
-- no full merged `Map<bigint, number[]>`
-
-Observed result so far:
-
-- fresh `requestId` compaction improved from about `48.7s` to about `17.1s`
-- compaction worker merge time is now sub-second on a fresh `requestId`
-  sample
-- the remaining compaction bottleneck is `finalize_ms`, not `worker_build_ms`
-- peak RSS after restart stayed below `1 GiB` instead of reproducing the prior
-  `3+ GiB` OOM shape
-
-Remaining deliverables:
-
-- shard-aware exact runs for `requestId`, `traceId`, and `spanId`
-- compaction finalization that does not block on non-critical cleanup
-
-### Phase 5: exact compaction finalization and shard mode
-
-Deliverables:
-
-- delete retired exact-run objects with bounded parallelism instead of serial
-  waits
-- keep manifest publication and other visibility-critical updates on the
-  critical path
-- shard-aware exact runs for `requestId`, `traceId`, and `spanId`
-
-Observed result so far:
-
-- fresh `requestId` compaction improved again from about `17.1s` to about
-  `3.5-4.0s`
-- `finalize_ms` on the fresh `requestId` sample dropped from about `10.7s` to
-  about `0.9-1.0s`
-- remaining compaction work is now mostly source preparation plus any residual
-  publish-side work
-- low-cardinality exact compactions now stage sources with fetch concurrency
-  `4`, while high-cardinality fields remain at `2`
-- recent live low-cardinality compactions are now:
-  - `service`: about `1.8s`
-  - `level`: about `1.8-2.6s`
-  - `environment`: about `2.2-2.7s`
-  - `method`: about `1.6-2.3s`
-  - `status`: about `1.9-2.6s`
-  - `duration`: about `2.0-2.1s`
-- warm `requestId` compaction improved from about `5.6s` to about `4.1s` after
-  direct-to-file source downloads shipped, which is about a `27%` reduction
-- live server RSS also dropped from about `1.16 GiB` current / `1.16 GiB`
-  high-water before that change to about `464 MiB` current / `590 MiB`
-  restart-window high-water after it
-- the next follow-up bounded high-cardinality exact compaction fan-in to `2`
-  while leaving low-cardinality fields on the default fan-in
-- the local focused benchmark for sparse high-cardinality compaction is more
-  than `25%` faster per job with fan-in `2` than with fan-in `4`
-- on the live node, that fan-in change pulled the remaining cold
-  high-cardinality compactions under `5s` as well:
-  - `path`: about `4.0s -> 1.6s`
-  - `spanId`: about `4.3s -> 2.4s`
-  - `traceId`: about `4.0s -> 2.6s`
-- the same live restart also kept current RSS around `400-500 MiB` with
-  restart-window high-water around `560 MiB`, compared with the unhealthy
-  pre-restart state around `2.0 GiB`
-
-Remaining deliverables:
-
-- shard-aware exact runs for `requestId`, `traceId`, and `spanId`
-
-### Phase 6: exact L0 throughput rewrite
-
-Deliverables:
-
-- faster exact L0 accumulation and encoding on `evlog`
-- avoid building exact outputs for fields that are not actually in the current
-  frontier batch
-- skip companion generation on lagging exact batches when companion for the
-  current segment is already at the current plan generation
-- split same-frontier high-cardinality `evlog` exact fields into smaller
-  deterministic batches so peak per-job wall time and peak RSS both come down
-- explicit phase telemetry inside exact L0 so scan, accumulate, encode, and
-  persist costs are separable
-- cached text tokenization for repeated `evlog` text values
-- compact singleton storage for positioned text postings until a second
-  document actually appears for the term
-- overlap piggyback companion staging with exact-run upload/finalize so the
-  owner batch no longer pays those two persistence legs fully serially
-- skip manifest publication for non-owner exact batches unless they advance the
-  stream-wide minimum exact frontier
-- keep `method,status,duration` as the stable `evlog` companion owner so
-  lagging exact frontiers do not inherit fresh companion work
-
-Observed result so far:
-
-- unified exact work now only builds the actual frontier batch instead of the
-  full configured exact set
-- the local focused benchmark for the `method,status,duration` frontier batch
-  is more than `25%` faster than building the full exact set for the same
-  segment
-- the local focused benchmark for a lagging `method,status,duration` batch is
-  also more than `25%` faster when companion rebuild is skipped for a segment
-  that already has the current companion generation
-- the local focused benchmark for the fresh high-cardinality `evlog` exact
-  group is also more than `25%` faster on peak per-job time when that work is
-  split into deterministic sub-batches with a single companion-owning batch
-- the local focused benchmark for `evlog` fast-byte companion build is more
-  than `25%` faster than the legacy fast-byte path that still allocates a
-  singleton `doc_ids` array for every unique keyword term
-- the local focused benchmark for repeated `evlog` text values is also more
-  than `25%` faster with cached analyzer output than with retokenizing every
-  repeated value
-- the live owner-batch phase timings now show exact L0 is persist-bound:
-  `build_ms` is often around `2.5-2.9s` while the overlapped persist window is
-  still around `2.7-4.3s`
-- on the live node, the persistence overlap lowered the slow owner batch from
-  the prior `7.8-9.1s` band into the `6.9-7.3s` band, which was a real but
-  insufficient win
-- the newest publish-gating change made the non-owner exact batches much
-  cheaper:
-  - `timestamp` now lands around `1.8-2.0s`
-  - `requestId` now lands around `3.0s`
-  - `traceId` now lands around `2.3s`
-  - `spanId` now lands around `3.3s`
-  - `path` now lands around `4.5s`
-- the newest fixed-owner change made the lagging `level,service,environment`
-  batch much cheaper as well:
-  - before: about `6.0-7.0s`
-  - after: about `1.9s`
-  - local perf proof: the same lagging batch is more than `25%` faster when it
-    does not rebuild companion payloads
-- the newest bounded-dispatch + `2 GiB` async-lane increase improved exact
-  frontier progress over the same `30s` live window from `11` indexed-segment
-  advances to `14` while the uploaded head still moved by `7` segments
-- the remaining exact-L0 outlier is now only the companion-owning
-  `method,status,duration` batch at about `7.1-7.3s`
-- on the live node, the latest restart kept current RSS in roughly the
-  `300-650 MiB` band with restart-window high-water below `900 MiB`, which is
-  far below the prior `3+ GiB` OOM shape
-
-Remaining goals:
-
-- the `method,status,duration` owner batch should get under `5s`
-- exact coverage should stop falling behind the uploaded head
-- steady-state RSS should spend more time in the `300-500 MiB` band instead of
-  the current `300-650 MiB` band
-
-### Phase 7: optional durable search-source sidecar
-
-Deliverables:
-
-- durable extraction sidecar
-- rebuilds consume sidecar instead of raw segment parse
-
-Expected gain:
-
-- another large reduction for rebuild-heavy and plan-change workloads
-- not required for the first major improvement
-
-## Acceptance Criteria
-
-Recommended acceptance targets for the current `evlog` workload:
-
-1. exact + companion segment coverage
-   - uploaded segments should receive both exact and companion coverage fast
-     enough that lag does not grow without bound under steady ingest
-
-2. exact L0 / companion freshness
-   - newly uploaded segments should receive both exact and companion coverage in
-     the same publication cycle
-
-3. latency targets
-   - exact L0 median under `5s`, with a long-term goal under `1s`
-   - fresh-segment companion work piggybacked from exact on `evlog`
-   - high-cardinality exact compaction median under `5s`, with
-     `finalize_ms` no longer dominant
-
-4. memory targets
-   - no OOM on the current host class during sustained backlog drain
-   - peak RSS materially below the previous `~3.36 GiB` kill point
-   - anonymous RSS no longer grows in proportion to merged exact key space
-
-5. correctness
-   - no false negatives for exact read filters or `_search` exact clauses
-   - stale or missing artifacts still fall back to raw segment/WAL scan exactly
-     as today
-
-## Risks And Mitigations
-
-### 1. Unified builder complexity grows
-
-Mitigation:
-
-- keep one extractor API and one worker job protocol
-- add deterministic fixture tests that compare the unified outputs against the
-  current exact + companion outputs
-
-### 2. Profile-specific extractors could diverge from generic behavior
-
-Mitigation:
-
-- keep a generic extractor as the reference path
-- run the same corpus through both paths in tests and compare outputs
-
-### 3. Shard mode complicates exact lookup and manifest state
-
-Mitigation:
-
-- enable shard mode only for a small allowlist of high-cardinality fields first
-- keep low-cardinality fields on the unsharded path
-
-### 4. File-backed artifacts add temp-file lifecycle work
-
-Mitigation:
-
-- dedicated build temp root
-- delete-on-success
-- startup sweep for abandoned temp directories
-
-### 5. One unified build failure could delay both exact and companion coverage
-
-Mitigation:
-
-- exact and companion remain rebuildable accelerators
-- allow the worker to return partial-family failure metadata if needed, but keep
-  the first implementation simpler: fail the whole segment build and retry
-- raw segment fallback preserves correctness
-
-## Bottom Line
-
-The current bottleneck is structural:
-
-- the system still scans and extracts the same `evlog` segment twice
-- it still compacts `requestId` with a full materialization algorithm
-
-The best next architecture is therefore:
-
-- **one unified search-segment build**
-- **direct sink-oriented extraction**
-- **streaming, optionally sharded exact compaction**
-
-That is the shortest path to meaningfully faster exact indexing, meaningfully
-faster companion indexing, a much smaller `requestId` compaction tail, and a
-much lower chance of another OOM kill.
+- `/Users/sorenschmidt/code/streams/test/index_job_rss.test.ts`
+- `/Users/sorenschmidt/code/streams/test/index_build_worker_pool_rss.test.ts`
+- `/Users/sorenschmidt/code/streams/test/async_index_actions.test.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/index_job_rss_scenarios.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/index_job_rss_runner.ts`
+- `/Users/sorenschmidt/code/streams/test/helpers/process_tree_rss_sampler.ts`

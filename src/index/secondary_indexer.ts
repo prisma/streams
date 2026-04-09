@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import type { SecondaryIndexRunRow, SegmentRow, SqliteDurableStore } from "../db/db";
@@ -33,10 +33,9 @@ import {
 import type { IndexSegmentLocalityManager } from "./segment_locality";
 import { IndexBuildWorkerPool } from "./index_build_worker_pool";
 import type { SecondaryCompactionBuildOutput, SecondaryCompactionRunSource } from "./secondary_compaction_build";
-import { beginAsyncIndexAction } from "./async_index_actions";
+import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "./async_index_actions";
 import { uploadRunPayloadsBoundedResult } from "./run_payload_upload";
 import { writeIndexRunOutputFileResult } from "./index_run_output_file";
-import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "../search/companion_plan";
 import { SearchSegmentBuildCoordinator } from "../search/search_segment_build_coordinator";
 import { collectUnifiedSearchBuildExactIndexes, type SearchSegmentBuildOutput } from "../search/search_segment_build";
 import type { CompanionSectionKind } from "../search/companion_format";
@@ -45,34 +44,25 @@ type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string }
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
 const SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG = 2;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY = 2;
-const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 4;
+const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 16;
+const SECONDARY_COMPACTION_SOURCE_INLINE_FETCH_MAX_BYTES = 256 * 1024;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
 const SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY = 2;
-const EVLOG_EXACT_COMPANION_OWNER_GROUP = ["method", "status", "duration"] as const;
+const SECONDARY_COMPACTION_MAX_LEVEL_HIGH_CARDINALITY = 0;
 const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "spanId", "path"]);
 const EVLOG_EXACT_BATCH_GROUPS = [
-  ["level", "service", "environment"],
+  ["level"],
+  ["service"],
+  ["environment"],
   ["timestamp"],
-  ["requestId", "traceId"],
+  ["requestId"],
+  ["traceId"],
   ["spanId"],
   ["path"],
-  ["method", "status", "duration"],
+  ["method"],
+  ["status"],
+  ["duration"],
 ] as const;
-type UnifiedCompanionSink = (
-  stream: string,
-  segmentIndex: number,
-  planGeneration: number,
-  output: NonNullable<SearchSegmentBuildOutput["companion"]>
-) => Promise<
-  Result<
-    | null
-    | {
-        sectionKinds: CompanionSectionKind[];
-        finalize: () => Result<{ sectionKinds: CompanionSectionKind[] }, { kind: string; message: string }>;
-      },
-    { kind: string; message: string }
-  >
->;
 type ExactBuiltRun = SearchSegmentBuildOutput["exactRuns"][number];
 type UploadedExactRun = {
   run: ExactBuiltRun;
@@ -94,6 +84,12 @@ export function secondaryCompactionFanout(indexName: string, configuredFanout: n
   if (configuredFanout <= 1) return configuredFanout;
   if (!EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return configuredFanout;
   return Math.max(2, Math.min(configuredFanout, SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY));
+}
+
+export function secondaryCompactionMaxLevel(indexName: string, configuredMaxLevel: number): number {
+  if (configuredMaxLevel <= 0) return configuredMaxLevel;
+  if (!EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return configuredMaxLevel;
+  return Math.min(configuredMaxLevel, SECONDARY_COMPACTION_MAX_LEVEL_HIGH_CARDINALITY);
 }
 
 export function secondaryBuildDispatchConcurrency(profile: string | null | undefined, batchCount: number): number {
@@ -129,6 +125,7 @@ export class SecondaryIndexManager {
   private readonly retireMinMs: number;
   private readonly buildQueue = new Set<string>();
   private readonly compactionQueue = new Set<string>();
+  private readonly deferredManifestPublishes = new Set<string>();
   private readonly building = new Set<string>();
   private readonly compacting = new Set<string>();
   private runningBuildTick = false;
@@ -142,7 +139,6 @@ export class SecondaryIndexManager {
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
   private readonly searchSegmentBuilds?: SearchSegmentBuildCoordinator;
-  private unifiedCompanionSink?: UnifiedCompanionSink;
 
   constructor(
     cfg: Config,
@@ -202,6 +198,22 @@ export class SecondaryIndexManager {
     this.runningBuildTick = false;
     this.runningCompactionTick = false;
     if (this.ownsBuildWorkers) this.buildWorkers.stop();
+  }
+
+  private requestDeferredManifestPublish(stream: string): void {
+    this.deferredManifestPublishes.add(stream);
+  }
+
+  private async flushDeferredManifestPublish(stream: string): Promise<void> {
+    if (!this.deferredManifestPublishes.has(stream)) return;
+    this.deferredManifestPublishes.delete(stream);
+    if (!this.publishManifest) return;
+    try {
+      await this.publishManifest(stream);
+    } catch (error) {
+      this.deferredManifestPublishes.add(stream);
+      throw error;
+    }
   }
 
   enqueue(stream: string): void {
@@ -281,10 +293,6 @@ export class SecondaryIndexManager {
 
   async tick(): Promise<void> {
     await Promise.all([this.runOneBuildTask(), this.runOneCompactionTask()]);
-  }
-
-  setUnifiedCompanionSink(sink: UnifiedCompanionSink): void {
-    this.unifiedCompanionSink = sink;
   }
 
   async persistUnifiedExactRunsFromSearchBuild(
@@ -379,6 +387,13 @@ export class SecondaryIndexManager {
           })
         )
       );
+      if (!failed) {
+        try {
+          await this.flushDeferredManifestPublish(stream);
+        } catch {
+          failed = true;
+        }
+      }
       if (failed) {
         this.buildQueue.add(stream);
       }
@@ -423,11 +438,13 @@ export class SecondaryIndexManager {
       const regRes = this.registry.getRegistryResult(stream);
       if (Result.isError(regRes)) return true;
       const configured = getConfiguredSecondaryIndexes(regRes.value);
+      let failed = false;
       for (const index of configured) {
         try {
           const compactRes = await this.maybeCompactRuns(stream, index.name);
           if (Result.isError(compactRes)) {
             this.compactionQueue.add(stream);
+            failed = true;
             break;
           }
         } catch (e) {
@@ -436,7 +453,15 @@ export class SecondaryIndexManager {
             console.error("secondary index compaction failed", stream, index.name, e);
           }
           this.compactionQueue.add(stream);
+          failed = true;
           break;
+        }
+      }
+      if (!failed) {
+        try {
+          await this.flushDeferredManifestPublish(stream);
+        } catch {
+          this.compactionQueue.add(stream);
         }
       }
       return true;
@@ -453,17 +478,6 @@ export class SecondaryIndexManager {
     return stream;
   }
 
-  private getCurrentCompanionPlan(stream: string, registry: SchemaRegistry): {
-    generation: number;
-    plan: SearchCompanionPlan;
-  } | null {
-    const desiredPlan = buildDesiredSearchCompanionPlan(registry);
-    const desiredHash = hashSearchCompanionPlan(desiredPlan);
-    const current = this.db.getSearchCompanionPlan(stream);
-    if (!current || current.plan_hash !== desiredHash) return null;
-    return { generation: current.generation, plan: desiredPlan };
-  }
-
   private getEvlogPeerBatch(indexName: string, peerIndexes: SecondaryIndexField[]): SecondaryIndexField[] {
     for (const group of EVLOG_EXACT_BATCH_GROUPS) {
       const batch = peerIndexes.filter((configuredIndex) => (group as readonly string[]).includes(configuredIndex.name));
@@ -472,35 +486,12 @@ export class SecondaryIndexManager {
     return peerIndexes.filter((configuredIndex) => configuredIndex.name === indexName);
   }
 
-  private shouldBuildCompanionForSegment(
-    stream: string,
-    segmentIndex: number,
-    companionPlanGeneration: number | null,
-    configuredIndexes: SecondaryIndexField[],
-    peerIndexes: SecondaryIndexField[],
-    batchIndexes: SecondaryIndexField[]
-  ): boolean {
-    if (!this.unifiedCompanionSink || companionPlanGeneration == null) return false;
-    const currentCompanion = this.db.getSearchSegmentCompanion(stream, segmentIndex);
-    if (currentCompanion && currentCompanion.plan_generation === companionPlanGeneration) return false;
-    const configuredOwnerBatch = configuredIndexes.filter((configuredIndex) =>
-      (EVLOG_EXACT_COMPANION_OWNER_GROUP as readonly string[]).includes(configuredIndex.name)
-    );
-    if (configuredOwnerBatch.length > 0) {
-      return configuredOwnerBatch.some((configuredIndex) => batchIndexes.some((entry) => entry.name === configuredIndex.name));
-    }
-    const fallbackOwnerName = peerIndexes.map((configuredIndex) => configuredIndex.name).sort((a, b) => a.localeCompare(b))[0];
-    return batchIndexes.some((entry) => entry.name === fallbackOwnerName);
-  }
-
   private shouldPublishManifestAfterL0Batch(
     configured: SecondaryIndexField[],
     batchIndexes: SecondaryIndexField[],
     stateByName: Map<string, NonNullable<ReturnType<SqliteDurableStore["getSecondaryIndexState"]>>>,
-    nextIndexedThrough: number,
-    shouldBuildCompanion: boolean
+    nextIndexedThrough: number
   ): boolean {
-    if (shouldBuildCompanion) return true;
     let minBefore = Number.POSITIVE_INFINITY;
     let minAfter = Number.POSITIVE_INFINITY;
     const batchNames = new Set(batchIndexes.map((entry) => entry.name));
@@ -603,17 +594,7 @@ export class SecondaryIndexManager {
             input_payload_bytes: segments.reduce((sum, segment) => sum + Number(segment.payload_bytes), 0),
           },
         });
-        const currentCompanionPlan = this.getCurrentCompanionPlan(stream, registry);
-        const shouldBuildCompanion = this.shouldBuildCompanionForSegment(
-          stream,
-          start,
-          currentCompanionPlan?.generation ?? null,
-          configured,
-          peerIndexes,
-          batchIndexes
-        );
-        const useUnifiedSearchBuild =
-          this.searchSegmentBuilds != null && this.span === 1 && registry.search?.profile === "evlog";
+        const useUnifiedSearchBuild = false;
         const batchIndexNames = new Set(batchIndexes.map((entry) => entry.name));
         const unifiedExactIndexes = useUnifiedSearchBuild
           ? collectUnifiedSearchBuildExactIndexes(registry, (indexName) => {
@@ -647,8 +628,9 @@ export class SecondaryIndexManager {
                         stream,
                         registry,
                         exactIndexes: unifiedExactIndexes,
-                        plan: shouldBuildCompanion ? (currentCompanionPlan?.plan ?? null) : null,
-                        planGeneration: shouldBuildCompanion ? (currentCompanionPlan?.generation ?? null) : null,
+                        plan: null,
+                        planGeneration: null,
+                        includeCompanion: false,
                         outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                         segment: {
                           segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
@@ -659,11 +641,13 @@ export class SecondaryIndexManager {
                       if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
                       sharedBuildCacheStatus = sharedRes.value.cacheStatus;
                       return Result.ok({
-                        kind: "secondary_l0_build" as const,
                         output: {
-                          runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
-                          companion: sharedRes.value.output.companion,
+                          kind: "secondary_l0_build" as const,
+                          output: {
+                            runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
+                          },
                         },
+                        telemetry: sharedRes.value.jobTelemetry,
                       });
                     }
                   )
@@ -672,8 +656,9 @@ export class SecondaryIndexManager {
                       stream,
                       registry,
                       exactIndexes: unifiedExactIndexes,
-                      plan: shouldBuildCompanion ? (currentCompanionPlan?.plan ?? null) : null,
-                      planGeneration: shouldBuildCompanion ? (currentCompanionPlan?.generation ?? null) : null,
+                      plan: null,
+                      planGeneration: null,
+                      includeCompanion: false,
                       outputDir: `${this.cfg.rootDir}/tmp/search-segment-builds`,
                       segment: {
                         segmentIndex: segmentLeaseRes.value.localSegments[0]!.segmentIndex,
@@ -684,11 +669,13 @@ export class SecondaryIndexManager {
                     if (Result.isError(sharedRes)) return Result.err(sharedRes.error);
                     sharedBuildCacheStatus = sharedRes.value.cacheStatus;
                     return Result.ok({
-                      kind: "secondary_l0_build" as const,
                       output: {
-                        runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
-                        companion: sharedRes.value.output.companion,
+                        kind: "secondary_l0_build" as const,
+                        output: {
+                          runs: sharedRes.value.output.exactRuns.filter((entry) => batchIndexNames.has(entry.indexName)),
+                        },
                       },
+                      telemetry: sharedRes.value.jobTelemetry,
                     });
                   })())
             : this.memorySampler
@@ -753,53 +740,21 @@ export class SecondaryIndexManager {
           });
           return invalidIndexBuild(runRes.error.message);
         }
-        if (runRes.value.kind !== "secondary_l0_build") {
+        if (runRes.value.output.kind !== "secondary_l0_build") {
           action.fail("unexpected worker result kind");
           return invalidIndexBuild("unexpected worker result kind");
         }
-        const outputRuns = runRes.value.output.runs;
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runRes.value.telemetry);
+        const outputRuns = runRes.value.output.output.runs;
         const nextIndexedThrough = end + 1;
         const shouldPublishManifest = this.shouldPublishManifestAfterL0Batch(
           configured,
           batchIndexes,
           stateByName,
-          nextIndexedThrough,
-          shouldBuildCompanion
+          nextIndexedThrough
         );
-        const unifiedCompanionOutput: NonNullable<SearchSegmentBuildOutput["companion"]> | null =
-          useUnifiedSearchBuild && "companion" in runRes.value.output
-            ? ((runRes.value.output.companion as SearchSegmentBuildOutput["companion"]) ?? null)
-            : null;
-        const companionStageStartedAt = Date.now();
-        const companionStagePromise =
-          useUnifiedSearchBuild &&
-          shouldBuildCompanion &&
-          this.unifiedCompanionSink &&
-          currentCompanionPlan?.generation != null &&
-          unifiedCompanionOutput
-            ? this.unifiedCompanionSink(
-                stream,
-                segmentLeaseRes.value.localSegments[0]!.segmentIndex,
-                currentCompanionPlan.generation,
-                unifiedCompanionOutput
-              )
-            : Promise.resolve(Result.ok(null));
         const exactPersistStartedAt = Date.now();
-        const [companionStageRes, uploadExactRes] = await Promise.all([
-          companionStagePromise,
-          this.uploadExactRunsResult(outputRuns),
-        ]);
-        piggybackCompanionPersistMs = Date.now() - companionStageStartedAt;
-        if (Result.isError(companionStageRes)) {
-          action.fail(companionStageRes.error.message, {
-            detail: {
-              build_ms: buildMs,
-              piggyback_companion_persist_ms: piggybackCompanionPersistMs,
-            },
-          });
-          return invalidIndexBuild(companionStageRes.error.message);
-        }
-        piggybackCompanionSectionKinds = companionStageRes.value?.sectionKinds ?? [];
+        const uploadExactRes = await this.uploadExactRunsResult(outputRuns);
         if (Result.isError(uploadExactRes)) {
           const exactPersistMs = Date.now() - exactPersistStartedAt;
           action.fail(uploadExactRes.error.message, {
@@ -807,21 +762,10 @@ export class SecondaryIndexManager {
               build_ms: buildMs,
               piggyback_companion_persist_ms: piggybackCompanionPersistMs,
               exact_persist_ms: exactPersistMs,
+              ...buildTelemetryDetail,
             },
           });
           return invalidIndexBuild(uploadExactRes.error.message);
-        }
-        const finalizeCompanionRes = companionStageRes.value?.finalize();
-        if (finalizeCompanionRes && Result.isError(finalizeCompanionRes)) {
-          const exactPersistMs = Date.now() - exactPersistStartedAt;
-          action.fail(finalizeCompanionRes.error.message, {
-            detail: {
-              build_ms: buildMs,
-              piggyback_companion_persist_ms: piggybackCompanionPersistMs,
-              exact_persist_ms: exactPersistMs,
-            },
-          });
-          return invalidIndexBuild(finalizeCompanionRes.error.message);
         }
         const persistRes = await this.finalizeExactRunsPersistResult(
           stream,
@@ -829,7 +773,7 @@ export class SecondaryIndexManager {
           batchIndexes,
           stateByName,
           nextIndexedThrough,
-          shouldPublishManifest
+          false
         );
         const exactPersistMs = Date.now() - exactPersistStartedAt;
         if (Result.isError(persistRes)) {
@@ -838,10 +782,15 @@ export class SecondaryIndexManager {
               build_ms: buildMs,
               piggyback_companion_persist_ms: piggybackCompanionPersistMs,
               exact_persist_ms: exactPersistMs,
+              ...buildTelemetryDetail,
             },
           });
           return invalidIndexBuild(persistRes.error.message);
         }
+        if (shouldPublishManifest) this.requestDeferredManifestPublish(stream);
+        const deferPiggybackCompanion = false;
+        piggybackCompanionSectionKinds = [];
+        piggybackCompanionPersistMs = 0;
         action.succeed({
           outputCount: uploadExactRes.value.outputRuns.length,
           outputSizeBytes: uploadExactRes.value.outputSizeBytes,
@@ -851,10 +800,13 @@ export class SecondaryIndexManager {
             output_filter_lens: uploadExactRes.value.outputFilterLens,
             shared_build_cache_status: sharedBuildCacheStatus,
             piggyback_companion_section_kinds: piggybackCompanionSectionKinds,
-            manifest_published: shouldPublishManifest,
+            piggyback_companion_deferred: deferPiggybackCompanion,
+            manifest_published: false,
+            manifest_publish_requested: shouldPublishManifest,
             build_ms: buildMs,
             piggyback_companion_persist_ms: piggybackCompanionPersistMs,
             exact_persist_ms: exactPersistMs,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -902,6 +854,7 @@ export class SecondaryIndexManager {
           action.fail(runRes.error.message);
           return runRes;
         }
+        const buildTelemetryDetail = asyncIndexActionMemoryDetail(runRes.value.jobTelemetry);
         const run = runRes.value.run;
         const artifactPersistStartedAt = Date.now();
         const persistRes = await this.persistRunArtifactResult(run);
@@ -919,6 +872,7 @@ export class SecondaryIndexManager {
               source_temp_spills: runRes.value.sourceTempSpillCount,
               source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
               compaction_fanout: compactionFanout,
+              ...buildTelemetryDetail,
             },
           });
           return persistRes;
@@ -949,16 +903,7 @@ export class SecondaryIndexManager {
         );
         this.onMetadataChanged?.(stream);
         const metadataFinalizeMs = Date.now() - metadataFinalizeStartedAt;
-        const publishManifestStartedAt = Date.now();
-        let publishManifestMs = 0;
-        if (this.publishManifest) {
-          try {
-            await this.publishManifest(stream);
-          } catch {
-            // ignore and retry later
-          }
-          publishManifestMs = Date.now() - publishManifestStartedAt;
-        }
+        this.requestDeferredManifestPublish(stream);
         const retiredGcStartedAt = Date.now();
         await this.gcRetiredRuns(stream, indexName);
         const retiredGcMs = Date.now() - retiredGcStartedAt;
@@ -980,8 +925,11 @@ export class SecondaryIndexManager {
             source_fetch_concurrency: runRes.value.sourceFetchConcurrency,
             compaction_fanout: compactionFanout,
             metadata_finalize_ms: metadataFinalizeMs,
-            publish_manifest_ms: publishManifestMs,
+            publish_manifest_ms: 0,
+            manifest_published: false,
+            manifest_publish_requested: true,
             retired_gc_ms: retiredGcMs,
+            ...buildTelemetryDetail,
           },
         });
         return Result.ok(undefined);
@@ -1129,13 +1077,14 @@ export class SecondaryIndexManager {
     const runs = this.db.listSecondaryIndexRuns(stream, indexName);
     const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
     if (runs.length < compactionFanout) return null;
+    const maxLevel = secondaryCompactionMaxLevel(indexName, this.maxLevel);
     const byLevel = new Map<number, SecondaryIndexRunRow[]>();
     for (const run of runs) {
       const arr = byLevel.get(run.level) ?? [];
       arr.push(run);
       byLevel.set(run.level, arr);
     }
-    for (let level = 0; level <= this.maxLevel; level++) {
+    for (let level = 0; level <= maxLevel; level++) {
       const levelRuns = byLevel.get(level);
       if (!levelRuns || levelRuns.length < compactionFanout) continue;
       const span = this.levelSpan(indexName, level);
@@ -1172,6 +1121,7 @@ export class SecondaryIndexManager {
     Result<
       {
         run: SecondaryCompactionBuildOutput;
+        jobTelemetry: import("./index_build_telemetry").IndexBuildJobTelemetry | null;
         sourcePrepareMs: number;
         workerBuildMs: number;
         sourceCacheHitCount: number;
@@ -1200,9 +1150,10 @@ export class SecondaryIndexManager {
       });
       const workerBuildMs = Date.now() - workerBuildStartedAt;
       if (Result.isError(buildRes)) return invalidIndexBuild(buildRes.error.message);
-      if (buildRes.value.kind !== "secondary_compaction_build") return invalidIndexBuild("unexpected worker result kind");
+      if (buildRes.value.output.kind !== "secondary_compaction_build") return invalidIndexBuild("unexpected worker result kind");
       return Result.ok({
-        run: buildRes.value.output,
+        run: buildRes.value.output.output,
+        jobTelemetry: buildRes.value.telemetry,
         sourcePrepareMs,
         workerBuildMs,
         sourceCacheHitCount: sourcesRes.value.cacheHitCount,
@@ -1290,7 +1241,7 @@ export class SecondaryIndexManager {
     Result<
       {
         source: SecondaryCompactionRunSource;
-        location: "cache_hit" | "cache_fill" | "temp_spill";
+        location: "cache_hit" | "cache_fill" | "temp_spill" | "inline_fetch";
       },
       SecondaryIndexBuildError
     >
@@ -1309,6 +1260,30 @@ export class SecondaryIndexManager {
     const tempOutputDir = `${this.cfg.rootDir}/tmp/secondary-index-sources`;
     const tempLocalPath = `${tempOutputDir}/secondary-source-${meta.run_id}-${Date.now()}-${randomBytes(4).toString("hex")}.irn`;
     try {
+      if (meta.size_bytes <= SECONDARY_COMPACTION_SOURCE_INLINE_FETCH_MAX_BYTES) {
+        const bytes = await retry(
+          async () => {
+            const data = await this.os.get(meta.object_key);
+            if (!data) throw dsError(`missing secondary index run ${meta.object_key}`);
+            return data;
+          },
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+        return Result.ok({
+          source: {
+            runId: meta.run_id,
+            startSegment: meta.start_segment,
+            endSegment: meta.end_segment,
+            bytes,
+          },
+          location: "inline_fetch",
+        });
+      }
       if (this.os.getFile) {
         mkdirSync(tempOutputDir, { recursive: true });
         const fileRes = await retry(
@@ -1439,7 +1414,17 @@ export class SecondaryIndexManager {
   private async persistRunArtifactResult(run: SecondaryCompactionBuildOutput): Promise<Result<number, SecondaryIndexBuildError>> {
     if (run.storage === "file") {
       try {
-        if (this.os.putFile) {
+        if (this.os.putFileNoEtag) {
+          await retry(
+            () => this.os.putFileNoEtag!(run.meta.objectKey, run.localPath, run.sizeBytes),
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          );
+        } else if (this.os.putFile) {
           await retryAbortable(
             (signal) => this.os.putFile!(run.meta.objectKey, run.localPath, run.sizeBytes, { signal }),
             {
@@ -1488,15 +1473,27 @@ export class SecondaryIndexManager {
     decodedRun?: IndexRun
   ): Promise<Result<number, SecondaryIndexBuildError>> {
     try {
-      await retryAbortable(
-        (signal) => this.os.put(meta.objectKey, payload, { contentLength: payload.byteLength, signal }),
-        {
-          retries: this.cfg.objectStoreRetries,
-          baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-          maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-          timeoutMs: this.cfg.objectStoreTimeoutMs,
-        }
-      );
+      if (this.os.putNoEtag) {
+        await retry(
+          () => this.os.putNoEtag!(meta.objectKey, payload, { contentLength: payload.byteLength }),
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+      } else {
+        await retryAbortable(
+          (signal) => this.os.put(meta.objectKey, payload, { contentLength: payload.byteLength, signal }),
+          {
+            retries: this.cfg.objectStoreRetries,
+            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+            timeoutMs: this.cfg.objectStoreTimeoutMs,
+          }
+        );
+      }
     } catch (e: unknown) {
       return invalidIndexBuild(String((e as any)?.message ?? e));
     }
@@ -1517,24 +1514,56 @@ export class SecondaryIndexManager {
       }
     }
     if (!bytes) {
-      try {
-        bytes = await retry(
-          async () => {
-            const data = await this.os.get(meta.object_key);
-            if (!data) throw dsError(`missing secondary index run ${meta.object_key}`);
-            return data;
-          },
-          {
-            retries: this.cfg.objectStoreRetries,
-            baseDelayMs: this.cfg.objectStoreBaseDelayMs,
-            maxDelayMs: this.cfg.objectStoreMaxDelayMs,
-            timeoutMs: this.cfg.objectStoreTimeoutMs,
+      if (this.runDiskCache && this.os.getFile) {
+        const tempOutputDir = `${this.cfg.rootDir}/tmp/secondary-index-runs`;
+        const tempLocalPath = `${tempOutputDir}/secondary-run-${meta.run_id}-${Date.now()}-${randomBytes(4).toString("hex")}.irn`;
+        try {
+          mkdirSync(tempOutputDir, { recursive: true });
+          const fileRes = await retry(
+            async () => {
+              const result = await this.os.getFile!(meta.object_key, tempLocalPath);
+              if (!result) throw dsError(`missing secondary index run ${meta.object_key}`);
+              return result;
+            },
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          );
+          const sizeBytes = fileRes.size > 0 ? fileRes.size : meta.size_bytes;
+          if (this.runDiskCache.putFromLocal(meta.object_key, tempLocalPath, sizeBytes)) {
+            bytes = this.runDiskCache.get(meta.object_key);
+            if (!bytes) bytes = readFileSync(this.runDiskCache.getPath(meta.object_key));
+          } else {
+            bytes = readFileSync(tempLocalPath);
+            rmSync(tempLocalPath, { force: true });
           }
-        );
-      } catch (e: unknown) {
-        return invalidIndexBuild(String((e as any)?.message ?? e));
+        } catch (e: unknown) {
+          rmSync(tempLocalPath, { force: true });
+          return invalidIndexBuild(String((e as any)?.message ?? e));
+        }
+      } else {
+        try {
+          bytes = await retry(
+            async () => {
+              const data = await this.os.get(meta.object_key);
+              if (!data) throw dsError(`missing secondary index run ${meta.object_key}`);
+              return data;
+            },
+            {
+              retries: this.cfg.objectStoreRetries,
+              baseDelayMs: this.cfg.objectStoreBaseDelayMs,
+              maxDelayMs: this.cfg.objectStoreMaxDelayMs,
+              timeoutMs: this.cfg.objectStoreTimeoutMs,
+            }
+          );
+        } catch (e: unknown) {
+          return invalidIndexBuild(String((e as any)?.message ?? e));
+        }
       }
-      this.runDiskCache?.put(meta.object_key, bytes);
+      if (!this.runDiskCache?.has(meta.object_key)) this.runDiskCache?.put(meta.object_key, bytes);
     }
     const decodeRes = decodeIndexRunResult(bytes);
     if (Result.isError(decodeRes)) return invalidIndexBuild(decodeRes.error.message);

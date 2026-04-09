@@ -92,7 +92,10 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
     - bundled companions (`.col`, `.fts`, `.agg`, `.mblk`) via `SearchCompanionManager`
 - The main process still owns scheduling, SQLite state changes, and manifest
   publication.
-- All heavy index-build computation now runs on the shared worker pool:
+- All heavy index-build computation now runs through the shared
+  `IndexBuildWorkerPool`, but each build executes in its own short-lived Bun
+  subprocess rather than on the main thread or in a long-lived
+  `worker_threads` pool:
   - combined routing-key + routing-key lexicon L0 run build
   - routing-key run compaction
   - routing-key lexicon run compaction
@@ -101,6 +104,11 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
   - non-evlog exact secondary L0 run build
   - exact secondary run compaction
   - non-evlog bundled companion per-segment build
+- The parent/subprocess handoff uses an explicit JSON wire format with tagged
+  `bigint` and `Uint8Array` values, not `node:v8` serialization. Repeated
+  local RSS soak tests showed that the old `v8.serialize` /
+  `v8.deserialize` path itself retained anonymous RSS in the long-lived server
+  process after many jobs.
 - Routing-key and routing-key lexicon L0 build now share one worker pass over
   the same leased 16-segment window. The worker emits both immutable payloads,
   and the main thread persists them through the two family-specific state
@@ -184,12 +192,16 @@ merges that run on the main event loop.
 6) Reader
 - Merges historical data from segments (local cache or R2) with tail data in SQLite.
 - Supports key-filtered reads and long-poll semantics.
-- On a remote segment cache miss, it fetches the whole segment object directly
-  from R2 and treats a missing-object GET as `null`, rather than probing object
-  existence before the fetch.
+- On a remote segment cache miss, it prefers the object-store `getFile(...)`
+  path so the segment is streamed to the local disk cache before it is mmapped
+  or read locally. Missing objects are still treated as `null` without a
+  separate existence probe.
 
 7) Object store
 - ObjectStore interface with put/get/head/list plus streaming uploads.
+- The R2 implementation uses direct SigV4-signed `fetch(...)` requests for
+  object reads, writes, and metadata operations. The supported implementation
+  does not depend on Bun's native `S3Client` data paths.
 - MockR2 implements the interface with deterministic fault injection.
 
 ## Profile Runtime
