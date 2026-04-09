@@ -27,6 +27,8 @@ type FastJsonScalarExtraction = {
 };
 
 const FAST_JSON_DECODER = new TextDecoder();
+export const ANALYZED_TEXT_CACHE_MAX_ENTRIES = 1024;
+export const ANALYZED_TEXT_CACHE_MAX_VALUE_CHARS = 256;
 
 export function resolveSearchAlias(search: SearchConfig | undefined, fieldName: string): string {
   return search?.aliases?.[fieldName] ?? fieldName;
@@ -133,9 +135,14 @@ export function analyzeTextValueCached(
   analyzer: SearchFieldConfig["analyzer"],
   cache: Map<string, string[]>
 ): string[] {
+  if (value.length > ANALYZED_TEXT_CACHE_MAX_VALUE_CHARS) return analyzeTextValue(value, analyzer);
   const cached = cache.get(value);
   if (cached) return cached;
   const analyzed = analyzeTextValue(value, analyzer);
+  if (cache.size >= ANALYZED_TEXT_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey != null) cache.delete(oldestKey);
+  }
   cache.set(value, analyzed);
   return analyzed;
 }

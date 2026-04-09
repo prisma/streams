@@ -14,6 +14,8 @@ import { decodeBundledSegmentCompanionResult, encodeBundledSegmentCompanionFromP
 import type { ColFieldInput, ColScalar, ColSectionInput } from "../src/search/col_format";
 import type { FtsFieldInput, FtsSectionInput } from "../src/search/fts_format";
 import {
+  ANALYZED_TEXT_CACHE_MAX_ENTRIES,
+  ANALYZED_TEXT_CACHE_MAX_VALUE_CHARS,
   analyzeTextValueCached,
   buildFastScalarAccessorTrieResult,
   analyzeTextValue,
@@ -839,6 +841,23 @@ describe("bundled companion build performance", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test("text token cache stays bounded on unique long values", () => {
+    const cache = new Map<string, string[]>();
+    for (let index = 0; index < ANALYZED_TEXT_CACHE_MAX_ENTRIES * 3; index += 1) {
+      const unique = `${index}-${"x".repeat(ANALYZED_TEXT_CACHE_MAX_VALUE_CHARS + 64)}`;
+      const tokens = analyzeTextValueCached(unique, "unicode_word_v1", cache);
+      expect(tokens.length).toBeGreaterThan(0);
+    }
+    expect(cache.size).toBe(0);
+
+    for (let index = 0; index < ANALYZED_TEXT_CACHE_MAX_ENTRIES * 3; index += 1) {
+      const unique = `short-${index}`;
+      const tokens = analyzeTextValueCached(unique, "unicode_word_v1", cache);
+      expect(tokens.length).toBeGreaterThan(0);
+    }
+    expect(cache.size).toBeLessThanOrEqual(ANALYZED_TEXT_CACHE_MAX_ENTRIES);
+  });
 
   test("file-backed companion staging uploads and caches the same artifact", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-companion-build-worker-"));

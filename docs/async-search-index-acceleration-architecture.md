@@ -71,6 +71,18 @@ It also uses the latest production evidence from `evlog-1`:
 - after the same restart, current RSS sat around `298-632 MiB` with
   restart-window high-water about `892 MiB`, so the node stayed below the
   `1 GiB` spike target while running two async exact lanes
+- the newest unified-search memory fix now bounds per-build text analyzer
+  caches and refuses to cache long text values, which prevents one owner batch
+  from retaining essentially unbounded unique `message` / `why` / `fix` /
+  `error.message` token arrays during a single exact-L0 job
+- on the latest live restart after that fix, current RSS stayed around
+  `518-571 MiB` over the first `30s` soak and restart-window high-water stayed
+  around `886 MiB`, so the node remained below the `1 GiB` spike target even
+  while the fresh `method,status,duration` owner batch resumed work
+- despite those RSS gains, exact indexing is still not catching ingest on a
+  per-frontier basis: in the latest `30s` live sample the uploaded head
+  advanced by `7` segments while the slowest exact frontiers advanced only
+  `+1` or `+2`, so backlog growth is slower but not yet reversed
 
 ## Summary
 
@@ -139,6 +151,10 @@ Several important changes are already shipped:
 19. `evlog` companion ownership is now fixed to the preferred
     `method,status,duration` batch whenever that group is configured, so lagging
     exact frontiers do not become accidental companion owners
+20. per-build text analyzer caches are now explicitly bounded and skip caching
+    long text values, so unified `evlog` search builds cannot retain an
+    effectively unbounded number of unique long-message token arrays in one
+    owner batch
 
 Those changes removed the worst duplicate segment scan and took standalone
 companion off the fresh-segment critical path, but they did not solve the whole
@@ -147,15 +163,16 @@ search backlog problem.
 The next big wins are now more targeted:
 
 1. **The `method,status,duration` owner batch should get comfortably below
-   `5s`.** It is now the only regular exact-L0 batch still above the target on
-   the live node.
+   `5s`.** It is still the only regular exact-L0 batch that remains above the
+   target on the live node.
 2. **Unified search-build handoff should stay file-backed and ownership-aware.**
    The coordinator must not retain large completed payloads in anonymous RSS,
    and each consumer must get explicit ownership of any temp files it uses.
 3. **Exact frontier catch-up still matters more than single-job latency.**
-   Exact compaction is now back under the `5s` ceiling, but the exact frontier
-   is still far behind the uploaded head. The next wins should reduce total
-   exact owner-batch work per segment and keep both async lanes busy.
+   Exact compaction is now back under the `5s` ceiling and RSS is back under
+   the `1 GiB` spike target, but the exact frontier is still far behind the
+   uploaded head. The next wins should reduce total exact owner-batch work per
+   segment and keep both async lanes busy.
 4. **Steady-state RSS is now healthy again, but it must stay that way.** The
    latest live restart stayed in roughly the `300-600 MiB` band with
    restart-window high-water below `900 MiB`. Future exact-L0 work must not
