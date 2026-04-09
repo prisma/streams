@@ -113,15 +113,48 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
   the same leased 16-segment window. The worker emits both immutable payloads,
   and the main thread persists them through the two family-specific state
   machines independently.
-- On `evlog` streams, exact-secondary L0 and bundled companion work now share
-  one `search_segment_build` worker pass over the same leased uploaded
-  segment.
-- That shared worker extracts the exact, `.col`, and `.fts` field set once
-  from raw JSON bytes, emits all aligned exact L0 payloads for the segment,
-  and also emits the bundled companion payload.
-- The exact-secondary and companion managers still persist through their own
-  state machines, but they now reuse the same worker result when both lag on
-  the same uploaded segment.
+- On `evlog` streams, exact-secondary L0 now uses the exact-only
+  `search_segment_build` worker path on one leased uploaded segment at a time
+  instead of replaying a separate exact-secondary scanner per field.
+- That exact-only worker extracts all fields for one deterministic exact batch
+  in a single raw-byte scan and emits one immutable exact L0 run per field in
+  the batch.
+- Span-1 exact-secondary L0 artifacts now use a compact single-segment run
+  format that stores only sorted fingerprints. The previous `mask16` layout
+  spent two extra bytes per entry on a mask that was always `1`, so the new
+  format cuts the hottest singleton exact uploads by about 20% without
+  changing query or compaction semantics.
+- The current `evlog` exact batches are:
+  - `timestamp`
+  - `level,service,environment`
+  - `method,status,duration`
+  - `requestId`
+  - `traceId`
+  - `spanId`
+  - `path`
+- Those batches no longer all use the same L0 span:
+  - `requestId`, `traceId`, `spanId`, and `path` stay on singleton
+    `span=1` jobs so the hottest high-cardinality exact builds keep their
+    compact single-segment encoding and smaller per-job memory footprint.
+  - `level,service,environment` uses a bounded `span=4` window.
+  - `timestamp` and `method,status,duration` use a bounded `span=2` window.
+  - `evlog` secondary compactions stay deferred while exact L0 is still more
+    than `256` uploaded segments behind, so backlog catch-up spends that async
+    capacity on new windows first.
+  - Those caps are applied even when the global `DS_INDEX_L0_SPAN` is larger.
+    In local profiling and live soak tests, this mixed policy preserved the
+    low-cardinality speedup without recreating the very slow multi-segment
+    outliers that showed up at `span=16`.
+- Bundled companion work still persists through its own state machine and
+  worker invocation. Exact-secondary and companion no longer duplicate the old
+  field-by-field exact scan, but they do not currently share one combined
+  worker result.
+- The `evlog` scheduler now prioritizes the most-behind exact fields first.
+  If one low-cardinality batch drifts out of alignment, only its lagging
+  subgroup is scheduled until that batch realigns. High-cardinality exact
+  fields (`requestId`, `traceId`, `spanId`, `path`) stay on singleton exact L0
+  jobs, while `timestamp` and the two low-cardinality grouped batches advance
+  in the configured multi-segment L0 windows.
 - Non-`evlog` exact-secondary streams still use the family-specific exact L0
   worker job.
 - Exact-secondary L0 runs now omit binary-fuse filters entirely. Exact lookups
@@ -167,6 +200,9 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
   for the same bounded budget.
 - If `DS_ASYNC_INDEX_CONCURRENCY` is unset, it defaults to
   `DS_INDEX_BUILDERS` so the shared gate matches worker-pool width by default.
+- With `--auto-tune`, those two knobs still default to the selected preset, but
+  operators may override them explicitly for controlled experiments without
+  disabling the rest of auto-tune.
 - Background index work yields cooperatively at bounded per-record / per-block
   intervals, and it backs off further while foreground read and search
   requests are active. Foreground latency should not depend on one whole index

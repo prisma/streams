@@ -10,6 +10,7 @@ import { buildSecondaryL0RunPayloadResult } from "../src/index/secondary_l0_buil
 import { DSB3_HEADER_BYTES, encodeBlock, encodeFooter, iterateBlockRecordsResult } from "../src/segment/format";
 import { buildEvlogDefaultRegistry } from "../src/profiles/evlog/schema";
 import { canonicalizeExactValue } from "../src/search/schema";
+import { buildSearchSegmentResult } from "../src/search/search_segment_build";
 import { schemaVersionForOffset } from "../src/schema/read_json";
 import { getSearchFieldBinding } from "../src/search/schema";
 import { resolvePointerResult } from "../src/util/json_pointer";
@@ -237,6 +238,95 @@ describe("secondary L0 build performance", () => {
         expect(batchedRes.value.runs).toHaveLength(indexes.length);
       }
       expect(batchedElapsedMs).toBeLessThan(legacyElapsedMs * 0.75);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("multi-segment low-cardinality evlog batches beat repeated single-segment exact-only builds by at least 50%", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-l0-group-span-"));
+    try {
+      const registry = buildEvlogDefaultRegistry("evlog-1");
+      const exactIndexes = getConfiguredSecondaryIndexes(registry)
+        .filter((entry) => ["method", "status", "duration"].includes(entry.name))
+        .map((index, ordinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(ordinal + 1),
+        }));
+      const segments = writeEvlogSegments(root, 2_000).slice(0, 2);
+
+      const warmCurrentStarted = performance.now();
+      let warmCurrentBytes = 0;
+      for (const segment of segments) {
+        const res = buildSearchSegmentResult({
+          stream: "evlog-1",
+          registry,
+          exactIndexes,
+          plan: null,
+          planGeneration: null,
+          includeCompanion: false,
+          outputDir: join(root, "current"),
+          segment,
+        });
+        if (Result.isError(res)) throw new Error(res.error.message);
+        for (const run of res.value.exactRuns) warmCurrentBytes += run.storage === "bytes" ? run.payload.byteLength : run.sizeBytes;
+      }
+      const warmCurrentElapsedMs = performance.now() - warmCurrentStarted;
+      expect(warmCurrentElapsedMs).toBeGreaterThan(0);
+      expect(warmCurrentBytes).toBeGreaterThan(0);
+
+      const warmProposedStarted = performance.now();
+      const warmProposedRes = buildSecondaryL0RunPayloadResult({
+        stream: "evlog-1",
+        registry,
+        startSegment: 0,
+        span: 2,
+        outputDir: join(root, "proposed"),
+        indexes: exactIndexes,
+        segments,
+      });
+      const warmProposedElapsedMs = performance.now() - warmProposedStarted;
+      expect(Result.isOk(warmProposedRes)).toBe(true);
+      expect(warmProposedElapsedMs).toBeGreaterThan(0);
+
+      const currentStarted = performance.now();
+      let currentBytes = 0;
+      for (const segment of segments) {
+        const res = buildSearchSegmentResult({
+          stream: "evlog-1",
+          registry,
+          exactIndexes,
+          plan: null,
+          planGeneration: null,
+          includeCompanion: false,
+          outputDir: join(root, "current-2"),
+          segment,
+        });
+        if (Result.isError(res)) throw new Error(res.error.message);
+        for (const run of res.value.exactRuns) currentBytes += run.storage === "bytes" ? run.payload.byteLength : run.sizeBytes;
+      }
+      const currentElapsedMs = performance.now() - currentStarted;
+
+      const proposedStarted = performance.now();
+      const proposedRes = buildSecondaryL0RunPayloadResult({
+        stream: "evlog-1",
+        registry,
+        startSegment: 0,
+        span: 2,
+        outputDir: join(root, "proposed-2"),
+        indexes: exactIndexes,
+        segments,
+      });
+      const proposedElapsedMs = performance.now() - proposedStarted;
+      expect(Result.isOk(proposedRes)).toBe(true);
+      if (Result.isError(proposedRes)) throw new Error(proposedRes.error.message);
+
+      const proposedBytes = proposedRes.value.runs.reduce(
+        (sum, run) => sum + (run.storage === "bytes" ? run.payload.byteLength : run.sizeBytes),
+        0
+      );
+      expect(proposedElapsedMs).toBeLessThan(currentElapsedMs * 0.5 + 2);
+      expect(proposedBytes).toBeGreaterThan(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

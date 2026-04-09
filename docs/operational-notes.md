@@ -145,12 +145,22 @@ Indexing note:
 - Exact-secondary L0 builds now scan one leased uploaded segment at a time and
   emit one run per aligned exact field, rather than replaying the same segment
   once per exact field.
-- The exact L0 scheduler now advances unique same-frontier batches instead of
-  replaying one field at a time forever. On `evlog` it uses deterministic
-  batches such as `level,service,environment`, `timestamp`,
-  `requestId,traceId`, `spanId`, `path`, and `method,status,duration`.
-- On `2 GiB+` presets, those unique `evlog` exact batches can now dispatch in
-  up to `2` parallel lanes on the same stream while still sharing the global
+- The exact L0 scheduler now advances deterministic `evlog` exact batches
+  instead of replaying one field at a time forever:
+  - `timestamp`
+  - `level,service,environment`
+  - `method,status,duration`
+  - `requestId`
+  - `traceId`
+  - `spanId`
+  - `path`
+- When one low-cardinality batch drifts apart, the scheduler pauses the ahead
+  fields and keeps advancing only the lagging subgroup until that batch
+  realigns. The high-cardinality fields remain singleton exact L0 jobs, and
+  `timestamp` is also kept singleton so it can advance on its faster path
+  instead of waiting behind the slower `method,status,duration` batch.
+- On `2 GiB+` presets, those unique `evlog` exact jobs can now dispatch in up
+  to `4` parallel lanes on the same stream while still sharing the global
   `DS_ASYNC_INDEX_CONCURRENCY` gate.
 - Those per-batch exact runs are still uploaded together as one batch, so
   exact backfill is no longer gated by one serialized sequence of remote PUTs
@@ -158,6 +168,22 @@ Indexing note:
 - Exact-secondary L0 runs also skip binary-fuse filter construction entirely.
   Query-time pruning still works by direct fingerprint search on those small L0
   runs, and compaction can add filters again on higher levels.
+- Span-1 exact-secondary L0 runs also use a dedicated single-segment encoding
+  instead of the generic `mask16` layout. That keeps singleton exact uploads
+  about 20% smaller, which directly reduces the `exact_persist_ms` tail on the
+  high-cardinality `requestId` / `traceId` / `spanId` / `path` batches.
+- The `evlog` exact scheduler now mixes span sizes intentionally:
+  - `requestId`, `traceId`, `spanId`, and `path` stay on singleton `span=1`
+    jobs because larger windows increase both payload size and peak job RSS
+    without enough wall-time improvement.
+  - `level,service,environment` uses a bounded `span=4` window.
+  - `timestamp` and `method,status,duration` use a bounded `span=2` window.
+- While `evlog` exact L0 is still more than `256` uploaded segments behind,
+  exact-secondary compactions stay deferred so catch-up capacity goes to new L0
+  work instead of rewriting already-persisted runs.
+  - Those caps apply even when `DS_INDEX_L0_SPAN` is larger, because the live
+    soak showed that `span=16` recreated long exact-job tails while the mixed
+    `4/2/1` policy kept the low-cardinality speedup.
 - Bundled companion builds compile search-field accessors once per schema
   version and reuse them for the whole segment build.
 - When a bundled companion plan has no rollups, the worker skips the per-record
@@ -304,6 +330,12 @@ Segment geometry across presets:
 
 `--auto-tune` now chooses both cache sizes and concurrency caps. Current
 presets:
+
+- By default, auto-tune owns all of those derived limits.
+- For controlled experiments, `DS_INDEX_BUILDERS` and
+  `DS_ASYNC_INDEX_CONCURRENCY` may still be set explicitly on top of
+  `--auto-tune`; all other tuned limits remain mutually exclusive with manual
+  overrides.
 
 - `256 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`

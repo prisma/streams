@@ -22,6 +22,7 @@ import {
   encodeIndexRunResult,
   RUN_TYPE_MASK16,
   RUN_TYPE_POSTINGS,
+  RUN_TYPE_SINGLE_SEGMENT,
   type IndexRun,
 } from "./run_format";
 import {
@@ -42,32 +43,50 @@ import type { CompanionSectionKind } from "../search/companion_format";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
-const SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG = 2;
+const SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG = 4;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_HIGH_CARDINALITY = 2;
 const SECONDARY_COMPACTION_SOURCE_FETCH_CONCURRENCY_LOW_CARDINALITY = 16;
 const SECONDARY_COMPACTION_SOURCE_INLINE_FETCH_MAX_BYTES = 256 * 1024;
 const SECONDARY_RETIRED_GC_DELETE_CONCURRENCY = 4;
 const SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY = 2;
 const SECONDARY_COMPACTION_MAX_LEVEL_HIGH_CARDINALITY = 0;
+const EVLOG_SECONDARY_COMPACTION_DEFER_LAG_SEGMENTS = 256;
 const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "spanId", "path"]);
+const EVLOG_EXACT_BATCH_SPAN_LIMITS = new Map<string, number>([
+  ["timestamp", 2],
+  ["duration,method,status", 2],
+  ["environment,level,service", 4],
+]);
 const EVLOG_EXACT_BATCH_GROUPS = [
-  ["level"],
-  ["service"],
-  ["environment"],
   ["timestamp"],
+  ["level", "service", "environment"],
+  ["method", "status", "duration"],
   ["requestId"],
   ["traceId"],
   ["spanId"],
   ["path"],
-  ["method"],
-  ["status"],
-  ["duration"],
 ] as const;
 type ExactBuiltRun = SearchSegmentBuildOutput["exactRuns"][number];
 type UploadedExactRun = {
   run: ExactBuiltRun;
   sizeBytes: number;
 };
+
+export function secondaryExactBatchSpan(
+  profile: string | null | undefined,
+  configuredSpan: number,
+  indexNames: readonly string[]
+): number {
+  const effectiveConfiguredSpan = Math.max(0, configuredSpan);
+  if (effectiveConfiguredSpan <= 0) return 0;
+  if ((profile ?? null) !== "evlog") return effectiveConfiguredSpan;
+  for (const indexName of indexNames) {
+    if (EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return 1;
+  }
+  const batchKey = Array.from(indexNames).sort((left, right) => left.localeCompare(right)).join(",");
+  const spanLimit = EVLOG_EXACT_BATCH_SPAN_LIMITS.get(batchKey);
+  return Math.min(effectiveConfiguredSpan, spanLimit ?? effectiveConfiguredSpan);
+}
 
 function invalidIndexBuild<T = never>(message: string): Result<T, SecondaryIndexBuildError> {
   return Result.err({ kind: "invalid_index_build", message });
@@ -97,6 +116,15 @@ export function secondaryBuildDispatchConcurrency(profile: string | null | undef
   return Math.max(1, Math.min(SECONDARY_BUILD_DISPATCH_CONCURRENCY_EVLOG, batchCount));
 }
 
+export function shouldDeferSecondaryCompaction(
+  profile: string | null | undefined,
+  uploadedCount: number,
+  indexedThrough: number
+): boolean {
+  if ((profile ?? null) !== "evlog") return false;
+  return Math.max(0, uploadedCount - indexedThrough) >= EVLOG_SECONDARY_COMPACTION_DEFER_LAG_SEGMENTS;
+}
+
 function binarySearch(values: bigint[], needle: bigint): number {
   let lo = 0;
   let hi = values.length - 1;
@@ -118,7 +146,7 @@ export class SecondaryIndexManager {
   private readonly segmentCache?: SegmentDiskCache;
   private readonly runDiskCache?: SegmentDiskCache;
   private readonly runCache: IndexRunCache;
-  private readonly span: number;
+  private readonly configuredSpan: number;
   private readonly compactionFanout: number;
   private readonly maxLevel: number;
   private readonly retireGenWindow: number;
@@ -170,7 +198,7 @@ export class SecondaryIndexManager {
     this.buildWorkers = buildWorkers ?? new IndexBuildWorkerPool(Math.max(1, cfg.indexBuilders));
     if (this.ownsBuildWorkers) this.buildWorkers.start();
     this.searchSegmentBuilds = searchSegmentBuilds;
-    this.span = cfg.indexL0SpanSegments > 0 ? 1 : 0;
+    this.configuredSpan = Math.max(0, cfg.indexL0SpanSegments);
     this.compactionFanout = cfg.indexCompactionFanout;
     this.maxLevel = cfg.indexMaxLevel;
     this.retireGenWindow = Math.max(0, cfg.indexRetireGenWindow);
@@ -217,7 +245,7 @@ export class SecondaryIndexManager {
   }
 
   enqueue(stream: string): void {
-    if (this.span <= 0) return;
+    if (this.configuredSpan <= 0) return;
     this.buildQueue.add(stream);
     this.compactionQueue.add(stream);
   }
@@ -227,7 +255,7 @@ export class SecondaryIndexManager {
     indexName: string,
     keyBytes: Uint8Array
   ): Promise<{ segments: Set<number>; indexedThrough: number } | null> {
-    if (this.span <= 0) return null;
+    if (this.configuredSpan <= 0) return null;
     const regRes = this.registry.getRegistryResult(stream);
     if (Result.isError(regRes)) return null;
     const configured = getConfiguredSecondaryIndexes(regRes.value).find((entry) => entry.name === indexName);
@@ -254,6 +282,8 @@ export class SecondaryIndexManager {
             if ((mask & (1 << bit)) !== 0) segments.add(run.meta.startSegment + bit);
           }
         }
+      } else if (run.runType === RUN_TYPE_SINGLE_SEGMENT) {
+        if (binarySearch(run.fingerprints, fp) >= 0) segments.add(run.meta.startSegment);
       } else if (run.postings) {
         const idx = binarySearch(run.fingerprints, fp);
         if (idx >= 0) {
@@ -312,7 +342,7 @@ export class SecondaryIndexManager {
       SecondaryIndexBuildError
     >
   > {
-    if (this.span <= 0 || runs.length === 0) return Result.ok(null);
+    if (this.configuredSpan <= 0 || runs.length === 0) return Result.ok(null);
     const configured = getConfiguredSecondaryIndexes(registry);
     if (configured.length === 0) return Result.ok(null);
     const stateByName = new Map(this.db.listSecondaryIndexStates(stream).map((state) => [state.index_name, state]));
@@ -327,7 +357,7 @@ export class SecondaryIndexManager {
     const outputRuns = runs.filter((entry) => targetIndexNames.has(entry.indexName));
     if (outputRuns.length === 0) return Result.ok(null);
 
-    const persistRes = await this.persistExactRuns(stream, outputRuns, targetIndexes, stateByName, segmentIndex + 1);
+    const persistRes = await this.persistExactRuns(stream, outputRuns, targetIndexes, stateByName, segmentIndex + 1, 1);
     if (Result.isError(persistRes)) return persistRes;
     return Result.ok({
       persistedIndexNames: targetIndexes.map((entry) => entry.name),
@@ -409,15 +439,39 @@ export class SecondaryIndexManager {
     profile: string | null
   ): SecondaryIndexField[] {
     const states = new Map(this.db.listSecondaryIndexStates(stream).map((state) => [state.index_name, state.indexed_through]));
+    if (profile === "evlog") {
+      const leaders: SecondaryIndexField[] = [];
+      const covered = new Set<string>();
+      const configuredOrder = new Map(configured.map((entry, index) => [entry.name, index]));
+      for (const group of EVLOG_EXACT_BATCH_GROUPS) {
+        const groupIndexes = configured.filter((entry) => (group as readonly string[]).includes(entry.name));
+        if (groupIndexes.length === 0) continue;
+        let minIndexedThrough = Number.POSITIVE_INFINITY;
+        for (const configuredIndex of groupIndexes) {
+          minIndexedThrough = Math.min(minIndexedThrough, states.get(configuredIndex.name) ?? 0);
+        }
+        const laggingBatch = groupIndexes.filter((configuredIndex) => (states.get(configuredIndex.name) ?? 0) === minIndexedThrough);
+        if (laggingBatch.length > 0) leaders.push(laggingBatch[0]!);
+        for (const configuredIndex of groupIndexes) covered.add(configuredIndex.name);
+      }
+      for (const configuredIndex of configured) {
+        if (covered.has(configuredIndex.name)) continue;
+        leaders.push(configuredIndex);
+      }
+      return leaders.sort((a, b) => {
+        const indexedThroughA = states.get(a.name) ?? 0;
+        const indexedThroughB = states.get(b.name) ?? 0;
+        if (indexedThroughA !== indexedThroughB) return indexedThroughA - indexedThroughB;
+        return (configuredOrder.get(a.name) ?? 0) - (configuredOrder.get(b.name) ?? 0);
+      });
+    }
     const leaders: SecondaryIndexField[] = [];
     const seen = new Set<string>();
     for (const configuredIndex of configured) {
       const indexedThrough = states.get(configuredIndex.name) ?? 0;
       const peerIndexes = configured.filter((entry) => (states.get(entry.name) ?? 0) === indexedThrough);
       const batchIndexes =
-        profile === "evlog"
-          ? this.getEvlogPeerBatch(configuredIndex.name, peerIndexes)
-          : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
+        peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
       const batchKey = batchIndexes
         .map((entry) => entry.name)
         .sort((a, b) => a.localeCompare(b))
@@ -438,8 +492,14 @@ export class SecondaryIndexManager {
       const regRes = this.registry.getRegistryResult(stream);
       if (Result.isError(regRes)) return true;
       const configured = getConfiguredSecondaryIndexes(regRes.value);
+      const profile = regRes.value.search?.profile ?? null;
+      const uploadedCount = this.db.countUploadedSegments(stream);
       let failed = false;
+      let attemptedAny = false;
       for (const index of configured) {
+        const state = this.db.getSecondaryIndexState(stream, index.name);
+        if (state && shouldDeferSecondaryCompaction(profile, uploadedCount, state.indexed_through)) continue;
+        attemptedAny = true;
         try {
           const compactRes = await this.maybeCompactRuns(stream, index.name);
           if (Result.isError(compactRes)) {
@@ -457,6 +517,7 @@ export class SecondaryIndexManager {
           break;
         }
       }
+      if (!attemptedAny) return false;
       if (!failed) {
         try {
           await this.flushDeferredManifestPublish(stream);
@@ -505,7 +566,7 @@ export class SecondaryIndexManager {
   }
 
   private async maybeBuildRuns(stream: string, index: SecondaryIndexField): Promise<Result<void, SecondaryIndexBuildError>> {
-    if (this.span <= 0) return Result.ok(undefined);
+    if (this.configuredSpan <= 0) return Result.ok(undefined);
     const key = `${stream}:${index.name}`;
     if (this.building.has(key)) return Result.ok(undefined);
     this.building.add(key);
@@ -546,15 +607,21 @@ export class SecondaryIndexManager {
         if (!state) return Result.ok(undefined);
         const indexedThrough = state.indexed_through;
         const uploadedCount = this.db.countUploadedSegments(stream);
-        if (uploadedCount < indexedThrough + this.span) return Result.ok(undefined);
         const peerIndexes = configured.filter((configuredIndex) => stateByName.get(configuredIndex.name)?.indexed_through === indexedThrough);
         const batchIndexes =
           registry.search?.profile === "evlog"
             ? this.getEvlogPeerBatch(index.name, peerIndexes)
             : peerIndexes.slice(0, SECONDARY_L0_BATCH_MAX_FIELDS);
         if (batchIndexes.length === 0) return Result.ok(undefined);
+        const batchSpan = secondaryExactBatchSpan(
+          registry.search?.profile,
+          this.configuredSpan,
+          batchIndexes.map((entry) => entry.name)
+        );
+        if (batchSpan <= 0) return Result.ok(undefined);
         const start = indexedThrough;
-        const end = start + this.span - 1;
+        if (uploadedCount < indexedThrough + batchSpan) return Result.ok(undefined);
+        const end = start + batchSpan - 1;
         const segments: SegmentRow[] = [];
         for (let i = start; i <= end; i++) {
           const seg = this.db.getSegmentByIndex(stream, i);
@@ -594,7 +661,11 @@ export class SecondaryIndexManager {
             input_payload_bytes: segments.reduce((sum, segment) => sum + Number(segment.payload_bytes), 0),
           },
         });
-        const useUnifiedSearchBuild = false;
+        const useUnifiedSearchBuild =
+          registry.search?.profile === "evlog" &&
+          batchSpan === 1 &&
+          !!this.searchSegmentBuilds &&
+          batchIndexes.length > 1;
         const batchIndexNames = new Set(batchIndexes.map((entry) => entry.name));
         const unifiedExactIndexes = useUnifiedSearchBuild
           ? collectUnifiedSearchBuildExactIndexes(registry, (indexName) => {
@@ -694,7 +765,7 @@ export class SecondaryIndexManager {
                         stream,
                         registry,
                         startSegment: start,
-                        span: this.span,
+                        span: batchSpan,
                         outputDir: `${this.cfg.rootDir}/tmp/secondary-index-builds`,
                         indexes: batchIndexes.map((configuredIndex) => ({
                           index: configuredIndex,
@@ -714,7 +785,7 @@ export class SecondaryIndexManager {
                     stream,
                     registry,
                     startSegment: start,
-                    span: this.span,
+                    span: batchSpan,
                     outputDir: `${this.cfg.rootDir}/tmp/secondary-index-builds`,
                     indexes: batchIndexes.map((configuredIndex) => ({
                       index: configuredIndex,
@@ -773,7 +844,8 @@ export class SecondaryIndexManager {
           batchIndexes,
           stateByName,
           nextIndexedThrough,
-          false
+          false,
+          batchSpan
         );
         const exactPersistMs = Date.now() - exactPersistStartedAt;
         if (Result.isError(persistRes)) {
@@ -819,7 +891,7 @@ export class SecondaryIndexManager {
   }
 
   private async maybeCompactRuns(stream: string, indexName: string): Promise<Result<void, SecondaryIndexBuildError>> {
-    if (this.span <= 0) return Result.ok(undefined);
+    if (this.configuredSpan <= 0) return Result.ok(undefined);
     const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
     if (compactionFanout <= 1) return Result.ok(undefined);
     const key = `${stream}:${indexName}`;
@@ -944,7 +1016,8 @@ export class SecondaryIndexManager {
     outputRuns: ExactBuiltRun[],
     targetIndexes: SecondaryIndexField[],
     stateByName: Map<string, ReturnType<SqliteDurableStore["listSecondaryIndexStates"]>[number]>,
-    nextIndexedThrough: number
+    nextIndexedThrough: number,
+    batchSpan: number
   ): Promise<
     Result<
       {
@@ -963,7 +1036,8 @@ export class SecondaryIndexManager {
       targetIndexes,
       stateByName,
       nextIndexedThrough,
-      true
+      true,
+      batchSpan
     );
     if (Result.isError(finalizeRes)) return finalizeRes;
     return Result.ok({
@@ -1039,7 +1113,8 @@ export class SecondaryIndexManager {
     targetIndexes: SecondaryIndexField[],
     stateByName: Map<string, ReturnType<SqliteDurableStore["listSecondaryIndexStates"]>[number]>,
     nextIndexedThrough: number,
-    shouldPublishManifest: boolean
+    shouldPublishManifest: boolean,
+    batchSpan: number
   ): Promise<Result<void, SecondaryIndexBuildError>> {
     for (const { run, sizeBytes } of uploaded.outputRuns) {
       this.db.insertSecondaryIndexRun({
@@ -1068,7 +1143,7 @@ export class SecondaryIndexManager {
         // ignore and retry later
       }
     }
-    if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + this.span) this.buildQueue.add(stream);
+    if (this.db.countUploadedSegments(stream) >= nextIndexedThrough + batchSpan) this.buildQueue.add(stream);
     this.compactionQueue.add(stream);
     return Result.ok(undefined);
   }
@@ -1087,7 +1162,7 @@ export class SecondaryIndexManager {
     for (let level = 0; level <= maxLevel; level++) {
       const levelRuns = byLevel.get(level);
       if (!levelRuns || levelRuns.length < compactionFanout) continue;
-      const span = this.levelSpan(indexName, level);
+      const span = this.levelSpan(stream, indexName, level);
       for (let i = 0; i + compactionFanout <= levelRuns.length; i++) {
         const base = levelRuns[i].start_segment;
         let ok = true;
@@ -1105,11 +1180,17 @@ export class SecondaryIndexManager {
     return null;
   }
 
-  private levelSpan(indexName: string, level: number): number {
+  private levelSpan(stream: string, indexName: string, level: number): number {
     const compactionFanout = secondaryCompactionFanout(indexName, this.compactionFanout);
-    let span = this.span;
+    let span = this.baseL0Span(stream, [indexName]);
     for (let i = 0; i < level; i++) span *= compactionFanout;
     return span;
+  }
+
+  private baseL0Span(stream: string, indexNames: readonly string[]): number {
+    const registryRes = this.registry.getRegistryResult(stream);
+    const profile = Result.isOk(registryRes) ? registryRes.value.search?.profile : null;
+    return secondaryExactBatchSpan(profile, this.configuredSpan, indexNames);
   }
 
   private async buildCompactedRunResult(

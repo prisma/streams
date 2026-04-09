@@ -27,6 +27,7 @@ export const INDEX_JOB_RSS_SCENARIOS = [
   "routing_compaction_build",
   "lexicon_compaction_build",
   "secondary_l0_build",
+  "secondary_l0_build_grouped_span4",
   "secondary_compaction_build",
   "companion_build_col",
   "companion_build_keyword_core",
@@ -672,6 +673,32 @@ export function buildIndexJobInputForScenario(root: string, scenario: IndexJobRs
           outputDir: join(root, "secondary-l0"),
           indexes: batchIndexes,
           segments: [{ segmentIndex: 0, startOffset: segment.startOffset!, localPath: segment.localPath }],
+        },
+      };
+    }
+    case "secondary_l0_build_grouped_span4": {
+      const registry = buildEvlogDefaultRegistry("evlog-1");
+      const batchIndexes = getConfiguredSecondaryIndexes(registry)
+        .filter((entry) => ["level", "service", "environment"].includes(entry.name))
+        .map((index, ordinal) => ({
+          index,
+          secret: new Uint8Array(16).fill(ordinal + 1),
+        }));
+      const segments = writeEvlogSegments(root, 48_000, 4);
+      return {
+        kind: "secondary_l0_build",
+        input: {
+          stream: "evlog-1",
+          registry,
+          startSegment: 0,
+          span: 4,
+          outputDir: join(root, "secondary-l0-grouped-span4"),
+          indexes: batchIndexes,
+          segments: segments.map((segment) => ({
+            segmentIndex: segment.segmentIndex,
+            startOffset: segment.startOffset!,
+            localPath: segment.localPath,
+          })),
         },
       };
     }
