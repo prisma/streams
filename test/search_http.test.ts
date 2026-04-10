@@ -711,7 +711,7 @@ describe("_search http", () => {
         }
 
         await waitForSearchFamilies(app);
-        await waitForSecondaryIndexPublished(app, "region");
+        await waitForSecondaryIndexPublished(app, "service");
         expect(app.deps.db.countSegmentsForStream(STREAM)).toBeGreaterThan(2);
 
         app.deps.indexer?.stop();
@@ -723,7 +723,7 @@ describe("_search http", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              q: 'region:"us-west-2"',
+              q: 'service:"staging-api"',
               size: 2,
               sort: ["offset:desc"],
             }),

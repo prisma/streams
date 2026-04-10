@@ -623,6 +623,22 @@ export function collectPositiveSearchExactClauses(query: CompiledSearchQuery): S
   return out;
 }
 
+export function isSearchExactVisibilityEligible(query: CompiledSearchQuery): boolean {
+  switch (query.kind) {
+    case "and":
+    case "or":
+      return isSearchExactVisibilityEligible(query.left) && isSearchExactVisibilityEligible(query.right);
+    case "not":
+      return isSearchExactVisibilityEligible(query.expr);
+    case "keyword":
+      return query.config.exact === true && !query.prefix;
+    case "compare":
+      return query.config.exact === true && query.op === "eq" && query.canonicalValue != null;
+    default:
+      return false;
+  }
+}
+
 export function collectPositiveSearchColumnClauses(query: CompiledSearchQuery): SearchColumnClause[] {
   const out: SearchColumnClause[] = [];
   const supportsColumn = (config: SearchFieldConfig): boolean =>

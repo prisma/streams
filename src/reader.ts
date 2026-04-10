@@ -51,6 +51,7 @@ import {
   collectPositiveSearchFtsClauses,
   evaluateSearchQueryResult,
   extractSearchHitFieldsResult,
+  isSearchExactVisibilityEligible,
 } from "./search/query";
 import { filterDocIdsByFtsClausesResult } from "./search/fts_runtime";
 import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema";
@@ -1196,11 +1197,7 @@ export class StreamReader {
         exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
         markTimedOutIfNeeded();
       }
-      const useExactVisibility =
-        exactClauses.length > 0 &&
-        columnClauses.length === 0 &&
-        ftsClauses.length === 0 &&
-        exactCandidateInfo.indexedThrough > 0;
+      const useExactVisibility = isSearchExactVisibilityEligible(request.q) && exactCandidateInfo.indexedThrough > 0;
       const coverageState = this.computePublishedCoverageState(
         stream,
         srow,
