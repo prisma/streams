@@ -39,6 +39,7 @@ import {
   mergeAggMeasureState,
 } from "./search/aggregate";
 import {
+  analyzeSearchIndexedSupport,
   type CompiledSearchQuery,
   type SearchColumnClause,
   type SearchEvaluation,
@@ -212,7 +213,9 @@ type PlannedReadSegments = {
 type PlannedReadOrder = "asc" | "desc";
 type PublishedCoverageOptions = {
   visiblePublishedSegmentCountOverride?: number | null;
+  requiredCompanionFamilies?: ReadonlySet<"col" | "fts">;
   ignoreCompanionVisibility?: boolean;
+  disableWalTail?: boolean;
 };
 
 function errorMessage(e: unknown): string {
@@ -230,6 +233,14 @@ function parseCompanionSections(value: string): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function companionRowHasFamilies(row: { sections_json: string }, requiredFamilies: ReadonlySet<"col" | "fts">): boolean {
+  const sections = parseCompanionSections(row.sections_json);
+  for (const family of requiredFamilies) {
+    if (!sections.has(family)) return false;
+  }
+  return true;
 }
 
 async function loadSegmentBytes(
@@ -496,7 +507,14 @@ export class StreamReader {
         : 0;
 
     const desiredPlan = buildDesiredSearchCompanionPlan(registry as any);
-    const planHasFamilies = Object.values(desiredPlan.families).some(Boolean);
+    const requestedCompanionFamilies =
+      options?.requiredCompanionFamilies == null
+        ? new Set<"col" | "fts">()
+        : new Set(options.requiredCompanionFamilies);
+    const planHasFamilies =
+      requestedCompanionFamilies.size > 0
+        ? Array.from(requestedCompanionFamilies).some((family) => desiredPlan.families[family] === true)
+        : Object.values(desiredPlan.families).some(Boolean);
     const requireCompanionVisibility = planHasFamilies && options?.ignoreCompanionVisibility !== true;
     let visiblePublishedSegmentCount =
       options?.visiblePublishedSegmentCountOverride == null
@@ -515,14 +533,15 @@ export class StreamReader {
       const currentCompanions = this.db
         .listSearchSegmentCompanions(stream)
         .filter((row) => row.plan_generation === desiredGeneration);
-      const currentSegments = new Set<number>();
-      for (const row of currentCompanions) {
-        const sections = parseCompanionSections(row.sections_json);
-        const hasEnabledFamily = Object.entries(desiredPlan.families).some(([family, enabled]) => enabled && sections.has(family));
-        if (hasEnabledFamily) currentSegments.add(row.segment_index);
-      }
       visiblePublishedSegmentCount = 0;
-      while (visiblePublishedSegmentCount < publishedSegmentCount && currentSegments.has(visiblePublishedSegmentCount)) {
+      while (visiblePublishedSegmentCount < publishedSegmentCount) {
+        const row = currentCompanions.find((entry) => entry.segment_index === visiblePublishedSegmentCount) ?? null;
+        if (!row) break;
+        const hasRequiredFamilies =
+          requestedCompanionFamilies.size > 0
+            ? companionRowHasFamilies(row, requestedCompanionFamilies)
+            : Object.entries(desiredPlan.families).some(([family, enabled]) => enabled && parseCompanionSections(row.sections_json).has(family));
+        if (!hasRequiredFamilies) break;
         visiblePublishedSegmentCount += 1;
       }
       if (visiblePublishedSegmentCount > 0) {
@@ -530,11 +549,17 @@ export class StreamReader {
         visibleThroughPrimaryTimestampMax = this.isoTimestampFromMs(visibleCompanionRow?.primary_timestamp_max_ms ?? null);
       }
     }
+    if (options?.visiblePublishedSegmentCountOverride != null) {
+      visiblePublishedSegmentCount = Math.min(visiblePublishedSegmentCount, options.visiblePublishedSegmentCountOverride);
+    }
 
     const hasOutstandingPublishedSegments = publishedSegmentCount < totalSegmentCount;
     const hasVisibilityGapWithinPublished = visiblePublishedSegmentCount < publishedSegmentCount;
     const hasOutstandingCompanions = requireCompanionVisibility && hasVisibilityGapWithinPublished;
-    const canSearchWalTail = this.shouldSearchWalTail(srow, hasOutstandingPublishedSegments, hasOutstandingCompanions);
+    const canSearchWalTail =
+      options?.disableWalTail === true
+        ? false
+        : this.shouldSearchWalTail(srow, hasOutstandingPublishedSegments, hasOutstandingCompanions);
     const omitWalTail = srow.pending_rows > 0n && !canSearchWalTail;
 
     let visibleThroughSeq = srow.next_offset - 1n;
@@ -1187,7 +1212,7 @@ export class StreamReader {
       let scannedTailDocs = 0;
       let scannedTailTimeMs = 0;
       const indexFamiliesUsed = new Set<string>();
-      const exactClauses = collectPositiveSearchExactClauses(request.q);
+      const indexedSupport = analyzeSearchIndexedSupport(request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       let exactTailCandidateInfo: SearchExactTailCandidateInfo = null;
@@ -1208,15 +1233,21 @@ export class StreamReader {
         exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
         markTimedOutIfNeeded();
       }
-      const useExactVisibility = isSearchExactVisibilityEligible(request.q) && exactCandidateInfo.indexedThrough > 0;
+      const useExactVisibility =
+        indexedSupport.indexedOnly &&
+        indexedSupport.requiresExact &&
+        isSearchExactVisibilityEligible(request.q) &&
+        exactCandidateInfo.indexedThrough > 0;
       const coverageState = this.computePublishedCoverageState(
         stream,
         srow,
         registry,
-        useExactVisibility
+        indexedSupport.indexedOnly
           ? {
-              visiblePublishedSegmentCountOverride: exactCandidateInfo.indexedThrough,
-              ignoreCompanionVisibility: true,
+              visiblePublishedSegmentCountOverride: useExactVisibility ? exactCandidateInfo.indexedThrough : null,
+              requiredCompanionFamilies: indexedSupport.requiredCompanionFamilies,
+              ignoreCompanionVisibility: indexedSupport.requiredCompanionFamilies.size === 0,
+              disableWalTail: true,
             }
           : undefined
       );
@@ -1314,6 +1345,7 @@ export class StreamReader {
           seg.segment_index,
           columnClauses,
           ftsClauses,
+          indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
           {
             addFtsSectionGetMs: (deltaMs) => {
               ftsSectionGetMs += deltaMs;
@@ -1403,6 +1435,7 @@ export class StreamReader {
                       sealedEnd,
                       {
                         indexFamiliesUsed,
+                        strictFamilies: indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
                         collectSearchMatchResult,
                         deadline,
                         isTimedOut: () => timedOut,
@@ -1465,6 +1498,7 @@ export class StreamReader {
                       sealedEnd,
                       {
                         indexFamiliesUsed,
+                        strictFamilies: indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
                         collectSearchMatchResult,
                         deadline,
                         isTimedOut: () => timedOut,
@@ -1997,6 +2031,7 @@ export class StreamReader {
     rangeEndSeq: bigint,
     state: {
       indexFamiliesUsed: Set<string>;
+      strictFamilies?: ReadonlySet<"col" | "fts">;
       collectSearchMatchResult: (offsetSeq: bigint, payload: Uint8Array) => Result<void, ReaderError>;
       deadline: number | null;
       isTimedOut: () => boolean;
@@ -2049,6 +2084,7 @@ export class StreamReader {
       seg.segment_index,
       columnClauses,
       ftsClauses,
+      state.strictFamilies,
       {
         addFtsSectionGetMs: state.addFtsSectionGetMs,
         addFtsDecodeMs: state.addFtsDecodeMs,
@@ -2386,6 +2422,7 @@ export class StreamReader {
     segmentIndex: number,
     columnClauses: SearchColumnClause[],
     ftsClauses: SearchFtsClause[],
+    strictFamilies?: ReadonlySet<"col" | "fts">,
     stats?: {
       addFtsSectionGetMs?: (deltaMs: number) => void;
       addFtsDecodeMs?: (deltaMs: number) => void;
@@ -2401,6 +2438,9 @@ export class StreamReader {
       if (columnRes.value) {
         intersection = columnRes.value;
         usedFamilies.add("col");
+      } else if (strictFamilies?.has("col")) {
+        intersection = new Set<number>();
+        usedFamilies.add("col");
       }
     }
 
@@ -2414,6 +2454,10 @@ export class StreamReader {
             if (!ftsRes.value.has(docId)) intersection.delete(docId);
           }
         }
+        usedFamilies.add("fts");
+      } else if (strictFamilies?.has("fts")) {
+        if (intersection == null) intersection = new Set<number>();
+        else intersection.clear();
         usedFamilies.add("fts");
       }
     }

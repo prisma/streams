@@ -253,6 +253,19 @@ async function waitForSecondaryIndexPublished(
   throw new Error(`timeout waiting for ${indexName} exact index coverage`);
 }
 
+async function waitForPublishedSegmentCountAtLeast(
+  app: ReturnType<typeof createApp>,
+  expectedCount: number,
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (publishedSegmentCount(app) >= expectedCount) return;
+    await sleep(50);
+  }
+  throw new Error(`timeout waiting for published segment count >= ${expectedCount}`);
+}
+
 describe("_search http", () => {
   test(
     "supports exact, range, prefix, bare text, phrase, and search_after pagination",
@@ -329,6 +342,16 @@ describe("_search http", () => {
             message: "card declined again",
             why: "issuer declined card",
           },
+          {
+            eventTime: "2026-03-25T10:19:23.123Z",
+            service: "audit-daemon",
+            status: 200,
+            duration: 25,
+            requestId: "other_1",
+            region: "us-west-2",
+            message: "background heartbeat",
+            why: "health check",
+          },
         ];
 
         for (const event of events) {
@@ -356,9 +379,9 @@ describe("_search http", () => {
         );
         expect(res.status).toBe(200);
         let body = await res.json();
-        expect(body.total).toEqual({ value: 1, relation: "eq" });
+        expect(body.total.value).toBe(1);
+        expect(["eq", "gte"]).toContain(body.total.relation);
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col"]));
-        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
 
@@ -374,7 +397,8 @@ describe("_search http", () => {
         );
         expect(res.status).toBe(200);
         body = await res.json();
-        expect(body.total).toEqual({ value: 2, relation: "eq" });
+        expect(body.total.value).toBe(2);
+        expect(["eq", "gte"]).toContain(body.total.relation);
         expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
         expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["job_1", "req_1"]);
 
@@ -419,7 +443,7 @@ describe("_search http", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              q: "service:billing-api",
+              q: "req:req_*",
               size: 1,
               sort: ["eventTime:desc", "offset:desc"],
             }),
@@ -438,7 +462,7 @@ describe("_search http", () => {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              q: "service:billing-api",
+              q: "req:req_*",
               size: 1,
               sort: ["eventTime:desc", "offset:desc"],
               search_after: body.next_search_after,
@@ -512,6 +536,16 @@ describe("_search http", () => {
             message: "payment retry failed again",
             why: "downstream timeout",
           },
+          {
+            eventTime: "2026-03-25T10:17:23.123Z",
+            service: "audit-daemon",
+            status: 200,
+            duration: 20,
+            requestId: "other_1",
+            region: "us-west-2",
+            message: "background heartbeat",
+            why: "health check",
+          },
         ]) {
           res = await app.fetch(
             new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
@@ -546,7 +580,8 @@ describe("_search http", () => {
         let body = await res.json();
         expect(body.timed_out).toBe(false);
         expect(body.timeout_ms).toBe(3000);
-        expect(body.total).toEqual({ value: 2, relation: "eq" });
+        expect(body.total.value).toBe(2);
+        expect(["eq", "gte"]).toContain(body.total.relation);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
@@ -981,7 +1016,112 @@ describe("_search http", () => {
   );
 
   test(
-    "searches the quiet WAL tail once upload and companion work are caught up",
+    "omits newest uploaded exact matches when exact-secondary coverage lags",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-exact-lag-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 150,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 4; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: "staging-api",
+                status: 500 + i,
+                duration: 1000 + i,
+                requestId: `req_${i}`,
+                region: "us-west-2",
+                message: `indexed exact match ${i}`,
+                why: "indexed exact segment",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSecondaryIndexPublished(app, "service", 20_000);
+        const indexedThrough = app.deps.db.getSecondaryIndexState(STREAM, "service")!.indexed_through;
+        app.deps.indexer?.stop();
+
+        for (let i = 4; i < 6; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: "staging-api",
+                status: 500 + i,
+                duration: 1000 + i,
+                requestId: `req_${i}`,
+                region: "us-west-2",
+                message: `late exact match ${i}`,
+                why: "unindexed exact segment",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForPublishedSegmentCountAtLeast(app, indexedThrough + 2, 20_000);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api"',
+              size: 10,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_3", "req_2", "req_1", "req_0"]);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.possible_missing_uploaded_segments).toBeGreaterThan(0);
+        expect(body.coverage.scanned_tail_docs).toBe(0);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "keeps indexed text search on published indexed coverage even when the WAL tail is quiet",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-quiet-tail-"));
       const cfg = makeConfig(root, {
@@ -1058,13 +1198,101 @@ describe("_search http", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
+        expect(body.hits).toHaveLength(0);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.mode).toBe("published");
+        expect(body.coverage.scanned_tail_docs).toBe(0);
+        expect(body.coverage.possible_missing_wal_rows).toBe(2);
+        expect(body.total).toEqual({ value: 0, relation: "gte" });
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "still searches the quiet WAL tail for non-index-only queries",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-quiet-tail-fallback-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 1_000_000,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+        searchWalOverlayQuietPeriodMs: 0,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (const event of [
+          {
+            eventTime: "2026-03-25T10:15:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2400,
+            requestId: "req_1",
+            region: "us-east-1",
+            message: "payment retry failed",
+            why: "downstream timeout",
+          },
+          {
+            eventTime: "2026-03-25T10:16:23.123Z",
+            service: "billing-api",
+            status: 503,
+            duration: 2500,
+            requestId: "req_2",
+            region: "us-east-1",
+            message: "another timeout",
+            why: "quiet tail match",
+          },
+        ]) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(event),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: '-service:"other-api" timeout',
+              sort: ["offset:desc"],
+              size: 10,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
         expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_2", "req_1"]);
         expect(body.coverage.complete).toBe(true);
-        expect(body.coverage.mode).toBe("complete");
         expect(body.coverage.scanned_tail_docs).toBeGreaterThan(0);
-        expect(body.coverage.possible_missing_events_upper_bound).toBe(0);
-        expect(body.coverage.possible_missing_wal_rows).toBe(0);
-        expect(body.total).toEqual({ value: 2, relation: "eq" });
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

@@ -46,6 +46,31 @@ Important:
 - `/_search` is optimized for indexed filtering and search semantics, not for
   plain chronological browsing of the whole stream
 
+## Indexed-Only Serving Contract
+
+`/_search` now has two serving modes:
+
+- indexed-only queries stay on indexed coverage only
+- non-index-only queries may still use mixed indexed plus raw-scan serving
+
+Indexed-only queries are positive conjunctions of leaves that are fully handled
+by shipped search indexes:
+
+- exact keyword equality through exact-secondary
+- typed equality, range, and `has:` through `.col`
+- keyword prefix, text, phrase, and text/keyword `has:` through `.fts`
+
+Queries that use `OR`, `NOT`, unary `-`, or other non-index-covered shapes are
+not indexed-only.
+
+Important consequence:
+
+- if an indexed-only query runs while exact-secondary or bundled-companion
+  coverage is behind, the response simply omits the uncovered newest suffix
+- the server does not raw-scan that suffix to fill in the gap
+- totals become lower bounds and `coverage.complete` stays `false` until the
+  required indexed coverage catches up
+
 ## Chronological Ordering
 
 For the most efficient filtered event list, sort by append order, not event
@@ -200,6 +225,11 @@ Current performance note:
 Under active ingest, `/_search` and `/_aggregate` may intentionally omit the
 newest suffix instead of scanning it on the request path.
 
+For `/_search`, this is now deliberate for any indexed-only query shape: if the
+query can be answered by the shipped indexes, the server keeps it on the
+indexed path only and reports the freshness gap through `coverage` instead of
+scanning uncovered data.
+
 Use the response `coverage` object to drive the UI:
 
 - `complete`
@@ -219,9 +249,10 @@ Use the response `coverage` object to drive the UI:
 - `possible_missing_uploaded_segments`
   - newest published segments omitted because the required indexed visibility
     is still catching up
-  - for text / column search that usually means bundled companions are behind
-  - for exact-only search that can instead mean the exact-secondary family has
-    not indexed the newest published suffix yet
+  - for text / column indexed-only search that usually means bundled companions
+    are behind
+  - for exact-only indexed search that can instead mean the exact-secondary
+    family has not indexed the newest published suffix yet
 - `possible_missing_sealed_rows`
   - newest sealed but not yet published rows omitted from the response
 - `possible_missing_wal_rows`
@@ -242,6 +273,8 @@ Recommended UI treatment:
   total
 - if the HTTP status is `408`, combine the freshness banner with a timeout note
   instead of treating the response as an error page
+- do not present missing newest rows for indexed-only queries as an error or a
+  retryable fallback case; it is the intended freshness/latency tradeoff
 
 ## Query Syntax
 

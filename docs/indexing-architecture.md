@@ -74,11 +74,14 @@ and remote serving structures, not durable record stores.
 2. Heavy indexing stays off the request path.
 3. Local SQLite stays bounded and rebuildable.
 4. Published search state is recovered from manifests and object-store objects.
-5. Missing or stale search coverage must fall back to source-segment or WAL-tail
-   scan instead of returning false negatives.
-6. Routing-key L0 builds depend on one local 16-segment window and therefore
+5. `/_search` query shapes that are fully supported by the shipped search
+   indexes must stay on indexed coverage only; when those indexes lag, the
+   response may omit the newest suffix instead of raw-scanning it.
+6. Query shapes that are not fully index-supported may still fall back to
+   source-segment or WAL-tail scan for correctness.
+7. Routing-key L0 builds depend on one local 16-segment window and therefore
    participate in the segment-cache eviction and overload rules.
-7. Every async build or compaction action is logged locally in SQLite with
+8. Every async build or compaction action is logged locally in SQLite with
    start/end timestamps, duration, input size, output size, and family-specific
    detail so slow paths can be analyzed without reconstructing timelines from
    process logs.
@@ -778,19 +781,30 @@ Current non-support:
 
 Current newest-suffix behavior:
 
-- while sealed segments are still unpublished or bundled companions are still
-  catching up, `/_search` omits that newest suffix instead of raw-scanning it
+- indexed-only `/_search` queries do not fall back to raw source-segment scans
+  or the WAL tail
+- indexed-only means the query is a positive conjunction of leaves that are
+  fully handled by shipped search indexes:
+  - exact keyword equality through exact-secondary
+  - typed equality, range, and `has:` through `.col`
+  - keyword prefix, text, phrase, and text/keyword `has:` through `.fts`
+- boolean `OR`, `NOT`, and unary-negated query shapes are not indexed-only and
+  may still use mixed indexed plus raw-scan serving
+- while the required indexed visibility is still catching up, indexed-only
+  `/_search` omits the newest suffix instead of raw-scanning it
 - exact-only `/_search` queries that use only positive exact clauses can use
   exact-secondary visibility instead of bundled-companion visibility
   - when that path is available, the visible published prefix is clamped by the
     exact family's `indexed_through` watermark, not by `.cix` coverage
+- indexed-only text / column queries clamp visibility by the required bundled
+  companion families only
 - the omitted range is reported through the `possible_missing_*` coverage
   fields
-- once publish and bundled-companion work are fully caught up, `/_search`
-  still omits a fresh WAL tail during active ingest
-- `/_search` only uses the bounded WAL tail as a local overlay after the tail
-  is quiet for the configured overlay period and still fits within the overlay
-  budget
+- once publish and bundled-companion work are fully caught up, indexed-only
+  `/_search` still omits a fresh WAL tail during active ingest
+- non-index-only `/_search` may still use the bounded WAL tail as a local
+  overlay after the tail is quiet for the configured overlay period and still
+  fits within the overlay budget
 - newest-first append-order search (`sort=["offset:desc"]`) walks sealed
   segments from the tail and decodes only the blocks it needs for the current
   page; it does not eagerly decode every block in the segment before checking

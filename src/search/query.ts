@@ -93,6 +93,12 @@ export type SearchFtsClause =
   | { kind: "keyword"; field: string; canonicalValue: string; prefix: boolean }
   | { kind: "text"; fields: SearchTextTarget[]; tokens: string[]; phrase: boolean; prefix: boolean };
 
+export type SearchIndexedSupport = {
+  indexedOnly: boolean;
+  requiresExact: boolean;
+  requiredCompanionFamilies: Set<"col" | "fts">;
+};
+
 type SearchDocument = {
   exactValues: Map<string, string[]>;
   textValues: Map<string, string[]>;
@@ -109,6 +115,10 @@ export type SearchHitFieldMap = Record<string, unknown>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function supportsColumnFamily(config: SearchFieldConfig): boolean {
+  return config.column === true && (config.kind === "integer" || config.kind === "float" || config.kind === "date" || config.kind === "bool");
 }
 
 function tokenizeResult(input: string): Result<Token[], { message: string }> {
@@ -639,10 +649,55 @@ export function isSearchExactVisibilityEligible(query: CompiledSearchQuery): boo
   }
 }
 
+function mergeSearchIndexedSupport(
+  left: SearchIndexedSupport,
+  right: SearchIndexedSupport
+): SearchIndexedSupport {
+  return {
+    indexedOnly: left.indexedOnly && right.indexedOnly,
+    requiresExact: left.requiresExact || right.requiresExact,
+    requiredCompanionFamilies: new Set([...left.requiredCompanionFamilies, ...right.requiredCompanionFamilies]),
+  };
+}
+
+export function analyzeSearchIndexedSupport(query: CompiledSearchQuery): SearchIndexedSupport {
+  switch (query.kind) {
+    case "and":
+      return mergeSearchIndexedSupport(analyzeSearchIndexedSupport(query.left), analyzeSearchIndexedSupport(query.right));
+    case "or":
+    case "not":
+      return { indexedOnly: false, requiresExact: false, requiredCompanionFamilies: new Set() };
+    case "has":
+      if (supportsColumnFamily(query.config)) {
+        return { indexedOnly: true, requiresExact: false, requiredCompanionFamilies: new Set(["col"]) };
+      }
+      if (query.config.kind === "text" || (query.config.kind === "keyword" && query.config.prefix === true)) {
+        return { indexedOnly: true, requiresExact: false, requiredCompanionFamilies: new Set(["fts"]) };
+      }
+      return { indexedOnly: false, requiresExact: false, requiredCompanionFamilies: new Set() };
+    case "compare":
+      if (query.op === "eq" && query.config.exact === true && query.canonicalValue != null && !supportsColumnFamily(query.config)) {
+        return { indexedOnly: true, requiresExact: true, requiredCompanionFamilies: new Set() };
+      }
+      if (supportsColumnFamily(query.config)) {
+        return { indexedOnly: true, requiresExact: false, requiredCompanionFamilies: new Set(["col"]) };
+      }
+      return { indexedOnly: false, requiresExact: false, requiredCompanionFamilies: new Set() };
+    case "keyword":
+      if (!query.prefix && query.config.exact === true) {
+        return { indexedOnly: true, requiresExact: true, requiredCompanionFamilies: new Set() };
+      }
+      if (query.config.kind === "keyword" && query.config.prefix === true) {
+        return { indexedOnly: true, requiresExact: false, requiredCompanionFamilies: new Set(["fts"]) };
+      }
+      return { indexedOnly: false, requiresExact: false, requiredCompanionFamilies: new Set() };
+    case "text":
+      return { indexedOnly: true, requiresExact: false, requiredCompanionFamilies: new Set(["fts"]) };
+  }
+}
+
 export function collectPositiveSearchColumnClauses(query: CompiledSearchQuery): SearchColumnClause[] {
   const out: SearchColumnClause[] = [];
-  const supportsColumn = (config: SearchFieldConfig): boolean =>
-    config.column === true && (config.kind === "integer" || config.kind === "float" || config.kind === "date" || config.kind === "bool");
   const visit = (node: CompiledSearchQuery, negated: boolean): void => {
     if (node.kind === "and") {
       visit(node.left, negated);
@@ -655,10 +710,10 @@ export function collectPositiveSearchColumnClauses(query: CompiledSearchQuery): 
     }
     if (negated) return;
     if (node.kind === "has") {
-      if (supportsColumn(node.config)) out.push({ field: node.field, op: "has" });
+      if (supportsColumnFamily(node.config)) out.push({ field: node.field, op: "has" });
       return;
     }
-    if (node.kind === "compare" && supportsColumn(node.config)) {
+    if (node.kind === "compare" && supportsColumnFamily(node.config)) {
       out.push({ field: node.field, op: node.op, compareValue: node.compareValue });
     }
   };
