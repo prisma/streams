@@ -64,6 +64,10 @@ Concurrency/load-shedding note:
 - The memory sampler is now only an adaptive signal:
   - on macOS it confirms high RSS with physical memory from `top -stats pid,mem`
   - on Linux it uses `MemAvailable` from `/proc/meminfo`, not raw `free` memory
+  - host-low-memory GC / heap-snapshot fallback only activates once the Streams
+    process itself is a meaningful consumer of its configured memory budget; a
+    small local-runtime process should not spam `[gc] forced GC (host memory headroom)`
+    just because the whole machine is under pressure
   - when over the configured threshold, it reduces `DS_SEARCH_CONCURRENCY` and `DS_ASYNC_INDEX_CONCURRENCY` to `max(1, ceil(base/2))`
   - it never reduces ingest or read concurrency
 - While over the threshold, the sampler also rate-limits best-effort `Bun.gc()` calls and optional heap snapshots.

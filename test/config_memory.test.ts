@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/config";
-import { deriveMemoryPressureHeadroomBytes, deriveMemoryPressureLimitBytes } from "../src/memory";
+import {
+  deriveHostMemoryHeadroomActivationBytes,
+  deriveMemoryPressureHeadroomBytes,
+  deriveMemoryPressureLimitBytes,
+  isHostMemoryPressureActive,
+} from "../src/memory";
 
 const KEYS = [
   "DS_MEMORY_LIMIT_MB",
@@ -70,5 +75,15 @@ describe("config memory tuning", () => {
     expect(deriveMemoryPressureHeadroomBytes(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024)).toBe(
       2 * 1024 * 1024 * 1024
     );
+  });
+
+  test("does not treat host low memory as process pressure until the process is a meaningful consumer", () => {
+    const limitBytes = 1024 * 1024 * 1024;
+    const hostTotalBytes = 16 * 1024 * 1024 * 1024;
+    const hostAvailableBytes = 512 * 1024 * 1024;
+
+    expect(deriveHostMemoryHeadroomActivationBytes(limitBytes)).toBe(256 * 1024 * 1024);
+    expect(isHostMemoryPressureActive(limitBytes, 80 * 1024 * 1024, hostAvailableBytes, hostTotalBytes)).toBe(false);
+    expect(isHostMemoryPressureActive(limitBytes, 320 * 1024 * 1024, hostAvailableBytes, hostTotalBytes)).toBe(true);
   });
 });

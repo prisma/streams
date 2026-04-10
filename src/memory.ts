@@ -6,6 +6,8 @@ const HOST_MEMORY_GUARD_FRACTION = 0.7;
 const HOST_MEMORY_HEADROOM_FRACTION = 0.15;
 const HOST_MEMORY_HEADROOM_MIN_BYTES = 512 * 1024 * 1024;
 const HOST_MEMORY_HEADROOM_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const HOST_MEMORY_HEADROOM_PROCESS_FRACTION = 0.25;
+const HOST_MEMORY_HEADROOM_PROCESS_MIN_BYTES = 128 * 1024 * 1024;
 
 export function deriveMemoryPressureLimitBytes(requestedLimitBytes: number, hostTotalBytes = os.totalmem()): number {
   const requested = Math.max(0, Math.floor(requestedLimitBytes));
@@ -24,6 +26,24 @@ export function deriveMemoryPressureHeadroomBytes(limitBytes: number, hostTotalB
   const headroomFromHost = Math.floor(hostTotalBytes * HOST_MEMORY_HEADROOM_FRACTION);
   const headroom = Math.max(HOST_MEMORY_HEADROOM_MIN_BYTES, headroomFromHost);
   return Math.min(limit, Math.min(HOST_MEMORY_HEADROOM_MAX_BYTES, headroom));
+}
+
+export function deriveHostMemoryHeadroomActivationBytes(limitBytes: number): number {
+  const limit = Math.max(0, Math.floor(limitBytes));
+  if (limit <= 0) return 0;
+  const activation = Math.max(HOST_MEMORY_HEADROOM_PROCESS_MIN_BYTES, Math.floor(limit * HOST_MEMORY_HEADROOM_PROCESS_FRACTION));
+  return Math.min(limit, activation);
+}
+
+export function isHostMemoryPressureActive(
+  limitBytes: number,
+  effectiveBytes: number,
+  hostAvailableBytes: number,
+  hostTotalBytes = os.totalmem()
+): boolean {
+  const headroomBytes = deriveMemoryPressureHeadroomBytes(limitBytes, hostTotalBytes);
+  if (headroomBytes <= 0 || hostAvailableBytes > headroomBytes) return false;
+  return effectiveBytes >= deriveHostMemoryHeadroomActivationBytes(limitBytes);
 }
 
 export class MemoryPressureMonitor {
@@ -98,7 +118,7 @@ export class MemoryPressureMonitor {
     const hostAvailableBytes = readHostAvailableMemoryBytes();
     this.lastRssBytes = rss;
     if (rss > this.maxRssBytes) this.maxRssBytes = rss;
-    const hostLowMemory = this.hostHeadroomBytes > 0 && hostAvailableBytes <= this.hostHeadroomBytes;
+    const hostLowMemory = isHostMemoryPressureActive(this.limitBytes, effectiveBytes, hostAvailableBytes);
     const overLimit = this.limitBytes > 0 && (effectiveBytes > this.limitBytes || hostLowMemory);
     if (this.onSample) {
       try {
