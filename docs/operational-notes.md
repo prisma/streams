@@ -188,6 +188,10 @@ Indexing note:
     soak showed that `span=16` recreated long exact-job tails while the mixed
     `4/2/2` policy kept the low-cardinality speedup without recreating the old
     multi-segment exact tails.
+  - Later soak runs also rejected widening the high-cardinality singleton jobs
+    beyond `span=2`, and rejected running the shared async scheduler at `3/3`.
+    Both experiments raised recent `secondary_l0_build` latency without enough
+    catch-up gain to justify keeping them.
 - Bundled companion builds compile search-field accessors once per schema
   version and reuse them for the whole segment build.
 - When a bundled companion plan has no rollups, the worker skips the per-record

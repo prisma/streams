@@ -148,6 +148,10 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
     In local profiling and live soak tests, this mixed policy preserved the
     low-cardinality speedup without recreating the very slow multi-segment
     outliers that showed up at `span=16`.
+  - Later soak experiments also rejected widening the high-cardinality singleton
+    jobs beyond `span=2` and rejected raising the shared async scheduler to
+    `3/3`; both changes increased per-job latency without improving end-to-end
+    catch-up enough to keep.
 - Bundled companion work still persists through its own state machine and
   worker invocation. Exact-secondary and companion no longer duplicate the old
   field-by-field exact scan, but they do not currently share one combined

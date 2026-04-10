@@ -309,6 +309,18 @@ shapes, use bounded multi-segment windows only where the live throughput gain is
 real, and continue pushing catch-up via narrower hot-path optimizations rather
 than wide exact spans.
 
+The later soak experiments narrowed that supported direction further:
+
+- keep the shared async scheduler at the default `2/2` setting on the current
+  `evlog` load; raising it to `3/3` increased recent `secondary_l0_build`
+  latency enough to make catch-up worse rather than better
+- keep high-cardinality singleton exact jobs (`requestId`, `traceId`, `spanId`,
+  `path`) at bounded `span=2`; widening them further stayed inside the widened
+  `150 MiB` memory budget, but regressed per-segment throughput
+- do not add the same token-scanning multi-segment fast path to the grouped
+  low-cardinality batches until it shows a measured win; the attempted grouped
+  variant regressed the local `span=4` workload and was not kept
+
 The current supported remote-read policy is also now narrower:
 
 - segment cache fills prefer `getFile(...)` when the object store supports it,
