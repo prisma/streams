@@ -19,7 +19,7 @@ import {
 import { schemaVersionForOffset } from "../src/schema/read_json";
 import { siphash24 } from "../src/util/siphash";
 import { buildBinaryFuseResult } from "../src/index/binary_fuse";
-import { encodeIndexRunResult, RUN_TYPE_MASK16 } from "../src/index/run_format";
+import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_SINGLE_SEGMENT } from "../src/index/run_format";
 
 type LocalSegment = { segmentIndex: number; startOffset: bigint; localPath: string };
 
@@ -350,6 +350,47 @@ describe("single-segment secondary L0 build performance", () => {
       });
 
       expect(Math.max(...singleFieldElapsedMs)).toBeLessThan(1_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("single-segment exact payloads use the compact singleton run format", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-l0-singleton-format-"));
+    try {
+      const registry = buildEvlogDefaultRegistry("evlog-1");
+      const indexes = getConfiguredSecondaryIndexes(registry);
+      const pathIndex = indexes.find((index) => index.name === "path");
+      expect(pathIndex).toBeTruthy();
+      if (!pathIndex) return;
+      const segment = writeEvlogSegment(root, 24_000);
+      const currentRes = buildSecondaryL0RunPayloadResult({
+        stream: "evlog-1",
+        registry,
+        startSegment: 0,
+        span: 1,
+        indexes: [{ index: pathIndex, secret: new Uint8Array(16).fill(7) }],
+        segments: [segment],
+      });
+      const legacyRes = buildLegacySingleFieldSingleSegmentSecondaryL0Result({
+        stream: "evlog-1",
+        registry,
+        index: { index: pathIndex, secret: new Uint8Array(16).fill(7) },
+        segment,
+      });
+      expect(Result.isOk(currentRes)).toBe(true);
+      expect(Result.isOk(legacyRes)).toBe(true);
+      if (Result.isError(currentRes) || Result.isError(legacyRes)) return;
+
+      const run = currentRes.value.runs[0]!;
+      expect(run.storage).toBe("bytes");
+      if (run.storage !== "bytes") return;
+      const decodedRes = decodeIndexRunResult(run.payload);
+      expect(Result.isOk(decodedRes)).toBe(true);
+      if (Result.isError(decodedRes)) return;
+
+      expect(decodedRes.value.runType).toBe(RUN_TYPE_SINGLE_SEGMENT);
+      expect(run.payload.byteLength).toBeLessThan(legacyRes.value.byteLength * 0.85);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

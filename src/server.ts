@@ -37,7 +37,20 @@ function formatPresetList<T>(presets: number[], selected: number, map: (preset: 
     .join(", ");
 }
 
+function parsePositiveIntegerOverride(name: string): string | null {
+  const raw = process.env[name];
+  if (raw == null) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(`invalid ${name}: ${raw}`);
+    process.exit(1);
+  }
+  return String(value);
+}
+
 function applyAutoTune(overrideMb: number | null): void {
+  const manualIndexBuilders = parsePositiveIntegerOverride("DS_INDEX_BUILDERS");
+  const manualAsyncIndexConcurrency = parsePositiveIntegerOverride("DS_ASYNC_INDEX_CONCURRENCY");
   const envMemRaw = process.env.DS_MEMORY_LIMIT_MB;
   if (overrideMb != null) {
     if (envMemRaw) {
@@ -73,7 +86,6 @@ function applyAutoTune(overrideMb: number | null): void {
     "DS_INGEST_CONCURRENCY",
     "DS_READ_CONCURRENCY",
     "DS_SEARCH_CONCURRENCY",
-    "DS_ASYNC_INDEX_CONCURRENCY",
     "DS_SEARCH_COMPANION_TOC_CACHE_BYTES",
     "DS_SEARCH_COMPANION_SECTION_CACHE_BYTES",
     "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
@@ -112,8 +124,11 @@ function applyAutoTune(overrideMb: number | null): void {
   process.env.DS_INGEST_CONCURRENCY = String(tune.ingestConcurrency);
   process.env.DS_READ_CONCURRENCY = String(tune.readConcurrency);
   process.env.DS_SEARCH_CONCURRENCY = String(tune.searchConcurrency);
-  process.env.DS_ASYNC_INDEX_CONCURRENCY = String(tune.asyncIndexConcurrency);
-  process.env.DS_INDEX_BUILDERS = String(tune.indexBuilders);
+  const effectiveIndexBuilders = manualIndexBuilders ?? String(tune.indexBuilders);
+  const effectiveAsyncIndexConcurrency =
+    manualAsyncIndexConcurrency ?? (manualIndexBuilders != null ? effectiveIndexBuilders : String(tune.asyncIndexConcurrency));
+  process.env.DS_ASYNC_INDEX_CONCURRENCY = effectiveAsyncIndexConcurrency;
+  process.env.DS_INDEX_BUILDERS = effectiveIndexBuilders;
   process.env.DS_SEGMENTER_WORKERS = String(tune.segmenterWorkers);
   process.env.DS_UPLOAD_CONCURRENCY = String(tune.uploadConcurrency);
   process.env.DS_SEARCH_COMPANION_BATCH_SEGMENTS = String(tune.searchCompanionBatchSegments);
@@ -279,6 +294,12 @@ function applyAutoTune(overrideMb: number | null): void {
       (v) => String(v)
     )}`
   );
+  if (manualIndexBuilders != null) console.log(`DS_INDEX_BUILDERS override applied: ${effectiveIndexBuilders}`);
+  if (manualAsyncIndexConcurrency != null) {
+    console.log(`DS_ASYNC_INDEX_CONCURRENCY override applied: ${effectiveAsyncIndexConcurrency}`);
+  } else if (manualIndexBuilders != null) {
+    console.log(`DS_ASYNC_INDEX_CONCURRENCY derived from DS_INDEX_BUILDERS override: ${effectiveAsyncIndexConcurrency}`);
+  }
 }
 
 if (autoTuneEnabled) applyAutoTune(autoTuneValueMb);

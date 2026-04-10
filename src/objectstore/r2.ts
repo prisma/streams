@@ -25,6 +25,7 @@ export type R2Config = {
 };
 
 const EMPTY_SHA256_HEX = createHash("sha256").update("").digest("hex");
+const UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
 
 function sha256Hex(data: Uint8Array | string): string {
   return createHash("sha256").update(data).digest("hex");
@@ -262,13 +263,12 @@ export class R2ObjectStore implements ObjectStore {
 
   async putNoEtag(key: string, data: Uint8Array, opts: PutNoEtagOptions = {}): Promise<number> {
     try {
-      const payloadHash = sha256Hex(data);
       const headers: Record<string, string> = {};
       if (opts.contentType) headers["content-type"] = opts.contentType;
       if (opts.contentLength != null) headers["content-length"] = String(opts.contentLength);
       const res = await this.signedFetch("PUT", this.objectPath(key), {
         body: Buffer.from(data),
-        payloadHash,
+        payloadHash: UNSIGNED_PAYLOAD,
         headers,
       });
       if (!res.ok) throw dsError(`HTTP ${res.status}: ${await res.text().catch(() => "")}`.trim());
@@ -280,12 +280,12 @@ export class R2ObjectStore implements ObjectStore {
 
   async putFileNoEtag(key: string, path: string, _size: number, opts: PutFileNoEtagOptions = {}): Promise<number> {
     try {
-      const payloadHash = await sha256FileHex(path);
       const headers: Record<string, string> = {};
       if (opts.contentType) headers["content-type"] = opts.contentType;
+      headers["content-length"] = String(_size);
       const res = await this.signedFetch("PUT", this.objectPath(key), {
         body: Bun.file(path),
-        payloadHash,
+        payloadHash: UNSIGNED_PAYLOAD,
         headers,
       });
       if (!res.ok) throw dsError(`HTTP ${res.status}: ${await res.text().catch(() => "")}`.trim());

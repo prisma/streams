@@ -229,6 +229,11 @@ describe("R2ObjectStore", () => {
 
     expect(entries.get("streams/no-etag-bytes")?.data).toEqual(new Uint8Array([1, 2, 3]));
     expect(entries.get("streams/no-etag-file")?.data).toEqual(new Uint8Array([4, 5, 6]));
+    const noEtagPuts = observedRequests.filter((req) => req.method === "PUT");
+    expect(noEtagPuts).toHaveLength(2);
+    expect(noEtagPuts.every((req) => req.headers.get("x-amz-content-sha256") === "UNSIGNED-PAYLOAD")).toBe(true);
+    expect(noEtagPuts[0]?.headers.get("content-length")).toBeNull();
+    expect(noEtagPuts[1]?.headers.get("content-length")).toBe("3");
 
     rmSync(tmpDir, { recursive: true, force: true });
   });

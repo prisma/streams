@@ -7,6 +7,7 @@ export const INDEX_RUN_MAGIC = "IRN1";
 export const INDEX_RUN_VERSION = 1;
 export const RUN_TYPE_MASK16 = 0;
 export const RUN_TYPE_POSTINGS = 1;
+export const RUN_TYPE_SINGLE_SEGMENT = 2;
 
 export type IndexRunMeta = {
   runId: string;
@@ -61,6 +62,13 @@ export function encodeIndexRunResult(run: IndexRun): Result<Uint8Array, IndexRun
       dataView.setBigUint64(off, run.fingerprints[i]!, false);
       dataView.setUint16(off + 8, run.masks[i]! & 0xffff, false);
     }
+  } else if (run.runType === RUN_TYPE_SINGLE_SEGMENT) {
+    if (run.meta.startSegment !== run.meta.endSegment) {
+      return invalidRun("single-segment run must span exactly one segment");
+    }
+    dataBytes = new Uint8Array(recordCount * 8);
+    const dataView = new DataView(dataBytes.buffer, dataBytes.byteOffset, dataBytes.byteLength);
+    for (let i = 0; i < recordCount; i++) dataView.setBigUint64(i * 8, run.fingerprints[i]!, false);
   } else if (run.runType === RUN_TYPE_POSTINGS) {
     if (!run.postings || run.postings.length !== recordCount) return invalidRun("postings run missing postings");
     const chunks: Uint8Array[] = [];
@@ -153,6 +161,15 @@ export function decodeIndexRunResult(data: Uint8Array): Result<IndexRun, IndexRu
     }
     run.fingerprints = fps;
     run.masks = masks;
+    return Result.ok(run);
+  }
+
+  if (runType === RUN_TYPE_SINGLE_SEGMENT) {
+    const needed = recordCount * 8;
+    if (body.byteLength < needed) return invalidRun("single-segment run truncated");
+    const fps: bigint[] = new Array(recordCount);
+    for (let i = 0; i < recordCount; i++) fps[i] = readU64BE(body, i * 8);
+    run.fingerprints = fps;
     return Result.ok(run);
   }
 

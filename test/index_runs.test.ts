@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
-import { decodeIndexRun, encodeIndexRun, RUN_TYPE_MASK16, type IndexRun } from "../src/index/run_format";
+import { decodeIndexRun, encodeIndexRun, RUN_TYPE_MASK16, RUN_TYPE_SINGLE_SEGMENT, type IndexRun } from "../src/index/run_format";
 
 function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
   const base = loadConfig();
@@ -45,6 +45,28 @@ describe("index runs", () => {
     expect(dec.fingerprints.length).toBe(2);
     expect(dec.fingerprints[0]).toBe(1n);
     expect(dec.masks?.[1]).toBe(2);
+  });
+
+  test("encode/decode roundtrip (single segment)", () => {
+    const run: IndexRun = {
+      meta: {
+        runId: "l0-0000000000000003-0000000000000003-123",
+        level: 0,
+        startSegment: 3,
+        endSegment: 3,
+        objectKey: "streams/abc/secondary-index/run.irn",
+        filterLen: 0,
+        recordCount: 2,
+      },
+      runType: RUN_TYPE_SINGLE_SEGMENT,
+      filterBytes: new Uint8Array(0),
+      fingerprints: [11n, 22n],
+    };
+    const enc = encodeIndexRun(run);
+    const dec = decodeIndexRun(enc);
+    expect(dec.runType).toBe(RUN_TYPE_SINGLE_SEGMENT);
+    expect(dec.fingerprints).toEqual([11n, 22n]);
+    expect(dec.masks).toBeUndefined();
   });
 
   test("index manager builds L0 run and selects candidate segments", async () => {

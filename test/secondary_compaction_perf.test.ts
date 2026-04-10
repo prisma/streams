@@ -11,7 +11,14 @@ import {
   secondaryCompactionMaxLevel,
   secondaryCompactionSourceFetchConcurrency,
 } from "../src/index/secondary_indexer";
-import { decodeIndexRunResult, encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS, type IndexRun } from "../src/index/run_format";
+import {
+  decodeIndexRunResult,
+  encodeIndexRunResult,
+  RUN_TYPE_MASK16,
+  RUN_TYPE_POSTINGS,
+  RUN_TYPE_SINGLE_SEGMENT,
+  type IndexRun,
+} from "../src/index/run_format";
 import type { SecondaryCompactionBuildInput, SecondaryCompactionRunSource } from "../src/index/secondary_compaction_build";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 import { ConcurrencyGate } from "../src/concurrency_gate";
@@ -65,6 +72,10 @@ function buildLegacySecondaryCompactionPayloadResult(input: SecondaryCompactionB
           if ((mask & (1 << bit)) !== 0) addSegment(fp, meta.startSegment + bit);
         }
       }
+      continue;
+    }
+    if (run.runType === RUN_TYPE_SINGLE_SEGMENT) {
+      for (const fp of run.fingerprints) addSegment(fp, meta.startSegment);
       continue;
     }
     if (run.runType === RUN_TYPE_POSTINGS && run.postings) {
@@ -148,6 +159,10 @@ function buildPreviousSecondaryCompactionPayloadResult(
           if ((mask & (1 << bit)) !== 0) addSegment(fp, meta.startSegment + bit);
         }
       }
+      continue;
+    }
+    if (run.runType === RUN_TYPE_SINGLE_SEGMENT) {
+      for (const fp of run.fingerprints) addSegment(fp, meta.startSegment);
       continue;
     }
     if (run.runType === RUN_TYPE_POSTINGS && run.postings) {

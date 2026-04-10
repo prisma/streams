@@ -25,7 +25,7 @@ import {
 } from "./schema";
 import { siphash24 } from "../util/siphash";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
-import { encodeIndexRunResult, RUN_TYPE_MASK16 } from "../index/run_format";
+import { encodeIndexRunResult, RUN_TYPE_SINGLE_SEGMENT } from "../index/run_format";
 import { writeIndexRunOutputFileResult } from "../index/index_run_output_file";
 import { getConfiguredSecondaryIndexes, hashSecondaryIndexField, type SecondaryIndexField } from "../index/secondary_schema";
 import { buildEncodedBundledCompanionPayloadResult } from "./companion_build";
@@ -406,10 +406,9 @@ export function buildSearchSegmentResult(
     };
     const payloadRes = encodeIndexRunResult({
       meta,
-      runType: RUN_TYPE_MASK16,
+      runType: RUN_TYPE_SINGLE_SEGMENT,
       filterBytes: new Uint8Array(0),
       fingerprints,
-      masks: new Array(fingerprints.length).fill(1),
     });
     if (Result.isError(payloadRes)) return invalidSearchSegmentBuild(payloadRes.error.message);
     if (input.outputDir) {

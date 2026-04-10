@@ -2,7 +2,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, w
 import { join } from "node:path";
 import { Result } from "better-result";
 import { concatBytes, readU32BE, readU64BE, writeU32BE, writeU64BE } from "../util/endian";
-import { INDEX_RUN_MAGIC, INDEX_RUN_VERSION, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS } from "./run_format";
+import { INDEX_RUN_MAGIC, INDEX_RUN_VERSION, RUN_TYPE_MASK16, RUN_TYPE_POSTINGS, RUN_TYPE_SINGLE_SEGMENT } from "./run_format";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
 
 export type SecondaryCompactionRunSource = {
@@ -291,7 +291,7 @@ function buildInputCursorResult(meta: SecondaryCompactionRunSource): Result<Inpu
   if (magic !== INDEX_RUN_MAGIC) return invalidIndexBuild(`secondary compact run ${meta.runId} invalid magic`);
   if (data[4] !== INDEX_RUN_VERSION) return invalidIndexBuild(`secondary compact run ${meta.runId} unsupported version`);
   const runType = data[5]!;
-  if (runType !== RUN_TYPE_MASK16 && runType !== RUN_TYPE_POSTINGS) {
+  if (runType !== RUN_TYPE_MASK16 && runType !== RUN_TYPE_POSTINGS && runType !== RUN_TYPE_SINGLE_SEGMENT) {
     return invalidIndexBuild(`unknown run type ${runType}`);
   }
   const startSegment = Number(readU64BE(data, 8));
@@ -336,6 +336,15 @@ function advanceInputCursorResult(cursor: InputCursor): Result<void, BuildError>
     cursor.nextIndex += 1;
     return Result.ok(undefined);
   }
+  if (cursor.runType === RUN_TYPE_SINGLE_SEGMENT) {
+    if (cursor.pos + 8 > cursor.body.byteLength) return invalidIndexBuild("secondary compact single-segment run truncated");
+    cursor.currentFp = readU64BE(cursor.body, cursor.pos);
+    cursor.currentMask = 1;
+    cursor.currentPostings = null;
+    cursor.pos += 8;
+    cursor.nextIndex += 1;
+    return Result.ok(undefined);
+  }
 
   if (cursor.pos + 8 > cursor.body.byteLength) return invalidIndexBuild("secondary compact postings run truncated (fp)");
   cursor.currentFp = readU64BE(cursor.body, cursor.pos);
@@ -367,7 +376,7 @@ function countMaskBits(mask: number): number {
 }
 
 function encodeSingleCursorPostingsResult(writer: DataWriter, cursor: InputCursor, startSegment: number): Result<number, BuildError> {
-  if (cursor.runType === RUN_TYPE_MASK16) {
+  if (cursor.runType === RUN_TYPE_MASK16 || cursor.runType === RUN_TYPE_SINGLE_SEGMENT) {
     const mask = cursor.currentMask;
     const count = countMaskBits(mask);
     const countRes = writer.writeUVarint(count);
@@ -392,7 +401,7 @@ function encodeSingleCursorPostingsResult(writer: DataWriter, cursor: InputCurso
 function mergeRelativeSegments(cursors: InputCursor[], startSegment: number): number[] {
   if (cursors.length === 1) {
     const cursor = cursors[0]!;
-    if (cursor.runType === RUN_TYPE_MASK16) {
+    if (cursor.runType === RUN_TYPE_MASK16 || cursor.runType === RUN_TYPE_SINGLE_SEGMENT) {
       const rel: number[] = [];
       const mask = cursor.currentMask;
       for (let bit = 0; bit < 16; bit += 1) {
@@ -411,7 +420,7 @@ function mergeRelativeSegments(cursors: InputCursor[], startSegment: number): nu
     let found = false;
     for (let i = 0; i < cursors.length; i += 1) {
       const cursor = cursors[i]!;
-      if (cursor.runType === RUN_TYPE_MASK16) {
+      if (cursor.runType === RUN_TYPE_MASK16 || cursor.runType === RUN_TYPE_SINGLE_SEGMENT) {
         let pos = positions[i]!;
         while (pos < 16 && (cursor.currentMask & (1 << pos)) === 0) pos += 1;
         positions[i] = pos;
@@ -431,7 +440,7 @@ function mergeRelativeSegments(cursors: InputCursor[], startSegment: number): nu
     if (!found) break;
     for (let i = 0; i < cursors.length; i += 1) {
       const cursor = cursors[i]!;
-      if (cursor.runType === RUN_TYPE_MASK16) {
+      if (cursor.runType === RUN_TYPE_MASK16 || cursor.runType === RUN_TYPE_SINGLE_SEGMENT) {
         if (positions[i]! < 16 && cursor.startSegment + positions[i]! === minSeg) positions[i]! += 1;
         continue;
       }
