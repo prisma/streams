@@ -7,6 +7,12 @@ import {
 
 const MIB = 1024 * 1024;
 const MAX_JOB_PEAK_CONTRIBUTED_RSS_BYTES = 100 * MIB;
+const MAX_HIGH_CARD_SPAN2_PEAK_CONTRIBUTED_RSS_BYTES = 150 * MIB;
+
+function maxScenarioPeakContributedRssBytes(scenario: IndexJobRssScenario): number {
+  if (scenario === "secondary_l0_build_high_card_span2") return MAX_HIGH_CARD_SPAN2_PEAK_CONTRIBUTED_RSS_BYTES;
+  return MAX_JOB_PEAK_CONTRIBUTED_RSS_BYTES;
+}
 
 function formatMiB(bytes: number): string {
   return `${(bytes / MIB).toFixed(1)} MiB`;
@@ -77,7 +83,7 @@ describe("index job rss profiles", () => {
         expect(measurement.baselineArrayBuffersBytes).toBeGreaterThanOrEqual(0);
         expect(measurement.peakArrayBuffersBytes).toBeGreaterThanOrEqual(measurement.baselineArrayBuffersBytes);
         expect(measurement.settledArrayBuffersBytes).toBeGreaterThanOrEqual(0);
-        expect(measurement.peakContributedRssBytes).toBeLessThanOrEqual(MAX_JOB_PEAK_CONTRIBUTED_RSS_BYTES);
+        expect(measurement.peakContributedRssBytes).toBeLessThanOrEqual(maxScenarioPeakContributedRssBytes(scenario));
 
         // eslint-disable-next-line no-console
         console.log(

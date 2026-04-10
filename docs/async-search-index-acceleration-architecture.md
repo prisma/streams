@@ -298,13 +298,15 @@ The two changes that closed the remaining live tail were:
    path when that API is available, because the live R2 benchmark for the
    `~780 KiB` exact artifacts was faster and lower-tail than re-reading the file
    into `putNoEtag`
-2. single-segment high-cardinality exact L0 jobs (`requestId`, `traceId`,
-   `spanId`, `path`) now collect fingerprints in typed buffers and dedupe after
-   sort instead of paying `Set<bigint>` cost on every record
+2. high-cardinality exact L0 jobs (`requestId`, `traceId`, `spanId`, `path`)
+   now stay on single-field jobs but use a bounded `span=2` window, and their
+   dedicated multi-segment fast path extracts raw scalars without paying the
+   generic full-JSON parse loop on the hot path
 
 That leaves the supported direction unchanged: keep the memory-safe split job
-shapes, and continue pushing catch-up via narrower hot-path optimizations rather
-than wider job shapes.
+shapes, use bounded multi-segment windows only where the live throughput gain is
+real, and continue pushing catch-up via narrower hot-path optimizations rather
+than wide exact spans.
 
 The current supported remote-read policy is also now narrower:
 

@@ -13,7 +13,7 @@ import {
 import { schemaVersionForOffset } from "../schema/read_json";
 import { siphash24 } from "../util/siphash";
 import { secondaryIndexRunObjectKey, streamHash16Hex } from "../util/stream_paths";
-import { encodeIndexRunResult, RUN_TYPE_MASK16 } from "./run_format";
+import { encodeIndexRunResult, RUN_TYPE_MASK16, RUN_TYPE_SINGLE_SEGMENT } from "./run_format";
 import type { SecondaryIndexField } from "./secondary_schema";
 import { writeIndexRunOutputFileResult } from "./index_run_output_file";
 
@@ -561,10 +561,9 @@ function buildSingleSegmentTopLevelScalarSecondaryL0RunPayloadResult(
     };
     const payloadRes = encodeIndexRunResult({
       meta,
-      runType: RUN_TYPE_MASK16,
+      runType: RUN_TYPE_SINGLE_SEGMENT,
       filterBytes: new Uint8Array(0),
       fingerprints,
-      masks: new Array(fingerprints.length).fill(1),
     });
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
     if (input.outputDir) {
@@ -720,14 +719,139 @@ function buildSingleFieldSingleSegmentSecondaryL0RunPayloadResult(
   };
   const payloadRes = encodeIndexRunResult({
     meta,
-    runType: RUN_TYPE_MASK16,
+    runType: RUN_TYPE_SINGLE_SEGMENT,
     filterBytes: new Uint8Array(0),
     fingerprints: orderedFingerprints,
-    masks: new Array(orderedFingerprints.length).fill(1),
   });
   if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
   if (input.outputDir) {
     const fileRes = writeIndexRunOutputFileResult(input.outputDir, `${entry.index.name}-l0-${input.startSegment}`, payloadRes.value);
+    if (Result.isError(fileRes)) return invalidIndexBuild(fileRes.error.message);
+    return Result.ok({
+      runs: [
+        {
+          indexName: entry.index.name,
+          meta,
+          storage: "file",
+          localPath: fileRes.value.localPath,
+          sizeBytes: fileRes.value.sizeBytes,
+        },
+      ],
+    });
+  }
+  return Result.ok({
+    runs: [
+      {
+        indexName: entry.index.name,
+        meta,
+        storage: "bytes",
+        payload: payloadRes.value,
+      },
+    ],
+  });
+}
+
+function buildSingleFieldMultiSegmentSecondaryL0RunPayloadResult(
+  input: SecondaryL0BuildInput
+): Result<SecondaryL0BuildOutput, BuildError> {
+  const entry = input.indexes[0];
+  if (!entry) return Result.ok({ runs: [] });
+
+  const maskByFp = new Map<bigint, number>();
+  const compiledByVersion = new Map<number, CompiledSearchFieldAccessor | null>();
+
+  for (const segment of input.segments) {
+    const bit = segment.segmentIndex - input.startSegment;
+    if (bit < 0 || bit >= input.span) {
+      return invalidIndexBuild(`exact L0 segment ${segment.segmentIndex} is outside the ${input.span}-segment build window`);
+    }
+    const maskBit = 1 << bit;
+    const localFingerprints = new Set<bigint>();
+    let offset = segment.startOffset;
+
+    const addRawValue = (rawValue: unknown): void => {
+      const canonical = canonicalizeExactValue(entry.index.config, rawValue);
+      if (canonical == null) return;
+      localFingerprints.add(siphash24(entry.secret, TERM_ENCODER.encode(canonical)));
+    };
+
+    const visitRes = visitBlockRecordPayloadsFromFileResult(segment.localPath, (payloadBytes, payloadStart, payloadEnd) => {
+      const payload = payloadBytes.subarray(payloadStart, payloadEnd);
+      const version = schemaVersionForOffset(input.registry, offset);
+      let accessor = compiledByVersion.get(version);
+      if (accessor === undefined) {
+        const compiledRes = compileSearchFieldAccessorsResult(input.registry, [entry.index.name], version);
+        if (Result.isError(compiledRes)) return invalidIndexBuild(compiledRes.error.message);
+        accessor = compiledRes.value[0] ?? null;
+        compiledByVersion.set(version, accessor);
+      }
+
+      if (accessor) {
+        if (supportsFastScalarJsonExtraction(accessor)) {
+          const fastValueRes = extractFastScalarJsonValueFromBytesResult(payload, accessor);
+          if (Result.isOk(fastValueRes)) {
+            if (fastValueRes.value.exists) addRawValue(fastValueRes.value.value);
+          } else {
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(PAYLOAD_DECODER.decode(payload));
+            } catch {
+              offset += 1n;
+              return Result.ok(undefined);
+            }
+            const rawValuesRes = visitCompiledAccessorRawValuesResult(parsed, accessor, addRawValue);
+            if (Result.isError(rawValuesRes)) return invalidIndexBuild(rawValuesRes.error.message);
+          }
+        } else {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(PAYLOAD_DECODER.decode(payload));
+          } catch {
+            offset += 1n;
+            return Result.ok(undefined);
+          }
+          const rawValuesRes = visitCompiledAccessorRawValuesResult(parsed, accessor, addRawValue);
+          if (Result.isError(rawValuesRes)) return invalidIndexBuild(rawValuesRes.error.message);
+        }
+      }
+
+      offset += 1n;
+      return Result.ok(undefined);
+    });
+    if (Result.isError(visitRes)) return invalidIndexBuild(visitRes.error.message);
+
+    for (const fingerprint of localFingerprints) {
+      maskByFp.set(fingerprint, (maskByFp.get(fingerprint) ?? 0) | maskBit);
+    }
+  }
+
+  const endSegment = input.startSegment + input.span - 1;
+  const fingerprints = sortFingerprints(maskByFp.keys());
+  const masks = fingerprints.map((fp) => maskByFp.get(fp) ?? 0);
+  const runId = `${entry.index.name}-l0-${input.startSegment.toString().padStart(16, "0")}-${endSegment.toString().padStart(16, "0")}-${Date.now()}`;
+  const meta = {
+    runId,
+    level: 0,
+    startSegment: input.startSegment,
+    endSegment,
+    objectKey: secondaryIndexRunObjectKey(streamHash16Hex(input.stream), entry.index.name, runId),
+    filterLen: 0,
+    recordCount: fingerprints.length,
+  };
+  const payloadRes = encodeIndexRunResult({
+    meta,
+    runType: RUN_TYPE_MASK16,
+    filterBytes: new Uint8Array(0),
+    fingerprints,
+    masks,
+  });
+  if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
+  if (input.outputDir) {
+    const fileRes = writeIndexRunOutputFileResult(
+      input.outputDir,
+      `${entry.index.name}-l0-${input.startSegment}-${endSegment}`,
+      payloadRes.value
+    );
     if (Result.isError(fileRes)) return invalidIndexBuild(fileRes.error.message);
     return Result.ok({
       runs: [
@@ -776,6 +900,9 @@ export function buildSecondaryL0RunPayloadResult(
 ): Result<SecondaryL0BuildOutput, BuildError> {
   if (input.span === 1 && input.indexes.length === 1 && input.segments.length === 1) {
     return buildSingleFieldSingleSegmentSecondaryL0RunPayloadResult(input);
+  }
+  if (input.span > 1 && input.indexes.length === 1) {
+    return buildSingleFieldMultiSegmentSecondaryL0RunPayloadResult(input);
   }
   const singleSegmentFastRes = buildSingleSegmentTopLevelScalarSecondaryL0RunPayloadResult(input);
   if (singleSegmentFastRes) return singleSegmentFastRes;
@@ -877,10 +1004,10 @@ export function buildSecondaryL0RunPayloadResult(
     };
     const payloadRes = encodeIndexRunResult({
       meta,
-      runType: RUN_TYPE_MASK16,
+      runType: singleSegmentWindow ? RUN_TYPE_SINGLE_SEGMENT : RUN_TYPE_MASK16,
       filterBytes: new Uint8Array(0),
       fingerprints,
-      masks,
+      ...(singleSegmentWindow ? {} : { masks }),
     });
     if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
     if (input.outputDir) {

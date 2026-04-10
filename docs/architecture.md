@@ -133,9 +133,11 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
   - `spanId`
   - `path`
 - Those batches no longer all use the same L0 span:
-  - `requestId`, `traceId`, `spanId`, and `path` stay on singleton
-    `span=1` jobs so the hottest high-cardinality exact builds keep their
-    compact single-segment encoding and smaller per-job memory footprint.
+  - `requestId`, `traceId`, `spanId`, and `path` stay on single-field jobs,
+    but they now use a bounded `span=2` window. A dedicated single-field
+    multi-segment fast path avoids the generic full-JSON parse loop so those
+    jobs still fit within the widened per-job memory budget while reducing the
+    persist overhead per covered segment.
   - `level,service,environment` uses a bounded `span=4` window.
   - `timestamp` and `method,status,duration` use a bounded `span=2` window.
   - `evlog` secondary compactions stay deferred while exact L0 is still more
@@ -152,9 +154,10 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - The `evlog` scheduler now prioritizes the most-behind exact fields first.
   If one low-cardinality batch drifts out of alignment, only its lagging
   subgroup is scheduled until that batch realigns. High-cardinality exact
-  fields (`requestId`, `traceId`, `spanId`, `path`) stay on singleton exact L0
-  jobs, while `timestamp` and the two low-cardinality grouped batches advance
-  in the configured multi-segment L0 windows.
+  fields (`requestId`, `traceId`, `spanId`, `path`) stay on single-field exact
+  L0 jobs with a bounded `span=2` window, while `timestamp` and the two
+  low-cardinality grouped batches advance in the configured multi-segment L0
+  windows.
 - Non-`evlog` exact-secondary streams still use the family-specific exact L0
   worker job.
 - Exact-secondary L0 runs now omit binary-fuse filters entirely. Exact lookups

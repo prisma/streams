@@ -34,11 +34,12 @@ async function sleep(ms: number): Promise<void> {
 }
 
 describe("secondary indexer", () => {
-  test("evlog exact batches keep high-cardinality jobs singleton and allow multi-segment low-card batches", () => {
-    expect(secondaryExactBatchSpan("evlog", 16, ["requestId"])).toBe(1);
-    expect(secondaryExactBatchSpan("evlog", 16, ["traceId"])).toBe(1);
-    expect(secondaryExactBatchSpan("evlog", 16, ["spanId"])).toBe(1);
-    expect(secondaryExactBatchSpan("evlog", 16, ["path"])).toBe(1);
+  test("evlog exact batches keep high-cardinality jobs single-field and use bounded multi-segment spans", () => {
+    expect(secondaryExactBatchSpan("evlog", 16, ["requestId"])).toBe(2);
+    expect(secondaryExactBatchSpan("evlog", 16, ["traceId"])).toBe(2);
+    expect(secondaryExactBatchSpan("evlog", 16, ["spanId"])).toBe(2);
+    expect(secondaryExactBatchSpan("evlog", 16, ["path"])).toBe(2);
+    expect(secondaryExactBatchSpan("evlog", 1, ["requestId"])).toBe(1);
     expect(secondaryExactBatchSpan("evlog", 16, ["timestamp"])).toBe(2);
     expect(secondaryExactBatchSpan("evlog", 16, ["level", "service", "environment"])).toBe(4);
     expect(secondaryExactBatchSpan("evlog", 16, ["method", "status", "duration"])).toBe(2);

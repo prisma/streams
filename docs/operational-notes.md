@@ -173,9 +173,11 @@ Indexing note:
   about 20% smaller, which directly reduces the `exact_persist_ms` tail on the
   high-cardinality `requestId` / `traceId` / `spanId` / `path` batches.
 - The `evlog` exact scheduler now mixes span sizes intentionally:
-  - `requestId`, `traceId`, `spanId`, and `path` stay on singleton `span=1`
-    jobs because larger windows increase both payload size and peak job RSS
-    without enough wall-time improvement.
+  - `requestId`, `traceId`, `spanId`, and `path` stay on single-field jobs,
+    but they now use a bounded `span=2` window. A dedicated single-field
+    multi-segment fast path avoids the generic full-JSON parse loop, which is
+    enough to keep those jobs inside the widened `150 MiB` budget while
+    lowering the per-segment persist overhead.
   - `level,service,environment` uses a bounded `span=4` window.
   - `timestamp` and `method,status,duration` use a bounded `span=2` window.
 - While `evlog` exact L0 is still more than `256` uploaded segments behind,
@@ -183,7 +185,8 @@ Indexing note:
   work instead of rewriting already-persisted runs.
   - Those caps apply even when `DS_INDEX_L0_SPAN` is larger, because the live
     soak showed that `span=16` recreated long exact-job tails while the mixed
-    `4/2/1` policy kept the low-cardinality speedup.
+    `4/2/2` policy kept the low-cardinality speedup without recreating the old
+    multi-segment exact tails.
 - Bundled companion builds compile search-field accessors once per schema
   version and reuse them for the whole segment build.
 - When a bundled companion plan has no rollups, the worker skips the per-record

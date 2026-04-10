@@ -331,4 +331,66 @@ describe("secondary L0 build performance", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test("multi-segment high-cardinality exact builds use the raw-scalar fast path and beat the legacy parse loop by at least 20%", () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-secondary-l0-high-card-span-"));
+    try {
+      const registry = buildEvlogDefaultRegistry("evlog-1");
+      const pathIndex = getConfiguredSecondaryIndexes(registry).find((entry) => entry.name === "path");
+      expect(pathIndex).toBeTruthy();
+      if (!pathIndex) return;
+      const segments = writeEvlogSegments(root, 48_000).slice(0, 2);
+      const currentInput = {
+        stream: "evlog-1",
+        registry,
+        startSegment: 0,
+        span: 2,
+        indexes: [{ index: pathIndex, secret: new Uint8Array(16).fill(7) }],
+        segments,
+      } as const;
+
+      const warmCurrent = buildSecondaryL0RunPayloadResult(currentInput);
+      expect(Result.isOk(warmCurrent)).toBe(true);
+      const warmLegacyStarted = performance.now();
+      void buildLegacySecondaryL0RunPayloadResult({
+        stream: "evlog-1",
+        index: pathIndex,
+        registry,
+        startSegment: 0,
+        span: 2,
+        secret: new Uint8Array(16).fill(7),
+        segments,
+      });
+      expect(performance.now() - warmLegacyStarted).toBeGreaterThan(0);
+
+      const currentSamples: number[] = [];
+      const legacySamples: number[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        const legacyStarted = performance.now();
+        void buildLegacySecondaryL0RunPayloadResult({
+          stream: "evlog-1",
+          index: pathIndex,
+          registry,
+          startSegment: 0,
+          span: 2,
+          secret: new Uint8Array(16).fill(7),
+          segments,
+        });
+        legacySamples.push(performance.now() - legacyStarted);
+
+        const currentStarted = performance.now();
+        const currentRes = buildSecondaryL0RunPayloadResult(currentInput);
+        currentSamples.push(performance.now() - currentStarted);
+        expect(Result.isOk(currentRes)).toBe(true);
+        if (Result.isOk(currentRes)) {
+          expect(currentRes.value.runs).toHaveLength(1);
+        }
+      }
+
+      const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+      expect(average(currentSamples)).toBeLessThan(average(legacySamples) * 0.8);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

@@ -52,6 +52,7 @@ const SECONDARY_COMPACTION_FANOUT_HIGH_CARDINALITY = 2;
 const SECONDARY_COMPACTION_MAX_LEVEL_HIGH_CARDINALITY = 0;
 const EVLOG_SECONDARY_COMPACTION_DEFER_LAG_SEGMENTS = 256;
 const EVLOG_HIGH_CARDINALITY_EXACT_FIELDS = new Set(["requestId", "traceId", "spanId", "path"]);
+const EVLOG_HIGH_CARDINALITY_EXACT_SPAN_LIMIT = 2;
 const EVLOG_EXACT_BATCH_SPAN_LIMITS = new Map<string, number>([
   ["timestamp", 2],
   ["duration,method,status", 2],
@@ -80,6 +81,9 @@ export function secondaryExactBatchSpan(
   const effectiveConfiguredSpan = Math.max(0, configuredSpan);
   if (effectiveConfiguredSpan <= 0) return 0;
   if ((profile ?? null) !== "evlog") return effectiveConfiguredSpan;
+  if (indexNames.length === 1 && EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexNames[0]!)) {
+    return Math.min(effectiveConfiguredSpan, EVLOG_HIGH_CARDINALITY_EXACT_SPAN_LIMIT);
+  }
   for (const indexName of indexNames) {
     if (EVLOG_HIGH_CARDINALITY_EXACT_FIELDS.has(indexName)) return 1;
   }
