@@ -780,6 +780,10 @@ Current newest-suffix behavior:
 
 - while sealed segments are still unpublished or bundled companions are still
   catching up, `/_search` omits that newest suffix instead of raw-scanning it
+- exact-only `/_search` queries that use only positive exact clauses can use
+  exact-secondary visibility instead of bundled-companion visibility
+  - when that path is available, the visible published prefix is clamped by the
+    exact family's `indexed_through` watermark, not by `.cix` coverage
 - the omitted range is reported through the `possible_missing_*` coverage
   fields
 - once publish and bundled-companion work are fully caught up, `/_search`
@@ -787,6 +791,10 @@ Current newest-suffix behavior:
 - `/_search` only uses the bounded WAL tail as a local overlay after the tail
   is quiet for the configured overlay period and still fits within the overlay
   budget
+- newest-first append-order search (`sort=["offset:desc"]`) walks sealed
+  segments from the tail and decodes only the blocks it needs for the current
+  page; it does not eagerly decode every block in the segment before checking
+  the newest records
 - `visible_through_primary_timestamp_max` and `oldest_omitted_append_at` let
   Studio explain the freshness gap in time terms
 

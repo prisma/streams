@@ -13,6 +13,7 @@ import { SchemaRegistryStore } from "./schema/registry";
 import { parseOffsetResult, offsetToSeqOrNeg1, encodeOffset } from "./offset";
 import {
   type BlockIndexEntry,
+  type SegmentFormatError,
   decodeBlockResult,
   iterateBlocksResult,
   parseBlockHeaderResult,
@@ -207,6 +208,10 @@ type PlannedReadSegments = {
   sealedEndSeq: bigint;
 };
 type PlannedReadOrder = "asc" | "desc";
+type PublishedCoverageOptions = {
+  visiblePublishedSegmentCountOverride?: number | null;
+  ignoreCompanionVisibility?: boolean;
+};
 
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
@@ -272,6 +277,46 @@ function loadSegmentFooterBlocksFromSource(seg: SegmentRow, source: SegmentReadS
   const footerBytes = readRangeFromSource(source, footerStart, footerStart + footerLen - 1);
   const footer = parseFooterBytes(footerBytes);
   return footer?.blocks ?? null;
+}
+
+function loadSegmentBlockEntriesFromSourceResult(
+  seg: SegmentRow,
+  source: SegmentReadSource
+): Result<BlockIndexEntry[], SegmentFormatError> {
+  const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
+  if (footerBlocks) return Result.ok(footerBlocks);
+
+  const limit = loadSegmentDataLimitFromSource(seg, source);
+  const blocks: BlockIndexEntry[] = [];
+  let blockOffset = 0;
+  let blockFirstOffset = seg.start_offset;
+  while (blockOffset < limit) {
+    const headerBytes = readRangeFromSource(source, blockOffset, blockOffset + DSB3_HEADER_BYTES - 1);
+    const headerRes = parseBlockHeaderResult(headerBytes);
+    if (Result.isError(headerRes)) return headerRes;
+    const header = headerRes.value;
+    blocks.push({
+      blockOffset,
+      firstOffset: blockFirstOffset,
+      recordCount: header.recordCount,
+      compressedLen: header.compressedLen,
+      firstAppendNs: header.firstAppendNs,
+      lastAppendNs: header.lastAppendNs,
+    });
+    blockOffset += DSB3_HEADER_BYTES + header.compressedLen;
+    blockFirstOffset += BigInt(header.recordCount);
+  }
+  return Result.ok(blocks);
+}
+
+function docIdSetIntersectsRange(docIds: Set<number> | null, start: number, end: number): boolean {
+  if (!docIds) return true;
+  for (const docId of docIds) {
+    if (docId < start) continue;
+    if (docId > end) continue;
+    return true;
+  }
+  return false;
 }
 
 export class StreamReader {
@@ -439,7 +484,8 @@ export class StreamReader {
       last_append_ms: bigint;
       segment_in_progress: number;
     },
-    registry: { search?: { fields: Record<string, unknown> } }
+    registry: { search?: { fields: Record<string, unknown> } },
+    options?: PublishedCoverageOptions
   ): PublishedCoverageState {
     const totalSegmentCount = this.db.countSegmentsForStream(stream);
     const publishedSegmentCount =
@@ -449,9 +495,13 @@ export class StreamReader {
 
     const desiredPlan = buildDesiredSearchCompanionPlan(registry as any);
     const planHasFamilies = Object.values(desiredPlan.families).some(Boolean);
-    let visiblePublishedSegmentCount = publishedSegmentCount;
+    const requireCompanionVisibility = planHasFamilies && options?.ignoreCompanionVisibility !== true;
+    let visiblePublishedSegmentCount =
+      options?.visiblePublishedSegmentCountOverride == null
+        ? publishedSegmentCount
+        : Math.max(0, Math.min(publishedSegmentCount, options.visiblePublishedSegmentCountOverride));
     let visibleThroughPrimaryTimestampMax: string | null = null;
-    if (planHasFamilies) {
+    if (requireCompanionVisibility && options?.visiblePublishedSegmentCountOverride == null) {
       const desiredHash = hashSearchCompanionPlan(desiredPlan);
       const companionPlanRow = this.db.getSearchCompanionPlan(stream);
       const desiredGeneration =
@@ -480,12 +530,13 @@ export class StreamReader {
     }
 
     const hasOutstandingPublishedSegments = publishedSegmentCount < totalSegmentCount;
-    const hasOutstandingCompanions = planHasFamilies && visiblePublishedSegmentCount < publishedSegmentCount;
+    const hasVisibilityGapWithinPublished = visiblePublishedSegmentCount < publishedSegmentCount;
+    const hasOutstandingCompanions = requireCompanionVisibility && hasVisibilityGapWithinPublished;
     const canSearchWalTail = this.shouldSearchWalTail(srow, hasOutstandingPublishedSegments, hasOutstandingCompanions);
     const omitWalTail = srow.pending_rows > 0n && !canSearchWalTail;
 
     let visibleThroughSeq = srow.next_offset - 1n;
-    if (hasOutstandingPublishedSegments || hasOutstandingCompanions || omitWalTail) {
+    if (hasOutstandingPublishedSegments || hasVisibilityGapWithinPublished || omitWalTail) {
       if (visiblePublishedSegmentCount > 0) {
         visibleThroughSeq = this.db.getSegmentByIndex(stream, visiblePublishedSegmentCount - 1)?.end_offset ?? -1n;
       } else {
@@ -494,7 +545,7 @@ export class StreamReader {
     }
 
     const possibleMissingUploadedSegments = Math.max(0, publishedSegmentCount - visiblePublishedSegmentCount);
-    const hasOmittedPublishedSuffix = hasOutstandingPublishedSegments || hasOutstandingCompanions;
+    const hasOmittedPublishedSuffix = hasOutstandingPublishedSegments || hasVisibilityGapWithinPublished;
     const possibleMissingUploadedRows = hasOmittedPublishedSuffix && srow.uploaded_through > visibleThroughSeq ? Number(srow.uploaded_through - visibleThroughSeq) : 0;
     const possibleMissingSealedRows = hasOmittedPublishedSuffix && srow.sealed_through > srow.uploaded_through ? Number(srow.sealed_through - srow.uploaded_through) : 0;
     const possibleMissingWalRows = omitWalTail ? Number(srow.pending_rows) : 0;
@@ -1111,13 +1162,6 @@ export class StreamReader {
 
       const snapshotEndSeq = srow.next_offset - 1n;
       const snapshotEndOffset = encodeOffset(srow.epoch, snapshotEndSeq);
-      const coverageState = this.computePublishedCoverageState(stream, srow, registry);
-      const visibleSnapshotEndSeq = coverageState.canSearchWalTail
-        ? snapshotEndSeq
-        : (coverageState.visibleThroughSeq < snapshotEndSeq ? coverageState.visibleThroughSeq : snapshotEndSeq);
-      const visibleSealedThrough = coverageState.canSearchWalTail
-        ? srow.sealed_through
-        : (coverageState.visibleThroughSeq < srow.sealed_through ? coverageState.visibleThroughSeq : srow.sealed_through);
       const deadline = request.timeoutMs == null ? null : Date.now() + request.timeoutMs;
       const leadingSort = request.sort[0] ?? null;
       const offsetSearchAfter =
@@ -1141,6 +1185,7 @@ export class StreamReader {
       let scannedTailDocs = 0;
       let scannedTailTimeMs = 0;
       const indexFamiliesUsed = new Set<string>();
+      const exactClauses = collectPositiveSearchExactClauses(request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
@@ -1151,6 +1196,28 @@ export class StreamReader {
         exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
         markTimedOutIfNeeded();
       }
+      const useExactVisibility =
+        exactClauses.length > 0 &&
+        columnClauses.length === 0 &&
+        ftsClauses.length === 0 &&
+        exactCandidateInfo.indexedThrough > 0;
+      const coverageState = this.computePublishedCoverageState(
+        stream,
+        srow,
+        registry,
+        useExactVisibility
+          ? {
+              visiblePublishedSegmentCountOverride: exactCandidateInfo.indexedThrough,
+              ignoreCompanionVisibility: true,
+            }
+          : undefined
+      );
+      const visibleSnapshotEndSeq = coverageState.canSearchWalTail
+        ? snapshotEndSeq
+        : (coverageState.visibleThroughSeq < snapshotEndSeq ? coverageState.visibleThroughSeq : snapshotEndSeq);
+      const visibleSealedThrough = coverageState.canSearchWalTail
+        ? srow.sealed_through
+        : (coverageState.visibleThroughSeq < srow.sealed_through ? coverageState.visibleThroughSeq : srow.sealed_through);
 
       const collectSearchMatchResult = (
         offsetSeq: bigint,
@@ -1982,23 +2049,36 @@ export class StreamReader {
     }
 
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
-    const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+    const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
-    const decodedBlocks: Array<{ records: Array<{ payload: Uint8Array }> }> = [];
-    for (const blockRes of iterateBlocksResult(segBytes)) {
-      if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
-      decodedBlocks.push({ records: blockRes.value.decoded.records });
-      if (markTimedOutIfNeeded()) {
+    const blockEntriesRes = loadSegmentBlockEntriesFromSourceResult(seg, source);
+    if (Result.isError(blockEntriesRes)) return Result.err({ kind: "internal", message: blockEntriesRes.error.message });
+
+    for (let blockIndex = blockEntriesRes.value.length - 1; blockIndex >= 0; blockIndex--) {
+      const block = blockEntriesRes.value[blockIndex]!;
+      const blockStartOffset = block.firstOffset;
+      const blockEndOffset = blockStartOffset + BigInt(block.recordCount) - 1n;
+      if (blockStartOffset > rangeEndSeq) continue;
+      if (blockEndOffset < rangeStartSeq) {
         if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
         else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
         return Result.ok(undefined);
       }
-    }
-
-    let blockEndOffset = seg.end_offset;
-    for (let blockIndex = decodedBlocks.length - 1; blockIndex >= 0; blockIndex--) {
-      const decoded = decodedBlocks[blockIndex]!;
-      const blockStartOffset = blockEndOffset - BigInt(decoded.records.length) + 1n;
+      const localDocIdStart = Number(blockStartOffset - seg.start_offset);
+      const localDocIdEnd = localDocIdStart + block.recordCount - 1;
+      if (!docIdSetIntersectsRange(familyCandidates.docIds, localDocIdStart, localDocIdEnd)) {
+        if (markTimedOutIfNeeded()) {
+          if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
+          else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+          return Result.ok(undefined);
+        }
+        continue;
+      }
+      const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+      const blockBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1);
+      const decodedRes = decodeBlockResult(blockBytes);
+      if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+      const decoded = decodedRes.value;
       for (let recordIndex = decoded.records.length - 1; recordIndex >= 0; recordIndex--) {
         const offsetSeq = blockStartOffset + BigInt(recordIndex);
         if (offsetSeq > rangeEndSeq) continue;
@@ -2023,7 +2103,6 @@ export class StreamReader {
           return Result.ok(undefined);
         }
       }
-      blockEndOffset = blockStartOffset - 1n;
     }
 
     if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);

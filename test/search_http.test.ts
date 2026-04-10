@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
+import { MockR2Store } from "../src/objectstore/mock_r2";
+import { DSB3_HEADER_BYTES, parseFooter } from "../src/segment/format";
+import { segmentObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 
 const STREAM = "searchable";
 
@@ -102,22 +106,56 @@ const SEARCH_SCHEMA = {
   },
 };
 
+const EXACT_ONLY_SEARCH_SCHEMA = {
+  schema: {
+    type: "object",
+    additionalProperties: true,
+  },
+  search: {
+    primaryTimestampField: "eventTime",
+    fields: {
+      eventTime: {
+        kind: "date",
+        bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+        sortable: true,
+      },
+      service: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/service" }],
+        normalizer: "lowercase_v1",
+        exact: true,
+        sortable: true,
+      },
+      requestId: {
+        kind: "keyword",
+        bindings: [{ version: 1, jsonPointer: "/requestId" }],
+        exact: true,
+        sortable: true,
+      },
+    },
+  },
+};
+
+function publishedSegmentCount(app: ReturnType<typeof createApp>): number {
+  const srow = app.deps.db.getStream(STREAM);
+  return srow && srow.uploaded_through >= 0n
+    ? ((app.deps.db.findSegmentForOffset(STREAM, srow.uploaded_through)?.segment_index ?? -1) + 1)
+    : 0;
+}
+
 async function waitForSearchFamilies(app: ReturnType<typeof createApp>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
     const companionPlan = app.deps.db.getSearchCompanionPlan(STREAM);
     const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
-    const publishedSegmentCount =
-      srow && srow.uploaded_through >= 0n
-        ? ((app.deps.db.findSegmentForOffset(STREAM, srow.uploaded_through)?.segment_index ?? -1) + 1)
-        : 0;
+    const uploadedSegments = publishedSegmentCount(app);
     if (
       srow &&
-      publishedSegmentCount > 0 &&
+      uploadedSegments > 0 &&
       srow.uploaded_through >= srow.sealed_through &&
       companionPlan &&
-      companionSegments.length >= publishedSegmentCount
+      companionSegments.length >= uploadedSegments
     ) {
       return;
     }
@@ -139,6 +177,22 @@ async function waitForUploadedWithoutCompanions(
     await sleep(50);
   }
   throw new Error("timeout waiting for uploaded uncompanioned prefix");
+}
+
+async function waitForSecondaryIndexPublished(
+  app: ReturnType<typeof createApp>,
+  indexName: string,
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const uploadedSegments = publishedSegmentCount(app);
+    const state = app.deps.db.getSecondaryIndexState(STREAM, indexName);
+    if (uploadedSegments > 0 && state && state.indexed_through >= uploadedSegments) return;
+    app.deps.indexer?.enqueue(STREAM);
+    await sleep(50);
+  }
+  throw new Error(`timeout waiting for ${indexName} exact index coverage`);
 }
 
 describe("_search http", () => {
@@ -593,6 +647,186 @@ describe("_search http", () => {
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_6");
         expect(body.coverage.indexed_segments + body.coverage.scanned_segments + Math.min(body.coverage.scanned_tail_docs, 1)).toBe(1);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "uses exact index visibility for exact-only search even while companions lag",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-exact-visibility-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 150,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 8; i++) {
+          const late = i >= 4;
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: late ? "staging-api" : "billing-api",
+                status: 500 + i,
+                duration: 1000 + i,
+                requestId: `req_${i}`,
+                region: late ? "us-west-2" : "us-east-1",
+                message: late ? `late exact match ${i}` : `early noise ${i}`,
+                why: late ? "latest exact-only segment" : "older exact-only segment",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSearchFamilies(app);
+        await waitForSecondaryIndexPublished(app, "region");
+        expect(app.deps.db.countSegmentsForStream(STREAM)).toBeGreaterThan(2);
+
+        app.deps.indexer?.stop();
+        app.deps.db.deleteSearchSegmentCompanionsFrom(STREAM, 1);
+        expect(app.deps.db.listSearchSegmentCompanions(STREAM).length).toBeLessThan(publishedSegmentCount(app));
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'region:"us-west-2"',
+              size: 2,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_7", "req_6"]);
+        expect(body.coverage.complete).toBe(true);
+        expect(body.coverage.mode).toBe("complete");
+        expect(body.coverage.possible_missing_uploaded_segments).toBe(0);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "scans offset-desc from the tail without decoding older corrupted blocks",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-tail-lazy-"));
+      const spillDir = join(root, "spill");
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 2_048,
+        blockMaxBytes: 128,
+        segmentMaxIntervalMs: 60_000,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+      const app = createApp(cfg, new MockR2Store({ maxInMemoryBytes: 0, spillDir }));
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(EXACT_ONLY_SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 10; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: "billing-api",
+                requestId: `req_${i}`,
+                payload: Array.from({ length: 256 }, (_, j) => String.fromCharCode(33 + ((i * 17 + j) % 90))).join(""),
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForUploadedWithoutCompanions(app);
+        app.deps.segmenter.stop();
+        app.deps.indexer?.stop();
+
+        const seg = app.deps.db.getSegmentByIndex(STREAM, 0);
+        expect(seg).not.toBeNull();
+        const expectedRequestId = `req_${Number(seg!.end_offset)}`;
+        const key = segmentObjectKey(streamHash16Hex(STREAM), 0);
+        const spilledPath = join(spillDir, `${createHash("sha256").update(key).digest("hex")}.bin`);
+        const segBytes = readFileSync(spilledPath);
+        const footer = parseFooter(segBytes);
+        expect(footer?.footer?.blocks.length ?? 0).toBeGreaterThan(1);
+        segBytes[DSB3_HEADER_BYTES + 1] = segBytes[DSB3_HEADER_BYTES + 1]! ^ 0xff;
+        writeFileSync(spilledPath, segBytes);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"billing-api"',
+              size: 1,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe(expectedRequestId);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.possible_missing_wal_rows).toBeGreaterThan(0);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

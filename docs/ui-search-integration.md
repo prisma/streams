@@ -185,6 +185,8 @@ Current performance note:
 - the most efficient path is append-order pagination with
   `sort=["offset:desc"]` or `sort=["offset:asc"]`
 - that path can prune by `search_after` before scanning older/newer ranges
+- for `sort=["offset:desc"]`, the server scans sealed segments from the tail
+  and only decodes the blocks needed to fill the current page
 - event-time sorts are supported, but they are less efficient for deep
   infinite-scroll pagination
 - `/_search` is still not the right mechanism for the unfiltered default event
@@ -212,8 +214,11 @@ Use the response `coverage` object to drive the UI:
 - `possible_missing_events_upper_bound`
   - an upper bound on newest events that may be omitted
 - `possible_missing_uploaded_segments`
-  - newest published segments omitted because bundled companions are still
-    catching up
+  - newest published segments omitted because the required indexed visibility
+    is still catching up
+  - for text / column search that usually means bundled companions are behind
+  - for exact-only search that can instead mean the exact-secondary family has
+    not indexed the newest published suffix yet
 - `possible_missing_sealed_rows`
   - newest sealed but not yet published rows omitted from the response
 - `possible_missing_wal_rows`
