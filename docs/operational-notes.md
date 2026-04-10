@@ -175,9 +175,10 @@ Indexing note:
 - The `evlog` exact scheduler now mixes span sizes intentionally:
   - `requestId`, `traceId`, `spanId`, and `path` stay on single-field jobs,
     but they now use a bounded `span=2` window. A dedicated single-field
-    multi-segment fast path avoids the generic full-JSON parse loop, which is
-    enough to keep those jobs inside the widened `150 MiB` budget while
-    lowering the per-segment persist overhead.
+    multi-segment fast path scans top-level scalar JSON tokens directly and
+    hashes raw bytes where possible, which is enough to keep those jobs inside
+    the widened `150 MiB` budget while lowering both build time and
+    per-segment persist overhead.
   - `level,service,environment` uses a bounded `span=4` window.
   - `timestamp` and `method,status,duration` use a bounded `span=2` window.
 - While `evlog` exact L0 is still more than `256` uploaded segments behind,

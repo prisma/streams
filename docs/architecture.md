@@ -135,9 +135,10 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Those batches no longer all use the same L0 span:
   - `requestId`, `traceId`, `spanId`, and `path` stay on single-field jobs,
     but they now use a bounded `span=2` window. A dedicated single-field
-    multi-segment fast path avoids the generic full-JSON parse loop so those
-    jobs still fit within the widened per-job memory budget while reducing the
-    persist overhead per covered segment.
+    multi-segment fast path scans top-level scalar JSON tokens directly and
+    hashes raw bytes where possible, so those jobs avoid both the generic
+    full-JSON parse loop and the generic scalar extraction path while still
+    fitting within the widened per-job memory budget.
   - `level,service,environment` uses a bounded `span=4` window.
   - `timestamp` and `method,status,duration` use a bounded `span=2` window.
   - `evlog` secondary compactions stay deferred while exact L0 is still more

@@ -434,6 +434,74 @@ function findMatchingStatesForObjectKeyResult(
   return Result.ok(null);
 }
 
+function matchesObjectKeyResult(
+  bytes: Uint8Array,
+  keyStart: number,
+  keyEnd: number,
+  hadEscape: boolean,
+  expectedKey: string
+): Result<boolean, BuildError> {
+  if (!hadEscape) return Result.ok(bytesEqualAsciiString(bytes, keyStart + 1, keyEnd, expectedKey));
+  const decodedRes = decodeJsonStringTokenBytes(bytes, {
+    kind: "string",
+    start: keyStart,
+    end: keyEnd,
+    hadEscape: true,
+  });
+  if (Result.isError(decodedRes)) return decodedRes;
+  return Result.ok(decodedRes.value === expectedKey);
+}
+
+function visitTopLevelScalarTokenForObjectKeyResult(
+  bytes: Uint8Array,
+  payloadStart: number,
+  payloadEnd: number,
+  key: string,
+  onToken: (bytes: Uint8Array, token: JsonScalarToken) => Result<void, BuildError>
+): Result<void, BuildError> {
+  let index = skipJsonWhitespaceBytes(bytes, payloadStart, payloadEnd);
+  if (index >= payloadEnd) return invalidIndexBuild("search fields require JSON object records");
+  if (bytes[index] !== 123) return invalidIndexBuild("search fields require JSON object records");
+  index += 1;
+  while (index < payloadEnd) {
+    index = skipJsonWhitespaceBytes(bytes, index, payloadEnd);
+    if (index >= payloadEnd) return invalidIndexBuild("unterminated JSON object");
+    const token = bytes[index];
+    if (token === 125) return Result.ok(undefined);
+    if (token !== 34) return invalidIndexBuild("invalid JSON object key");
+    const keyEndRes = scanJsonStringEndBytes(bytes, index, payloadEnd);
+    if (Result.isError(keyEndRes)) return keyEndRes;
+    const matchedRes = matchesObjectKeyResult(bytes, index, keyEndRes.value.end, keyEndRes.value.hadEscape, key);
+    if (Result.isError(matchedRes)) return matchedRes;
+    const matched = matchedRes.value;
+    index = skipJsonWhitespaceBytes(bytes, keyEndRes.value.end + 1, payloadEnd);
+    if (index >= payloadEnd) return invalidIndexBuild("unterminated JSON object");
+    if (bytes[index] !== 58) return invalidIndexBuild("invalid JSON object separator");
+    index = skipJsonWhitespaceBytes(bytes, index + 1, payloadEnd);
+    if (index >= payloadEnd) return invalidIndexBuild("unterminated JSON object");
+    if (!matched || bytes[index] === 123 || bytes[index] === 91) {
+      const skipRes = skipJsonValueBytes(bytes, index, payloadEnd);
+      if (Result.isError(skipRes)) return skipRes;
+      index = skipRes.value;
+    } else {
+      const scalarRes = parseJsonScalarTokenBytes(bytes, index, payloadEnd);
+      if (Result.isError(scalarRes)) return scalarRes;
+      const onTokenRes = onToken(bytes, scalarRes.value.token);
+      if (Result.isError(onTokenRes)) return onTokenRes;
+      return Result.ok(undefined);
+    }
+    index = skipJsonWhitespaceBytes(bytes, index, payloadEnd);
+    if (index >= payloadEnd) return invalidIndexBuild("unterminated JSON object");
+    if (bytes[index] === 44) {
+      index += 1;
+      continue;
+    }
+    if (bytes[index] === 125) return Result.ok(undefined);
+    return invalidIndexBuild("invalid JSON object delimiter");
+  }
+  return invalidIndexBuild("unterminated JSON object");
+}
+
 function visitSingleSegmentTopLevelScalarExactTokensRangeResult(
   bytes: Uint8Array,
   payloadStart: number,
@@ -877,6 +945,114 @@ function buildSingleFieldMultiSegmentSecondaryL0RunPayloadResult(
   });
 }
 
+function buildSingleFieldMultiSegmentTopLevelScalarSecondaryL0RunPayloadResult(
+  input: SecondaryL0BuildInput
+): Result<SecondaryL0BuildOutput, BuildError> | null {
+  const entry = input.indexes[0];
+  if (!entry || input.span <= 1) return null;
+
+  const accessorKeyByVersion = new Map<number, string>();
+  const versions = Array.from(new Set(input.registry.boundaries.map((boundary) => boundary.version)));
+  for (const version of versions) {
+    const compiledRes = compileSearchFieldAccessorsResult(input.registry, [entry.index.name], version);
+    if (Result.isError(compiledRes)) return invalidIndexBuild(compiledRes.error.message);
+    const accessor = compiledRes.value[0];
+    if (!accessor || !supportsFastScalarJsonExtraction(accessor) || accessor.path.length !== 1) return null;
+    accessorKeyByVersion.set(version, accessor.path[0]!);
+  }
+
+  const maskByFp = new Map<bigint, number>();
+
+  for (const segment of input.segments) {
+    const bit = segment.segmentIndex - input.startSegment;
+    if (bit < 0 || bit >= input.span) {
+      return invalidIndexBuild(`exact L0 segment ${segment.segmentIndex} is outside the ${input.span}-segment build window`);
+    }
+    const maskBit = 1 << bit;
+    const state: BatchState = {
+      index: entry.index,
+      secret: entry.secret,
+      maskByFp: null,
+      fpByCanonical: null,
+      fingerprints: shouldUseBufferedSingleSegmentFingerprints(entry.index.name) ? null : new Set<bigint>(),
+      fingerprintBuffer: shouldUseBufferedSingleSegmentFingerprints(entry.index.name) ? new BigUint64Array(256) : null,
+      fingerprintCount: 0,
+      termScratch: new Uint8Array(0),
+      lowercaseScratch: new Uint8Array(0),
+    };
+    let offset = segment.startOffset;
+    const visitRes = visitBlockRecordPayloadsFromFileResult(segment.localPath, (payloadBytes, payloadStart, payloadEnd) => {
+      const version = schemaVersionForOffset(input.registry, offset);
+      const accessorKey = accessorKeyByVersion.get(version);
+      if (!accessorKey) return invalidIndexBuild(`missing exact accessor for schema version ${version}`);
+      const tokenRes = visitTopLevelScalarTokenForObjectKeyResult(
+        payloadBytes,
+        payloadStart,
+        payloadEnd,
+        accessorKey,
+        (bytes, token) => addSingleSegmentExactFingerprintFromToken(state, bytes, token)
+      );
+      offset += 1n;
+      return tokenRes;
+    });
+    if (Result.isError(visitRes)) return invalidIndexBuild(visitRes.error.message);
+    for (const fingerprint of finalizeSingleSegmentFingerprints(state)) {
+      maskByFp.set(fingerprint, (maskByFp.get(fingerprint) ?? 0) | maskBit);
+    }
+  }
+
+  const endSegment = input.startSegment + input.span - 1;
+  const fingerprints = sortFingerprints(maskByFp.keys());
+  const masks = fingerprints.map((fp) => maskByFp.get(fp) ?? 0);
+  const runId = `${entry.index.name}-l0-${input.startSegment.toString().padStart(16, "0")}-${endSegment.toString().padStart(16, "0")}-${Date.now()}`;
+  const meta = {
+    runId,
+    level: 0,
+    startSegment: input.startSegment,
+    endSegment,
+    objectKey: secondaryIndexRunObjectKey(streamHash16Hex(input.stream), entry.index.name, runId),
+    filterLen: 0,
+    recordCount: fingerprints.length,
+  };
+  const payloadRes = encodeIndexRunResult({
+    meta,
+    runType: RUN_TYPE_MASK16,
+    filterBytes: new Uint8Array(0),
+    fingerprints,
+    masks,
+  });
+  if (Result.isError(payloadRes)) return invalidIndexBuild(payloadRes.error.message);
+  if (input.outputDir) {
+    const fileRes = writeIndexRunOutputFileResult(
+      input.outputDir,
+      `${entry.index.name}-l0-${input.startSegment}-${endSegment}`,
+      payloadRes.value
+    );
+    if (Result.isError(fileRes)) return invalidIndexBuild(fileRes.error.message);
+    return Result.ok({
+      runs: [
+        {
+          indexName: entry.index.name,
+          meta,
+          storage: "file",
+          localPath: fileRes.value.localPath,
+          sizeBytes: fileRes.value.sizeBytes,
+        },
+      ],
+    });
+  }
+  return Result.ok({
+    runs: [
+      {
+        indexName: entry.index.name,
+        meta,
+        storage: "bytes",
+        payload: payloadRes.value,
+      },
+    ],
+  });
+}
+
 function invalidIndexBuild(message: string): Result<never, BuildError> {
   return Result.err({ kind: "invalid_index_build", message });
 }
@@ -902,6 +1078,8 @@ export function buildSecondaryL0RunPayloadResult(
     return buildSingleFieldSingleSegmentSecondaryL0RunPayloadResult(input);
   }
   if (input.span > 1 && input.indexes.length === 1) {
+    const topLevelScalarMultiSegmentRes = buildSingleFieldMultiSegmentTopLevelScalarSecondaryL0RunPayloadResult(input);
+    if (topLevelScalarMultiSegmentRes) return topLevelScalarMultiSegmentRes;
     return buildSingleFieldMultiSegmentSecondaryL0RunPayloadResult(input);
   }
   const singleSegmentFastRes = buildSingleSegmentTopLevelScalarSecondaryL0RunPayloadResult(input);

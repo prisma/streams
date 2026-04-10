@@ -300,8 +300,9 @@ The two changes that closed the remaining live tail were:
    into `putNoEtag`
 2. high-cardinality exact L0 jobs (`requestId`, `traceId`, `spanId`, `path`)
    now stay on single-field jobs but use a bounded `span=2` window, and their
-   dedicated multi-segment fast path extracts raw scalars without paying the
-   generic full-JSON parse loop on the hot path
+   dedicated multi-segment fast path scans top-level scalar JSON tokens and
+   hashes raw bytes where possible, without paying either the generic
+   full-JSON parse loop or the generic scalar-extraction path on the hot path
 
 That leaves the supported direction unchanged: keep the memory-safe split job
 shapes, use bounded multi-segment windows only where the live throughput gain is
