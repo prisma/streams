@@ -40,6 +40,7 @@ import { writeIndexRunOutputFileResult } from "./index_run_output_file";
 import { SearchSegmentBuildCoordinator } from "../search/search_segment_build_coordinator";
 import { collectUnifiedSearchBuildExactIndexes, type SearchSegmentBuildOutput } from "../search/search_segment_build";
 import type { CompanionSectionKind } from "../search/companion_format";
+import type { IndexTailMatcher } from "./indexer";
 
 type SecondaryIndexBuildError = { kind: "invalid_index_build"; message: string };
 const SECONDARY_L0_BATCH_MAX_FIELDS = 1;
@@ -296,6 +297,68 @@ export class SecondaryIndexManager {
       }
     }
     return { segments, indexedThrough: state.indexed_through };
+  }
+
+  async createSecondaryIndexTailMatcher(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexTailMatcher | null> {
+    if (this.configuredSpan <= 0) return null;
+    const regRes = this.registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return null;
+    const configured = getConfiguredSecondaryIndexes(regRes.value).find((entry) => entry.name === indexName);
+    if (!configured) return null;
+    const state = this.db.getSecondaryIndexState(stream, indexName);
+    if (!state) return null;
+    if (state.config_hash !== hashSecondaryIndexField(configured)) return null;
+    if (state.indexed_through <= 0) return null;
+    const runs = this.db
+      .listSecondaryIndexRuns(stream, indexName)
+      .filter((meta) => meta.start_segment < state.indexed_through);
+    if (runs.length === 0) return null;
+
+    const fp = siphash24(state.index_secret, keyBytes);
+    let cursor = runs.length - 1;
+    let resolvedDownTo = state.indexed_through;
+    const matchedSegments = new Set<number>();
+    const unknownSegments = new Set<number>();
+
+    return {
+      indexedThrough: state.indexed_through,
+      matchesSegment: async (segmentIndex: number) => {
+        if (segmentIndex < 0 || segmentIndex >= state.indexed_through) return false;
+        while (segmentIndex < resolvedDownTo && cursor >= 0) {
+          const meta = runs[cursor--]!;
+          resolvedDownTo = Math.min(resolvedDownTo, meta.start_segment);
+          const runRes = await this.loadRunResult(meta);
+          if (Result.isError(runRes) || !runRes.value) {
+            for (let seg = meta.start_segment; seg <= meta.end_segment; seg++) {
+              unknownSegments.add(seg);
+            }
+            continue;
+          }
+          const run = runRes.value;
+          if (run.filter && !binaryFuseContains(run.filter, fp)) continue;
+          if (run.runType === RUN_TYPE_MASK16 && run.masks) {
+            const idx = binarySearch(run.fingerprints, fp);
+            if (idx >= 0) {
+              const mask = run.masks[idx];
+              for (let bit = 0; bit < 16; bit++) {
+                if ((mask & (1 << bit)) !== 0) matchedSegments.add(run.meta.startSegment + bit);
+              }
+            }
+            continue;
+          }
+          if (run.runType === RUN_TYPE_SINGLE_SEGMENT) {
+            if (binarySearch(run.fingerprints, fp) >= 0) matchedSegments.add(run.meta.startSegment);
+            continue;
+          }
+          if (!run.postings) continue;
+          const idx = binarySearch(run.fingerprints, fp);
+          if (idx < 0) continue;
+          for (const seg of run.postings[idx]) matchedSegments.add(seg);
+        }
+        if (segmentIndex < resolvedDownTo) return true;
+        return matchedSegments.has(segmentIndex) || unknownSegments.has(segmentIndex);
+      },
+    };
   }
 
   getLocalCacheBytes(stream: string): number {

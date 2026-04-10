@@ -5,11 +5,69 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
+import type {
+  GetFileResult,
+  GetOptions,
+  ObjectStore,
+  PutFileNoEtagOptions,
+  PutFileOptions,
+  PutNoEtagOptions,
+  PutOptions,
+  PutResult,
+} from "../src/objectstore/interface";
 import { MockR2Store } from "../src/objectstore/mock_r2";
 import { DSB3_HEADER_BYTES, parseFooter } from "../src/segment/format";
 import { segmentObjectKey, streamHash16Hex } from "../src/util/stream_paths";
 
 const STREAM = "searchable";
+
+class CountingObjectStore implements ObjectStore {
+  secondaryIndexGets = 0;
+
+  constructor(private readonly inner: ObjectStore) {}
+
+  private recordSecondaryIndexGet(key: string): void {
+    if (key.includes("/secondary-index/")) this.secondaryIndexGets += 1;
+  }
+
+  put(key: string, data: Uint8Array, opts?: PutOptions): Promise<PutResult> {
+    return this.inner.put(key, data, opts);
+  }
+
+  putFile?(key: string, path: string, size: number, opts?: PutFileOptions): Promise<PutResult> {
+    return this.inner.putFile!(key, path, size, opts);
+  }
+
+  putNoEtag?(key: string, data: Uint8Array, opts?: PutNoEtagOptions): Promise<number> {
+    return this.inner.putNoEtag!(key, data, opts);
+  }
+
+  putFileNoEtag?(key: string, path: string, size: number, opts?: PutFileNoEtagOptions): Promise<number> {
+    return this.inner.putFileNoEtag!(key, path, size, opts);
+  }
+
+  async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
+    this.recordSecondaryIndexGet(key);
+    return this.inner.get(key, opts);
+  }
+
+  async getFile(key: string, path: string, opts?: GetOptions): Promise<GetFileResult | null> {
+    this.recordSecondaryIndexGet(key);
+    return this.inner.getFile!(key, path, opts);
+  }
+
+  head(key: string): Promise<{ etag: string; size: number } | null> {
+    return this.inner.head(key);
+  }
+
+  delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  list(prefix: string): Promise<string[]> {
+    return this.inner.list(prefix);
+  }
+}
 
 function makeConfig(rootDir: string, overrides: Partial<Config>): Config {
   const base = loadConfig();
@@ -827,6 +885,93 @@ describe("_search http", () => {
         expect(body.hits[0].fields.requestId).toBe(expectedRequestId);
         expect(body.coverage.complete).toBe(false);
         expect(body.coverage.possible_missing_wal_rows).toBeGreaterThan(0);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "loads only the newest exact runs for cold offset-desc exact search",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-exact-tail-runs-"));
+      const spillDir = join(root, "spill");
+      const store = new CountingObjectStore(new MockR2Store({ maxInMemoryBytes: 0, spillDir }));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 160,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 1,
+        indexCheckIntervalMs: 10,
+        indexCompactionFanout: 1,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+
+      let app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(EXACT_ONLY_SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 24; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.123Z`,
+                service: "staging-api",
+                requestId: `req_${i}`,
+                payload: "x".repeat(160),
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSecondaryIndexPublished(app, "service", 30_000);
+        expect(app.deps.db.listSecondaryIndexRuns(STREAM, "service").length).toBeGreaterThan(10);
+
+        app.close();
+        rmSync(join(root, "cache", "secondary-index"), { recursive: true, force: true });
+
+        app = createApp(cfg, store);
+        store.secondaryIndexGets = 0;
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api"',
+              size: 1,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe("req_23");
+        expect(store.secondaryIndexGets).toBeLessThan(8);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

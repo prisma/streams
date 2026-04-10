@@ -795,6 +795,12 @@ Current newest-suffix behavior:
   segments from the tail and decodes only the blocks it needs for the current
   page; it does not eagerly decode every block in the segment before checking
   the newest records
+- for exact-only newest-first search, the reader now resolves exact-secondary
+  candidates lazily from the newest runs backward instead of materializing the
+  full exact candidate set up front
+  - this keeps first-page `offset:desc` search from fetching or decoding every
+    historical exact run when the newest page can be satisfied from the latest
+    exact-index suffix
 - `visible_through_primary_timestamp_max` and `oldest_omitted_append_at` let
   Studio explain the freshness gap in time terms
 

@@ -113,6 +113,10 @@ export class GlobalIndexManager implements StreamIndexLookup {
     return this.secondaryIndex.candidateSegmentsForSecondaryIndex(stream, indexName, keyBytes);
   }
 
+  createSecondaryIndexTailMatcher(stream: string, indexName: string, keyBytes: Uint8Array) {
+    return this.secondaryIndex.createSecondaryIndexTailMatcher(stream, indexName, keyBytes);
+  }
+
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null> {
     return this.companionIndex.getAggSegmentCompanion(stream, segmentIndex);
   }

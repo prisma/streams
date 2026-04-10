@@ -26,7 +26,7 @@ import { loadSegmentBytesCached, loadSegmentSource, readRangeFromSource, type Se
 import { Bloom256 } from "./util/bloom256";
 import { readU32BE } from "./util/endian";
 import { type RetryOptions } from "./util/retry";
-import type { IndexCandidate, StreamIndexLookup } from "./index/indexer";
+import type { IndexCandidate, IndexTailMatcher, StreamIndexLookup } from "./index/indexer";
 import { dsError } from "./util/ds_error.ts";
 import { Result } from "better-result";
 import { filterDocIdsByColumnResult } from "./search/col_runtime";
@@ -167,6 +167,7 @@ export type ReaderError =
 
 const READ_FILTER_SCAN_LIMIT_BYTES = 100 * 1024 * 1024;
 type SegmentCandidateInfo = { segments: Set<number> | null; indexedThrough: number };
+type SearchExactTailCandidateInfo = { matchers: IndexTailMatcher[]; indexedThrough: number } | null;
 type SearchFamilyCandidateInfo = { docIds: Set<number> | null; usedFamilies: Set<string> };
 type SearchHitInternal = {
   offsetSeq: bigint;
@@ -1189,11 +1190,21 @@ export class StreamReader {
       const exactClauses = collectPositiveSearchExactClauses(request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
+      let exactTailCandidateInfo: SearchExactTailCandidateInfo = null;
       let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
       let exactCandidateTimeMs = 0;
       if (!markTimedOutIfNeeded()) {
         const exactCandidateStartedAt = Date.now();
-        exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+        if (this.canUseSearchExactTailMatchers(request, cursorFieldBound)) {
+          exactTailCandidateInfo = await this.resolveSearchExactTailCandidateInfo(stream, request.q);
+          if (exactTailCandidateInfo) {
+            exactCandidateInfo = { segments: null, indexedThrough: exactTailCandidateInfo.indexedThrough };
+          } else {
+            exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+          }
+        } else {
+          exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+        }
         exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
         markTimedOutIfNeeded();
       }
@@ -1368,20 +1379,23 @@ export class StreamReader {
             if (!timedOut && !stopIfPageComplete()) {
               const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
               if (sealedEnd >= rangeStartSeq) {
-                const plannedSealedSegments = this.planSealedReadSegments(
-                  stream,
-                  rangeStartSeq,
-                  sealedEnd,
-                  exactCandidateInfo.segments,
-                  exactCandidateInfo.indexedThrough,
-                  "desc"
-                );
+                const plannedSealedSegments = exactTailCandidateInfo
+                  ? null
+                  : this.planSealedReadSegments(
+                      stream,
+                      rangeStartSeq,
+                      sealedEnd,
+                      exactCandidateInfo.segments,
+                      exactCandidateInfo.indexedThrough,
+                      "desc"
+                    );
                 if (plannedSealedSegments) {
                   for (const seg of plannedSealedSegments.segments) {
                     const scanRes = await this.scanSegmentReverseForSearchResult(
                       stream,
                       seg,
                       exactCandidateInfo,
+                      exactTailCandidateInfo,
                       cursorFieldBound,
                       columnClauses,
                       ftsClauses,
@@ -1425,6 +1439,9 @@ export class StreamReader {
                 } else {
                   const startSeg = this.db.findSegmentForOffset(stream, sealedEnd);
                   let segmentIndex = startSeg?.segment_index ?? this.db.countSegmentsForStream(stream) - 1;
+                  if (exactTailCandidateInfo) {
+                    segmentIndex = Math.min(segmentIndex, exactTailCandidateInfo.indexedThrough - 1);
+                  }
                   while (segmentIndex >= 0) {
                     const seg = this.db.getSegmentByIndex(stream, segmentIndex);
                     if (!seg) {
@@ -1440,6 +1457,7 @@ export class StreamReader {
                       stream,
                       seg,
                       exactCandidateInfo,
+                      exactTailCandidateInfo,
                       cursorFieldBound,
                       columnClauses,
                       ftsClauses,
@@ -1971,6 +1989,7 @@ export class StreamReader {
     stream: string,
     seg: SegmentRow,
     exactCandidateInfo: SegmentCandidateInfo,
+    exactTailCandidateInfo: SearchExactTailCandidateInfo,
     cursorFieldBound: SearchCursorFieldBound | null,
     columnClauses: SearchColumnClause[],
     ftsClauses: SearchFtsClause[],
@@ -1999,6 +2018,14 @@ export class StreamReader {
       return true;
     };
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
+    if (exactTailCandidateInfo) {
+      if (seg.segment_index >= exactTailCandidateInfo.indexedThrough) return Result.ok(undefined);
+      for (const matcher of exactTailCandidateInfo.matchers) {
+        const matched = await matcher.matchesSegment(seg.segment_index);
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
+        if (!matched) return Result.ok(undefined);
+      }
+    }
     if (
       exactCandidateInfo.segments &&
       seg.segment_index < exactCandidateInfo.indexedThrough &&
@@ -2235,6 +2262,34 @@ export class StreamReader {
       }
     }
     return { segments: intersection ?? new Set<number>(), indexedThrough };
+  }
+
+  private canUseSearchExactTailMatchers(request: SearchRequest, cursorFieldBound: SearchCursorFieldBound | null): boolean {
+    if (!this.index?.createSecondaryIndexTailMatcher) return false;
+    if (request.searchAfter != null) return false;
+    if (cursorFieldBound != null) return false;
+    const leadingSort = request.sort[0] ?? null;
+    return leadingSort?.kind === "offset" && leadingSort.direction === "desc";
+  }
+
+  private async resolveSearchExactTailCandidateInfo(
+    stream: string,
+    query: CompiledSearchQuery
+  ): Promise<SearchExactTailCandidateInfo> {
+    if (!this.index?.createSecondaryIndexTailMatcher) return null;
+    const clauses = collectPositiveSearchExactClauses(query);
+    if (clauses.length === 0) return null;
+
+    const matchers: IndexTailMatcher[] = [];
+    for (const clause of clauses) {
+      const matcher = await this.index.createSecondaryIndexTailMatcher(stream, clause.field, utf8Bytes(clause.canonicalValue));
+      if (matcher) matchers.push(matcher);
+    }
+    if (matchers.length === 0) return null;
+
+    const indexedThrough = matchers.reduce((min, matcher) => Math.min(min, matcher.indexedThrough), Number.MAX_SAFE_INTEGER);
+    if (!Number.isFinite(indexedThrough) || indexedThrough <= 0) return null;
+    return { matchers, indexedThrough };
   }
 
   private async resolveColumnCandidateDocIdsResult(

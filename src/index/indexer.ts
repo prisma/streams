@@ -29,6 +29,10 @@ import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "./async_ind
 import { RoutingLexiconL0BuildCoordinator } from "./routing_lexicon_l0_build_coordinator";
 
 export type IndexCandidate = { segments: Set<number>; indexedThrough: number };
+export type IndexTailMatcher = {
+  indexedThrough: number;
+  matchesSegment(segmentIndex: number): Promise<boolean>;
+};
 type IndexBuildError = { kind: "invalid_index_build"; message: string };
 export type CompanionSectionLookupStats = {
   sectionGetMs: number;
@@ -41,6 +45,7 @@ export type StreamIndexLookup = {
   enqueue(stream: string): void;
   candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
   candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
+  createSecondaryIndexTailMatcher?(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexTailMatcher | null>;
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
@@ -203,6 +208,10 @@ export class IndexManager {
   }
 
   async candidateSegmentsForSecondaryIndex(_stream: string, _indexName: string, _keyBytes: Uint8Array): Promise<IndexCandidate | null> {
+    return null;
+  }
+
+  async createSecondaryIndexTailMatcher(_stream: string, _indexName: string, _keyBytes: Uint8Array): Promise<IndexTailMatcher | null> {
     return null;
   }
 

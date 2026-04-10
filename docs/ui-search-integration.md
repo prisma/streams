@@ -187,6 +187,9 @@ Current performance note:
 - that path can prune by `search_after` before scanning older/newer ranges
 - for `sort=["offset:desc"]`, the server scans sealed segments from the tail
   and only decodes the blocks needed to fill the current page
+- for exact-only `sort=["offset:desc"]` search, the server also resolves the
+  exact-secondary candidate set lazily from newest runs backward, so the first
+  page does not need to fetch every historical exact run before it can return
 - event-time sorts are supported, but they are less efficient for deep
   infinite-scroll pagination
 - `/_search` is still not the right mechanism for the unfiltered default event
