@@ -80,6 +80,7 @@ export type SearchRequest = {
 export type SearchExactClause = {
   field: string;
   canonicalValue: string;
+  fieldKind: string;
 };
 
 export type SearchColumnClause = {
@@ -625,13 +626,12 @@ export function collectPositiveSearchExactClauses(
     }
     if (negated) return;
     if (node.kind === "keyword" && !node.prefix && node.config.exact) {
-      if (opts?.excludeFtsKeywordClauses && node.config.kind === "keyword" && node.config.prefix === true) return;
-      out.push({ field: node.field, canonicalValue: node.canonicalValue });
+      out.push({ field: node.field, canonicalValue: node.canonicalValue, fieldKind: node.config.kind });
       return;
     }
     if (node.kind === "compare" && node.op === "eq" && node.config.exact && node.canonicalValue) {
-      if (opts?.excludeFtsKeywordClauses && node.config.kind === "keyword" && node.config.prefix === true) return;
-      out.push({ field: node.field, canonicalValue: node.canonicalValue });
+      if (supportsColumnFamily(node.config)) return;
+      out.push({ field: node.field, canonicalValue: node.canonicalValue, fieldKind: node.config.kind });
     }
   };
   visit(query, false);
@@ -746,7 +746,7 @@ export function collectPositiveSearchFtsClauses(query: CompiledSearchQuery): Sea
       return;
     }
     if (node.kind === "keyword") {
-      if (node.config.kind === "keyword" && node.config.prefix === true) {
+      if (node.config.kind === "keyword" && node.prefix) {
         out.push({ kind: "keyword", field: node.field, canonicalValue: node.canonicalValue, prefix: node.prefix });
       }
       return;

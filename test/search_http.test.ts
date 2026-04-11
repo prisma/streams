@@ -495,7 +495,7 @@ describe("_search http", () => {
   );
 
   test(
-    "returns timed-out partial search responses, clamps explicit timeout_ms to 3s, and defaults indexed-only searches to 750ms",
+    "returns timed-out partial search responses, clamps explicit timeout_ms to 3s, and defaults indexed-only searches to 200ms",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-timeout-"));
       const cfg = makeConfig(root, {
@@ -608,9 +608,9 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
-        expect(res.headers.get("search-timeout-ms")).toBe("750");
+        expect(res.headers.get("search-timeout-ms")).toBe("200");
         body = await res.json();
-        expect(body.timeout_ms).toBe(750);
+        expect(body.timeout_ms).toBe(200);
         expect(body.timed_out).toBe(false);
 
         res = await app.fetch(
@@ -1162,6 +1162,267 @@ describe("_search http", () => {
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_22");
         expect(store.secondaryIndexGets).toBeLessThan(8);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "keeps mixed keyword exact and typed equality search on the indexed column path",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-exact-tail-column-"));
+      const spillDir = join(root, "spill");
+      const store = new CountingObjectStore(new MockR2Store({ maxInMemoryBytes: 0, spillDir }));
+      const exactColumnSchema = {
+        schema: {
+          type: "object",
+          additionalProperties: true,
+        },
+        search: {
+          primaryTimestampField: "eventTime",
+          fields: {
+            eventTime: {
+              kind: "date",
+              bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+              sortable: true,
+            },
+            service: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/service" }],
+              normalizer: "lowercase_v1",
+              exact: true,
+              prefix: true,
+              exists: true,
+              sortable: true,
+            },
+            duration: {
+              kind: "float",
+              bindings: [{ version: 1, jsonPointer: "/duration" }],
+              exact: true,
+              column: true,
+              exists: true,
+              sortable: true,
+            },
+            requestId: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/requestId" }],
+              exact: true,
+              prefix: true,
+              exists: true,
+              sortable: true,
+            },
+          },
+        },
+      } as const;
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 160,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 1,
+        indexCheckIntervalMs: 10,
+        indexCompactionFanout: 1,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+
+      let app = createApp(cfg, store);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(exactColumnSchema),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 24; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.123Z`,
+                service: "staging-api",
+                status: 200 + i,
+                duration: i === 22 || i === 23 ? 1422.027 : 1000 + i,
+                requestId: `req_${i}`,
+                region: "us-west-2",
+                payload: "x".repeat(160),
+                message: `event ${i}`,
+                why: "typed equality exact-tail regression",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSecondaryIndexPublished(app, "service", 30_000);
+        await waitForSecondaryIndexPublished(app, "duration", 30_000);
+        expect(app.deps.db.listSecondaryIndexRuns(STREAM, "service").length).toBeGreaterThan(10);
+        expect(app.deps.db.listSecondaryIndexRuns(STREAM, "duration").length).toBeGreaterThan(10);
+
+        app.close();
+        rmSync(join(root, "cache", "secondary-index"), { recursive: true, force: true });
+
+        app = createApp(cfg, store);
+        store.secondaryIndexGets = 0;
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api" AND duration:1422.027',
+              size: 1,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe("req_23");
+        expect(body.coverage.index_families_used).toEqual(["col"]);
+        expect(store.secondaryIndexGets).toBe(0);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
+    "uses companion visibility for typed equality when companions lag",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-typed-exact-visibility-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 150,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+      const app = createApp(cfg);
+      const exactColumnSchema = {
+        schema: {
+          type: "object",
+          additionalProperties: true,
+        },
+        search: {
+          primaryTimestampField: "eventTime",
+          fields: {
+            eventTime: {
+              kind: "date",
+              bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+              sortable: true,
+            },
+            service: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/service" }],
+              normalizer: "lowercase_v1",
+              exact: true,
+              prefix: true,
+              exists: true,
+              sortable: true,
+            },
+            duration: {
+              kind: "float",
+              bindings: [{ version: 1, jsonPointer: "/duration" }],
+              exact: true,
+              column: true,
+              exists: true,
+              sortable: true,
+            },
+            requestId: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/requestId" }],
+              exact: true,
+              prefix: true,
+              exists: true,
+              sortable: true,
+            },
+          },
+        },
+      } as const;
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(exactColumnSchema),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 8; i++) {
+          const late = i >= 6;
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: late ? "staging-api" : "billing-api",
+                duration: late ? 1422.027 : 1000 + i,
+                requestId: `req_${i}`,
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSecondaryIndexPublished(app, "service");
+        await waitForSecondaryIndexPublished(app, "duration");
+        expect(app.deps.db.countSegmentsForStream(STREAM)).toBeGreaterThan(2);
+
+        app.deps.indexer?.stop();
+        app.deps.db.deleteSearchSegmentCompanionsFrom(STREAM, 1);
+        expect(app.deps.db.listSearchSegmentCompanions(STREAM).length).toBeLessThan(publishedSegmentCount(app));
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api" AND duration:1422.027',
+              size: 2,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits).toEqual([]);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.mode).toBe("published");
+        expect(body.coverage.possible_missing_uploaded_segments).toBeGreaterThan(0);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

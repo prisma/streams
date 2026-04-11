@@ -692,7 +692,7 @@ Current request shape:
 - `sort`
 - `timeout_ms`
   - optional lower per-request budget
-  - when omitted, index-capable queries default to `750 ms`
+  - when omitted, index-capable queries default to `200 ms`
   - other queries still default to `3000 ms`
   - the server clamps effective `/_search` timeout to `<= 3000 ms`
   - the deadline is enforced cooperatively between work units, so wall time may
@@ -768,12 +768,31 @@ Current candidate-planning behavior:
 
 - fielded exact keyword clauses still use the internal exact family first for
   sealed-history segment pruning when that family is available
+- exact equality on typed fields continues to use the `.col` family, so typed
+  equality, range, and `has:` all share the same companion-backed visibility
+  boundary
 - newest-first exact searches keep using that exact-tail pruning even when the
   request carries `search_after`, so Studio pagination stays on the indexed
   exact path instead of falling back to a broad sealed-history walk
-- if a keyword field is also present in bundled `.fts` because it enables
-  `prefix=true`, `_search` also uses the `.fts` term dictionary/postings as a
-  per-segment doc-id fallback for exact clauses
+- when a query mixes lazy keyword exact pruning with `.col` or `.fts` filters,
+  `_search` resolves the cheap companion family candidates first and only runs
+  the exact tail matcher for segments that still have indexed doc candidates
+- keyword equality keeps using exact-secondary even on fields that also support
+  `prefix=true`
+  - bundled `.fts` remains responsible for keyword prefix and text matching,
+    not exact keyword equality
+- when a query already requires bundled companion visibility, `_search` does
+  not spend request time on extra exact-secondary planning for the same page
+  - the visible prefix is already clamped by the companion families that the
+    query requires
+  - exact clauses are still enforced against the indexed candidate docs inside
+    that visible prefix
+  - example: `env:"staging" AND duration:1422.027` stays on the indexed
+    `.col`-bounded path
+    - `env:"staging"` is still evaluated as an exact clause
+    - `duration:1422.027` provides the indexed doc candidates through `.col`
+    - the request does not pay extra exact-secondary planning cost just to
+      widen or re-plan the same visible prefix
 - positive `.fts` clauses are evaluated in estimated-selectivity order, and
   later clauses are checked against the current candidate doc-id set instead of
   materializing every clause against the whole segment

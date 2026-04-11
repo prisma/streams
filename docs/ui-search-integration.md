@@ -100,14 +100,21 @@ Example:
 
 `/_search` uses a server-side timeout target of `3000 ms`.
 
-Indexed-only queries default to a lower `750 ms` budget when the request does
+Indexed-only queries default to a lower `200 ms` budget when the request does
 not provide `timeout_ms`. This applies to search shapes that can be served
 entirely from exact, `.col`, and/or `.fts` indexes.
+
+For mixed exact-plus-typed filters such as `env:"staging" AND duration:1422.027`:
+
+- the server keeps the query on indexed coverage only
+- the typed predicate (`duration`) drives the companion-backed candidate set
+- the exact predicate (`env`) is still enforced inside that indexed prefix
+- the request does not wait on extra exact-secondary planning for the same page
 
 - the request may set `timeout_ms` to a lower value
 - values above `3000` are clamped to `3000`
 - if `timeout_ms` is omitted:
-  - index-capable `/_search` requests default to `750 ms`
+  - index-capable `/_search` requests default to `200 ms`
   - other search shapes default to `3000 ms`
 - the reader checks that deadline cooperatively between work units
 - if the budget is exhausted, the server returns `408` with a normal JSON search
@@ -260,8 +267,10 @@ Use the response `coverage` object to drive the UI:
     are behind
   - for exact-only indexed search that can instead mean the exact-secondary
     family has not indexed the newest published suffix yet
-  - for mixed exact plus text or exact plus column search, companion coverage
-    still wins; exact-secondary does not extend the visible suffix by itself
+  - for mixed exact plus text or exact plus column search, visibility is still
+    limited by the companion families the query requires
+  - exact clauses are still enforced inside that visible indexed prefix, but
+    they do not trigger a separate exact-secondary visibility expansion
 - `possible_missing_sealed_rows`
   - newest sealed but not yet published rows omitted from the response
 - `possible_missing_wal_rows`

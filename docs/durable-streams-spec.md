@@ -761,6 +761,8 @@ Current request fields:
 - `sort`
 - `timeout_ms`
   - optional lower per-request budget
+  - when omitted, indexed-only `/_search` queries default to `200 ms`
+  - when omitted, other `/_search` queries default to `3000 ms`
   - server-side effective timeout is always clamped to `<= 3000 ms`
   - the deadline is enforced cooperatively between work units, so wall time may
     overshoot slightly before the partial response is returned

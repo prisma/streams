@@ -1279,15 +1279,14 @@ export class StreamReader {
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       const hasNonKeywordFtsClauses = hasNonKeywordSearchFtsClauses(ftsClauses);
-      const exactClauses = collectPositiveSearchExactClauses(request.q, {
-        excludeFtsKeywordClauses: hasNonKeywordFtsClauses,
-      });
+      const exactClauses =
+        indexedSupport.requiredCompanionFamilies.size > 0 ? [] : collectPositiveSearchExactClauses(request.q);
       let exactTailCandidateInfo: SearchExactTailCandidateInfo = null;
       let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
       let exactCandidateTimeMs = 0;
       if (!markTimedOutIfNeeded()) {
         const exactCandidateStartedAt = Date.now();
-        if (this.canUseSearchExactTailMatchers(request, cursorFieldBound, ftsClauses)) {
+        if (this.canUseSearchExactTailMatchers(request, cursorFieldBound, ftsClauses, exactClauses)) {
           exactTailCandidateInfo = await this.resolveSearchExactTailCandidateInfo(stream, exactClauses);
           if (exactTailCandidateInfo) {
             exactCandidateInfo = { segments: null, indexedThrough: exactTailCandidateInfo.indexedThrough };
@@ -2138,7 +2137,9 @@ export class StreamReader {
       return true;
     };
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
-    if (exactTailCandidateInfo) {
+    const deferExactTailUntilAfterFamilies =
+      exactTailCandidateInfo != null && (columnClauses.length > 0 || ftsClauses.length > 0);
+    if (exactTailCandidateInfo && !deferExactTailUntilAfterFamilies) {
       if (seg.segment_index >= exactTailCandidateInfo.indexedThrough) return Result.ok(undefined);
       for (const matcher of exactTailCandidateInfo.matchers) {
         const matched = await matcher.matchesSegment(seg.segment_index);
@@ -2185,6 +2186,19 @@ export class StreamReader {
       for (const family of familyCandidates.usedFamilies) state.indexFamiliesUsed.add(family);
       if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
       return Result.ok(undefined);
+    }
+    if (exactTailCandidateInfo && deferExactTailUntilAfterFamilies) {
+      if (seg.segment_index >= exactTailCandidateInfo.indexedThrough) return Result.ok(undefined);
+      for (const matcher of exactTailCandidateInfo.matchers) {
+        const matched = await matcher.matchesSegment(seg.segment_index);
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
+        if (!matched) {
+          if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegment();
+          for (const family of familyCandidates.usedFamilies) state.indexFamiliesUsed.add(family);
+          if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
+          return Result.ok(undefined);
+        }
+      }
     }
     const usedIndexedFamilies = familyCandidates.usedFamilies.size > 0;
     if (familyCandidates.usedFamilies.size > 0) {
@@ -2388,12 +2402,14 @@ export class StreamReader {
   private canUseSearchExactTailMatchers(
     request: SearchRequest,
     cursorFieldBound: SearchCursorFieldBound | null,
-    ftsClauses: readonly SearchFtsClause[]
+    ftsClauses: readonly SearchFtsClause[],
+    exactClauses: readonly SearchExactClause[]
   ): boolean {
     if (!this.index?.createSecondaryIndexTailMatcher) return false;
     if (cursorFieldBound != null) return false;
-    if (collectPositiveSearchColumnClauses(request.q).length > 0) return false;
     if (hasNonKeywordSearchFtsClauses(ftsClauses)) return false;
+    if (exactClauses.length !== 1) return false;
+    if (exactClauses[0]?.fieldKind !== "keyword") return false;
     const leadingSort = request.sort[0] ?? null;
     return leadingSort?.kind === "offset" && leadingSort.direction === "desc";
   }
