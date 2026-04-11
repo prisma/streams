@@ -1973,8 +1973,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               reader.searchResult({ stream, request, signal: requestAbortController.signal })
             );
             if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
-            const status = searchRes.value.timedOut ? 408 : 200;
-            return json(status, {
+            return json(200, {
               stream,
               snapshot_end_offset: searchRes.value.snapshotEndOffset,
               took_ms: searchRes.value.tookMs,

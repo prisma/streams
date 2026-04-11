@@ -781,10 +781,9 @@ Current response fields:
 
 Current response status behavior:
 
-- `200` when search completes within the effective timeout budget
-- `408` when search reaches the effective timeout budget
-  - the response body is still a valid search result
-  - partial hits and coverage counters are included
+- `200` when `/_search` returns a structured search result
+  - this includes partial results where `timed_out === true`
+  - when `timed_out === true`, partial hits and coverage counters are included
   - `total.relation` is `gte`
   - observed wall time may be slightly above `timeout_ms`
 - if the outer generic `5000 ms` resolver timeout fires first while an
@@ -874,8 +873,10 @@ Current request-path behavior under active ingest:
 - when exact clauses provide a candidate segment set, `/_search` may plan the
   sealed segment scan up front instead of iterating the full indexed sealed
   prefix one segment at a time
-- if the request hits the effective timeout budget, `/_search` returns `408`
-  with a valid partial search result body instead of keeping the request open
+- if the request hits the effective timeout budget, `/_search` still returns a
+  valid partial search result body instead of keeping the request open
+  - the HTTP status remains `200`
+  - `timed_out` and `search-timed-out: true` indicate that the body is partial
 - timeout checks are cooperative rather than preemptive, so clients should treat
   `timeout_ms` as a bounded target rather than a strict wall-clock guarantee
 

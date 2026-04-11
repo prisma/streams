@@ -117,15 +117,17 @@ For mixed exact-plus-typed filters such as `env:"staging" AND duration:1422.027`
   - index-capable `/_search` requests default to `200 ms`
   - other search shapes default to `3000 ms`
 - the reader checks that deadline cooperatively between work units
-- if the budget is exhausted, the server returns `408` with a normal JSON search
+- if the budget is exhausted, the server still returns a normal JSON search
   response body instead of hanging the request
+  - the HTTP status stays `200`
+  - `timed_out: true` and `search-timed-out: true` mark the body as partial
 - because timeout checks are cooperative, observed wall time may overshoot the
   configured timeout slightly while an in-flight unit of work completes
 
 Important UI rule:
 
 - `/_search` has two timeout shapes:
-  - the normal search timeout shape: `408` with a structured partial-result
+  - the normal search timeout shape: `200` with a structured partial-result
     body and `search-timed-out: true`
   - the outer generic resolver timeout shape: `408` with
     `{ "error": { "code": "request_timeout", "message": "request timed out" } }`
@@ -289,8 +291,8 @@ Recommended UI treatment:
   - `Newest omitted events started arriving at 2026-04-01T12:57:15Z.`
 - treat `total.relation === "gte"` on `/_search` as a lower bound, not an exact
   total
-- if the HTTP status is `408`, combine the freshness banner with a timeout note
-  instead of treating the response as an error page
+- if `timed_out === true` or `search-timed-out: true`, combine the freshness
+  banner with a timeout note instead of treating the response as an error page
 - do not present missing newest rows for indexed-only queries as an error or a
   retryable fallback case; it is the intended freshness/latency tradeoff
 

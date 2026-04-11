@@ -642,7 +642,7 @@ describe("_search http", () => {
             }),
           })
         );
-        expect(res.status).toBe(408);
+        expect(res.status).toBe(200);
         expect(res.headers.get("search-timed-out")).toBe("true");
         expect(res.headers.get("search-timeout-ms")).toBe("0");
         expect(res.headers.get("search-total-relation")).toBe("gte");
