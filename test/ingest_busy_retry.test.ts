@@ -19,6 +19,7 @@ function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
     ingestBusyTimeoutMs: 1000,
     segmentCheckIntervalMs: 100_000,
     uploadIntervalMs: 100_000,
+    indexL0SpanSegments: 0,
     indexCheckIntervalMs: 100_000,
     segmenterWorkers: 0,
     ...overrides,
