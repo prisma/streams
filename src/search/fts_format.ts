@@ -41,6 +41,15 @@ export type FtsPostingBlock = {
   posOffsets?: Uint32Array;
 };
 
+type PostingBlockMeta = {
+  blockOffset: number;
+  docsInBlock: number;
+  firstDocId: number;
+  docDeltaOffset: number;
+  docDeltaLength: number;
+  totalLength: number;
+};
+
 const KIND_CODE: Record<SearchFieldKind, number> = {
   keyword: 0,
   text: 1,
@@ -286,6 +295,7 @@ export class FtsFieldView {
   private readonly docFreqs: U32LeView;
   private readonly postingOffsets: U32LeView;
   private existsDocIdsCache: number[] | null = null;
+  private readonly newestPostingBlockMeta = new Map<number, PostingBlockMeta[]>();
 
   constructor(
     readonly name: string,
@@ -334,6 +344,70 @@ export class FtsFieldView {
     const end = this.postingOffsets.get(termOrdinal + 1) || start;
     return new PostingIterator(this.postingsPayload.subarray(start, end));
   }
+
+  newestDocIds(termOrdinal: number, limit: number, candidateDocIds: ReadonlySet<number> | null = null): number[] {
+    if (limit <= 0) return [];
+    const start = this.postingOffsets.get(termOrdinal);
+    const end = this.postingOffsets.get(termOrdinal + 1) || start;
+    if (end <= start) return [];
+    const payload = this.postingsPayload.subarray(start, end);
+    const metas = this.postingBlockMetadata(termOrdinal, payload);
+    const newest: number[] = [];
+    for (let blockIndex = metas.length - 1; blockIndex >= 0; blockIndex--) {
+      const docIds = decodePostingBlockDocIds(payload, metas[blockIndex]!);
+      for (let index = docIds.length - 1; index >= 0; index--) {
+        const docId = docIds[index]!;
+        if (!candidateDocIds || candidateDocIds.has(docId)) {
+          newest.push(docId);
+          if (newest.length >= limit) return newest;
+        }
+      }
+    }
+    return newest;
+  }
+
+  private postingBlockMetadata(termOrdinal: number, payload: Uint8Array): PostingBlockMeta[] {
+    const cached = this.newestPostingBlockMeta.get(termOrdinal);
+    if (cached) return cached;
+    const metas: PostingBlockMeta[] = [];
+    const cursor = new BinaryCursor(payload);
+    while (cursor.offset < payload.byteLength) {
+      const blockOffset = cursor.offset;
+      const docsInBlock = cursor.readU16();
+      cursor.readU8();
+      cursor.skip(1);
+      const firstDocId = cursor.readU32();
+      const docDeltaLength = cursor.readU32();
+      const freqLength = cursor.readU32();
+      const posLength = cursor.readU32();
+      const docDeltaOffset = cursor.offset;
+      cursor.skip(docDeltaLength + freqLength + posLength);
+      metas.push({
+        blockOffset,
+        docsInBlock,
+        firstDocId,
+        docDeltaOffset,
+        docDeltaLength,
+        totalLength: cursor.offset - blockOffset,
+      });
+    }
+    this.newestPostingBlockMeta.set(termOrdinal, metas);
+    return metas;
+  }
+}
+
+function decodePostingBlockDocIds(bytes: Uint8Array, meta: PostingBlockMeta): Uint32Array {
+  const docIds = new Uint32Array(meta.docsInBlock);
+  if (meta.docsInBlock === 0) return docIds;
+  docIds[0] = meta.firstDocId;
+  if (meta.docsInBlock === 1 || meta.docDeltaLength === 0) return docIds;
+  const deltaCursor = new BinaryCursor(bytes.subarray(meta.docDeltaOffset, meta.docDeltaOffset + meta.docDeltaLength));
+  let previous = meta.firstDocId;
+  for (let index = 1; index < meta.docsInBlock; index++) {
+    previous += Number(readUVarint(deltaCursor));
+    docIds[index] = previous;
+  }
+  return docIds;
 }
 
 export class FtsSectionView {

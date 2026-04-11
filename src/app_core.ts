@@ -46,7 +46,7 @@ import { Result } from "better-result";
 import { parseReadFilterResult } from "./read_filter";
 import { hashSecondaryIndexField } from "./index/secondary_schema";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan } from "./search/companion_plan";
-import { parseSearchRequestBodyResult, parseSearchRequestQueryResult } from "./search/query";
+import { analyzeSearchIndexedSupport, parseSearchRequestBodyResult, parseSearchRequestQueryResult } from "./search/query";
 import { parseAggregateRequestBodyResult } from "./search/aggregate";
 import {
   StreamProfileStore,
@@ -81,6 +81,7 @@ const UNAVAILABLE_RETRY_AFTER_SECONDS = "5";
 const APPEND_REQUEST_TIMEOUT_MS = 3_000;
 const HTTP_RESOLVER_TIMEOUT_MS = 5_000;
 const SEARCH_REQUEST_TIMEOUT_MS = 3_000;
+const SEARCH_INDEXED_ONLY_DEFAULT_TIMEOUT_MS = 750;
 const TIMEOUT_SENTINEL = Symbol("request-timeout");
 const DEFAULT_TOUCH_JOURNAL_FILTER_BYTES = 4 * (1 << 22);
 
@@ -93,8 +94,9 @@ function retryAfterHeaders(seconds: string, headers: HeadersInit = {}): HeadersI
   };
 }
 
-function clampSearchRequestTimeoutMs(timeoutMs: number | null): number {
-  return timeoutMs == null ? SEARCH_REQUEST_TIMEOUT_MS : Math.min(timeoutMs, SEARCH_REQUEST_TIMEOUT_MS);
+function clampSearchRequestTimeoutMs(timeoutMs: number | null, indexedOnly: boolean): number {
+  if (timeoutMs == null) return indexedOnly ? SEARCH_INDEXED_ONLY_DEFAULT_TIMEOUT_MS : SEARCH_REQUEST_TIMEOUT_MS;
+  return Math.min(timeoutMs, SEARCH_REQUEST_TIMEOUT_MS);
 }
 
 async function awaitWithCooperativeTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | TimeoutSentinel> {
@@ -1962,11 +1964,14 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               ? parseSearchRequestQueryResult(regRes.value, url.searchParams)
               : parseSearchRequestBodyResult(regRes.value, requestBody);
             if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
+            const indexedSupport = analyzeSearchIndexedSupport(requestRes.value.q);
             const request = {
               ...requestRes.value,
-              timeoutMs: clampSearchRequestTimeoutMs(requestRes.value.timeoutMs),
+              timeoutMs: clampSearchRequestTimeoutMs(requestRes.value.timeoutMs, indexedSupport.indexedOnly),
             };
-            const searchRes = await runForegroundWithGate(searchGate, () => reader.searchResult({ stream, request }));
+            const searchRes = await runForegroundWithGate(searchGate, () =>
+              reader.searchResult({ stream, request, signal: requestAbortController.signal })
+            );
             if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
             const status = searchRes.value.timedOut ? 408 : 200;
             return json(status, {

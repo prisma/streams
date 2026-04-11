@@ -52,9 +52,10 @@ import {
   collectPositiveSearchFtsClauses,
   evaluateSearchQueryResult,
   extractSearchHitFieldsResult,
+  hasNonKeywordSearchFtsClauses,
   isSearchExactVisibilityEligible,
 } from "./search/query";
-import { filterDocIdsByFtsClausesResult } from "./search/fts_runtime";
+import { filterDocIdsByFtsClausesResult, planNewestFirstFtsClausesResult } from "./search/fts_runtime";
 import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema";
 import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./search/column_encoding";
 import type { SearchRollupConfig } from "./schema/registry";
@@ -169,7 +170,13 @@ export type ReaderError =
 const READ_FILTER_SCAN_LIMIT_BYTES = 100 * 1024 * 1024;
 type SegmentCandidateInfo = { segments: Set<number> | null; indexedThrough: number };
 type SearchExactTailCandidateInfo = { matchers: IndexTailMatcher[]; indexedThrough: number } | null;
-type SearchFamilyCandidateInfo = { docIds: Set<number> | null; usedFamilies: Set<string> };
+type SearchDocIdCandidates = {
+  size: number;
+  minDocId: number;
+  maxDocId: number;
+  sortedDocIds: Uint32Array;
+};
+type SearchFamilyCandidateInfo = { docIds: SearchDocIdCandidates | null; usedFamilies: Set<string> };
 type SearchHitInternal = {
   offsetSeq: bigint;
   offset: string;
@@ -322,15 +329,63 @@ function loadSegmentBlockEntriesFromSourceResult(
   return Result.ok(blocks);
 }
 
-function docIdSetIntersectsRange(docIds: Set<number> | null, start: number, end: number): boolean {
-  if (!docIds) return true;
-  for (const docId of docIds) {
-    if (docId < start) continue;
-    if (docId > end) continue;
-    return true;
+function searchDocIdsLowerBound(sortedDocIds: Uint32Array, target: number): number {
+  let low = 0;
+  let high = sortedDocIds.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (sortedDocIds[mid]! < target) low = mid + 1;
+    else high = mid;
   }
-  return false;
+  return low;
 }
+
+function buildSearchDocIdCandidates(docIds: Set<number>): SearchDocIdCandidates {
+  const sortedDocIds = Uint32Array.from(docIds);
+  sortedDocIds.sort();
+  return {
+    size: sortedDocIds.length,
+    minDocId: sortedDocIds.length > 0 ? sortedDocIds[0]! : 0,
+    maxDocId: sortedDocIds.length > 0 ? sortedDocIds[sortedDocIds.length - 1]! : -1,
+    sortedDocIds,
+  };
+}
+
+function searchDocIdsHas(docIds: SearchDocIdCandidates | null, docId: number): boolean {
+  if (!docIds) return true;
+  if (docId < docIds.minDocId || docId > docIds.maxDocId) return false;
+  const index = searchDocIdsLowerBound(docIds.sortedDocIds, docId);
+  return index < docIds.size && docIds.sortedDocIds[index] === docId;
+}
+
+function searchDocIdsIntersectRange(docIds: SearchDocIdCandidates | null, start: number, end: number): boolean {
+  if (!docIds) return true;
+  if (end < docIds.minDocId || start > docIds.maxDocId) return false;
+  const index = searchDocIdsLowerBound(docIds.sortedDocIds, start);
+  return index < docIds.size && docIds.sortedDocIds[index]! <= end;
+}
+
+function intersectDocIdSets(left: Set<number> | null, right: Set<number>): Set<number> {
+  if (left == null) return right;
+  const target = left.size <= right.size ? left : right;
+  const probe = target === left ? right : left;
+  for (const docId of Array.from(target)) {
+    if (!probe.has(docId)) target.delete(docId);
+  }
+  return target;
+}
+
+export const searchDocIdCandidatesTestHelpers = {
+  build(docIds: Iterable<number>) {
+    return buildSearchDocIdCandidates(new Set(docIds));
+  },
+  has(docIds: SearchDocIdCandidates | null, docId: number): boolean {
+    return searchDocIdsHas(docIds, docId);
+  },
+  intersectsRange(docIds: SearchDocIdCandidates | null, start: number, end: number): boolean {
+    return searchDocIdsIntersectRange(docIds, start, end);
+  },
+} as const;
 
 export class StreamReader {
   private readonly config: Config;
@@ -1167,9 +1222,13 @@ export class StreamReader {
     return res.value;
   }
 
-  async searchResult(args: { stream: string; request: SearchRequest }): Promise<Result<SearchResultBatch, ReaderError>> {
+  async searchResult(args: {
+    stream: string;
+    request: SearchRequest;
+    signal?: AbortSignal | null;
+  }): Promise<Result<SearchResultBatch, ReaderError>> {
     const startedAt = Date.now();
-    const { stream, request } = args;
+    const { stream, request, signal } = args;
     const leaveSearchPhase = this.memorySampler?.enter("search", {
       stream,
       has_query: request.q != null,
@@ -1198,6 +1257,10 @@ export class StreamReader {
       const hits: SearchHitInternal[] = [];
       let timedOut = false;
       const markTimedOutIfNeeded = (): boolean => {
+        if (signal?.aborted) {
+          timedOut = true;
+          return true;
+        }
         if (deadline == null || Date.now() < deadline) return false;
         timedOut = true;
         return true;
@@ -1215,20 +1278,24 @@ export class StreamReader {
       const indexedSupport = analyzeSearchIndexedSupport(request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
+      const hasNonKeywordFtsClauses = hasNonKeywordSearchFtsClauses(ftsClauses);
+      const exactClauses = collectPositiveSearchExactClauses(request.q, {
+        excludeFtsKeywordClauses: hasNonKeywordFtsClauses,
+      });
       let exactTailCandidateInfo: SearchExactTailCandidateInfo = null;
       let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
       let exactCandidateTimeMs = 0;
       if (!markTimedOutIfNeeded()) {
         const exactCandidateStartedAt = Date.now();
-        if (this.canUseSearchExactTailMatchers(request, cursorFieldBound)) {
-          exactTailCandidateInfo = await this.resolveSearchExactTailCandidateInfo(stream, request.q);
+        if (this.canUseSearchExactTailMatchers(request, cursorFieldBound, ftsClauses)) {
+          exactTailCandidateInfo = await this.resolveSearchExactTailCandidateInfo(stream, exactClauses);
           if (exactTailCandidateInfo) {
             exactCandidateInfo = { segments: null, indexedThrough: exactTailCandidateInfo.indexedThrough };
           } else {
-            exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+            exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, exactClauses);
           }
         } else {
-          exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, request.q);
+          exactCandidateInfo = await this.resolveSearchExactCandidateSegments(stream, exactClauses);
         }
         exactCandidateTimeMs = Date.now() - exactCandidateStartedAt;
         markTimedOutIfNeeded();
@@ -1236,6 +1303,7 @@ export class StreamReader {
       const useExactVisibility =
         indexedSupport.indexedOnly &&
         indexedSupport.requiresExact &&
+        indexedSupport.requiredCompanionFamilies.size === 0 &&
         isSearchExactVisibilityEligible(request.q) &&
         exactCandidateInfo.indexedThrough > 0;
       const coverageState = this.computePublishedCoverageState(
@@ -1261,6 +1329,12 @@ export class StreamReader {
       const collectSearchMatchResult = (
         offsetSeq: bigint,
         payload: Uint8Array
+      ): Result<void, ReaderError> => collectSearchMatchIntoResult(hits, offsetSeq, payload);
+
+      const collectSearchMatchIntoResult = (
+        targetHits: SearchHitInternal[],
+        offsetSeq: bigint,
+        payload: Uint8Array
       ): Result<void, ReaderError> => {
         const parsedRes = decodeJsonPayloadResult(this.registry, stream, offsetSeq, payload);
         if (Result.isError(parsedRes)) return Result.err({ kind: "internal", message: parsedRes.error.message });
@@ -1273,7 +1347,7 @@ export class StreamReader {
         if (request.searchAfter && compareSearchAfterValues(sortInternal, request.sort, request.searchAfter) <= 0) {
           return Result.ok(undefined);
         }
-        hits.push({
+        targetHits.push({
           offsetSeq,
           offset: encodeOffset(srow.epoch, offsetSeq),
           score: evalRes.value.score,
@@ -1287,7 +1361,7 @@ export class StreamReader {
 
       const scanSegmentForSearchResult = async (
         seg: SegmentRow,
-        allowedDocIds: Set<number> | null,
+        allowedDocIds: SearchDocIdCandidates | null,
         rangeStartSeq: bigint,
         rangeEndSeq: bigint
       ): Promise<Result<void, ReaderError>> => {
@@ -1304,7 +1378,7 @@ export class StreamReader {
               continue;
             }
             const localDocId = Number(curOffset - seg.start_offset);
-            if (!allowedDocIds || allowedDocIds.has(localDocId)) {
+            if (searchDocIdsHas(allowedDocIds, localDocId)) {
               const matchRes = collectSearchMatchResult(curOffset, record.payload);
               if (Result.isError(matchRes)) return matchRes;
             }
@@ -1346,6 +1420,7 @@ export class StreamReader {
           columnClauses,
           ftsClauses,
           indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
+          undefined,
           {
             addFtsSectionGetMs: (deltaMs) => {
               ftsSectionGetMs += deltaMs;
@@ -1438,6 +1513,7 @@ export class StreamReader {
                         strictFamilies: indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
                         collectSearchMatchResult,
                         deadline,
+                        signal,
                         isTimedOut: () => timedOut,
                         setTimedOut: (next) => {
                           timedOut = next;
@@ -1464,6 +1540,7 @@ export class StreamReader {
                         addScannedSegmentTimeMs: (deltaMs) => {
                           scannedSegmentTimeMs += deltaMs;
                         },
+                        remainingHits: () => Math.max(1, request.size - hits.length),
                       }
                     );
                     if (Result.isError(scanRes)) return scanRes;
@@ -1501,6 +1578,7 @@ export class StreamReader {
                         strictFamilies: indexedSupport.indexedOnly ? indexedSupport.requiredCompanionFamilies : undefined,
                         collectSearchMatchResult,
                         deadline,
+                        signal,
                         isTimedOut: () => timedOut,
                         setTimedOut: (next) => {
                           timedOut = next;
@@ -1527,6 +1605,7 @@ export class StreamReader {
                         addScannedSegmentTimeMs: (deltaMs) => {
                           scannedSegmentTimeMs += deltaMs;
                         },
+                        remainingHits: () => request.size - hits.length,
                       }
                     );
                     if (Result.isError(scanRes)) return scanRes;
@@ -2034,6 +2113,7 @@ export class StreamReader {
       strictFamilies?: ReadonlySet<"col" | "fts">;
       collectSearchMatchResult: (offsetSeq: bigint, payload: Uint8Array) => Result<void, ReaderError>;
       deadline: number | null;
+      signal?: AbortSignal | null;
       isTimedOut: () => boolean;
       setTimedOut: (next: boolean) => void;
       stopIfPageComplete: () => boolean;
@@ -2044,10 +2124,15 @@ export class StreamReader {
       addFtsDecodeMs: (deltaMs: number) => void;
       addFtsClauseEstimateMs: (deltaMs: number) => void;
       addScannedSegmentTimeMs: (deltaMs: number) => void;
+      remainingHits: () => number;
     }
   ): Promise<Result<void, ReaderError>> {
     const segmentStartedAt = Date.now();
     const markTimedOutIfNeeded = (): boolean => {
+      if (state.signal?.aborted) {
+        state.setTimedOut(true);
+        return true;
+      }
       if (state.deadline == null || Date.now() < state.deadline) return false;
       state.setTimedOut(true);
       return true;
@@ -2085,6 +2170,7 @@ export class StreamReader {
       columnClauses,
       ftsClauses,
       state.strictFamilies,
+      state.remainingHits(),
       {
         addFtsSectionGetMs: state.addFtsSectionGetMs,
         addFtsDecodeMs: state.addFtsDecodeMs,
@@ -2126,7 +2212,7 @@ export class StreamReader {
       }
       const localDocIdStart = Number(blockStartOffset - seg.start_offset);
       const localDocIdEnd = localDocIdStart + block.recordCount - 1;
-      if (!docIdSetIntersectsRange(familyCandidates.docIds, localDocIdStart, localDocIdEnd)) {
+      if (!searchDocIdsIntersectRange(familyCandidates.docIds, localDocIdStart, localDocIdEnd)) {
         if (markTimedOutIfNeeded()) {
           if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
           else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
@@ -2148,7 +2234,7 @@ export class StreamReader {
           return Result.ok(undefined);
         }
         const localDocId = Number(offsetSeq - seg.start_offset);
-        if (!familyCandidates.docIds || familyCandidates.docIds.has(localDocId)) {
+        if (searchDocIdsHas(familyCandidates.docIds, localDocId)) {
           const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
           if (Result.isError(matchRes)) return matchRes;
         }
@@ -2268,9 +2354,8 @@ export class StreamReader {
     return { segments: intersection ?? new Set<number>(), indexedThrough };
   }
 
-  private async resolveSearchExactCandidateSegments(stream: string, query: CompiledSearchQuery): Promise<SegmentCandidateInfo> {
+  private async resolveSearchExactCandidateSegments(stream: string, clauses: SearchExactClause[]): Promise<SegmentCandidateInfo> {
     if (!this.index) return { segments: null, indexedThrough: 0 };
-    const clauses = collectPositiveSearchExactClauses(query);
     if (clauses.length === 0) return { segments: null, indexedThrough: 0 };
 
     const candidates: IndexCandidate[] = [];
@@ -2300,20 +2385,24 @@ export class StreamReader {
     return { segments: intersection ?? new Set<number>(), indexedThrough };
   }
 
-  private canUseSearchExactTailMatchers(request: SearchRequest, cursorFieldBound: SearchCursorFieldBound | null): boolean {
+  private canUseSearchExactTailMatchers(
+    request: SearchRequest,
+    cursorFieldBound: SearchCursorFieldBound | null,
+    ftsClauses: readonly SearchFtsClause[]
+  ): boolean {
     if (!this.index?.createSecondaryIndexTailMatcher) return false;
-    if (request.searchAfter != null) return false;
     if (cursorFieldBound != null) return false;
+    if (collectPositiveSearchColumnClauses(request.q).length > 0) return false;
+    if (hasNonKeywordSearchFtsClauses(ftsClauses)) return false;
     const leadingSort = request.sort[0] ?? null;
     return leadingSort?.kind === "offset" && leadingSort.direction === "desc";
   }
 
   private async resolveSearchExactTailCandidateInfo(
     stream: string,
-    query: CompiledSearchQuery
+    clauses: SearchExactClause[]
   ): Promise<SearchExactTailCandidateInfo> {
     if (!this.index?.createSecondaryIndexTailMatcher) return null;
-    const clauses = collectPositiveSearchExactClauses(query);
     if (clauses.length === 0) return null;
 
     const matchers: IndexTailMatcher[] = [];
@@ -2350,9 +2439,7 @@ export class StreamReader {
         intersection = clauseRes.value;
         continue;
       }
-      for (const docId of Array.from(intersection)) {
-        if (!clauseRes.value.has(docId)) intersection.delete(docId);
-      }
+      intersection = intersectDocIdSets(intersection, clauseRes.value);
       if (intersection.size === 0) break;
     }
     return Result.ok(intersection ?? new Set<number>());
@@ -2380,9 +2467,7 @@ export class StreamReader {
         intersection = clauseRes.value;
         continue;
       }
-      for (const docId of Array.from(intersection)) {
-        if (!clauseRes.value.has(docId)) intersection.delete(docId);
-      }
+      intersection = intersectDocIdSets(intersection, clauseRes.value);
       if (intersection.size === 0) break;
     }
     return Result.ok(intersection ?? new Set<number>());
@@ -2392,12 +2477,14 @@ export class StreamReader {
     stream: string,
     segmentIndex: number,
     clauses: SearchFtsClause[],
+    candidateDocIds?: Set<number> | null,
+    maxNewestDocIds?: number,
     stats?: {
       addFtsSectionGetMs?: (deltaMs: number) => void;
       addFtsDecodeMs?: (deltaMs: number) => void;
       addFtsClauseEstimateMs?: (deltaMs: number) => void;
     }
-  ): Promise<Result<Set<number> | null, { message: string }>> {
+  ): Promise<Result<{ docIds: Set<number> | null; usedFamily: boolean } | null, { message: string }>> {
     if (!this.index || clauses.length === 0) return Result.ok(null);
     const companionRes = this.index.getFtsSegmentCompanionWithStats
       ? await this.index.getFtsSegmentCompanionWithStats(stream, segmentIndex)
@@ -2406,15 +2493,32 @@ export class StreamReader {
     stats?.addFtsDecodeMs?.(companionRes.stats.decodeMs);
     const companion = companionRes.companion;
     if (!companion) return Result.ok(null);
+    if (maxNewestDocIds != null) {
+      const newestPlanRes = planNewestFirstFtsClausesResult({
+        companion,
+        clauses,
+        candidateDocIds,
+        maxNewestDocIds,
+      });
+      if (Result.isError(newestPlanRes)) return newestPlanRes;
+      if (newestPlanRes.value?.mode === "segment_only") {
+        return Result.ok({ docIds: candidateDocIds ?? null, usedFamily: true });
+      }
+      if (newestPlanRes.value?.mode === "doc_ids") {
+        return Result.ok({ docIds: newestPlanRes.value.docIds, usedFamily: true });
+      }
+    }
     const clausesRes = filterDocIdsByFtsClausesResult({
       companion,
       clauses,
+      candidateDocIds,
+      maxNewestDocIds,
       onEstimateMs: (deltaMs) => {
         stats?.addFtsClauseEstimateMs?.(deltaMs);
       },
     });
     if (Result.isError(clausesRes)) return clausesRes;
-    return Result.ok(clausesRes.value);
+    return Result.ok({ docIds: clausesRes.value, usedFamily: true });
   }
 
   private async resolveSearchFamilyCandidatesResult(
@@ -2423,6 +2527,7 @@ export class StreamReader {
     columnClauses: SearchColumnClause[],
     ftsClauses: SearchFtsClause[],
     strictFamilies?: ReadonlySet<"col" | "fts">,
+    newestFtsDocLimit?: number,
     stats?: {
       addFtsSectionGetMs?: (deltaMs: number) => void;
       addFtsDecodeMs?: (deltaMs: number) => void;
@@ -2445,15 +2550,17 @@ export class StreamReader {
     }
 
     if (ftsClauses.length > 0) {
-      const ftsRes = await this.resolveSearchFtsCandidateDocIdsResult(stream, segmentIndex, ftsClauses, stats);
+      const ftsRes = await this.resolveSearchFtsCandidateDocIdsResult(
+        stream,
+        segmentIndex,
+        ftsClauses,
+        intersection,
+        newestFtsDocLimit,
+        stats
+      );
       if (Result.isError(ftsRes)) return ftsRes;
-      if (ftsRes.value) {
-        if (intersection == null) intersection = ftsRes.value;
-        else {
-          for (const docId of Array.from(intersection)) {
-            if (!ftsRes.value.has(docId)) intersection.delete(docId);
-          }
-        }
+      if (ftsRes.value?.usedFamily) {
+        if (ftsRes.value.docIds) intersection = intersectDocIdSets(intersection, ftsRes.value.docIds);
         usedFamilies.add("fts");
       } else if (strictFamilies?.has("fts")) {
         if (intersection == null) intersection = new Set<number>();
@@ -2462,7 +2569,7 @@ export class StreamReader {
       }
     }
 
-    return Result.ok({ docIds: intersection, usedFamilies });
+    return Result.ok({ docIds: intersection ? buildSearchDocIdCandidates(intersection) : null, usedFamilies });
   }
 }
 

@@ -266,6 +266,19 @@ async function waitForPublishedSegmentCountAtLeast(
   throw new Error(`timeout waiting for published segment count >= ${expectedCount}`);
 }
 
+async function waitForSearchGateIdle(app: ReturnType<typeof createApp>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await app.fetch(new Request("http://local/v1/server/_details", { method: "GET" }));
+    if (res.status === 200) {
+      const body = await res.json();
+      if ((body.runtime?.concurrency?.search?.active ?? 0) === 0) return;
+    }
+    await sleep(25);
+  }
+  throw new Error("timeout waiting for idle search gate");
+}
+
 describe("_search http", () => {
   test(
     "supports exact, range, prefix, bare text, phrase, and search_after pagination",
@@ -482,7 +495,7 @@ describe("_search http", () => {
   );
 
   test(
-    "returns timed-out partial search responses with metrics headers and clamps timeout_ms to 3s",
+    "returns timed-out partial search responses, clamps explicit timeout_ms to 3s, and defaults indexed-only searches to 750ms",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-timeout-"));
       const cfg = makeConfig(root, {
@@ -591,6 +604,40 @@ describe("_search http", () => {
               q: "timeout",
               size: 10,
               sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("search-timeout-ms")).toBe("750");
+        body = await res.json();
+        expect(body.timeout_ms).toBe(750);
+        expect(body.timed_out).toBe(false);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout OR health",
+              size: 10,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("search-timeout-ms")).toBe("3000");
+        body = await res.json();
+        expect(body.timeout_ms).toBe(3000);
+        expect(body.timed_out).toBe(false);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: "timeout",
+              size: 10,
+              sort: ["offset:desc"],
               timeout_ms: 0,
             }),
           })
@@ -609,6 +656,7 @@ describe("_search http", () => {
         expect(body.coverage.complete).toBe(false);
         expect(body.total.relation).toBe("gte");
         expect(body.hits).toEqual([]);
+        await waitForSearchGateIdle(app);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
@@ -837,6 +885,93 @@ describe("_search http", () => {
   );
 
   test(
+    "keeps mixed exact and text search on companion visibility even when exact coverage is farther ahead",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "ds-search-mixed-indexed-visibility-"));
+      const cfg = makeConfig(root, {
+        segmentMaxBytes: 160,
+        blockMaxBytes: 96,
+        segmentCheckIntervalMs: 10,
+        uploadIntervalMs: 10,
+        uploadConcurrency: 2,
+        indexL0SpanSegments: 2,
+        indexCheckIntervalMs: 10,
+        segmentCacheMaxBytes: 64 * 1024 * 1024,
+        segmentFooterCacheEntries: 128,
+      });
+      const app = createApp(cfg);
+      try {
+        let res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+          })
+        );
+        expect([200, 201]).toContain(res.status);
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(SEARCH_SCHEMA),
+          })
+        );
+        expect(res.status).toBe(200);
+
+        for (let i = 0; i < 8; i++) {
+          res = await app.fetch(
+            new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                eventTime: `2026-03-25T10:${String(10 + i).padStart(2, "0")}:23.123Z`,
+                service: "staging-api",
+                status: 500 + i,
+                duration: 1000 + i,
+                requestId: `req_${i}`,
+                region: "us-west-2",
+                payload: "x".repeat(160),
+                message: `timeout signal ${i}`,
+                why: "mixed indexed visibility",
+              }),
+            })
+          );
+          expect(res.status).toBe(204);
+        }
+
+        await waitForSearchFamilies(app);
+        await waitForSecondaryIndexPublished(app, "service");
+        expect(app.deps.db.countSegmentsForStream(STREAM)).toBeGreaterThan(2);
+
+        app.deps.indexer?.stop();
+        app.deps.db.deleteSearchSegmentCompanionsFrom(STREAM, 1);
+        expect(app.deps.db.listSearchSegmentCompanions(STREAM).length).toBeLessThan(publishedSegmentCount(app));
+
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api" timeout',
+              size: 10,
+              sort: ["offset:desc"],
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["req_0"]);
+        expect(body.coverage.complete).toBe(false);
+        expect(body.coverage.possible_missing_uploaded_segments).toBeGreaterThan(0);
+      } finally {
+        app.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000
+  );
+
+  test(
     "scans offset-desc from the tail without decoding older corrupted blocks",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-tail-lazy-"));
@@ -929,7 +1064,7 @@ describe("_search http", () => {
   );
 
   test(
-    "loads only the newest exact runs for cold offset-desc exact search",
+    "loads only the newest exact runs for cold offset-desc exact search, including search_after pagination",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-exact-tail-runs-"));
       const spillDir = join(root, "spill");
@@ -1003,9 +1138,29 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
-        const body = await res.json();
+        let body = await res.json();
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_23");
+        expect(body.next_search_after).not.toBeNull();
+        expect(store.secondaryIndexGets).toBeLessThan(8);
+
+        store.secondaryIndexGets = 0;
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              q: 'service:"staging-api"',
+              size: 1,
+              sort: ["offset:desc"],
+              search_after: body.next_search_after,
+            }),
+          })
+        );
+        expect(res.status).toBe(200);
+        body = await res.json();
+        expect(body.hits).toHaveLength(1);
+        expect(body.hits[0].fields.requestId).toBe("req_22");
         expect(store.secondaryIndexGets).toBeLessThan(8);
       } finally {
         app.close();

@@ -692,6 +692,8 @@ Current request shape:
 - `sort`
 - `timeout_ms`
   - optional lower per-request budget
+  - when omitted, index-capable queries default to `750 ms`
+  - other queries still default to `3000 ms`
   - the server clamps effective `/_search` timeout to `<= 3000 ms`
   - the deadline is enforced cooperatively between work units, so wall time may
     overshoot slightly before the partial response is returned
@@ -766,6 +768,9 @@ Current candidate-planning behavior:
 
 - fielded exact keyword clauses still use the internal exact family first for
   sealed-history segment pruning when that family is available
+- newest-first exact searches keep using that exact-tail pruning even when the
+  request carries `search_after`, so Studio pagination stays on the indexed
+  exact path instead of falling back to a broad sealed-history walk
 - if a keyword field is also present in bundled `.fts` because it enables
   `prefix=true`, `_search` also uses the `.fts` term dictionary/postings as a
   per-segment doc-id fallback for exact clauses
@@ -796,6 +801,10 @@ Current newest-suffix behavior:
   exact-secondary visibility instead of bundled-companion visibility
   - when that path is available, the visible published prefix is clamped by the
     exact family's `indexed_through` watermark, not by `.cix` coverage
+- mixed indexed queries such as exact plus text or exact plus `.col` do not use
+  that exact-only visibility override
+  - they stay clamped by the companion families they require, even if
+    exact-secondary is farther ahead
 - indexed-only text / column queries clamp visibility by the required bundled
   companion families only
 - the omitted range is reported through the `possible_missing_*` coverage

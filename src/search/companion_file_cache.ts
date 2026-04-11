@@ -176,6 +176,37 @@ export class CompanionFileCache {
     return mappedRes;
   }
 
+  mapCachedBundleResult(args: {
+    objectKey: string;
+    expectedSize: number;
+    decodeToc: (bytes: Uint8Array) => Result<CompanionToc, { message: string }>;
+  }): Result<MappedCompanionBundle | null, CompanionFileCacheError> {
+    const cached = this.mappedBundles.get(args.objectKey);
+    if (cached) {
+      this.pinnedKeys.add(args.objectKey);
+      this.touch(args.objectKey);
+      return Result.ok(cached);
+    }
+
+    const entry = this.entries.get(args.objectKey);
+    if (!entry) return Result.ok(null);
+    const stat = this.safeStat(entry.path);
+    if (!stat || stat.size !== args.expectedSize) {
+      this.removeEntry(args.objectKey, true);
+      return Result.ok(null);
+    }
+    const mappedRes = this.mapBundleResult(args.objectKey, entry.path, args.expectedSize, args.decodeToc);
+    if (Result.isError(mappedRes)) {
+      this.removeEntry(args.objectKey, true);
+      return mappedRes;
+    }
+
+    this.pinnedKeys.add(args.objectKey);
+    this.mappedBundles.set(args.objectKey, mappedRes.value);
+    this.touch(args.objectKey);
+    return Result.ok(mappedRes.value);
+  }
+
   stats(): CompanionFileCacheStats {
     let mappedBytes = 0;
     let mappedEntryCount = 0;

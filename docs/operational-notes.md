@@ -29,7 +29,7 @@ runtime overview and command surface, see `overview.md`.
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS`: maximum age for cached `.cix` files before startup/admission pruning retires them (default 24h)
 - `DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES`: hot mmap-backed companion bundles retained by the process (default 64)
 - `DS_SEARCH_COMPANION_TOC_CACHE_BYTES`: in-memory TOC cache for bundled companions (default 1 MiB unless auto-tune raises it)
-- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory raw section-byte cache for bundled companions (default 16 MiB unless auto-tune raises it)
+- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory decoded section-view cache for bundled companions, admitted by raw section payload bytes (default derived from memory limit; auto-tune uses 8 MiB on 256–512 MiB presets, 64 MiB on 1 GiB, 512 MiB on 2–4 GiB, and 1024 MiB on 8 GiB)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_LEXICON_INDEX_CACHE_MAX_BYTES`: on-disk lexicon-run cache cap for local immutable `.lex` files under `${DS_ROOT}/cache/lexicon` (default derived from memory limit; auto-tune uses 8–64 MiB on 256–2048 MiB presets)
@@ -79,6 +79,10 @@ Concurrency/load-shedding note:
 
 Companion-cache note:
 - Bundled companion reads now fetch the full remote `.cix` object once, store it locally, and mmap the local cached file.
+- Query-time bundled companion reads also keep a small in-process TOC cache and a byte-bounded decoded section cache so repeated `.col`, `.fts`, `.agg`, and metrics-block lookups do not have to reread and re-decode the same section payloads.
+- Newly published bundled companions are primed into both the local mmap cache and the decoded-section cache for the hottest families. On restart, the server now proactively fetches the newest published companion bundles back from object storage, maps them locally, and pre-decodes the hottest `.fts` / `.col` sections in the background. That keeps newest-first indexed searches on the newest window from paying per-segment R2 fetches after restart.
+- On the 2 GiB and larger auto-tuned presets, the section cache is intentionally much larger than the default so newest-first `.fts` queries can keep multiple hot companion sections resident instead of thrashing between multi-megabyte bundles. The 2 GiB preset now carries a 512 MiB decoded-section budget because 256 MiB still thrashed on real `evlog` newest-first text searches.
+- Newest-first single-token `.fts` queries now pull candidate doc IDs from the tail of each posting list instead of decoding the whole list from the front. That keeps common reverse-chronological text searches bounded by the newest posting blocks rather than total historical term frequency inside one companion section.
 - Because Bun does not currently expose an explicit unmap primitive, a companion file that has been mmapped by the running process is treated as pinned until process restart.
 - Startup pruning and new cache admissions retire stale or oldest unmmapped companion files first; if the hot mapped set alone exceeds the disk budget, the process may temporarily sit above the configured cache cap until restart.
 - The auto-tuned 1–2 GiB presets also force companion rebuilding into one-segment / one-yield-block passes so aggregate-heavy `.cix` generation does not overlap too aggressively with append, segment cut, and upload work.
@@ -355,23 +359,23 @@ presets:
   - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `512 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
-  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
+  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
   - concurrency: ingest `1`, read `2`, search `1`, async index `1`, index builders `1`, uploads `1`, segmenter workers `1`
 - `1024 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
-  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
+  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `64 MiB`
   - concurrency: ingest `2`, read `4`, search `2`, async index `1`, index builders `1`, uploads `2`, segmenter workers `1`
 - `2048 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
-  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
+  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `512 MiB`
   - concurrency: ingest `2`, read `4`, search `2`, async index `2`, index builders `2`, uploads `4`, segmenter workers `2`
 - `4096 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
-  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
+  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `512 MiB`
   - concurrency: ingest `4`, read `8`, search `4`, async index `2`, index builders `2`, uploads `4`, segmenter workers `2`
 - `8192 MiB`:
   - geometry: segment `16 MiB`, block `1 MiB`, segment rows `100k`
-  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
+  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `1024 MiB`
   - concurrency: ingest `8`, read `16`, search `8`, async index `4`, index builders `4`, uploads `8`, segmenter workers `4`
 
 ## Diagnosing stalls

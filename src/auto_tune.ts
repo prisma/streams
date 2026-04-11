@@ -44,7 +44,11 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     indexMemMb: Math.max(4, Math.floor(p / 64)),
     lexiconIndexCacheMb: p >= 8192 ? 256 : p >= 4096 ? 128 : p >= 2048 ? 64 : p >= 1024 ? 32 : p >= 512 ? 16 : 8,
     searchCompanionTocCacheMb: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    searchCompanionSectionCacheMb: p >= 8192 ? 128 : p >= 4096 ? 64 : p >= 2048 ? 32 : p >= 1024 ? 16 : 8,
+    // Newest-first .fts search touches many multi-megabyte companion sections
+    // on active streams. On 2 GiB hosts, 256 MiB was not enough to keep the
+    // hot newest-first working set resident, so repeated indexed text queries
+    // kept thrashing between section decode and mmap-backed bundle reads.
+    searchCompanionSectionCacheMb: p >= 8192 ? 1024 : p >= 2048 ? 512 : p >= 1024 ? 64 : p >= 512 ? 16 : 8,
     // Keep append working sets tighter on <=2 GiB presets because the request path
     // still holds multiple copies of JSON batches while normalizing and queuing.
     ingestBatchMb: p >= 8192 ? 64 : p >= 4096 ? 16 : p >= 2048 ? 8 : p >= 1024 ? 4 : 2,

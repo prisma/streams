@@ -181,6 +181,8 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
             routing_run_cache_bytes: routingIndexMemory.runCacheBytes,
             exact_run_cache_bytes: secondaryIndexMemory.runCacheBytes,
             mock_r2_in_memory_bytes: mockR2InMemoryBytes,
+            companion_toc_cache_bytes: companionMemory.tocCacheBytes,
+            companion_section_cache_bytes: companionMemory.sectionCacheBytes,
           };
           const mappedFiles = {
             segment_cache_mapped_bytes: segmentDiskStats.mappedBytes,

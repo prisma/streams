@@ -16,12 +16,18 @@ type ResolvedTermGroup = {
 
 type CandidateDocIds = ReadonlySet<number> | null;
 
+export type NewestFirstFtsClausePlan =
+  | { mode: "doc_ids"; docIds: Set<number> }
+  | { mode: "segment_only" };
+
 function intersectInto(target: Set<number> | null, next: Set<number>): Set<number> {
   if (target == null) return next;
-  for (const docId of Array.from(target)) {
-    if (!next.has(docId)) target.delete(docId);
+  const intersection = target.size <= next.size ? target : next;
+  const probe = intersection === target ? next : target;
+  for (const docId of Array.from(intersection)) {
+    if (!probe.has(docId)) intersection.delete(docId);
   }
-  return target;
+  return intersection;
 }
 
 function unionInto(target: Set<number>, next: Iterable<number>): void {
@@ -30,6 +36,12 @@ function unionInto(target: Set<number>, next: Iterable<number>): void {
 
 function unionDocIdsInto(target: Set<number>, docIds: Uint32Array): void {
   for (let index = 0; index < docIds.length; index++) target.add(docIds[index]!);
+}
+
+function newestDocIdSet(docIds: Iterable<number>, limit: number): Set<number> {
+  if (limit <= 0) return new Set();
+  const sorted = Array.from(new Set(docIds)).sort((left, right) => left - right);
+  return new Set(sorted.slice(-limit));
 }
 
 function postingDocs(field: FtsFieldView, termOrdinal: number): Map<number, PostingDoc> {
@@ -83,6 +95,20 @@ function docsForOrdinals(field: FtsFieldView, ordinals: number[], candidateDocId
     if (candidateDocIds && docs.size === candidateDocIds.size) break;
   }
   return docs;
+}
+
+function newestDocsForTerm(field: FtsFieldView, termOrdinal: number, limit: number, candidateDocIds: CandidateDocIds = null): Set<number> {
+  if (limit <= 0 || (candidateDocIds && candidateDocIds.size === 0)) return new Set();
+  return new Set(field.newestDocIds(termOrdinal, limit, candidateDocIds));
+}
+
+function newestDocsForOrdinals(field: FtsFieldView, ordinals: number[], limit: number, candidateDocIds: CandidateDocIds = null): Set<number> {
+  if (limit <= 0 || (candidateDocIds && candidateDocIds.size === 0)) return new Set();
+  const docs = new Set<number>();
+  for (const ordinal of ordinals) {
+    unionInto(docs, newestDocsForTerm(field, ordinal, limit, candidateDocIds));
+  }
+  return newestDocIdSet(docs, limit);
 }
 
 function totalDocFreq(field: FtsFieldView, ordinals: number[]): number {
@@ -223,6 +249,66 @@ function docsForTargetFieldResult(
   return docsForTextFieldResult(field, tokens, phrase, prefix, candidateDocIds);
 }
 
+function filterNewestDocIdsByFtsClauseResult(args: {
+  companion: FtsSectionView;
+  clause: SearchFtsClause;
+  candidateDocIds?: CandidateDocIds;
+  maxNewestDocIds: number;
+}): Result<Set<number> | null, { message: string }> {
+  const candidateDocIds = args.candidateDocIds ?? null;
+  if (args.maxNewestDocIds <= 0) return Result.ok(new Set());
+
+  if (args.clause.kind === "has") {
+    const field = args.companion.getField(args.clause.field);
+    if (!field) return Result.err({ message: `missing .fts2 field ${args.clause.field}` });
+    const matches = candidateDocIds ? field.existsDocIds().filter((docId) => candidateDocIds.has(docId)) : field.existsDocIds();
+    return Result.ok(newestDocIdSet(matches, args.maxNewestDocIds));
+  }
+
+  if (args.clause.kind === "keyword") {
+    const field = args.companion.getField(args.clause.field);
+    if (!field) return Result.err({ message: `missing .fts2 field ${args.clause.field}` });
+    const ordinalsRes = args.clause.prefix
+      ? field.expandPrefixResult(args.clause.canonicalValue, SEARCH_PREFIX_TERM_LIMIT)
+      : Result.ok((() => {
+          const termOrdinal = field.lookupTerm(args.clause.canonicalValue);
+          return termOrdinal == null ? [] : [termOrdinal];
+        })());
+    if (Result.isError(ordinalsRes)) return ordinalsRes;
+    return Result.ok(newestDocsForOrdinals(field, ordinalsRes.value, args.maxNewestDocIds, candidateDocIds));
+  }
+
+  if (args.clause.phrase || args.clause.tokens.length !== 1) return Result.ok(null);
+  const token = args.clause.tokens[0]!;
+  const docs = new Set<number>();
+  for (const target of args.clause.fields) {
+    const field = args.companion.getField(target.field);
+    if (!field) return Result.err({ message: `missing .fts2 field ${target.field}` });
+    let fieldDocs: Set<number>;
+    if (target.config.kind === "keyword") {
+      const ordinalsRes = args.clause.prefix
+        ? field.expandPrefixResult(token, SEARCH_PREFIX_TERM_LIMIT)
+        : Result.ok((() => {
+            const termOrdinal = field.lookupTerm(token);
+            return termOrdinal == null ? [] : [termOrdinal];
+          })());
+      if (Result.isError(ordinalsRes)) return ordinalsRes;
+      fieldDocs = newestDocsForOrdinals(field, ordinalsRes.value, args.maxNewestDocIds, candidateDocIds);
+    } else {
+      const ordinalsRes = args.clause.prefix
+        ? field.expandPrefixResult(token, SEARCH_PREFIX_TERM_LIMIT)
+        : Result.ok((() => {
+            const termOrdinal = field.lookupTerm(token);
+            return termOrdinal == null ? [] : [termOrdinal];
+          })());
+      if (Result.isError(ordinalsRes)) return ordinalsRes;
+      fieldDocs = newestDocsForOrdinals(field, ordinalsRes.value, args.maxNewestDocIds, candidateDocIds);
+    }
+    unionInto(docs, fieldDocs);
+  }
+  return Result.ok(newestDocIdSet(docs, args.maxNewestDocIds));
+}
+
 export function filterDocIdsByFtsClauseResult(args: {
   companion: FtsSectionView;
   clause: SearchFtsClause;
@@ -297,15 +383,69 @@ function estimateDocFreqForFtsClauseResult(args: {
     return Result.ok(termOrdinal == null ? 0 : field.docFreq(termOrdinal));
   }
 
-  return Result.ok(Number.MAX_SAFE_INTEGER);
+  if (args.clause.phrase || args.clause.tokens.length !== 1) return Result.ok(Number.MAX_SAFE_INTEGER);
+  const token = args.clause.tokens[0]!;
+  let total = 0;
+  for (const target of args.clause.fields) {
+    const field = args.companion.getField(target.field);
+    if (!field) return Result.err({ message: `missing .fts2 field ${target.field}` });
+    const ordinalsRes = args.clause.prefix
+      ? field.expandPrefixResult(token, SEARCH_PREFIX_TERM_LIMIT)
+      : Result.ok((() => {
+          const termOrdinal = field.lookupTerm(token);
+          return termOrdinal == null ? [] : [termOrdinal];
+        })());
+    if (Result.isError(ordinalsRes)) return ordinalsRes;
+    total += totalDocFreq(field, ordinalsRes.value);
+  }
+  return Result.ok(total);
+}
+
+export function planNewestFirstFtsClausesResult(args: {
+  companion: FtsSectionView;
+  clauses: SearchFtsClause[];
+  maxNewestDocIds: number;
+  candidateDocIds?: CandidateDocIds;
+}): Result<NewestFirstFtsClausePlan | null, { message: string }> {
+  if (args.clauses.length !== 1 || args.maxNewestDocIds <= 0) return Result.ok(null);
+  const candidateDocIds = args.candidateDocIds ?? null;
+  const clause = args.clauses[0]!;
+  const docFreqRes = estimateDocFreqForFtsClauseResult({ companion: args.companion, clause });
+  if (Result.isError(docFreqRes)) return docFreqRes;
+  if (candidateDocIds != null && candidateDocIds.size > args.maxNewestDocIds && docFreqRes.value > args.maxNewestDocIds) {
+    return Result.ok({ mode: "segment_only" });
+  }
+  const newestRes = filterNewestDocIdsByFtsClauseResult({
+    companion: args.companion,
+    clause,
+    candidateDocIds,
+    maxNewestDocIds: args.maxNewestDocIds,
+  });
+  if (Result.isError(newestRes)) return newestRes;
+  if (!newestRes.value) return Result.ok(null);
+  return Result.ok({ mode: "doc_ids", docIds: newestRes.value });
 }
 
 export function filterDocIdsByFtsClausesResult(args: {
   companion: FtsSectionView;
   clauses: SearchFtsClause[];
   onEstimateMs?: (deltaMs: number) => void;
+  maxNewestDocIds?: number;
+  candidateDocIds?: CandidateDocIds;
 }): Result<Set<number>, { message: string }> {
   if (args.clauses.length === 0) return Result.ok(new Set());
+  const candidateDocIds = args.candidateDocIds ?? null;
+
+  if (args.maxNewestDocIds != null && args.clauses.length === 1) {
+    const newestRes = filterNewestDocIdsByFtsClauseResult({
+      companion: args.companion,
+      clause: args.clauses[0]!,
+      candidateDocIds,
+      maxNewestDocIds: args.maxNewestDocIds,
+    });
+    if (Result.isError(newestRes)) return newestRes;
+    if (newestRes.value) return Result.ok(newestRes.value);
+  }
 
   const planned: Array<{ clause: SearchFtsClause; docFreq: number }> = [];
   const estimateStartedAt = Date.now();
@@ -317,7 +457,7 @@ export function filterDocIdsByFtsClausesResult(args: {
   args.onEstimateMs?.(Date.now() - estimateStartedAt);
 
   planned.sort((left, right) => left.docFreq - right.docFreq);
-  let intersection: Set<number> | null = null;
+  let intersection: Set<number> | null = candidateDocIds ? new Set(candidateDocIds) : null;
   for (const plan of planned) {
     const clauseRes = filterDocIdsByFtsClauseResult({
       companion: args.companion,

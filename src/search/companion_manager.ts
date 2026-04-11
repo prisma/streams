@@ -22,6 +22,7 @@ import { retry, retryAbortable } from "../util/retry";
 import { yieldToEventLoop } from "../util/yield";
 import { searchCompanionObjectKey, streamHash16Hex } from "../util/stream_paths";
 import { asyncIndexActionMemoryDetail, beginAsyncIndexAction } from "../index/async_index_actions";
+import { ByteLruCache } from "../util/byte_lru";
 import { buildDesiredSearchCompanionPlan, hashSearchCompanionPlan, type SearchCompanionPlan } from "./companion_plan";
 import {
   PSCIX2_MAX_TOC_BYTES,
@@ -169,6 +170,11 @@ type CompanionBuildProgress = {
   metricRecords: number;
 };
 
+type CachedCompanionSection = {
+  payloadBytes: number;
+  companion: CompanionSectionMap[CompanionSectionKind];
+};
+
 const PAYLOAD_DECODER = new TextDecoder();
 
 function compareValues(left: bigint | number | boolean, right: bigint | number | boolean): number {
@@ -242,6 +248,8 @@ export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly fileCache: CompanionFileCache;
+  private readonly tocCache: ByteLruCache<string, CompanionToc>;
+  private readonly sectionCache: ByteLruCache<string, CachedCompanionSection>;
   private readonly segmentCache?: SegmentDiskCache;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
@@ -251,6 +259,8 @@ export class SearchCompanionManager {
   private readonly segmentLocality?: IndexSegmentLocalityManager;
   private readonly buildWorkers: IndexBuildWorkerPool;
   private readonly ownsBuildWorkers: boolean;
+  private warmingMappedBundles = false;
+  private stopped = false;
 
   constructor(
     private readonly cfg: Config,
@@ -282,6 +292,8 @@ export class SearchCompanionManager {
       cfg.searchCompanionFileCacheMaxAgeMs,
       cfg.searchCompanionMappedCacheEntries
     );
+    this.tocCache = new ByteLruCache(cfg.searchCompanionTocCacheBytes, (toc) => 64 + toc.sections.length * 32);
+    this.sectionCache = new ByteLruCache(cfg.searchCompanionSectionCacheBytes, (entry) => entry.payloadBytes);
   }
 
   private async yieldBackgroundWork(): Promise<void> {
@@ -293,13 +305,18 @@ export class SearchCompanionManager {
   }
 
   start(): void {
-    // Scheduling is owned by the global index manager.
+    this.stopped = false;
+    this.scheduleWarmMappedBundles();
   }
 
   stop(): void {
+    this.stopped = true;
     this.runningBuildTick = false;
     if (this.ownsBuildWorkers) this.buildWorkers.stop();
     this.fileCache.clearMapped();
+    this.tocCache.clear();
+    this.sectionCache.clear();
+    this.warmingMappedBundles = false;
   }
 
   async persistUnifiedCompanionOutput(
@@ -353,7 +370,60 @@ export class SearchCompanionManager {
   }
 
   enqueue(stream: string): void {
+    if (this.stopped) return;
     this.queue.add(stream);
+    this.scheduleWarmMappedBundles();
+  }
+
+  private scheduleWarmMappedBundles(): void {
+    if (this.stopped) return;
+    if (this.warmingMappedBundles) return;
+    this.warmingMappedBundles = true;
+    queueMicrotask(() => {
+      void this.warmMappedBundlesBackground();
+    });
+  }
+
+  private async warmMappedBundlesBackground(): Promise<void> {
+    try {
+      if (this.stopped) return;
+      const budget = Math.max(0, this.cfg.searchCompanionMappedCacheEntries);
+      if (budget <= 0) return;
+      const streams = this.db.listSearchCompanionPlanStreams();
+      if (streams.length === 0) return;
+      const perStreamBudget = Math.max(1, Math.ceil(budget / streams.length));
+      const sectionBudgetSoftLimit =
+        this.cfg.searchCompanionSectionCacheBytes > 0 ? Math.max(1, Math.floor(this.cfg.searchCompanionSectionCacheBytes * 0.85)) : 0;
+      for (const stream of streams) {
+        if (this.stopped) return;
+        const rows = this.db.listSearchSegmentCompanions(stream);
+        const newestRows = rows.slice(-perStreamBudget).reverse();
+        for (const row of newestRows) {
+          if (this.stopped) return;
+          try {
+            const bundleRes = await this.loadBundleResult(row);
+            if (Result.isError(bundleRes)) {
+              console.warn("bundled companion warm failed", row.object_key, bundleRes.error.message);
+              continue;
+            }
+            if (sectionBudgetSoftLimit > 0 && this.sectionCache.totalBytes < sectionBudgetSoftLimit) {
+              const sectionKinds = parseSectionKinds(row);
+              if (sectionKinds.has("fts")) {
+                await this.getSectionCompanionWithStats(stream, row.segment_index, "fts");
+              }
+              if (this.sectionCache.totalBytes < sectionBudgetSoftLimit && sectionKinds.has("col")) {
+                await this.getSectionCompanionWithStats(stream, row.segment_index, "col");
+              }
+            }
+          } catch (error: unknown) {
+            console.warn("bundled companion warm skipped", row.object_key, String((error as any)?.message ?? error));
+          }
+          await this.yieldBackgroundWork();
+        }
+      }
+    } finally {
+      this.warmingMappedBundles = false;
+    }
   }
 
   async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null> {
@@ -390,6 +460,10 @@ export class SearchCompanionManager {
     mappedFileBytes: number;
     mappedFileEntries: number;
     pinnedFileEntries: number;
+    tocCacheBytes: number;
+    tocCacheEntries: number;
+    sectionCacheBytes: number;
+    sectionCacheEntries: number;
   } {
     const stats = this.fileCache.stats();
     return {
@@ -398,7 +472,19 @@ export class SearchCompanionManager {
       mappedFileBytes: stats.mappedBytes,
       mappedFileEntries: stats.mappedEntryCount,
       pinnedFileEntries: stats.pinnedEntryCount,
+      tocCacheBytes: this.tocCache.totalBytes,
+      tocCacheEntries: this.tocCache.size,
+      sectionCacheBytes: this.sectionCache.totalBytes,
+      sectionCacheEntries: this.sectionCache.size,
     };
+  }
+
+  private bundleCacheKey(row: SearchSegmentCompanionRow): string {
+    return `${row.object_key}@${row.updated_at_ms}`;
+  }
+
+  private sectionCacheKey(row: SearchSegmentCompanionRow, kind: CompanionSectionKind): string {
+    return `${this.bundleCacheKey(row)}:${kind}`;
   }
 
   private async getSectionCompanion<K extends CompanionSectionKind>(
@@ -423,6 +509,13 @@ export class SearchCompanionManager {
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
       if (!row || row.plan_generation !== planRow.generation) return { companion: null, stats: { sectionGetMs, decodeMs } };
       if (!parseSectionKinds(row).has(kind)) return { companion: null, stats: { sectionGetMs, decodeMs } };
+      const cachedSection = this.sectionCache.get(this.sectionCacheKey(row, kind));
+      if (cachedSection) {
+        return {
+          companion: cachedSection.companion as CompanionSectionMap[K],
+          stats: { sectionGetMs, decodeMs },
+        };
+      }
       const sectionStartedAt = Date.now();
       const bundle = await this.loadBundleResult(row);
       if (Result.isError(bundle)) throw dsError(bundle.error.message);
@@ -435,6 +528,10 @@ export class SearchCompanionManager {
       const decoded = decodeCompanionSectionPayloadResult(kind, sectionBytes.value, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
       decodeMs = Date.now() - decodeStartedAt;
+      this.sectionCache.set(this.sectionCacheKey(row, kind), {
+        payloadBytes: sectionBytes.value.byteLength,
+        companion: decoded.value,
+      });
       return { companion: decoded.value ?? null, stats: { sectionGetMs, decodeMs } };
     } finally {
       leave?.();
@@ -774,6 +871,7 @@ export class SearchCompanionManager {
     row: SearchSegmentCompanionRow
   ): Promise<Result<{ bytes: Uint8Array; toc: CompanionToc }, CompanionBuildError>> {
     if (row.size_bytes <= 0) return invalidCompanionBuild(`invalid .cix size for ${row.object_key}`);
+    const bundleCacheKey = this.bundleCacheKey(row);
     const bundleRes = await this.fileCache.loadMappedBundleResult({
       objectKey: row.object_key,
       expectedSize: row.size_bytes,
@@ -792,8 +890,11 @@ export class SearchCompanionManager {
           }
         ),
       decodeToc: (bytes) => {
+        const cachedToc = this.tocCache.get(bundleCacheKey);
+        if (cachedToc) return Result.ok(cachedToc);
         const tocRes = decodeBundledSegmentCompanionTocResult(bytes.subarray(0, Math.min(bytes.byteLength, PSCIX2_MAX_TOC_BYTES)));
         if (Result.isError(tocRes)) return Result.err({ message: tocRes.error.message });
+        this.tocCache.set(bundleCacheKey, tocRes.value);
         return Result.ok(tocRes.value);
       },
     });
@@ -1061,6 +1162,7 @@ export class SearchCompanionManager {
       prepared.primaryTimestampMinMs,
       prepared.primaryTimestampMaxMs
     );
+    this.scheduleWarmMappedBundles();
     return Result.ok({ sectionKinds: prepared.sectionKinds });
   }
 
@@ -1120,6 +1222,19 @@ export class SearchCompanionManager {
         } catch {
           // ignore temp cleanup failures
         }
+      }
+    } else {
+      const warmRes = this.fileCache.mapCachedBundleResult({
+        objectKey,
+        expectedSize: outputSizeBytes,
+        decodeToc: (bytes) => {
+          const tocRes = decodeBundledSegmentCompanionTocResult(bytes.subarray(0, Math.min(bytes.byteLength, PSCIX2_MAX_TOC_BYTES)));
+          if (Result.isError(tocRes)) return Result.err({ message: tocRes.error.message });
+          return Result.ok(tocRes.value);
+        },
+      });
+      if (Result.isError(warmRes)) {
+        console.warn("bundled companion mmap prime failed", objectKey, warmRes.error.message);
       }
     }
     return Result.ok({

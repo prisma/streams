@@ -608,7 +608,10 @@ export function parseSearchRequestQueryResult(
   });
 }
 
-export function collectPositiveSearchExactClauses(query: CompiledSearchQuery): SearchExactClause[] {
+export function collectPositiveSearchExactClauses(
+  query: CompiledSearchQuery,
+  opts?: { excludeFtsKeywordClauses?: boolean }
+): SearchExactClause[] {
   const out: SearchExactClause[] = [];
   const visit = (node: CompiledSearchQuery, negated: boolean): void => {
     if (node.kind === "and") {
@@ -622,10 +625,12 @@ export function collectPositiveSearchExactClauses(query: CompiledSearchQuery): S
     }
     if (negated) return;
     if (node.kind === "keyword" && !node.prefix && node.config.exact) {
+      if (opts?.excludeFtsKeywordClauses && node.config.kind === "keyword" && node.config.prefix === true) return;
       out.push({ field: node.field, canonicalValue: node.canonicalValue });
       return;
     }
     if (node.kind === "compare" && node.op === "eq" && node.config.exact && node.canonicalValue) {
+      if (opts?.excludeFtsKeywordClauses && node.config.kind === "keyword" && node.config.prefix === true) return;
       out.push({ field: node.field, canonicalValue: node.canonicalValue });
     }
   };
@@ -752,6 +757,10 @@ export function collectPositiveSearchFtsClauses(query: CompiledSearchQuery): Sea
   };
   visit(query, false);
   return out;
+}
+
+export function hasNonKeywordSearchFtsClauses(clauses: readonly SearchFtsClause[]): boolean {
+  return clauses.some((clause) => clause.kind !== "keyword");
 }
 
 export function buildSearchDocumentResult(
