@@ -275,9 +275,15 @@ describe("bootstrap from R2", () => {
         app2.deps.db.db.query(`UPDATE streams SET last_append_ms=? WHERE stream=?;`).run(app2.deps.db.nowMs() - 11n * 60_000n, stream);
         const exactDeadline = Date.now() + 10_000;
         while (Date.now() < exactDeadline) {
+          const uploadedSegmentCount = app2.deps.db.getStream(stream)?.uploaded_segment_count ?? 0;
           const secondaryStates = app2.deps.db.listSecondaryIndexStates(stream);
           const secondaryRuns = app2.deps.db.listSecondaryIndexRuns(stream, "service");
-          if (secondaryStates.length === 3 && secondaryRuns.length > 0) break;
+          const exactCoverageComplete =
+            uploadedSegmentCount > 0 &&
+            secondaryStates.length === 3 &&
+            secondaryStates.every((state) => state.indexed_through >= uploadedSegmentCount);
+          const companionCoverageComplete = app2.deps.db.listSearchSegmentCompanions(stream).length >= uploadedSegmentCount;
+          if (exactCoverageComplete && companionCoverageComplete && secondaryRuns.length > 0) break;
           (secondaryIndexer as any).enqueue(stream);
           await (secondaryIndexer as any).tick?.();
           await sleep(50);
