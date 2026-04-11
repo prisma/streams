@@ -177,6 +177,45 @@ Recommended UI treatment on timeout:
 - expose a retry affordance if the UI wants to rerun with narrower filters
 - `/_search` no longer supports request-time exact total-hit counting
 
+Recommended integrator strategy:
+
+- treat `200` plus `timed_out: true` as a successful partial result, not as an
+  error response
+- treat `408` with
+  `{ "error": { "code": "request_timeout", "message": "request timed out" } }`
+  as a real request failure because the server did not produce a structured
+  search body
+- keep one UI state for `complete` results and one for `partial` results; do
+  not collapse partial results into the generic error state
+- render partial hits immediately and attach inline explanation next to the
+  result list rather than replacing the list with a toast or blocking modal
+- prefer a narrow banner model:
+  - `Showing partial results from the indexed prefix. Totals are lower bounds.`
+  - if `coverage.visible_through_primary_timestamp_max` is present, append the
+    freshness watermark
+- keep the scroll/pagination controls enabled when `next_search_after` is
+  present, even if `timed_out === true`
+  - the next page request should reuse the same `q`, `sort`, and returned
+    `search_after`
+- do not auto-retry the same query in a tight loop when `timed_out === true`
+  - that just burns the budget repeatedly against the same indexed prefix
+- if the user wants more complete results, offer explicit actions instead:
+  - narrow the query
+  - reduce `size`
+  - retry with a larger `timeout_ms`
+- keep the generic retry button only for the outer `408 request_timeout` shape
+
+Suggested UI flow:
+
+1. Send `/_search`.
+2. If the HTTP status is `200`, always parse and render the body.
+3. If `timed_out === true`, mark the page as partial, show the timeout/freshness
+   banner, and treat `total.relation === "gte"` as a lower bound.
+4. If `next_search_after` is present, allow infinite scroll to continue from the
+   returned page.
+5. Only show a hard error state when the server returns the generic `408`
+   timeout error body or some other non-search failure.
+
 ## Infinite Scroll
 
 Use the `next_search_after` value returned by the previous `/_search` response.
