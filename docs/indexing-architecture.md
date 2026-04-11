@@ -692,7 +692,7 @@ Current request shape:
 - `sort`
 - `timeout_ms`
   - optional lower per-request budget
-  - when omitted, index-capable queries default to `200 ms`
+  - when omitted, index-capable queries default to `2000 ms`
   - other queries still default to `3000 ms`
   - the server clamps effective `/_search` timeout to `<= 3000 ms`
   - the deadline is enforced cooperatively between work units, so wall time may

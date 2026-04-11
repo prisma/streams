@@ -81,7 +81,7 @@ const UNAVAILABLE_RETRY_AFTER_SECONDS = "5";
 const APPEND_REQUEST_TIMEOUT_MS = 3_000;
 const HTTP_RESOLVER_TIMEOUT_MS = 5_000;
 const SEARCH_REQUEST_TIMEOUT_MS = 3_000;
-const SEARCH_INDEXED_ONLY_DEFAULT_TIMEOUT_MS = 200;
+const SEARCH_INDEXED_ONLY_DEFAULT_TIMEOUT_MS = 2_000;
 const TIMEOUT_SENTINEL = Symbol("request-timeout");
 const DEFAULT_TOUCH_JOURNAL_FILTER_BYTES = 4 * (1 << 22);
 
@@ -1973,7 +1973,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               reader.searchResult({ stream, request, signal: requestAbortController.signal })
             );
             if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
-            return json(200, {
+            const status = searchRes.value.timedOut ? 408 : 200;
+            return json(status, {
               stream,
               snapshot_end_offset: searchRes.value.snapshotEndOffset,
               took_ms: searchRes.value.tookMs,

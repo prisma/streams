@@ -495,7 +495,7 @@ describe("_search http", () => {
   );
 
   test(
-    "returns timed-out partial search responses, clamps explicit timeout_ms to 3s, and defaults indexed-only searches to 200ms",
+    "returns timed-out partial search responses, clamps explicit timeout_ms to 3s, and defaults indexed-only searches to 2000ms",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-timeout-"));
       const cfg = makeConfig(root, {
@@ -608,9 +608,9 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
-        expect(res.headers.get("search-timeout-ms")).toBe("200");
+        expect(res.headers.get("search-timeout-ms")).toBe("2000");
         body = await res.json();
-        expect(body.timeout_ms).toBe(200);
+        expect(body.timeout_ms).toBe(2000);
         expect(body.timed_out).toBe(false);
 
         res = await app.fetch(
@@ -642,7 +642,7 @@ describe("_search http", () => {
             }),
           })
         );
-        expect(res.status).toBe(200);
+        expect(res.status).toBe(408);
         expect(res.headers.get("search-timed-out")).toBe("true");
         expect(res.headers.get("search-timeout-ms")).toBe("0");
         expect(res.headers.get("search-total-relation")).toBe("gte");

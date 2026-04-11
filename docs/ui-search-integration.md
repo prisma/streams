@@ -100,7 +100,7 @@ Example:
 
 `/_search` uses a server-side timeout target of `3000 ms`.
 
-Indexed-only queries default to a lower `200 ms` budget when the request does
+Indexed-only queries default to a lower `2000 ms` budget when the request does
 not provide `timeout_ms`. This applies to search shapes that can be served
 entirely from exact, `.col`, and/or `.fts` indexes.
 
@@ -114,12 +114,11 @@ For mixed exact-plus-typed filters such as `env:"staging" AND duration:1422.027`
 - the request may set `timeout_ms` to a lower value
 - values above `3000` are clamped to `3000`
 - if `timeout_ms` is omitted:
-  - index-capable `/_search` requests default to `200 ms`
+  - index-capable `/_search` requests default to `2000 ms`
   - other search shapes default to `3000 ms`
 - the reader checks that deadline cooperatively between work units
-- if the budget is exhausted, the server still returns a normal JSON search
-  response body instead of hanging the request
-  - the HTTP status stays `200`
+- if the budget is exhausted, the server returns `408` with a normal JSON
+  search response body instead of hanging the request
   - `timed_out: true` and `search-timed-out: true` mark the body as partial
 - because timeout checks are cooperative, observed wall time may overshoot the
   configured timeout slightly while an in-flight unit of work completes
@@ -127,7 +126,7 @@ For mixed exact-plus-typed filters such as `env:"staging" AND duration:1422.027`
 Important UI rule:
 
 - `/_search` has two timeout shapes:
-  - the normal search timeout shape: `200` with a structured partial-result
+  - the normal search timeout shape: `408` with a structured partial-result
     body and `search-timed-out: true`
   - the outer generic resolver timeout shape: `408` with
     `{ "error": { "code": "request_timeout", "message": "request timed out" } }`
@@ -169,7 +168,7 @@ Recommended UI treatment on timeout:
 
 - keep showing the returned hits
 - if `timed_out === true` or `search-timed-out: true`, show a banner such as:
-  - `Search hit its 3.0s budget. Showing the newest matches found so far.`
+  - `Search hit its time budget. Showing the newest matches found so far.`
 - if the body is the generic `request_timeout` error, show a banner such as:
   - `Search request timed out before the server produced a partial result. Try a narrower query and retry.`
 - if `total.relation === "gte"`, label totals as a lower bound:
@@ -179,8 +178,8 @@ Recommended UI treatment on timeout:
 
 Recommended integrator strategy:
 
-- treat `200` plus `timed_out: true` as a successful partial result, not as an
-  error response
+- treat `408` plus `timed_out: true` or `search-timed-out: true` as a
+  successful partial result, not as a generic transport failure
 - treat `408` with
   `{ "error": { "code": "request_timeout", "message": "request timed out" } }`
   as a real request failure because the server did not produce a structured
@@ -208,9 +207,11 @@ Recommended integrator strategy:
 Suggested UI flow:
 
 1. Send `/_search`.
-2. If the HTTP status is `200`, always parse and render the body.
-3. If `timed_out === true`, mark the page as partial, show the timeout/freshness
-   banner, and treat `total.relation === "gte"` as a lower bound.
+2. If the HTTP status is `200`, parse and render the body normally.
+3. If the HTTP status is `408`, inspect the body and headers:
+   - if `timed_out === true` or `search-timed-out: true`, treat it as a
+     structured partial result and render it
+   - otherwise treat it as a real timeout failure
 4. If `next_search_after` is present, allow infinite scroll to continue from the
    returned page.
 5. Only show a hard error state when the server returns the generic `408`
