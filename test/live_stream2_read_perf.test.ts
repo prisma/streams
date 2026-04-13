@@ -87,7 +87,7 @@ describe("live stream-2 read perf fixtures", () => {
       expect(bodyBytes).toBeGreaterThan(600_000);
       expect(elapsedMs).toBeLessThan(100);
     });
-  });
+  }, 15_000);
 
   test("wal-tail read stays below 100ms on warm live fixture data", async () => {
     await withFixtureApp(async (app) => {
@@ -96,5 +96,5 @@ describe("live stream-2 read perf fixtures", () => {
       expect(bodyBytes).toBeGreaterThan(600_000);
       expect(elapsedMs).toBeLessThan(100);
     });
-  });
+  }, 15_000);
 });
