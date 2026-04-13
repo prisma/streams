@@ -12,6 +12,14 @@ and other trusted local workflows.
 
 ## Release Checklist
 
+Release branch policy:
+
+- Always cut and publish releases from `main` only.
+- Do not run `release.yml` against feature branches or temporary release
+  branches.
+- Merge the release changes into `main` first, then dispatch the release
+  workflow from `main`.
+
 0. Ensure npm trusted publishing is configured for both packages:
 
 - `@prisma/streams-local`
@@ -81,10 +89,10 @@ npm publish --access public ./dist/npm/streams-local
 npm publish --access public ./dist/npm/streams-server
 ```
 
-Or use the repository release workflow after pushing to `main`:
+Or use the repository release workflow from `main` only:
 
 ```bash
-gh workflow run release.yml
+gh workflow run release.yml --ref main
 ```
 
 The GitHub workflow builds, validates, and publishes both packages with npm
