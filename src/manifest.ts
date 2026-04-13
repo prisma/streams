@@ -1,4 +1,3 @@
-import { zstdCompressSync } from "node:zlib";
 import { Result } from "better-result";
 import type {
   IndexRunRow,
@@ -13,6 +12,7 @@ import type {
   StreamRow,
 } from "./db/db";
 import { encodeOffsetResult } from "./offset";
+import { zstdCompressSync } from "./util/zstd";
 import { dsError } from "./util/ds_error.ts";
 
 function b64(bytes: Uint8Array): string {

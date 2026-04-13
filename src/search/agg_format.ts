@@ -1,8 +1,8 @@
 import { Result } from "better-result";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { BinaryCursor, BinaryPayloadError, BinaryWriter, concatBytes, readF64, readI64, readU16, readU32 } from "./binary/codec";
 import { RestartStringTableView, encodeRestartStringTable } from "./binary/restart_strings";
 import { readUVarint, readZigZagVarint, writeUVarint, writeZigZagVarint } from "./binary/varint";
+import { zstdCompressSync, zstdDecompressSync } from "../util/zstd";
 import type { SearchCompanionPlan, SearchCompanionPlanRollup } from "./companion_plan";
 
 export type AggSummaryState = {

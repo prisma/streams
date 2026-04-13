@@ -12,6 +12,14 @@ and other trusted local workflows.
 
 ## Release Checklist
 
+Release branch policy:
+
+- Always cut and publish releases from `main` only.
+- Do not run `release.yml` against feature branches or temporary release
+  branches.
+- Merge the release changes into `main` first, then dispatch the release
+  workflow from `main`.
+
 0. Ensure npm trusted publishing is configured for both packages:
 
 - `@prisma/streams-local`
@@ -46,7 +54,7 @@ These tests build the generated package directories, pack them, install them
 into temporary consumers, and verify:
 
 - Node end-to-end usage of `@prisma/streams-local`
-- Bun end-to-end usage of `@prisma/streams-local`, including the live `/touch/*` path
+- Bun end-to-end usage of `@prisma/streams-local` on Bun `1.2.x` and newer, including the live `/touch/*` path
 - stateful local-runtime reopen flows that must read `/_schema` and skip
   duplicate first-schema installs when the registry already matches
 - local package exposure of `GET /v1/server/_details` and `GET /v1/stream/{name}/_routing_keys`
@@ -81,10 +89,10 @@ npm publish --access public ./dist/npm/streams-local
 npm publish --access public ./dist/npm/streams-server
 ```
 
-Or use the repository release workflow after pushing to `main`:
+Or use the repository release workflow from `main` only:
 
 ```bash
-gh workflow run release.yml
+gh workflow run release.yml --ref main
 ```
 
 The GitHub workflow builds, validates, and publishes both packages with npm
@@ -113,6 +121,8 @@ For `@prisma/streams-local`, the build intentionally:
   each embed their own copy of the runtime
 - keeps the local runtime Bun-compatible even though the generated bundle
   targets the Node module surface
+- publishes a local-package Bun engine floor of `>=1.2.0` while keeping the
+  full server on the repository Bun floor
 - pins the embedded local runtime to the built-in `1024 MB` auto-tune preset so
   Prisma CLI gets a predictable cache and concurrency budget
 - keeps npm dependencies external instead of rebundling them into the local
@@ -133,7 +143,7 @@ The split gives you:
 
 ## Current Packaging Contract
 
-- `@prisma/streams-local` supports Bun and Node
+- `@prisma/streams-local` supports Bun `>=1.2.0` and Node `>=22`
 - `@prisma/streams-local/internal/daemon` is intentionally internal
 - `@prisma/streams-server` is Bun-only
 - the root repository package is still private and is not the publish target

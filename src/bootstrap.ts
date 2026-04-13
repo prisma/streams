@@ -1,9 +1,9 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { zstdDecompressSync } from "node:zlib";
 import type { Config } from "./config";
 import { SqliteDurableStore } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
+import { zstdDecompressSync } from "./util/zstd";
 import { localSegmentPath, schemaObjectKey, segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
 import { retry } from "./util/retry";
 import { dsError } from "./util/ds_error.ts";
