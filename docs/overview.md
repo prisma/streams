@@ -70,8 +70,8 @@ See [security.md](./security.md) and [auth.md](./auth.md).
 
 ## Prerequisites
 
-- Bun `>=1.3.11`
-- Node.js `>=22` for local embedding and Node-based consumers
+- Bun `>=1.3.11` for the full self-hosted server and repository workflows
+- Bun `>=1.2.0` or Node.js `>=22` for the published `@prisma/streams-local` package
 
 ## Quick Start
 
@@ -116,8 +116,8 @@ console.log(server.exports.sqlite.path);
 await server.close();
 ```
 
-The published `@prisma/streams-local` surface is built to run on both Bun and
-Node. The full self-hosted server remains Bun-only.
+The published `@prisma/streams-local` surface is built to run on Bun `>=1.2.0`
+and Node `>=22`. The full self-hosted server remains Bun-only.
 
 The local embedded runtime always applies the built-in `1024 MB` auto-tune
 preset. That keeps the local package on the current control-plane and endpoint

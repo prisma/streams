@@ -2,6 +2,7 @@ import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } f
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { localPackageBunEngine } from "./package-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -36,8 +37,8 @@ function replaceInBuiltLocalFiles(replacements) {
 function writeDistReadme() {
   const readme = `# Prisma Streams Local Build
 
-This directory contains the generated Node-compatible package artifacts for the
-published \`@prisma/streams-local\` runtime.
+This directory contains the generated Node/Bun-compatible package artifacts for
+the published \`@prisma/streams-local\` runtime.
 
 ## What Local Streams Is
 
@@ -52,13 +53,18 @@ The embedded local runtime always applies the built-in \`1024 MB\` auto-tune
 preset, so Prisma CLI gets a predictable cache and concurrency budget and the
 same current HTTP surface, including \`GET /v1/server/_details\`.
 
+Published runtime floor:
+
+- Bun \`${localPackageBunEngine}\`
+- Node.js \`>=22\`
+
 ## Supported Package Surface
 
 - \`@prisma/streams-local\`
 - \`@prisma/streams-local/internal/daemon\` (internal Prisma CLI plumbing)
 
-The full self-hosted server remains Bun-only and is not part of this Node build
-surface.
+The full self-hosted server remains Bun-only and is not part of this local
+build surface.
 
 ## Integrating It
 

@@ -1,6 +1,6 @@
 import { Result } from "better-result";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { BinaryCursor, BinaryPayloadError, BinaryWriter, readI64 } from "../../search/binary/codec";
+import { zstdCompressSync, zstdDecompressSync } from "../../util/zstd";
 import type { MetricsBlockRecord } from "./normalize";
 
 export type MetricsBlockSectionInput = {

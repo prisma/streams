@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { localPackageBunEngine } from "./package-contract.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TABLE_KEY_POSTS = "8c646d3dd6bc68f4";
@@ -37,6 +38,9 @@ try {
   const localPackageManifest = JSON.parse(readFileSync(join(localPackageDir, "package.json"), "utf8"));
   if ("@durable-streams/client" in (localPackageManifest.dependencies ?? {})) {
     throw new Error("@prisma/streams-local should not publish @durable-streams/client");
+  }
+  if (localPackageManifest.engines?.bun !== localPackageBunEngine) {
+    throw new Error(`@prisma/streams-local should publish bun ${localPackageBunEngine}, got ${localPackageManifest.engines?.bun}`);
   }
   const packOutput = run("npm", ["pack", "--pack-destination", packDir], localPackageDir);
   const tarballName = packOutput.split(/\r?\n/).filter(Boolean).at(-1);

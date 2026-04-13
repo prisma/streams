@@ -2,6 +2,7 @@ import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } fro
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { localPackageBunEngine } from "./package-contract.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
@@ -104,7 +105,7 @@ function buildLocalPackage() {
     license: rootPackage.license,
     type: "module",
     engines: {
-      bun: rootPackage.engines.bun,
+      bun: localPackageBunEngine,
       node: rootPackage.engines.node,
     },
     publishConfig: {

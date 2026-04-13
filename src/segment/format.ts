@@ -1,9 +1,9 @@
 import { Result } from "better-result";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { Bloom256 } from "../util/bloom256";
 import { crc32c } from "../util/crc32c";
 import { concatBytes, readU32BE, readU64BE, writeU32BE, writeU64BE } from "../util/endian";
 import { dsError } from "../util/ds_error.ts";
+import { zstdCompressSync, zstdDecompressSync } from "../util/zstd";
 
 export type SegmentRecord = {
   appendNs: bigint;
