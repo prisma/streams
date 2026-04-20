@@ -63,19 +63,35 @@ describe("bootstrap from R2", () => {
             body: JSON.stringify({
               schema: {
                 type: "object",
+                required: ["type", "key", "value", "headers"],
                 properties: {
-                  eventTime: { type: "string" },
-                  x: { type: "number" },
-                  service: { type: "string" },
+                  type: { type: "string" },
+                  key: { type: "string" },
+                  value: {
+                    type: "object",
+                    properties: {
+                      x: { type: "number" },
+                      service: { type: "string" },
+                      duration: { type: "number" },
+                    },
+                    required: ["x", "service", "duration"],
+                  },
+                  headers: {
+                    type: "object",
+                    required: ["operation", "timestamp"],
+                    properties: {
+                      operation: { type: "string" },
+                      timestamp: { type: "string" },
+                    },
+                  },
                 },
-                required: ["x", "service"],
               },
               search: {
                 primaryTimestampField: "eventTime",
                 fields: {
                   eventTime: {
                     kind: "date",
-                    bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+                    bindings: [{ version: 1, jsonPointer: "/headers/timestamp" }],
                     exact: true,
                     column: true,
                     exists: true,
@@ -83,7 +99,7 @@ describe("bootstrap from R2", () => {
                   },
                   service: {
                     kind: "keyword",
-                    bindings: [{ version: 1, jsonPointer: "/service" }],
+                    bindings: [{ version: 1, jsonPointer: "/value/service" }],
                     normalizer: "lowercase_v1",
                     exact: true,
                     prefix: true,
@@ -91,7 +107,7 @@ describe("bootstrap from R2", () => {
                   },
                   duration: {
                     kind: "float",
-                    bindings: [{ version: 1, jsonPointer: "/duration" }],
+                    bindings: [{ version: 1, jsonPointer: "/value/duration" }],
                     exact: true,
                     column: true,
                     exists: true,
@@ -136,10 +152,17 @@ describe("bootstrap from R2", () => {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({
-                eventTime: `2026-03-25T10:0${i}:00.000Z`,
-                x: i,
-                service: i % 2 === 0 ? "api" : "worker",
-                duration: 100 + i * 10,
+                type: "public.requests",
+                key: String(i),
+                value: {
+                  x: i,
+                  service: i % 2 === 0 ? "api" : "worker",
+                  duration: 100 + i * 10,
+                },
+                headers: {
+                  operation: "insert",
+                  timestamp: `2026-03-25T10:0${i}:00.000Z`,
+                },
               }),
             })
           );
@@ -222,7 +245,7 @@ describe("bootstrap from R2", () => {
           fields: {
             eventTime: {
               kind: "date",
-              bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+              bindings: [{ version: 1, jsonPointer: "/headers/timestamp" }],
               exact: true,
               column: true,
               exists: true,
@@ -230,7 +253,7 @@ describe("bootstrap from R2", () => {
             },
             service: {
               kind: "keyword",
-              bindings: [{ version: 1, jsonPointer: "/service" }],
+              bindings: [{ version: 1, jsonPointer: "/value/service" }],
               normalizer: "lowercase_v1",
               exact: true,
               prefix: true,
@@ -238,7 +261,7 @@ describe("bootstrap from R2", () => {
             },
             duration: {
               kind: "float",
-              bindings: [{ version: 1, jsonPointer: "/duration" }],
+              bindings: [{ version: 1, jsonPointer: "/value/duration" }],
               exact: true,
               column: true,
               exists: true,

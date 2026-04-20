@@ -17,7 +17,7 @@ export function deriveStateProtocolChanges(record: unknown): CanonicalChange[] {
   if (typeof type !== "string" || type.trim() === "") return [];
   if (typeof key !== "string" || key.trim() === "") return [];
 
-  const before = Object.prototype.hasOwnProperty.call(record, "oldValue") ? (record as any).oldValue : undefined;
+  const before = Object.prototype.hasOwnProperty.call(record, "old_value") ? (record as any).old_value : undefined;
   const after = Object.prototype.hasOwnProperty.call(record, "value") ? (record as any).value : undefined;
 
   return [{ entity: type, key, op, before, after }];

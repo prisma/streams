@@ -324,7 +324,7 @@ function makeEvent(args: {
   txid: bigint;
 }): any {
   const value = { id: String(args.id), ...args.valueDims };
-  const oldValue = { id: String(args.id), ...args.oldDims };
+  const beforeValue = { id: String(args.id), ...args.oldDims };
   if (args.op === "insert") {
     return {
       type: args.entity,
@@ -341,7 +341,7 @@ function makeEvent(args: {
     return {
       type: args.entity,
       key: String(args.id),
-      oldValue,
+      old_value: beforeValue,
       headers: {
         operation: "delete",
         txid: args.txid.toString(),
@@ -353,7 +353,7 @@ function makeEvent(args: {
     type: args.entity,
     key: String(args.id),
     value,
-    oldValue,
+    old_value: beforeValue,
     headers: {
       operation: "update",
       txid: args.txid.toString(),

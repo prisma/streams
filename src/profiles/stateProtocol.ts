@@ -16,6 +16,7 @@ import {
   isStateProtocolProfile,
   validateStateProtocolProfileResult,
 } from "./stateProtocol/validation";
+import { validateStateProtocolRecordResult } from "./stateProtocol/ingest";
 
 const STATE_PROTOCOL_TOUCH_CAPABILITY: StreamTouchCapability = {
   getTouchConfig(profile) {
@@ -96,5 +97,12 @@ export const STATE_PROTOCOL_STREAM_PROFILE_DEFINITION: StreamProfileDefinition =
       },
       schemaRegistry: null,
     });
+  },
+
+  jsonIngest: {
+    prepareRecordResult({ profile, value }) {
+      if (!isStateProtocolProfile(profile)) return Result.err({ message: "invalid state-protocol profile" });
+      return validateStateProtocolRecordResult(value);
+    },
   },
 };

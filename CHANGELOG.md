@@ -2,6 +2,11 @@
 
 ## Upcoming
 
+- Align Prisma WAL/state-protocol events with the published spec by using
+  `old_value`, validating change/control message shapes on append, and
+  accepting control messages without generating touch invalidations.
+- Use `bun pm pack` in package smoke tests and release docs so release
+  validation works with the repository's Bun package-manager pin.
 - Add stream profiles with built-in `generic` and `state-protocol` support,
   including a simplified `profile`-based `/_profile` API for live/touch setup.
 - Rename state-protocol touch processing metrics and runtime state to

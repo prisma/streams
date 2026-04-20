@@ -70,7 +70,7 @@ Touch generation consumes State Protocol records from the base stream.
   "type": "public.todos",
   "key": "1",
   "value": { "id": "1", "tenantId": "t1", "status": "open" },
-  "oldValue": { "id": "1", "tenantId": "t1", "status": "done" },
+  "old_value": { "id": "1", "tenantId": "t1", "status": "done" },
   "headers": {
     "operation": "update",
     "txid": "2057",
@@ -85,7 +85,7 @@ Rules:
 2. `type` must be non-empty.
 3. `key` must be non-empty.
 4. `value` should exist for `insert|update`.
-5. `oldValue` is optional but strongly recommended for precise invalidation on
+5. `old_value` is optional but strongly recommended for precise invalidation on
    updates.
 6. Control messages are ignored for touch derivation.
 
@@ -487,7 +487,7 @@ keys from those templates. Otherwise it waits on your provided keyset as-is.
 }
 ```
 
-This pattern assumes your change adapter can provide the `oldValue` data needed
+This pattern assumes your change adapter can provide the `old_value` data needed
 for precise update invalidation. If before-images are not guaranteed, prefer
 coarse waits for correctness.
 
@@ -659,7 +659,7 @@ before-images.
 
 `touch.onMissingBefore`:
 
-- `coarse` (default): suppress fine invalidation when `oldValue` is missing,
+- `coarse` (default): suppress fine invalidation when `old_value` is missing,
   but still emit coarse table touches
 - `skipBefore`: best-effort after-only fine invalidation
 - `error`: treat missing or insufficient before-images as a state-protocol
@@ -669,7 +669,7 @@ Guidance:
 
 - treat touches as invalidation hints only
 - always re-run the real query after `touched`
-- provide `oldValue` for updates whenever possible
+- provide `old_value` for updates whenever possible
 - fine waits are only fully correct when the adapter can supply the before
   image fields needed to derive the right watch keys
 - if before-images are not guaranteed, prefer coarse waits for correctness

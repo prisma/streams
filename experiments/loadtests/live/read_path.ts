@@ -387,7 +387,7 @@ async function runTouchDriver(args: {
       const valueJson = `{\"id\":\"${rng.nextU32()}\",\"userId\":${JSON.stringify(encodeUser(userIdx))},\"orgId\":${JSON.stringify(
         encodeOrg(orgIdx)
       )},\"status\":${JSON.stringify(encodeStatus(statusIdx))}}`;
-      const evt = `{\"type\":\"public.posts\",\"key\":\"${rng.nextU32()}\",\"value\":${valueJson},\"oldValue\":${valueJson},\"headers\":{\"operation\":\"update\",\"txid\":\"${rng.nextU32()}\",\"timestamp\":\"${new Date().toISOString()}\"}}`;
+      const evt = `{\"type\":\"public.posts\",\"key\":\"${rng.nextU32()}\",\"value\":${valueJson},\"old_value\":${valueJson},\"headers\":{\"operation\":\"update\",\"txid\":\"${rng.nextU32()}\",\"timestamp\":\"${new Date().toISOString()}\"}}`;
       batch.push(evt);
     }
     const body = `[${batch.join(",")}]`;

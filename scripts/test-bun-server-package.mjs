@@ -76,10 +76,11 @@ try {
   mkdirSync(consumerDir, { recursive: true });
 
   const serverPackageDir = join(repoRoot, "dist", "npm", "streams-server");
-  const packOutput = run("npm", ["pack", "--pack-destination", packDir], serverPackageDir);
-  const tarballName = packOutput.split(/\r?\n/).filter(Boolean).at(-1);
-  if (!tarballName) throw new Error("npm pack did not produce a tarball name");
-  const tarballPath = join(packDir, tarballName);
+  const tarballPath = run("bun", ["pm", "pack", "--destination", packDir, "--quiet"], serverPackageDir)
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .at(-1);
+  if (!tarballPath) throw new Error("bun pm pack did not produce a tarball path");
 
   writeFileSync(
     join(consumerDir, "package.json"),

@@ -1,6 +1,6 @@
 {
   "name": "prisma-streams",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Prisma Streams is a Bun + TypeScript implementation of the Durable Streams HTTP protocol, with a local development server for Prisma CLI integration.",
   "repository": {
@@ -73,6 +73,7 @@
     "./package.json": "./package.json"
   },
   "devDependencies": {
+    "@durable-streams/state": "0.2.5",
     "@durable-streams/server-conformance-tests": "^0.2.1",
     "bun-types": "^1.3.6",
     "fast-check": "^3.14.0",

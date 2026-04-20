@@ -42,10 +42,11 @@ try {
   if (localPackageManifest.engines?.bun !== localPackageBunEngine) {
     throw new Error(`@prisma/streams-local should publish bun ${localPackageBunEngine}, got ${localPackageManifest.engines?.bun}`);
   }
-  const packOutput = run("npm", ["pack", "--pack-destination", packDir], localPackageDir);
-  const tarballName = packOutput.split(/\r?\n/).filter(Boolean).at(-1);
-  if (!tarballName) throw new Error("npm pack did not produce a tarball name");
-  const tarballPath = join(packDir, tarballName);
+  const tarballPath = run("bun", ["pm", "pack", "--destination", packDir, "--quiet"], localPackageDir)
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .at(-1);
+  if (!tarballPath) throw new Error("bun pm pack did not produce a tarball path");
 
   writeFileSync(
     join(consumerDir, "package.json"),
@@ -243,7 +244,7 @@ try {
         type: "posts",
         key: "post:1",
         value: { id: "post:1", title: "hello" },
-        oldValue: null,
+        old_value: null,
         headers: {
           operation: "insert",
           timestamp: new Date().toISOString(),

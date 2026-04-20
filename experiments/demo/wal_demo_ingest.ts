@@ -71,7 +71,7 @@ type StateProtocolChange = {
   type: string;
   key: string;
   value?: any;
-  oldValue?: any;
+  old_value?: any;
   headers: {
     operation: "insert" | "update" | "delete";
     txid?: string;
@@ -152,7 +152,7 @@ function wal2jsonV1EnvelopeToStateProtocol(env: Wal2JsonV1Envelope): StateProtoc
         type,
         key: keyBefore,
         value: null,
-        oldValue: before,
+        old_value: before,
         headers: { operation: "delete", txid, timestamp },
       });
       continue;
@@ -169,7 +169,7 @@ function wal2jsonV1EnvelopeToStateProtocol(env: Wal2JsonV1Envelope): StateProtoc
         type,
         key: oldKey,
         value: null,
-        oldValue: before,
+        old_value: before,
         headers: { operation: "delete", txid, timestamp },
       });
       out.push({
@@ -185,7 +185,7 @@ function wal2jsonV1EnvelopeToStateProtocol(env: Wal2JsonV1Envelope): StateProtoc
       type,
       key: oldKey,
       value: after,
-      oldValue: before,
+      old_value: before,
       headers: { operation: "update", txid, timestamp },
     });
   }

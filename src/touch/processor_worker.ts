@@ -314,13 +314,13 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           } else {
             if (beforeObj === undefined) {
               if (onMissingBefore === "error") {
-                failProcess(`missing oldValue for update (entity=${entity}, templateId=${tpl.templateId})`);
+                failProcess(`missing old_value for update (entity=${entity}, templateId=${tpl.templateId})`);
                 return;
               }
             } else {
-              // oldValue exists but missing fields / unsupported types.
+              // old_value exists but missing fields / unsupported types.
               if (onMissingBefore === "error") {
-                failProcess(`oldValue missing required fields for update (entity=${entity}, templateId=${tpl.templateId})`);
+                failProcess(`old_value missing required fields for update (entity=${entity}, templateId=${tpl.templateId})`);
                 return;
               }
             }

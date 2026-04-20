@@ -138,7 +138,7 @@ Each committed database change should be normalized into a JSON record like:
   "type": "public.posts",
   "key": "42",
   "value": { "id": 42, "userId": "u1", "title": "Hello" },
-  "oldValue": { "id": 42, "userId": "u0", "title": "Hello" },
+  "old_value": { "id": 42, "userId": "u0", "title": "Hello" },
   "headers": {
     "operation": "update",
     "txid": "12345",
@@ -152,15 +152,15 @@ Mapping guidance:
 - insert:
   - `headers.operation = "insert"`
   - `value = row after`
-  - `oldValue = null` or omitted
+  - `old_value = null` or omitted
 - update:
   - `headers.operation = "update"`
   - `value = row after`
-  - `oldValue = row before`
+  - `old_value = row before`
 - delete:
   - `headers.operation = "delete"`
   - `value = null`
-  - `oldValue = row before`
+  - `old_value = row before`
 
 Field meanings:
 
@@ -171,16 +171,16 @@ Field meanings:
   - primary key string is the simplest choice
 - `value`
   - after image
-- `oldValue`
+- `old_value`
   - before image
 - `headers.timestamp`
   - commit or event timestamp in RFC3339
 - `headers.txid`
   - commit/transaction id if available
 
-## Why `oldValue` Matters
+## Why `old_value` Matters
 
-The live system can operate without `oldValue`, but update invalidation becomes
+The live system can operate without `old_value`, but update invalidation becomes
 less precise.
 
 Recommended policy:
