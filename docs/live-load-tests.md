@@ -76,7 +76,7 @@ bun run experiments/loadtests/live/write_path.ts \
 
 - `--steps 1000,5000,10000,20000` and `--step-seconds 60`
 - `--producers` and `--batch-events` (client-side throughput tuning)
-- `--columns 128` (size of `value` and `oldValue` objects)
+- `--columns 128` (size of `value` and `old_value` objects)
 - `--coarse-interval-ms` and `--coalesce-window-ms`
 - Guardrails:
   - `--lag-degrade-offsets` + `--lag-recover-offsets` (hysteresis for coarse-only mode under lag)

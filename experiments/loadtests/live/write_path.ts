@@ -53,7 +53,7 @@ Options:
   --step-seconds <n>                  (default: 60)
   --producers <n>                     (default: 4)
   --batch-events <n>                  (default: 200)
-  --columns <n>                       (default: 128)  Value/oldValue columns per row object
+  --columns <n>                       (default: 128)  Value/old_value columns per row object
   --row-space <n>                     (default: 100000) Rows per entity per producer
   --ttl-ms <n>                        (default: 3600000) Template inactivity TTL for activations
   --coarse-interval-ms <n>            (default: 100)
@@ -405,7 +405,7 @@ function makeEventFactory(args: { entity: string; fields: string[]; columns: num
       const { id, before } = doDelete();
       const key = String(id);
       const oldJson = makeRowJson(id, before);
-      return `{\"type\":${JSON.stringify(args.entity)},\"key\":${JSON.stringify(key)},\"value\":null,\"oldValue\":${oldJson},\"headers\":{\"operation\":\"delete\",\"txid\":${JSON.stringify(
+      return `{\"type\":${JSON.stringify(args.entity)},\"key\":${JSON.stringify(key)},\"value\":null,\"old_value\":${oldJson},\"headers\":{\"operation\":\"delete\",\"txid\":${JSON.stringify(
         String(txid)
       )},\"timestamp\":${JSON.stringify(timestamp)}}}`;
     }
@@ -414,7 +414,7 @@ function makeEventFactory(args: { entity: string; fields: string[]; columns: num
     const key = String(id);
     const valueJson = makeRowJson(id, after);
     const oldJson = makeRowJson(id, before);
-    return `{\"type\":${JSON.stringify(args.entity)},\"key\":${JSON.stringify(key)},\"value\":${valueJson},\"oldValue\":${oldJson},\"headers\":{\"operation\":\"update\",\"txid\":${JSON.stringify(
+    return `{\"type\":${JSON.stringify(args.entity)},\"key\":${JSON.stringify(key)},\"value\":${valueJson},\"old_value\":${oldJson},\"headers\":{\"operation\":\"update\",\"txid\":${JSON.stringify(
       String(txid)
     )},\"timestamp\":${JSON.stringify(timestamp)}}}`;
   };

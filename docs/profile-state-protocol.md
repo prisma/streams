@@ -40,6 +40,7 @@ and related live invalidation behavior.
 `state-protocol` owns:
 
 - profile validation for the touch config
+- append-time validation for State Protocol change and control messages
 - canonical change derivation for touch processing
 - `/touch/meta`
 - `/touch/wait`
@@ -53,6 +54,15 @@ The core engine only provides the shared plumbing:
 - journals
 - template registry
 - notifier integration
+
+Append-time validation follows the published State Protocol message shapes:
+
+- change messages must use `type`, `key`, `headers.operation`, and `value` for
+  `insert|update`
+- control messages must use `headers.control` with optional `headers.offset`
+- malformed change/control records are rejected with `400`
+- control messages are stored in the stream but do not produce touch
+  invalidations
 
 ## Schema Relationship
 
@@ -74,7 +84,7 @@ When `state-protocol` is used for WAL change events like:
   "type": "public.posts",
   "key": "42",
   "value": { "id": 42, "title": "Hello" },
-  "oldValue": null,
+  "old_value": null,
   "headers": {
     "operation": "insert",
     "timestamp": "2026-03-16T12:00:00.000Z"

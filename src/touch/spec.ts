@@ -38,7 +38,7 @@ export type TouchConfig = {
    */
   touchCoalesceWindowMs?: number;
   /**
-   * Policy when an update event is missing `oldValue` (before image).
+   * Policy when an update event is missing `old_value` (before image).
    *
    * - coarse: emit coarse table touches only (safe default)
    * - skipBefore: compute fine touches from `value` only

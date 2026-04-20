@@ -289,7 +289,7 @@ async function appendFieldUpdate(baseUrl: string, stream: string, update: FieldU
         field: update.field,
         text: update.value,
       },
-      oldValue: {
+      old_value: {
         field: update.field,
         text: previousText,
       },
@@ -978,7 +978,7 @@ async function publishFieldUpdate(opts: {
         field: opts.field,
         text: opts.nextValue,
       },
-      oldValue: {
+      old_value: {
         field: opts.field,
         text: opts.previousValue,
       },

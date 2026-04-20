@@ -78,8 +78,8 @@ This produces:
 4. Inspect the package contents:
 
 ```bash
-npm pack --dry-run ./dist/npm/streams-local
-npm pack --dry-run ./dist/npm/streams-server
+(cd ./dist/npm/streams-local && bun pm pack --dry-run)
+(cd ./dist/npm/streams-server && bun pm pack --dry-run)
 ```
 
 5. Publish the packages:

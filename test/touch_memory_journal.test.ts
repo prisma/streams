@@ -80,7 +80,7 @@ describe("touch storage=memory (journal cursors)", () => {
         type: entity,
         key: "post:1",
         value: { tenantId: "t1", userId: "456" },
-        oldValue: { tenantId: "t1", userId: "123" },
+        old_value: { tenantId: "t1", userId: "123" },
         headers: { operation: "update" },
       };
       await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
@@ -233,7 +233,7 @@ describe("touch storage=memory (journal cursors)", () => {
           type: entity,
           key: "post:2",
           value: { tenantId: "t1", userId: "9" },
-          oldValue: { tenantId: "t1", userId: "8" },
+          old_value: { tenantId: "t1", userId: "8" },
           headers: { operation: "update" },
         }),
       });
@@ -428,7 +428,7 @@ describe("touch storage=memory (journal cursors)", () => {
         type: entity,
         key: `post:${i + 1}`,
         value: { userId: i + 1 },
-        oldValue: { userId: i + 1000 },
+        old_value: { userId: i + 1000 },
         headers: { operation: "update" },
       }));
       await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
@@ -532,7 +532,7 @@ describe("touch storage=memory (journal cursors)", () => {
         type: entity,
         key: `post:${i + 1}`,
         value: { userId: i + 1 },
-        oldValue: { userId: i + 1000 },
+        old_value: { userId: i + 1000 },
         headers: { operation: "update" },
       }));
       await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {

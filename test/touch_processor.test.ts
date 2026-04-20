@@ -121,7 +121,7 @@ describe("live touches (state protocol)", () => {
           type: entity,
           key: "post:1",
           value: { tenantId: "t1", userId: "456" },
-          oldValue: { tenantId: "t1", userId: "123" },
+          old_value: { tenantId: "t1", userId: "123" },
           headers: { operation: "update" },
         }),
       });
@@ -154,7 +154,7 @@ describe("live touches (state protocol)", () => {
     }
   });
 
-  test("onMissingBefore=coarse suppresses template invalidation when update is missing oldValue", async () => {
+  test("onMissingBefore=coarse suppresses template invalidation when update is missing old_value", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-live-missing-before-"));
     let app: ReturnType<typeof createApp> | null = null;
     let server: any | null = null;
@@ -294,7 +294,7 @@ describe("live touches (state protocol)", () => {
           type: entity,
           key: "post:1",
           value: { tenantId: "t1", userId: "123" },
-          oldValue: { tenantId: "t1", userId: "000" },
+          old_value: { tenantId: "t1", userId: "000" },
           headers: { operation: "update" },
         }),
       });
@@ -335,7 +335,7 @@ describe("live touches (state protocol)", () => {
           type: entity,
           key: "post:1",
           value: { tenantId: "t1", userId: "123" },
-          oldValue: { tenantId: "t1", userId: "123" },
+          old_value: { tenantId: "t1", userId: "123" },
           headers: { operation: "update" },
         }),
       });
