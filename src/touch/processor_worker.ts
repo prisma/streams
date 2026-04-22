@@ -7,7 +7,7 @@ import type { HostRuntime } from "../runtime/host_runtime.ts";
 import { setSqliteRuntimeOverride } from "../sqlite/adapter.ts";
 import { initConsoleLogging } from "../util/log.ts";
 import type { ProcessRequest } from "./worker_protocol.ts";
-import { encodeTemplateArg, tableKeyIdFor, templateKeyIdFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
+import { encodeTemplateArg, membershipKeyIdFor, tableKeyIdFor, templateKeyIdFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
 
 initConsoleLogging();
 
@@ -278,6 +278,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         const beforeObj = ch.before;
 
         const watchKeyIds = new Set<number>();
+        const membershipKeyIds = new Set<number>();
 
         const compute = (obj: unknown): number | null => {
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
@@ -292,13 +293,30 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           }
           return watchKeyIdFor(tpl.templateId, args) >>> 0;
         };
+        const computeMembership = (obj: unknown): number | null => {
+          if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+          const args: string[] = [];
+          for (let i = 0; i < tpl.fields.length; i++) {
+            const name = tpl.fields[i];
+            const enc = tpl.encodings[i];
+            const v = (obj as any)[name];
+            const encoded = encodeTemplateArg(v, enc);
+            if (encoded == null) return null;
+            args.push(encoded);
+          }
+          return membershipKeyIdFor(tpl.templateId, args) >>> 0;
+        };
 
         if (ch.op === "insert") {
           const k = compute(afterObj);
           if (k != null) watchKeyIds.add(k >>> 0);
+          const m = computeMembership(afterObj);
+          if (m != null) membershipKeyIds.add(m >>> 0);
         } else if (ch.op === "delete") {
           const k = compute(beforeObj);
           if (k != null) watchKeyIds.add(k >>> 0);
+          const m = computeMembership(beforeObj);
+          if (m != null) membershipKeyIds.add(m >>> 0);
         } else {
           // update: compute touches from both before and after (when possible).
           // Policy for missing/insufficient before image:
@@ -307,10 +325,21 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           // - error: fail the processing batch
           const kAfter = compute(afterObj);
           const kBefore = compute(beforeObj);
+          const mAfter = computeMembership(afterObj);
+          const mBefore = computeMembership(beforeObj);
 
           if (kBefore != null) {
             watchKeyIds.add(kBefore >>> 0);
             if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
+            if (mBefore != null && mAfter != null) {
+              if (mBefore !== mAfter) {
+                membershipKeyIds.add(mBefore >>> 0);
+                membershipKeyIds.add(mAfter >>> 0);
+              }
+            } else {
+              if (mBefore != null) membershipKeyIds.add(mBefore >>> 0);
+              if (mAfter != null) membershipKeyIds.add(mAfter >>> 0);
+            }
           } else {
             if (beforeObj === undefined) {
               if (onMissingBefore === "error") {
@@ -327,6 +356,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
             if (onMissingBefore === "skipBefore") {
               if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
+              if (mAfter != null) membershipKeyIds.add(mAfter >>> 0);
             } else {
               // coarse: no fine touches
             }
@@ -336,6 +366,18 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         for (const watchKeyId of watchKeyIds) {
           queueTouch({
             keyId: watchKeyId >>> 0,
+            tsMs,
+            watermark,
+            entity,
+            kind: "template",
+            templateId: tpl.templateId,
+            windowMs: coalesceWindowMs,
+          });
+          if (fineBudgetExhausted) break;
+        }
+        for (const membershipKeyId of membershipKeyIds) {
+          queueTouch({
+            keyId: membershipKeyId >>> 0,
             tsMs,
             watermark,
             entity,

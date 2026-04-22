@@ -231,6 +231,8 @@ lowercase hex chars.
   - `templateId(entity, fieldsSorted) = XXH3_64("tpl\0" + entity + "\0" + join(fieldsSorted, "\0"))`
 - Template key:
   - `templateKey(templateId) = XXH3_64("tpl\0" + templateIdBytesBE)`
+- Membership key:
+  - `membershipKey(templateId, args...) = XXH3_64("mem\0" + templateIdBytesBE + "\0" + arg1 + ... )`
 - Watch key:
   - `watchKey(templateId, args...) = XXH3_64("key\0" + templateIdBytesBE + "\0" + arg1 + ... )`
 
@@ -287,12 +289,16 @@ The live subscription shape is:
 Example in TypeScript using the repo's reference helpers:
 
 ```ts
-import { encodeTemplateArg, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
+import { encodeTemplateArg, membershipKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
 
 const entity = "public.todos";
 const fields = ["tenantId", "status"].sort();
 const templateId = templateIdFor(entity, fields);
 const tableKey = tableKeyFor(entity);
+const membershipKey = membershipKeyFor(templateId, [
+  encodeTemplateArg("open", "string")!,
+  encodeTemplateArg("t1", "string")!,
+]);
 const watchKey = watchKeyFor(templateId, [
   encodeTemplateArg("open", "string")!,
   encodeTemplateArg("t1", "string")!,
@@ -302,6 +308,9 @@ const watchKey = watchKeyFor(templateId, [
 For this query:
 
 - use `tableKey` for coarse waits
+- use `membershipKey` plus `templateIdsUsed: [templateId]` when the result only
+  depends on which rows match the predicate, for example `count(*)`,
+  `exists(...)`, or a stable row-key set
 - use `watchKey` plus `templateIdsUsed: [templateId]` for fine waits
 
 ## Templates
@@ -639,6 +648,8 @@ Fine lane:
 
 - controlled by lag guardrails, budgets, and hot-interest filtering
 - when degraded, `restricted` emits template keys instead of fine watch keys
+- `membershipKey` is a fine key like `watchKey`; under degradation it also
+  falls back through `templateKey`
 
 Guardrail defaults:
 

@@ -53,6 +53,26 @@ export function templateKeyIdFor(templateIdHex16: string): number {
   return xxh3Low32(concat([utf8("tpl\0"), tplBytes]));
 }
 
+export function membershipKeyFor(templateIdHex16: string, encodedArgs: string[]): string {
+  const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
+  const parts: Uint8Array[] = [utf8("mem\0"), tplBytes];
+  for (const a of encodedArgs) {
+    parts.push(utf8("\0"));
+    parts.push(utf8(a));
+  }
+  return xxh3Hex(concat(parts));
+}
+
+export function membershipKeyIdFor(templateIdHex16: string, encodedArgs: string[]): number {
+  const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
+  const parts: Uint8Array[] = [utf8("mem\0"), tplBytes];
+  for (const a of encodedArgs) {
+    parts.push(utf8("\0"));
+    parts.push(utf8(a));
+  }
+  return xxh3Low32(concat(parts));
+}
+
 export function watchKeyFor(templateIdHex16: string, encodedArgs: string[]): string {
   const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
   const parts: Uint8Array[] = [utf8("key\0"), tplBytes];

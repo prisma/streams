@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
-import { tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
+import { membershipKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -390,6 +390,158 @@ describe("live touches (state protocol)", () => {
         }),
       });
       expect(res.touched).toBe(false);
+    } finally {
+      try {
+        server?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        app?.close?.();
+      } catch {
+        // ignore
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("membership keys ignore in-partition updates but wake on membership changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-membership-"));
+    let app: ReturnType<typeof createApp> | null = null;
+    let server: any | null = null;
+    try {
+      app = createApp(makeConfig(root), new MockR2Store());
+      app.deps.segmenter.stop();
+      app.deps.uploader.stop();
+
+      server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      const stream = "state_membership";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+      await installStateProtocolProfile(baseUrl, stream);
+
+      const entity = "posts";
+      const fields = ["tenantId"];
+      const templateId = templateIdFor(entity, fields);
+      const tenant1MembershipKey = membershipKeyFor(templateId, ["t1"]);
+      const tenant2MembershipKey = membershipKeyFor(templateId, ["t2"]);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          templates: [
+            {
+              entity,
+              fields: fields.map((name) => ({ name, encoding: "string" })),
+            },
+          ],
+          inactivityTtlMs: 60 * 60 * 1000,
+        }),
+      });
+
+      const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", title: "after" },
+          old_value: { tenantId: "t1", title: "before" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const unchangedMembership = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: meta0.cursor,
+          keys: [tenant1MembershipKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 0,
+        }),
+      });
+      expect(unchangedMembership.touched).toBe(false);
+
+      const insertWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: unchangedMembership.cursor,
+          keys: [tenant1MembershipKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 2000,
+        }),
+      });
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:2",
+          value: { tenantId: "t1", title: "new" },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const insertedMembership = await insertWaitPromise;
+      expect(insertedMembership.touched).toBe(true);
+
+      const moveOutWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: insertedMembership.cursor,
+          keys: [tenant1MembershipKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 2000,
+        }),
+      });
+      const moveInWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: insertedMembership.cursor,
+          keys: [tenant2MembershipKey],
+          templateIdsUsed: [templateId],
+          timeoutMs: 2000,
+        }),
+      });
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:2",
+          value: { tenantId: "t2", title: "new" },
+          old_value: { tenantId: "t1", title: "new" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const movedOut = await moveOutWaitPromise;
+      expect(movedOut.touched).toBe(true);
+
+      const movedIn = await moveInWaitPromise;
+      expect(movedIn.touched).toBe(true);
     } finally {
       try {
         server?.stop?.();
