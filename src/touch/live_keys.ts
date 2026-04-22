@@ -73,6 +73,26 @@ export function membershipKeyIdFor(templateIdHex16: string, encodedArgs: string[
   return xxh3Low32(concat(parts));
 }
 
+export function projectedFieldKeyFor(templateIdHex16: string, fieldName: string, encodedArgs: string[]): string {
+  const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
+  const parts: Uint8Array[] = [utf8("fld\0"), tplBytes, utf8("\0"), utf8(fieldName)];
+  for (const a of encodedArgs) {
+    parts.push(utf8("\0"));
+    parts.push(utf8(a));
+  }
+  return xxh3Hex(concat(parts));
+}
+
+export function projectedFieldKeyIdFor(templateIdHex16: string, fieldName: string, encodedArgs: string[]): number {
+  const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
+  const parts: Uint8Array[] = [utf8("fld\0"), tplBytes, utf8("\0"), utf8(fieldName)];
+  for (const a of encodedArgs) {
+    parts.push(utf8("\0"));
+    parts.push(utf8(a));
+  }
+  return xxh3Low32(concat(parts));
+}
+
 export function watchKeyFor(templateIdHex16: string, encodedArgs: string[]): string {
   const tplBytes = encodeU64Be(BigInt(`0x${templateIdHex16}`));
   const parts: Uint8Array[] = [utf8("key\0"), tplBytes];

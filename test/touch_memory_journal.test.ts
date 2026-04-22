@@ -886,4 +886,110 @@ describe("touch storage=memory (journal cursors)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("exact fine wait started pre-restricted still wakes via template fallback after lag degradation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-touch-mem-restricted-exact-fallback-"));
+    let app: ReturnType<typeof createApp> | null = null;
+    let server: any | null = null;
+    try {
+      app = createApp(
+        makeConfig(root, {
+          touchMaxBatchRows: 1,
+        }),
+        new MockR2Store()
+      );
+      app.deps.segmenter.stop();
+      app.deps.uploader.stop();
+
+      server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      const stream = "state_mem_restricted_exact_fallback";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+
+      await installStateProtocolProfile(baseUrl, stream, {
+        lagDegradeFineTouchesAtSourceOffsets: 1,
+        lagRecoverFineTouchesAtSourceOffsets: 0,
+        memory: {
+          hotKeyTtlMs: 1000,
+          hotTemplateTtlMs: 1000,
+        },
+      });
+
+      const entity = "public.posts";
+      const fields = ["userId"];
+      const templateId = templateIdFor(entity, fields);
+      const fineKey = watchKeyFor(templateId, ["42"]);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          templates: [
+            {
+              entity,
+              fields: [{ name: "userId", encoding: "int64" }],
+            },
+          ],
+          inactivityTtlMs: 60_000,
+        }),
+      });
+
+      const waitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: "now",
+          timeoutMs: 3000,
+          keys: [fineKey],
+          templateIdsUsed: [templateId],
+          interestMode: "fine",
+          exact: true,
+        }),
+      });
+
+      await new Promise((r) => setTimeout(r, 40));
+
+      // None of these rows touch the exact fine key (userId=42), so this waiter
+      // only wakes if restricted-mode template fallback remains active for exact waits.
+      const rows = Array.from({ length: 20 }, (_, i) => ({
+        type: entity,
+        key: `post:${i + 1}`,
+        value: { userId: i + 1 },
+        old_value: { userId: i + 1000 },
+        headers: { operation: "update" },
+      }));
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(rows),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const res = await waitPromise;
+      expect(res?.touched).toBe(true);
+      expect(res?.effectiveWaitKind).toBe("fineKey");
+
+      const meta = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
+      expect(String(meta?.touchMode)).toBe("restricted");
+      expect(Number(meta?.waitTouchedTotal ?? 0)).toBeGreaterThan(0);
+    } finally {
+      try {
+        server?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        app?.close?.();
+      } catch {
+        // ignore
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

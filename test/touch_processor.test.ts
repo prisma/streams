@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { loadConfig, type Config } from "../src/config";
 import { MockR2Store } from "../src/objectstore/mock_r2";
-import { membershipKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
+import { membershipKeyFor, projectedFieldKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
 
 function makeConfig(rootDir: string, overrides: Partial<Config> = {}): Config {
   const base = loadConfig();
@@ -542,6 +542,176 @@ describe("live touches (state protocol)", () => {
 
       const movedIn = await moveInWaitPromise;
       expect(movedIn.touched).toBe(true);
+    } finally {
+      try {
+        server?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        app?.close?.();
+      } catch {
+        // ignore
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("projected field keys stay quiet on irrelevant updates and wake on watched field changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-live-projected-field-"));
+    let app: ReturnType<typeof createApp> | null = null;
+    let server: any | null = null;
+    try {
+      app = createApp(makeConfig(root), new MockR2Store());
+      app.deps.segmenter.stop();
+      app.deps.uploader.stop();
+
+      server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      const stream = "state_projected_field";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+      await installStateProtocolProfile(baseUrl, stream);
+
+      const entity = "message";
+      const fields = ["id"];
+      const templateId = templateIdFor(entity, fields);
+      const membershipKey = membershipKeyFor(templateId, ["1"]);
+      const authorKey = projectedFieldKeyFor(templateId, "author", ["1"]);
+      const exactKeys = [membershipKey, authorKey];
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          templates: [
+            {
+              entity,
+              fields: [{ name: "id", encoding: "int64" }],
+            },
+          ],
+          inactivityTtlMs: 60 * 60 * 1000,
+        }),
+      });
+
+      const primeExactCursor = async (): Promise<string> => {
+        const prime = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cursor: "now",
+            exact: true,
+            keys: exactKeys,
+            templateIdsUsed: [templateId],
+            timeoutMs: 0,
+          }),
+        });
+        expect(prime?.touched).toBe(false);
+
+        const settledMeta = await fetchJson(
+          `${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta?settle=flush&timeoutMs=2000`,
+          { method: "GET" }
+        );
+        expect(settledMeta?.settled).toBe(true);
+        return settledMeta.cursor;
+      };
+
+      const waitFromCursor = async (cursor: string, timeoutMs = 200): Promise<any> =>
+        fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cursor,
+            exact: true,
+            keys: exactKeys,
+            templateIdsUsed: [templateId],
+            timeoutMs,
+          }),
+        });
+
+      const otherRowCursor = await primeExactCursor();
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "message:2",
+          value: { id: 2, author: "bob", text: "after" },
+          old_value: { id: 2, author: "alice", text: "before" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const otherRowWait = await waitFromCursor(otherRowCursor);
+      expect(otherRowWait?.touched).toBe(false);
+      expect(otherRowWait?.effectiveWaitKind).toBe("fineKey");
+
+      const otherFieldCursor = await primeExactCursor();
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "message:1",
+          value: { id: 1, author: "alice", text: "after" },
+          old_value: { id: 1, author: "alice", text: "before" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const otherFieldWait = await waitFromCursor(otherFieldCursor);
+      expect(otherFieldWait?.touched).toBe(false);
+
+      const watchedFieldCursor = await primeExactCursor();
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "message:1",
+          value: { id: 1, author: "bob", text: "after" },
+          old_value: { id: 1, author: "alice", text: "after" },
+          headers: { operation: "update" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const watchedFieldWait = await waitFromCursor(watchedFieldCursor, 2000);
+      expect(watchedFieldWait?.touched).toBe(true);
+      expect(watchedFieldWait?.effectiveWaitKind).toBe("fineKey");
+
+      const deleteCursor = await primeExactCursor();
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "message:1",
+          old_value: { id: 1, author: "bob", text: "after" },
+          headers: { operation: "delete" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const deleteWait = await waitFromCursor(deleteCursor, 2000);
+      expect(deleteWait?.touched).toBe(true);
     } finally {
       try {
         server?.stop?.();

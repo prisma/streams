@@ -10,7 +10,6 @@ type Waiter = {
   afterGeneration: number;
   keys: number[];
   exactKeys: string[] | null;
-  exactOnly: boolean;
   // For huge keysets, we avoid per-key indexing and instead scan on flush.
   broad: boolean;
   deadlineMs: number;
@@ -387,7 +386,6 @@ export class TouchJournal {
   waitForAny(args: {
     keys: number[];
     exactKeys?: string[] | null;
-    exactOnly?: boolean;
     afterGeneration: number;
     timeoutMs: number;
     signal?: AbortSignal;
@@ -395,21 +393,19 @@ export class TouchJournal {
     const exactKeys = Array.isArray(args.exactKeys)
       ? Array.from(new Set(args.exactKeys.map((key) => key.trim().toLowerCase()).filter((key) => /^[0-9a-f]{16}$/.test(key))))
       : [];
-    const exactOnly = args.exactOnly === true && exactKeys.length > 0;
     if (args.keys.length === 0 && exactKeys.length === 0) return Promise.resolve(null);
     if (args.signal?.aborted) return Promise.resolve(null);
     const timeoutMs = Math.max(0, Math.floor(args.timeoutMs));
     if (timeoutMs <= 0) return Promise.resolve(null);
 
     const keys = Array.from(new Set(args.keys.map(u32)));
-    const broad = !exactOnly && keys.length > this.keyIndexMaxKeys;
+    const broad = keys.length > this.keyIndexMaxKeys;
 
     return new Promise((resolve) => {
       const waiter: Waiter = {
         afterGeneration: u32(args.afterGeneration),
         keys,
         exactKeys: exactKeys.length > 0 ? exactKeys : null,
-        exactOnly,
         broad,
         deadlineMs: Date.now() + timeoutMs,
         heapIndex: -1,
@@ -418,14 +414,16 @@ export class TouchJournal {
           if (waiter.done) return;
           waiter.done = true;
 
-          if (waiter.exactOnly && waiter.exactKeys) {
+          if (waiter.exactKeys) {
             for (const routingKey of waiter.exactKeys) {
               const s = this.byExactKey.get(routingKey);
               if (!s) continue;
               s.delete(waiter);
               if (s.size === 0) this.byExactKey.delete(routingKey);
             }
-          } else if (waiter.broad) {
+          }
+
+          if (waiter.broad) {
             this.broad.delete(waiter);
           } else {
             for (const k of waiter.keys) {
@@ -445,13 +443,15 @@ export class TouchJournal {
         },
       };
 
-      if (waiter.exactOnly && waiter.exactKeys) {
+      if (waiter.exactKeys) {
         for (const routingKey of waiter.exactKeys) {
           const set = this.byExactKey.get(routingKey) ?? new Set<Waiter>();
           set.add(waiter);
           this.byExactKey.set(routingKey, set);
         }
-      } else if (waiter.broad) {
+      }
+
+      if (waiter.broad) {
         this.broad.add(waiter);
       } else {
         for (const k of waiter.keys) {

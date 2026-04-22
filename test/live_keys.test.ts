@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { membershipKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
+import { membershipKeyFor, projectedFieldKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "../src/touch/live_keys";
 import { xxh3Hex } from "../src/runtime/hash";
 
 function utf8(s: string): Uint8Array {
@@ -48,8 +48,18 @@ function membershipKeyForLe(templateIdHex16: string, encodedArgs: string[]): str
   return xxh3Hex(concat(parts));
 }
 
+function projectedFieldKeyForLe(templateIdHex16: string, fieldName: string, encodedArgs: string[]): string {
+  const tplBytes = encodeU64Le(BigInt(`0x${templateIdHex16}`));
+  const parts: Uint8Array[] = [utf8("fld\0"), tplBytes, utf8("\0"), utf8(fieldName)];
+  for (const a of encodedArgs) {
+    parts.push(utf8("\0"));
+    parts.push(utf8(a));
+  }
+  return xxh3Hex(concat(parts));
+}
+
 describe("live key hashing (golden vectors)", () => {
-  test("tableKey/templateId/watchKey/membershipKey are stable, and fine keys use BE templateId bytes", () => {
+  test("tableKey/templateId/watchKey/membershipKey/projectedFieldKey are stable, and fine keys use BE templateId bytes", () => {
     const entity = "public.todos";
     const fieldsSorted = ["status", "tenantId", "userId"];
 
@@ -57,17 +67,21 @@ describe("live key hashing (golden vectors)", () => {
     const templateId = templateIdFor(entity, fieldsSorted);
     const watchKey = watchKeyFor(templateId, ["open", "t1", "u1"]);
     const membershipKey = membershipKeyFor(templateId, ["open", "t1", "u1"]);
+    const projectedFieldKey = projectedFieldKeyFor(templateId, "title", ["open", "t1", "u1"]);
 
     // Golden vectors. If these change, cross-language implementations will drift.
     expect(tableKey).toBe("feadeb84d447fd63");
     expect(templateId).toBe("ddd2330fdab379da");
     expect(watchKey).toBe("39accd125778dc36");
     expect(membershipKey).toBe("eae633979a7ee466");
+    expect(projectedFieldKey).toBe("1ecc53e76a89f0d5");
 
     // Endianness check: LE encoding yields different fine keys.
     const le = watchKeyForLe(templateId, ["open", "t1", "u1"]);
     expect(le).not.toBe(watchKey);
     const membershipLe = membershipKeyForLe(templateId, ["open", "t1", "u1"]);
     expect(membershipLe).not.toBe(membershipKey);
+    const projectedLe = projectedFieldKeyForLe(templateId, "title", ["open", "t1", "u1"]);
+    expect(projectedLe).not.toBe(projectedFieldKey);
   });
 });

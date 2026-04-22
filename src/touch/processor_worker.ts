@@ -11,6 +11,8 @@ import {
   encodeTemplateArg,
   membershipKeyFor,
   membershipKeyIdFor,
+  projectedFieldKeyFor,
+  projectedFieldKeyIdFor,
   tableKeyIdFor,
   templateKeyIdFor,
   watchKeyFor,
@@ -40,6 +42,53 @@ type ActiveTemplate = {
 };
 
 type TouchProcessorWorkerError = { kind: "missing_old_value"; message: string };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isProjectedFieldValue(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function projectedFieldValueEquals(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  return typeof a === "number" && typeof b === "number" && Number.isNaN(a) && Number.isNaN(b);
+}
+
+function changedProjectedFieldNames(args: {
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  excluded: ReadonlySet<string>;
+}): string[] {
+  const names = new Set<string>([...Object.keys(args.before), ...Object.keys(args.after)]);
+  const out: string[] = [];
+  for (const name of names) {
+    if (args.excluded.has(name)) continue;
+    const beforeValue = Object.prototype.hasOwnProperty.call(args.before, name) ? args.before[name] : undefined;
+    const afterValue = Object.prototype.hasOwnProperty.call(args.after, name) ? args.after[name] : undefined;
+    if (!isProjectedFieldValue(beforeValue) || !isProjectedFieldValue(afterValue)) continue;
+    if (!projectedFieldValueEquals(beforeValue, afterValue)) out.push(name);
+  }
+  return out;
+}
+
+function projectedFieldNamesFromAfter(args: { after: Record<string, unknown>; excluded: ReadonlySet<string> }): string[] {
+  const out: string[] = [];
+  for (const name of Object.keys(args.after)) {
+    if (args.excluded.has(name)) continue;
+    if (!isProjectedFieldValue(args.after[name])) continue;
+    out.push(name);
+  }
+  return out;
+}
 
 async function handleProcess(msg: ProcessRequest): Promise<void> {
   const { stream, fromOffset, toOffset, profile, maxRows, maxBytes } = msg;
@@ -299,8 +348,9 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
         const watchKeys = new Map<number, string>();
         const membershipKeys = new Map<number, string>();
+        const projectedFieldKeys = new Map<number, string>();
 
-        const compute = (obj: unknown): { keyId: number; routingKey: string } | null => {
+        const computeArgs = (obj: unknown): string[] | null => {
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
           const args: string[] = [];
           for (let i = 0; i < tpl.fields.length; i++) {
@@ -311,56 +361,61 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             if (encoded == null) return null;
             args.push(encoded);
           }
+          return args;
+        };
+        const computeWatch = (args: string[]): { keyId: number; routingKey: string } => {
           const routingKey = watchKeyFor(tpl.templateId, args);
           return { keyId: watchKeyIdFor(tpl.templateId, args) >>> 0, routingKey };
         };
-        const computeMembership = (obj: unknown): { keyId: number; routingKey: string } | null => {
-          if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
-          const args: string[] = [];
-          for (let i = 0; i < tpl.fields.length; i++) {
-            const name = tpl.fields[i];
-            const enc = tpl.encodings[i];
-            const v = (obj as any)[name];
-            const encoded = encodeTemplateArg(v, enc);
-            if (encoded == null) return null;
-            args.push(encoded);
-          }
+        const computeMembership = (args: string[]): { keyId: number; routingKey: string } => {
           const routingKey = membershipKeyFor(tpl.templateId, args);
           return { keyId: membershipKeyIdFor(tpl.templateId, args) >>> 0, routingKey };
         };
+        const computeProjectedField = (fieldName: string, args: string[]): { keyId: number; routingKey: string } => {
+          const routingKey = projectedFieldKeyFor(tpl.templateId, fieldName, args);
+          return { keyId: projectedFieldKeyIdFor(tpl.templateId, fieldName, args) >>> 0, routingKey };
+        };
+        const afterArgs = computeArgs(afterObj);
+        const beforeArgs = computeArgs(beforeObj);
+        const watchAfter = afterArgs != null ? computeWatch(afterArgs) : null;
+        const watchBefore = beforeArgs != null ? computeWatch(beforeArgs) : null;
+        const membershipAfter = afterArgs != null ? computeMembership(afterArgs) : null;
+        const membershipBefore = beforeArgs != null ? computeMembership(beforeArgs) : null;
+        const sameTuple = watchBefore != null && watchAfter != null && watchBefore.routingKey === watchAfter.routingKey;
+        const excludedProjectedFields = new Set(tpl.fields);
 
         if (ch.op === "insert") {
-          const k = compute(afterObj);
-          if (k != null) watchKeys.set(k.keyId >>> 0, k.routingKey);
-          const m = computeMembership(afterObj);
-          if (m != null) membershipKeys.set(m.keyId >>> 0, m.routingKey);
+          if (watchAfter != null) watchKeys.set(watchAfter.keyId >>> 0, watchAfter.routingKey);
+          if (membershipAfter != null) membershipKeys.set(membershipAfter.keyId >>> 0, membershipAfter.routingKey);
         } else if (ch.op === "delete") {
-          const k = compute(beforeObj);
-          if (k != null) watchKeys.set(k.keyId >>> 0, k.routingKey);
-          const m = computeMembership(beforeObj);
-          if (m != null) membershipKeys.set(m.keyId >>> 0, m.routingKey);
+          if (watchBefore != null) watchKeys.set(watchBefore.keyId >>> 0, watchBefore.routingKey);
+          if (membershipBefore != null) membershipKeys.set(membershipBefore.keyId >>> 0, membershipBefore.routingKey);
         } else {
           // update: compute touches from both before and after (when possible).
           // Policy for missing/insufficient before image:
           // - coarse: emit no fine touches (table touch already guarantees correctness)
           // - skipBefore: emit after-only touch
           // - error: fail the processing batch
-          const kAfter = compute(afterObj);
-          const kBefore = compute(beforeObj);
-          const mAfter = computeMembership(afterObj);
-          const mBefore = computeMembership(beforeObj);
-
-          if (kBefore != null) {
-            watchKeys.set(kBefore.keyId >>> 0, kBefore.routingKey);
-            if (kAfter != null) watchKeys.set(kAfter.keyId >>> 0, kAfter.routingKey);
-            if (mBefore != null && mAfter != null) {
-              if (mBefore.routingKey !== mAfter.routingKey) {
-                membershipKeys.set(mBefore.keyId >>> 0, mBefore.routingKey);
-                membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
+          if (watchBefore != null) {
+            watchKeys.set(watchBefore.keyId >>> 0, watchBefore.routingKey);
+            if (watchAfter != null) watchKeys.set(watchAfter.keyId >>> 0, watchAfter.routingKey);
+            if (membershipBefore != null && membershipAfter != null) {
+              if (membershipBefore.routingKey !== membershipAfter.routingKey) {
+                membershipKeys.set(membershipBefore.keyId >>> 0, membershipBefore.routingKey);
+                membershipKeys.set(membershipAfter.keyId >>> 0, membershipAfter.routingKey);
+              } else if (sameTuple && isPlainObject(beforeObj) && isPlainObject(afterObj) && afterArgs != null) {
+                for (const fieldName of changedProjectedFieldNames({
+                  before: beforeObj,
+                  after: afterObj,
+                  excluded: excludedProjectedFields,
+                })) {
+                  const projected = computeProjectedField(fieldName, afterArgs);
+                  projectedFieldKeys.set(projected.keyId >>> 0, projected.routingKey);
+                }
               }
             } else {
-              if (mBefore != null) membershipKeys.set(mBefore.keyId >>> 0, mBefore.routingKey);
-              if (mAfter != null) membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
+              if (membershipBefore != null) membershipKeys.set(membershipBefore.keyId >>> 0, membershipBefore.routingKey);
+              if (membershipAfter != null) membershipKeys.set(membershipAfter.keyId >>> 0, membershipAfter.routingKey);
             }
           } else {
             if (beforeObj === undefined) {
@@ -377,8 +432,17 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             }
 
             if (onMissingBefore === "skipBefore") {
-              if (kAfter != null) watchKeys.set(kAfter.keyId >>> 0, kAfter.routingKey);
-              if (mAfter != null) membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
+              if (watchAfter != null) watchKeys.set(watchAfter.keyId >>> 0, watchAfter.routingKey);
+              if (membershipAfter != null) membershipKeys.set(membershipAfter.keyId >>> 0, membershipAfter.routingKey);
+              if (afterArgs != null && isPlainObject(afterObj)) {
+                for (const fieldName of projectedFieldNamesFromAfter({
+                  after: afterObj,
+                  excluded: excludedProjectedFields,
+                })) {
+                  const projected = computeProjectedField(fieldName, afterArgs);
+                  projectedFieldKeys.set(projected.keyId >>> 0, projected.routingKey);
+                }
+              }
             } else {
               // coarse: no fine touches
             }
@@ -401,6 +465,19 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         for (const [membershipKeyId, routingKey] of membershipKeys) {
           queueTouch({
             keyId: membershipKeyId >>> 0,
+            routingKey,
+            tsMs,
+            watermark,
+            entity,
+            kind: "template",
+            templateId: tpl.templateId,
+            windowMs: coalesceWindowMs,
+          });
+          if (fineBudgetExhausted) break;
+        }
+        for (const [projectedFieldKeyId, routingKey] of projectedFieldKeys) {
+          queueTouch({
+            keyId: projectedFieldKeyId >>> 0,
             routingKey,
             tsMs,
             watermark,

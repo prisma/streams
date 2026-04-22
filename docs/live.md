@@ -19,7 +19,8 @@ To use Live correctly, wire up all four pieces:
 
 - A base Durable Stream containing State Protocol change records.
 - A `state-protocol` profile with `touch.enabled=true`.
-- Application code that computes the table/template/watch keys for each query.
+- Application code that computes the table, template, and fine keys for each
+  query.
 - A wait loop that carries a cursor forward and re-runs the real query on
   `touched` or `stale`.
 
@@ -248,6 +249,8 @@ lowercase hex chars.
   - `templateKey(templateId) = XXH3_64("tpl\0" + templateIdBytesBE)`
 - Membership key:
   - `membershipKey(templateId, args...) = XXH3_64("mem\0" + templateIdBytesBE + "\0" + arg1 + ... )`
+- Projected field key:
+  - `projectedFieldKey(templateId, fieldName, args...) = XXH3_64("fld\0" + templateIdBytesBE + "\0" + fieldName + "\0" + arg1 + ... )`
 - Watch key:
   - `watchKey(templateId, args...) = XXH3_64("key\0" + templateIdBytesBE + "\0" + arg1 + ... )`
 
@@ -304,7 +307,7 @@ The live subscription shape is:
 Example in TypeScript using the repo's reference helpers:
 
 ```ts
-import { encodeTemplateArg, membershipKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
+import { encodeTemplateArg, membershipKeyFor, projectedFieldKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
 
 const entity = "public.todos";
 const fields = ["tenantId", "status"].sort();
@@ -318,6 +321,10 @@ const watchKey = watchKeyFor(templateId, [
   encodeTemplateArg("open", "string")!,
   encodeTemplateArg("t1", "string")!,
 ]);
+const projectedTitleKey = projectedFieldKeyFor(templateId, "title", [
+  encodeTemplateArg("open", "string")!,
+  encodeTemplateArg("t1", "string")!,
+]);
 ```
 
 For this query:
@@ -325,8 +332,14 @@ For this query:
 - use `tableKey` for coarse waits
 - use `membershipKey` plus `templateIdsUsed: [templateId]` when the result only
   depends on which rows match the predicate, for example `count(*)`,
-  `exists(...)`, or a stable row-key set
-- use `watchKey` plus `templateIdsUsed: [templateId]` for fine waits
+  `exists(...)`, or a stable row-key set; singleton lookups such as
+  `select id from posts where id=?` are also in this membership-only class
+- use `membershipKey` plus one `projectedFieldKey` per projected scalar field,
+  plus `templateIdsUsed: [templateId]`, when the result depends only on row
+  membership plus those fields, for example this `select id, title ... order by
+  id` query or `select author from posts where id=?`
+- use `watchKey` plus `templateIdsUsed: [templateId]` when any row-content
+  change inside the watched equality tuple should rerun the SQL
 
 ## Templates
 
@@ -549,7 +562,7 @@ is still not a generic SQL diff engine:
 
 Use `interestMode="fine"` when you have:
 
-- one or more watch keys
+- one or more fine keys
 - the template ids used by the query
 
 Use `interestMode="coarse"` when:
@@ -742,8 +755,8 @@ Fine lane:
 
 - controlled by lag guardrails, budgets, and hot-interest filtering
 - when degraded, `restricted` emits template keys instead of fine watch keys
-- `membershipKey` is a fine key like `watchKey`; under degradation it also
-  falls back through `templateKey`
+- `membershipKey` and `projectedFieldKey` are fine keys like `watchKey`; under
+  degradation they also fall back through `templateKey`
 
 Guardrail defaults:
 
@@ -777,9 +790,11 @@ Guidance:
 
 - treat touches as invalidation hints only
 - always re-run the real query after `touched`
+- exact projected-field invalidation needs usable before-images on updates; with
+  `skipBefore`, projected field touches become after-only best effort
 - provide `old_value` for updates whenever possible
 - fine waits are only fully correct when the adapter can supply the before
-  image fields needed to derive the right watch keys
+  image fields needed to derive the right fine keys
 - if before-images are not guaranteed, prefer coarse waits for correctness
 - if strict precision matters, use `onMissingBefore="error"`
 

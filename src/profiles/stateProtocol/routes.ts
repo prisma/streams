@@ -342,6 +342,8 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
     return respond.badRequest("wait.exact requires 1 to 16 literal 64-bit routing keys");
   }
   const useExactFineKeyMatch = exactFineRoutingKeys.length > 0;
+  const exactFallbackKeyIds =
+    interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0 ? templateWaitKeyIds : [];
 
   if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0 && !useExactFineKeyMatch) {
     const merged = new Set<number>();
@@ -406,6 +408,20 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
           bucketStartMs: journal.getLastBucketStartMs(),
         });
       }
+      const fallbackTouched =
+        exactFallbackKeyIds.length > 0 ? journal.maybeTouchedSinceAny(exactFallbackKeyIds, sinceGen) : false;
+      if (fallbackTouched) {
+        const latencyMs = Date.now() - waitStartMs;
+        touchManager.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+        return respond.json(200, {
+          touched: true,
+          cursor: journal.getCursor(),
+          effectiveWaitKind,
+          bucketMaxSourceOffsetSeq: journal.getLastFlushedSourceOffsetSeq().toString(),
+          flushAtMs: journal.getLastFlushAtMs(),
+          bucketStartMs: journal.getLastBucketStartMs(),
+        });
+      }
       if (exactTouched === false) {
         // Exact recent history covers this cursor range and saw none of the watched keys.
       } else if (journal.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
@@ -450,9 +466,8 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
 
     const afterGen = journal.getGeneration();
     const hit = await journal.waitForAny({
-      keys: waitKeyIds,
+      keys: useExactFineKeyMatch ? exactFallbackKeyIds : waitKeyIds,
       exactKeys: useExactFineKeyMatch ? exactFineRoutingKeys : null,
-      exactOnly: useExactFineKeyMatch,
       afterGeneration: afterGen,
       timeoutMs: remaining,
       signal: req.signal,
