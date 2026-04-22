@@ -268,6 +268,327 @@ describe("touch storage=memory (journal cursors)", () => {
     }
   });
 
+  test("touch/meta settle=flush avoids conservative wakes from an unsettled cursor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-touch-mem-settle-"));
+    let app: ReturnType<typeof createApp> | null = null;
+    let server: any | null = null;
+    try {
+      app = createApp(makeConfig(root), new MockR2Store());
+      app.deps.segmenter.stop();
+      app.deps.uploader.stop();
+
+      server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      const stream = "state_mem_settle";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+
+      await installStateProtocolProfile(baseUrl, stream, {
+        memory: {
+          bucketMs: 250,
+        },
+      });
+
+      const entity = "posts";
+      const fields = ["tenantId"];
+      const templateId = templateIdFor(entity, fields);
+      const watchedKey = watchKeyFor(templateId, ["t1"]);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          templates: [
+            {
+              entity,
+              fields: [{ name: "tenantId", encoding: "string" }],
+            },
+          ],
+          inactivityTtlMs: 60_000,
+        }),
+      });
+
+      const primeFineInterest = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: "now",
+          keys: [watchedKey],
+          timeoutMs: 50,
+        }),
+      });
+      expect(primeFineInterest?.touched).toBe(false);
+
+      const meta0 = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
+      expect(meta0?.settled).toBe(true);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:1",
+          value: { tenantId: "t1", title: "first" },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const metaUnsettled = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta`, { method: "GET" });
+      expect(metaUnsettled?.cursor).toBe(meta0.cursor);
+      expect(Number(metaUnsettled?.pendingKeys ?? 0)).toBeGreaterThan(0);
+      expect(metaUnsettled?.settled).toBe(false);
+
+      const unsettledWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: metaUnsettled.cursor,
+          keys: [watchedKey],
+          timeoutMs: 1500,
+        }),
+      });
+
+      await new Promise((r) => setTimeout(r, 30));
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:2",
+          value: { tenantId: "t2", title: "other" },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const unsettledWait = await unsettledWaitPromise;
+      expect(unsettledWait?.touched).toBe(true);
+
+      const settledMeta = await fetchJson(
+        `${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta?settle=flush&timeoutMs=2000`,
+        { method: "GET" }
+      );
+      expect(settledMeta?.settled).toBe(true);
+      expect(typeof settledMeta?.cursor).toBe("string");
+      expect(settledMeta.cursor).not.toBe(meta0.cursor);
+      expect(Number(settledMeta?.pendingKeys ?? 0)).toBe(0);
+
+      const settledWaitPromise = fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: settledMeta.cursor,
+          keys: [watchedKey],
+          timeoutMs: 600,
+        }),
+      });
+
+      await new Promise((r) => setTimeout(r, 30));
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: entity,
+          key: "post:3",
+          value: { tenantId: "t2", title: "other-again" },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const settledWait = await settledWaitPromise;
+      expect(settledWait?.touched).toBe(false);
+    } finally {
+      try {
+        server?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        app?.close?.();
+      } catch {
+        // ignore
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("small exact fine keysets support the live-demo join dependency shape", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-touch-mem-exact-join-"));
+    let app: ReturnType<typeof createApp> | null = null;
+    let server: any | null = null;
+    try {
+      app = createApp(makeConfig(root), new MockR2Store());
+      app.deps.segmenter.stop();
+      app.deps.uploader.stop();
+
+      server = Bun.serve({ port: 0, fetch: app.fetch });
+      const baseUrl = `http://localhost:${server.port}`;
+
+      const stream = "state_mem_exact_join";
+      await fetch(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      });
+
+      await installStateProtocolProfile(baseUrl, stream, {
+        memory: {
+          bucketMs: 100,
+        },
+      });
+
+      const messageTemplateId = templateIdFor("public.message", ["channelId"]);
+      const channelTemplateId = templateIdFor("public.channel", ["id"]);
+      const watchedKeys = [watchKeyFor(messageTemplateId, ["1"]), watchKeyFor(channelTemplateId, ["1"])];
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/templates/activate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          templates: [
+            {
+              entity: "public.message",
+              fields: [{ name: "channelId", encoding: "int64" }],
+            },
+            {
+              entity: "public.channel",
+              fields: [{ name: "id", encoding: "int64" }],
+            },
+          ],
+          inactivityTtlMs: 60_000,
+        }),
+      });
+
+      const prime = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: "now",
+          exact: true,
+          keys: watchedKeys,
+          interestMode: "fine",
+          timeoutMs: 0,
+        }),
+      });
+      expect(prime?.touched).toBe(false);
+
+      const settledMeta0 = await fetchJson(
+        `${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta?settle=flush&timeoutMs=2000`,
+        { method: "GET" }
+      );
+      expect(settledMeta0?.settled).toBe(true);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "public.message",
+          key: "message:2",
+          value: {
+            channelId: 2,
+            text: "other channel",
+            author: "bot",
+            createdAt: "2026-04-22T00:00:00.000Z",
+          },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const irrelevantWait = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: settledMeta0.cursor,
+          exact: true,
+          keys: watchedKeys,
+          interestMode: "fine",
+          timeoutMs: 200,
+        }),
+      });
+      expect(irrelevantWait?.touched).toBe(false);
+      expect(irrelevantWait?.effectiveWaitKind).toBe("fineKey");
+
+      const rePrime = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: "now",
+          exact: true,
+          keys: watchedKeys,
+          interestMode: "fine",
+          timeoutMs: 0,
+        }),
+      });
+      expect(rePrime?.touched).toBe(false);
+
+      const settledMeta1 = await fetchJson(
+        `${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/meta?settle=flush&timeoutMs=2000`,
+        { method: "GET" }
+      );
+      expect(settledMeta1?.settled).toBe(true);
+
+      await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "public.message",
+          key: "message:1",
+          value: {
+            channelId: 1,
+            text: "watched channel",
+            author: "alice",
+            createdAt: "2026-04-22T00:00:01.000Z",
+          },
+          headers: { operation: "insert" },
+        }),
+      });
+
+      app.deps.touch.notify(stream);
+      await app.deps.touch.tick();
+
+      const relevantWait = await fetchJson(`${baseUrl}/v1/stream/${encodeURIComponent(stream)}/touch/wait`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cursor: settledMeta1.cursor,
+          exact: true,
+          keys: watchedKeys,
+          interestMode: "fine",
+          timeoutMs: 200,
+        }),
+      });
+      expect(relevantWait?.touched).toBe(true);
+      expect(relevantWait?.effectiveWaitKind).toBe("fineKey");
+    } finally {
+      try {
+        server?.stop?.();
+      } catch {
+        // ignore
+      }
+      try {
+        app?.close?.();
+      } catch {
+        // ignore
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("touch/wait interestMode tracks fine active interests and ignores coarse waits", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-touch-mem-interest-"));
     let app: ReturnType<typeof createApp> | null = null;

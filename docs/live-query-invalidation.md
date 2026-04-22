@@ -21,6 +21,8 @@ The current exact boundary is narrow:
 
 - exact watch-key invalidation exists only for active single-entity templates
   with 1 to 3 equality fields
+- exact result handling also requires a settled cursor; otherwise the query can
+  still observe rows ahead of the cursor and rerun later on a conservative wake
 - even for those shapes, exact SQL-result invalidation is only possible for
   full-row reads where any touched row necessarily changes the result
 
@@ -43,9 +45,10 @@ Everything else is either:
 | Query family | Example | Best Live mapping | Narrowest invalidation scope | Result-exact in best case? | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Whole-table full-row read | `SELECT * FROM posts` | `tableKey(posts)` | All rows in one entity | Yes | Any insert, delete, or update on `posts` changes the result. `ORDER BY` without `LIMIT/OFFSET` does not change this. |
-| Single-table full-row equality read on 1 to 3 fields | `SELECT * FROM posts WHERE tenantId=? AND status=?` | `watchKey(templateId, args)` plus `templateIdsUsed` | One equality tuple in one entity | Yes | Requires an active template, `interestMode="fine"`, runtime fine mode, and usable before-images for updates. |
+| Single-table full-row equality read on 1 to 3 fields | `SELECT * FROM posts WHERE tenantId=? AND status=?` | `watchKey(templateId, args)` plus `templateIdsUsed` | One equality tuple in one entity | Yes | Requires an active template, `interestMode="fine"`, runtime fine mode, usable before-images for updates, and best exactness comes from a small literal `keys` wait with a settled cursor. |
 | Small finite union of full-row equality tuples | `SELECT * FROM posts WHERE (tenantId,status) IN ((?,?),(?,?))` | One watch key per concrete tuple | The enumerated equality tuples | Yes | This is inferred from `touch/wait` accepting multiple keys. It stays narrow only while the full tuple set is explicitly enumerated and small. |
-| Membership-only equality query on 1 to 3 fields | `SELECT count(*) FROM posts WHERE tenantId=?`, `SELECT EXISTS(...)`, `SELECT id FROM posts WHERE tenantId=? ORDER BY id` | `membershipKey(templateId, args)` plus `templateIdsUsed` | Insert/delete/equality-partition-move changes for one tuple | Yes | This new key family ignores updates that keep the row in the same equality tuple. It is result-exact only when the SQL result depends on membership of matching row identities, not row contents. |
+| Membership-only equality query on 1 to 3 fields | `SELECT count(*) FROM posts WHERE tenantId=?`, `SELECT EXISTS(...)`, `SELECT id FROM posts WHERE tenantId=? ORDER BY id` | `membershipKey(templateId, args)` plus `templateIdsUsed` | Insert/delete/equality-partition-move changes for one tuple | Yes | This key family ignores updates that keep the row in the same equality tuple. It is result-exact only when the SQL result depends on membership of matching row identities, not row contents. Small literal-key waits get the strongest practical exactness. |
+| Application-owned join with a small exact dependency set | `SELECT c.id, c.name, m.id, m.text, m.author, m.createdAt FROM channel c JOIN message m ON m.channelId=c.id WHERE c.id=? ORDER BY m.id` | Union of exact per-entity watch keys, for example `watchKey(channel.id=?)` plus `watchKey(message.channelId=?)`, preheated as a small literal keyset and paired with a settled cursor | Only the exact dependencies the app enumerated | Yes, for that concrete shape | This is not generic SQL join tracking. It works only when the app can decompose the query into exact participating dependencies, keep those keys hot through the query, and each dependency is itself exact for the query result. |
 | Projected row read | `SELECT id, title FROM posts WHERE tenantId=?` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Updates to non-projected columns still wake. |
 | Top-N / pagination / offset query | `SELECT * FROM posts WHERE tenantId=? ORDER BY createdAt DESC LIMIT 20` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Changes inside the watched partition but outside the returned window still wake. |
 | Aggregate / `DISTINCT` / `GROUP BY` / `HAVING` / window / value-sensitive derived query on one entity | `SELECT sum(amount) FROM posts WHERE tenantId=?` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Live invalidates from base-row changes. It does not maintain derived relational state beyond membership-only exactness. |
@@ -63,10 +66,14 @@ Everything else is either:
   1 to 3 fields.
 - Exact `membershipKey` invalidation is available for single-entity,
   membership-only equality queries on 1 to 3 fields.
+- Small literal fine-key waits can opt into an exact wait path with
+  `wait.exact=true`, which avoids the bloom-style and uint32-id false positives
+  for recent cursor ranges.
 - Exact SQL-result invalidation is narrower still: it is available for
   full-row reads whose result necessarily changes whenever any watched row
-  changes, and for membership-only queries whose result depends only on the set
-  of matching row identities.
+  changes, for membership-only queries whose result depends only on the set of
+  matching row identities, and for a small class of application-owned joins
+  whose dependencies can be enumerated exactly.
 
 Examples:
 
@@ -75,6 +82,9 @@ Examples:
   `membershipKey`.
 - `SELECT EXISTS(SELECT 1 FROM posts WHERE tenantId=?)` can now be
   result-exact with `membershipKey`.
+- the `channel`/`message` join from the live demo can be result-exact if the
+  client preheats the exact keyset, uses a settled cursor, and waits on the
+  exact per-entity keys for the watched channel row and message partition
 - `SELECT id FROM posts WHERE id=?` cannot be result-exact because an update to
   an unprojected column still wakes.
 - `SELECT id FROM posts WHERE tenantId=? ORDER BY id` can be result-exact with
@@ -95,10 +105,10 @@ cross-cutting cases that make invalidation coarser or force extra re-runs:
 | Runtime degrades to `touchMode="restricted"` | Fine waits wake on `templateKey`, which means "some row for this template shape changed", not necessarily the same bound values. |
 | Runtime degrades to `touchMode="coarseOnly"` or the client chooses `interestMode="coarse"` | Waits wake on `tableKey`, which means "some row in this entity changed". |
 | Wait keyset grows past `memory.keyIndexMaxKeys` (default `32`) | The waiter becomes broad and matching on flush is bloom-based, so false positives increase. |
-| Routing keys are collapsed to uint32 key IDs in the journal hot path | Distinct 64-bit routing keys can collide and cause false-positive wakes. |
-| `maybeTouchedSince*` is a bloom-style fast path | Immediate "already touched" checks are intentionally lossy and can report touched when the exact watched key was not touched. |
+| Routing keys are collapsed to uint32 key IDs in the journal hot path | Distinct 64-bit routing keys can collide and cause false-positive wakes, except on the small literal fine-key exact path. |
+| `maybeTouchedSince*` is a bloom-style fast path | Immediate "already touched" checks are intentionally lossy and can report touched when the exact watched key was not touched, except when recent exact-key history covers the small literal fine-key wait. |
 | A journal bucket overflows its unique-key cap | The bucket becomes a broadcast wakeup for all waiters. |
-| `touch/meta` cursor is captured while scan lag or the current pending bucket still exists | The query can observe rows newer than the stable flushed cursor coverage, so the next wait may wake even though the rerun result is unchanged. |
+| `touch/meta` cursor is captured while scan lag or the current pending bucket still exists | The query can observe rows newer than the stable flushed cursor coverage, so the next wait may wake even though the rerun result is unchanged. Use `GET /touch/meta?settle=flush` to avoid this internal race. |
 | Process restart changes the journal epoch | `stale=true` forces a full rerun and re-subscribe. |
 
 ## Current Exactness Preconditions
@@ -113,6 +123,8 @@ For the narrow "result-exact" rows in the matrix to remain exact:
   - the relevant template was active before the change occurred
   - updates have usable before-images for the template fields
   - the runtime stays out of `restricted` and `coarseOnly`
+  - for the strongest practical exactness, the wait uses literal `keys` and the
+    keyset stays within the small exact fine-key lane
   - the wait set stays small enough to avoid broad matching if exact waiter
     indexing matters
 - membership-only equality queries must also satisfy all of these:
@@ -122,14 +134,20 @@ For the narrow "result-exact" rows in the matrix to remain exact:
     contents
   - updates have usable before-images for those template fields
   - the runtime stays out of `restricted` and `coarseOnly`
+  - for the strongest practical exactness, the wait uses literal `keys` and the
+    keyset stays within the small exact fine-key lane
   - the wait set stays small enough to avoid broad matching if exact waiter
     indexing matters
 - in all cases:
   - the query is a full-row read over one entity, or a fully enumerated small
-    set of equality tuples on one entity
+    set of equality tuples on one entity, or a join whose exact dependencies
+    are all enumerated explicitly by the application
+  - exact-result-sensitive small fine keysets are preheated before the query and
+    use a settled cursor so writes during the query still emit exact fine keys
   - no uint32 key collision, bloom false positive, or overflow wake occurs
   - the cursor used for the wait is settled enough that the query did not
-    observe newer state than the cursor covers
+    observe newer state than the cursor covers, for example from
+    `/touch/meta?settle=flush`
 
 If any of those conditions fails, exactness is lost. In the conservative modes
 (`coarse`, `restricted`, `coarseOnly`) the system still preserves invalidation

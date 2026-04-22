@@ -7,7 +7,16 @@ import type { HostRuntime } from "../runtime/host_runtime.ts";
 import { setSqliteRuntimeOverride } from "../sqlite/adapter.ts";
 import { initConsoleLogging } from "../util/log.ts";
 import type { ProcessRequest } from "./worker_protocol.ts";
-import { encodeTemplateArg, membershipKeyIdFor, tableKeyIdFor, templateKeyIdFor, watchKeyIdFor, type TemplateEncoding } from "./live_keys.ts";
+import {
+  encodeTemplateArg,
+  membershipKeyFor,
+  membershipKeyIdFor,
+  tableKeyIdFor,
+  templateKeyIdFor,
+  watchKeyFor,
+  watchKeyIdFor,
+  type TemplateEncoding,
+} from "./live_keys.ts";
 
 initConsoleLogging();
 
@@ -126,6 +135,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
   type PendingTouch = {
     keyId: number;
+    routingKey?: string;
     windowStartMs: number;
     watermark: string;
     entity: string;
@@ -136,16 +146,24 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
 
   const pending = new Map<string, PendingTouch>();
   const templateOnlyEntityTouch = new Map<string, EntityTemplateOnlyTouch>();
-  const touches: Array<{ keyId: number; watermark: string; entity: string; kind: "table" | "template"; templateId?: string }> = [];
+  const touches: Array<{ keyId: number; routingKey?: string; watermark: string; entity: string; kind: "table" | "template"; templateId?: string }> = [];
   let fineTouchesDroppedDueToBudget = 0;
   let fineTouchesSkippedColdTemplate = 0;
 
   const flush = (_mapKey: string, p: PendingTouch) => {
-    touches.push({ keyId: p.keyId >>> 0, watermark: p.watermark, entity: p.entity, kind: p.kind, templateId: p.templateId });
+    touches.push({
+      keyId: p.keyId >>> 0,
+      routingKey: p.routingKey,
+      watermark: p.watermark,
+      entity: p.entity,
+      kind: p.kind,
+      templateId: p.templateId,
+    });
   };
 
   const queueTouch = (args: {
     keyId: number;
+    routingKey?: string;
     tsMs: number;
     watermark: string;
     entity: string;
@@ -153,7 +171,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     templateId?: string;
     windowMs: number;
   }) => {
-    const mapKey = `i:${args.keyId >>> 0}`;
+    const mapKey = args.routingKey ? `r:${args.routingKey}` : `i:${args.keyId >>> 0}`;
     const prev = pending.get(mapKey);
 
     // Guardrail: cap fine/template touches (key cardinality) per batch.
@@ -176,6 +194,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     if (!prev) {
       pending.set(mapKey, {
         keyId: args.keyId >>> 0,
+        routingKey: args.routingKey,
         windowStartMs: args.tsMs,
         watermark: args.watermark,
         entity: args.entity,
@@ -192,6 +211,7 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     flush(mapKey, prev);
     pending.set(mapKey, {
       keyId: args.keyId >>> 0,
+      routingKey: args.routingKey,
       windowStartMs: args.tsMs,
       watermark: args.watermark,
       entity: args.entity,
@@ -277,10 +297,10 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
         const afterObj = ch.after;
         const beforeObj = ch.before;
 
-        const watchKeyIds = new Set<number>();
-        const membershipKeyIds = new Set<number>();
+        const watchKeys = new Map<number, string>();
+        const membershipKeys = new Map<number, string>();
 
-        const compute = (obj: unknown): number | null => {
+        const compute = (obj: unknown): { keyId: number; routingKey: string } | null => {
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
           const args: string[] = [];
           for (let i = 0; i < tpl.fields.length; i++) {
@@ -291,9 +311,10 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             if (encoded == null) return null;
             args.push(encoded);
           }
-          return watchKeyIdFor(tpl.templateId, args) >>> 0;
+          const routingKey = watchKeyFor(tpl.templateId, args);
+          return { keyId: watchKeyIdFor(tpl.templateId, args) >>> 0, routingKey };
         };
-        const computeMembership = (obj: unknown): number | null => {
+        const computeMembership = (obj: unknown): { keyId: number; routingKey: string } | null => {
           if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
           const args: string[] = [];
           for (let i = 0; i < tpl.fields.length; i++) {
@@ -304,19 +325,20 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             if (encoded == null) return null;
             args.push(encoded);
           }
-          return membershipKeyIdFor(tpl.templateId, args) >>> 0;
+          const routingKey = membershipKeyFor(tpl.templateId, args);
+          return { keyId: membershipKeyIdFor(tpl.templateId, args) >>> 0, routingKey };
         };
 
         if (ch.op === "insert") {
           const k = compute(afterObj);
-          if (k != null) watchKeyIds.add(k >>> 0);
+          if (k != null) watchKeys.set(k.keyId >>> 0, k.routingKey);
           const m = computeMembership(afterObj);
-          if (m != null) membershipKeyIds.add(m >>> 0);
+          if (m != null) membershipKeys.set(m.keyId >>> 0, m.routingKey);
         } else if (ch.op === "delete") {
           const k = compute(beforeObj);
-          if (k != null) watchKeyIds.add(k >>> 0);
+          if (k != null) watchKeys.set(k.keyId >>> 0, k.routingKey);
           const m = computeMembership(beforeObj);
-          if (m != null) membershipKeyIds.add(m >>> 0);
+          if (m != null) membershipKeys.set(m.keyId >>> 0, m.routingKey);
         } else {
           // update: compute touches from both before and after (when possible).
           // Policy for missing/insufficient before image:
@@ -329,16 +351,16 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           const mBefore = computeMembership(beforeObj);
 
           if (kBefore != null) {
-            watchKeyIds.add(kBefore >>> 0);
-            if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
+            watchKeys.set(kBefore.keyId >>> 0, kBefore.routingKey);
+            if (kAfter != null) watchKeys.set(kAfter.keyId >>> 0, kAfter.routingKey);
             if (mBefore != null && mAfter != null) {
-              if (mBefore !== mAfter) {
-                membershipKeyIds.add(mBefore >>> 0);
-                membershipKeyIds.add(mAfter >>> 0);
+              if (mBefore.routingKey !== mAfter.routingKey) {
+                membershipKeys.set(mBefore.keyId >>> 0, mBefore.routingKey);
+                membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
               }
             } else {
-              if (mBefore != null) membershipKeyIds.add(mBefore >>> 0);
-              if (mAfter != null) membershipKeyIds.add(mAfter >>> 0);
+              if (mBefore != null) membershipKeys.set(mBefore.keyId >>> 0, mBefore.routingKey);
+              if (mAfter != null) membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
             }
           } else {
             if (beforeObj === undefined) {
@@ -355,17 +377,18 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
             }
 
             if (onMissingBefore === "skipBefore") {
-              if (kAfter != null) watchKeyIds.add(kAfter >>> 0);
-              if (mAfter != null) membershipKeyIds.add(mAfter >>> 0);
+              if (kAfter != null) watchKeys.set(kAfter.keyId >>> 0, kAfter.routingKey);
+              if (mAfter != null) membershipKeys.set(mAfter.keyId >>> 0, mAfter.routingKey);
             } else {
               // coarse: no fine touches
             }
           }
         }
 
-        for (const watchKeyId of watchKeyIds) {
+        for (const [watchKeyId, routingKey] of watchKeys) {
           queueTouch({
             keyId: watchKeyId >>> 0,
+            routingKey,
             tsMs,
             watermark,
             entity,
@@ -375,9 +398,10 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
           });
           if (fineBudgetExhausted) break;
         }
-        for (const membershipKeyId of membershipKeyIds) {
+        for (const [membershipKeyId, routingKey] of membershipKeys) {
           queueTouch({
             keyId: membershipKeyId >>> 0,
+            routingKey,
             tsMs,
             watermark,
             entity,
@@ -421,6 +445,10 @@ async function handleProcess(msg: ProcessRequest): Promise<void> {
     const bk = b.keyId >>> 0;
     if (ak < bk) return -1;
     if (ak > bk) return 1;
+    const ar = a.routingKey ?? "";
+    const br = b.routingKey ?? "";
+    if (ar < br) return -1;
+    if (ar > br) return 1;
     const aw = BigInt(a.watermark);
     const bw = BigInt(b.watermark);
     if (aw < bw) return -1;
