@@ -1,0 +1,121 @@
+# Live SQL Query Invalidation Matrix
+
+This document maps relational/SQL query families to the narrowest invalidation
+Streams Live can currently provide.
+
+Important:
+
+- Live does not parse SQL.
+- Live does not do incremental query maintenance.
+- The application must map each SQL query to one or more State Protocol
+  entities plus optional templates and watch keys.
+- The matrix below is a best-case view. The implementation still has global
+  coarsening and false-positive paths listed later in this document.
+
+## Hard Boundary
+
+Streams Live can tell you that a query may be stale. It cannot generally prove
+"re-run only when the SQL result actually changed" for arbitrary SQL.
+
+The current exact boundary is narrow:
+
+- exact watch-key invalidation exists only for active single-entity templates
+  with 1 to 3 equality fields
+- even for those shapes, exact SQL-result invalidation is only possible for
+  full-row reads where any touched row necessarily changes the result
+
+Everything else is either:
+
+- exact only with respect to the watched equality partition, not the final SQL
+  result, or
+- coarse at template or table scope
+
+## Reading The Matrix
+
+- `Best Live mapping` is the narrowest keying the current system can use.
+- `Narrowest invalidation scope` describes what a wake means in the best case.
+- `Result-exact in best case?` means the wake corresponds to a change that
+  really changes the SQL result, ignoring the global false-positive sources
+  listed later.
+
+## Query Matrix
+
+| Query family | Example | Best Live mapping | Narrowest invalidation scope | Result-exact in best case? | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Whole-table full-row read | `SELECT * FROM posts` | `tableKey(posts)` | All rows in one entity | Yes | Any insert, delete, or update on `posts` changes the result. `ORDER BY` without `LIMIT/OFFSET` does not change this. |
+| Single-table full-row equality read on 1 to 3 fields | `SELECT * FROM posts WHERE tenantId=? AND status=?` | `watchKey(templateId, args)` plus `templateIdsUsed` | One equality tuple in one entity | Yes | Requires an active template, `interestMode="fine"`, runtime fine mode, and usable before-images for updates. |
+| Small finite union of full-row equality tuples | `SELECT * FROM posts WHERE (tenantId,status) IN ((?,?),(?,?))` | One watch key per concrete tuple | The enumerated equality tuples | Yes | This is inferred from `touch/wait` accepting multiple keys. It stays narrow only while the full tuple set is explicitly enumerated and small. |
+| Projected row read | `SELECT id, title FROM posts WHERE tenantId=?` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Updates to non-projected columns still wake. |
+| Top-N / pagination / offset query | `SELECT * FROM posts WHERE tenantId=? ORDER BY createdAt DESC LIMIT 20` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Changes inside the watched partition but outside the returned window still wake. |
+| Aggregate / `DISTINCT` / `GROUP BY` / `HAVING` / window / `EXISTS` on one entity | `SELECT count(*) FROM posts WHERE tenantId=?` | Watch key(s) when the filter is template-eligible, otherwise `tableKey` | Exact watched tuple(s), otherwise table | No | Live invalidates from base-row changes. It does not maintain derived relational state. |
+| Equality filter with more than 3 bound fields | `SELECT * FROM posts WHERE a=? AND b=? AND c=? AND d=?` | `tableKey`, or an app-chosen less-specific template if over-invalidation is acceptable | Table, or only a partial equality partition | No | Templates are limited to 1 to 3 fields. |
+| Range / inequality / pattern / function / expression predicate | `SELECT * FROM posts WHERE createdAt>=?` | `tableKey(posts)` | Table | No | Current Live does not emit range, prefix, expression, or function-based invalidations. |
+| Large finite `IN` / `OR` keyset | `SELECT * FROM posts WHERE id IN (...)` | Many watch keys | Enumerated tuples on the write side, but broad bloom-based matching on the wait side once the keyset is large | No | `touch/wait` allows up to 1024 keys. Large wait sets become broad waiters and false positives increase. |
+| Join across multiple entities | `SELECT * FROM posts p JOIN users u ON ...` | `tableKey` for every participating entity the application knows the query depends on | Participating tables | No | There is no join dependency tracker, no multi-table watch key, and no SQL parser. |
+| `UNION` / `INTERSECT` / `EXCEPT` / multi-source CTE or expanded view | `SELECT ... FROM posts UNION ALL SELECT ... FROM drafts` | `tableKey` for every participating entity | Participating tables | No | The application must supply the full base-entity dependency set itself. |
+
+## Practical Reading Of The Matrix
+
+- Any query can be supported if the application can at least name the entity or
+  entities it depends on and wait on their table keys.
+- Exact watch-key invalidation is limited to single-entity equality filters on
+  1 to 3 fields.
+- Exact SQL-result invalidation is narrower still: it is only available for
+  full-row reads whose result necessarily changes whenever any watched row
+  changes.
+
+Examples:
+
+- `SELECT * FROM posts WHERE id=?` can be result-exact.
+- `SELECT id FROM posts WHERE id=?` cannot be result-exact because an update to
+  an unprojected column still wakes.
+- `SELECT count(*) FROM posts WHERE tenantId=?` cannot be result-exact because
+  many updates inside that partition leave the count unchanged.
+- `SELECT * FROM posts WHERE tenantId=? ORDER BY createdAt DESC LIMIT 10` cannot
+  be result-exact because rows outside the returned window can still wake it.
+
+## Global Coarsening And False-Positive Sources
+
+The matrix above is the best case. The current implementation has these
+cross-cutting cases that make invalidation coarser or force extra re-runs:
+
+| Condition | Effect on invalidation |
+| --- | --- |
+| Template is not active yet, or the change predates template activation | No fine watch-key invalidation exists for that history. Only coarse table invalidation is reliable. |
+| Update is missing a usable `old_value` and `onMissingBefore="coarse"` | Fine update invalidation is suppressed. The update only emits the coarse table touch. |
+| Update is missing a usable `old_value` and `onMissingBefore="skipBefore"` | Fine invalidation becomes after-only best effort. It is no longer exact for rows leaving the old equality partition. |
+| Runtime degrades to `touchMode="restricted"` | Fine waits wake on `templateKey`, which means "some row for this template shape changed", not necessarily the same bound values. |
+| Runtime degrades to `touchMode="coarseOnly"` or the client chooses `interestMode="coarse"` | Waits wake on `tableKey`, which means "some row in this entity changed". |
+| Wait keyset grows past `memory.keyIndexMaxKeys` (default `32`) | The waiter becomes broad and matching on flush is bloom-based, so false positives increase. |
+| Routing keys are collapsed to uint32 key IDs in the journal hot path | Distinct 64-bit routing keys can collide and cause false-positive wakes. |
+| `maybeTouchedSince*` is a bloom-style fast path | Immediate "already touched" checks are intentionally lossy and can report touched when the exact watched key was not touched. |
+| A journal bucket overflows its unique-key cap | The bucket becomes a broadcast wakeup for all waiters. |
+| `touch/meta` cursor is captured while scan lag or the current pending bucket still exists | The query can observe rows newer than the stable flushed cursor coverage, so the next wait may wake even though the rerun result is unchanged. |
+| Process restart changes the journal epoch | `stale=true` forces a full rerun and re-subscribe. |
+
+## Current Exactness Preconditions
+
+For the narrow "result-exact" rows in the matrix to remain exact:
+
+- whole-table full-row reads must use table scope and avoid the journal-level
+  false-positive paths listed above
+- equality-scoped full-row reads must also satisfy all of these:
+  - the query is represented as 1 to 3 equality fields per active template
+  - the client uses the correct watch key(s) plus `templateIdsUsed`
+  - the relevant template was active before the change occurred
+  - updates have usable before-images for the template fields
+  - the runtime stays out of `restricted` and `coarseOnly`
+  - the wait set stays small enough to avoid broad matching if exact waiter
+    indexing matters
+- in all cases:
+  - the query is a full-row read over one entity, or a fully enumerated small
+    set of equality tuples on one entity
+  - no uint32 key collision, bloom false positive, or overflow wake occurs
+  - the cursor used for the wait is settled enough that the query did not
+    observe newer state than the cursor covers
+
+If any of those conditions fails, exactness is lost. In the conservative modes
+(`coarse`, `restricted`, `coarseOnly`) the system still preserves invalidation
+correctness but wakes become coarser and extra SQL reruns are expected.
+`skipBefore` is explicitly best-effort and can also miss the old partition on
+updates that move rows.

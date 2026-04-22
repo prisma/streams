@@ -210,6 +210,8 @@ bun run test:conformance
 - [sqlite-schema.md](./sqlite-schema.md): SQLite schema and invariants
 - [schemas.md](./schemas.md): schema registry and lens behavior
 - [live.md](./live.md): end-to-end live / touch integration guide and API semantics
+- [live-query-invalidation.md](./live-query-invalidation.md): SQL query-family matrix for
+  exact vs coarse live invalidation
 - [metrics.md](./metrics.md): shipped metrics profile and metrics query model
 - [gharchive-demo.md](./gharchive-demo.md): self-contained GH Archive demo for ingestion, search, and aggregates
 - [recovery-integrity-runbook.md](./recovery-integrity-runbook.md): recovery and operational runbook

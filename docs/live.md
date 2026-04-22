@@ -108,6 +108,9 @@ Examples:
 Queries with joins, ranges, arbitrary expressions, or larger predicate sets can
 still use Live, but they should usually wait coarsely on the table key.
 
+For a query-family matrix that maps SQL shapes to exact vs coarse invalidation,
+see [live-query-invalidation.md](./live-query-invalidation.md).
+
 ### 4) Activate templates before relying on fine invalidation
 
 Fine invalidation depends on active templates. Activation is idempotent, but it
