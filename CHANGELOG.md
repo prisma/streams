@@ -2,6 +2,13 @@
 
 ## Upcoming
 
+- Improve Streams Live exact invalidation coverage with membership-only and
+  projected-field fine keys for cheap exact query shapes.
+- Add settled-cursor barriers and an exact small-key wait lane so small live
+  subscriptions can avoid more conservative reruns and key-match false
+  positives.
+- Add a live SQL invalidation matrix documenting which query families can be
+  result-exact versus only template- or table-coarse.
 - Align Prisma WAL/state-protocol events with the published spec by using
   `old_value`, validating change/control message shapes on append, and
   accepting control messages without generating touch invalidations.
