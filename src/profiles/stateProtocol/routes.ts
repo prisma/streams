@@ -8,6 +8,8 @@ import type { TouchConfig } from "../../touch/spec";
 import type { StreamTouchRouteArgs } from "../profile";
 import { getStateProtocolTouchConfig } from "./validation";
 
+const EXACT_FINE_WAIT_MAX_KEYS = 16;
+
 function countActiveTemplates(stream: string, db: StreamTouchRouteArgs["db"]): number {
   try {
     const row = db.db.query(`SELECT COUNT(*) as cnt FROM live_templates WHERE stream=? AND state='active';`).get(stream) as any;
@@ -60,6 +62,20 @@ function parseTemplateDeclsResult(raw: unknown, fieldPath: string): Result<Templ
   return Result.ok(templates);
 }
 
+function parseWaitTimeoutMsQueryResult(raw: string | null, defaultValue: number, fieldPath: string): Result<number, { message: string }> {
+  if (raw == null || raw.trim() === "") return Result.ok(defaultValue);
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return Result.err({ message: `${fieldPath} must be a number (ms)` });
+  return Result.ok(Math.max(0, Math.min(120_000, Math.floor(n))));
+}
+
+function normalizeExactFineWaitKeys(keys: string[]): string[] {
+  if (keys.length === 0 || keys.length > EXACT_FINE_WAIT_MAX_KEYS) return [];
+  const normalized = Array.from(new Set(keys.map((key) => key.trim().toLowerCase())));
+  if (!normalized.every((key) => /^[0-9a-f]{16}$/.test(key))) return [];
+  return normalized;
+}
+
 async function handleTemplatesActivateRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig): Promise<Response> {
   const { req, stream, streamRow, touchManager, respond } = args;
   if (req.method !== "POST") return respond.badRequest("unsupported method");
@@ -98,13 +114,14 @@ async function handleTemplatesActivateRoute(args: StreamTouchRouteArgs, touchCfg
   return respond.json(200, { activated: res.activated, denied: res.denied, limits });
 }
 
-function handleMetaRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig): Response {
-  const { stream, streamRow, db, touchManager, respond } = args;
+function buildMetaRoutePayload(args: StreamTouchRouteArgs, touchCfg: TouchConfig) {
+  const { stream, streamRow, db, touchManager } = args;
   const meta = touchManager.getOrCreateJournal(stream, touchCfg).getMeta();
   const runtime = touchManager.getTouchRuntimeSnapshot({ stream, touchCfg });
   const touchState = db.getStreamTouchState(stream);
-  return respond.json(200, {
+  return {
     ...meta,
+    settled: meta.pendingKeys === 0 && runtime.lagSourceOffsets === 0,
     coarseIntervalMs: touchCfg.coarseIntervalMs ?? 100,
     touchCoalesceWindowMs: touchCfg.touchCoalesceWindowMs ?? 100,
     activeTemplates: countActiveTemplates(stream, db),
@@ -143,7 +160,48 @@ function handleMetaRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig): Res
     journalNotifyWakeMsMax: runtime.journalNotifyWakeMsMax,
     journalTimeoutsFiredTotal: runtime.journalTimeoutsFiredTotal,
     journalTimeoutSweepMsTotal: runtime.journalTimeoutSweepMsTotal,
-  });
+  };
+}
+
+async function handleMetaRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig): Promise<Response> {
+  const { req, respond } = args;
+  if (req.method !== "GET") return respond.badRequest("unsupported method");
+
+  const url = new URL(req.url);
+  const settleRaw = url.searchParams.get("settle");
+  if (settleRaw !== null && settleRaw !== "flush") {
+    return respond.badRequest("meta.settle must be 'flush' when provided");
+  }
+
+  const timeoutMsRes = parseWaitTimeoutMsQueryResult(url.searchParams.get("timeoutMs"), 30_000, "meta.timeoutMs");
+  if (Result.isError(timeoutMsRes)) return respond.badRequest(timeoutMsRes.error.message);
+
+  if (settleRaw !== "flush") {
+    return respond.json(200, buildMetaRoutePayload(args, touchCfg));
+  }
+
+  const deadlineMs = Date.now() + timeoutMsRes.value;
+  for (;;) {
+    const payload = buildMetaRoutePayload(args, touchCfg);
+    if (payload.settled || Date.now() >= deadlineMs) {
+      return respond.json(200, payload);
+    }
+    if (req.signal.aborted) return new Response(null, { status: 204 });
+    const remainingMs = Math.max(1, deadlineMs - Date.now());
+    await new Promise<void>((resolve) => {
+      const waitMs = Math.min(25, remainingMs);
+      const timer = setTimeout(() => {
+        req.signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, waitMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        req.signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      req.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
 }
 
 async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig): Promise<Response> {
@@ -181,6 +239,10 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
   }
   if (keys.length === 0 && keyIds.length === 0) return respond.badRequest("wait requires keys or keyIds");
   if (keyIds.length > 1024) return respond.badRequest("wait.keyIds too large (max 1024)");
+
+  const exactRaw = body?.exact;
+  if (exactRaw !== undefined && typeof exactRaw !== "boolean") return respond.badRequest("wait.exact must be a boolean when provided");
+  const exactRequested = exactRaw === true;
 
   const cursorRaw = body?.cursor;
   if (typeof cursorRaw !== "string" || cursorRaw.trim() === "") return respond.badRequest("wait.cursor must be a non-empty string");
@@ -270,7 +332,20 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
     waitKeyIds = Array.from(new Set(entities.map((entity) => tableKeyIdFor(entity) >>> 0)));
   }
 
-  if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0) {
+  if (exactRequested && (interestMode !== "fine" || effectiveWaitKind !== "fineKey")) {
+    return respond.badRequest("wait.exact requires fine interest while runtime is in fine-key mode");
+  }
+
+  const exactFineRoutingKeys =
+    exactRequested && interestMode === "fine" && effectiveWaitKind === "fineKey" ? normalizeExactFineWaitKeys(keys) : [];
+  if (exactRequested && exactFineRoutingKeys.length === 0) {
+    return respond.badRequest("wait.exact requires 1 to 16 literal 64-bit routing keys");
+  }
+  const useExactFineKeyMatch = exactFineRoutingKeys.length > 0;
+  const exactFallbackKeyIds =
+    interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0 ? templateWaitKeyIds : [];
+
+  if (interestMode === "fine" && effectiveWaitKind === "fineKey" && templateWaitKeyIds.length > 0 && !useExactFineKeyMatch) {
     const merged = new Set<number>();
     for (const keyId of waitKeyIds) merged.add(keyId >>> 0);
     for (const keyId of templateWaitKeyIds) merged.add(keyId >>> 0);
@@ -319,7 +394,49 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
     const nowGen = journal.getGeneration();
     if (sinceGen > nowGen) sinceGen = nowGen;
 
-    if (journal.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
+    if (useExactFineKeyMatch) {
+      const exactTouched = journal.exactTouchedSinceAny(exactFineRoutingKeys, sinceGen);
+      if (exactTouched === true) {
+        const latencyMs = Date.now() - waitStartMs;
+        touchManager.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+        return respond.json(200, {
+          touched: true,
+          cursor: journal.getCursor(),
+          effectiveWaitKind,
+          bucketMaxSourceOffsetSeq: journal.getLastFlushedSourceOffsetSeq().toString(),
+          flushAtMs: journal.getLastFlushAtMs(),
+          bucketStartMs: journal.getLastBucketStartMs(),
+        });
+      }
+      const fallbackTouched =
+        exactFallbackKeyIds.length > 0 ? journal.maybeTouchedSinceAny(exactFallbackKeyIds, sinceGen) : false;
+      if (fallbackTouched) {
+        const latencyMs = Date.now() - waitStartMs;
+        touchManager.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+        return respond.json(200, {
+          touched: true,
+          cursor: journal.getCursor(),
+          effectiveWaitKind,
+          bucketMaxSourceOffsetSeq: journal.getLastFlushedSourceOffsetSeq().toString(),
+          flushAtMs: journal.getLastFlushAtMs(),
+          bucketStartMs: journal.getLastBucketStartMs(),
+        });
+      }
+      if (exactTouched === false) {
+        // Exact recent history covers this cursor range and saw none of the watched keys.
+      } else if (journal.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
+        const latencyMs = Date.now() - waitStartMs;
+        touchManager.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
+        return respond.json(200, {
+          touched: true,
+          cursor: journal.getCursor(),
+          effectiveWaitKind,
+          bucketMaxSourceOffsetSeq: journal.getLastFlushedSourceOffsetSeq().toString(),
+          flushAtMs: journal.getLastFlushAtMs(),
+          bucketStartMs: journal.getLastBucketStartMs(),
+        });
+      }
+    } else if (journal.maybeTouchedSinceAny(waitKeyIds, sinceGen)) {
       const latencyMs = Date.now() - waitStartMs;
       touchManager.recordWaitMetrics({ stream, touchCfg, keysCount: waitKeyIds.length, outcome: "touched", latencyMs });
       return respond.json(200, {
@@ -348,7 +465,13 @@ async function handleWaitRoute(args: StreamTouchRouteArgs, touchCfg: TouchConfig
     }
 
     const afterGen = journal.getGeneration();
-    const hit = await journal.waitForAny({ keys: waitKeyIds, afterGeneration: afterGen, timeoutMs: remaining, signal: req.signal });
+    const hit = await journal.waitForAny({
+      keys: useExactFineKeyMatch ? exactFallbackKeyIds : waitKeyIds,
+      exactKeys: useExactFineKeyMatch ? exactFineRoutingKeys : null,
+      afterGeneration: afterGen,
+      timeoutMs: remaining,
+      signal: req.signal,
+    });
     if (req.signal.aborted) return new Response(null, { status: 204 });
 
     if (hit == null) {

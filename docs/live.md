@@ -19,7 +19,8 @@ To use Live correctly, wire up all four pieces:
 
 - A base Durable Stream containing State Protocol change records.
 - A `state-protocol` profile with `touch.enabled=true`.
-- Application code that computes the table/template/watch keys for each query.
+- Application code that computes the table, template, and fine keys for each
+  query.
 - A wait loop that carries a cursor forward and re-runs the real query on
   `touched` or `stale`.
 
@@ -108,6 +109,9 @@ Examples:
 Queries with joins, ranges, arbitrary expressions, or larger predicate sets can
 still use Live, but they should usually wait coarsely on the table key.
 
+For a query-family matrix that maps SQL shapes to exact vs coarse invalidation,
+see [live-query-invalidation.md](./live-query-invalidation.md).
+
 ### 4) Activate templates before relying on fine invalidation
 
 Fine invalidation depends on active templates. Activation is idempotent, but it
@@ -176,12 +180,27 @@ The response includes a `cursor` such as:
 ```json
 {
   "cursor": "9f3a8d6c5a7b1234:12346",
+  "settled": true,
   "touchMode": "fine",
   "lagSourceOffsets": 0,
   "activeTemplates": 3,
   "activeWaiters": 12
 }
 ```
+
+If you need the strongest practical protection against conservative reruns from
+the current flush/lag race, call:
+
+```bash
+curl -sS "http://127.0.0.1:8080/v1/stream/app.wal/touch/meta?settle=flush&timeoutMs=30000"
+```
+
+That waits until:
+
+- the touch processor has no current lag for the stream
+- the current pending journal bucket is flushed
+
+and then returns a `settled: true` cursor.
 
 ### 6) Wait, then repeat
 
@@ -228,6 +247,10 @@ lowercase hex chars.
   - `templateId(entity, fieldsSorted) = XXH3_64("tpl\0" + entity + "\0" + join(fieldsSorted, "\0"))`
 - Template key:
   - `templateKey(templateId) = XXH3_64("tpl\0" + templateIdBytesBE)`
+- Membership key:
+  - `membershipKey(templateId, args...) = XXH3_64("mem\0" + templateIdBytesBE + "\0" + arg1 + ... )`
+- Projected field key:
+  - `projectedFieldKey(templateId, fieldName, args...) = XXH3_64("fld\0" + templateIdBytesBE + "\0" + fieldName + "\0" + arg1 + ... )`
 - Watch key:
   - `watchKey(templateId, args...) = XXH3_64("key\0" + templateIdBytesBE + "\0" + arg1 + ... )`
 
@@ -284,13 +307,21 @@ The live subscription shape is:
 Example in TypeScript using the repo's reference helpers:
 
 ```ts
-import { encodeTemplateArg, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
+import { encodeTemplateArg, membershipKeyFor, projectedFieldKeyFor, tableKeyFor, templateIdFor, watchKeyFor } from "./src/touch/live_keys";
 
 const entity = "public.todos";
 const fields = ["tenantId", "status"].sort();
 const templateId = templateIdFor(entity, fields);
 const tableKey = tableKeyFor(entity);
+const membershipKey = membershipKeyFor(templateId, [
+  encodeTemplateArg("open", "string")!,
+  encodeTemplateArg("t1", "string")!,
+]);
 const watchKey = watchKeyFor(templateId, [
+  encodeTemplateArg("open", "string")!,
+  encodeTemplateArg("t1", "string")!,
+]);
+const projectedTitleKey = projectedFieldKeyFor(templateId, "title", [
   encodeTemplateArg("open", "string")!,
   encodeTemplateArg("t1", "string")!,
 ]);
@@ -299,7 +330,16 @@ const watchKey = watchKeyFor(templateId, [
 For this query:
 
 - use `tableKey` for coarse waits
-- use `watchKey` plus `templateIdsUsed: [templateId]` for fine waits
+- use `membershipKey` plus `templateIdsUsed: [templateId]` when the result only
+  depends on which rows match the predicate, for example `count(*)`,
+  `exists(...)`, or a stable row-key set; singleton lookups such as
+  `select id from posts where id=?` are also in this membership-only class
+- use `membershipKey` plus one `projectedFieldKey` per projected scalar field,
+  plus `templateIdsUsed: [templateId]`, when the result depends only on row
+  membership plus those fields, for example this `select id, title ... order by
+  id` query or `select author from posts where id=?`
+- use `watchKey` plus `templateIdsUsed: [templateId]` when any row-content
+  change inside the watched equality tuple should rerun the SQL
 
 ## Templates
 
@@ -370,8 +410,10 @@ Properties:
 Implementation details:
 
 - time-aware bloom filter
+- recent exact-key history for small fine waits
 - bucketed commit generations
 - per-key waiter index for small keysets
+- exact waiter index for small literal fine keysets
 - broad-waiter scan path for large keysets
 - global deadline heap with a single timeout timer
 
@@ -400,6 +442,7 @@ Flush cadence:
 Use this endpoint to:
 
 - seed the first cursor for a wait loop
+- optionally wait for a settled cursor with `?settle=flush`
 - inspect current runtime mode and lag
 - debug hot-interest behavior
 - confirm that touch is enabled for a stream
@@ -409,6 +452,7 @@ The response is flat rather than nested.
 Commonly useful fields:
 
 - `cursor`, `epoch`, `generation`
+- `settled`
 - `bucketMs`, `coalesceMs`
 - `pendingKeys`, `overflowBuckets`, `activeWaiters`
 - `activeTemplates`, `touchMode`, `lagSourceOffsets`
@@ -418,6 +462,28 @@ Commonly useful fields:
 
 Monotonic totals are also included for scan, touch, wait, and journal
 activity.
+
+Query params:
+
+- `settle`
+  - optional
+  - `flush`
+  - when present, `/touch/meta` waits until `pendingKeys=0` and
+    `lagSourceOffsets=0`, or until `timeoutMs` expires
+- `timeoutMs`
+  - optional
+  - range `0..120000`
+  - default `30000`
+
+`settled=true` means the returned cursor is not behind the current pending
+journal bucket or touch-processor lag at response time.
+
+Important:
+
+- `settle=flush` is the best available practical barrier inside Live itself
+- it eliminates the current internal "query saw rows from an unflushed bucket"
+  race
+- it does not turn Live into full cross-system snapshot coordination
 
 If `/touch/meta` returns `404`, touch is not enabled for that stream.
 
@@ -446,6 +512,11 @@ This is the core long-poll endpoint.
   - optional
   - `fine|coarse`
   - defaults to `fine`
+- `exact`
+  - optional boolean
+  - only valid for small literal fine-key waits
+  - asks the server to use the exact small-key path instead of only the lossy
+    bloom/uint32 matching path
 - `templateIdsUsed`
   - optional string array
   - heartbeats active templates and enables runtime fallback logic
@@ -461,11 +532,37 @@ Validation notes:
 - if you send coarse waits without `templateIdsUsed`, your provided `keys` or
   `keyIds` should already be table-level
 
+### Small exact fine-key lane
+
+When all of these are true:
+
+- `interestMode="fine"`
+- `exact=true`
+- the effective wait kind stays `fineKey`
+- you send literal 64-bit routing `keys`, not only `keyIds`
+- the keyset is small (currently up to `16` keys)
+
+the server uses an exact small-key path in addition to the normal journal
+machinery:
+
+- active waits are matched by full 64-bit routing key, not only uint32 key id
+- recent flushed generations are checked against exact routing keys before the
+  bloom-style `maybeTouchedSince*` path
+
+This materially reduces false-positive wakes for expensive small keysets, but it
+is still not a generic SQL diff engine:
+
+- it only helps while the query can be represented as a small exact fine keyset
+- exact recent coverage is bounded to a short recent window around the current
+  cursor range
+- overflow, degraded runtime modes, missing before-images, or coarse/template
+  fallbacks still lose exactness
+
 ### Fine vs coarse waits
 
 Use `interestMode="fine"` when you have:
 
-- one or more watch keys
+- one or more fine keys
 - the template ids used by the query
 
 Use `interestMode="coarse"` when:
@@ -612,11 +709,33 @@ for (;;) {
 
 Guidance:
 
-- capture the cursor before running the query
+- for exact-result-sensitive paths, prefer a settled cursor from
+  `/touch/meta?settle=flush`
+- for small exact fine keysets, first issue a zero-timeout fine wait on the
+  exact `keys` to keep them hot through the query, then capture the settled
+  cursor and run the query
+- otherwise, capture the cursor before running the query
 - compute the keyset for the query you actually ran
 - use the returned cursor for the next iteration
 - if the query shape changes, activate or declare the new template shape before
   relying on fine waits
+
+Example keyed barrier pattern:
+
+```ts
+const subscription = computeLiveSubscription();
+
+await waitForTouch({
+  cursor: "now",
+  exact: true,
+  keys: subscription.keys,
+  interestMode: "fine",
+  timeoutMs: 0,
+});
+
+let cursor = (await getTouchMeta({ settle: "flush" })).cursor;
+const queryResult = await runRealDatabaseQuery();
+```
 
 ## Runtime Modes and Load Behavior
 
@@ -636,6 +755,8 @@ Fine lane:
 
 - controlled by lag guardrails, budgets, and hot-interest filtering
 - when degraded, `restricted` emits template keys instead of fine watch keys
+- `membershipKey` and `projectedFieldKey` are fine keys like `watchKey`; under
+  degradation they also fall back through `templateKey`
 
 Guardrail defaults:
 
@@ -669,9 +790,11 @@ Guidance:
 
 - treat touches as invalidation hints only
 - always re-run the real query after `touched`
+- exact projected-field invalidation needs usable before-images on updates; with
+  `skipBefore`, projected field touches become after-only best effort
 - provide `old_value` for updates whenever possible
 - fine waits are only fully correct when the adapter can supply the before
-  image fields needed to derive the right watch keys
+  image fields needed to derive the right fine keys
 - if before-images are not guaranteed, prefer coarse waits for correctness
 - if strict precision matters, use `onMissingBefore="error"`
 
@@ -680,8 +803,9 @@ Guidance:
 Use these defaults unless you have a measured reason not to.
 
 - Keep keysets small. Large keysets become broad waits and are more expensive.
-- Prefer `keyIds` only on hot paths. `keys` are easier to debug and are fine for
-  most integrations.
+- Prefer `keys` for small exact-result-sensitive fine waits. Use `keyIds` only
+  on hot paths where the compact uint32 form matters more than exact small-key
+  matching.
 - Activate templates opportunistically and keep heartbeating them through
   `templateIdsUsed`.
 - Use coarse waits for query shapes that are not clean equality templates.

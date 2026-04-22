@@ -9,12 +9,19 @@ type TouchHit = {
 type Waiter = {
   afterGeneration: number;
   keys: number[];
+  exactKeys: string[] | null;
   // For huge keysets, we avoid per-key indexing and instead scan on flush.
   broad: boolean;
   deadlineMs: number;
   heapIndex: number;
   done: boolean;
   cleanup: (hit: TouchHit) => void;
+};
+
+type ExactGeneration = {
+  generation: number;
+  keys: Set<string>;
+  overflow: boolean;
 };
 
 type IntervalStats = {
@@ -115,6 +122,8 @@ export function formatTouchCursor(epoch: string, generation: number): string {
  * - False positives are allowed (extra invalidations).
  */
 export class TouchJournal {
+  private static readonly EXACT_RECENT_WINDOW_MS = 15_000;
+
   private readonly epoch: string;
   private generation: number;
   private readonly bucketMs: number;
@@ -125,6 +134,7 @@ export class TouchJournal {
   private readonly lastSet: Uint32Array;
 
   private readonly pending = new Set<number>();
+  private readonly pendingExact = new Set<string>();
   private pendingBucketStartMs = 0;
   private pendingMaxSourceOffsetSeq: bigint = -1n;
   private lastFlushedSourceOffsetSeq: bigint = -1n;
@@ -138,7 +148,10 @@ export class TouchJournal {
   private flushTimer: any | null = null;
 
   private readonly byKey = new Map<number, Set<Waiter>>();
+  private readonly byExactKey = new Map<string, Set<Waiter>>();
   private readonly broad = new Set<Waiter>();
+  private readonly exactRecent: ExactGeneration[] = [];
+  private readonly exactRecentMaxGenerations: number;
   private activeWaiters = 0;
 
   // Single global deadline heap + timer for waiter expiry.
@@ -192,6 +205,7 @@ export class TouchJournal {
     this.lastSet = new Uint32Array(size);
     this.pendingMaxKeys = Math.max(1, Math.floor(opts.pendingMaxKeys));
     this.keyIndexMaxKeys = Math.max(1, Math.floor(opts.keyIndexMaxKeys));
+    this.exactRecentMaxGenerations = Math.max(16, Math.ceil(TouchJournal.EXACT_RECENT_WINDOW_MS / this.bucketMs));
   }
 
   stop(): void {
@@ -201,6 +215,7 @@ export class TouchJournal {
     this.timeoutTimer = null;
     this.scheduledDeadlineMs = null;
     this.pending.clear();
+    this.pendingExact.clear();
     this.pendingBucketStartMs = 0;
     this.pendingMaxSourceOffsetSeq = -1n;
     this.lastFlushedSourceOffsetSeq = -1n;
@@ -208,7 +223,9 @@ export class TouchJournal {
     this.lastBucketStartMs = 0;
     this.flushIntervalsLast10s.length = 0;
     this.byKey.clear();
+    this.byExactKey.clear();
     this.broad.clear();
+    this.exactRecent.length = 0;
     this.deadlineHeap.length = 0;
     this.activeWaiters = 0;
   }
@@ -280,7 +297,7 @@ export class TouchJournal {
     return this.lastSet.byteLength;
   }
 
-  touch(keyId: number, sourceOffsetSeq?: bigint): void {
+  touch(keyId: number, sourceOffsetSeq?: bigint, routingKey?: string): void {
     if (this.pending.size === 0 && !this.overflow && this.pendingBucketStartMs <= 0) {
       this.pendingBucketStartMs = Date.now();
     }
@@ -290,6 +307,9 @@ export class TouchJournal {
       this.overflow = true;
     } else {
       this.pending.add(u32(keyId));
+    }
+    if (typeof routingKey === "string" && /^[0-9a-f]{16}$/i.test(routingKey.trim())) {
+      this.pendingExact.add(routingKey.trim().toLowerCase());
     }
     if (typeof sourceOffsetSeq === "bigint" && sourceOffsetSeq > this.pendingMaxSourceOffsetSeq) {
       this.pendingMaxSourceOffsetSeq = sourceOffsetSeq;
@@ -330,6 +350,32 @@ export class TouchJournal {
     return false;
   }
 
+  exactTouchedSinceAny(routingKeys: string[], sinceGeneration: number): boolean | null {
+    const normalized = Array.from(
+      new Set(routingKeys.map((key) => key.trim().toLowerCase()).filter((key) => /^[0-9a-f]{16}$/.test(key)))
+    );
+    if (normalized.length === 0) return false;
+    if (sinceGeneration >= this.getGeneration()) return false;
+    if (sinceGeneration < this.lastOverflowGeneration) return null;
+    if (this.exactRecent.length === 0) return null;
+
+    const firstNeededGeneration = Math.max(0, Math.floor(sinceGeneration) + 1);
+    const oldestRetainedGeneration = this.exactRecent[0]!.generation;
+    if (firstNeededGeneration < oldestRetainedGeneration) return null;
+
+    let expectedGeneration = firstNeededGeneration;
+    for (const entry of this.exactRecent) {
+      if (entry.generation < firstNeededGeneration) continue;
+      if (entry.generation !== expectedGeneration) return null;
+      if (entry.overflow) return null;
+      for (const routingKey of normalized) {
+        if (entry.keys.has(routingKey)) return true;
+      }
+      expectedGeneration += 1;
+    }
+    return expectedGeneration > this.getGeneration() ? false : null;
+  }
+
   /**
    * Wait for any of `keys` to be touched in a bucket generation strictly greater than `afterGeneration`.
    *
@@ -337,8 +383,17 @@ export class TouchJournal {
    * - `{generation, keyId}` when touched
    * - `null` on timeout or abort
    */
-  waitForAny(args: { keys: number[]; afterGeneration: number; timeoutMs: number; signal?: AbortSignal }): Promise<TouchHit> {
-    if (args.keys.length === 0) return Promise.resolve(null);
+  waitForAny(args: {
+    keys: number[];
+    exactKeys?: string[] | null;
+    afterGeneration: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<TouchHit> {
+    const exactKeys = Array.isArray(args.exactKeys)
+      ? Array.from(new Set(args.exactKeys.map((key) => key.trim().toLowerCase()).filter((key) => /^[0-9a-f]{16}$/.test(key))))
+      : [];
+    if (args.keys.length === 0 && exactKeys.length === 0) return Promise.resolve(null);
     if (args.signal?.aborted) return Promise.resolve(null);
     const timeoutMs = Math.max(0, Math.floor(args.timeoutMs));
     if (timeoutMs <= 0) return Promise.resolve(null);
@@ -350,6 +405,7 @@ export class TouchJournal {
       const waiter: Waiter = {
         afterGeneration: u32(args.afterGeneration),
         keys,
+        exactKeys: exactKeys.length > 0 ? exactKeys : null,
         broad,
         deadlineMs: Date.now() + timeoutMs,
         heapIndex: -1,
@@ -357,6 +413,15 @@ export class TouchJournal {
         cleanup: (hit) => {
           if (waiter.done) return;
           waiter.done = true;
+
+          if (waiter.exactKeys) {
+            for (const routingKey of waiter.exactKeys) {
+              const s = this.byExactKey.get(routingKey);
+              if (!s) continue;
+              s.delete(waiter);
+              if (s.size === 0) this.byExactKey.delete(routingKey);
+            }
+          }
 
           if (waiter.broad) {
             this.broad.delete(waiter);
@@ -377,6 +442,14 @@ export class TouchJournal {
           resolve(hit);
         },
       };
+
+      if (waiter.exactKeys) {
+        for (const routingKey of waiter.exactKeys) {
+          const set = this.byExactKey.get(routingKey) ?? new Set<Waiter>();
+          set.add(waiter);
+          this.byExactKey.set(routingKey, set);
+        }
+      }
 
       if (waiter.broad) {
         this.broad.add(waiter);
@@ -427,6 +500,14 @@ export class TouchJournal {
       this.overflowBuckets += 1;
       this.lastOverflowGeneration = gen;
     }
+    this.exactRecent.push({
+      generation: gen,
+      keys: new Set(this.pendingExact),
+      overflow: this.overflow,
+    });
+    while (this.exactRecent.length > this.exactRecentMaxGenerations) {
+      this.exactRecent.shift();
+    }
 
     // Update bloom filter for touched keys. We still update for the keys we captured even on overflow;
     // the overflow marker is what preserves correctness for dropped keys.
@@ -444,9 +525,10 @@ export class TouchJournal {
       // Broadcast wakeup: resolve all waiters (safe, lossy).
       const wakeStartMs = Date.now();
       let wakeups = 0;
-      const all: Waiter[] = [];
-      for (const s of this.byKey.values()) for (const w of s) all.push(w);
-      for (const w of this.broad) all.push(w);
+      const all = new Set<Waiter>();
+      for (const s of this.byKey.values()) for (const w of s) all.add(w);
+      for (const s of this.byExactKey.values()) for (const w of s) all.add(w);
+      for (const w of this.broad) all.add(w);
       for (const w of all) {
         if (w.done) continue;
         if (gen > w.afterGeneration) {
@@ -469,6 +551,19 @@ export class TouchJournal {
       // Wake keyed waiters by touched key id.
       const wakeStartMs = Date.now();
       let wakeups = 0;
+      const exactWoken = new Set<Waiter>();
+      for (const routingKey of this.pendingExact) {
+        const set = this.byExactKey.get(routingKey);
+        if (!set || set.size === 0) continue;
+        for (const w of set) {
+          if (w.done || exactWoken.has(w)) continue;
+          if (gen > w.afterGeneration) {
+            exactWoken.add(w);
+            wakeups += 1;
+            w.cleanup({ generation: gen, keyId: 0, bucketMaxSourceOffsetSeq, flushAtMs, bucketStartMs });
+          }
+        }
+      }
       for (const keyId of this.pending) {
         const set = this.byKey.get(keyId);
         if (!set || set.size === 0) continue;
@@ -513,6 +608,7 @@ export class TouchJournal {
     }
 
     this.pending.clear();
+    this.pendingExact.clear();
     this.pendingBucketStartMs = 0;
     this.pendingMaxSourceOffsetSeq = -1n;
     this.overflow = false;

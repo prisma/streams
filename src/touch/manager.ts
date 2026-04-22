@@ -71,6 +71,7 @@ const HOT_INTEREST_MAX_KEYS = 64;
 
 type TouchRecord = {
   keyId: number;
+  routingKey?: string;
   watermark: string;
   entity: string;
   kind: "table" | "template";
@@ -538,7 +539,7 @@ export class TouchProcessorManager {
         } catch {
           sourceOffsetSeq = undefined;
         }
-        j.touch(t.keyId >>> 0, sourceOffsetSeq);
+        j.touch(t.keyId >>> 0, sourceOffsetSeq, t.routingKey);
       }
     }
 

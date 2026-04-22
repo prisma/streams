@@ -2,6 +2,7 @@ import type { StreamProfileSpec } from "../profiles";
 
 export type TouchRow = {
   keyId: number;
+  routingKey?: string;
   watermark: string; // source stream offset (base-10 string)
   entity: string;
   kind: "table" | "template";
