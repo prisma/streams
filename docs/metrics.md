@@ -346,6 +346,17 @@ This implementation emits interval summaries for:
 - `tieredstore.auto_tune.preset_mb`
 - `tieredstore.auto_tune.effective_memory_limit_mb`
 
+### Object store
+
+- `tieredstore.objectstore.put.latency`
+- `tieredstore.objectstore.get.latency`
+- `tieredstore.objectstore.head.latency`
+- `tieredstore.objectstore.delete.latency`
+- `tieredstore.objectstore.list.latency`
+  - tags:
+    - `artifact=manifest|schema_registry|routing_index|routing_key_lexicon|exact_index|segment|bundled_companion|stream_catalog|meta|unknown`
+    - `outcome=ok|miss|error`
+
 ### Append and read throughput
 
 - `tieredstore.append.bytes`

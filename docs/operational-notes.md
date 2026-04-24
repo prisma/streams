@@ -229,7 +229,9 @@ When throughput drops, check in this order:
 
 3) Upload backlog (segments stuck locally)
 - Increase `DS_UPLOAD_CONCURRENCY` if network allows.
-- Check object store latency and error rates.
+- Check `tieredstore.objectstore.put.latency`, `tieredstore.objectstore.get.latency`,
+  and the related `head` / `delete` / `list` latency metrics in
+  `__stream_metrics__`, plus object-store error rates.
 - Inspect `GET /v1/server/_details` and `tieredstore.upload.pending_segments`.
 - Remember the uploader preserves a contiguous uploaded prefix per stream:
   - it always retries the earliest missing segment for that stream first

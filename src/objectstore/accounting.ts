@@ -1,4 +1,5 @@
 import type { SqliteDurableStore } from "../db/db";
+import type { Metrics } from "../metrics";
 import type { GetOptions, ObjectStore, PutResult } from "./interface";
 
 type ClassifiedRequest = {
@@ -36,57 +37,115 @@ function classifyListPrefix(prefix: string): ClassifiedRequest | null {
 export class AccountingObjectStore implements ObjectStore {
   constructor(
     private readonly inner: ObjectStore,
-    private readonly db: SqliteDurableStore
+    private readonly db: SqliteDurableStore,
+    private readonly metrics?: Metrics
   ) {}
 
+  private recordLatency(op: "put" | "get" | "head" | "delete" | "list", artifact: string, startedNs: bigint, outcome: "ok" | "miss" | "error"): void {
+    if (!this.metrics) return;
+    const elapsedNs = Number(process.hrtime.bigint() - startedNs);
+    this.metrics.record(`tieredstore.objectstore.${op}.latency`, elapsedNs, "ns", {
+      artifact,
+      outcome,
+    });
+  }
+
   async put(key: string, data: Uint8Array, opts?: { contentType?: string; contentLength?: number }): Promise<PutResult> {
-    const res = await this.inner.put(key, data, opts);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyKey(key);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", data.byteLength);
-    return res;
+    const artifact = classified?.artifact ?? "unknown";
+    try {
+      const res = await this.inner.put(key, data, opts);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", data.byteLength);
+      this.recordLatency("put", artifact, startedNs, "ok");
+      return res;
+    } catch (error) {
+      this.recordLatency("put", artifact, startedNs, "error");
+      throw error;
+    }
   }
 
   async putFile(key: string, path: string, size: number, opts?: { contentType?: string }): Promise<PutResult> {
-    if (!this.inner.putFile) {
-      const bytes = await Bun.file(path).bytes();
-      const res = await this.inner.put(key, bytes, {
-        contentType: opts?.contentType,
-        contentLength: size,
-      });
-      const classified = classifyKey(key);
-      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
-      return res;
-    }
-    const res = await this.inner.putFile(key, path, size, opts);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyKey(key);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
-    return res;
+    const artifact = classified?.artifact ?? "unknown";
+    try {
+      if (!this.inner.putFile) {
+        const bytes = await Bun.file(path).bytes();
+        const res = await this.inner.put(key, bytes, {
+          contentType: opts?.contentType,
+          contentLength: size,
+        });
+        if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
+        this.recordLatency("put", artifact, startedNs, "ok");
+        return res;
+      }
+      const res = await this.inner.putFile(key, path, size, opts);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "put", size);
+      this.recordLatency("put", artifact, startedNs, "ok");
+      return res;
+    } catch (error) {
+      this.recordLatency("put", artifact, startedNs, "error");
+      throw error;
+    }
   }
 
   async get(key: string, opts?: GetOptions): Promise<Uint8Array | null> {
-    const res = await this.inner.get(key, opts);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyKey(key);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "get", res?.byteLength ?? 0);
-    return res;
+    const artifact = classified?.artifact ?? "unknown";
+    try {
+      const res = await this.inner.get(key, opts);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "get", res?.byteLength ?? 0);
+      this.recordLatency("get", artifact, startedNs, res == null ? "miss" : "ok");
+      return res;
+    } catch (error) {
+      this.recordLatency("get", artifact, startedNs, "error");
+      throw error;
+    }
   }
 
   async head(key: string): Promise<{ etag: string; size: number } | null> {
-    const res = await this.inner.head(key);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyKey(key);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "head", res?.size ?? 0);
-    return res;
+    const artifact = classified?.artifact ?? "unknown";
+    try {
+      const res = await this.inner.head(key);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "head", res?.size ?? 0);
+      this.recordLatency("head", artifact, startedNs, res == null ? "miss" : "ok");
+      return res;
+    } catch (error) {
+      this.recordLatency("head", artifact, startedNs, "error");
+      throw error;
+    }
   }
 
   async delete(key: string): Promise<void> {
-    await this.inner.delete(key);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyKey(key);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "delete", 0);
+    const artifact = classified?.artifact ?? "unknown";
+    try {
+      await this.inner.delete(key);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "delete", 0);
+      this.recordLatency("delete", artifact, startedNs, "ok");
+    } catch (error) {
+      this.recordLatency("delete", artifact, startedNs, "error");
+      throw error;
+    }
   }
 
   async list(prefix: string): Promise<string[]> {
-    const res = await this.inner.list(prefix);
+    const startedNs = process.hrtime.bigint();
     const classified = classifyListPrefix(prefix);
-    if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "list", 0);
-    return res;
+    const artifact = classified?.artifact ?? (prefix.replace(/\/+$/, "") === "streams" ? "stream_catalog" : "unknown");
+    try {
+      const res = await this.inner.list(prefix);
+      if (classified) this.db.recordObjectStoreRequestByHash(classified.streamHash, classified.artifact, "list", 0);
+      this.recordLatency("list", artifact, startedNs, "ok");
+      return res;
+    } catch (error) {
+      this.recordLatency("list", artifact, startedNs, "error");
+      throw error;
+    }
   }
 }
