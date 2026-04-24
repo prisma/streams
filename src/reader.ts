@@ -25,7 +25,9 @@ import { loadSegmentBytesCached, loadSegmentSource, readRangeFromSource, type Se
 import { Bloom256 } from "./util/bloom256";
 import { readU32BE } from "./util/endian";
 import { type RetryOptions } from "./util/retry";
+import { retry } from "./util/retry";
 import type { IndexCandidate, StreamIndexLookup } from "./index/indexer";
+import { segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
 import { dsError } from "./util/ds_error.ts";
 import { Result } from "better-result";
 import { filterDocIdsByColumnResult } from "./search/col_runtime";
@@ -179,6 +181,11 @@ type HotWalExactCache = {
   endSeq: bigint;
   schemaKey: string;
   values: Map<string, Map<string, bigint[]>>;
+};
+type SegmentRangeBlockReader = {
+  blocks: BlockIndexEntry[];
+  readBlock: (block: BlockIndexEntry) => Promise<Result<Uint8Array, ReaderError>>;
+  fetchedBytes: () => number;
 };
 type SearchHitInternal = {
   offsetSeq: bigint;
@@ -1986,6 +1993,47 @@ export class StreamReader {
     return res.value;
   }
 
+  private async loadSegmentRangeBlockReaderResult(seg: SegmentRow): Promise<Result<SegmentRangeBlockReader | null, ReaderError>> {
+    const objectKey = segmentObjectKey(streamHash16Hex(seg.stream), seg.segment_index);
+    let fetchedBytes = 0;
+    const readRange = async (start: number, end: number): Promise<Result<Uint8Array, ReaderError>> => {
+      const bytes = await retry(
+        async () => {
+          const res = await this.os.get(objectKey, { range: { start, end } });
+          if (!res) throw dsError(`object store missing segment: ${objectKey}`);
+          return res;
+        },
+        this.retryOpts()
+      );
+      fetchedBytes += bytes.byteLength;
+      return Result.ok(bytes);
+    };
+
+    if (seg.size_bytes < 8) return Result.ok(null);
+    const tailRes = await readRange(seg.size_bytes - 8, seg.size_bytes - 1);
+    if (Result.isError(tailRes)) return tailRes;
+    const tail = tailRes.value;
+    if (tail.byteLength < 8) return Result.ok(null);
+    const magic = String.fromCharCode(tail[4], tail[5], tail[6], tail[7]);
+    if (magic !== "DSF1") return Result.ok(null);
+    const footerLen = readU32BE(tail, 0);
+    const footerStart = seg.size_bytes - 8 - footerLen;
+    if (footerStart < 0) return Result.ok(null);
+    const footerRes = await readRange(footerStart, footerStart + footerLen - 1);
+    if (Result.isError(footerRes)) return footerRes;
+    const footer = parseFooterBytes(footerRes.value);
+    if (!footer?.blocks) return Result.ok(null);
+
+    return Result.ok({
+      blocks: footer.blocks,
+      readBlock: async (block) => {
+        const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+        return readRange(block.blockOffset, block.blockOffset + totalLen - 1);
+      },
+      fetchedBytes: () => fetchedBytes,
+    });
+  }
+
   private async scanSegmentReverseForSearchResult(
     stream: string,
     seg: SegmentRow,
@@ -2074,57 +2122,72 @@ export class StreamReader {
       if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
       else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
     };
+    const scanCandidateDocIdsWithBlocksResult = async (
+      blocks: BlockIndexEntry[],
+      readBlock: (block: BlockIndexEntry) => Promise<Result<Uint8Array, ReaderError>>
+    ): Promise<Result<void, ReaderError>> => {
+      const candidateDocIds = Array.from(familyCandidates.docIds!)
+        .filter((docId) => {
+          const offsetSeq = seg.start_offset + BigInt(docId);
+          return offsetSeq >= rangeStartSeq && offsetSeq <= rangeEndSeq;
+        })
+        .sort((left, right) => right - left);
+      let currentBlockIndex = -1;
+      let currentBlockStartOffset = 0n;
+      let currentRecords: Array<{ payload: Uint8Array }> = [];
+      for (const docId of candidateDocIds) {
+        const offsetSeq = seg.start_offset + BigInt(docId);
+        const blockIndex = findFirstRelevantBlockIndex(blocks, offsetSeq);
+        const block = blocks[blockIndex]!;
+        const blockStartOffset = block.firstOffset;
+        const blockEndOffset = blockStartOffset + BigInt(block.recordCount) - 1n;
+        if (offsetSeq < blockStartOffset || offsetSeq > blockEndOffset) continue;
+        if (blockIndex !== currentBlockIndex) {
+          const blockBytesRes = await readBlock(block);
+          if (Result.isError(blockBytesRes)) return blockBytesRes;
+          const decodedRes = decodeBlockResult(blockBytesRes.value);
+          if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+          currentBlockIndex = blockIndex;
+          currentBlockStartOffset = blockStartOffset;
+          currentRecords = decodedRes.value.records;
+          state.addDecodedRecords(decodedRes.value.recordCount);
+        }
+        const recordIndex = Number(offsetSeq - currentBlockStartOffset);
+        const record = currentRecords[recordIndex];
+        if (!record) continue;
+        const matchRes = state.collectSearchMatchResult(offsetSeq, record.payload);
+        if (Result.isError(matchRes)) return matchRes;
+        if (markTimedOutIfNeeded()) return Result.ok(undefined);
+        if (state.stopIfPageComplete()) return Result.ok(undefined);
+      }
+      return Result.ok(undefined);
+    };
 
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
+    if (familyCandidates.docIds) {
+      const rangeReaderRes = await this.loadSegmentRangeBlockReaderResult(seg);
+      if (Result.isError(rangeReaderRes)) return rangeReaderRes;
+      if (rangeReaderRes.value) {
+        const rangeReader = rangeReaderRes.value;
+        const scanRes = await scanCandidateDocIdsWithBlocksResult(rangeReader.blocks, rangeReader.readBlock);
+        state.addSegmentPayloadBytesFetched(rangeReader.fetchedBytes());
+        addSegmentTime();
+        return scanRes;
+      }
+    }
+
     const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
     state.addSegmentPayloadBytesFetched(seg.size_bytes);
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
     if (footerBlocks) {
       if (familyCandidates.docIds) {
-        const candidateDocIds = Array.from(familyCandidates.docIds)
-          .filter((docId) => {
-            const offsetSeq = seg.start_offset + BigInt(docId);
-            return offsetSeq >= rangeStartSeq && offsetSeq <= rangeEndSeq;
-          })
-          .sort((left, right) => right - left);
-        let currentBlockIndex = -1;
-        let currentBlockStartOffset = 0n;
-        let currentRecords: Array<{ payload: Uint8Array }> = [];
-        for (const docId of candidateDocIds) {
-          const offsetSeq = seg.start_offset + BigInt(docId);
-          const blockIndex = findFirstRelevantBlockIndex(footerBlocks, offsetSeq);
-          const block = footerBlocks[blockIndex]!;
-          const blockStartOffset = block.firstOffset;
-          const blockEndOffset = blockStartOffset + BigInt(block.recordCount) - 1n;
-          if (offsetSeq < blockStartOffset || offsetSeq > blockEndOffset) continue;
-          if (blockIndex !== currentBlockIndex) {
-            const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
-            const blockBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1);
-            const decodedRes = decodeBlockResult(blockBytes);
-            if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
-            currentBlockIndex = blockIndex;
-            currentBlockStartOffset = blockStartOffset;
-            currentRecords = decodedRes.value.records;
-            state.addDecodedRecords(decodedRes.value.recordCount);
-          }
-          const recordIndex = Number(offsetSeq - currentBlockStartOffset);
-          const record = currentRecords[recordIndex];
-          if (!record) continue;
-          const matchRes = state.collectSearchMatchResult(offsetSeq, record.payload);
-          if (Result.isError(matchRes)) return matchRes;
-          if (markTimedOutIfNeeded()) {
-            addSegmentTime();
-            return Result.ok(undefined);
-          }
-          if (state.stopIfPageComplete()) {
-            addSegmentTime();
-            return Result.ok(undefined);
-          }
-        }
-
+        const scanRes = await scanCandidateDocIdsWithBlocksResult(footerBlocks, async (block) => {
+          const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+          return Result.ok(readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1));
+        });
         addSegmentTime();
-        return Result.ok(undefined);
+        return scanRes;
       }
 
       for (let blockIndex = findFirstRelevantBlockIndex(footerBlocks, rangeEndSeq); blockIndex >= 0; blockIndex--) {

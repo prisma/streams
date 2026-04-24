@@ -664,6 +664,9 @@ Current candidate-planning behavior:
 - for append-order reverse search, a non-empty per-segment candidate doc-id set
   is walked directly in offset order, and only blocks containing candidate hits
   are decoded
+- remote candidate-doc searches range-read the segment footer and matching
+  compressed blocks instead of fetching the full segment object when the DSB3
+  footer is available
 - fielded exact keyword clauses still use the internal exact family first for
   sealed-history segment pruning when that family is available
 - if a keyword field is also present in bundled `.fts` because it enables
