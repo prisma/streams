@@ -183,6 +183,7 @@ export class SearchCompanionManager {
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
 
   constructor(
@@ -228,12 +229,28 @@ export class SearchCompanionManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
     this.fileCache.clearMapped();
   }
 
   enqueue(stream: string): void {
     this.queue.add(stream);
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null> {
@@ -412,6 +429,7 @@ export class SearchCompanionManager {
       }
     } finally {
       this.running = false;
+      if (this.queue.size > 0) this.scheduleTick();
     }
   }
 

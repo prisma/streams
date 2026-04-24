@@ -25,7 +25,10 @@ runtime overview and command surface, see `overview.md`.
 - `DS_INDEX_CHECK_MS`: in-process periodic sweep interval for the routing-key,
   exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms;
   auto-tune defers periodic sweeps to `3600000ms` through the `1024 MiB`
-  preset, then uses `1000ms` at `2048 MiB` and above).
+  preset, then uses `1000ms` at `2048 MiB` and above). Segment uploads and
+  schema/profile changes also enqueue the affected stream and wake the
+  background managers promptly, so the sweep interval is not the normal
+  freshness target for known changed streams.
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)

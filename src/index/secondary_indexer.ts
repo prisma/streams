@@ -74,6 +74,7 @@ export class SecondaryIndexManager {
   private readonly compacting = new Set<string>();
   private readonly streamIdleTicks = new Map<string, { logicalSizeBytes: bigint; nextOffset: bigint; flatTicks: number }>();
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
@@ -135,13 +136,29 @@ export class SecondaryIndexManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
     this.streamIdleTicks.clear();
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
     this.queue.add(stream);
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async candidateSegmentsForSecondaryIndex(
@@ -271,6 +288,7 @@ export class SecondaryIndexManager {
       }
     } finally {
       this.running = false;
+      if (this.queue.size > 0) this.scheduleTick();
     }
   }
 

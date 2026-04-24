@@ -90,6 +90,7 @@ export class IndexManager {
   private lastDiskEvictions = 0;
   private lastDiskBytesAdded = 0;
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
@@ -151,12 +152,28 @@ export class IndexManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
     this.queue.add(stream);
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
@@ -295,6 +312,7 @@ export class IndexManager {
       this.recordCacheStats();
     } finally {
       this.running = false;
+      if (this.queue.size > 0) this.scheduleTick();
     }
   }
 
