@@ -8,6 +8,8 @@ and tooling.
 
 - [overview.md](./overview.md) — product overview, quick start, package surfaces, and the main
   documentation map
+- [compute-demo.md](./compute-demo.md) — Compute deployment that layers `/studio` and `/generate`
+  on top of the Streams server
 - [live.md](./live.md) — end-to-end guide for the live / touch system and the `/touch/*`
   APIs
 - [live-query-invalidation.md](./live-query-invalidation.md) — SQL query-family matrix for

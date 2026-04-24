@@ -93,6 +93,8 @@ bun run src/local/cli.ts reset --name default
 Notes:
 
 - Full server startup requires `--object-store local|r2`.
+- Prisma Compute deployments should use `src/compute/entry.ts`, which injects `--object-store r2` for the server entrypoint and `--auto-tune` when `DS_MEMORY_LIMIT_MB` is set.
+- If Compute needs worker-thread entrypoints such as `segmenter_worker.ts` or `processor_worker.ts`, prebuild the bundle with `bun run build:compute-bundle` and deploy that artifact with `--skip-build`. The Compute CLI's built-in Bun strategy only bundles the explicit entrypoint file.
 - Full mode binds to `127.0.0.1` by default. Set `DS_HOST=0.0.0.0` if you intentionally want a non-loopback bind inside a trusted network boundary.
 - Local mode is designed for development and Prisma CLI integration, not hostile-network deployment.
 - The default local data root remains under `envPaths("prisma-dev").data/durable-streams/` for compatibility with the Prisma development workflow.
@@ -177,6 +179,72 @@ DURABLE_STREAMS_R2_ACCESS_KEY_ID=your-access-key \
 DURABLE_STREAMS_R2_SECRET_ACCESS_KEY=your-secret \
   bun run src/server.ts --object-store r2
 ```
+
+Prisma Compute:
+
+```bash
+DS_HOST=0.0.0.0 \
+DS_ROOT=/mnt/app/prisma-streams \
+  DS_MEMORY_LIMIT_MB=1024 \
+DURABLE_STREAMS_R2_BUCKET=your-bucket \
+DURABLE_STREAMS_R2_ACCOUNT_ID=your-account-id \
+DURABLE_STREAMS_R2_ACCESS_KEY_ID=your-access-key \
+DURABLE_STREAMS_R2_SECRET_ACCESS_KEY=your-secret \
+  bun run src/compute/entry.ts
+```
+
+Use an explicit `DS_ROOT` under `/mnt/app` on Prisma Compute. Paths under
+`/tmp` or other ephemeral filesystem locations are lost on crash, restart, and
+VM replacement, which drops the local SQLite catalog and caches.
+
+Prebuild for Prisma Compute deployments that need worker threads:
+
+```bash
+bun run build:compute-bundle
+
+PRISMA_API_TOKEN=... \
+  bunx @prisma/compute-cli compute deploy \
+    --service your-service-id \
+    --path .compute-build/bundle \
+    --entrypoint compute/entry.js \
+    --skip-build
+```
+
+`src/compute/entry.ts` always injects `--object-store r2`. When
+`DS_MEMORY_LIMIT_MB` is set, it also injects `--auto-tune`, so Compute
+deployments can use the standard memory preset without a separate argv channel.
+
+Compute demo deployment with Studio and the evlog generator:
+
+```bash
+bun run build:compute-demo-bundle
+
+PRISMA_API_TOKEN=... \
+  bunx @prisma/compute-cli deploy \
+    --service your-service-id \
+    --skip-build \
+    --path .compute-demo-build/bundle \
+    --entrypoint compute/demo_entry.js
+```
+
+That artifact starts the normal Streams server plus:
+
+- `/studio` for the streams-only Prisma Studio UI
+- `/generate` for a bulk evlog ingest page with a stream-name field defaulting
+  to `demo-app` and `1k`, `10k`, and `100k` actions
+
+See [compute-demo.md](./compute-demo.md).
+
+Compute verification demo:
+
+```bash
+bun run demo:compute-verify --url https://your-service.cdg.prisma.build
+```
+
+The Compute verification workload uses large mixed-entropy binary rows so
+segmenting still cuts by `DS_SEGMENT_MAX_BYTES` under the compression-aware
+seal heuristic. That avoids needing a tiny `DS_SEGMENT_TARGET_ROWS` override
+just to force cuts for an overly compressible demo payload.
 
 ## Development Commands
 
