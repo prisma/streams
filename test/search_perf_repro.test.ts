@@ -22,6 +22,8 @@ const SMALL_STREAM_ROWS_PER_SEGMENT = envNumber("SEARCH_PERF_SMALL_ROWS_PER_SEGM
 const SMALL_STREAM_PAYLOAD_BYTES = envNumber("SEARCH_PERF_SMALL_PAYLOAD_BYTES", 8 * 1024);
 const WAL_TAIL_ROWS = envNumber("SEARCH_PERF_WAL_TAIL_ROWS", 32_768);
 const WAL_TAIL_PAYLOAD_BYTES = envNumber("SEARCH_PERF_WAL_TAIL_PAYLOAD_BYTES", 4 * 1024);
+const EXACT_ONLY_ROWS = envNumber("SEARCH_PERF_EXACT_ONLY_ROWS", 32_768);
+const EXACT_ONLY_PAYLOAD_BYTES = envNumber("SEARCH_PERF_EXACT_ONLY_PAYLOAD_BYTES", 4 * 1024);
 const APPEND_BATCH_ROWS = envNumber("SEARCH_PERF_APPEND_BATCH_ROWS", 512);
 const BLOCK_MAX_BYTES = envNumber("SEARCH_PERF_BLOCK_MAX_BYTES", 64 * 1024);
 
@@ -105,6 +107,25 @@ function buildEvlogPayload(index: number, targetBytes: number, environment = "st
   return bytes;
 }
 
+function buildExactOnlyPayload(index: number, targetBytes: number): Uint8Array {
+  const encoder = new TextEncoder();
+  const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, 0) + index * 1000).toISOString();
+  const base = {
+    eventTime: timestamp,
+    customerId: `cust-${String(index).padStart(10, "0")}`,
+    message: `exact-only seed event ${index}`,
+    context: { seed: index, pad: "" },
+  };
+  const baseBytes = encoder.encode(JSON.stringify(base)).byteLength;
+  const padChars = targetBytes - baseBytes;
+  if (padChars < 0) throw new Error(`target payload ${targetBytes} is too small for exact-only seed row (${baseBytes})`);
+  const bytes = encoder.encode(JSON.stringify({ ...base, context: { seed: index, pad: padFor(index, padChars) } }));
+  if (bytes.byteLength !== targetBytes) {
+    throw new Error(`expected ${targetBytes} bytes, got ${bytes.byteLength}`);
+  }
+  return bytes;
+}
+
 async function createEvlogStream(app: ReturnType<typeof createApp>, stream: string): Promise<void> {
   let res = await app.fetch(
     new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
@@ -121,6 +142,46 @@ async function createEvlogStream(app: ReturnType<typeof createApp>, stream: stri
       body: JSON.stringify({
         apiVersion: "durable.streams/profile/v1",
         profile: { kind: "evlog" },
+      }),
+    })
+  );
+  expect(res.status).toBe(200);
+}
+
+async function createExactOnlyStream(app: ReturnType<typeof createApp>, stream: string): Promise<void> {
+  let res = await app.fetch(
+    new Request(`http://local/v1/stream/${encodeURIComponent(stream)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+    })
+  );
+  expect([200, 201]).toContain(res.status);
+
+  res = await app.fetch(
+    new Request(`http://local/v1/stream/${encodeURIComponent(stream)}/_schema`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        schema: { type: "object", additionalProperties: true },
+        search: {
+          primaryTimestampField: "eventTime",
+          fields: {
+            eventTime: {
+              kind: "date",
+              bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+              column: true,
+              exists: true,
+              sortable: true,
+            },
+            customerId: {
+              kind: "keyword",
+              bindings: [{ version: 1, jsonPointer: "/customerId" }],
+              exact: true,
+              exists: true,
+              sortable: true,
+            },
+          },
+        },
       }),
     })
   );
@@ -144,6 +205,39 @@ function appendSeedRows(
         routingKey: null,
         contentType: "application/json",
         payload: buildEvlogPayload(index, payloadBytes),
+        appendMs: BigInt(appendBaseMs + index),
+      };
+    });
+    const append = app.deps.db.appendWalRows({
+      stream,
+      startOffset: nextOffset,
+      expectedOffset: nextOffset,
+      baseAppendMs: BigInt(appendBaseMs + start),
+      rows: batch,
+    });
+    expect(Result.isOk(append)).toBe(true);
+    if (Result.isError(append)) throw new Error(append.error.kind);
+    nextOffset = append.value.lastOffset + 1n;
+  }
+}
+
+function appendExactOnlyRows(
+  app: ReturnType<typeof createApp>,
+  stream: string,
+  rows: number,
+  payloadBytes: number,
+  batchRows: number
+): void {
+  let nextOffset = app.deps.db.getStream(stream)?.next_offset ?? 0n;
+  const appendBaseMs = Date.parse("2026-01-01T00:00:00.000Z");
+  for (let start = 0; start < rows; start += batchRows) {
+    const count = Math.min(batchRows, rows - start);
+    const batch = Array.from({ length: count }, (_, localIndex) => {
+      const index = start + localIndex;
+      return {
+        routingKey: null,
+        contentType: "application/json",
+        payload: buildExactOnlyPayload(index, payloadBytes),
         appendMs: BigInt(appendBaseMs + index),
       };
     });
@@ -292,6 +386,59 @@ async function buildWalTailFixture(args: { stream: string; rows: number; payload
   };
 }
 
+async function buildExactOnlyFixture(args: { stream: string; rows: number; payloadBytes: number }): Promise<PerfFixture> {
+  const root = mkdtempSync(join(tmpdir(), `ds-search-perf-${args.stream}-`));
+  const store = new MockR2Store({
+    maxInMemoryBytes: 1 * 1024 * 1024,
+    spillDir: `${root}/mock-r2`,
+  });
+  const commonConfig = {
+    segmentTargetRows: args.rows,
+    segmentMaxBytes: args.rows * args.payloadBytes * 4,
+    blockMaxBytes: BLOCK_MAX_BYTES,
+    indexL0SpanSegments: 16,
+    segmentCacheMaxBytes: 0,
+    segmentFooterCacheEntries: 0,
+    searchWalOverlayQuietPeriodMs: 0,
+  } satisfies Partial<Config>;
+  let buildApp: ReturnType<typeof createApp> | null = createApp(
+    makeConfig(root, {
+      ...commonConfig,
+      segmentCheckIntervalMs: 5,
+      uploadIntervalMs: 5,
+      indexCheckIntervalMs: 5,
+    }),
+    store
+  );
+  try {
+    await createExactOnlyStream(buildApp, args.stream);
+    appendExactOnlyRows(buildApp, args.stream, args.rows, args.payloadBytes, APPEND_BATCH_ROWS);
+    await waitForUploadedCompanions(buildApp, args.stream, 1, TIMEOUT_MS);
+  } finally {
+    buildApp?.close();
+    buildApp = null;
+  }
+
+  const app = createApp(
+    makeConfig(root, {
+      ...commonConfig,
+      segmentCheckIntervalMs: 60_000,
+      uploadIntervalMs: 60_000,
+      indexCheckIntervalMs: 60_000,
+    }),
+    store
+  );
+  return {
+    app,
+    root,
+    store,
+    stream: args.stream,
+    rows: args.rows,
+    segments: 1,
+    payloadBytes: args.payloadBytes,
+  };
+}
+
 async function measuredSearch(
   app: ReturnType<typeof createApp>,
   stream: string,
@@ -408,7 +555,7 @@ describe("search performance repro cases", () => {
   );
 
   t(
-    "two uploaded evlog segments below the exact L0 span have no exact run and broad filters fall back to fts plus source scan",
+    "two uploaded evlog segments below the secondary exact L0 span use companion candidates plus source scan",
     async () => {
       const fixture = await buildFixture({
         stream: "perf-small-no-l0",
@@ -464,6 +611,34 @@ describe("search performance repro cases", () => {
         expect(warm.body.coverage.candidate_doc_ids).toBe(1);
         expect(warm.body.coverage.scanned_tail_docs).toBe(1);
         expect(warm.elapsedMs).toBeLessThan(cold.elapsedMs);
+      } finally {
+        fixture.app.close();
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT_MS
+  );
+
+  t(
+    "sealed exact-only rare filters use .exact doc-id postings instead of parsing every candidate record",
+    async () => {
+      const fixture = await buildExactOnlyFixture({
+        stream: "perf-exact-only-postings",
+        rows: EXACT_ONLY_ROWS,
+        payloadBytes: EXACT_ONLY_PAYLOAD_BYTES,
+      });
+      try {
+        const result = await measuredSearch(fixture.app, fixture.stream, {
+          q: 'customerId:"cust-0000000000"',
+          size: 1,
+          sort: ["offset:desc"],
+        });
+        logPerfCase("sealed-exact-only-postings", fixture, result);
+
+        expect(result.body.hits).toHaveLength(1);
+        expect(result.body.coverage.index_families_used).toContain("exact");
+        expect(result.body.coverage.candidate_doc_ids).toBe(1);
+        expect(result.parseCalls).toBeLessThanOrEqual(8);
       } finally {
         fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });

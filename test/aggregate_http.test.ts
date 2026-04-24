@@ -210,7 +210,7 @@ describe("_aggregate http", () => {
         );
         expect(res.status).toBe(200);
         let indexStatus = await res.json();
-        expect(indexStatus.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts"]);
+        expect(indexStatus.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "exact", "fts"]);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_aggregate`, {
@@ -359,7 +359,7 @@ describe("_aggregate http", () => {
         );
         expect(res.status).toBe(200);
         const details = await res.json();
-        expect(details.index_status.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts"]);
+        expect(details.index_status.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "exact", "fts"]);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_aggregate`, {

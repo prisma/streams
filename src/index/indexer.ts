@@ -21,6 +21,7 @@ import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
 import type { AggSectionView } from "../search/agg_format";
 import type { ColSectionView } from "../search/col_format";
+import type { ExactSectionView } from "../search/exact_format";
 import type { FtsSectionView } from "../search/fts_format";
 import type { MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import type { SchemaRegistryStore } from "../schema/registry";
@@ -41,6 +42,7 @@ export type StreamIndexLookup = {
   candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
+  getExactSegmentCompanion(stream: string, segmentIndex: number): Promise<ExactSectionView | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
   getFtsSegmentCompanionWithStats?(
     stream: string,

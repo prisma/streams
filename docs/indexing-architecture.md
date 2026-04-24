@@ -18,6 +18,8 @@ Prisma Streams now ships these indexing layers:
 - the existing exact-match secondary index family, now treated as an internal
   accelerator derived from schema `search.fields`
 - a bundled per-segment `PSCIX2` companion container (`.cix`)
+- a plan-relative binary `exact` section family inside `.cix` for doc-level
+  exact-value postings
 - a plan-relative binary `col` section family inside `.cix` for typed equality, range, and
   existence
 - a plan-relative binary `fts` section family inside `.cix` for keyword exact/prefix and text
@@ -520,13 +522,13 @@ bundled companion plan changes.
 Current bundled-companion rules:
 
 - each uploaded segment may have one current `.cix`
-- the `.cix` may contain any subset of `col`, `fts`, `agg`, and `mblk`
+- the `.cix` may contain any subset of `exact`, `col`, `fts`, `agg`, and `mblk`
 - the desired bundled companion plan is hashed and versioned per stream
 - bundled companions use the binary `PSCIX2` container with a fixed header and
   fixed section table
 - each bundled companion build loads one segment and builds enabled families
-  sequentially, so `col`, `fts`, `agg`, and `mblk` do not keep their heaviest
-  in-memory state live at the same time
+  sequentially, so `exact`, `col`, `fts`, `agg`, and `mblk` do not keep their
+  heaviest in-memory state live at the same time
 - family payloads are plan-relative and do not repeat field or rollup names
 - query-time companion reads cache raw `.cix` bytes plus the parsed section
   table and decode only the requested section family on demand
@@ -657,6 +659,8 @@ Current query support:
 
 Current candidate-planning behavior:
 
+- exact-equality clauses use bundled `.exact` doc-id postings when available
+  before intersecting with `.col` and `.fts` candidates
 - fielded exact keyword clauses still use the internal exact family first for
   sealed-history segment pruning when that family is available
 - if a keyword field is also present in bundled `.fts` because it enables
@@ -758,7 +762,7 @@ endpoints:
 - routing-key lexicon status
 - internal exact-index status, including stale-config detection
 - bundled companion object coverage
-- `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
+- `exact`, `col`, `fts`, `agg`, and `mblk` family progress derived from bundled
   companion sections
 
 Current exact-index scheduling:
@@ -849,8 +853,8 @@ The intended planner order for metrics streams is:
 The long-term design doc is still directionally correct, but the current system
 ships a smaller subset:
 
-- `.col` and `.fts` are per-segment companions only; there are no compacted
-  `.col`, `.fts`, or `.agg` runs yet
+- `.exact`, `.col`, and `.fts` are per-segment companions only; there are no
+  compacted `.exact`, `.col`, `.fts`, or `.agg` runs yet
 - `.sub` is not implemented
 - `_search` does not ship snippets
 - current text scoring is query-time text scoring over the source records; it is

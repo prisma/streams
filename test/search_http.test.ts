@@ -348,6 +348,7 @@ describe("_search http", () => {
         expect(res.status).toBe(200);
         body = await res.json();
         expect(body.total).toEqual({ value: 2, relation: "eq" });
+        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["exact"]));
         expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
         expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["job_1", "req_1"]);
 

@@ -23,11 +23,11 @@ runtime overview and command surface, see `overview.md`.
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
 - `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_INDEX_CHECK_MS`: in-process periodic sweep interval for the routing-key,
-  exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms;
-  auto-tune defers periodic sweeps to `3600000ms` through the `1024 MiB`
-  preset, then uses `1000ms` at `2048 MiB` and above). Segment uploads and
-  schema/profile changes also enqueue the affected stream and wake the
-  background managers promptly, so the sweep interval is not the normal
+  exact secondary, `.exact`, `.col`, `.fts`, and `.agg` index managers
+  (default 1000ms; auto-tune defers periodic sweeps to `3600000ms` through the
+  `1024 MiB` preset, then uses `1000ms` at `2048 MiB` and above). Segment
+  uploads and schema/profile changes also enqueue the affected stream and wake
+  the background managers promptly, so the sweep interval is not the normal
   freshness target for known changed streams.
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
@@ -247,9 +247,9 @@ When throughput drops, check in this order:
   `DS_SEARCH_COMPANION_YIELD_BLOCKS` if backfill is making the server feel
   sluggish under large `.fts` fields.
 - The internal `__stream_metrics__` system stream no longer builds routing,
-  lexicon, exact, `.col`, `.fts`, `.agg`, or `.mblk` families. If you still
-  see heavy bundled companion work after restart, look for user streams rather
-  than self-indexing on the internal metrics stream.
+  lexicon, exact secondary, `.exact`, `.col`, `.fts`, `.agg`, or `.mblk`
+  families. If you still see heavy bundled companion work after restart, look
+  for user streams rather than self-indexing on the internal metrics stream.
 
 5) SQLite write stalls
 - Ensure the DB is on fast local SSD.

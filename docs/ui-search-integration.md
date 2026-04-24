@@ -351,7 +351,8 @@ supported source of truth:
   - the local lexicon cache under `${DS_ROOT}/cache/lexicon`
   - the local bundled-companion cache under `${DS_ROOT}/cache/companions`
 - `storage.companion_families`
-  Bundled companion byte breakdown for `col`, `fts`, `agg`, and `mblk`.
+  Bundled companion byte breakdown for `exact`, `col`, `fts`, `agg`, and
+  `mblk`.
 - `index_status.routing_key_index`, `index_status.exact_indexes[*]`, and
   `index_status.search_families[*]`
   Per-family progress, lag, and bytes-at-rest for index surfaces.

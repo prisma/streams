@@ -10,7 +10,7 @@ import type {
 import { parseDurationMsResult } from "../util/duration";
 import { dsError } from "../util/ds_error";
 
-export type SearchCompanionFamily = "col" | "fts" | "agg" | "mblk";
+export type SearchCompanionFamily = "exact" | "col" | "fts" | "agg" | "mblk";
 
 export type SearchCompanionPlanField = {
   ordinal: number;
@@ -62,6 +62,7 @@ export type SearchCompanionPlan = {
 export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): SearchCompanionPlan {
   const search = registry.search;
   const families: Record<SearchCompanionFamily, boolean> = {
+    exact: false,
     col: false,
     fts: false,
     agg: false,
@@ -73,6 +74,7 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
 
   const wantedFieldNames = new Set<string>();
   for (const [name, field] of Object.entries(search.fields)) {
+    if (field.exact === true && field.kind !== "text") wantedFieldNames.add(name);
     if (field.column === true) wantedFieldNames.add(name);
     if (field.kind === "text" || (field.kind === "keyword" && field.prefix === true)) wantedFieldNames.add(name);
   }
@@ -109,6 +111,7 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
   });
 
   const colFields = fields.filter((field) => field.column);
+  const exactFields = fields.filter((field) => field.exact && field.kind !== "text");
   const ftsFields = fields.filter((field) => field.kind === "text" || (field.kind === "keyword" && field.prefix));
   const rollups = Object.entries(search.rollups ?? {})
     .sort((a, b) => a[0].localeCompare(b[0]))
@@ -148,6 +151,7 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
       } satisfies SearchCompanionPlanRollup;
     });
 
+  families.exact = exactFields.length > 0;
   families.col = colFields.length > 0;
   families.fts = ftsFields.length > 0;
   families.agg = rollups.length > 0;
@@ -160,6 +164,13 @@ export function buildDesiredSearchCompanionPlan(registry: SchemaRegistry): Searc
       primaryTimestampField: search.primaryTimestampField ?? null,
       primaryTimestampFieldOrdinal: fieldOrdinalByName.get(search.primaryTimestampField) ?? null,
       profile: search.profile ?? null,
+      exactFields: exactFields.map((field) => ({
+        ordinal: field.ordinal,
+        name: field.name,
+        kind: field.kind,
+        bindings: field.bindings,
+        normalizer: field.normalizer,
+      })),
       colFields: colFields.map((field) => ({
         ordinal: field.ordinal,
         name: field.name,

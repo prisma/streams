@@ -507,8 +507,8 @@ Rules:
   changed and the exact family has not rebuilt for that config yet
 - `bundled_companions` reports current `.cix` coverage for the desired
   companion plan generation
-- `search_families` covers bundled companion sections such as `col`, `fts`,
-  `agg`, and `mblk`
+- `search_families` covers bundled companion sections such as `exact`, `col`,
+  `fts`, `agg`, and `mblk`
 - `manifest.last_uploaded_size_bytes` is the uploaded manifest object size as a
   string when known
 - `routing_key_index`, `routing_key_lexicon`, each `exact_indexes[*]`,
@@ -554,7 +554,7 @@ Rules:
   - segment and index caches are seeded on first read of a remote object; they
     may increase even when the request was initiated by a read-only UI flow
 - `storage.companion_families` splits bundled companion bytes by section family
-  (`col`, `fts`, `agg`, `mblk`)
+  (`exact`, `col`, `fts`, `agg`, `mblk`)
 - `object_store_requests` reports node-local per-stream object-store request
   counters, split into puts and reads, plus a per-artifact breakdown
 - this is the supported combined descriptor endpoint for stream-management UIs

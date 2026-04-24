@@ -357,9 +357,14 @@ function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name:
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> {
+function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "exact" | "col" | "fts" | "agg" | "mblk"; fields: string[] }> {
   if (!search) return [];
-  const out: Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> = [];
+  const out: Array<{ family: "exact" | "col" | "fts" | "agg" | "mblk"; fields: string[] }> = [];
+  const exactFields = Object.entries(search.fields)
+    .filter(([, field]) => field.exact === true && field.kind !== "text")
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+  if (exactFields.length > 0) out.push({ family: "exact", fields: exactFields });
   const colFields = Object.entries(search.fields)
     .filter(([, field]) => field.column === true)
     .map(([name]) => name)
@@ -1337,6 +1342,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         sqlite_shared_total_bytes: sqliteSharedBytes.toString(),
       },
       companion_families: {
+        exact_bytes: String(familyBytes.get("exact") ?? 0n),
         col_bytes: String(familyBytes.get("col") ?? 0n),
         fts_bytes: String(familyBytes.get("fts") ?? 0n),
         agg_bytes: String(familyBytes.get("agg") ?? 0n),

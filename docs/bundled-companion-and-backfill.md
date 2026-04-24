@@ -23,13 +23,15 @@ For a sealed uploaded segment, the steady-state published objects are:
 
 The `.cix` may contain any subset of:
 
+- `exact`
 - `col`
 - `fts`
 - `agg`
 - `mblk`
 
-The exact secondary index family remains separate because it is a compacted
-cross-segment accelerator, not a per-segment section family.
+The exact secondary index family remains separate from `.exact`: secondary
+exact runs are compacted cross-segment accelerators, while `.exact` is the
+per-segment doc-level postings section.
 
 ## Why Bundle Companions
 

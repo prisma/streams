@@ -70,6 +70,10 @@ class CombinedIndexController implements StreamIndexLookup {
     return this.companionIndex.getColSegmentCompanion(stream, segmentIndex);
   }
 
+  getExactSegmentCompanion(stream: string, segmentIndex: number) {
+    return this.companionIndex.getExactSegmentCompanion(stream, segmentIndex);
+  }
+
   getFtsSegmentCompanion(stream: string, segmentIndex: number) {
     return this.companionIndex.getFtsSegmentCompanion(stream, segmentIndex);
   }

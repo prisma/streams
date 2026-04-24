@@ -29,6 +29,7 @@ import type { IndexCandidate, StreamIndexLookup } from "./index/indexer";
 import { dsError } from "./util/ds_error.ts";
 import { Result } from "better-result";
 import { filterDocIdsByColumnResult } from "./search/col_runtime";
+import { filterDocIdsByExactClausesResult } from "./search/exact_runtime";
 import {
   type AggregateRequest,
   cloneAggMeasureState,
@@ -1263,6 +1264,7 @@ export class StreamReader {
         const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
           stream,
           seg.segment_index,
+          exactClauses,
           columnClauses,
           ftsClauses,
           {
@@ -1379,6 +1381,7 @@ export class StreamReader {
                       seg,
                       exactCandidateInfo,
                       cursorFieldBound,
+                      exactClauses,
                       columnClauses,
                       ftsClauses,
                       rangeStartSeq,
@@ -1446,6 +1449,7 @@ export class StreamReader {
                       seg,
                       exactCandidateInfo,
                       cursorFieldBound,
+                      exactClauses,
                       columnClauses,
                       ftsClauses,
                       rangeStartSeq,
@@ -1987,6 +1991,7 @@ export class StreamReader {
     seg: SegmentRow,
     exactCandidateInfo: SegmentCandidateInfo,
     cursorFieldBound: SearchCursorFieldBound | null,
+    exactClauses: SearchExactClause[],
     columnClauses: SearchColumnClause[],
     ftsClauses: SearchFtsClause[],
     rangeStartSeq: bigint,
@@ -2038,6 +2043,7 @@ export class StreamReader {
     const familyCandidatesRes = await this.resolveSearchFamilyCandidatesResult(
       stream,
       seg.segment_index,
+      exactClauses,
       columnClauses,
       ftsClauses,
       {
@@ -2453,6 +2459,7 @@ export class StreamReader {
   private async resolveSearchFamilyCandidatesResult(
     stream: string,
     segmentIndex: number,
+    exactClauses: SearchExactClause[],
     columnClauses: SearchColumnClause[],
     ftsClauses: SearchFtsClause[],
     stats?: {
@@ -2464,11 +2471,26 @@ export class StreamReader {
     let intersection: Set<number> | null = null;
     const usedFamilies = new Set<string>();
 
+    if (exactClauses.length > 0) {
+      const exactCompanion = await this.index?.getExactSegmentCompanion(stream, segmentIndex);
+      if (exactCompanion) {
+        const exactRes = filterDocIdsByExactClausesResult({ companion: exactCompanion, clauses: exactClauses });
+        if (Result.isError(exactRes)) return exactRes;
+        intersection = exactRes.value;
+        usedFamilies.add("exact");
+      }
+    }
+
     if (columnClauses.length > 0) {
       const columnRes = await this.resolveSearchColumnCandidateDocIdsResult(stream, segmentIndex, columnClauses);
       if (Result.isError(columnRes)) return columnRes;
       if (columnRes.value) {
-        intersection = columnRes.value;
+        if (intersection == null) intersection = columnRes.value;
+        else {
+          for (const docId of Array.from(intersection)) {
+            if (!columnRes.value.has(docId)) intersection.delete(docId);
+          }
+        }
         usedFamilies.add("col");
       }
     }
