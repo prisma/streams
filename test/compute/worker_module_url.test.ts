@@ -15,6 +15,14 @@ describe("resolveWorkerModuleUrl", () => {
     ).toBe("file:///repo/bundle/segment/segmenter_worker.js");
   });
 
+  test("resolves bundled segment workers from the compute entrypoint", () => {
+    expect(
+      resolveWorkerModuleUrl("file:///repo/bundle/compute/entry.js", "./segmenter_worker.ts", "../segment/segmenter_worker.js").href
+    ).toBe(
+      "file:///repo/bundle/segment/segmenter_worker.js"
+    );
+  });
+
   test("keeps the default js rewrite when the built path matches the source layout", () => {
     expect(resolveWorkerModuleUrl("file:///repo/src/touch/worker_pool.js", "./processor_worker.ts").href).toBe(
       "file:///repo/src/touch/processor_worker.js"

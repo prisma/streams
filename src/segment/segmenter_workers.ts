@@ -82,7 +82,7 @@ export class SegmenterWorkerPool implements SegmenterController {
   }
 
   private spawnWorker(idx: number): void {
-    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "./segment/segmenter_worker.js");
+    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "../segment/segmenter_worker.js");
     const worker = new Worker(workerSpec, {
       workerData: {
         config: this.config,

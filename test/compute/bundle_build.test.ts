@@ -25,7 +25,7 @@ describe("compute bundle build", () => {
 
       const runtimeEntrypoint = await readFile(path.join(bundleDir, "compute", "entry.js"), "utf8");
       expect(runtimeEntrypoint).toContain(
-        'resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "./segment/segmenter_worker.js")'
+        'resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "../segment/segmenter_worker.js")'
       );
       expect(runtimeEntrypoint).toContain(
         'resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "./touch/processor_worker.js")'
