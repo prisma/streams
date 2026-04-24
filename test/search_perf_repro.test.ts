@@ -340,7 +340,7 @@ describe("search performance repro cases", () => {
   );
 
   t(
-    "offset-desc broad filter still pays whole newest-segment decode before it can stop at the first page",
+    "offset-desc broad filter measures newest-segment first-page cost",
     async () => {
       const fixture = await buildFixture({
         stream: "perf-reverse-offset",

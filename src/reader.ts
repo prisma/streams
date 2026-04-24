@@ -1981,16 +1981,61 @@ export class StreamReader {
       state.addScannedSegment();
     }
 
+    const addSegmentTime = (): void => {
+      if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
+      else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+    };
+
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
-    const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+    const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
+    const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
+    if (footerBlocks) {
+      for (let blockIndex = findFirstRelevantBlockIndex(footerBlocks, rangeEndSeq); blockIndex >= 0; blockIndex--) {
+        const block = footerBlocks[blockIndex]!;
+        const blockStartOffset = block.firstOffset;
+        const blockEndOffset = blockStartOffset + BigInt(block.recordCount) - 1n;
+        if (blockStartOffset > rangeEndSeq) continue;
+        if (blockEndOffset < rangeStartSeq) break;
+
+        const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+        const blockBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1);
+        const decodedRes = decodeBlockResult(blockBytes);
+        if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+        const decoded = decodedRes.value;
+        for (let recordIndex = decoded.records.length - 1; recordIndex >= 0; recordIndex--) {
+          const offsetSeq = blockStartOffset + BigInt(recordIndex);
+          if (offsetSeq > rangeEndSeq) continue;
+          if (offsetSeq < rangeStartSeq) {
+            addSegmentTime();
+            return Result.ok(undefined);
+          }
+          const localDocId = Number(offsetSeq - seg.start_offset);
+          if (!familyCandidates.docIds || familyCandidates.docIds.has(localDocId)) {
+            const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
+            if (Result.isError(matchRes)) return matchRes;
+          }
+          if (markTimedOutIfNeeded()) {
+            addSegmentTime();
+            return Result.ok(undefined);
+          }
+          if (state.stopIfPageComplete()) {
+            addSegmentTime();
+            return Result.ok(undefined);
+          }
+        }
+      }
+
+      addSegmentTime();
+      return Result.ok(undefined);
+    }
+
     const decodedBlocks: Array<{ records: Array<{ payload: Uint8Array }> }> = [];
-    for (const blockRes of iterateBlocksResult(segBytes)) {
+    for (const blockRes of iterateBlocksResult(source.bytes)) {
       if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
       decodedBlocks.push({ records: blockRes.value.decoded.records });
       if (markTimedOutIfNeeded()) {
-        if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
-        else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+        addSegmentTime();
         return Result.ok(undefined);
       }
     }
@@ -2003,8 +2048,7 @@ export class StreamReader {
         const offsetSeq = blockStartOffset + BigInt(recordIndex);
         if (offsetSeq > rangeEndSeq) continue;
         if (offsetSeq < rangeStartSeq) {
-          if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
-          else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+          addSegmentTime();
           return Result.ok(undefined);
         }
         const localDocId = Number(offsetSeq - seg.start_offset);
@@ -2013,21 +2057,18 @@ export class StreamReader {
           if (Result.isError(matchRes)) return matchRes;
         }
         if (markTimedOutIfNeeded()) {
-          if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
-          else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+          addSegmentTime();
           return Result.ok(undefined);
         }
         if (state.stopIfPageComplete()) {
-          if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
-          else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+          addSegmentTime();
           return Result.ok(undefined);
         }
       }
       blockEndOffset = blockStartOffset - 1n;
     }
 
-    if (usedIndexedFamilies) state.addIndexedSegmentTimeMs(Date.now() - segmentStartedAt);
-    else state.addScannedSegmentTimeMs(Date.now() - segmentStartedAt);
+    addSegmentTime();
     return Result.ok(undefined);
   }
 

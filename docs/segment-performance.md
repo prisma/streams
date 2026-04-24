@@ -58,6 +58,10 @@ Current behavior:
 - `_search` uses the same planning idea when exact clauses provide a candidate
   segment set: it scans only candidate indexed segments plus any uncovered tail,
   instead of iterating the full indexed sealed prefix one segment at a time.
+- `_search` append-order reverse scans (`sort: ["offset:desc"]`) use the
+  segment footer's block index to decode blocks newest-to-oldest and can stop
+  after the requested page is full. They no longer decode every block in the
+  segment before walking records backward.
 - Background routing, lexicon, exact, and bundled-companion builders now yield
   at bounded per-record or per-block intervals and slow down further while a
   foreground read or search is active. That keeps hot keyed reads fast even
