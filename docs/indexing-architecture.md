@@ -31,7 +31,9 @@ Prisma Streams now ships these indexing layers:
 Bundled companion reads now use a local immutable `.cix` cache plus
 `Bun.mmap()` over the cached file. The object-store read unit is therefore the
 full bundled companion on first access, while the runtime decode unit remains
-the requested family section.
+the requested family section. Decoded companion sections are also cached in
+memory by object key, plan generation, and section kind within the
+`DS_SEARCH_COMPANION_SECTION_CACHE_BYTES` budget.
 
 The public schema model is **`search`**, not `indexes[]`.
 

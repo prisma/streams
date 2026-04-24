@@ -33,6 +33,11 @@ The exact secondary index family remains separate from `.exact`: secondary
 exact runs are compacted cross-segment accelerators, while `.exact` is the
 per-segment doc-level postings section.
 
+Decoded section views are cached in memory by companion object key, plan
+generation, and section kind. The cache is bounded by
+`DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`; raw immutable `.cix` objects remain
+managed by the local companion file cache.
+
 ## Why Bundle Companions
 
 Bundling keeps the object model small while still allowing family-specific

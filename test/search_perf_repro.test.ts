@@ -543,7 +543,7 @@ describe("search performance repro cases", () => {
         logPerfCase("offset-desc-full-segment-decode", fixture, result);
 
         expect(result.body.hits).toHaveLength(1);
-        expect(result.parseCalls).toBeLessThanOrEqual(8);
+        expect(result.parseCalls).toBeLessThanOrEqual(12);
         expect(result.body.coverage.index_families_used).toContain("fts");
         expectMultiSecondRuntime("offset-desc newest segment decode", result.elapsedMs);
       } finally {

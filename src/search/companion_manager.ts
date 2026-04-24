@@ -185,10 +185,29 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
   }
 }
 
+function parseSectionSizes(row: SearchSegmentCompanionRow): Record<string, number> {
+  try {
+    const parsed = JSON.parse(row.section_sizes_json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [kind, size] of Object.entries(parsed)) {
+      if (typeof size === "number" && Number.isFinite(size) && size > 0) out[kind] = size;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly fileCache: CompanionFileCache;
+  private readonly decodedSectionCache = new Map<
+    string,
+    { bytes: number; companion: CompanionSectionMap[CompanionSectionKind] }
+  >();
+  private decodedSectionCacheBytes = 0;
   private readonly segmentCache?: SegmentDiskCache;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
@@ -336,6 +355,9 @@ export class SearchCompanionManager {
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
       if (!row || row.plan_generation !== planRow.generation) return { companion: null, stats: { sectionGetMs, decodeMs } };
       if (!parseSectionKinds(row).has(kind)) return { companion: null, stats: { sectionGetMs, decodeMs } };
+      const cacheKey = this.decodedSectionCacheKey(row, kind);
+      const cached = this.getDecodedSectionCache(cacheKey);
+      if (cached) return { companion: cached as CompanionSectionMap[K], stats: { sectionGetMs, decodeMs } };
       const sectionStartedAt = Date.now();
       const bundle = await this.loadBundleResult(row);
       if (Result.isError(bundle)) throw dsError(bundle.error.message);
@@ -348,9 +370,47 @@ export class SearchCompanionManager {
       const decoded = decodeCompanionSectionPayloadResult(kind, sectionBytes.value, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
       decodeMs = Date.now() - decodeStartedAt;
+      this.setDecodedSectionCache(cacheKey, decoded.value ?? null, parseSectionSizes(row)[kind] ?? sectionBytes.value.byteLength);
       return { companion: decoded.value ?? null, stats: { sectionGetMs, decodeMs } };
     } finally {
       leave?.();
+    }
+  }
+
+  private decodedSectionCacheKey(row: SearchSegmentCompanionRow, kind: CompanionSectionKind): string {
+    return `${row.object_key}:${row.plan_generation}:${kind}`;
+  }
+
+  private getDecodedSectionCache(key: string): CompanionSectionMap[CompanionSectionKind] | null {
+    const entry = this.decodedSectionCache.get(key);
+    if (!entry) return null;
+    this.decodedSectionCache.delete(key);
+    this.decodedSectionCache.set(key, entry);
+    return entry.companion;
+  }
+
+  private setDecodedSectionCache(
+    key: string,
+    companion: CompanionSectionMap[CompanionSectionKind] | null,
+    bytes: number
+  ): void {
+    const budget = Math.max(0, this.cfg.searchCompanionSectionCacheBytes);
+    if (budget <= 0 || companion == null) return;
+    const safeBytes = Math.max(1, Math.ceil(bytes));
+    if (safeBytes > budget) return;
+    const existing = this.decodedSectionCache.get(key);
+    if (existing) {
+      this.decodedSectionCacheBytes -= existing.bytes;
+      this.decodedSectionCache.delete(key);
+    }
+    this.decodedSectionCache.set(key, { bytes: safeBytes, companion });
+    this.decodedSectionCacheBytes += safeBytes;
+    while (this.decodedSectionCacheBytes > budget) {
+      const oldestKey = this.decodedSectionCache.keys().next().value;
+      if (oldestKey == null) break;
+      const oldest = this.decodedSectionCache.get(oldestKey);
+      this.decodedSectionCache.delete(oldestKey);
+      this.decodedSectionCacheBytes -= oldest?.bytes ?? 0;
     }
   }
 
