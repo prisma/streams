@@ -635,6 +635,12 @@ Current search coverage fields:
 - `scanned_tail_docs`
 - `scanned_tail_time_ms`
 - `exact_candidate_time_ms`
+- `candidate_doc_ids`
+- `decoded_records`
+- `json_parse_time_ms`
+- `segment_payload_bytes_fetched`
+- `sort_time_ms`
+- `peak_hits_held`
 - `index_families_used`
 
 Current query support:
@@ -659,6 +665,9 @@ Current candidate-planning behavior:
 - positive `.fts` clauses are evaluated in estimated-selectivity order, and
   later clauses are checked against the current candidate doc-id set instead of
   materializing every clause against the whole segment
+- quiet WAL-tail exact clauses use a per-reader in-memory exact postings cache
+  for the visible tail range, so repeated exact tail lookups fetch only matching
+  WAL rows instead of scanning the whole tail again
 
 Current non-support:
 

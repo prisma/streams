@@ -45,6 +45,7 @@ import {
   type SearchFtsClause,
   type SearchRequest,
   type SearchSortSpec,
+  buildSearchDocumentResult,
   collectPositiveSearchColumnClauses,
   collectPositiveSearchExactClauses,
   collectPositiveSearchFtsClauses,
@@ -54,7 +55,7 @@ import {
 import { filterDocIdsByFtsClausesResult } from "./search/fts_runtime";
 import { canonicalizeColumnValue, canonicalizeExactValue } from "./search/schema";
 import { encodeSortableBool, encodeSortableFloat64, encodeSortableInt64 } from "./search/column_encoding";
-import type { SearchRollupConfig } from "./schema/registry";
+import type { SchemaRegistry, SearchRollupConfig } from "./schema/registry";
 import type { AggMeasureState } from "./search/agg_format";
 import type { MetricsBlockSectionView } from "./profiles/metrics/block_format";
 import { materializeMetricsBlockRecord } from "./profiles/metrics/normalize";
@@ -172,6 +173,12 @@ export type ReaderError =
 const READ_FILTER_SCAN_LIMIT_BYTES = 100 * 1024 * 1024;
 type SegmentCandidateInfo = { segments: Set<number> | null; indexedThrough: number };
 type SearchFamilyCandidateInfo = { docIds: Set<number> | null; usedFamilies: Set<string> };
+type HotWalExactCache = {
+  startSeq: bigint;
+  endSeq: bigint;
+  schemaKey: string;
+  values: Map<string, Map<string, bigint[]>>;
+};
 type SearchHitInternal = {
   offsetSeq: bigint;
   offset: string;
@@ -289,6 +296,7 @@ export class StreamReader {
   private readonly index?: StreamIndexLookup;
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly memory?: MemoryPressureMonitor;
+  private readonly hotWalExact = new Map<string, HotWalExactCache>();
 
   constructor(
     config: Config,
@@ -1153,6 +1161,7 @@ export class StreamReader {
       let sortTimeMs = 0;
       let peakHitsHeld = 0;
       const indexFamiliesUsed = new Set<string>();
+      const exactClauses = collectPositiveSearchExactClauses(request.q);
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
       let exactCandidateInfo: SegmentCandidateInfo = { segments: null, indexedThrough: 0 };
@@ -1294,6 +1303,46 @@ export class StreamReader {
       };
 
       const stopIfPageComplete = (): boolean => hits.length >= request.size;
+      const scanWalTailResult = (
+        startSeq: bigint,
+        endSeq: bigint,
+        direction: "asc" | "desc",
+        stopOnPageComplete: boolean
+      ): Result<void, ReaderError> => {
+        const tailStartedAt = Date.now();
+        const hotOffsetsRes = this.hotWalExactOffsetsResult(stream, startSeq, endSeq, exactClauses, registry);
+        if (Result.isError(hotOffsetsRes)) return hotOffsetsRes;
+        const hotOffsets = hotOffsetsRes.value;
+        if (hotOffsets) {
+          candidateDocIds += hotOffsets.length;
+          const orderedOffsets = direction === "desc" ? [...hotOffsets].reverse() : hotOffsets;
+          for (const offsetSeq of orderedOffsets) {
+            const record = this.walRecordAt(stream, offsetSeq);
+            if (!record) continue;
+            scannedTailDocs += 1;
+            const matchRes = collectSearchMatchResult(record.offset, record.payload);
+            if (Result.isError(matchRes)) return matchRes;
+            if (markTimedOutIfNeeded()) break;
+            if (stopOnPageComplete && stopIfPageComplete()) break;
+          }
+          scannedTailTimeMs += Date.now() - tailStartedAt;
+          return Result.ok(undefined);
+        }
+
+        const rows =
+          direction === "desc"
+            ? this.db.iterWalRangeDesc(stream, startSeq, endSeq)
+            : this.db.iterWalRange(stream, startSeq, endSeq);
+        for (const record of rows) {
+          scannedTailDocs += 1;
+          const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
+          if (Result.isError(matchRes)) return matchRes;
+          if (markTimedOutIfNeeded()) break;
+          if (stopOnPageComplete && stopIfPageComplete()) break;
+        }
+        scannedTailTimeMs += Date.now() - tailStartedAt;
+        return Result.ok(undefined);
+      };
 
       if (leadingSort?.kind === "offset") {
         const descending = leadingSort.direction === "desc";
@@ -1308,17 +1357,10 @@ export class StreamReader {
               const walStart = rangeStartSeq > tailStart ? rangeStartSeq : tailStart;
               const walEnd = rangeEndSeq;
               if (walStart <= walEnd) {
-              const tailStartedAt = Date.now();
-              for (const record of this.db.iterWalRangeDesc(stream, walStart, walEnd)) {
-                scannedTailDocs += 1;
-                const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
-                if (Result.isError(matchRes)) return matchRes;
-                if (markTimedOutIfNeeded()) break;
-                if (stopIfPageComplete()) break;
+                const tailRes = scanWalTailResult(walStart, walEnd, "desc", true);
+                if (Result.isError(tailRes)) return tailRes;
               }
-              scannedTailTimeMs += Date.now() - tailStartedAt;
             }
-          }
             if (!timedOut && !stopIfPageComplete()) {
               const sealedEnd = rangeEndSeq < visibleSealedThrough ? rangeEndSeq : visibleSealedThrough;
               if (sealedEnd >= rangeStartSeq) {
@@ -1486,15 +1528,8 @@ export class StreamReader {
               }
             }
             if (!timedOut && !stopIfPageComplete() && coverageState.canSearchWalTail && seq <= rangeEndSeq) {
-              const tailStartedAt = Date.now();
-              for (const record of this.db.iterWalRange(stream, seq, rangeEndSeq)) {
-                scannedTailDocs += 1;
-                const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
-                if (Result.isError(matchRes)) return matchRes;
-                if (markTimedOutIfNeeded()) break;
-                if (stopIfPageComplete()) break;
-              }
-              scannedTailTimeMs += Date.now() - tailStartedAt;
+              const tailRes = scanWalTailResult(seq, rangeEndSeq, "asc", true);
+              if (Result.isError(tailRes)) return tailRes;
             }
           }
         }
@@ -1582,14 +1617,8 @@ export class StreamReader {
       }
 
       if (!timedOut && coverageState.canSearchWalTail && seq <= snapshotEndSeq) {
-        const tailStartedAt = Date.now();
-        for (const record of this.db.iterWalRange(stream, seq, snapshotEndSeq)) {
-          scannedTailDocs += 1;
-          const matchRes = collectSearchMatchResult(BigInt(record.offset), record.payload);
-          if (Result.isError(matchRes)) return matchRes;
-          if (markTimedOutIfNeeded()) break;
-        }
-        scannedTailTimeMs += Date.now() - tailStartedAt;
+        const tailRes = scanWalTailResult(seq, snapshotEndSeq, "asc", false);
+        if (Result.isError(tailRes)) return tailRes;
       }
 
       const sortStartedAt = Date.now();
@@ -2127,6 +2156,79 @@ export class StreamReader {
 
     addSegmentTime();
     return Result.ok(undefined);
+  }
+
+  private searchSchemaKey(registry: SchemaRegistry): string {
+    return `${registry.currentVersion}:${JSON.stringify(registry.search ?? null)}`;
+  }
+
+  private buildHotWalExactCacheResult(
+    stream: string,
+    startSeq: bigint,
+    endSeq: bigint,
+    registry: SchemaRegistry
+  ): Result<HotWalExactCache, ReaderError> {
+    const schemaKey = this.searchSchemaKey(registry);
+    const cached = this.hotWalExact.get(stream);
+    if (cached && cached.startSeq === startSeq && cached.endSeq === endSeq && cached.schemaKey === schemaKey) {
+      return Result.ok(cached);
+    }
+
+    const values = new Map<string, Map<string, bigint[]>>();
+    if (startSeq <= endSeq) {
+      for (const record of this.db.iterWalRange(stream, startSeq, endSeq)) {
+        const offsetSeq = BigInt(record.offset);
+        const parsedRes = decodeJsonPayloadResult(this.registry, stream, offsetSeq, record.payload);
+        if (Result.isError(parsedRes)) return Result.err({ kind: "internal", message: parsedRes.error.message });
+        const docRes = buildSearchDocumentResult(registry, offsetSeq, parsedRes.value);
+        if (Result.isError(docRes)) return Result.err({ kind: "internal", message: docRes.error.message });
+        for (const [field, fieldValues] of docRes.value.exactValues) {
+          let byValue = values.get(field);
+          if (!byValue) {
+            byValue = new Map();
+            values.set(field, byValue);
+          }
+          for (const value of fieldValues) {
+            let offsets = byValue.get(value);
+            if (!offsets) {
+              offsets = [];
+              byValue.set(value, offsets);
+            }
+            offsets.push(offsetSeq);
+          }
+        }
+      }
+    }
+
+    const next: HotWalExactCache = { startSeq, endSeq, schemaKey, values };
+    this.hotWalExact.set(stream, next);
+    return Result.ok(next);
+  }
+
+  private hotWalExactOffsetsResult(
+    stream: string,
+    startSeq: bigint,
+    endSeq: bigint,
+    clauses: SearchExactClause[],
+    registry: SchemaRegistry
+  ): Result<bigint[] | null, ReaderError> {
+    if (clauses.length === 0 || startSeq > endSeq) return Result.ok(null);
+    const cacheRes = this.buildHotWalExactCacheResult(stream, startSeq, endSeq, registry);
+    if (Result.isError(cacheRes)) return cacheRes;
+
+    const postings = clauses.map((clause) => cacheRes.value.values.get(clause.field)?.get(clause.canonicalValue) ?? []);
+    if (postings.some((offsets) => offsets.length === 0)) return Result.ok([]);
+    postings.sort((left, right) => left.length - right.length);
+    const [smallest, ...rest] = postings;
+    const restSets = rest.map((offsets) => new Set(offsets));
+    return Result.ok(smallest!.filter((offset) => restSets.every((set) => set.has(offset))));
+  }
+
+  private walRecordAt(stream: string, offsetSeq: bigint): { offset: bigint; payload: Uint8Array } | null {
+    for (const record of this.db.iterWalRange(stream, offsetSeq, offsetSeq)) {
+      return { offset: BigInt(record.offset), payload: record.payload };
+    }
+    return null;
   }
 
   private async segmentMayOverlapSearchCursor(

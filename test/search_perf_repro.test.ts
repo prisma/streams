@@ -20,6 +20,8 @@ const REVERSE_ROWS = envNumber("SEARCH_PERF_REVERSE_ROWS", 32_768);
 const REVERSE_PAYLOAD_BYTES = envNumber("SEARCH_PERF_REVERSE_PAYLOAD_BYTES", 8 * 1024);
 const SMALL_STREAM_ROWS_PER_SEGMENT = envNumber("SEARCH_PERF_SMALL_ROWS_PER_SEGMENT", 32_768);
 const SMALL_STREAM_PAYLOAD_BYTES = envNumber("SEARCH_PERF_SMALL_PAYLOAD_BYTES", 8 * 1024);
+const WAL_TAIL_ROWS = envNumber("SEARCH_PERF_WAL_TAIL_ROWS", 32_768);
+const WAL_TAIL_PAYLOAD_BYTES = envNumber("SEARCH_PERF_WAL_TAIL_PAYLOAD_BYTES", 4 * 1024);
 const APPEND_BATCH_ROWS = envNumber("SEARCH_PERF_APPEND_BATCH_ROWS", 512);
 const BLOCK_MAX_BYTES = envNumber("SEARCH_PERF_BLOCK_MAX_BYTES", 64 * 1024);
 
@@ -258,6 +260,38 @@ async function buildFixture(args: {
   };
 }
 
+async function buildWalTailFixture(args: { stream: string; rows: number; payloadBytes: number }): Promise<PerfFixture> {
+  const root = mkdtempSync(join(tmpdir(), `ds-search-perf-${args.stream}-`));
+  const store = new MockR2Store({
+    maxInMemoryBytes: 1 * 1024 * 1024,
+    spillDir: `${root}/mock-r2`,
+  });
+  const app = createApp(
+    makeConfig(root, {
+      segmentTargetRows: args.rows,
+      segmentMaxBytes: args.rows * args.payloadBytes * 4,
+      blockMaxBytes: BLOCK_MAX_BYTES,
+      searchWalOverlayQuietPeriodMs: 0,
+      searchWalOverlayMaxBytes: args.rows * args.payloadBytes * 4,
+      segmentCheckIntervalMs: 60_000,
+      uploadIntervalMs: 60_000,
+      indexCheckIntervalMs: 60_000,
+    }),
+    store
+  );
+  await createEvlogStream(app, args.stream);
+  appendSeedRows(app, args.stream, args.rows, args.payloadBytes, APPEND_BATCH_ROWS);
+  return {
+    app,
+    root,
+    store,
+    stream: args.stream,
+    rows: args.rows,
+    segments: 0,
+    payloadBytes: args.payloadBytes,
+  };
+}
+
 async function measuredSearch(
   app: ReturnType<typeof createApp>,
   stream: string,
@@ -398,6 +432,38 @@ describe("search performance repro cases", () => {
         expect(result.body.coverage.indexed_segments).toBeGreaterThan(0);
         expect(fixture.app.deps.db.listSecondaryIndexRuns(fixture.stream, "environment")).toHaveLength(0);
         expectMultiSecondRuntime("small stream below exact L0 span", result.elapsedMs);
+      } finally {
+        fixture.app.close();
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT_MS
+  );
+
+  t(
+    "quiet WAL-tail rare exact filters use the hot exact cache after the first lookup",
+    async () => {
+      const fixture = await buildWalTailFixture({
+        stream: "perf-wal-tail-exact",
+        rows: WAL_TAIL_ROWS,
+        payloadBytes: WAL_TAIL_PAYLOAD_BYTES,
+      });
+      try {
+        const requestBody = {
+          q: 'requestId:"req-0000000000"',
+          size: 1,
+          sort: ["offset:desc"],
+        };
+        const cold = await measuredSearch(fixture.app, fixture.stream, requestBody);
+        const warm = await measuredSearch(fixture.app, fixture.stream, requestBody);
+        logPerfCase("wal-tail-rare-exact-cold", fixture, cold);
+        logPerfCase("wal-tail-rare-exact-warm", fixture, warm);
+
+        expect(cold.body.hits).toHaveLength(1);
+        expect(warm.body.hits).toHaveLength(1);
+        expect(warm.body.coverage.candidate_doc_ids).toBe(1);
+        expect(warm.body.coverage.scanned_tail_docs).toBe(1);
+        expect(warm.elapsedMs).toBeLessThan(cold.elapsedMs);
       } finally {
         fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
