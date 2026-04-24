@@ -661,6 +661,9 @@ Current candidate-planning behavior:
 
 - exact-equality clauses use bundled `.exact` doc-id postings when available
   before intersecting with `.col` and `.fts` candidates
+- for append-order reverse search, a non-empty per-segment candidate doc-id set
+  is walked directly in offset order, and only blocks containing candidate hits
+  are decoded
 - fielded exact keyword clauses still use the internal exact family first for
   sealed-history segment pruning when that family is available
 - if a keyword field is also present in bundled `.fts` because it enables

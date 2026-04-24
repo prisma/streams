@@ -2081,6 +2081,52 @@ export class StreamReader {
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
     if (footerBlocks) {
+      if (familyCandidates.docIds) {
+        const candidateDocIds = Array.from(familyCandidates.docIds)
+          .filter((docId) => {
+            const offsetSeq = seg.start_offset + BigInt(docId);
+            return offsetSeq >= rangeStartSeq && offsetSeq <= rangeEndSeq;
+          })
+          .sort((left, right) => right - left);
+        let currentBlockIndex = -1;
+        let currentBlockStartOffset = 0n;
+        let currentRecords: Array<{ payload: Uint8Array }> = [];
+        for (const docId of candidateDocIds) {
+          const offsetSeq = seg.start_offset + BigInt(docId);
+          const blockIndex = findFirstRelevantBlockIndex(footerBlocks, offsetSeq);
+          const block = footerBlocks[blockIndex]!;
+          const blockStartOffset = block.firstOffset;
+          const blockEndOffset = blockStartOffset + BigInt(block.recordCount) - 1n;
+          if (offsetSeq < blockStartOffset || offsetSeq > blockEndOffset) continue;
+          if (blockIndex !== currentBlockIndex) {
+            const totalLen = DSB3_HEADER_BYTES + block.compressedLen;
+            const blockBytes = readRangeFromSource(source, block.blockOffset, block.blockOffset + totalLen - 1);
+            const decodedRes = decodeBlockResult(blockBytes);
+            if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
+            currentBlockIndex = blockIndex;
+            currentBlockStartOffset = blockStartOffset;
+            currentRecords = decodedRes.value.records;
+            state.addDecodedRecords(decodedRes.value.recordCount);
+          }
+          const recordIndex = Number(offsetSeq - currentBlockStartOffset);
+          const record = currentRecords[recordIndex];
+          if (!record) continue;
+          const matchRes = state.collectSearchMatchResult(offsetSeq, record.payload);
+          if (Result.isError(matchRes)) return matchRes;
+          if (markTimedOutIfNeeded()) {
+            addSegmentTime();
+            return Result.ok(undefined);
+          }
+          if (state.stopIfPageComplete()) {
+            addSegmentTime();
+            return Result.ok(undefined);
+          }
+        }
+
+        addSegmentTime();
+        return Result.ok(undefined);
+      }
+
       for (let blockIndex = findFirstRelevantBlockIndex(footerBlocks, rangeEndSeq); blockIndex >= 0; blockIndex--) {
         const block = footerBlocks[blockIndex]!;
         const blockStartOffset = block.firstOffset;
@@ -2101,11 +2147,8 @@ export class StreamReader {
             addSegmentTime();
             return Result.ok(undefined);
           }
-          const localDocId = Number(offsetSeq - seg.start_offset);
-          if (!familyCandidates.docIds || familyCandidates.docIds.has(localDocId)) {
-            const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
-            if (Result.isError(matchRes)) return matchRes;
-          }
+          const matchRes = state.collectSearchMatchResult(offsetSeq, decoded.records[recordIndex]!.payload);
+          if (Result.isError(matchRes)) return matchRes;
           if (markTimedOutIfNeeded()) {
             addSegmentTime();
             return Result.ok(undefined);

@@ -62,6 +62,11 @@ Current behavior:
   segment footer's block index to decode blocks newest-to-oldest and can stop
   after the requested page is full. They no longer decode every block in the
   segment before walking records backward.
+- When bundled companions produce per-segment candidate doc IDs for an
+  append-order reverse search, `_search` walks those doc IDs newest-to-oldest
+  and decodes only the blocks containing candidate hits. Broad candidates still
+  behave like normal newest-first scans, but rare exact candidates no longer
+  force every intervening block to decode.
 - Background routing, lexicon, exact, and bundled-companion builders now yield
   at bounded per-record or per-block intervals and slow down further while a
   foreground read or search is active. That keeps hot keyed reads fast even
