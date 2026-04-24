@@ -35,6 +35,11 @@ the requested family section. Decoded companion sections are also cached in
 memory by object key, plan generation, and section kind within the
 `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES` budget.
 
+Explicit primary timestamp sorts use companion segment timestamp bounds for a
+top-k plan: sealed segments with known bounds are visited in likely result
+order, only the requested page of best hits is retained, and remaining segments
+are skipped once their timestamp range cannot beat the current kth hit.
+
 The public schema model is **`search`**, not `indexes[]`.
 
 The public query surfaces are:

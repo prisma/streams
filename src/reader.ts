@@ -1,5 +1,5 @@
 import type { Config } from "./config";
-import type { SqliteDurableStore, SegmentRow } from "./db/db";
+import type { SearchSegmentCompanionRow, SqliteDurableStore, SegmentRow } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
 import {
   type CompiledReadFilter,
@@ -228,6 +228,7 @@ type PlannedReadSegments = {
   sealedEndSeq: bigint;
 };
 type PlannedReadOrder = "asc" | "desc";
+type PrimaryTimestampTopKSort = Extract<SearchSortSpec, { kind: "field" }>;
 
 function errorMessage(e: unknown): string {
   return String((e as any)?.message ?? e);
@@ -390,6 +391,50 @@ export class StreamReader {
       plannedSegments.push(seg);
     }
     return { segments: plannedSegments, sealedEndSeq };
+  }
+
+  private planAllSealedReadSegments(
+    stream: string,
+    startSeq: bigint,
+    sealedEndSeq: bigint,
+    order: PlannedReadOrder = "asc"
+  ): PlannedReadSegments | null {
+    if (startSeq > sealedEndSeq) return { segments: [], sealedEndSeq };
+    const startSeg = this.db.findSegmentForOffset(stream, startSeq);
+    const endSeg = this.db.findSegmentForOffset(stream, sealedEndSeq);
+    if (!startSeg || !endSeg) return null;
+    const plannedSegments: SegmentRow[] = [];
+    if (order === "asc") {
+      for (let segmentIndex = startSeg.segment_index; segmentIndex <= endSeg.segment_index; segmentIndex++) {
+        const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+        if (!seg) return null;
+        plannedSegments.push(seg);
+      }
+    } else {
+      for (let segmentIndex = endSeg.segment_index; segmentIndex >= startSeg.segment_index; segmentIndex--) {
+        const seg = this.db.getSegmentByIndex(stream, segmentIndex);
+        if (!seg) return null;
+        plannedSegments.push(seg);
+      }
+    }
+    return { segments: plannedSegments, sealedEndSeq };
+  }
+
+  private currentSearchCompanionRowsBySegment(stream: string, registry: SchemaRegistry): Map<number, SearchSegmentCompanionRow> {
+    const desiredPlan = buildDesiredSearchCompanionPlan(registry);
+    const desiredHash = hashSearchCompanionPlan(desiredPlan);
+    const companionPlanRow = this.db.getSearchCompanionPlan(stream);
+    const desiredGeneration =
+      companionPlanRow == null
+        ? 1
+        : companionPlanRow.plan_hash === desiredHash
+          ? companionPlanRow.generation
+          : companionPlanRow.generation + 1;
+    const rowsBySegment = new Map<number, SearchSegmentCompanionRow>();
+    for (const row of this.db.listSearchSegmentCompanions(stream)) {
+      if (row.plan_generation === desiredGeneration) rowsBySegment.set(row.segment_index, row);
+    }
+    return rowsBySegment;
   }
 
   cacheStats(): SegmentCacheStats | null {
@@ -1145,6 +1190,9 @@ export class StreamReader {
       const offsetSearchAfter =
         request.searchAfter && leadingSort?.kind === "offset" ? normalizeSearchAfterValue(leadingSort, request.searchAfter[0]) : null;
       const cursorFieldBound = resolveSearchCursorFieldBound(request);
+      const primaryTimestampTopKSort = resolvePrimaryTimestampTopKSort(registry, request);
+      const primaryTimestampRowsBySegment =
+        primaryTimestampTopKSort && request.size > 0 ? this.currentSearchCompanionRowsBySegment(stream, registry) : null;
 
       const hits: SearchHitInternal[] = [];
       let timedOut = false;
@@ -1198,7 +1246,7 @@ export class StreamReader {
         if (request.searchAfter && compareSearchAfterValues(sortInternal, request.sort, request.searchAfter) <= 0) {
           return Result.ok(undefined);
         }
-        hits.push({
+        const hit: SearchHitInternal = {
           offsetSeq,
           offset: encodeOffset(srow.epoch, offsetSeq),
           score: evalRes.value.score,
@@ -1206,9 +1254,30 @@ export class StreamReader {
           sortResponse: buildSearchSortResponseValues(request.sort, sortInternal, encodeOffset(srow.epoch, offsetSeq)),
           fields: fieldsRes.value,
           source: parsedRes.value,
-        });
+        };
+        hits.push(hit);
+        if (primaryTimestampTopKSort && request.size > 0 && hits.length > request.size) {
+          hits.splice(worstSearchHitIndex(hits, request.sort), 1);
+        }
         if (hits.length > peakHitsHeld) peakHitsHeld = hits.length;
         return Result.ok(undefined);
+      };
+
+      const primaryTimestampTopKCutoff = (): bigint | null => {
+        if (!primaryTimestampTopKSort || hits.length < request.size) return null;
+        const worstHit = hits[worstSearchHitIndex(hits, request.sort)];
+        const value = worstHit?.sortInternal[0];
+        return typeof value === "bigint" ? value : null;
+      };
+
+      const primaryTimestampSegmentMayBeatTopK = (seg: SegmentRow): boolean => {
+        if (!primaryTimestampTopKSort || !primaryTimestampRowsBySegment) return true;
+        const cutoff = primaryTimestampTopKCutoff();
+        if (cutoff == null) return true;
+        const row = primaryTimestampRowsBySegment.get(seg.segment_index);
+        if (row?.primary_timestamp_min_ms == null || row.primary_timestamp_max_ms == null) return true;
+        if (primaryTimestampTopKSort.direction === "desc") return row.primary_timestamp_max_ms >= cutoff;
+        return row.primary_timestamp_min_ms <= cutoff;
       };
 
       const scanSegmentForSearchResult = async (
@@ -1608,18 +1677,27 @@ export class StreamReader {
         exactCandidateInfo.indexedThrough,
         "asc"
       );
-      if (plannedSealedSegments) {
-        for (const seg of plannedSealedSegments.segments) {
+      const allSealedSegments =
+        primaryTimestampTopKSort && !plannedSealedSegments ? this.planAllSealedReadSegments(stream, 0n, sealedEnd, "asc") : null;
+      const sealedSegmentPlan = plannedSealedSegments ?? allSealedSegments;
+      if (sealedSegmentPlan) {
+        const sealedSegments =
+          primaryTimestampTopKSort && primaryTimestampRowsBySegment
+            ? orderSegmentsByPrimaryTimestampBounds(sealedSegmentPlan.segments, primaryTimestampRowsBySegment, primaryTimestampTopKSort.direction)
+            : sealedSegmentPlan.segments;
+        for (const seg of sealedSegments) {
+          if (!primaryTimestampSegmentMayBeatTopK(seg)) break;
           const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
           if (Result.isError(scanRes)) return scanRes;
-          seq = seg.end_offset + 1n;
+          if (seg.end_offset >= seq) seq = seg.end_offset + 1n;
           if (timedOut) break;
         }
-        if (seq <= plannedSealedSegments.sealedEndSeq) seq = plannedSealedSegments.sealedEndSeq + 1n;
+        if (seq <= sealedSegmentPlan.sealedEndSeq) seq = sealedSegmentPlan.sealedEndSeq + 1n;
       } else {
         while (seq <= visibleSnapshotEndSeq && seq <= visibleSealedThrough) {
           const seg = this.db.findSegmentForOffset(stream, seq);
           if (!seg) break;
+          if (!primaryTimestampSegmentMayBeatTopK(seg)) break;
           const scanRes = await scanSegmentWithFamiliesResult(seg, 0n, snapshotEndSeq);
           if (Result.isError(scanRes)) return scanRes;
           seq = seg.end_offset + 1n;
@@ -2766,4 +2844,49 @@ function normalizeSearchAfterValue(sort: SearchSortSpec, raw: unknown): bigint |
 
 function compareSearchAfter(hit: SearchHitInternal, sorts: SearchSortSpec[], searchAfter: unknown[]): number {
   return compareSearchAfterValues(hit.sortInternal, sorts, searchAfter);
+}
+
+function resolvePrimaryTimestampTopKSort(registry: SchemaRegistry, request: SearchRequest): PrimaryTimestampTopKSort | null {
+  const leadingSort = request.sort[0];
+  if (!leadingSort || leadingSort.kind !== "field") return null;
+  if (registry.search?.primaryTimestampField !== leadingSort.field) return null;
+  if (leadingSort.config.kind !== "date") return null;
+  return leadingSort;
+}
+
+function worstSearchHitIndex(hits: SearchHitInternal[], sorts: SearchSortSpec[]): number {
+  let worstIndex = 0;
+  for (let index = 1; index < hits.length; index++) {
+    if (compareSearchHits(hits[index]!, hits[worstIndex]!, sorts) > 0) worstIndex = index;
+  }
+  return worstIndex;
+}
+
+function orderSegmentsByPrimaryTimestampBounds(
+  segments: SegmentRow[],
+  rowsBySegment: Map<number, SearchSegmentCompanionRow>,
+  direction: "asc" | "desc"
+): SegmentRow[] {
+  const unknown: SegmentRow[] = [];
+  const known: SegmentRow[] = [];
+  for (const seg of segments) {
+    const row = rowsBySegment.get(seg.segment_index);
+    if (row?.primary_timestamp_min_ms == null || row.primary_timestamp_max_ms == null) unknown.push(seg);
+    else known.push(seg);
+  }
+  known.sort((left, right) => {
+    const leftRow = rowsBySegment.get(left.segment_index)!;
+    const rightRow = rowsBySegment.get(right.segment_index)!;
+    if (direction === "desc") {
+      if (leftRow.primary_timestamp_max_ms !== rightRow.primary_timestamp_max_ms) {
+        return leftRow.primary_timestamp_max_ms! > rightRow.primary_timestamp_max_ms! ? -1 : 1;
+      }
+      return right.segment_index - left.segment_index;
+    }
+    if (leftRow.primary_timestamp_min_ms !== rightRow.primary_timestamp_min_ms) {
+      return leftRow.primary_timestamp_min_ms! < rightRow.primary_timestamp_min_ms! ? -1 : 1;
+    }
+    return left.segment_index - right.segment_index;
+  });
+  return [...unknown, ...known];
 }

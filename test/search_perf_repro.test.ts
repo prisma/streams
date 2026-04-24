@@ -555,6 +555,38 @@ describe("search performance repro cases", () => {
   );
 
   t(
+    "explicit timestamp-desc broad filter measures event-time global sort cost",
+    async () => {
+      const fixture = await buildFixture({
+        stream: "perf-timestamp-topk",
+        segments: DEFAULT_SORT_SEGMENTS,
+        rowsPerSegment: DEFAULT_SORT_ROWS_PER_SEGMENT,
+        payloadBytes: DEFAULT_SORT_PAYLOAD_BYTES,
+        indexL0SpanSegments: 2,
+      });
+      try {
+        const result = await measuredSearch(fixture.app, fixture.stream, {
+          q: 'environment:"staging"',
+          size: 100,
+          sort: ["timestamp:desc", "offset:desc"],
+        });
+        logPerfCase("timestamp-desc-top-k", fixture, result);
+
+        expect(result.body.hits).toHaveLength(100);
+        expect(result.body.coverage.index_families_used).toContain("fts");
+        expect(result.body.coverage.indexed_segments).toBeLessThanOrEqual(2);
+        expect(result.body.coverage.peak_hits_held).toBeLessThanOrEqual(100);
+        expect(result.parseCalls).toBeLessThanOrEqual(DEFAULT_SORT_ROWS_PER_SEGMENT + 128);
+        expectMultiSecondRuntime("explicit timestamp-desc broad filter", result.elapsedMs);
+      } finally {
+        fixture.app.close();
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+    TIMEOUT_MS
+  );
+
+  t(
     "two uploaded evlog segments below the secondary exact L0 span use companion candidates plus source scan",
     async () => {
       const fixture = await buildFixture({
