@@ -9,6 +9,7 @@ import { MockR2Store } from "../src/objectstore/mock_r2";
 
 const RUN = process.env.SEARCH_PERF_REPRO === "1";
 const t = RUN ? test : test.skip;
+const EXPECT_SLOW = process.env.SEARCH_PERF_EXPECT_SLOW === "1";
 
 const TIMEOUT_MS = envNumber("SEARCH_PERF_TIMEOUT_MS", 900_000);
 const MIN_CASE_MS = envNumber("SEARCH_PERF_MIN_CASE_MS", 2_000, { allowZero: true });
@@ -290,7 +291,7 @@ async function measuredSearch(
 }
 
 function expectMultiSecondRuntime(label: string, elapsedMs: number): void {
-  if (MIN_CASE_MS <= 0) return;
+  if (!EXPECT_SLOW || MIN_CASE_MS <= 0) return;
   expect(
     elapsedMs,
     `${label} completed in ${elapsedMs.toFixed(2)}ms; increase fixture size or lower SEARCH_PERF_MIN_CASE_MS for this machine`
@@ -311,7 +312,7 @@ function logPerfCase(label: string, fixture: PerfFixture, result: { elapsedMs: n
 
 describe("search performance repro cases", () => {
   t(
-    "default non-scoring evlog filter uses timestamp sort and materializes the broad match set before paging",
+    "default non-scoring evlog filter measures broad event-list query cost",
     async () => {
       const fixture = await buildFixture({
         stream: "perf-default-sort",
@@ -325,10 +326,9 @@ describe("search performance repro cases", () => {
           q: 'environment:"staging"',
           size: 100,
         });
-        logPerfCase("default-timestamp-sort", fixture, result);
+        logPerfCase("default-non-scoring-sort", fixture, result);
 
         expect(result.body.hits).toHaveLength(100);
-        expect(result.parseCalls).toBeGreaterThanOrEqual(fixture.rows);
         expect(result.body.coverage.index_families_used).toContain("fts");
         expectMultiSecondRuntime("default timestamp sort broad filter", result.elapsedMs);
       } finally {

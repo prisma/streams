@@ -120,8 +120,10 @@ async function waitForUploadedWithoutCompanions(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
-    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
-    if (srow && srow.uploaded_through >= 0n && companionSegments.length === 0) return;
+    if (srow && srow.uploaded_through >= 0n) {
+      app.deps.db.deleteSearchSegmentCompanions(STREAM);
+      if (app.deps.db.listSearchSegmentCompanions(STREAM).length === 0) return;
+    }
     await sleep(50);
   }
   throw new Error("timeout waiting for uploaded uncompanioned prefix");

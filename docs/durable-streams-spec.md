@@ -757,6 +757,10 @@ Current request fields:
 - `size`
 - `search_after`
 - `sort`
+  - optional sort list
+  - when omitted, non-scoring filter queries sort by `offset:desc`
+  - when omitted, scoring text queries sort by `_score:desc`, then the
+    primary timestamp field, then `offset:desc`
 - `timeout_ms`
   - optional lower per-request budget
   - server-side effective timeout is always clamped to `<= 3000 ms`
