@@ -62,6 +62,8 @@ function applyAutoTune(overrideMb: number | null): void {
   const conflictVars = [
     "DS_SEGMENT_MAX_BYTES",
     "DS_SEGMENT_TARGET_ROWS",
+    "DS_SEGMENT_CACHE_MAX_BYTES",
+    "DS_INDEX_CHECK_MS",
     "DS_SQLITE_CACHE_MB",
     "DS_SQLITE_CACHE_BYTES",
     "DS_WORKER_SQLITE_CACHE_MB",
@@ -100,6 +102,8 @@ function applyAutoTune(overrideMb: number | null): void {
   process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
   process.env.DS_SEGMENT_MAX_BYTES = String(tune.segmentMaxMiB * 1024 * 1024);
   process.env.DS_SEGMENT_TARGET_ROWS = String(tune.segmentTargetRows);
+  process.env.DS_SEGMENT_CACHE_MAX_BYTES = String(tune.segmentCacheMb * 1024 * 1024);
+  process.env.DS_INDEX_CHECK_MS = String(tune.indexCheckMs);
   process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
   process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
   process.env.DS_INDEX_RUN_MEM_CACHE_BYTES = String(tune.indexMemMb * 1024 * 1024);
@@ -137,6 +141,22 @@ function applyAutoTune(overrideMb: number | null): void {
       presets,
       preset,
       (p) => tuneForPreset(p).segmentTargetRows,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_SEGMENT_CACHE_MB presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).segmentCacheMb,
+      (v) => String(v)
+    )}`
+  );
+  console.log(
+    `DS_INDEX_CHECK_MS presets: ${formatPresetList(
+      presets,
+      preset,
+      (p) => tuneForPreset(p).indexCheckMs,
       (v) => String(v)
     )}`
   );

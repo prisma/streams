@@ -12,6 +12,9 @@ Current behavior:
 - If recent segments compressed below `50%` of the logical target, the next
   segment's logical byte target is raised so the expected compressed segment
   reaches at least `50%` of `DS_SEGMENT_MAX_BYTES`.
+- The boost is capped at `5x` the base logical target, which is equivalent to
+  treating anything stronger than `10:1` compression as `10:1` for this
+  heuristic.
 - This heuristic is best-effort:
   - it never reduces the logical byte target below `DS_SEGMENT_MAX_BYTES`
   - cut eligibility uses the same raised logical-byte target, so the segmenter

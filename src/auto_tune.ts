@@ -1,6 +1,8 @@
 export type AutoTuneConfig = {
   segmentMaxMiB: number;
   segmentTargetRows: number;
+  segmentCacheMb: number;
+  indexCheckMs: number;
   sqliteCacheMb: number;
   workerSqliteCacheMb: number;
   indexMemMb: number;
@@ -35,6 +37,13 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     // tiny compressed segment objects.
     segmentMaxMiB: 16,
     segmentTargetRows: 100_000,
+    // The 1 GiB Compute host only has about 685 MiB of usable RSS after the
+    // platform clamp, so it cannot afford a persistent 256 MiB local segment
+    // cache on top of active ingest and background reads.
+    segmentCacheMb: p >= 2048 ? 256 : 0,
+    // Small hosts defer background sweeps so routing/exact backfill does not
+    // immediately start re-reading uploaded history during a large ingest burst.
+    indexCheckMs: p >= 2048 ? 1_000 : 3_600_000,
     sqliteCacheMb: Math.max(8, Math.floor(p / 16)),
     workerSqliteCacheMb: Math.max(8, Math.min(32, Math.floor(p / 128))),
     indexMemMb: Math.max(4, Math.floor(p / 64)),

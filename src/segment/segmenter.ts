@@ -31,6 +31,7 @@ export type SegmenterMemoryStats = {
 
 const SEGMENT_COMPRESSION_WINDOW = 8;
 const MIN_COMPRESSED_FILL_RATIO = 0.5;
+const MAX_COMPRESSION_BOOST_MULTIPLIER = 5;
 
 export class Segmenter {
   private readonly config: Config;
@@ -171,6 +172,8 @@ export class Segmenter {
     }
     const desiredCompressedBytes = Math.ceil(this.config.segmentMaxBytes * MIN_COMPRESSED_FILL_RATIO);
     const boosted = BigInt(Math.ceil(desiredCompressedBytes / ratio));
+    const maxBoosted = baseTarget * BigInt(MAX_COMPRESSION_BOOST_MULTIPLIER);
+    if (boosted > maxBoosted) return maxBoosted;
     return boosted > baseTarget ? boosted : baseTarget;
   }
 

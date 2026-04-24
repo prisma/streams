@@ -14,15 +14,18 @@ runtime overview and command surface, see `overview.md`.
 - `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 100k; auto-tune preserves 100k rows on every preset)
 - `DS_SEGMENT_MAX_INTERVAL_MS`: max time between segment cuts (default 0; 0 disables time-based sealing)
 - `DS_SEGMENT_CHECK_MS`: segmenter tick interval (default 250ms)
-- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1–2 GiB presets)
+- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` through `2048 MiB`, `2` at `4096 MiB`, and `4` at `8192 MiB`)
 - `DS_UPLOAD_CHECK_MS`: uploader tick interval (default 250ms)
 - `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1–2 GiB presets)
 - `DS_BASE_WAL_GC_CHUNK_OFFSETS`: max base-WAL rows deleted per GC sweep/manifest commit transaction (default 1,000,000)
 - `DS_BASE_WAL_GC_INTERVAL_MS`: minimum delay between touch-manager base-WAL GC sweeps per stream (default 1000ms)
-- `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
+- `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB; auto-tune disables it through the `1024 MiB` preset, then uses `256 MiB` at `2048 MiB` and above)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
 - `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
-- `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
+- `DS_INDEX_CHECK_MS`: in-process periodic sweep interval for the routing-key,
+  exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms;
+  auto-tune defers periodic sweeps to `3600000ms` through the `1024 MiB`
+  preset, then uses `1000ms` at `2048 MiB` and above).
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)
@@ -159,7 +162,7 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 - `DS_READ_MAX_BYTES=1–4MiB`
 - SQLite `cache_size` around 128–256 MiB
 - Worker SQLite caches around 16–32 MiB each
-- On hosts near the low end of this range, prefer `DS_SEGMENTER_WORKERS=1`,
+- On hosts near the low end of this range, prefer `DS_SEGMENTER_WORKERS=0`,
   `DS_UPLOAD_CONCURRENCY=2`, and `DS_SEARCH_COMPANION_BATCH_SEGMENTS=1` while
   keeping the default 16 MiB / 100k-row segment geometry.
 
@@ -174,6 +177,9 @@ Segment geometry across presets:
   - if recent compression is stronger than `2:1`, it raises the logical byte
     seal target so the next segment aims for at least `50%` of
     `DS_SEGMENT_MAX_BYTES` after compression
+  - the boost is capped at `5x` the base byte target, which is equivalent to
+    treating anything stronger than `10:1` compression as `10:1` for seal
+    sizing
   - this never lowers the target below `DS_SEGMENT_MAX_BYTES`
   - cut eligibility uses the same raised byte target, so the segmenter waits
     for enough logical backlog instead of starting immediately at the base
@@ -186,23 +192,23 @@ Segment geometry across presets:
 presets:
 
 - `256 MiB`:
-  - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`; index checks every `3600000ms`
 - `512 MiB`:
-  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`; index checks every `3600000ms`
 - `1024 MiB`:
-  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`; index checks every `3600000ms`
 - `2048 MiB`:
-  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, segment cache `256 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`; index checks every `1000ms`
 - `4096 MiB`:
-  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
-  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, uploads `4`, segmenter workers `2`
+  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, segment cache `256 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
+  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, uploads `4`, segmenter workers `2`; index checks every `1000ms`
 - `8192 MiB`:
-  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
-  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, uploads `8`, segmenter workers `4`
+  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, segment cache `256 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
+  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, uploads `8`, segmenter workers `4`; index checks every `1000ms`
 
 ## Diagnosing stalls
 
