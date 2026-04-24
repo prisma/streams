@@ -808,6 +808,12 @@ Current search response headers:
 - `search-scanned-tail-docs`
 - `search-scanned-tail-time-ms`
 - `search-exact-candidate-time-ms`
+- `search-candidate-doc-ids`
+- `search-decoded-records`
+- `search-json-parse-time-ms`
+- `search-segment-payload-bytes-fetched`
+- `search-sort-time-ms`
+- `search-peak-hits-held`
 - `search-index-families-used`
 
 Current search coverage fields:
@@ -832,6 +838,12 @@ Current search coverage fields:
 - `scanned_tail_docs`
 - `scanned_tail_time_ms`
 - `exact_candidate_time_ms`
+- `candidate_doc_ids`
+- `decoded_records`
+- `json_parse_time_ms`
+- `segment_payload_bytes_fetched`
+- `sort_time_ms`
+- `peak_hits_held`
 - `index_families_used`
 
 Current query support:

@@ -319,10 +319,19 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
+        expect(Number(res.headers.get("search-candidate-doc-ids"))).toBeGreaterThan(0);
+        expect(Number(res.headers.get("search-decoded-records"))).toBeGreaterThan(0);
+        expect(Number(res.headers.get("search-segment-payload-bytes-fetched"))).toBeGreaterThan(0);
         let body = await res.json();
         expect(body.total).toEqual({ value: 1, relation: "eq" });
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col"]));
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+        expect(body.coverage.candidate_doc_ids).toBeGreaterThan(0);
+        expect(body.coverage.decoded_records).toBeGreaterThan(0);
+        expect(body.coverage.json_parse_time_ms).toEqual(expect.any(Number));
+        expect(body.coverage.segment_payload_bytes_fetched).toBeGreaterThan(0);
+        expect(body.coverage.sort_time_ms).toEqual(expect.any(Number));
+        expect(body.coverage.peak_hits_held).toBeGreaterThan(0);
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
 

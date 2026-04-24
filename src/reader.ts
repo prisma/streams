@@ -114,6 +114,12 @@ export type SearchResultBatch = {
     scannedTailDocs: number;
     scannedTailTimeMs: number;
     exactCandidateTimeMs: number;
+    candidateDocIds: number;
+    decodedRecords: number;
+    jsonParseTimeMs: number;
+    segmentPayloadBytesFetched: number;
+    sortTimeMs: number;
+    peakHitsHeld: number;
     indexFamiliesUsed: string[];
   };
   total: {
@@ -1140,6 +1146,12 @@ export class StreamReader {
       let scannedSegmentTimeMs = 0;
       let scannedTailDocs = 0;
       let scannedTailTimeMs = 0;
+      let candidateDocIds = 0;
+      let decodedRecords = 0;
+      let jsonParseTimeMs = 0;
+      let segmentPayloadBytesFetched = 0;
+      let sortTimeMs = 0;
+      let peakHitsHeld = 0;
       const indexFamiliesUsed = new Set<string>();
       const columnClauses = collectPositiveSearchColumnClauses(request.q);
       const ftsClauses = collectPositiveSearchFtsClauses(request.q);
@@ -1156,7 +1168,9 @@ export class StreamReader {
         offsetSeq: bigint,
         payload: Uint8Array
       ): Result<void, ReaderError> => {
+        const parseStartedAt = Date.now();
         const parsedRes = decodeJsonPayloadResult(this.registry, stream, offsetSeq, payload);
+        jsonParseTimeMs += Date.now() - parseStartedAt;
         if (Result.isError(parsedRes)) return Result.err({ kind: "internal", message: parsedRes.error.message });
         const evalRes = evaluateSearchQueryResult(registry, offsetSeq, request.q, parsedRes.value);
         if (Result.isError(evalRes)) return Result.err({ kind: "internal", message: evalRes.error.message });
@@ -1176,6 +1190,7 @@ export class StreamReader {
           fields: fieldsRes.value,
           source: parsedRes.value,
         });
+        if (hits.length > peakHitsHeld) peakHitsHeld = hits.length;
         return Result.ok(undefined);
       };
 
@@ -1187,10 +1202,12 @@ export class StreamReader {
       ): Promise<Result<void, ReaderError>> => {
         if (markTimedOutIfNeeded()) return Result.ok(undefined);
         const segBytes = await loadSegmentBytes(this.os, seg, this.diskCache, this.retryOpts());
+        segmentPayloadBytesFetched += seg.size_bytes;
         if (markTimedOutIfNeeded()) return Result.ok(undefined);
         let curOffset = seg.start_offset;
         for (const blockRes of iterateBlocksResult(segBytes)) {
           if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
+          decodedRecords += blockRes.value.decoded.recordCount;
           for (const record of blockRes.value.decoded.records) {
             if (curOffset > rangeEndSeq) return Result.ok(undefined);
             if (curOffset < rangeStartSeq) {
@@ -1254,6 +1271,7 @@ export class StreamReader {
         if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
         if (markTimedOutIfNeeded()) return Result.ok(undefined);
         const familyCandidates = familyCandidatesRes.value;
+        if (familyCandidates.docIds) candidateDocIds += familyCandidates.docIds.size;
         if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
           indexedSegments += familyCandidates.usedFamilies.size > 0 ? 1 : 0;
           for (const family of familyCandidates.usedFamilies) indexFamiliesUsed.add(family);
@@ -1353,6 +1371,15 @@ export class StreamReader {
                         addScannedSegmentTimeMs: (deltaMs) => {
                           scannedSegmentTimeMs += deltaMs;
                         },
+                        addCandidateDocIds: (count) => {
+                          candidateDocIds += count;
+                        },
+                        addDecodedRecords: (count) => {
+                          decodedRecords += count;
+                        },
+                        addSegmentPayloadBytesFetched: (count) => {
+                          segmentPayloadBytesFetched += count;
+                        },
                       }
                     );
                     if (Result.isError(scanRes)) return scanRes;
@@ -1410,6 +1437,15 @@ export class StreamReader {
                         },
                         addScannedSegmentTimeMs: (deltaMs) => {
                           scannedSegmentTimeMs += deltaMs;
+                        },
+                        addCandidateDocIds: (count) => {
+                          candidateDocIds += count;
+                        },
+                        addDecodedRecords: (count) => {
+                          decodedRecords += count;
+                        },
+                        addSegmentPayloadBytesFetched: (count) => {
+                          segmentPayloadBytesFetched += count;
                         },
                       }
                     );
@@ -1493,6 +1529,12 @@ export class StreamReader {
             scannedTailDocs,
             scannedTailTimeMs,
             exactCandidateTimeMs,
+            candidateDocIds,
+            decodedRecords,
+            jsonParseTimeMs,
+            segmentPayloadBytesFetched,
+            sortTimeMs,
+            peakHitsHeld,
             indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
           },
           total: {
@@ -1550,7 +1592,9 @@ export class StreamReader {
         scannedTailTimeMs += Date.now() - tailStartedAt;
       }
 
+      const sortStartedAt = Date.now();
       hits.sort((left, right) => compareSearchHits(left, right, request.sort));
+      sortTimeMs += Date.now() - sortStartedAt;
       const pageHits = hits.slice(0, request.size);
       const nextSearchAfter = pageHits.length === request.size ? pageHits[pageHits.length - 1].sortResponse : null;
       const exactTotalKnown = !timedOut && coverageState.complete && nextSearchAfter == null;
@@ -1582,6 +1626,12 @@ export class StreamReader {
           scannedTailDocs,
           scannedTailTimeMs,
           exactCandidateTimeMs,
+          candidateDocIds,
+          decodedRecords,
+          jsonParseTimeMs,
+          segmentPayloadBytesFetched,
+          sortTimeMs,
+          peakHitsHeld,
           indexFamiliesUsed: Array.from(indexFamiliesUsed).sort(),
         },
         total: {
@@ -1926,6 +1976,9 @@ export class StreamReader {
       addFtsDecodeMs: (deltaMs: number) => void;
       addFtsClauseEstimateMs: (deltaMs: number) => void;
       addScannedSegmentTimeMs: (deltaMs: number) => void;
+      addCandidateDocIds: (count: number) => void;
+      addDecodedRecords: (count: number) => void;
+      addSegmentPayloadBytesFetched: (count: number) => void;
     }
   ): Promise<Result<void, ReaderError>> {
     const segmentStartedAt = Date.now();
@@ -1967,6 +2020,7 @@ export class StreamReader {
     if (Result.isError(familyCandidatesRes)) return Result.err({ kind: "internal", message: familyCandidatesRes.error.message });
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const familyCandidates = familyCandidatesRes.value;
+    if (familyCandidates.docIds) state.addCandidateDocIds(familyCandidates.docIds.size);
     if (familyCandidates.docIds && familyCandidates.docIds.size === 0) {
       if (familyCandidates.usedFamilies.size > 0) state.addIndexedSegment();
       for (const family of familyCandidates.usedFamilies) state.indexFamiliesUsed.add(family);
@@ -1988,6 +2042,7 @@ export class StreamReader {
 
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const source = await loadSegmentSource(this.os, seg, this.diskCache, this.retryOpts());
+    state.addSegmentPayloadBytesFetched(seg.size_bytes);
     if (markTimedOutIfNeeded()) return Result.ok(undefined);
     const footerBlocks = loadSegmentFooterBlocksFromSource(seg, source);
     if (footerBlocks) {
@@ -2003,6 +2058,7 @@ export class StreamReader {
         const decodedRes = decodeBlockResult(blockBytes);
         if (Result.isError(decodedRes)) return Result.err({ kind: "internal", message: decodedRes.error.message });
         const decoded = decodedRes.value;
+        state.addDecodedRecords(decoded.recordCount);
         for (let recordIndex = decoded.records.length - 1; recordIndex >= 0; recordIndex--) {
           const offsetSeq = blockStartOffset + BigInt(recordIndex);
           if (offsetSeq > rangeEndSeq) continue;
@@ -2034,6 +2090,7 @@ export class StreamReader {
     for (const blockRes of iterateBlocksResult(source.bytes)) {
       if (Result.isError(blockRes)) return Result.err({ kind: "internal", message: blockRes.error.message });
       decodedBlocks.push({ records: blockRes.value.decoded.records });
+      state.addDecodedRecords(blockRes.value.decoded.recordCount);
       if (markTimedOutIfNeeded()) {
         addSegmentTime();
         return Result.ok(undefined);

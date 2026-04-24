@@ -122,6 +122,12 @@ Timed-out search responses include:
   - `search-scanned-tail-docs`
   - `search-scanned-tail-time-ms`
   - `search-exact-candidate-time-ms`
+  - `search-candidate-doc-ids`
+  - `search-decoded-records`
+  - `search-json-parse-time-ms`
+  - `search-segment-payload-bytes-fetched`
+  - `search-sort-time-ms`
+  - `search-peak-hits-held`
   - `search-index-families-used`
 
 Recommended UI treatment on timeout:

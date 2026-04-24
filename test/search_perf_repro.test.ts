@@ -306,7 +306,11 @@ function logPerfCase(label: string, fixture: PerfFixture, result: { elapsedMs: n
       `elapsedMs=${result.elapsedMs.toFixed(2)} tookMs=${result.body.took_ms ?? result.body.tookMs ?? "n/a"} ` +
       `parseCalls=${result.parseCalls} indexedSegments=${coverage.indexed_segments ?? coverage.indexedSegments ?? "n/a"} ` +
       `indexedSegmentTimeMs=${coverage.indexed_segment_time_ms ?? coverage.indexedSegmentTimeMs ?? "n/a"} ` +
-      `ftsDecodeMs=${coverage.fts_decode_ms ?? coverage.ftsDecodeMs ?? "n/a"} families=${JSON.stringify(coverage.index_families_used ?? [])}`
+      `ftsDecodeMs=${coverage.fts_decode_ms ?? coverage.ftsDecodeMs ?? "n/a"} ` +
+      `candidateDocIds=${coverage.candidate_doc_ids ?? "n/a"} decodedRecords=${coverage.decoded_records ?? "n/a"} ` +
+      `jsonParseTimeMs=${coverage.json_parse_time_ms ?? "n/a"} segmentBytesFetched=${coverage.segment_payload_bytes_fetched ?? "n/a"} ` +
+      `sortTimeMs=${coverage.sort_time_ms ?? "n/a"} peakHitsHeld=${coverage.peak_hits_held ?? "n/a"} ` +
+      `families=${JSON.stringify(coverage.index_families_used ?? [])}`
   );
 }
 
