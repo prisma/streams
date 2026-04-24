@@ -168,8 +168,7 @@ If `routingKey` is configured:
 
 Schemas do not define:
 
-- whether a stream is `generic`, `queue`, `evlog`, or `state-protocol`
-- profile-owned endpoints
+- whether a stream is `generic`, `evlog`, `metrics`, or `state-protocol`
 - profile-owned endpoints or runtime hooks
 
 Schemas do define payload-owned field extraction, including routing keys and

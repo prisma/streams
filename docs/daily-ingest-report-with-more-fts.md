@@ -34,7 +34,7 @@ much work per segment in one uninterrupted turn:
 ## Fix
 
 The bundled companion builder in
-[src/search/companion_manager.ts](/Users/sorenschmidt/code/streams/src/search/companion_manager.ts)
+[src/search/companion_manager.ts](../src/search/companion_manager.ts)
 was changed in two important ways:
 
 1. Single-pass section building
@@ -61,7 +61,7 @@ Additional observability was also added:
 ## Targeted Regression Coverage
 
 The new targeted regression test is in
-[test/companion_backfill.test.ts](/Users/sorenschmidt/code/streams/test/companion_backfill.test.ts).
+[test/companion_backfill.test.ts](../test/companion_backfill.test.ts).
 
 It exercises a GH Archive-like large-text schema and verifies that a bundled
 companion build yields back to the event loop before it finishes:

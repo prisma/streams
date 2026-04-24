@@ -90,11 +90,10 @@ Indexes:
   - `(segment_in_progress, pending_bytes, last_segment_cut_ms)`
 
 Invariants:
-- `0 <= uploaded_through <= sealed_through <= next_offset`
+- `uploaded_through <= sealed_through < next_offset` for non-empty streams; new empty streams start with `sealed_through=-1`, `uploaded_through=-1`, and `next_offset=0`
 - `0 <= uploaded_segment_count <= segment_count` (see `stream_segment_meta`)
-- `profile IS NULL` means the stream has no explicit declaration and is treated
-  as a `generic` stream
-- `pending_bytes` and `pending_rows` reflect WAL rows with `offset >= sealed_through` (or `>= uploaded_through`, depending on design); pick one and enforce consistently.
+- `profile IS NULL` or `profile='generic'` is treated as a `generic` stream; current stream creation stores `generic`
+- `pending_bytes` and `pending_rows` reflect unsealed WAL rows with `offset > sealed_through`; sealing a segment decrements these counters
 - `logical_size_bytes` is the logical payload-byte size exposed by `/_details`;
   it is updated on append, restored from manifests for published history, and
   can be repaired asynchronously after bootstrap if missing.

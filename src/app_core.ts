@@ -1878,7 +1878,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           if (regRes.value.routingKey == null) return badRequest("routing key not configured");
           const limitRaw = url.searchParams.get("limit");
           const limit = limitRaw == null ? 100 : Number(limitRaw);
-          if (!Number.isFinite(limit) || limit <= 0 || !Number.isInteger(limit)) return badRequest("invalid limit");
+          if (!Number.isFinite(limit) || limit <= 0 || !Number.isInteger(limit) || limit > 500) return badRequest("invalid limit");
           const after = url.searchParams.get("after");
           const listRes = indexer?.listRoutingKeysResult
             ? await runForeground(() => indexer.listRoutingKeysResult!(stream, after, limit))

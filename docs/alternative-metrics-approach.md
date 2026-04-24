@@ -17,10 +17,10 @@ Primary Axiom sources used here:
 
 Repository sources used for the current Prisma Streams behavior:
 
-- [docs/metrics.md](/Users/sorenschmidt/code/streams/docs/metrics.md)
-- [docs/aggregation-rollups.md](/Users/sorenschmidt/code/streams/docs/aggregation-rollups.md)
-- [src/metrics.ts](/Users/sorenschmidt/code/streams/src/metrics.ts)
-- [src/metrics_emitter.ts](/Users/sorenschmidt/code/streams/src/metrics_emitter.ts)
+- [metrics.md](./metrics.md)
+- [aggregation-rollups.md](./aggregation-rollups.md)
+- [src/metrics.ts](../src/metrics.ts)
+- [src/metrics_emitter.ts](../src/metrics_emitter.ts)
 
 ## Summary
 
@@ -156,7 +156,7 @@ model:
 Prisma Streams does **not** bill by active time series, but the current internal
 metrics path still has active-series pressure in the runtime.
 
-The sharpest example is [src/metrics.ts](/Users/sorenschmidt/code/streams/src/metrics.ts):
+The sharpest example is [src/metrics.ts](../src/metrics.ts):
 
 - every distinct metric + tag set becomes a `MetricSeries` in memory
 - that map lives for the whole flush interval

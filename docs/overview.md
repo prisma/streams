@@ -70,7 +70,7 @@ See [security.md](./security.md) and [auth.md](./auth.md).
 
 ## Prerequisites
 
-- Bun `>=1.3.11` for the full self-hosted server and repository workflows
+- Bun `>=1.3.6` for the full self-hosted server and repository workflows
 - Bun `>=1.2.0` or Node.js `>=22` for the published `@prisma/streams-local` package
 
 ## Quick Start

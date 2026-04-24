@@ -31,11 +31,11 @@ runtime overview and command surface, see `overview.md`.
   freshness target for known changed streams.
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
-- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)
+- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default is derived from `DS_LOCAL_BACKLOG_MAX_BYTES`: 10% of backlog, at least 512 MiB, clamped to 256 MiB..4 GiB; with the default 10 GiB backlog this is 1 GiB)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS`: maximum age for cached `.cix` files before startup/admission pruning retires them (default 24h)
 - `DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES`: hot mmap-backed companion bundles retained by the process (default 64)
 - `DS_SEARCH_COMPANION_TOC_CACHE_BYTES`: in-memory TOC cache for bundled companions (default 1 MiB unless auto-tune raises it)
-- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory raw section-byte cache for bundled companions (default 16 MiB unless auto-tune raises it)
+- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory raw section-byte cache for bundled companions (default 32 MiB when no memory limit is set; otherwise 2% of memory limit, clamped to 8 MiB..128 MiB; auto-tune sets this from the selected preset)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_LEXICON_INDEX_CACHE_MAX_BYTES`: on-disk lexicon-run cache cap for local immutable `.lex` files under `${DS_ROOT}/cache/lexicon` (default derived from memory limit; auto-tune uses 8–64 MiB on 256–2048 MiB presets)

@@ -221,7 +221,7 @@ series tables.
 ### Important Current Limitation
 
 The internal emitter still maintains an in-memory per-series map for the flush
-interval in [src/metrics.ts](/Users/sorenschmidt/code/streams/src/metrics.ts).
+interval in [src/metrics.ts](../src/metrics.ts).
 
 So the shipped system improves **storage and query-path cardinality behavior**
 more than **ingest-path cardinality behavior**.

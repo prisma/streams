@@ -639,6 +639,9 @@ Current search coverage fields:
 - `possible_missing_wal_rows`
 - `indexed_segments`
 - `indexed_segment_time_ms`
+- `fts_section_get_ms`
+- `fts_decode_ms`
+- `fts_clause_estimate_ms`
 - `scanned_segments`
 - `scanned_segment_time_ms`
 - `scanned_tail_docs`
