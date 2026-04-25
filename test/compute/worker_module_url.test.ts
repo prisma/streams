@@ -23,9 +23,11 @@ describe("resolveWorkerModuleUrl", () => {
     );
   });
 
-  test("keeps the default js rewrite when the built path matches the source layout", () => {
-    expect(resolveWorkerModuleUrl("file:///repo/src/touch/worker_pool.js", "./processor_worker.ts").href).toBe(
-      "file:///repo/src/touch/processor_worker.js"
+  test("resolves bundled touch workers beside the local bundle", () => {
+    expect(
+      resolveWorkerModuleUrl("file:///repo/dist/local/index-hash.js", "./processor_worker.ts", "../touch/processor_worker.js").href
+    ).toBe(
+      "file:///repo/dist/touch/processor_worker.js"
     );
   });
 });

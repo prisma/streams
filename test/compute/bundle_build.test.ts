@@ -28,7 +28,7 @@ describe("compute bundle build", () => {
         'resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "../segment/segmenter_worker.js")'
       );
       expect(runtimeEntrypoint).toContain(
-        'resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "./touch/processor_worker.js")'
+        'resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "../touch/processor_worker.js")'
       );
     } finally {
       await rm(tmpRoot, { recursive: true, force: true });

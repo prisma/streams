@@ -114,7 +114,7 @@ export class TouchProcessorWorkerPool {
   }
 
   private spawnWorker(idx: number, generation: number = this.generation): void {
-    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "./touch/processor_worker.js");
+    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "../touch/processor_worker.js");
 
     const worker = new Worker(workerSpec, {
       workerData: { config: this.cfg, hostRuntime: detectHostRuntime() },
