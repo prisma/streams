@@ -974,6 +974,13 @@ describe("bundled companions and backfill", () => {
         const registry = registryRes.value;
         const plan = buildDesiredSearchCompanionPlan(registry);
         const companionIndex = (app.deps.indexer as any).companionIndex;
+        let yieldCount = 0;
+        companionIndex.foregroundActivity = {
+          yieldBackgroundWork: async () => {
+            yieldCount += 1;
+            await sleep(0);
+          },
+        };
 
         let timerFiredAt = 0;
         const startedAt = Date.now();
@@ -985,6 +992,7 @@ describe("bundled companions and backfill", () => {
         const finishedAt = Date.now() - startedAt;
 
         expect(Result.isError(buildRes)).toBeFalse();
+        expect(yieldCount).toBeGreaterThan(0);
         expect(timerFiredAt).toBeGreaterThan(0);
         expect(timerFiredAt).toBeLessThan(finishedAt);
       } finally {
