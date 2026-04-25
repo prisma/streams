@@ -48,6 +48,8 @@ and tooling.
 ## Operations
 
 - [operational-notes.md](./operational-notes.md) — tuning knobs and stall diagnosis
+- [bun-memory-risk.md](./bun-memory-risk.md) — repository policy for risky Bun
+  body, file, and S3 APIs that can retain anon RSS
 - [memory-assumption.md](./memory-assumption.md) — ranked working assumptions for explaining RSS growth from the current memory observability surfaces
 - [recovery-integrity-runbook.md](./recovery-integrity-runbook.md) — recovery steps and correctness checks
 - [segment-performance.md](./segment-performance.md) — segment read-path performance notes
