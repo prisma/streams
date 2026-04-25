@@ -26,7 +26,8 @@ deployment shape. It:
 
 - applies the normal Compute argv defaults from
   [`src/compute/entry.ts`](../src/compute/entry.ts), including `--object-store r2`
-  and `--auto-tune` when `DS_MEMORY_LIMIT_MB` is set
+  and `--auto-tune` when `DS_MEMORY_LIMIT_MB` is set, before the colocated
+  Streams server config is loaded
 - starts the regular Streams app in-process
 - fronts it with the `/studio`, `/studio/api/streams/*`, `/generate`, and
   `/api/generate/jobs*` routes
@@ -35,6 +36,26 @@ deployment shape. It:
 When `COMPUTE_DEMO_STREAMS_SERVER_URL` or `STREAMS_SERVER_URL` is set, the
 entrypoint skips the colocated Streams app and proxies all Streams requests to
 that external server instead.
+
+For the colocated 1 GiB Compute demo, the `1024 MiB` auto-tune preset keeps
+segmenting in the main process, seals smaller 8 MiB / 50k-row segments,
+disables the segment disk cache, uses one upload lane, and limits
+bundled-companion work to one segment / one yield block per pass. During a
+generate job, the colocated demo pauses segmenter and indexer loops, appends
+directly to the in-process ingest queue instead of serializing batches through
+Bun's `Request` body path, then resumes background cutting and indexing for the
+generated stream. That avoids overlapping the generator, append path, segment
+cutting, uploading, and companion building too aggressively on Compute hosts
+whose effective RSS headroom is lower than the nominal memory preset.
+
+When the generator runs on a separate server and writes over HTTP, the Streams
+server cannot use the colocated direct-append pause hooks. The low-memory
+server preset still keeps append responses non-keep-alive and defers immediate
+index/companion enqueue wakeups until the server has had a short
+foreground-quiet window, with a bounded deferral cap so a continuous trickle of
+writes cannot starve background catch-up. Uploaded segments therefore avoid
+starting companion backfill while the external generator is still bursting
+writes, but continue to make progress after the burst or during low-rate ingest.
 
 ## Bundle Build
 

@@ -4,8 +4,9 @@ Status: **informational**. This repo does not ship a dedicated segment perf tool
 
 Current behavior:
 
-- Segment sealing uses a fixed `16 MiB` / `100,000`-row geometry across
-  auto-tune presets.
+- Segment sealing defaults to `16 MiB` / `100,000` rows. Auto-tune presets
+  through `1024 MiB` use `8 MiB` / `50,000` rows to keep segment build memory
+  bounded on small hosts.
 - The segmenter keeps a trailing window over the latest `8` sealed segments for
   the same stream and computes a cheap compressed/logical ratio from stored
   metadata (`size_bytes` / `payload_bytes`).

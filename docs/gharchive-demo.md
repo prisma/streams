@@ -132,9 +132,9 @@ For the `all` range, the demo intentionally uses smaller append batches by
 default so the workload does not amplify the server's append-path JSON
 materialization cost on low-memory hosts. On 1–2 GiB auto-tuned servers, the
 runtime also clamps upload and bundled-companion backfill to single-lane
-settings. Segment geometry stays at the normal `16 MiB` / `100,000`-row seal
-thresholds so long-range ingest is not dominated by many tiny uploaded segment
-objects.
+settings. The `1024 MiB` and smaller presets also use `8 MiB` / `50,000`-row
+segment geometry so one cut does not transiently hold a large encoded working
+set on memory-clamped hosts.
 
 The `all` range now starts at `2020-01-01 10:00 UTC`, not at the earliest GH
 Archive history. This is intentional:

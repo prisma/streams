@@ -1,16 +1,26 @@
 import { bootstrapFromR2 } from "../bootstrap";
-import { createApp } from "../app";
+import { createApp, type App } from "../app";
 import { loadConfig } from "../config";
+import type { AppendRow } from "../ingest";
 import { MockR2Store } from "../objectstore/mock_r2";
 import { R2ObjectStore } from "../objectstore/r2";
+import { resolveJsonIngestCapability } from "../profiles";
+import type { SchemaRegistry } from "../schema/registry";
 import { dsError } from "../util/ds_error.ts";
+import { resolvePointerResult } from "../util/json_pointer";
 import { initConsoleLogging } from "../util/log";
 import { ensureComputeArgv } from "./entry";
 import { createComputeDemoSite, type PrebuiltStudioAssets } from "./demo_site";
+import { applyAutoTune, AutoTuneApplyError, parseAutoTuneArg } from "../server_auto_tune";
+import { Result } from "better-result";
 
 initConsoleLogging();
 
 export type StreamsFetchTarget = {
+  appendGenerateBatch?: (stream: string, events: Array<Record<string, unknown>>) => Promise<void>;
+  beginGenerateJob?: (stream: string) => void;
+  endGenerateJob?: (stream: string) => void;
+  ensureGenerateStream?: (stream: string) => Promise<void>;
   fetch(request: Request): Promise<Response>;
 };
 
@@ -106,20 +116,157 @@ export function createExternalStreamsTarget(baseUrl: string): StreamsFetchTarget
   };
 }
 
+export function applyColocatedComputeDemoArgv(
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  opts: { log?: (message: string) => void } = {},
+): string[] {
+  const next = ensureComputeArgv(argv, env);
+  const args = next.slice(2);
+  const autoTune = parseAutoTuneArg(args);
+  if (autoTune.enabled) {
+    applyAutoTune(autoTune.valueMb, { env, log: opts.log });
+  }
+  return next;
+}
+
+const DIRECT_APPEND_TEXT_ENCODER = new TextEncoder();
+
+function keyBytesFromString(value: string | null): Uint8Array | null {
+  return value == null ? null : DIRECT_APPEND_TEXT_ENCODER.encode(value);
+}
+
+function extractRoutingKey(reg: SchemaRegistry, value: unknown): Uint8Array | null {
+  if (!reg.routingKey) return null;
+  const resolvedRes = resolvePointerResult(value, reg.routingKey.jsonPointer);
+  if (Result.isError(resolvedRes)) {
+    throw dsError(resolvedRes.error.message);
+  }
+  const resolved = resolvedRes.value;
+  if (!resolved.exists) {
+    if (reg.routingKey.required) throw dsError("routing key missing");
+    return null;
+  }
+  if (typeof resolved.value !== "string") throw dsError("routing key must be string");
+  return keyBytesFromString(resolved.value);
+}
+
+function appendErrorMessage(kind: string): string {
+  if (kind === "not_found") return "stream not found";
+  if (kind === "gone") return "stream expired";
+  if (kind === "content_type_mismatch") return "content-type mismatch";
+  if (kind === "overloaded") return "ingest queue full";
+  if (kind === "closed") return "stream is closed";
+  return "append failed";
+}
+
+function createColocatedStreamsTarget(streamsApp: App): StreamsFetchTarget {
+  let activeGenerateJobs = 0;
+  const generateStreamsToEnqueue = new Set<string>();
+
+  return {
+    appendGenerateBatch: async (stream, events) => {
+      const { db, ingest, metrics, notifier, profiles, registry, stats, touch } = streamsApp.deps;
+      const streamRow = db.getStream(stream);
+      if (!streamRow || db.isDeleted(streamRow)) throw dsError("stream not found");
+
+      const regRes = registry.getRegistryResult(stream);
+      if (Result.isError(regRes)) throw dsError(regRes.error.message);
+      const profileRes = profiles.getProfileResult(stream, streamRow);
+      if (Result.isError(profileRes)) throw dsError(profileRes.error.message);
+      const jsonIngest = resolveJsonIngestCapability(profileRes.value);
+      const reg = regRes.value;
+      const validator = reg.currentVersion > 0 ? registry.getValidatorForVersion(reg, reg.currentVersion) : null;
+      if (reg.currentVersion > 0 && !validator) throw dsError("schema validator missing");
+
+      const rows: AppendRow[] = [];
+      let encodedBytes = 0;
+      for (const event of events) {
+        let value: unknown = event;
+        let profileRoutingKey: Uint8Array | null = null;
+        if (jsonIngest) {
+          const preparedRes = jsonIngest.prepareRecordResult({ stream, profile: profileRes.value, value: event });
+          if (Result.isError(preparedRes)) throw dsError(preparedRes.error.message);
+          value = preparedRes.value.value;
+          profileRoutingKey = keyBytesFromString(preparedRes.value.routingKey);
+        }
+        if (validator && !validator(value)) {
+          const message = validator.errors ? validator.errors.map((error) => error.message).join("; ") : "schema validation failed";
+          throw dsError(message);
+        }
+        const payload = DIRECT_APPEND_TEXT_ENCODER.encode(JSON.stringify(value));
+        encodedBytes += payload.byteLength;
+        rows.push({
+          routingKey: reg.routingKey ? extractRoutingKey(reg, value) : profileRoutingKey,
+          contentType: "application/json",
+          payload,
+        });
+      }
+
+      const appendRes = await ingest.append({
+        stream,
+        baseAppendMs: db.nowMs(),
+        rows,
+        contentType: "application/json",
+      });
+      if (Result.isError(appendRes)) {
+        throw dsError(appendErrorMessage(appendRes.error.kind));
+      }
+      if (appendRes.value.appendedRows > 0) {
+        metrics.recordAppend(encodedBytes, appendRes.value.appendedRows);
+        notifier.notify(stream, appendRes.value.lastOffset);
+        notifier.notifyDetailsChanged(stream);
+        touch.notify(stream);
+        stats?.recordStreamTouched(stream);
+        stats?.recordIngested(encodedBytes);
+      }
+    },
+    beginGenerateJob: (stream) => {
+      activeGenerateJobs += 1;
+      generateStreamsToEnqueue.add(stream);
+      if (activeGenerateJobs !== 1) return;
+      streamsApp.deps.indexer?.stop();
+      streamsApp.deps.segmenter.stop(true);
+    },
+    endGenerateJob: (stream) => {
+      generateStreamsToEnqueue.add(stream);
+      activeGenerateJobs = Math.max(0, activeGenerateJobs - 1);
+      if (activeGenerateJobs !== 0) return;
+      streamsApp.deps.segmenter.start();
+      streamsApp.deps.indexer?.start();
+      for (const pendingStream of generateStreamsToEnqueue) {
+        streamsApp.deps.indexer?.enqueue(pendingStream);
+      }
+      generateStreamsToEnqueue.clear();
+    },
+    fetch: (request) => streamsApp.fetch(request),
+  };
+}
+
 async function main(): Promise<void> {
-  const cfg = loadConfig();
   const studioAssets = await loadStudioAssets();
   const externalStreamsServerUrl = resolveExternalStreamsServerUrl();
   let streamsTarget: StreamsFetchTarget;
   let closeStreamsTarget: (() => void) | null = null;
+  let cfg: ReturnType<typeof loadConfig>;
 
   if (externalStreamsServerUrl) {
+    cfg = loadConfig();
     streamsTarget = createExternalStreamsTarget(externalStreamsServerUrl);
     console.log(
       `prisma-streams compute demo using external Streams server ${externalStreamsServerUrl}`,
     );
   } else {
-    process.argv = ensureComputeArgv(process.argv);
+    try {
+      process.argv = applyColocatedComputeDemoArgv(process.argv);
+    } catch (error) {
+      if (error instanceof AutoTuneApplyError) {
+        console.error(error.message);
+        process.exit(1);
+      }
+      throw error;
+    }
+    cfg = loadConfig();
     const args = process.argv.slice(2);
 
     const storeIdx = args.indexOf("--object-store");
@@ -134,11 +281,19 @@ async function main(): Promise<void> {
     if (storeChoice === "local") {
       const memBytesRaw = process.env.DS_MOCK_R2_MAX_INMEM_BYTES;
       const memMbRaw = process.env.DS_MOCK_R2_MAX_INMEM_MB;
+      const putDelayRaw = process.env.DS_MOCK_R2_PUT_DELAY_MS;
+      const getDelayRaw = process.env.DS_MOCK_R2_GET_DELAY_MS;
+      const headDelayRaw = process.env.DS_MOCK_R2_HEAD_DELAY_MS;
+      const listDelayRaw = process.env.DS_MOCK_R2_LIST_DELAY_MS;
       const memBytes = memBytesRaw
         ? Number(memBytesRaw)
         : memMbRaw
           ? Number(memMbRaw) * 1024 * 1024
           : null;
+      const putDelayMs = putDelayRaw ? Number(putDelayRaw) : 0;
+      const getDelayMs = getDelayRaw ? Number(getDelayRaw) : 0;
+      const headDelayMs = headDelayRaw ? Number(headDelayRaw) : 0;
+      const listDelayMs = listDelayRaw ? Number(listDelayRaw) : 0;
       if (memBytesRaw && !Number.isFinite(memBytes)) {
         console.error(`invalid DS_MOCK_R2_MAX_INMEM_BYTES: ${memBytesRaw}`);
         process.exit(1);
@@ -147,19 +302,35 @@ async function main(): Promise<void> {
         console.error(`invalid DS_MOCK_R2_MAX_INMEM_MB: ${memMbRaw}`);
         process.exit(1);
       }
+      for (const [name, value] of [
+        ["DS_MOCK_R2_PUT_DELAY_MS", putDelayMs],
+        ["DS_MOCK_R2_GET_DELAY_MS", getDelayMs],
+        ["DS_MOCK_R2_HEAD_DELAY_MS", headDelayMs],
+        ["DS_MOCK_R2_LIST_DELAY_MS", listDelayMs],
+      ] as const) {
+        if (!Number.isFinite(value) || value < 0) {
+          console.error(`invalid ${name}: ${process.env[name]}`);
+          process.exit(1);
+        }
+      }
       const spillDir = process.env.DS_MOCK_R2_SPILL_DIR;
-      store =
-        memBytes != null || spillDir
-          ? new MockR2Store({
-              maxInMemoryBytes: memBytes ?? undefined,
-              spillDir,
-            })
-          : new MockR2Store();
+      store = new MockR2Store({
+        maxInMemoryBytes: memBytes ?? undefined,
+        spillDir,
+        faults: {
+          putDelayMs,
+          getDelayMs,
+          headDelayMs,
+          listDelayMs,
+        },
+      });
     } else {
       const bucket = process.env.DURABLE_STREAMS_R2_BUCKET;
       const accountId = process.env.DURABLE_STREAMS_R2_ACCOUNT_ID;
       const accessKeyId = process.env.DURABLE_STREAMS_R2_ACCESS_KEY_ID;
       const secretAccessKey = process.env.DURABLE_STREAMS_R2_SECRET_ACCESS_KEY;
+      const endpoint = process.env.DURABLE_STREAMS_R2_ENDPOINT;
+      const region = process.env.DURABLE_STREAMS_R2_REGION;
       if (!bucket || !accountId || !accessKeyId || !secretAccessKey) {
         console.error(
           "missing R2 env vars: DURABLE_STREAMS_R2_BUCKET, DURABLE_STREAMS_R2_ACCOUNT_ID, DURABLE_STREAMS_R2_ACCESS_KEY_ID, DURABLE_STREAMS_R2_SECRET_ACCESS_KEY",
@@ -171,6 +342,8 @@ async function main(): Promise<void> {
         accountId,
         bucket,
         secretAccessKey,
+        endpoint,
+        region,
       });
     }
 
@@ -179,7 +352,7 @@ async function main(): Promise<void> {
     }
 
     const streamsApp = createApp(cfg, store);
-    streamsTarget = streamsApp;
+    streamsTarget = createColocatedStreamsTarget(streamsApp);
     closeStreamsTarget = () => streamsApp.close();
   }
   const demoSite = createComputeDemoSite({

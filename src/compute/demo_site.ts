@@ -30,10 +30,18 @@ export type ComputeDemoSite = {
   fetch(request: Request): Promise<Response>;
 };
 
+type GenerateStreamsTarget = {
+  appendGenerateBatch?: (stream: string, events: Array<Record<string, unknown>>) => Promise<void>;
+  beginGenerateJob?: (stream: string) => void;
+  endGenerateJob?: (stream: string) => void;
+  ensureGenerateStream?: (stream: string) => Promise<void>;
+  fetch(request: Request): Promise<Response>;
+};
+
 type CreateComputeDemoSiteOptions = {
   bootId?: string;
   studioAssets: PrebuiltStudioAssets;
-  streamsApp: { fetch(request: Request): Promise<Response> };
+  streamsApp: GenerateStreamsTarget;
 };
 
 const APP_CACHE_CONTROL = "public, max-age=31536000, immutable";
@@ -50,6 +58,8 @@ const GENERATE_BUTTON_COUNTS = new Set([1_000, 10_000, 100_000]);
 const GENERATE_BATCH_TARGET_BYTES = 256 * 1024;
 const GENERATE_BATCH_MIN_EVENTS = 100;
 const GENERATE_BATCH_MAX_EVENTS = 500;
+const GENERATE_GC_MIN_TOTAL_EVENTS = 100_000;
+const GENERATE_GC_ROW_INTERVAL = 50_000;
 const DEFAULT_GENERATE_STREAM = "demo-app";
 const GENERATE_STREAM_NAME_MAX_LENGTH = 128;
 const GENERATE_STREAM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -101,6 +111,23 @@ function methodNotAllowed(allow: string): Response {
     },
     status: 405,
   });
+}
+
+function collectGenerateBatchMemory(job: GenerateJobState, previousInserted: number): void {
+  if (job.total < GENERATE_GC_MIN_TOTAL_EVENTS) return;
+  const crossedBoundary =
+    Math.floor(previousInserted / GENERATE_GC_ROW_INTERVAL) !==
+    Math.floor(job.inserted / GENERATE_GC_ROW_INTERVAL);
+  if (!crossedBoundary && job.inserted < job.total) return;
+
+  const gc = (globalThis as { Bun?: { gc?: (force?: boolean) => void } }).Bun?.gc;
+  if (typeof gc !== "function") return;
+
+  try {
+    gc(true);
+  } catch {
+    return;
+  }
 }
 
 function responseBodyForMethod(
@@ -908,6 +935,11 @@ export function createComputeDemoSite(
   };
 
   const ensureGenerateStream = async (stream: string): Promise<void> => {
+    if (options.streamsApp.ensureGenerateStream) {
+      await options.streamsApp.ensureGenerateStream(stream);
+      return;
+    }
+
     const createResponse = await options.streamsApp.fetch(
       new Request(`http://streams.internal/v1/stream/${encodeURIComponent(stream)}`, {
         headers: {
@@ -950,6 +982,11 @@ export function createComputeDemoSite(
     stream: string,
     events: Array<Record<string, unknown>>,
   ): Promise<void> => {
+    if (options.streamsApp.appendGenerateBatch) {
+      await options.streamsApp.appendGenerateBatch(stream, events);
+      return;
+    }
+
     const response = await options.streamsApp.fetch(
       new Request(`http://streams.internal/v1/stream/${encodeURIComponent(stream)}`, {
         body: JSON.stringify(events),
@@ -980,8 +1017,11 @@ export function createComputeDemoSite(
     job.batchSize = batchSize;
     job.status = "running";
 
+    let beganGenerateJob = false;
     try {
       await ensureGenerateStream(job.stream);
+      options.streamsApp.beginGenerateJob?.(job.stream);
+      beganGenerateJob = true;
       const baseMs = Date.now() - Math.max(0, job.total - 1) * 1_000;
 
       while (job.inserted < job.total) {
@@ -996,7 +1036,9 @@ export function createComputeDemoSite(
         }
 
         await appendGenerateBatch(job.stream, events);
+        const previousInserted = job.inserted;
         job.inserted += events.length;
+        collectGenerateBatchMemory(job, previousInserted);
 
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
@@ -1009,6 +1051,8 @@ export function createComputeDemoSite(
       job.status = "failed";
       job.finishedAt = new Date().toISOString();
       scheduleCleanup(job.id);
+    } finally {
+      if (beganGenerateJob) options.streamsApp.endGenerateJob?.(job.stream);
     }
   };
 
