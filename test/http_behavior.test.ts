@@ -91,6 +91,24 @@ async function waitForCondition(check: () => Promise<boolean>, timeoutMs = 10_00
   throw new Error("timed out waiting for condition");
 }
 
+async function waitForStableDetailsEtag(baseUrl: string, stream: string, settleMs = 75): Promise<string> {
+  let details = await fetch(`${baseUrl}/v1/stream/${stream}/_details`);
+  expect(details.status).toBe(200);
+  let etag = details.headers.get("etag");
+  expect(etag).not.toBeNull();
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    await sleep(settleMs);
+    details = await fetch(`${baseUrl}/v1/stream/${stream}/_details`);
+    expect(details.status).toBe(200);
+    const nextEtag = details.headers.get("etag");
+    expect(nextEtag).not.toBeNull();
+    if (nextEtag === etag) return etag!;
+    etag = nextEtag;
+  }
+  return etag!;
+}
+
 class RecordingStore implements ObjectStore {
   readonly inner = new MockR2Store();
   readonly getCalls: Array<{ key: string; opts?: GetOptions }> = [];
@@ -654,13 +672,10 @@ describe("http behavior", () => {
     await withServer({}, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/details-etag`, { method: "PUT", headers: { "content-type": "text/plain" } });
 
-      const first = await fetch(`${baseUrl}/v1/stream/details-etag/_details`);
-      expect(first.status).toBe(200);
-      const etag = first.headers.get("etag");
-      expect(etag).not.toBeNull();
+      const etag = await waitForStableDetailsEtag(baseUrl, "details-etag");
 
       const second = await fetch(`${baseUrl}/v1/stream/details-etag/_details`, {
-        headers: { "if-none-match": etag! },
+        headers: { "if-none-match": etag },
       });
       expect(second.status).toBe(304);
       expect(second.headers.get("etag")).toBe(etag);
@@ -757,13 +772,11 @@ describe("http behavior", () => {
     await withServer({}, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/details-timeout`, { method: "PUT", headers: { "content-type": "text/plain" } });
 
-      const first = await fetch(`${baseUrl}/v1/stream/details-timeout/_details`);
-      const etag = first.headers.get("etag");
-      expect(etag).not.toBeNull();
+      const etag = await waitForStableDetailsEtag(baseUrl, "details-timeout");
 
       const start = Date.now();
       const timedOut = await fetch(`${baseUrl}/v1/stream/details-timeout/_details?live=long-poll&timeout=200ms`, {
-        headers: { "if-none-match": etag! },
+        headers: { "if-none-match": etag },
       });
       expect(timedOut.status).toBe(304);
       expect(Date.now() - start).toBeGreaterThan(150);
@@ -973,14 +986,11 @@ describe("http behavior", () => {
         headers: { "content-type": "text/plain" },
       });
 
-      const first = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details`);
-      expect(first.status).toBe(200);
-      const etag = first.headers.get("etag");
-      expect(etag).not.toBeNull();
+      const etag = await waitForStableDetailsEtag(baseUrl, "details-resolver-timeout");
 
       const start = Date.now();
       const timedOut = await fetch(`${baseUrl}/v1/stream/details-resolver-timeout/_details?live=long-poll&timeout=6s`, {
-        headers: { "if-none-match": etag! },
+        headers: { "if-none-match": etag },
       });
       const elapsed = Date.now() - start;
 
