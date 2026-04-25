@@ -19,6 +19,7 @@ import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
+import { LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS, shouldDeferEnqueuedIndexWork, shouldWaitForLowMemoryIndexQuiet } from "./schedule";
 import type { AggSectionView } from "../search/agg_format";
 import type { ColSectionView } from "../search/col_format";
 import type { ExactSectionView } from "../search/exact_format";
@@ -100,6 +101,7 @@ export class IndexManager {
   private readonly registry?: SchemaRegistryStore;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
+  private firstQueuedAtMs: number | null = null;
 
   constructor(
     cfg: Config,
@@ -161,7 +163,12 @@ export class IndexManager {
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
+    if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
+    if (shouldDeferEnqueuedIndexWork(this.cfg)) {
+      this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+      return;
+    }
     this.scheduleTick();
   }
 
@@ -169,6 +176,16 @@ export class IndexManager {
     if (!this.timer || this.wakeTimer) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null;
+      if (
+        shouldWaitForLowMemoryIndexQuiet(
+          this.cfg,
+          this.firstQueuedAtMs,
+          this.foregroundActivity?.wasActiveWithin(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS) ?? false
+        )
+      ) {
+        this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+        return;
+      }
       if (this.running) {
         this.scheduleTick(250);
         return;
@@ -314,7 +331,12 @@ export class IndexManager {
       this.recordCacheStats();
     } finally {
       this.running = false;
-      if (this.queue.size > 0) this.scheduleTick();
+      if (this.queue.size > 0) {
+        if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
+        this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
+      } else {
+        this.firstQueuedAtMs = null;
+      }
     }
   }
 

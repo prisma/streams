@@ -4,10 +4,10 @@ import { memoryLimitForPreset, tuneForPreset } from "../src/auto_tune";
 describe("auto tune presets", () => {
   test("keeps ingest batch and queue budgets conservative on small presets", () => {
     expect(memoryLimitForPreset(256)).toBe(300);
-    expect(tuneForPreset(256).segmentMaxMiB).toBe(16);
-    expect(tuneForPreset(256).segmentTargetRows).toBe(100_000);
-    expect(tuneForPreset(1024).segmentMaxMiB).toBe(16);
-    expect(tuneForPreset(1024).segmentTargetRows).toBe(100_000);
+    expect(tuneForPreset(256).segmentMaxMiB).toBe(8);
+    expect(tuneForPreset(256).segmentTargetRows).toBe(50_000);
+    expect(tuneForPreset(1024).segmentMaxMiB).toBe(8);
+    expect(tuneForPreset(1024).segmentTargetRows).toBe(50_000);
     expect(tuneForPreset(1024).segmentCacheMb).toBe(0);
     expect(tuneForPreset(1024).indexCheckMs).toBe(3_600_000);
     expect(tuneForPreset(1024).ingestBatchMb).toBe(4);
@@ -16,8 +16,8 @@ describe("auto tune presets", () => {
     expect(tuneForPreset(1024).readConcurrency).toBe(4);
     expect(tuneForPreset(1024).searchConcurrency).toBe(2);
     expect(tuneForPreset(1024).asyncIndexConcurrency).toBe(1);
-    expect(tuneForPreset(1024).segmenterWorkers).toBe(1);
-    expect(tuneForPreset(1024).uploadConcurrency).toBe(2);
+    expect(tuneForPreset(1024).segmenterWorkers).toBe(0);
+    expect(tuneForPreset(1024).uploadConcurrency).toBe(1);
     expect(tuneForPreset(1024).indexBuildConcurrency).toBe(1);
     expect(tuneForPreset(1024).lexiconIndexCacheMb).toBe(32);
     expect(tuneForPreset(1024).searchCompanionBatchSegments).toBe(1);

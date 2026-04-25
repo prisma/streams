@@ -1,6 +1,7 @@
 import { mkdirSync, createWriteStream, type WriteStream } from "node:fs";
 import { dirname, extname } from "node:path";
 import { isMainThread, threadId } from "node:worker_threads";
+import { readLinuxStatusRssBreakdown } from "./runtime_memory";
 
 type BunJscModule = {
   heapStats?: () => unknown;
@@ -174,6 +175,7 @@ export class RuntimeMemorySampler {
         reason,
         data,
         process_memory_usage: process.memoryUsage(),
+        linux_status_rss: readLinuxStatusRssBreakdown(0),
         jsc_heap_stats: await this.readJscHeapStats(),
         jsc_memory_usage: await this.readJscMemoryUsage(),
         memory_subsystems: this.readSubsystems(),

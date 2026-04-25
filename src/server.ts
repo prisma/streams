@@ -6,302 +6,23 @@ import { MockR2Store } from "./objectstore/mock_r2";
 import { R2ObjectStore } from "./objectstore/r2";
 import { bootstrapFromR2 } from "./bootstrap";
 import { initConsoleLogging } from "./util/log";
-import { AUTO_TUNE_PRESETS, memoryLimitForPreset, tuneForPreset, type AutoTuneConfig } from "./auto_tune";
+import { applyAutoTune, AutoTuneApplyError, parseAutoTuneArg } from "./server_auto_tune";
 
 initConsoleLogging();
 
 const args = process.argv.slice(2);
-let autoTuneEnabled = false;
-let autoTuneValueMb: number | null = null;
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === "--auto-tune") {
-    autoTuneEnabled = true;
-    const next = args[i + 1];
-    if (next && !next.startsWith("--") && /^[0-9]+$/.test(next)) {
-      autoTuneValueMb = Number(next);
-    }
-  } else if (arg.startsWith("--auto-tune=")) {
-    autoTuneEnabled = true;
-    const raw = arg.split("=", 2)[1] ?? "";
-    if (raw.trim() !== "") autoTuneValueMb = Number(raw);
-  }
-}
-
-function formatPresetList<T>(presets: number[], selected: number, map: (preset: number) => T, fmt: (val: T) => string): string {
-  return presets
-    .map((preset) => {
-      const value = fmt(map(preset));
-      return preset === selected ? `[${value}]` : value;
-    })
-    .join(", ");
-}
-
-function applyAutoTune(overrideMb: number | null): void {
-  const envMemRaw = process.env.DS_MEMORY_LIMIT_MB;
-  if (overrideMb != null) {
-    if (envMemRaw) {
-      console.error("--auto-tune with a value cannot be used with DS_MEMORY_LIMIT_MB");
+const autoTune = parseAutoTuneArg(args);
+if (autoTune.enabled) {
+  try {
+    applyAutoTune(autoTune.valueMb);
+  } catch (error) {
+    if (error instanceof AutoTuneApplyError) {
+      console.error(error.message);
       process.exit(1);
     }
-  } else if (!envMemRaw) {
-    console.error("--auto-tune requires DS_MEMORY_LIMIT_MB to be set (or pass a value)");
-    process.exit(1);
+    throw error;
   }
-  const memMb = overrideMb != null ? overrideMb : Number(envMemRaw);
-  if (!Number.isFinite(memMb) || memMb <= 0) {
-    const bad = overrideMb != null ? String(overrideMb) : String(envMemRaw);
-    console.error(`invalid DS_MEMORY_LIMIT_MB: ${bad}`);
-    process.exit(1);
-  }
-  if (process.env.DS_MEMORY_LIMIT_BYTES) {
-    console.error("--auto-tune does not allow DS_MEMORY_LIMIT_BYTES; use DS_MEMORY_LIMIT_MB");
-    process.exit(1);
-  }
-
-  const conflictVars = [
-    "DS_SEGMENT_MAX_BYTES",
-    "DS_SEGMENT_TARGET_ROWS",
-    "DS_SEGMENT_CACHE_MAX_BYTES",
-    "DS_INDEX_CHECK_MS",
-    "DS_SQLITE_CACHE_MB",
-    "DS_SQLITE_CACHE_BYTES",
-    "DS_WORKER_SQLITE_CACHE_MB",
-    "DS_WORKER_SQLITE_CACHE_BYTES",
-    "DS_INDEX_RUN_MEM_CACHE_BYTES",
-    "DS_LEXICON_INDEX_CACHE_MAX_BYTES",
-    "DS_INGEST_MAX_BATCH_BYTES",
-    "DS_INGEST_MAX_QUEUE_BYTES",
-    "DS_INGEST_CONCURRENCY",
-    "DS_READ_CONCURRENCY",
-    "DS_SEARCH_CONCURRENCY",
-    "DS_ASYNC_INDEX_CONCURRENCY",
-    "DS_SEARCH_COMPANION_TOC_CACHE_BYTES",
-    "DS_SEARCH_COMPANION_SECTION_CACHE_BYTES",
-    "DS_SEARCH_COMPANION_BATCH_SEGMENTS",
-    "DS_SEARCH_COMPANION_YIELD_BLOCKS",
-  ];
-  const conflicts = conflictVars.filter((v) => process.env[v] != null);
-  if (conflicts.length > 0) {
-    console.error(`--auto-tune cannot be used with manual memory settings: ${conflicts.join(", ")}`);
-    process.exit(1);
-  }
-
-  const presets = [...AUTO_TUNE_PRESETS];
-  const preset = [...presets].reverse().find((v) => v <= memMb);
-  if (!preset) {
-    console.error(`DS_MEMORY_LIMIT_MB=${memMb} is below the minimum preset (256)`);
-    process.exit(1);
-  }
-  const tune: AutoTuneConfig = tuneForPreset(preset);
-
-  const memoryLimitMb = memoryLimitForPreset(preset);
-  process.env.DS_AUTO_TUNE_REQUESTED_MB = String(memMb);
-  process.env.DS_AUTO_TUNE_PRESET_MB = String(preset);
-  process.env.DS_AUTO_TUNE_EFFECTIVE_MEMORY_LIMIT_MB = String(memoryLimitMb);
-  process.env.DS_MEMORY_LIMIT_MB = String(memoryLimitMb);
-  process.env.DS_SEGMENT_MAX_BYTES = String(tune.segmentMaxMiB * 1024 * 1024);
-  process.env.DS_SEGMENT_TARGET_ROWS = String(tune.segmentTargetRows);
-  process.env.DS_SEGMENT_CACHE_MAX_BYTES = String(tune.segmentCacheMb * 1024 * 1024);
-  process.env.DS_INDEX_CHECK_MS = String(tune.indexCheckMs);
-  process.env.DS_SQLITE_CACHE_MB = String(tune.sqliteCacheMb);
-  process.env.DS_WORKER_SQLITE_CACHE_MB = String(tune.workerSqliteCacheMb);
-  process.env.DS_INDEX_RUN_MEM_CACHE_BYTES = String(tune.indexMemMb * 1024 * 1024);
-  process.env.DS_LEXICON_INDEX_CACHE_MAX_BYTES = String(tune.lexiconIndexCacheMb * 1024 * 1024);
-  process.env.DS_SEARCH_COMPANION_TOC_CACHE_BYTES = String(tune.searchCompanionTocCacheMb * 1024 * 1024);
-  process.env.DS_SEARCH_COMPANION_SECTION_CACHE_BYTES = String(tune.searchCompanionSectionCacheMb * 1024 * 1024);
-  process.env.DS_INGEST_MAX_BATCH_BYTES = String(tune.ingestBatchMb * 1024 * 1024);
-  process.env.DS_INGEST_MAX_QUEUE_BYTES = String(tune.ingestQueueMb * 1024 * 1024);
-  process.env.DS_INGEST_CONCURRENCY = String(tune.ingestConcurrency);
-  process.env.DS_READ_CONCURRENCY = String(tune.readConcurrency);
-  process.env.DS_SEARCH_CONCURRENCY = String(tune.searchConcurrency);
-  process.env.DS_ASYNC_INDEX_CONCURRENCY = String(tune.asyncIndexConcurrency);
-  process.env.DS_INDEX_BUILD_CONCURRENCY = String(tune.indexBuildConcurrency);
-  process.env.DS_INDEX_COMPACT_CONCURRENCY = String(tune.indexCompactConcurrency);
-  process.env.DS_SEGMENTER_WORKERS = String(tune.segmenterWorkers);
-  process.env.DS_UPLOAD_CONCURRENCY = String(tune.uploadConcurrency);
-  process.env.DS_SEARCH_COMPANION_BATCH_SEGMENTS = String(tune.searchCompanionBatchSegments);
-  process.env.DS_SEARCH_COMPANION_YIELD_BLOCKS = String(tune.searchCompanionYieldBlocks);
-
-  const presetLine = formatPresetList(presets, preset, (v) => v, (v) => String(v));
-  console.log(`Auto-tuning for memory preset ${presetLine}`);
-  console.log(
-    `DS_MEMORY_LIMIT_MB presets: ${formatPresetList(presets, preset, (p) => memoryLimitForPreset(p), (v) => String(v))}`
-  );
-  console.log(
-    `DS_SEGMENT_MAX_MIB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).segmentMaxMiB,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEGMENT_TARGET_ROWS presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).segmentTargetRows,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEGMENT_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).segmentCacheMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INDEX_CHECK_MS presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).indexCheckMs,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SQLITE_CACHE_MB presets: ${formatPresetList(presets, preset, (p) => tuneForPreset(p).sqliteCacheMb, (v) => String(v))}`
-  );
-  console.log(
-    `DS_WORKER_SQLITE_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).workerSqliteCacheMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INDEX_RUN_MEM_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).indexMemMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_LEXICON_INDEX_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).lexiconIndexCacheMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEARCH_COMPANION_TOC_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).searchCompanionTocCacheMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEARCH_COMPANION_SECTION_CACHE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).searchCompanionSectionCacheMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INGEST_MAX_BATCH_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).ingestBatchMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INGEST_MAX_QUEUE_MB presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).ingestQueueMb,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INGEST_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).ingestConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_READ_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).readConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEARCH_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).searchConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_ASYNC_INDEX_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).asyncIndexConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INDEX_BUILD_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).indexBuildConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_INDEX_COMPACT_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).indexCompactConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEGMENTER_WORKERS presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).segmenterWorkers,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_UPLOAD_CONCURRENCY presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).uploadConcurrency,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEARCH_COMPANION_BATCH_SEGMENTS presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).searchCompanionBatchSegments,
-      (v) => String(v)
-    )}`
-  );
-  console.log(
-    `DS_SEARCH_COMPANION_YIELD_BLOCKS presets: ${formatPresetList(
-      presets,
-      preset,
-      (p) => tuneForPreset(p).searchCompanionYieldBlocks,
-      (v) => String(v)
-    )}`
-  );
 }
-
-if (autoTuneEnabled) applyAutoTune(autoTuneValueMb);
 
 const cfg = loadConfig();
 
@@ -330,7 +51,15 @@ let store;
 if (storeChoice === "local") {
   const memBytesRaw = process.env.DS_MOCK_R2_MAX_INMEM_BYTES;
   const memMbRaw = process.env.DS_MOCK_R2_MAX_INMEM_MB;
+  const putDelayRaw = process.env.DS_MOCK_R2_PUT_DELAY_MS;
+  const getDelayRaw = process.env.DS_MOCK_R2_GET_DELAY_MS;
+  const headDelayRaw = process.env.DS_MOCK_R2_HEAD_DELAY_MS;
+  const listDelayRaw = process.env.DS_MOCK_R2_LIST_DELAY_MS;
   const memBytes = memBytesRaw ? Number(memBytesRaw) : memMbRaw ? Number(memMbRaw) * 1024 * 1024 : null;
+  const putDelayMs = putDelayRaw ? Number(putDelayRaw) : 0;
+  const getDelayMs = getDelayRaw ? Number(getDelayRaw) : 0;
+  const headDelayMs = headDelayRaw ? Number(headDelayRaw) : 0;
+  const listDelayMs = listDelayRaw ? Number(listDelayRaw) : 0;
   if (memBytesRaw && !Number.isFinite(memBytes)) {
     // eslint-disable-next-line no-console
     console.error(`invalid DS_MOCK_R2_MAX_INMEM_BYTES: ${memBytesRaw}`);
@@ -341,13 +70,36 @@ if (storeChoice === "local") {
     console.error(`invalid DS_MOCK_R2_MAX_INMEM_MB: ${memMbRaw}`);
     process.exit(1);
   }
+  for (const [name, value] of [
+    ["DS_MOCK_R2_PUT_DELAY_MS", putDelayMs],
+    ["DS_MOCK_R2_GET_DELAY_MS", getDelayMs],
+    ["DS_MOCK_R2_HEAD_DELAY_MS", headDelayMs],
+    ["DS_MOCK_R2_LIST_DELAY_MS", listDelayMs],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      // eslint-disable-next-line no-console
+      console.error(`invalid ${name}: ${process.env[name]}`);
+      process.exit(1);
+    }
+  }
   const spillDir = process.env.DS_MOCK_R2_SPILL_DIR;
-  store = memBytes != null || spillDir ? new MockR2Store({ maxInMemoryBytes: memBytes ?? undefined, spillDir }) : new MockR2Store();
+  store = new MockR2Store({
+    maxInMemoryBytes: memBytes ?? undefined,
+    spillDir,
+    faults: {
+      putDelayMs,
+      getDelayMs,
+      headDelayMs,
+      listDelayMs,
+    },
+  });
 } else {
   const bucket = process.env.DURABLE_STREAMS_R2_BUCKET;
   const accountId = process.env.DURABLE_STREAMS_R2_ACCOUNT_ID;
   const accessKeyId = process.env.DURABLE_STREAMS_R2_ACCESS_KEY_ID;
   const secretAccessKey = process.env.DURABLE_STREAMS_R2_SECRET_ACCESS_KEY;
+  const endpoint = process.env.DURABLE_STREAMS_R2_ENDPOINT;
+  const region = process.env.DURABLE_STREAMS_R2_REGION;
   if (!bucket || !accountId || !accessKeyId || !secretAccessKey) {
     // eslint-disable-next-line no-console
     console.error("missing R2 env vars: DURABLE_STREAMS_R2_BUCKET, DURABLE_STREAMS_R2_ACCOUNT_ID, DURABLE_STREAMS_R2_ACCESS_KEY_ID, DURABLE_STREAMS_R2_SECRET_ACCESS_KEY");
@@ -358,6 +110,8 @@ if (storeChoice === "local") {
     accountId,
     accessKeyId,
     secretAccessKey,
+    endpoint,
+    region,
   });
 }
 

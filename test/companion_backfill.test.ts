@@ -9,6 +9,7 @@ import { MockR2Store } from "../src/objectstore/mock_r2";
 import { buildDesiredSearchCompanionPlan } from "../src/search/companion_plan";
 import { decodeBundledSegmentCompanionTocResult } from "../src/search/companion_format";
 import { streamHash16Hex } from "../src/util/stream_paths";
+import { LOW_MEMORY_INDEX_ENQUEUE_MAX_DEFER_MS, shouldWaitForLowMemoryIndexQuiet } from "../src/index/schedule";
 
 const STREAM = "backfill";
 
@@ -126,7 +127,91 @@ async function waitForSegment(
   throw new Error(`timeout waiting for segment ${segmentIndex}`);
 }
 
+async function waitForUploadedSegments(app: ReturnType<typeof createApp>, timeoutMs = 10_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = app.deps.db.getStream(STREAM);
+    const uploaded = app.deps.db.countUploadedSegments(STREAM);
+    if (row && uploaded > 0 && row.uploaded_through >= row.sealed_through) return uploaded;
+    await sleep(25);
+  }
+  throw new Error("timeout waiting for uploaded segments");
+}
+
 describe("bundled companions and backfill", () => {
+  test("low-memory enqueue quiet waits are capped so trickle ingest cannot starve backfill", () => {
+    const cfg = {
+      memoryLimitBytes: 1024 * 1024 * 1024,
+      indexCheckIntervalMs: 60_000,
+    };
+    const now = 10_000_000;
+
+    expect(shouldWaitForLowMemoryIndexQuiet(cfg, now - 1_000, true, now)).toBe(true);
+    expect(shouldWaitForLowMemoryIndexQuiet(cfg, now - LOW_MEMORY_INDEX_ENQUEUE_MAX_DEFER_MS, true, now)).toBe(false);
+    expect(shouldWaitForLowMemoryIndexQuiet(cfg, now - 1_000, false, now)).toBe(false);
+    expect(shouldWaitForLowMemoryIndexQuiet({ ...cfg, memoryLimitBytes: 2048 * 1024 * 1024 }, now - 1_000, true, now)).toBe(false);
+  });
+
+  test("low-memory presets defer explicit companion enqueue wakeups to the periodic index tick", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-companion-low-memory-defer-"));
+    const cfg = makeConfig(root, {
+      memoryLimitBytes: 1024 * 1024 * 1024,
+      segmentMaxBytes: 180,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      uploadConcurrency: 1,
+      indexL0SpanSegments: 2,
+      indexCheckIntervalMs: 60_000,
+      segmentCacheMaxBytes: 0,
+      segmentFooterCacheEntries: 0,
+    });
+    const app = createApp(cfg);
+    try {
+      let res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        })
+      );
+      expect([200, 201]).toContain(res.status);
+
+      res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(SCHEMA_V1),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      for (let i = 0; i < 6; i++) {
+        res = await app.fetch(
+          new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              eventTime: `2026-03-25T10:0${i}:00.000Z`,
+              service: i % 2 === 0 ? "api" : "worker",
+              status: 500 + i,
+              why: i % 2 === 0 ? "retry later" : "issuer timeout",
+              pad: "x".repeat(256),
+            }),
+          })
+        );
+        expect(res.status).toBe(204);
+      }
+
+      await waitForUploadedSegments(app);
+      app.deps.indexer?.enqueue(STREAM);
+      await sleep(200);
+
+      expect(app.deps.db.listSearchSegmentCompanions(STREAM)).toHaveLength(0);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test(
     "stores one .cix per sealed segment and backfills existing streams after search config changes",
     async () => {
