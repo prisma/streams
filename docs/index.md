@@ -8,6 +8,8 @@ and tooling.
 
 - [overview.md](./overview.md) — product overview, quick start, package surfaces, and the main
   documentation map
+- [compute-demo.md](./compute-demo.md) — Compute deployment that layers `/studio` and `/generate`
+  on top of the Streams server
 - [live.md](./live.md) — end-to-end guide for the live / touch system and the `/touch/*`
   APIs
 - [live-query-invalidation.md](./live-query-invalidation.md) — SQL query-family matrix for
@@ -30,7 +32,8 @@ and tooling.
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations
 - [architecture.md](./architecture.md) — system architecture and data flow
 - [tiered-index.md](./tiered-index.md) — tiered routing-key index design
-- [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` search indexing model
+- [indexing-architecture.md](./indexing-architecture.md) — current exact + `.col` + `.fts` + `.agg` + `.mblk` search indexing model
+- [aspirational-indexing-architecture.md](./aspirational-indexing-architecture.md) — long-term target indexing architecture, not the shipped model
 - [storage-layout-architecture.md](./storage-layout-architecture.md) — `PSCIX2` bundled companion storage layout and per-family binary section codecs
 - [bundled-companion-and-backfill.md](./bundled-companion-and-backfill.md) — bundled `.cix` companions and async backfill for existing streams
 - [low-latency-reads-under-ingest.md](./low-latency-reads-under-ingest.md) — future architecture for stable `/_search` and `/_aggregate` latency under heavy ingest
@@ -45,6 +48,8 @@ and tooling.
 ## Operations
 
 - [operational-notes.md](./operational-notes.md) — tuning knobs and stall diagnosis
+- [bun-memory-risk.md](./bun-memory-risk.md) — repository policy for risky Bun
+  body, file, and S3 APIs that can retain anon RSS
 - [memory-assumption.md](./memory-assumption.md) — ranked working assumptions for explaining RSS growth from the current memory observability surfaces
 - [recovery-integrity-runbook.md](./recovery-integrity-runbook.md) — recovery steps and correctness checks
 - [segment-performance.md](./segment-performance.md) — segment read-path performance notes

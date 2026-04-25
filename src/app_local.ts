@@ -53,6 +53,10 @@ class LocalIndexLookup implements StreamIndexLookup {
     return null;
   }
 
+  async getExactSegmentCompanion(_stream: string, _segmentIndex: number): Promise<null> {
+    return null;
+  }
+
   async getFtsSegmentCompanion(_stream: string, _segmentIndex: number): Promise<null> {
     return null;
   }

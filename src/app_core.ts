@@ -132,6 +132,12 @@ function searchResponseHeaders(search: SearchResultBatch): HeadersInit {
     "search-scanned-tail-docs": String(search.coverage.scannedTailDocs),
     "search-scanned-tail-time-ms": String(search.coverage.scannedTailTimeMs),
     "search-exact-candidate-time-ms": String(search.coverage.exactCandidateTimeMs),
+    "search-candidate-doc-ids": String(search.coverage.candidateDocIds),
+    "search-decoded-records": String(search.coverage.decodedRecords),
+    "search-json-parse-time-ms": String(search.coverage.jsonParseTimeMs),
+    "search-segment-payload-bytes-fetched": String(search.coverage.segmentPayloadBytesFetched),
+    "search-sort-time-ms": String(search.coverage.sortTimeMs),
+    "search-peak-hits-held": String(search.coverage.peakHitsHeld),
     "search-index-families-used": search.coverage.indexFamiliesUsed.join(","),
   };
 }
@@ -311,9 +317,12 @@ function bodyBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
   return buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+const JSON_TEXT_DECODER = new TextDecoder();
+const JSON_TEXT_ENCODER = new TextEncoder();
+
 function keyBytesFromString(s: string | null): Uint8Array | null {
   if (s == null) return null;
-  return new TextEncoder().encode(s);
+  return JSON_TEXT_ENCODER.encode(s);
 }
 
 function extractRoutingKey(reg: SchemaRegistry, value: any): Result<Uint8Array | null, { message: string }> {
@@ -351,9 +360,14 @@ function configuredExactIndexes(search: SearchConfig | undefined): Array<{ name:
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> {
+function configuredSearchFamilies(search: SearchConfig | undefined): Array<{ family: "exact" | "col" | "fts" | "agg" | "mblk"; fields: string[] }> {
   if (!search) return [];
-  const out: Array<{ family: "col" | "fts" | "agg" | "mblk"; fields: string[] }> = [];
+  const out: Array<{ family: "exact" | "col" | "fts" | "agg" | "mblk"; fields: string[] }> = [];
+  const exactFields = Object.entries(search.fields)
+    .filter(([, field]) => field.exact === true && field.kind !== "text")
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+  if (exactFields.length > 0) out.push({ family: "exact", fields: exactFields });
   const colFields = Object.entries(search.fields)
     .filter(([, field]) => field.column === true)
     .map(([name]) => name)
@@ -524,6 +538,45 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     heapSnapshotPath: cfg.heapSnapshotPath ?? undefined,
   });
   memory.start();
+  let httpAppendGcBytesSinceLast = 0;
+  let httpAppendGcLastMs = 0;
+  const maybeCollectAfterHttpAppend = (bodyBytes: number): void => {
+    if (cfg.memoryLimitBytes <= 0 || bodyBytes <= 0) return;
+    const limit = cfg.memoryLimitBytes;
+    httpAppendGcBytesSinceLast += Math.max(0, Math.floor(bodyBytes));
+    const usage = process.memoryUsage();
+    const smallMemoryPreset = limit <= 1024 * 1024 * 1024;
+    const byteCadence = smallMemoryPreset ? 8 * 1024 * 1024 : 64 * 1024 * 1024;
+    const abovePressureBand =
+      usage.rss > limit * 0.55 ||
+      usage.external > limit * 0.2 ||
+      usage.arrayBuffers > limit * 0.15;
+    if (!abovePressureBand && httpAppendGcBytesSinceLast < byteCadence) return;
+    const now = Date.now();
+    if (now - httpAppendGcLastMs < 1_000) return;
+    const gc = (globalThis as { Bun?: { gc?: (force?: boolean) => void } }).Bun?.gc;
+    if (typeof gc !== "function") return;
+    httpAppendGcLastMs = now;
+    httpAppendGcBytesSinceLast = 0;
+    try {
+      gc(true);
+    } catch {
+      try {
+        gc();
+      } catch {
+        return;
+      }
+    }
+  };
+  const appendResponseHeaders = (headers: HeadersInit = {}): HeadersInit => {
+    if (cfg.memoryLimitBytes > 0 && cfg.memoryLimitBytes <= 1024 * 1024 * 1024) {
+      return withNosniff({
+        ...headers,
+        connection: "close",
+      });
+    }
+    return withNosniff(headers);
+  };
   const ingest = new IngestQueue(cfg, db, stats, backpressure, metrics);
   const notifier = new StreamNotifier();
   const registry = new SchemaRegistryStore(db);
@@ -1068,7 +1121,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     }
     const reg = regRes.value;
     const jsonIngest = resolveJsonIngestCapability(profileRes.value);
-    const text = new TextDecoder().decode(bodyBytes);
+    const text = JSON_TEXT_DECODER.decode(bodyBytes);
     let arr: any;
     try {
       arr = JSON.parse(text);
@@ -1107,7 +1160,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       rows.push({
         routingKey: rkRes.value,
         contentType: "application/json",
-        payload: new TextEncoder().encode(JSON.stringify(value)),
+        payload: JSON_TEXT_ENCODER.encode(JSON.stringify(value)),
       });
     }
     return Result.ok({ rows });
@@ -1331,6 +1384,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         sqlite_shared_total_bytes: sqliteSharedBytes.toString(),
       },
       companion_families: {
+        exact_bytes: String(familyBytes.get("exact") ?? 0n),
         col_bytes: String(familyBytes.get("col") ?? 0n),
         fts_bytes: String(familyBytes.get("fts") ?? 0n),
         agg_bytes: String(familyBytes.get("agg") ?? 0n),
@@ -1866,7 +1920,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           if (regRes.value.routingKey == null) return badRequest("routing key not configured");
           const limitRaw = url.searchParams.get("limit");
           const limit = limitRaw == null ? 100 : Number(limitRaw);
-          if (!Number.isFinite(limit) || limit <= 0 || !Number.isInteger(limit)) return badRequest("invalid limit");
+          if (!Number.isFinite(limit) || limit <= 0 || !Number.isInteger(limit) || limit > 500) return badRequest("invalid limit");
           const after = url.searchParams.get("after");
           const listRes = indexer?.listRoutingKeysResult
             ? await runForeground(() => indexer.listRoutingKeysResult!(stream, after, limit))
@@ -1950,6 +2004,12 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                 scanned_tail_docs: searchRes.value.coverage.scannedTailDocs,
                 scanned_tail_time_ms: searchRes.value.coverage.scannedTailTimeMs,
                 exact_candidate_time_ms: searchRes.value.coverage.exactCandidateTimeMs,
+                candidate_doc_ids: searchRes.value.coverage.candidateDocIds,
+                decoded_records: searchRes.value.coverage.decodedRecords,
+                json_parse_time_ms: searchRes.value.coverage.jsonParseTimeMs,
+                segment_payload_bytes_fetched: searchRes.value.coverage.segmentPayloadBytesFetched,
+                sort_time_ms: searchRes.value.coverage.sortTimeMs,
+                peak_hits_held: searchRes.value.coverage.peakHitsHeld,
                 index_families_used: searchRes.value.coverage.indexFamiliesUsed,
               },
               total: searchRes.value.total,
@@ -2106,7 +2166,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                 };
                 if (existingClosed) headers["stream-closed"] = "true";
                 if (srow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(srow.expires_at_ms)).toISOString();
-                return new Response(null, { status: 200, headers: withNosniff(headers) });
+                return new Response(null, { status: 200, headers: appendResponseHeaders(headers) });
               }
 
               db.ensureStream(stream, { contentType, expiresAtMs, ttlSeconds, closed: false });
@@ -2177,7 +2237,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               };
               if (streamClosed || closedNow) headers["stream-closed"] = "true";
               if (createdRow.expires_at_ms != null) headers["stream-expires-at"] = new Date(Number(createdRow.expires_at_ms)).toISOString();
-              return new Response(null, { status: 201, headers: withNosniff(headers) });
+              return new Response(null, { status: 201, headers: appendResponseHeaders(headers) });
             });
           } finally {
             leaveAppendPhase?.();
@@ -2253,11 +2313,13 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             stream,
             stream_content_type: streamContentType,
           });
+          let appendBodyBytesForGc = 0;
           try {
-            return await runWithGate(ingestGate, async () => {
+            const response = await runWithGate(ingestGate, async () => {
               const ab = await req.arrayBuffer();
               if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
               const bodyBytes = new Uint8Array(ab);
+              appendBodyBytesForGc = bodyBytes.byteLength;
 
               const isCloseOnly = streamClosed && bodyBytes.byteLength === 0;
               if (bodyBytes.byteLength === 0 && !streamClosed) return badRequest("empty body");
@@ -2305,18 +2367,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
                     "stream-next-offset": encodeOffset(srow.epoch, err.lastOffset),
                     "stream-closed": "true",
                   };
-                  return new Response(null, { status: 409, headers: withNosniff(headers) });
+                  return new Response(null, { status: 409, headers: appendResponseHeaders(headers) });
                 }
                 if (err.kind === "producer_stale_epoch") {
                   return new Response(null, {
                     status: 403,
-                    headers: withNosniff({ "producer-epoch": String(err.producerEpoch) }),
+                    headers: appendResponseHeaders({ "producer-epoch": String(err.producerEpoch) }),
                   });
                 }
                 if (err.kind === "producer_gap") {
                   return new Response(null, {
                     status: 409,
-                    headers: withNosniff({
+                    headers: appendResponseHeaders({
                       "producer-expected-seq": String(err.expected),
                       "producer-received-seq": String(err.received),
                     }),
@@ -2348,8 +2410,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               }
 
               const status = producer && res.appendedRows > 0 ? 200 : 204;
-              return new Response(null, { status, headers: withNosniff(headers) });
+              return new Response(null, { status, headers: appendResponseHeaders(headers) });
             });
+            maybeCollectAfterHttpAppend(appendBodyBytesForGc);
+            return response;
           } finally {
             leaveAppendPhase?.();
           }

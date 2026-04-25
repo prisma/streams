@@ -1,6 +1,8 @@
 export type AutoTuneConfig = {
   segmentMaxMiB: number;
   segmentTargetRows: number;
+  segmentCacheMb: number;
+  indexCheckMs: number;
   sqliteCacheMb: number;
   workerSqliteCacheMb: number;
   indexMemMb: number;
@@ -29,12 +31,17 @@ export function memoryLimitForPreset(preset: number): number {
 
 export function tuneForPreset(p: number): AutoTuneConfig {
   return {
-    // Segment geometry is fixed across presets. Smaller hosts still scale
-    // concurrency and cache budgets down, but they keep the same 16 MiB /
-    // 100k-row seal thresholds so upload throughput is not dominated by many
-    // tiny compressed segment objects.
-    segmentMaxMiB: 16,
-    segmentTargetRows: 100_000,
+    // <=1 GiB hosts need smaller cut units because segment build/compression
+    // can transiently hold several encoded copies of the candidate rows.
+    segmentMaxMiB: p <= 1024 ? 8 : 16,
+    segmentTargetRows: p <= 1024 ? 50_000 : 100_000,
+    // The 1 GiB Compute host only has about 685 MiB of usable RSS after the
+    // platform clamp, so it cannot afford a persistent 256 MiB local segment
+    // cache on top of active ingest and background reads.
+    segmentCacheMb: p >= 2048 ? 256 : 0,
+    // Small hosts defer background sweeps so routing/exact backfill does not
+    // immediately start re-reading uploaded history during a large ingest burst.
+    indexCheckMs: p >= 2048 ? 1_000 : 3_600_000,
     sqliteCacheMb: Math.max(8, Math.floor(p / 16)),
     workerSqliteCacheMb: Math.max(8, Math.min(32, Math.floor(p / 128))),
     indexMemMb: Math.max(4, Math.floor(p / 64)),
@@ -54,8 +61,8 @@ export function tuneForPreset(p: number): AutoTuneConfig {
     // to overlap aggressively under the GH Archive "all" workload.
     indexBuildConcurrency: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
     indexCompactConcurrency: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    segmenterWorkers: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
-    uploadConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 1024 ? 2 : 1,
+    segmenterWorkers: p >= 8192 ? 4 : p >= 4096 ? 2 : p >= 2048 ? 1 : 0,
+    uploadConcurrency: p >= 8192 ? 8 : p >= 4096 ? 4 : p >= 2048 ? 2 : 1,
     searchCompanionBatchSegments: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
     searchCompanionYieldBlocks: p >= 8192 ? 4 : p >= 4096 ? 2 : 1,
   };

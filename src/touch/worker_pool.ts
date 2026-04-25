@@ -1,8 +1,8 @@
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { Result } from "better-result";
 import type { Config } from "../config";
 import { detectHostRuntime } from "../runtime/host_runtime.ts";
+import { resolveWorkerModuleUrl } from "../compute/worker_module_url";
 import type { ProcessRequest, ProcessResult, WorkerMessage } from "./worker_protocol";
 import { dsError } from "../util/ds_error.ts";
 
@@ -114,7 +114,7 @@ export class TouchProcessorWorkerPool {
   }
 
   private spawnWorker(idx: number, generation: number = this.generation): void {
-    const workerSpec = fileURLToPath(new URL("./processor_worker.ts", import.meta.url));
+    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./processor_worker.ts", "../touch/processor_worker.js");
 
     const worker = new Worker(workerSpec, {
       workerData: { config: this.cfg, hostRuntime: detectHostRuntime() },

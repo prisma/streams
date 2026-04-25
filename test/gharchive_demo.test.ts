@@ -408,7 +408,7 @@ describe("gharchive demo", () => {
         expect(Object.keys(exactDetails.schema.search.fields).sort()).toEqual(["actorLogin", "eventTime"]);
         expect(exactDetails.index_status.exact_indexes).toHaveLength(1);
         expect(exactDetails.index_status.exact_indexes[0].name).toBe("actorLogin");
-        expect(exactDetails.index_status.search_families).toEqual([]);
+        expect(exactDetails.index_status.search_families.map((entry: { family: string }) => entry.family)).toEqual(["exact"]);
 
         const ftsDetailsRes = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(ftsStream)}/_details`, { method: "GET" })

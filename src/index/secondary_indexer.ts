@@ -16,6 +16,7 @@ import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
+import { LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS, shouldDeferEnqueuedIndexWork, shouldWaitForLowMemoryIndexQuiet } from "./schedule";
 import { binaryFuseContains, buildBinaryFuseResult } from "./binary_fuse";
 import { IndexRunCache } from "./run_cache";
 import {
@@ -74,12 +75,14 @@ export class SecondaryIndexManager {
   private readonly compacting = new Set<string>();
   private readonly streamIdleTicks = new Map<string, { logicalSizeBytes: bigint; nextOffset: bigint; flatTicks: number }>();
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
+  private firstQueuedAtMs: number | null = null;
 
   constructor(
     cfg: Config,
@@ -135,13 +138,44 @@ export class SecondaryIndexManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
     this.streamIdleTicks.clear();
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
+    if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
+    if (shouldDeferEnqueuedIndexWork(this.cfg)) {
+      this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+      return;
+    }
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (
+        shouldWaitForLowMemoryIndexQuiet(
+          this.cfg,
+          this.firstQueuedAtMs,
+          this.foregroundActivity?.wasActiveWithin(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS) ?? false
+        )
+      ) {
+        this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+        return;
+      }
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async candidateSegmentsForSecondaryIndex(
@@ -271,6 +305,12 @@ export class SecondaryIndexManager {
       }
     } finally {
       this.running = false;
+      if (this.queue.size > 0) {
+        if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
+        this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
+      } else {
+        this.firstQueuedAtMs = null;
+      }
     }
   }
 

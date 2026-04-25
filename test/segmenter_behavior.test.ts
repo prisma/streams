@@ -207,4 +207,65 @@ describe("segmenter behavior", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("clamps the compression-aware byte target at 5x base target under extreme compression", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-segmenter-comp-clamp-"));
+    try {
+      const cfg = {
+        ...loadConfig(),
+        rootDir: root,
+        dbPath: `${root}/wal.sqlite`,
+        port: 0,
+        segmentCheckIntervalMs: 5,
+        segmentMaxBytes: 1024,
+        segmentTargetRows: 10_000,
+      };
+      const db = new SqliteDurableStore(cfg.dbPath);
+      db.ensureStream("compressed", { contentType: "application/octet-stream" });
+
+      for (let i = 0; i < 8; i++) {
+        db.commitSealedSegment({
+          segmentId: `hist-${i}`,
+          stream: "compressed",
+          segmentIndex: i,
+          startOffset: BigInt(i),
+          endOffset: BigInt(i),
+          blockCount: 1,
+          lastAppendMs: BigInt(i + 1),
+          payloadBytes: 10_000n,
+          sizeBytes: 100,
+          localPath: join(root, `hist-${i}.bin`),
+          rowsSealed: 1n,
+        });
+      }
+
+      const payload = new Uint8Array([7]);
+      const append = db.appendWalRows({
+        stream: "compressed",
+        startOffset: 8n,
+        baseAppendMs: 100n,
+        rows: Array.from({ length: 6_000 }, (_, i) => ({
+          routingKey: null,
+          contentType: null,
+          payload,
+          appendMs: BigInt(100 + i),
+        })),
+      });
+      expect(Result.isOk(append)).toBe(true);
+
+      const segmenter = new Segmenter(cfg, db, { candidatesPerTick: 1 });
+      segmenter.start();
+      await waitFor(() => (db.getStream("compressed")?.sealed_through ?? -1n) >= 5_127n);
+      segmenter.stop();
+
+      const seg = db.getSegmentByIndex("compressed", 8);
+      expect(seg).not.toBeNull();
+      expect(seg?.end_offset).toBe(5_127n);
+      expect(seg?.payload_bytes).toBe(5_120n);
+      expect(db.getStream("compressed")?.sealed_through).toBe(5_127n);
+      db.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

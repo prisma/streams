@@ -75,6 +75,26 @@ async function appendRepoBatchEvents(
 }
 
 describe("routing key lexicon", () => {
+  test("rejects routing key list limits above the documented maximum", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-routing-lexicon-limit-"));
+    const { app } = createProfileTestApp(root, {
+      metricsFlushIntervalMs: 0,
+    });
+    try {
+      const stream = "routing-lexicon-limit";
+      await createRoutedJsonStream(app, stream);
+
+      const res = await fetchJsonApp(app, `http://local/v1/stream/${encodeURIComponent(stream)}/_routing_keys?limit=501`, {
+        method: "GET",
+      });
+      expect(res.status).toBe(400);
+      expect(res.body?.error?.message).toBe("invalid limit");
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("lists routing keys completely before the first lexicon run exists", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-routing-lexicon-fallback-"));
     const { app, store } = createProfileTestApp(root, {

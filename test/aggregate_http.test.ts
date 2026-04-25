@@ -120,8 +120,10 @@ async function waitForUploadedWithoutCompanions(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
-    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
-    if (srow && srow.uploaded_through >= 0n && companionSegments.length === 0) return;
+    if (srow && srow.uploaded_through >= 0n) {
+      app.deps.db.deleteSearchSegmentCompanions(STREAM);
+      if (app.deps.db.listSearchSegmentCompanions(STREAM).length === 0) return;
+    }
     await sleep(50);
   }
   throw new Error("timeout waiting for uploaded uncompanioned prefix");
@@ -208,7 +210,7 @@ describe("_aggregate http", () => {
         );
         expect(res.status).toBe(200);
         let indexStatus = await res.json();
-        expect(indexStatus.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts"]);
+        expect(indexStatus.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "exact", "fts"]);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_aggregate`, {
@@ -357,7 +359,7 @@ describe("_aggregate http", () => {
         );
         expect(res.status).toBe(200);
         const details = await res.json();
-        expect(details.index_status.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts"]);
+        expect(details.index_status.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "exact", "fts"]);
 
         res = await app.fetch(
           new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_aggregate`, {

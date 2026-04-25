@@ -7,105 +7,103 @@ type Entry = {
   type: string;
 };
 
-class FakeS3File {
-  constructor(
-    private readonly client: FakeS3Client,
-    private readonly key: string,
-    private readonly range?: { begin?: number; end?: number }
-  ) {}
+const TEXT_ENCODER = new TextEncoder();
+const originalFetch = globalThis.fetch;
+const entries = new Map<string, Entry>();
+const requests: Request[] = [];
 
-  async exists(): Promise<boolean> {
-    this.client.existsCalls += 1;
-    return this.client.entries.has(this.key);
-  }
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
 
-  slice(begin?: number, end?: number): FakeS3File {
-    return new FakeS3File(this.client, this.key, { begin, end });
-  }
+function objectKeyFromUrl(url: URL): string {
+  const parts = url.pathname.split("/").filter(Boolean);
+  return parts.slice(1).map(decodeURIComponent).join("/");
+}
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    this.client.arrayBufferCalls += 1;
-    const entry = this.client.entries.get(this.key);
-    if (!entry) throw new Error("missing");
-    const start = this.range?.begin ?? 0;
-    const end = this.range?.end ?? entry.data.byteLength;
-    const sliced = entry.data.slice(start, end);
-    return sliced.buffer.slice(sliced.byteOffset, sliced.byteOffset + sliced.byteLength);
-  }
+function etagFor(key: string): string {
+  return `"etag-${key}"`;
+}
 
-  async write(data: Uint8Array | Blob, opts?: { type?: string }): Promise<number> {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(await data.arrayBuffer());
-    this.client.entries.set(this.key, {
+async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const req = new Request(input, init);
+  requests.push(req);
+  expect(req.headers.get("authorization")).toStartWith("AWS4-HMAC-SHA256 ");
+  expect(req.headers.get("x-amz-date")).not.toBeNull();
+  expect(req.headers.get("x-amz-content-sha256")).not.toBeNull();
+
+  const url = new URL(req.url);
+  const key = objectKeyFromUrl(url);
+  if (req.method === "PUT") {
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    entries.set(key, {
       data: bytes,
-      etag: `"etag-${this.key}"`,
-      type: opts?.type ?? "",
+      etag: etagFor(key),
+      type: req.headers.get("content-type") ?? "",
     });
-    return bytes.byteLength;
+    return new Response(null, { status: 200, headers: { etag: etagFor(key) } });
   }
-
-  async stat(): Promise<{ size: number; etag: string; type: string; lastModified: Date }> {
-    const entry = this.client.entries.get(this.key);
-    if (!entry) throw new Error("missing");
-    return {
-      size: entry.data.byteLength,
-      etag: entry.etag,
-      type: entry.type,
-      lastModified: new Date(),
-    };
+  if (req.method === "HEAD") {
+    const entry = entries.get(key);
+    if (!entry) return new Response(null, { status: 404 });
+    return new Response(null, {
+      status: 200,
+      headers: {
+        etag: entry.etag,
+        "content-length": String(entry.data.byteLength),
+        "content-type": entry.type,
+      },
+    });
   }
-
-  async delete(): Promise<void> {
-    this.client.entries.delete(this.key);
+  if (req.method === "GET" && url.searchParams.get("list-type") === "2") {
+    const prefix = url.searchParams.get("prefix") ?? "";
+    const keys = [...entries.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const body = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      "<ListBucketResult>",
+      "<IsTruncated>false</IsTruncated>",
+      ...keys.map((k) => `<Contents><Key>${xmlEscape(k)}</Key></Contents>`),
+      "</ListBucketResult>",
+    ].join("");
+    return new Response(TEXT_ENCODER.encode(body), { status: 200 });
   }
+  if (req.method === "GET") {
+    const entry = entries.get(key);
+    if (!entry) return new Response(null, { status: 404 });
+    const range = req.headers.get("range");
+    if (range) {
+      const match = range.match(/^bytes=(\d+)-(\d*)$/);
+      if (!match) return new Response(null, { status: 416 });
+      const start = Number(match[1]);
+      const end = match[2] ? Number(match[2]) : entry.data.byteLength - 1;
+      return new Response(entry.data.slice(start, Math.min(end + 1, entry.data.byteLength)), { status: 206 });
+    }
+    return new Response(entry.data.slice(), { status: 200 });
+  }
+  if (req.method === "DELETE") {
+    entries.delete(key);
+    return new Response(null, { status: 204 });
+  }
+  return new Response(null, { status: 405 });
 }
-
-class FakeS3Client {
-  static instances: FakeS3Client[] = [];
-
-  readonly entries = new Map<string, Entry>();
-  readonly options: Record<string, unknown> | undefined;
-  existsCalls = 0;
-  arrayBufferCalls = 0;
-
-  constructor(options?: Record<string, unknown>) {
-    this.options = options;
-    FakeS3Client.instances.push(this);
-  }
-
-  file(path: string): FakeS3File {
-    return new FakeS3File(this, path);
-  }
-
-  async list(input?: { prefix?: string; continuationToken?: string }): Promise<{
-    contents: Array<{ key: string }>;
-    isTruncated: boolean;
-    nextContinuationToken?: string;
-  }> {
-    const filtered = [...this.entries.keys()].filter((key) => (input?.prefix ? key.startsWith(input.prefix) : true)).sort();
-    const start = input?.continuationToken ? Number(input.continuationToken) : 0;
-    const page = filtered.slice(start, start + 2);
-    const next = start + page.length;
-    return {
-      contents: page.map((key) => ({ key })),
-      isTruncated: next < filtered.length,
-      nextContinuationToken: next < filtered.length ? String(next) : undefined,
-    };
-  }
-}
-
-const originalS3Client = Bun.S3Client;
 
 describe("R2ObjectStore", () => {
   beforeEach(() => {
-    FakeS3Client.instances = [];
-    (Bun as any).S3Client = FakeS3Client;
+    entries.clear();
+    requests.length = 0;
+    globalThis.fetch = fakeFetch;
   });
 
   afterEach(() => {
-    (Bun as any).S3Client = originalS3Client;
+    globalThis.fetch = originalFetch;
   });
 
-  test("uses Bun.S3Client for R2 reads and writes", async () => {
+  test("uses signed fetch requests for R2 reads and writes", async () => {
     const store = new R2ObjectStore({
       accountId: "acct",
       bucket: "bucket",
@@ -113,16 +111,8 @@ describe("R2ObjectStore", () => {
       secretAccessKey: "secret",
     });
 
-    const client = FakeS3Client.instances[0];
-    expect(client?.options).toMatchObject({
-      bucket: "bucket",
-      accessKeyId: "key",
-      secretAccessKey: "secret",
-      region: "auto",
-      endpoint: "https://acct.r2.cloudflarestorage.com",
-    });
-
     await store.put("streams/a", new Uint8Array([1, 2, 3]), { contentType: "application/octet-stream" });
+    expect(requests[0]?.url).toBe("https://acct.r2.cloudflarestorage.com/bucket/streams/a");
 
     expect(await store.head("streams/a")).toEqual({
       etag: "etag-streams/a",
@@ -136,7 +126,21 @@ describe("R2ObjectStore", () => {
     expect(await store.get("streams/a")).toBeNull();
   });
 
-  test("get handles missing objects from the GET itself without an exists preflight", async () => {
+  test("supports custom S3-compatible endpoints for local R2-path stress tests", async () => {
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      accessKeyId: "key",
+      secretAccessKey: "secret",
+      endpoint: "http://127.0.0.1:9000",
+      region: "us-east-1",
+    });
+
+    await store.put("streams/a", new Uint8Array([1]));
+    expect(requests[0]?.url).toBe("http://127.0.0.1:9000/bucket/streams/a");
+  });
+
+  test("get handles missing objects", async () => {
     const store = new R2ObjectStore({
       accountId: "acct",
       bucket: "bucket",
@@ -144,10 +148,7 @@ describe("R2ObjectStore", () => {
       secretAccessKey: "secret",
     });
 
-    const client = FakeS3Client.instances[0]!;
     expect(await store.get("streams/missing")).toBeNull();
-    expect(client.existsCalls).toBe(0);
-    expect(client.arrayBufferCalls).toBe(1);
   });
 
   test("paginates list results", async () => {
@@ -159,11 +160,10 @@ describe("R2ObjectStore", () => {
       region: "auto",
     });
 
-    const client = FakeS3Client.instances[0]!;
-    client.entries.set("streams/a", { data: new Uint8Array([1]), etag: '"a"', type: "application/octet-stream" });
-    client.entries.set("streams/b", { data: new Uint8Array([2]), etag: '"b"', type: "application/octet-stream" });
-    client.entries.set("streams/c", { data: new Uint8Array([3]), etag: '"c"', type: "application/octet-stream" });
-    client.entries.set("other/d", { data: new Uint8Array([4]), etag: '"d"', type: "application/octet-stream" });
+    entries.set("streams/a", { data: new Uint8Array([1]), etag: '"a"', type: "application/octet-stream" });
+    entries.set("streams/b", { data: new Uint8Array([2]), etag: '"b"', type: "application/octet-stream" });
+    entries.set("streams/c", { data: new Uint8Array([3]), etag: '"c"', type: "application/octet-stream" });
+    entries.set("other/d", { data: new Uint8Array([4]), etag: '"d"', type: "application/octet-stream" });
 
     expect(await store.list("streams/")).toEqual(["streams/a", "streams/b", "streams/c"]);
   });

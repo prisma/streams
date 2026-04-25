@@ -16,6 +16,7 @@ import { yieldToEventLoop } from "../util/yield";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
 import { LexiconFileCache } from "./lexicon_file_cache";
+import { LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS, shouldDeferEnqueuedIndexWork, shouldWaitForLowMemoryIndexQuiet } from "./schedule";
 import {
   buildLexiconRunPayload,
   decodeLexiconRunResult,
@@ -92,7 +93,9 @@ export class LexiconIndexManager {
   private readonly building = new Set<string>();
   private readonly compacting = new Set<string>();
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
+  private firstQueuedAtMs: number | null = null;
 
   constructor(
     private readonly cfg: Config,
@@ -135,13 +138,44 @@ export class LexiconIndexManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
     this.fileCache?.clearMapped();
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
+    if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
+    if (shouldDeferEnqueuedIndexWork(this.cfg)) {
+      this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+      return;
+    }
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (
+        shouldWaitForLowMemoryIndexQuiet(
+          this.cfg,
+          this.firstQueuedAtMs,
+          this.foregroundActivity?.wasActiveWithin(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS) ?? false
+        )
+      ) {
+        this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+        return;
+      }
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   getLocalCacheBytes(stream: string): number {
@@ -253,6 +287,12 @@ export class LexiconIndexManager {
       }
     } finally {
       this.running = false;
+      if (this.queue.size > 0) {
+        if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
+        this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
+      } else {
+        this.firstQueuedAtMs = null;
+      }
     }
   }
 

@@ -17,6 +17,7 @@ import { dsError } from "../util/ds_error.ts";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
+import { LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS, shouldDeferEnqueuedIndexWork, shouldWaitForLowMemoryIndexQuiet } from "../index/schedule";
 import { retry } from "../util/retry";
 import { yieldToEventLoop } from "../util/yield";
 import { searchCompanionObjectKey, streamHash16Hex } from "../util/stream_paths";
@@ -39,10 +40,12 @@ import { CompanionFileCache } from "./companion_file_cache";
 import type { ColFieldInput, ColScalar, ColSectionInput, ColSectionView } from "./col_format";
 import {
   analyzeTextValue,
+  canonicalizeExactValue,
   canonicalizeColumnValue,
   extractRawSearchValuesForFieldsResult,
   normalizeKeywordValue,
 } from "./schema";
+import type { ExactFieldInput, ExactSectionInput, ExactSectionView } from "./exact_format";
 import type { FtsFieldInput, FtsSectionInput, FtsSectionView, FtsTermInput } from "./fts_format";
 import { buildMetricsBlockRecord } from "../profiles/metrics/normalize";
 import type { MetricsBlockSectionInput, MetricsBlockSectionView } from "../profiles/metrics/block_format";
@@ -76,6 +79,11 @@ type FtsFieldBuilder = {
   companion: FtsFieldInput;
 };
 
+type ExactFieldBuilder = {
+  config: SearchFieldConfig;
+  companion: ExactFieldInput;
+};
+
 type GroupBuilder = {
   key: string;
   measures: Record<string, AggMeasureState>;
@@ -99,6 +107,9 @@ type CompanionBuildProgress = {
   docCount: number;
   colFields: number;
   colValues: number;
+  exactFields: number;
+  exactTerms: number;
+  exactPostings: number;
   ftsFields: number;
   ftsTerms: number;
   ftsPostings: number;
@@ -166,10 +177,26 @@ function parseSectionKinds(row: SearchSegmentCompanionRow): Set<CompanionSection
     const parsed = JSON.parse(row.sections_json);
     if (!Array.isArray(parsed)) return new Set();
     return new Set(
-      parsed.filter((value): value is CompanionSectionKind => value === "col" || value === "fts" || value === "agg" || value === "mblk")
+      parsed.filter(
+        (value): value is CompanionSectionKind => value === "exact" || value === "col" || value === "fts" || value === "agg" || value === "mblk"
+      )
     );
   } catch {
     return new Set();
+  }
+}
+
+function parseSectionSizes(row: SearchSegmentCompanionRow): Record<string, number> {
+  try {
+    const parsed = JSON.parse(row.section_sizes_json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [kind, size] of Object.entries(parsed)) {
+      if (typeof size === "number" && Number.isFinite(size) && size > 0) out[kind] = size;
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
 
@@ -177,13 +204,20 @@ export class SearchCompanionManager {
   private readonly queue = new Set<string>();
   private readonly building = new Set<string>();
   private readonly fileCache: CompanionFileCache;
+  private readonly decodedSectionCache = new Map<
+    string,
+    { bytes: number; companion: CompanionSectionMap[CompanionSectionKind] }
+  >();
+  private decodedSectionCacheBytes = 0;
   private readonly segmentCache?: SegmentDiskCache;
   private readonly yieldBlocks: number;
   private readonly memorySampler?: RuntimeMemorySampler;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
+  private firstQueuedAtMs: number | null = null;
 
   constructor(
     private readonly cfg: Config,
@@ -228,16 +262,51 @@ export class SearchCompanionManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
     this.fileCache.clearMapped();
   }
 
   enqueue(stream: string): void {
+    if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
+    if (shouldDeferEnqueuedIndexWork(this.cfg)) {
+      this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+      return;
+    }
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (
+        shouldWaitForLowMemoryIndexQuiet(
+          this.cfg,
+          this.firstQueuedAtMs,
+          this.foregroundActivity?.wasActiveWithin(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS) ?? false
+        )
+      ) {
+        this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+        return;
+      }
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null> {
     return (await this.getSectionCompanion(stream, segmentIndex, "col")) ?? null;
+  }
+
+  async getExactSegmentCompanion(stream: string, segmentIndex: number): Promise<ExactSectionView | null> {
+    return (await this.getSectionCompanion(stream, segmentIndex, "exact")) ?? null;
   }
 
   async getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null> {
@@ -303,6 +372,9 @@ export class SearchCompanionManager {
       const row = this.db.getSearchSegmentCompanion(stream, segmentIndex);
       if (!row || row.plan_generation !== planRow.generation) return { companion: null, stats: { sectionGetMs, decodeMs } };
       if (!parseSectionKinds(row).has(kind)) return { companion: null, stats: { sectionGetMs, decodeMs } };
+      const cacheKey = this.decodedSectionCacheKey(row, kind);
+      const cached = this.getDecodedSectionCache(cacheKey);
+      if (cached) return { companion: cached as CompanionSectionMap[K], stats: { sectionGetMs, decodeMs } };
       const sectionStartedAt = Date.now();
       const bundle = await this.loadBundleResult(row);
       if (Result.isError(bundle)) throw dsError(bundle.error.message);
@@ -315,9 +387,47 @@ export class SearchCompanionManager {
       const decoded = decodeCompanionSectionPayloadResult(kind, sectionBytes.value, plan.value);
       if (Result.isError(decoded)) throw dsError(decoded.error.message);
       decodeMs = Date.now() - decodeStartedAt;
+      this.setDecodedSectionCache(cacheKey, decoded.value ?? null, parseSectionSizes(row)[kind] ?? sectionBytes.value.byteLength);
       return { companion: decoded.value ?? null, stats: { sectionGetMs, decodeMs } };
     } finally {
       leave?.();
+    }
+  }
+
+  private decodedSectionCacheKey(row: SearchSegmentCompanionRow, kind: CompanionSectionKind): string {
+    return `${row.object_key}:${row.plan_generation}:${kind}`;
+  }
+
+  private getDecodedSectionCache(key: string): CompanionSectionMap[CompanionSectionKind] | null {
+    const entry = this.decodedSectionCache.get(key);
+    if (!entry) return null;
+    this.decodedSectionCache.delete(key);
+    this.decodedSectionCache.set(key, entry);
+    return entry.companion;
+  }
+
+  private setDecodedSectionCache(
+    key: string,
+    companion: CompanionSectionMap[CompanionSectionKind] | null,
+    bytes: number
+  ): void {
+    const budget = Math.max(0, this.cfg.searchCompanionSectionCacheBytes);
+    if (budget <= 0 || companion == null) return;
+    const safeBytes = Math.max(1, Math.ceil(bytes));
+    if (safeBytes > budget) return;
+    const existing = this.decodedSectionCache.get(key);
+    if (existing) {
+      this.decodedSectionCacheBytes -= existing.bytes;
+      this.decodedSectionCache.delete(key);
+    }
+    this.decodedSectionCache.set(key, { bytes: safeBytes, companion });
+    this.decodedSectionCacheBytes += safeBytes;
+    while (this.decodedSectionCacheBytes > budget) {
+      const oldestKey = this.decodedSectionCache.keys().next().value;
+      if (oldestKey == null) break;
+      const oldest = this.decodedSectionCache.get(oldestKey);
+      this.decodedSectionCache.delete(oldestKey);
+      this.decodedSectionCacheBytes -= oldest?.bytes ?? 0;
     }
   }
 
@@ -412,6 +522,12 @@ export class SearchCompanionManager {
       }
     } finally {
       this.running = false;
+      if (this.queue.size > 0) {
+        if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
+        this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
+      } else {
+        this.firstQueuedAtMs = null;
+      }
     }
   }
 
@@ -618,6 +734,7 @@ export class SearchCompanionManager {
     leaveLoad?.();
     if (Result.isError(bytesRes)) return bytesRes;
     const segmentBytes = bytesRes.value;
+    const exactBuilders = plan.families.exact ? this.createExactBuilders(registry) : new Map<string, ExactFieldBuilder>();
     const colBuilders = plan.families.col ? this.createColBuilders(registry) : new Map<string, ColumnFieldBuilder>();
     const ftsBuilders = plan.families.fts ? this.createFtsBuilders(registry) : new Map<string, FtsFieldBuilder>();
     const aggBuildersRes = plan.families.agg ? this.createAggRollupBuildersResult(registry) : Result.ok(new Map<string, AggRollupBuilder>());
@@ -627,6 +744,7 @@ export class SearchCompanionManager {
       ? { records: [], minWindowStartMs: undefined, maxWindowEndMs: undefined }
       : null;
     const requiredFieldNames = new Set<string>();
+    for (const fieldName of exactBuilders.keys()) requiredFieldNames.add(fieldName);
     for (const fieldName of colBuilders.keys()) requiredFieldNames.add(fieldName);
     for (const fieldName of ftsBuilders.keys()) requiredFieldNames.add(fieldName);
     for (const builder of aggBuilders.values()) {
@@ -647,6 +765,9 @@ export class SearchCompanionManager {
         rawSearchValues = rawValuesRes.value;
       }
       if (rawSearchValues) {
+        const leaveExact = this.memorySampler?.enter("companion_record_exact", { doc_count: docCount });
+        this.recordExactBuilders(exactBuilders, rawSearchValues, docCount);
+        leaveExact?.();
         const leaveCol = this.memorySampler?.enter("companion_record_col", { doc_count: docCount });
         this.recordColBuilders(colBuilders, rawSearchValues, docCount);
         leaveCol?.();
@@ -680,7 +801,7 @@ export class SearchCompanionManager {
         this.memorySampler.capture("companion_progress", {
           stream: seg.stream,
           segment_index: seg.segment_index,
-          ...this.summarizeCompanionBuildProgress(colBuilders, ftsBuilders, aggBuilders, metricsBuilder, docCount + 1),
+          ...this.summarizeCompanionBuildProgress(exactBuilders, colBuilders, ftsBuilders, aggBuilders, metricsBuilder, docCount + 1),
         });
       }
       return Result.ok(undefined);
@@ -700,6 +821,16 @@ export class SearchCompanionManager {
       sectionSizes[kind] = payload.payload.byteLength;
     };
 
+    if (plan.families.exact) {
+      const leaveExactEncode = this.memorySampler?.enter("companion_encode_exact", {
+        stream: seg.stream,
+        segment_index: seg.segment_index,
+        doc_count: docCountRes.value,
+      });
+      addSection(encodeCompanionSectionPayload("exact", this.finalizeExactSection(exactBuilders, docCountRes.value), plan));
+      exactBuilders.clear();
+      leaveExactEncode?.();
+    }
     if (plan.families.col) {
       const leaveColEncode = this.memorySampler?.enter("companion_encode_col", {
         stream: seg.stream,
@@ -778,6 +909,49 @@ export class SearchCompanionManager {
       builders.set(fieldName, { config: field, kind: field.kind, docIds: [], values: [], invalid: false });
     }
     return builders;
+  }
+
+  private createExactBuilders(registry: SchemaRegistry): Map<string, ExactFieldBuilder> {
+    const builders = new Map<string, ExactFieldBuilder>();
+    for (const [fieldName, field] of Object.entries(registry.search?.fields ?? {}).sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (field.exact !== true || field.kind === "text") continue;
+      builders.set(fieldName, {
+        config: field,
+        companion: {
+          kind: field.kind,
+          exists_docs: [],
+          terms: Object.create(null) as Record<string, number[]>,
+        },
+      });
+    }
+    return builders;
+  }
+
+  private recordExactBuilders(builders: Map<string, ExactFieldBuilder>, rawSearchValues: Map<string, unknown[]>, docCount: number): void {
+    for (const [fieldName, builder] of builders) {
+      const fieldCompanion = builder.companion;
+      let hasValue = false;
+      for (const rawValue of rawSearchValues.get(fieldName) ?? []) {
+        const canonical = canonicalizeExactValue(builder.config, rawValue);
+        if (canonical == null) continue;
+        hasValue = true;
+        const postings = fieldCompanion.terms[canonical] ?? [];
+        if (postings.length === 0 || postings[postings.length - 1] !== docCount) postings.push(docCount);
+        fieldCompanion.terms[canonical] = postings;
+      }
+      if (hasValue) fieldCompanion.exists_docs.push(docCount);
+    }
+  }
+
+  private finalizeExactSection(builders: Map<string, ExactFieldBuilder>, docCount: number): ExactSectionInput {
+    const orderedFields = Object.create(null) as Record<string, ExactFieldInput>;
+    for (const [fieldName, builder] of Array.from(builders.entries()).sort((a, b) => a[0].localeCompare(b[0]))) {
+      orderedFields[fieldName] = builder.companion;
+    }
+    return {
+      doc_count: docCount,
+      fields: orderedFields,
+    };
   }
 
   private recordColBuilders(builders: Map<string, ColumnFieldBuilder>, rawSearchValues: Map<string, unknown[]>, docCount: number): void {
@@ -948,12 +1122,22 @@ export class SearchCompanionManager {
   }
 
   private summarizeCompanionBuildProgress(
+    exactBuilders: Map<string, ExactFieldBuilder>,
     colBuilders: Map<string, ColumnFieldBuilder>,
     ftsBuilders: Map<string, FtsFieldBuilder>,
     aggBuilders: Map<string, AggRollupBuilder>,
     metricsBuilder: MetricsBlockBuilder | null,
     docCount: number
   ): CompanionBuildProgress {
+    let exactTerms = 0;
+    let exactPostings = 0;
+    for (const builder of exactBuilders.values()) {
+      for (const postings of Object.values(builder.companion.terms)) {
+        exactTerms += 1;
+        exactPostings += postings.length;
+      }
+    }
+
     let colValues = 0;
     for (const builder of colBuilders.values()) colValues += builder.values.length;
 
@@ -979,6 +1163,9 @@ export class SearchCompanionManager {
 
     return {
       docCount,
+      exactFields: exactBuilders.size,
+      exactTerms,
+      exactPostings,
       colFields: colBuilders.size,
       colValues,
       ftsFields: ftsBuilders.size,

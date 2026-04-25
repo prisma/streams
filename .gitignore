@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.compute-build/
+.compute-demo-build/
 ds-data/
 ds-data-loadtest/
 ds-data-loadtest-*/

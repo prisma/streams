@@ -36,6 +36,8 @@
     "build": "bun run build:npm-packages",
     "build:local:node": "node scripts/build-local-node.mjs",
     "build:npm-packages": "node scripts/build-npm-packages.mjs",
+    "build:compute-bundle": "bun run scripts/compute/build-bundle.mjs",
+    "build:compute-demo-bundle": "bun run scripts/compute/build-demo-bundle.mjs",
     "prepack": "bun run build:npm-packages",
     "start": "bun run src/server.ts",
     "start:full": "bun run src/server.ts",
@@ -59,7 +61,8 @@
     "demo:ingest": "bun run experiments/demo/wal_demo_ingest.ts",
     "demo:subscribe": "bun run experiments/demo/wal_demo_subscribe.ts",
     "demo:live-fields": "bun run experiments/demo/live_fields_app.ts",
-    "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts"
+    "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts",
+    "demo:compute-verify": "bun run experiments/demo/compute/verify.ts"
   },
   "exports": {
     "./local": {

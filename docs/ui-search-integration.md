@@ -122,6 +122,12 @@ Timed-out search responses include:
   - `search-scanned-tail-docs`
   - `search-scanned-tail-time-ms`
   - `search-exact-candidate-time-ms`
+  - `search-candidate-doc-ids`
+  - `search-decoded-records`
+  - `search-json-parse-time-ms`
+  - `search-segment-payload-bytes-fetched`
+  - `search-sort-time-ms`
+  - `search-peak-hits-held`
   - `search-index-families-used`
 
 Recommended UI treatment on timeout:
@@ -345,7 +351,8 @@ supported source of truth:
   - the local lexicon cache under `${DS_ROOT}/cache/lexicon`
   - the local bundled-companion cache under `${DS_ROOT}/cache/companions`
 - `storage.companion_families`
-  Bundled companion byte breakdown for `col`, `fts`, `agg`, and `mblk`.
+  Bundled companion byte breakdown for `exact`, `col`, `fts`, `agg`, and
+  `mblk`.
 - `index_status.routing_key_index`, `index_status.exact_indexes[*]`, and
   `index_status.search_families[*]`
   Per-family progress, lag, and bytes-at-rest for index surfaces.
@@ -421,8 +428,9 @@ scan uncovered published ranges or the WAL tail to preserve correctness.
 1. Call `GET /v1/stream/{name}/_details`.
 2. If `schema.search` is absent, hide the advanced filter/search UI.
 3. Build search controls from `schema.search.fields`.
-4. Choose the default chronological sort from `primaryTimestampField`, with
-   `offset` as the tie-breaker.
+4. For filter-only event-list queries, use append-order sorting
+   (`["offset:desc"]` for newest first). Use `primaryTimestampField` plus
+   `offset` only when the UI explicitly needs event-time ordering.
 5. Issue `POST /v1/stream/{name}/_search` for the event list.
 6. Use `next_search_after` for infinite scroll.
 7. Use `index_status` to show indexing progress or freshness indicators.
@@ -432,7 +440,7 @@ scan uncovered published ranges or the WAL tail to preserve correctness.
 For a filtered, chronologically ordered, infinitely scrolling event list:
 
 - use `/_search`
-- sort by the primary timestamp field plus `offset`
+- sort by `offset` for the efficient append-order path
 - paginate with `search_after`
 - inspect `/_details` to determine whether search is available and which query
   controls to render

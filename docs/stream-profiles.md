@@ -47,10 +47,6 @@ Current built-ins:
 - `metrics`
 - `state-protocol`
 
-Planned next built-ins:
-
-- `queue`
-
 ## `generic`
 
 `generic` is the baseline meaning of “plain durable stream”.
@@ -327,7 +323,8 @@ cache.
 
 The stream metadata stores the profile metadata.
 
-- `NULL` means “no explicit declaration”
+- `NULL` means “no explicit declaration”; current stream creation stores
+  `generic`, but readers still treat `NULL` as `generic`
 - `streams.profile` stores the profile kind
 - `stream_profiles.profile_json` stores non-generic profile configuration
 - if no profile is explicitly declared, the stream is treated as `generic`
@@ -336,7 +333,7 @@ This keeps storage simple and avoids inventing a second metadata layer.
 
 ## Future Profiles
 
-Additional profiles such as `queue` should follow the same rules:
+Additional future profiles should follow the same rules:
 
 - the stream remains the same durable append-only storage object
 - the profile defines semantic meaning and profile-owned behavior

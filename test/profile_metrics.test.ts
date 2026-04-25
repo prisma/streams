@@ -334,7 +334,7 @@ describe("metrics profile", () => {
 
       const indexStatusRes = await fetchJsonApp(app, `http://local/v1/stream/${encodeURIComponent(stream)}/_index_status`, { method: "GET" });
       expect(indexStatusRes.status).toBe(200);
-      expect(indexStatusRes.body?.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "fts", "mblk"]);
+      expect(indexStatusRes.body?.search_families.map((family: any) => family.family).sort()).toEqual(["agg", "col", "exact", "fts", "mblk"]);
       expect(indexStatusRes.body?.search_families.find((family: any) => family.family === "mblk")?.fully_indexed_uploaded_segments).toBe(true);
 
       const alignedRes = await fetchJsonApp(app, `http://local/v1/stream/${encodeURIComponent(stream)}/_aggregate`, {

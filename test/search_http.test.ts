@@ -134,14 +134,90 @@ async function waitForUploadedWithoutCompanions(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const srow = app.deps.db.getStream(STREAM);
-    const companionSegments = app.deps.db.listSearchSegmentCompanions(STREAM);
-    if (srow && srow.uploaded_through >= 0n && companionSegments.length === 0) return;
+    if (srow && srow.uploaded_through >= 0n) {
+      app.deps.db.deleteSearchSegmentCompanions(STREAM);
+      if (app.deps.db.listSearchSegmentCompanions(STREAM).length === 0) return;
+    }
     await sleep(50);
   }
   throw new Error("timeout waiting for uploaded uncompanioned prefix");
 }
 
 describe("_search http", () => {
+  test("processes explicitly queued search companion work before the next periodic sweep", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-search-http-enqueue-wake-"));
+    const cfg = makeConfig(root, {
+      segmentMaxBytes: 200,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      indexL0SpanSegments: 2,
+      indexCheckIntervalMs: 60_000,
+      segmentCacheMaxBytes: 0,
+      segmentFooterCacheEntries: 0,
+      searchWalOverlayQuietPeriodMs: 0,
+    });
+    const app = createApp(cfg);
+    try {
+      let res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+        })
+      );
+      expect([200, 201]).toContain(res.status);
+
+      res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_schema`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(SEARCH_SCHEMA),
+        })
+      );
+      expect(res.status).toBe(200);
+
+      const events = Array.from({ length: 24 }, (_, index) => ({
+        eventTime: new Date(Date.UTC(2026, 2, 25, 10, 0, index)).toISOString(),
+        service: index % 2 === 0 ? "billing-api" : "identity",
+        status: index % 5 === 0 ? 503 : 200,
+        duration: index + 1,
+        requestId: `req_${index}`,
+        region: index % 2 === 0 ? "ap-southeast-1" : "eu-west-1",
+        message: index % 2 === 0 ? "queued companion wake match" : "other event",
+        why: "background indexing",
+      }));
+
+      res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(events),
+        })
+      );
+      expect([201, 204]).toContain(res.status);
+
+      await waitForSearchFamilies(app, 5_000);
+
+      res = await app.fetch(
+        new Request(`http://local/v1/stream/${encodeURIComponent(STREAM)}/_search`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            q: 'region:"ap-southeast-1" message:"queued companion wake"',
+            size: 5,
+            sort: ["offset:asc"],
+          }),
+        })
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.coverage.indexed_segments).toBeGreaterThan(0);
+      expect(body.hits.length).toBeGreaterThan(0);
+    } finally {
+      app.close();
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   test(
     "supports exact, range, prefix, bare text, phrase, and search_after pagination",
     async () => {
@@ -243,10 +319,19 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
+        expect(Number(res.headers.get("search-candidate-doc-ids"))).toBeGreaterThan(0);
+        expect(Number(res.headers.get("search-decoded-records"))).toBeGreaterThan(0);
+        expect(Number(res.headers.get("search-segment-payload-bytes-fetched"))).toBeGreaterThan(0);
         let body = await res.json();
         expect(body.total).toEqual({ value: 1, relation: "eq" });
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["col"]));
         expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
+        expect(body.coverage.candidate_doc_ids).toBeGreaterThan(0);
+        expect(body.coverage.decoded_records).toBeGreaterThan(0);
+        expect(body.coverage.json_parse_time_ms).toEqual(expect.any(Number));
+        expect(body.coverage.segment_payload_bytes_fetched).toBeGreaterThan(0);
+        expect(body.coverage.sort_time_ms).toEqual(expect.any(Number));
+        expect(body.coverage.peak_hits_held).toBeGreaterThan(0);
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
 
@@ -263,6 +348,7 @@ describe("_search http", () => {
         expect(res.status).toBe(200);
         body = await res.json();
         expect(body.total).toEqual({ value: 2, relation: "eq" });
+        expect(body.coverage.index_families_used).toEqual(expect.arrayContaining(["exact"]));
         expect(body.coverage.index_families_used).toEqual(expect.not.arrayContaining(["fts"]));
         expect(body.hits.map((hit: any) => hit.fields.requestId)).toEqual(["job_1", "req_1"]);
 
@@ -516,6 +602,7 @@ describe("_search http", () => {
         indexCheckIntervalMs: 10,
         segmentCacheMaxBytes: 0,
         segmentFooterCacheEntries: 0,
+        searchWalOverlayQuietPeriodMs: 0,
       });
       const app = createApp(cfg);
       try {
@@ -633,6 +720,10 @@ describe("_search http", () => {
           })
         );
         expect(res.status).toBe(200);
+
+        // Keep this test focused on search behavior while companions are not
+        // caught up. Enqueued work normally wakes the managers promptly.
+        app.deps.indexer?.stop();
 
         for (const event of [
           {
@@ -809,11 +900,12 @@ describe("_search http", () => {
   );
 
   test(
-    "omits the newest uploaded and WAL suffix while companions are still catching up",
+    "reports incomplete WAL coverage while returning visible uploaded matches",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "ds-search-omit-suffix-"));
       const cfg = makeConfig(root, {
         segmentMaxBytes: 140,
+        segmentTargetRows: 1,
         segmentCheckIntervalMs: 10,
         uploadIntervalMs: 10,
         uploadConcurrency: 2,
@@ -905,15 +997,15 @@ describe("_search http", () => {
         );
         expect(res.status).toBe(200);
         const body = await res.json();
-        expect(body.hits).toEqual([]);
+        expect(body.hits.length).toBeGreaterThan(0);
         expect(body.coverage.complete).toBe(false);
         expect(body.coverage.mode).toBe("published");
-        expect(body.coverage.scanned_segments).toBe(0);
+        expect(body.coverage.indexed_segments + body.coverage.scanned_segments).toBeGreaterThan(0);
         expect(body.coverage.scanned_tail_docs).toBe(0);
-        expect(body.coverage.possible_missing_uploaded_segments).toBeGreaterThan(0);
         expect(body.coverage.possible_missing_wal_rows).toBeGreaterThan(0);
         expect(body.coverage.possible_missing_events_upper_bound).toBeGreaterThan(0);
-        expect(body.total).toEqual({ value: 0, relation: "gte" });
+        expect(body.total.value).toBeGreaterThan(0);
+        expect(["eq", "gte"]).toContain(body.total.relation);
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });

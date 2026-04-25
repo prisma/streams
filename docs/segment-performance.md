@@ -4,14 +4,18 @@ Status: **informational**. This repo does not ship a dedicated segment perf tool
 
 Current behavior:
 
-- Segment sealing uses a fixed `16 MiB` / `100,000`-row geometry across
-  auto-tune presets.
+- Segment sealing defaults to `16 MiB` / `100,000` rows. Auto-tune presets
+  through `1024 MiB` use `8 MiB` / `50,000` rows to keep segment build memory
+  bounded on small hosts.
 - The segmenter keeps a trailing window over the latest `8` sealed segments for
   the same stream and computes a cheap compressed/logical ratio from stored
   metadata (`size_bytes` / `payload_bytes`).
 - If recent segments compressed below `50%` of the logical target, the next
   segment's logical byte target is raised so the expected compressed segment
   reaches at least `50%` of `DS_SEGMENT_MAX_BYTES`.
+- The boost is capped at `5x` the base logical target, which is equivalent to
+  treating anything stronger than `10:1` compression as `10:1` for this
+  heuristic.
 - This heuristic is best-effort:
   - it never reduces the logical byte target below `DS_SEGMENT_MAX_BYTES`
   - cut eligibility uses the same raised logical-byte target, so the segmenter
@@ -55,6 +59,18 @@ Current behavior:
 - `_search` uses the same planning idea when exact clauses provide a candidate
   segment set: it scans only candidate indexed segments plus any uncovered tail,
   instead of iterating the full indexed sealed prefix one segment at a time.
+- `_search` append-order reverse scans (`sort: ["offset:desc"]`) use the
+  segment footer's block index to decode blocks newest-to-oldest and can stop
+  after the requested page is full. They no longer decode every block in the
+  segment before walking records backward.
+- When bundled companions produce per-segment candidate doc IDs for an
+  append-order reverse search, `_search` walks those doc IDs newest-to-oldest
+  and decodes only the blocks containing candidate hits. Broad candidates still
+  behave like normal newest-first scans, but rare exact candidates no longer
+  force every intervening block to decode.
+- For remote segments on that candidate-doc path, `_search` range-reads the
+  segment footer and only the needed compressed data blocks. It falls back to
+  the full segment source only when the footer is unavailable.
 - Background routing, lexicon, exact, and bundled-companion builders now yield
   at bounded per-record or per-block intervals and slow down further while a
   foreground read or search is active. That keeps hot keyed reads fast even

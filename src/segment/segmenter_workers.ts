@@ -1,7 +1,7 @@
-import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { Config } from "../config";
 import { detectHostRuntime } from "../runtime/host_runtime.ts";
+import { resolveWorkerModuleUrl } from "../compute/worker_module_url";
 import type { SegmenterHooks, SegmenterMemoryStats, SegmenterOptions } from "./segmenter";
 
 export type SegmenterController = {
@@ -82,7 +82,7 @@ export class SegmenterWorkerPool implements SegmenterController {
   }
 
   private spawnWorker(idx: number): void {
-    const workerSpec = fileURLToPath(new URL("./segmenter_worker.ts", import.meta.url));
+    const workerSpec = resolveWorkerModuleUrl(import.meta.url, "./segmenter_worker.ts", "../segment/segmenter_worker.js");
     const worker = new Worker(workerSpec, {
       workerData: {
         config: this.config,

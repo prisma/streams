@@ -70,6 +70,10 @@ class CombinedIndexController implements StreamIndexLookup {
     return this.companionIndex.getColSegmentCompanion(stream, segmentIndex);
   }
 
+  getExactSegmentCompanion(stream: string, segmentIndex: number) {
+    return this.companionIndex.getExactSegmentCompanion(stream, segmentIndex);
+  }
+
   getFtsSegmentCompanion(stream: string, segmentIndex: number) {
     return this.companionIndex.getFtsSegmentCompanion(stream, segmentIndex);
   }
@@ -101,7 +105,7 @@ export function createApp(cfg: Config, os?: ObjectStore, opts: CreateAppOptions 
     stats: opts.stats,
     createRuntime: ({ config, db, ingest, registry, notifier, stats, backpressure, metrics, memorySampler, memory, asyncIndexGate, foregroundActivity }) => {
       const rawStore = os ?? new MockR2Store();
-      const store = new AccountingObjectStore(rawStore, db);
+      const store = new AccountingObjectStore(rawStore, db, metrics);
       const segmenterHooks: SegmenterHooks = {
         onSegmentSealed: (stream, payloadBytes, segmentBytes) => {
           if (stats) stats.recordSegmentSealed(payloadBytes, segmentBytes);

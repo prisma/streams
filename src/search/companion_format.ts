@@ -1,6 +1,7 @@
 import { Result } from "better-result";
 import { decodeAggSegmentCompanionResult, encodeAggSegmentCompanion, type AggSectionInput, type AggSectionView } from "./agg_format";
 import { decodeColSegmentCompanionResult, encodeColSegmentCompanion, type ColSectionInput, type ColSectionView } from "./col_format";
+import { decodeExactSegmentCompanionResult, encodeExactSegmentCompanion, type ExactSectionInput, type ExactSectionView } from "./exact_format";
 import { decodeFtsSegmentCompanionResult, encodeFtsSegmentCompanion, type FtsSectionInput, type FtsSectionView } from "./fts_format";
 import {
   decodeMetricsBlockSegmentCompanionResult,
@@ -16,26 +17,29 @@ const MAGIC = new TextEncoder().encode("PSCIX2");
 const MAJOR_VERSION = 2;
 const HEADER_BYTES = 58;
 const SECTION_ENTRY_BYTES = 28;
-export const PSCIX2_MAX_SECTION_COUNT = 4;
+export const PSCIX2_MAX_SECTION_COUNT = 5;
 export const PSCIX2_MAX_TOC_BYTES = HEADER_BYTES + SECTION_ENTRY_BYTES * PSCIX2_MAX_SECTION_COUNT;
 
 const SECTION_KIND_CODE = {
-  col: 1,
-  fts: 2,
-  agg: 3,
-  mblk: 4,
+  exact: 1,
+  col: 2,
+  fts: 3,
+  agg: 4,
+  mblk: 5,
 } as const;
 
 const CODE_SECTION_KIND = {
-  1: "col",
-  2: "fts",
-  3: "agg",
-  4: "mblk",
+  1: "exact",
+  2: "col",
+  3: "fts",
+  4: "agg",
+  5: "mblk",
 } as const;
 
-export type CompanionSectionKind = "col" | "fts" | "agg" | "mblk";
+export type CompanionSectionKind = "exact" | "col" | "fts" | "agg" | "mblk";
 
 export type CompanionSectionInputMap = {
+  exact?: ExactSectionInput;
   col?: ColSectionInput;
   fts?: FtsSectionInput;
   agg?: AggSectionInput;
@@ -43,6 +47,7 @@ export type CompanionSectionInputMap = {
 };
 
 export type CompanionSectionMap = {
+  exact?: ExactSectionView;
   col?: ColSectionView;
   fts?: FtsSectionView;
   agg?: AggSectionView;
@@ -98,6 +103,10 @@ function encodeSectionPayload(
   section: CompanionSectionInputMap[CompanionSectionKind],
   plan: SearchCompanionPlan
 ): EncodedCompanionSectionPayload {
+  if (kind === "exact") {
+    const payload = encodeExactSegmentCompanion(section as ExactSectionInput, plan);
+    return { kind, version: 2, compression: 0, flags: 0, dirLength: 8, logicalLength: payload.byteLength, payload };
+  }
   if (kind === "col") {
     const payload = encodeColSegmentCompanion(section as ColSectionInput, plan);
     return { kind, version: 2, compression: 0, flags: 0, dirLength: 8, logicalLength: payload.byteLength, payload };
@@ -127,6 +136,11 @@ function decodeSectionResult(
   bytes: Uint8Array,
   plan: SearchCompanionPlan
 ): Result<CompanionSectionMap[CompanionSectionKind], CompanionFormatError> {
+  if (kind === "exact") {
+    const decoded = decodeExactSegmentCompanionResult(bytes, plan);
+    if (Result.isError(decoded)) return invalidCompanion(decoded.error.message);
+    return Result.ok(decoded.value as CompanionSectionMap[CompanionSectionKind]);
+  }
   if (kind === "col") {
     const decoded = decodeColSegmentCompanionResult(bytes, plan);
     if (Result.isError(decoded)) return invalidCompanion(decoded.error.message);
@@ -155,7 +169,7 @@ export function encodeBundledSegmentCompanion(companion: {
   sections: CompanionSectionInputMap;
 }): Uint8Array {
   const sectionPayloads: EncodedCompanionSectionPayload[] = [];
-  for (const kind of ["col", "fts", "agg", "mblk"] as CompanionSectionKind[]) {
+  for (const kind of ["exact", "col", "fts", "agg", "mblk"] as CompanionSectionKind[]) {
     const section = companion.sections[kind];
     if (!section) continue;
     sectionPayloads.push(encodeSectionPayload(kind, section, companion.plan));

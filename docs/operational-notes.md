@@ -9,27 +9,33 @@ runtime overview and command surface, see `overview.md`.
 
 - `DS_ROOT`: data directory (default `./ds-data`)
 - `DS_DB_PATH`: SQLite file path (default `${DS_ROOT}/wal.sqlite`)
-- `DS_SEGMENT_MAX_BYTES`: segment seal threshold (default 16 MiB; auto-tune preserves 16 MiB on every preset)
+- `DS_SEGMENT_MAX_BYTES`: segment seal threshold (default 16 MiB; auto-tune uses 8 MiB through the `1024 MiB` preset and 16 MiB above that)
 - `DS_BLOCK_MAX_BYTES`: max uncompressed bytes per DSB3 block (default 256 KiB)
-- `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 100k; auto-tune preserves 100k rows on every preset)
+- `DS_SEGMENT_TARGET_ROWS`: segment seal threshold by row count (default 100k; auto-tune uses 50k rows through the `1024 MiB` preset and 100k rows above that)
 - `DS_SEGMENT_MAX_INTERVAL_MS`: max time between segment cuts (default 0; 0 disables time-based sealing)
 - `DS_SEGMENT_CHECK_MS`: segmenter tick interval (default 250ms)
-- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune uses `1` on 1–2 GiB presets)
+- `DS_SEGMENTER_WORKERS`: background segmenter worker threads (default 0; auto-tune keeps segmenting in-process through `1024 MiB`, then uses `1` at `2048 MiB`, `2` at `4096 MiB`, and `4` at `8192 MiB`)
 - `DS_UPLOAD_CHECK_MS`: uploader tick interval (default 250ms)
-- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `2` on 1–2 GiB presets)
+- `DS_UPLOAD_CONCURRENCY`: max concurrent uploads (default 4; auto-tune uses `1` through `1024 MiB`, `2` at `2048 MiB`, `4` at `4096 MiB`, and `8` at `8192 MiB`)
 - `DS_BASE_WAL_GC_CHUNK_OFFSETS`: max base-WAL rows deleted per GC sweep/manifest commit transaction (default 1,000,000)
 - `DS_BASE_WAL_GC_INTERVAL_MS`: minimum delay between touch-manager base-WAL GC sweeps per stream (default 1000ms)
-- `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB)
+- `DS_SEGMENT_CACHE_MAX_BYTES`: on-disk segment cache cap (default 256 MiB; auto-tune disables it through the `1024 MiB` preset, then uses `256 MiB` at `2048 MiB` and above)
 - `DS_INDEX_L0_SPAN`: segments per L0 index run (default 16)
 - `DS_INDEX_BUILD_CONCURRENCY`: max parallel async segment-processing tasks inside one exact-family run build (default 4; in-process, not worker threads; auto-tune uses `1` on 1–2 GiB presets)
-- `DS_INDEX_CHECK_MS`: in-process tick interval for the routing-key, exact secondary, `.col`, `.fts`, and `.agg` index managers (default 1000ms)
+- `DS_INDEX_CHECK_MS`: in-process periodic sweep interval for the routing-key,
+  exact secondary, `.exact`, `.col`, `.fts`, and `.agg` index managers
+  (default 1000ms; auto-tune defers periodic sweeps to `3600000ms` through the
+  `1024 MiB` preset, then uses `1000ms` at `2048 MiB` and above). Segment
+  uploads and schema/profile changes also enqueue the affected stream and wake
+  the background managers promptly, so the sweep interval is not the normal
+  freshness target for known changed streams.
 - `DS_SEARCH_COMPANION_BATCH_SEGMENTS`: uploaded stale segments rebuilt per bundled-companion pass before the manager yields and republishes the manifest (default 4; auto-tune uses `1` on 1–2 GiB presets)
 - `DS_SEARCH_COMPANION_YIELD_BLOCKS`: decoded segment blocks processed by one bundled-companion build before it yields back to the event loop (default 4; auto-tune uses `1` on 1–2 GiB presets)
-- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default 512 MiB, scaled up on larger backlog settings and capped at 4 GiB)
+- `DS_SEARCH_COMPANION_FILE_CACHE_MAX_BYTES`: on-disk bundled-companion cache cap for local immutable `.cix` files under `${DS_ROOT}/cache/companions` (default is derived from `DS_LOCAL_BACKLOG_MAX_BYTES`: 10% of backlog, at least 512 MiB, clamped to 256 MiB..4 GiB; with the default 10 GiB backlog this is 1 GiB)
 - `DS_SEARCH_COMPANION_FILE_CACHE_MAX_AGE_MS`: maximum age for cached `.cix` files before startup/admission pruning retires them (default 24h)
 - `DS_SEARCH_COMPANION_MMAP_CACHE_ENTRIES`: hot mmap-backed companion bundles retained by the process (default 64)
 - `DS_SEARCH_COMPANION_TOC_CACHE_BYTES`: in-memory TOC cache for bundled companions (default 1 MiB unless auto-tune raises it)
-- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory raw section-byte cache for bundled companions (default 16 MiB unless auto-tune raises it)
+- `DS_SEARCH_COMPANION_SECTION_CACHE_BYTES`: in-memory raw section-byte cache for bundled companions (default 32 MiB when no memory limit is set; otherwise 2% of memory limit, clamped to 8 MiB..128 MiB; auto-tune sets this from the selected preset)
 - `DS_INDEX_RUN_CACHE_MAX_BYTES`: on-disk index-run cache cap (default 256 MiB)
 - `DS_INDEX_RUN_MEM_CACHE_BYTES`: in-memory index-run cache cap (default 64 MiB, auto-tuned when memory limit is set)
 - `DS_LEXICON_INDEX_CACHE_MAX_BYTES`: on-disk lexicon-run cache cap for local immutable `.lex` files under `${DS_ROOT}/cache/lexicon` (default derived from memory limit; auto-tune uses 8–64 MiB on 256–2048 MiB presets)
@@ -67,18 +73,29 @@ Concurrency/load-shedding note:
   - when over the configured threshold, it reduces `DS_SEARCH_CONCURRENCY` and `DS_ASYNC_INDEX_CONCURRENCY` to `max(1, ceil(base/2))`
   - it never reduces ingest or read concurrency
 - While over the threshold, the sampler also rate-limits best-effort `Bun.gc()` calls and optional heap snapshots.
+- On `1024 MiB` and smaller memory limits, append responses include
+  `Connection: close` and the append path performs throttled post-append GC
+  after request-body buffers become unreachable. This avoids Bun retaining
+  native request-body buffers across a long keep-alive ingestion connection.
+- On those same low-memory presets, segment upload/schema/profile enqueue
+  signals do not immediately wake routing, secondary, lexicon, or companion
+  index builders when the index check interval is long. The queued work waits
+  for a short foreground-quiet window, then runs after a bounded deferral even
+  if a continuous trickle of writes keeps the server from going fully quiet.
+  This avoids companion/index backfill overlap with sustained ingest bursts
+  without starving background catch-up on always-active streams.
 - `GET /v1/server/_details` exposes the configured cache / concurrency budgets,
   selected auto-tune preset, and the node's current effective runtime state.
 - When `DS_MEMORY_SAMPLER_PATH` is enabled, each sampler record now also
-  includes `memory_subsystems`, which mirrors the grouped runtime memory
-  breakdown exposed by `GET /v1/server/_details`.
+  includes `linux_status_rss` on Linux and `memory_subsystems`, which mirrors
+  the grouped runtime memory breakdown exposed by `GET /v1/server/_details`.
 
 Companion-cache note:
 - Bundled companion reads now fetch the full remote `.cix` object once, store it locally, and mmap the local cached file.
 - Because Bun does not currently expose an explicit unmap primitive, a companion file that has been mmapped by the running process is treated as pinned until process restart.
 - Startup pruning and new cache admissions retire stale or oldest unmmapped companion files first; if the hot mapped set alone exceeds the disk budget, the process may temporarily sit above the configured cache cap until restart.
 - The auto-tuned 1–2 GiB presets also force companion rebuilding into one-segment / one-yield-block passes so aggregate-heavy `.cix` generation does not overlap too aggressively with append, segment cut, and upload work.
-- The auto-tuned 1–2 GiB presets keep the same 16 MiB / 100k-row segment geometry as larger hosts. Only concurrency and cache budgets shrink on those presets.
+- The auto-tuned presets through `1024 MiB` use 8 MiB / 50k-row segment geometry so segment build/compression does not transiently hold one large encoded cut unit on memory-clamped hosts.
 - Routing-key lexicon reads now use the same local immutable-file pattern:
   - freshly built `.lex` runs are seeded into `${DS_ROOT}/cache/lexicon`
   - first read of an uncached `.lex` downloads the full object once, stores it locally, and then serves it from `Bun.mmap()`
@@ -108,6 +125,20 @@ Companion-cache note:
 MockR2 env vars (only when using `--object-store local`):
 - `DS_MOCK_R2_MAX_INMEM_BYTES` / `DS_MOCK_R2_MAX_INMEM_MB`
 - `DS_MOCK_R2_SPILL_DIR`
+- `DS_MOCK_R2_PUT_DELAY_MS`, `DS_MOCK_R2_GET_DELAY_MS`,
+  `DS_MOCK_R2_HEAD_DELAY_MS`, and `DS_MOCK_R2_LIST_DELAY_MS`: inject
+  operation latency for local object-store stress tests.
+
+R2-compatible local stress tests can set `DURABLE_STREAMS_R2_ENDPOINT` and
+`DURABLE_STREAMS_R2_REGION` to point the R2 object-store implementation at a
+local S3-compatible service such as MinIO.
+
+The R2 object-store path uses signed `fetch()` requests instead of Bun's native
+`S3Client`. It streams file uploads from Node file streams and reads response
+bodies through the stream reader instead of `Response.arrayBuffer()`. Local
+1 GiB stress tests showed the native S3 path retaining high anon RSS during
+ingest and companion upload, while the fetch path returned near baseline after
+the same work completed.
 
 Indexing note:
 - Full mode runs indexing in the server process via background timer loops.
@@ -159,21 +190,25 @@ If you need to cap memory, set SQLite `cache_size` manually at startup.
 - `DS_READ_MAX_BYTES=1–4MiB`
 - SQLite `cache_size` around 128–256 MiB
 - Worker SQLite caches around 16–32 MiB each
-- On hosts near the low end of this range, prefer `DS_SEGMENTER_WORKERS=1`,
-  `DS_UPLOAD_CONCURRENCY=2`, and `DS_SEARCH_COMPANION_BATCH_SEGMENTS=1` while
-  keeping the default 16 MiB / 100k-row segment geometry.
+- On hosts near the low end of this range, prefer `DS_SEGMENTER_WORKERS=0`,
+  `DS_UPLOAD_CONCURRENCY=2`, and `DS_SEARCH_COMPANION_BATCH_SEGMENTS=1`.
 
 Segment geometry across presets:
-- all auto-tune presets seal at `16 MiB` or `100,000` rows, whichever is reached first
+- auto-tune presets through `1024 MiB` seal at `8 MiB` or `50,000` rows,
+  whichever is reached first
+- auto-tune presets at `2048 MiB` and above seal at `16 MiB` or `100,000`
+  rows, whichever is reached first
 - smaller presets reduce overlap and memory pressure by lowering queue sizes,
-  worker counts, and background concurrency instead of emitting many more
-  smaller segment objects
+  worker counts, background concurrency, and cut-unit size
 - segmenting also uses a cheap trailing compression heuristic over the latest
   `8` sealed segments for the same stream:
   - it sums each segment's stored `payload_bytes` and compressed `size_bytes`
   - if recent compression is stronger than `2:1`, it raises the logical byte
     seal target so the next segment aims for at least `50%` of
     `DS_SEGMENT_MAX_BYTES` after compression
+  - the boost is capped at `5x` the base byte target, which is equivalent to
+    treating anything stronger than `10:1` compression as `10:1` for seal
+    sizing
   - this never lowers the target below `DS_SEGMENT_MAX_BYTES`
   - cut eligibility uses the same raised byte target, so the segmenter waits
     for enough logical backlog instead of starting immediately at the base
@@ -186,23 +221,29 @@ Segment geometry across presets:
 presets:
 
 - `256 MiB`:
-  - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - segment geometry: `8 MiB` / `50,000` rows
+  - caches: SQLite `16 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `4 MiB`, lexicon cache `8 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `0`; index checks every `3600000ms`
 - `512 MiB`:
-  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
-  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `1`
+  - segment geometry: `8 MiB` / `50,000` rows
+  - caches: SQLite `32 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `8 MiB`, lexicon cache `16 MiB`, companion TOC `1 MiB`, companion section `8 MiB`
+  - concurrency: ingest `1`, read `2`, search `1`, async index `1`, uploads `1`, segmenter workers `0`; index checks every `3600000ms`
 - `1024 MiB`:
-  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - segment geometry: `8 MiB` / `50,000` rows
+  - caches: SQLite `64 MiB`, worker SQLite `8 MiB`, segment cache `0`, index-run memory `16 MiB`, lexicon cache `32 MiB`, companion TOC `1 MiB`, companion section `16 MiB`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `1`, segmenter workers `0`; index checks every `3600000ms`
 - `2048 MiB`:
-  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
-  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`
+  - segment geometry: `16 MiB` / `100,000` rows
+  - caches: SQLite `128 MiB`, worker SQLite `16 MiB`, segment cache `256 MiB`, index-run memory `32 MiB`, lexicon cache `64 MiB`, companion TOC `1 MiB`, companion section `32 MiB`
+  - concurrency: ingest `2`, read `4`, search `2`, async index `1`, uploads `2`, segmenter workers `1`; index checks every `1000ms`
 - `4096 MiB`:
-  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
-  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, uploads `4`, segmenter workers `2`
+  - segment geometry: `16 MiB` / `100,000` rows
+  - caches: SQLite `256 MiB`, worker SQLite `32 MiB`, segment cache `256 MiB`, index-run memory `64 MiB`, lexicon cache `128 MiB`, companion TOC `2 MiB`, companion section `64 MiB`
+  - concurrency: ingest `4`, read `8`, search `4`, async index `2`, uploads `4`, segmenter workers `2`; index checks every `1000ms`
 - `8192 MiB`:
-  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
-  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, uploads `8`, segmenter workers `4`
+  - segment geometry: `16 MiB` / `100,000` rows
+  - caches: SQLite `512 MiB`, worker SQLite `32 MiB`, segment cache `256 MiB`, index-run memory `128 MiB`, lexicon cache `256 MiB`, companion TOC `4 MiB`, companion section `128 MiB`
+  - concurrency: ingest `8`, read `16`, search `8`, async index `4`, uploads `8`, segmenter workers `4`; index checks every `1000ms`
 
 ## Diagnosing stalls
 
@@ -220,7 +261,9 @@ When throughput drops, check in this order:
 
 3) Upload backlog (segments stuck locally)
 - Increase `DS_UPLOAD_CONCURRENCY` if network allows.
-- Check object store latency and error rates.
+- Check `tieredstore.objectstore.put.latency`, `tieredstore.objectstore.get.latency`,
+  and the related `head` / `delete` / `list` latency metrics in
+  `__stream_metrics__`, plus object-store error rates.
 - Inspect `GET /v1/server/_details` and `tieredstore.upload.pending_segments`.
 - Remember the uploader preserves a contiguous uploaded prefix per stream:
   - it always retries the earliest missing segment for that stream first
@@ -236,9 +279,9 @@ When throughput drops, check in this order:
   `DS_SEARCH_COMPANION_YIELD_BLOCKS` if backfill is making the server feel
   sluggish under large `.fts` fields.
 - The internal `__stream_metrics__` system stream no longer builds routing,
-  lexicon, exact, `.col`, `.fts`, `.agg`, or `.mblk` families. If you still
-  see heavy bundled companion work after restart, look for user streams rather
-  than self-indexing on the internal metrics stream.
+  lexicon, exact secondary, `.exact`, `.col`, `.fts`, `.agg`, or `.mblk`
+  families. If you still see heavy bundled companion work after restart, look
+  for user streams rather than self-indexing on the internal metrics stream.
 
 5) SQLite write stalls
 - Ensure the DB is on fast local SSD.

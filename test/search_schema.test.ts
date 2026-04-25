@@ -1,8 +1,52 @@
 import { describe, expect, test } from "bun:test";
 import { Result } from "better-result";
 import { parseSchemaUpdateResult } from "../src/schema/registry";
+import { parseSearchRequestBodyResult } from "../src/search/query";
 
 describe("search schema config", () => {
+  test("defaults non-scoring filters to offset-desc and scoring text to relevance", () => {
+    const registry = {
+      search: {
+        primaryTimestampField: "eventTime",
+        defaultFields: [{ field: "message", boost: 1 }],
+        fields: {
+          eventTime: {
+            kind: "date",
+            bindings: [{ version: 1, jsonPointer: "/eventTime" }],
+            column: true,
+            exists: true,
+            sortable: true,
+          },
+          service: {
+            kind: "keyword",
+            bindings: [{ version: 1, jsonPointer: "/service" }],
+            normalizer: "lowercase_v1",
+            exact: true,
+            prefix: true,
+            exists: true,
+            sortable: true,
+          },
+          message: {
+            kind: "text",
+            bindings: [{ version: 1, jsonPointer: "/message" }],
+            analyzer: "unicode_word_v1",
+            exists: true,
+          },
+        },
+      },
+    } as any;
+
+    const filterRes = parseSearchRequestBodyResult(registry, { q: "service:checkout" });
+    expect(Result.isOk(filterRes)).toBe(true);
+    if (Result.isError(filterRes)) return;
+    expect(filterRes.value.sort).toEqual([{ kind: "offset", direction: "desc" }]);
+
+    const textRes = parseSearchRequestBodyResult(registry, { q: "checkout" });
+    expect(Result.isOk(textRes)).toBe(true);
+    if (Result.isError(textRes)) return;
+    expect(textRes.value.sort.map((sort) => sort.kind)).toEqual(["score", "field", "offset"]);
+  });
+
   test("accepts versioned search bindings, aliases, and default fields", () => {
     const res = parseSchemaUpdateResult({
       schema: {

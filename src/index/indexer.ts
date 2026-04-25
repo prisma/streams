@@ -19,8 +19,10 @@ import { yieldToEventLoop } from "../util/yield";
 import { RuntimeMemorySampler } from "../runtime_memory_sampler";
 import { ConcurrencyGate } from "../concurrency_gate";
 import type { ForegroundActivityTracker } from "../foreground_activity";
+import { LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS, shouldDeferEnqueuedIndexWork, shouldWaitForLowMemoryIndexQuiet } from "./schedule";
 import type { AggSectionView } from "../search/agg_format";
 import type { ColSectionView } from "../search/col_format";
+import type { ExactSectionView } from "../search/exact_format";
 import type { FtsSectionView } from "../search/fts_format";
 import type { MetricsBlockSectionView } from "../profiles/metrics/block_format";
 import type { SchemaRegistryStore } from "../schema/registry";
@@ -41,6 +43,7 @@ export type StreamIndexLookup = {
   candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
   getAggSegmentCompanion(stream: string, segmentIndex: number): Promise<AggSectionView | null>;
   getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null>;
+  getExactSegmentCompanion(stream: string, segmentIndex: number): Promise<ExactSectionView | null>;
   getFtsSegmentCompanion(stream: string, segmentIndex: number): Promise<FtsSectionView | null>;
   getFtsSegmentCompanionWithStats?(
     stream: string,
@@ -90,6 +93,7 @@ export class IndexManager {
   private lastDiskEvictions = 0;
   private lastDiskBytesAdded = 0;
   private timer: any | null = null;
+  private wakeTimer: any | null = null;
   private running = false;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
@@ -97,6 +101,7 @@ export class IndexManager {
   private readonly registry?: SchemaRegistryStore;
   private readonly asyncGate: ConcurrencyGate;
   private readonly foregroundActivity?: ForegroundActivityTracker;
+  private firstQueuedAtMs: number | null = null;
 
   constructor(
     cfg: Config,
@@ -151,12 +156,43 @@ export class IndexManager {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
+    this.wakeTimer = null;
   }
 
   enqueue(stream: string): void {
     if (this.span <= 0) return;
+    if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
+    if (shouldDeferEnqueuedIndexWork(this.cfg)) {
+      this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+      return;
+    }
+    this.scheduleTick();
+  }
+
+  private scheduleTick(delayMs = 0): void {
+    if (!this.timer || this.wakeTimer) return;
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      if (
+        shouldWaitForLowMemoryIndexQuiet(
+          this.cfg,
+          this.firstQueuedAtMs,
+          this.foregroundActivity?.wasActiveWithin(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS) ?? false
+        )
+      ) {
+        this.scheduleTick(LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS);
+        return;
+      }
+      if (this.running) {
+        this.scheduleTick(250);
+        return;
+      }
+      void this.tick();
+    }, delayMs);
+    (this.wakeTimer as { unref?: () => void }).unref?.();
   }
 
   async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
@@ -295,6 +331,12 @@ export class IndexManager {
       this.recordCacheStats();
     } finally {
       this.running = false;
+      if (this.queue.size > 0) {
+        if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
+        this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
+      } else {
+        this.firstQueuedAtMs = null;
+      }
     }
   }
 

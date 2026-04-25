@@ -1036,6 +1036,19 @@ describe("http behavior", () => {
     });
   });
 
+  test("low-memory append responses close HTTP connections", async () => {
+    await withServer({ memoryLimitBytes: 1024 * 1024 * 1024 }, async ({ baseUrl }) => {
+      await fetch(`${baseUrl}/v1/stream/json-close`, { method: "PUT", headers: { "content-type": "application/json" } });
+      const r = await fetch(`${baseUrl}/v1/stream/json-close`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ x: 1 }, { y: 2 }]),
+      });
+      expect(r.status).toBe(204);
+      expect(r.headers.get("connection")).toBe("close");
+    });
+  });
+
   test("schema routing key batch append and read by key", async () => {
     await withServer({}, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/keys`, { method: "PUT", headers: { "content-type": "application/json" } });

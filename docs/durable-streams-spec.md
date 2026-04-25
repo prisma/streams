@@ -507,8 +507,8 @@ Rules:
   changed and the exact family has not rebuilt for that config yet
 - `bundled_companions` reports current `.cix` coverage for the desired
   companion plan generation
-- `search_families` covers bundled companion sections such as `col`, `fts`,
-  `agg`, and `mblk`
+- `search_families` covers bundled companion sections such as `exact`, `col`,
+  `fts`, `agg`, and `mblk`
 - `manifest.last_uploaded_size_bytes` is the uploaded manifest object size as a
   string when known
 - `routing_key_index`, `routing_key_lexicon`, each `exact_indexes[*]`,
@@ -554,7 +554,7 @@ Rules:
   - segment and index caches are seeded on first read of a remote object; they
     may increase even when the request was initiated by a read-only UI flow
 - `storage.companion_families` splits bundled companion bytes by section family
-  (`col`, `fts`, `agg`, `mblk`)
+  (`exact`, `col`, `fts`, `agg`, `mblk`)
 - `object_store_requests` reports node-local per-stream object-store request
   counters, split into puts and reads, plus a per-artifact breakdown
 - this is the supported combined descriptor endpoint for stream-management UIs
@@ -757,6 +757,10 @@ Current request fields:
 - `size`
 - `search_after`
 - `sort`
+  - optional sort list
+  - when omitted, non-scoring filter queries sort by `offset:desc`
+  - when omitted, scoring text queries sort by `_score:desc`, then the
+    primary timestamp field, then `offset:desc`
 - `timeout_ms`
   - optional lower per-request budget
   - server-side effective timeout is always clamped to `<= 3000 ms`
@@ -804,6 +808,12 @@ Current search response headers:
 - `search-scanned-tail-docs`
 - `search-scanned-tail-time-ms`
 - `search-exact-candidate-time-ms`
+- `search-candidate-doc-ids`
+- `search-decoded-records`
+- `search-json-parse-time-ms`
+- `search-segment-payload-bytes-fetched`
+- `search-sort-time-ms`
+- `search-peak-hits-held`
 - `search-index-families-used`
 
 Current search coverage fields:
@@ -828,6 +838,12 @@ Current search coverage fields:
 - `scanned_tail_docs`
 - `scanned_tail_time_ms`
 - `exact_candidate_time_ms`
+- `candidate_doc_ids`
+- `decoded_records`
+- `json_parse_time_ms`
+- `segment_payload_bytes_fetched`
+- `sort_time_ms`
+- `peak_hits_held`
 - `index_families_used`
 
 Current query support:

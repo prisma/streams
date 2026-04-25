@@ -199,6 +199,16 @@ Current response shape:
 
 Current coverage fields:
 
+- `mode`
+- `complete`
+- `stream_head_offset`
+- `visible_through_offset`
+- `visible_through_primary_timestamp_max`
+- `oldest_omitted_append_at`
+- `possible_missing_events_upper_bound`
+- `possible_missing_uploaded_segments`
+- `possible_missing_sealed_rows`
+- `possible_missing_wal_rows`
 - `used_rollups`
 - `indexed_segments`
 - `scanned_segments`

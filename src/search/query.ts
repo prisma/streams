@@ -498,7 +498,7 @@ function normalizeSortWithTieBreaker(search: SearchConfig, query: CompiledSearch
       ? [...explicit]
       : hasScoringTextClause(query)
         ? [{ kind: "score", direction: "desc" }, timestampSort, { kind: "offset", direction: "desc" }]
-        : [timestampSort, { kind: "offset", direction: "desc" }];
+        : [{ kind: "offset", direction: "desc" }];
   if (!sorts.some((sort) => sort.kind === "offset")) {
     sorts.push({ kind: "offset", direction: "desc" });
   }
