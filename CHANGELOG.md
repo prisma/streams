@@ -2,6 +2,11 @@
 
 ## Upcoming
 
+- Require an explicit full-server auth mode, with `--auth-strategy api-key`
+  enforcing bearer-token authentication on every production Streams and Compute
+  demo request.
+- Add package-based Prisma Compute deployment guidance and publish the
+  `@prisma/streams-server/compute` entrypoint for npm consumers.
 - Improve Streams Live exact invalidation coverage with membership-only and
   projected-field fine keys for cheap exact query shapes.
 - Add settled-cursor barriers and an exact small-key wait lane so small live

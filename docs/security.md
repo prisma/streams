@@ -19,15 +19,24 @@ When reporting a vulnerability, include:
 
 ## Current Security Posture
 
-Prisma Streams does **not** currently implement built-in authentication or authorization.
+The full Prisma Streams server requires an explicit startup auth mode:
+
+- `--auth-strategy api-key` enables built-in API key authentication for every
+  request
+- `--no-auth` disables built-in authentication for deployments that rely on a
+  trusted external boundary
 
 That has concrete deployment consequences:
 
-- Do not expose the server directly to the public internet.
-- Run the full server behind a trusted reverse proxy, API gateway, VPN boundary, or other authenticated network perimeter.
+- Prefer `--auth-strategy api-key` when the server receives network traffic
+  directly.
+- Use `--no-auth` only behind a trusted reverse proxy, API gateway, VPN
+  boundary, or local-only deployment wrapper.
 - Terminate TLS outside the server.
 - Treat the local development server as a loopback-only tool for trusted local workflows such as `npx prisma dev`.
 
-The local development server is intentionally optimized for local integration, not hostile-network deployment.
+The local development server is intentionally optimized for local integration,
+not hostile-network deployment, and does not participate in the full-server auth
+contract.
 
 More detail is documented in [auth.md](./auth.md).

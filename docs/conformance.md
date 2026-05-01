@@ -21,7 +21,7 @@ Default behavior:
 Manual target mode:
 
 ```bash
-DS_HOST=127.0.0.1 PORT=8787 DS_ROOT=/tmp/ds-conformance bun run src/server.ts --object-store local
+DS_HOST=127.0.0.1 PORT=8787 DS_ROOT=/tmp/ds-conformance bun run src/server.ts --object-store local --no-auth
 CONFORMANCE_TEST_URL=http://127.0.0.1:8787 bun run test:conformance
 CONFORMANCE_TEST_URL=http://127.0.0.1:8787 bun run test:conformance:local
 ```

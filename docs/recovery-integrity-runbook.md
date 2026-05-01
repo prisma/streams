@@ -361,7 +361,7 @@ recover data or helper state that only existed in local SQLite at the time the
 node was lost.
 
 ```bash
-bun run src/server.ts --object-store r2 --bootstrap-from-r2
+bun run src/server.ts --object-store r2 --bootstrap-from-r2 --no-auth
 ```
 
 Required env vars for R2:
@@ -449,8 +449,8 @@ Common commands:
 
 ```bash
 # Full mode
-bun run src/server.ts --object-store local
-bun run src/server.ts --object-store r2
+bun run src/server.ts --object-store local --no-auth
+bun run src/server.ts --object-store r2 --no-auth
 
 # Local mode
 bun run src/local/cli.ts start --name default --port 8080

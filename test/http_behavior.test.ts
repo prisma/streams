@@ -686,12 +686,10 @@ describe("http behavior", () => {
     await withServer({}, async ({ baseUrl }) => {
       await fetch(`${baseUrl}/v1/stream/details-live`, { method: "PUT", headers: { "content-type": "text/plain" } });
 
-      const first = await fetch(`${baseUrl}/v1/stream/details-live/_details`);
-      const etag = first.headers.get("etag");
-      expect(etag).not.toBeNull();
+      const etag = await waitForStableDetailsEtag(baseUrl, "details-live");
 
       const detailsPromise = fetch(`${baseUrl}/v1/stream/details-live/_details?live=long-poll&timeout=2s`, {
-        headers: { "if-none-match": etag! },
+        headers: { "if-none-match": etag },
       });
       await sleep(100);
       await fetch(`${baseUrl}/v1/stream/details-live`, {

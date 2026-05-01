@@ -27,7 +27,7 @@ cd /path/to/prisma-streams
 DS_TOUCH_WORKERS=4 \
 DS_TOUCH_MAX_BATCH_ROWS=1000 \
 DS_TOUCH_MAX_BATCH_BYTES=$((8*1024*1024)) \
-  bun run src/server.ts --object-store local --stats
+  bun run src/server.ts --object-store local --stats --no-auth
 ```
 
 Notes:

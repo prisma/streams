@@ -53,17 +53,20 @@ Not implemented today:
 - The publishable npm surfaces are intentionally split:
   - `@prisma/streams-local` exports `startLocalDurableStreamsServer` and its server types
   - `@prisma/streams-local/internal/daemon` exists for Prisma CLI integration and is intentionally internal
-  - `@prisma/streams-server` is the Bun-only full server package and CLI
+  - `@prisma/streams-server` is the Bun-only full server package, CLI, and
+    package Compute entrypoint
 
 See [conformance.md](./conformance.md) for current compatibility status,
 verification commands, and known gaps.
 
 ## Security
 
-Prisma Streams does **not** currently implement built-in authentication or authorization.
+Full server startup requires an explicit auth mode.
 
-- Do not expose the server directly to the public internet.
-- Put the full server behind a trusted reverse proxy, API gateway, VPN boundary, or other authenticated perimeter.
+- Use `--auth-strategy api-key` with `API_KEY` for built-in authentication on
+  every request.
+- Use `--no-auth` only behind a trusted reverse proxy, API gateway, VPN
+  boundary, or other authenticated perimeter.
 - Treat the local development server as a loopback-only tool for trusted local workflows.
 
 See [security.md](./security.md) and [auth.md](./auth.md).
@@ -79,7 +82,7 @@ See [security.md](./security.md) and [auth.md](./auth.md).
 bun install
 
 # Full server (self-hosted pipeline)
-bun run src/server.ts --object-store local
+bun run src/server.ts --object-store local --no-auth
 
 # Local development server
 bun run src/local/cli.ts start --name default --port 8080
@@ -92,9 +95,17 @@ bun run src/local/cli.ts reset --name default
 
 Notes:
 
-- Full server startup requires `--object-store local|r2`.
-- Prisma Compute deployments should use `src/compute/entry.ts`, which injects `--object-store r2` for the server entrypoint and `--auto-tune` when `DS_MEMORY_LIMIT_MB` is set.
-- If Compute needs worker-thread entrypoints such as `segmenter_worker.ts` or `processor_worker.ts`, prebuild the bundle with `bun run build:compute-bundle` and deploy that artifact with `--skip-build`. The Compute CLI's built-in Bun strategy only bundles the explicit entrypoint file.
+- Full server startup requires `--object-store local|r2` and exactly one auth mode: `--no-auth` or `--auth-strategy api-key`.
+- Prisma Compute deployments from npm should follow the package-based flow in
+  the top-level [README.md](../README.md#deploy-to-prisma-compute).
+- Repository Compute bundle deployments can use `src/compute/entry.ts`, which
+  injects `--object-store r2` for the server entrypoint and `--auto-tune` when
+  `DS_MEMORY_LIMIT_MB` is set. Compute deployments still need an explicit auth
+  mode.
+- If deploying from this repository with a prebuilt artifact, use
+  `bun run build:compute-bundle` and deploy that artifact with `--skip-build`
+  so worker-thread entrypoints such as `segmenter_worker.ts` and
+  `processor_worker.ts` are included.
 - Full mode binds to `127.0.0.1` by default. Set `DS_HOST=0.0.0.0` if you intentionally want a non-loopback bind inside a trusted network boundary.
 - Local mode is designed for development and Prisma CLI integration, not hostile-network deployment.
 - The default local data root remains under `envPaths("prisma-dev").data/durable-streams/` for compatibility with the Prisma development workflow.
@@ -140,19 +151,26 @@ More detail is in [local-dev.md](./local-dev.md).
 The full server is started via:
 
 ```bash
-bun run src/server.ts --object-store local
+bun run src/server.ts --object-store local --no-auth
 ```
 
 Published CLI package:
 
 ```bash
-bunx --package @prisma/streams-server prisma-streams-server --object-store local
+bunx --package @prisma/streams-server prisma-streams-server --object-store local --no-auth
 ```
 
 Bind control:
 
 ```bash
-DS_HOST=127.0.0.1 PORT=8080 bun run src/server.ts --object-store local
+DS_HOST=127.0.0.1 PORT=8080 bun run src/server.ts --object-store local --no-auth
+```
+
+API key auth:
+
+```bash
+API_KEY=replace-with-at-least-10-characters \
+  bun run src/server.ts --object-store local --auth-strategy api-key
 ```
 
 Optional flags:
@@ -167,7 +185,7 @@ Optional flags:
 Local MockR2:
 
 ```bash
-bun run src/server.ts --object-store local
+bun run src/server.ts --object-store local --no-auth
 ```
 
 Real R2:
@@ -177,27 +195,14 @@ DURABLE_STREAMS_R2_BUCKET=your-bucket \
 DURABLE_STREAMS_R2_ACCOUNT_ID=your-account-id \
 DURABLE_STREAMS_R2_ACCESS_KEY_ID=your-access-key \
 DURABLE_STREAMS_R2_SECRET_ACCESS_KEY=your-secret \
-  bun run src/server.ts --object-store r2
+API_KEY=replace-with-at-least-10-characters \
+  bun run src/server.ts --object-store r2 --auth-strategy api-key
 ```
 
-Prisma Compute:
+Prisma Compute deployment from the published npm package is documented in the
+top-level [README.md](../README.md#deploy-to-prisma-compute).
 
-```bash
-DS_HOST=0.0.0.0 \
-DS_ROOT=/mnt/app/prisma-streams \
-  DS_MEMORY_LIMIT_MB=1024 \
-DURABLE_STREAMS_R2_BUCKET=your-bucket \
-DURABLE_STREAMS_R2_ACCOUNT_ID=your-account-id \
-DURABLE_STREAMS_R2_ACCESS_KEY_ID=your-access-key \
-DURABLE_STREAMS_R2_SECRET_ACCESS_KEY=your-secret \
-  bun run src/compute/entry.ts
-```
-
-Use an explicit `DS_ROOT` under `/mnt/app` on Prisma Compute. Paths under
-`/tmp` or other ephemeral filesystem locations are lost on crash, restart, and
-VM replacement, which drops the local SQLite catalog and caches.
-
-Prebuild for Prisma Compute deployments that need worker threads:
+Repository prebuild for Prisma Compute deployments:
 
 ```bash
 bun run build:compute-bundle
@@ -210,9 +215,8 @@ PRISMA_API_TOKEN=... \
     --skip-build
 ```
 
-`src/compute/entry.ts` always injects `--object-store r2`. When
-`DS_MEMORY_LIMIT_MB` is set, it also injects `--auto-tune`, so Compute
-deployments can use the standard memory preset without a separate argv channel.
+`src/compute/entry.ts` has the same Compute argv behavior as the package
+Compute entrypoint, but is intended for repository-built artifacts.
 
 Compute demo deployment with Studio and the evlog generator:
 

@@ -12,6 +12,7 @@ import { initConsoleLogging } from "../util/log";
 import { ensureComputeArgv } from "./entry";
 import { createComputeDemoSite, type PrebuiltStudioAssets } from "./demo_site";
 import { applyAutoTune, AutoTuneApplyError, parseAutoTuneArg } from "../server_auto_tune";
+import { parseAuthConfigResult, withAuth } from "../auth";
 import { Result } from "better-result";
 
 initConsoleLogging();
@@ -244,6 +245,12 @@ function createColocatedStreamsTarget(streamsApp: App): StreamsFetchTarget {
 }
 
 async function main(): Promise<void> {
+  const authConfigResult = parseAuthConfigResult(process.argv.slice(2));
+  if (Result.isError(authConfigResult)) {
+    console.error(authConfigResult.error.message);
+    process.exit(1);
+  }
+  const authConfig = authConfigResult.value;
   const studioAssets = await loadStudioAssets();
   const externalStreamsServerUrl = resolveExternalStreamsServerUrl();
   let streamsTarget: StreamsFetchTarget;
@@ -361,7 +368,7 @@ async function main(): Promise<void> {
   });
 
   const server = Bun.serve({
-    fetch: (request) => demoSite.fetch(request),
+    fetch: withAuth(authConfig, (request) => demoSite.fetch(request)),
     hostname: cfg.host,
     idleTimeout: loadIdleTimeoutSeconds(),
     port: cfg.port,

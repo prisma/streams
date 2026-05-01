@@ -15,6 +15,55 @@ The canonical documentation index is [docs/index.md](./docs/index.md). The
 dedicated stream profile reference is
 [docs/stream-profiles.md](./docs/stream-profiles.md).
 
+## Deploy To Prisma Compute
+
+Deploy Compute services from the published `@prisma/streams-server` npm package
+rather than from a checkout of this repository. Create a small Compute app with
+the package dependency and an entrypoint that selects the auth mode before
+loading the package Compute entrypoint:
+
+```json
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@prisma/streams-server": "<pin-the-version>"
+  }
+}
+```
+
+```ts
+// compute-entry.ts
+process.argv.push("--auth-strategy", "api-key");
+await import("@prisma/streams-server/compute");
+```
+
+Deploy that app with the Compute CLI:
+
+```bash
+PRISMA_API_TOKEN=... \
+  bunx @prisma/compute-cli compute deploy \
+    --service your-service-id \
+    --path . \
+    --entrypoint compute-entry.ts
+```
+
+Set these service environment variables:
+
+- `DS_HOST=0.0.0.0`
+- `DS_ROOT=/mnt/app/prisma-streams`
+- `DS_MEMORY_LIMIT_MB=1024`
+- `API_KEY=replace-with-at-least-10-characters`
+- `DURABLE_STREAMS_R2_BUCKET`
+- `DURABLE_STREAMS_R2_ACCOUNT_ID`
+- `DURABLE_STREAMS_R2_ACCESS_KEY_ID`
+- `DURABLE_STREAMS_R2_SECRET_ACCESS_KEY`
+
+The package Compute entrypoint injects `--object-store r2`, and injects
+`--auto-tune` when `DS_MEMORY_LIMIT_MB` is set. It does not inject auth; keep
+the explicit `--auth-strategy api-key` in your app entrypoint and send requests
+with `Authorization: Bearer $API_KEY`.
+
 ## Core Model
 
 The system now has three separate concepts:

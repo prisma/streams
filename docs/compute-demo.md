@@ -28,6 +28,8 @@ deployment shape. It:
   [`src/compute/entry.ts`](../src/compute/entry.ts), including `--object-store r2`
   and `--auto-tune` when `DS_MEMORY_LIMIT_MB` is set, before the colocated
   Streams server config is loaded
+- requires the same explicit auth mode as the normal full server:
+  `--auth-strategy api-key` with `API_KEY`, or `--no-auth`
 - starts the regular Streams app in-process
 - fronts it with the `/studio`, `/studio/api/streams/*`, `/generate`, and
   `/api/generate/jobs*` routes
@@ -98,6 +100,7 @@ Required runtime env is the same as the normal R2-backed Compute server:
 - `DS_HOST=0.0.0.0`
 - `DS_ROOT=/mnt/app/prisma-streams`
 - `DS_MEMORY_LIMIT_MB=1024`
+- `API_KEY` when using `--auth-strategy api-key`
 - `DURABLE_STREAMS_R2_BUCKET`
 - `DURABLE_STREAMS_R2_ACCOUNT_ID`
 - `DURABLE_STREAMS_R2_ACCESS_KEY_ID`
@@ -107,12 +110,13 @@ On Prisma Compute, keep `DS_ROOT` under `/mnt/app`. Paths such as `/tmp` are
 ephemeral and lose the colocated Streams SQLite state on restart.
 
 External-streams demo mode only needs the HTTP bind settings plus the target
-Streams server:
+Streams server and an explicit auth mode:
 
 ```bash
 DS_HOST=0.0.0.0 \
+API_KEY=replace-with-at-least-10-characters \
 COMPUTE_DEMO_STREAMS_SERVER_URL=https://cmoa45nql0u6bzycn7dwdpxe0.cdg.prisma.build \
-  bun run src/compute/demo_entry.ts
+  bun run src/compute/demo_entry.ts --auth-strategy api-key
 ```
 
 ## Studio Integration Shape
