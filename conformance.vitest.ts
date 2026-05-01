@@ -29,7 +29,7 @@ beforeAll(async () => {
   if (process.env.CONFORMANCE_TEST_URL) return;
 
   rootDir = mkdtempSync(join(tmpdir(), "ds-conformance-"));
-  proc = spawn("bun", ["run", "src/server.ts", "--object-store", "local"], {
+  proc = spawn("bun", ["run", "src/server.ts", "--object-store", "local", "--no-auth"], {
     env: {
       ...process.env,
       PORT: "8787",

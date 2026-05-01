@@ -104,7 +104,7 @@ append_note "memory-sampler-experiment-start" \
   export MIMALLOC_SHOW_STATS="${MIMALLOC_SHOW_STATS:-1}"
   export DS_MEMORY_SAMPLER_PATH="${SAMPLER_PATH}"
   export DS_MEMORY_SAMPLER_INTERVAL_MS="${SAMPLER_INTERVAL_MS}"
-  "${BUN_BIN}" run src/server.ts --object-store r2 --auto-tune="${AUTO_TUNE_MB}"
+  "${BUN_BIN}" run src/server.ts --object-store r2 --auto-tune="${AUTO_TUNE_MB}" --no-auth
 ) >"${SERVER_LOG_PATH}" 2>&1 &
 server_pid=$!
 

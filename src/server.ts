@@ -7,10 +7,19 @@ import { R2ObjectStore } from "./objectstore/r2";
 import { bootstrapFromR2 } from "./bootstrap";
 import { initConsoleLogging } from "./util/log";
 import { applyAutoTune, AutoTuneApplyError, parseAutoTuneArg } from "./server_auto_tune";
+import { parseAuthConfigResult, withAuth } from "./auth";
+import { Result } from "better-result";
 
 initConsoleLogging();
 
 const args = process.argv.slice(2);
+const authConfigResult = parseAuthConfigResult(args);
+if (Result.isError(authConfigResult)) {
+  console.error(authConfigResult.error.message);
+  process.exit(1);
+}
+const authConfig = authConfigResult.value;
+
 const autoTune = parseAutoTuneArg(args);
 if (autoTune.enabled) {
   try {
@@ -155,10 +164,11 @@ const fetchWithHist = hist
           if (method === "GET" || method === "HEAD") hist.recordRead(ms);
           else if (method === "POST" || method === "PUT" || method === "DELETE") hist.recordWrite(ms);
         }
-      }
-      return resp;
+  }
+  return resp;
     }
   : app.fetch;
+const fetchWithAuth = withAuth(authConfig, fetchWithHist);
 
 const server = Bun.serve({
   hostname: cfg.host,
@@ -176,7 +186,7 @@ const server = Bun.serve({
     }
     return n;
   })(),
-  fetch: fetchWithHist,
+  fetch: fetchWithAuth,
 });
 
 statsReporter?.start();

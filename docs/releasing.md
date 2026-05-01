@@ -59,6 +59,7 @@ into temporary consumers, and verify:
   duplicate first-schema installs when the registry already matches
 - local package exposure of `GET /v1/server/_details` and `GET /v1/stream/{name}/_routing_keys`
 - Bun CLI startup for `@prisma/streams-server`
+- package exposure of the `@prisma/streams-server/compute` Compute entrypoint
 
 3. Build the publishable package directories:
 
@@ -146,4 +147,6 @@ The split gives you:
 - `@prisma/streams-local` supports Bun `>=1.2.0` and Node `>=22`
 - `@prisma/streams-local/internal/daemon` is intentionally internal
 - `@prisma/streams-server` is Bun-only
+- `@prisma/streams-server/compute` starts the Compute server entrypoint from a
+  package consumer and injects the Compute object-store and auto-tune defaults
 - the root repository package is still private and is not the publish target

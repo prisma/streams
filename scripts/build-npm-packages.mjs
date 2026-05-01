@@ -146,20 +146,36 @@ development embedding, use \`@prisma/streams-local\` instead.
 Recommended:
 
 \`\`\`bash
-bunx --package @prisma/streams-server prisma-streams-server --object-store local
+bunx --package @prisma/streams-server prisma-streams-server --object-store local --no-auth
 \`\`\`
 
 After installation in a project:
 
 \`\`\`bash
-bun x prisma-streams-server --object-store local
+bun x prisma-streams-server --object-store local --no-auth
 \`\`\`
+
+## Prisma Compute
+
+Create a small Compute app that depends on this package and uses the package
+Compute entrypoint instead of this repository:
+
+\`\`\`ts
+process.argv.push("--auth-strategy", "api-key");
+await import("@prisma/streams-server/compute");
+\`\`\`
+
+The package Compute entrypoint injects \`--object-store r2\`, and injects
+\`--auto-tune\` when \`DS_MEMORY_LIMIT_MB\` is set. It does not inject auth; pass
+\`--auth-strategy api-key\` as shown above, and set \`API_KEY\` in the Compute
+environment.
 
 Useful environment variables:
 
 - \`PORT\`
 - \`DS_HOST\`
 - \`DS_HTTP_IDLE_TIMEOUT_SECONDS\`
+- \`API_KEY\` when using \`--auth-strategy api-key\`
 
 For R2 mode set:
 
@@ -197,6 +213,7 @@ runtime documentation.
     },
     exports: {
       ".": "./src/server.ts",
+      "./compute": "./src/compute/package_entry.ts",
       "./package.json": "./package.json",
     },
     dependencies: rootPackage.dependencies,

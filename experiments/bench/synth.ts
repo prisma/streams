@@ -211,7 +211,7 @@ async function runMemoryStress(): Promise<void> {
     } as Record<string, string>;
 
     const proc = Bun.spawn({
-      cmd: ["bun", "run", "src/server.ts", "--stats", "--object-store", "local"],
+      cmd: ["bun", "run", "src/server.ts", "--stats", "--object-store", "local", "--no-auth"],
       env,
       stdout: "pipe",
       stderr: "pipe",

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -97,7 +97,18 @@ try {
 
   run("bun", ["add", tarballPath], consumerDir);
 
-  const child = spawn("bun", ["x", "prisma-streams-server", "--object-store", "local"], {
+  const installedPackageJsonPath = join(consumerDir, "node_modules", "@prisma", "streams-server", "package.json");
+  const installedPackageJson = JSON.parse(readFileSync(installedPackageJsonPath, "utf8"));
+  const computeExport = installedPackageJson.exports?.["./compute"];
+  if (computeExport !== "./src/compute/package_entry.ts") {
+    throw new Error(`unexpected @prisma/streams-server/compute export: ${computeExport}`);
+  }
+  const computeExportPath = join(consumerDir, "node_modules", "@prisma", "streams-server", computeExport.slice(2));
+  if (!existsSync(computeExportPath)) {
+    throw new Error(`missing @prisma/streams-server/compute target: ${computeExportPath}`);
+  }
+
+  const child = spawn("bun", ["x", "prisma-streams-server", "--object-store", "local", "--no-auth"], {
     cwd: consumerDir,
     env: {
       ...process.env,

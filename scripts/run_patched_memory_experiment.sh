@@ -72,7 +72,7 @@ append_note "patched-phase-start" \
 
 (
   export MIMALLOC_SHOW_STATS="${MIMALLOC_SHOW_STATS:-1}"
-  bun run src/server.ts --object-store r2 --auto-tune="${AUTO_TUNE_MB}"
+  bun run src/server.ts --object-store r2 --auto-tune="${AUTO_TUNE_MB}" --no-auth
 ) >"${SERVER_LOG_PATH}" 2>&1 &
 server_pid=$!
 

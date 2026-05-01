@@ -19,7 +19,7 @@ DURABLE_STREAMS_R2_SECRET_ACCESS_KEY=1741cb2577a9f400c7a3ccbfdff3e46071ddd029ee0
 DS_LOCAL_BACKLOG_MAX_BYTES=7516192768 \
 DS_SEGMENT_CACHE_MAX_BYTES=2147483648 \
 DS_INDEX_RUN_CACHE_MAX_BYTES=536870912 \
-bun run src/server.ts --object-store r2 --auto-tune=4096
+bun run src/server.ts --object-store r2 --auto-tune=4096 --no-auth
 ```
 
 Ingest command:
