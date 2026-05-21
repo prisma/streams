@@ -22,7 +22,10 @@ export function buildLocalConfig(args: { name?: string; port?: number }): Config
     autoTuneEffectiveMemoryLimitMb: effectiveMemoryLimitMb,
     rootDir: dataDir,
     dbPath,
-    memoryLimitBytes: effectiveMemoryLimitMb * 1024 * 1024,
+    // Local mode uses the preset for cache and concurrency budgets only. It
+    // may be embedded in a larger host process, so process-level pressure
+    // monitoring must stay disabled.
+    memoryLimitBytes: 0,
     segmentMaxBytes: tune.segmentMaxMiB * 1024 * 1024,
     segmentTargetRows: tune.segmentTargetRows,
     sqliteCacheBytes: tune.sqliteCacheMb * 1024 * 1024,

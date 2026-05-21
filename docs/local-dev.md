@@ -11,6 +11,9 @@ It is different from the full self-hosted server:
 - optimized for loopback and embedded tooling, not hostile-network deployment
 - fixed built-in `1024 MB` auto-tune preset so embedded local servers have
   predictable cache and concurrency limits
+- no process-level memory pressure guard; local mode may run inside a larger
+  host Node/Bun process, so it does not sample or throttle based on whole-process
+  RSS
 
 ## Supported Package Surface
 
@@ -83,6 +86,8 @@ In local mode this reports:
 - `auto_tune.enabled = true`
 - `auto_tune.preset_mb = 1024`
 - the effective local cache and concurrency settings derived from that preset
+- `configured_limits.memory.pressure_limit_bytes = 0`, because the local
+  package disables the process-level memory pressure guard
 
 The same package surface also includes the current stream subresources, such as
 alphabetical routing-key listing via:

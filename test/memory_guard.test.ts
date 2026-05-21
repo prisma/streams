@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { darwinTopMemArgs, parseDarwinTopMemBytes, parseLinuxMemAvailableBytes } from "../src/memory";
+import { MemoryPressureMonitor, darwinTopMemArgs, parseDarwinTopMemBytes, parseLinuxMemAvailableBytes } from "../src/memory";
 
 describe("memory pressure monitor", () => {
   test("parses darwin top mem output", () => {
@@ -36,5 +36,26 @@ MemAvailable:    3004396 kB
 Buffers:          102848 kB
 `;
     expect(parseLinuxMemAvailableBytes(meminfo)).toBe(3_004_396 * 1024);
+  });
+
+  test("does not start sampling when the pressure limit is disabled", async () => {
+    let samples = 0;
+    const monitor = new MemoryPressureMonitor(0, {
+      intervalMs: 50,
+      onSample: () => {
+        samples += 1;
+      },
+    });
+
+    try {
+      monitor.start();
+      await Bun.sleep(100);
+    } finally {
+      monitor.stop();
+    }
+
+    expect(samples).toBe(0);
+    expect(monitor.isOverLimit()).toBe(false);
+    expect(monitor.getLimitBytes()).toBe(0);
   });
 });

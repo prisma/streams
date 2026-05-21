@@ -62,6 +62,10 @@ runtime overview and command surface, see `overview.md`.
 
 Concurrency/load-shedding note:
 - Streams no longer rejects HTTP requests just because the process is under memory pressure.
+- Local mode keeps `DS_MEMORY_LIMIT_*` disabled even though it applies the
+  built-in `1024 MiB` auto-tune preset for cache and concurrency budgets. This
+  prevents an embedded local server from sampling or throttling based on the
+  host process RSS.
 - Instead, it uses bounded concurrency everywhere:
   - ingest/create requests are admitted through `DS_INGEST_CONCURRENCY`
   - read requests are admitted through `DS_READ_CONCURRENCY`

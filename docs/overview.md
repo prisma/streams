@@ -133,9 +133,9 @@ The published `@prisma/streams-local` surface is built to run on Bun `>=1.2.0`
 and Node `>=22`. The full self-hosted server remains Bun-only.
 
 The local embedded runtime always applies the built-in `1024 MB` auto-tune
-preset. That keeps the local package on the current control-plane and endpoint
-surface while giving Prisma CLI a predictable cache and concurrency budget
-without extra configuration.
+preset for cache and concurrency budgets. It does not enable the process-level
+memory pressure guard, because embedded callers may share a larger host
+Node/Bun process whose RSS is not owned by Streams.
 
 The package smoke tests cover the local Live path under both host runtimes:
 

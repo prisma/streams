@@ -63,6 +63,9 @@ export class MemoryPressureMonitor {
   ) {
     const requestedLimitBytes = Math.max(0, Math.floor(limitBytes));
     this.limitBytes = deriveMemoryPressureLimitBytes(requestedLimitBytes);
+    const initialRssBytes = process.memoryUsage().rss;
+    this.lastRssBytes = initialRssBytes;
+    this.maxRssBytes = initialRssBytes;
     if (requestedLimitBytes > 0 && this.limitBytes < requestedLimitBytes) {
       // eslint-disable-next-line no-console
       console.warn(
@@ -83,6 +86,7 @@ export class MemoryPressureMonitor {
 
   start(): void {
     if (this.timer) return;
+    if (this.limitBytes <= 0) return;
     this.sample();
     this.timer = setInterval(() => this.sample(), this.intervalMs);
   }

@@ -203,6 +203,9 @@ describe("local durable streams server", () => {
           preset_mb: LOCAL_AUTO_TUNE_PRESET_MB,
           effective_memory_limit_mb: LOCAL_AUTO_TUNE_PRESET_MB,
         });
+        expect(serverDetails.configured_limits.memory.pressure_limit_bytes).toBe(0);
+        expect(serverDetails.runtime.memory.pressure_active).toBe(false);
+        expect(serverDetails.runtime.memory.pressure_limit_bytes).toBe(0);
         expect(serverDetails.runtime.memory.process).toEqual({
           rss_bytes: expect.any(Number),
           heap_total_bytes: expect.any(Number),
