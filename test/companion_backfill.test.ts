@@ -975,26 +975,27 @@ describe("bundled companions and backfill", () => {
         const plan = buildDesiredSearchCompanionPlan(registry);
         const companionIndex = (app.deps.indexer as any).companionIndex;
         let yieldCount = 0;
+        let buildPending = false;
+        let yieldedTimerWhileBuildPending = false;
         companionIndex.foregroundActivity = {
           yieldBackgroundWork: async () => {
             yieldCount += 1;
-            await sleep(0);
+            await new Promise<void>((resolve) => {
+              setTimeout(() => {
+                yieldedTimerWhileBuildPending = buildPending;
+                resolve();
+              }, 0);
+            });
           },
         };
 
-        let timerFiredAt = 0;
-        const startedAt = Date.now();
-        setTimeout(() => {
-          timerFiredAt = Date.now() - startedAt;
-        }, 0);
-
+        buildPending = true;
         const buildRes = await companionIndex.buildBundledCompanionResult(registry, plan, 1, segment);
-        const finishedAt = Date.now() - startedAt;
+        buildPending = false;
 
         expect(Result.isError(buildRes)).toBeFalse();
         expect(yieldCount).toBeGreaterThan(0);
-        expect(timerFiredAt).toBeGreaterThan(0);
-        expect(timerFiredAt).toBeLessThan(finishedAt);
+        expect(yieldedTimerWhileBuildPending).toBeTrue();
       } finally {
         app.close();
         rmSync(root, { recursive: true, force: true });
