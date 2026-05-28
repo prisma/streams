@@ -33,6 +33,7 @@ export type OpenVfsRepoOptions = {
   repoId?: string;
   authToken?: string;
   fetch?: VfsFetch;
+  profileKind?: "vfs-repo" | "workspace-fs";
 };
 
 export type VfsEnsureOptions = {
@@ -97,6 +98,7 @@ export class VfsRepoClient {
   readonly stream: string;
   private readonly fetchImpl: VfsFetch;
   private readonly authToken?: string;
+  private readonly profileKind: "vfs-repo" | "workspace-fs";
 
   constructor(options: OpenVfsRepoOptions) {
     const stream = options.stream ?? (options.tenantId && options.repoId ? vfsRepoStreamName(options.tenantId, options.repoId) : null);
@@ -107,6 +109,7 @@ export class VfsRepoClient {
     this.stream = stream;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.authToken = options.authToken;
+    this.profileKind = options.profileKind ?? "vfs-repo";
   }
 
   private headers(extra: HeadersInit = {}): Headers {
@@ -159,7 +162,7 @@ export class VfsRepoClient {
       body: JSON.stringify({
         apiVersion: "durable.streams/profile/v1",
         profile: {
-          kind: "vfs-repo",
+          kind: this.profileKind,
           version: 1,
           gitRepo: options.gitRepoStream ? { stream: options.gitRepoStream } : undefined,
         },

@@ -33,3 +33,19 @@ export function gitPackPath(packId: string): string {
 export function gitPackIndexPath(packId: string): string {
   return `packs/${packId}.idx`;
 }
+
+export function gitRefCheckpointPath(generation: number): string {
+  return `checkpoints/ref-${String(generation).padStart(12, "0")}.json`;
+}
+
+export function gitLatestRefCheckpointPath(): string {
+  return "checkpoints/ref-latest.json";
+}
+
+export function gitRefCheckpointKey(repoStream: string, format: GitObjectFormat, generation: number): string {
+  return `${gitObjectArtifactPrefix(repoStream, format)}/${gitRefCheckpointPath(generation)}`;
+}
+
+export function gitLatestRefCheckpointKey(repoStream: string, format: GitObjectFormat): string {
+  return `${gitObjectArtifactPrefix(repoStream, format)}/${gitLatestRefCheckpointPath()}`;
+}

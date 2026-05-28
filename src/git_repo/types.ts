@@ -35,6 +35,7 @@ export type GitRepoProfileConfig = {
     allowLocalPathImport: boolean;
     maxBytes: number;
     gitBinary: string;
+    gitCommandTimeoutMs: number;
   };
 };
 
@@ -69,6 +70,7 @@ export function defaultGitRepoProfileConfig(): GitRepoProfileConfig {
       allowLocalPathImport: false,
       maxBytes: 512 * 1024 * 1024,
       gitBinary: "git",
+      gitCommandTimeoutMs: 30_000,
     },
   };
 }
@@ -100,6 +102,7 @@ export type GitRefTransactionCommittedRecord = {
   repoId: string;
   txnId: string;
   idempotencyKey?: string;
+  requestHash: string;
   actor?: string;
   createdAt: string;
   refUpdates: GitRefUpdate[];

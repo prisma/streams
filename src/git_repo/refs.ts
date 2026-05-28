@@ -11,11 +11,39 @@ export type GitRefError = {
   message: string;
 };
 
+export const MAX_GIT_REF_UPDATES = 1000;
+
 export function normalizeGitRef(ref: string): string {
   const raw = ref.trim();
   if (raw === "HEAD") return raw;
   if (raw.startsWith("refs/")) return raw;
   return `refs/heads/${raw}`;
+}
+
+export function validateGitRefNameResult(ref: string, opts: { allowHead?: boolean } = {}): Result<string, GitRefError> {
+  const normalized = normalizeGitRef(ref);
+  if (normalized === "HEAD") {
+    return opts.allowHead === true ? Result.ok(normalized) : Result.err({ message: "HEAD is symbolic and cannot be updated as a ref" });
+  }
+  if (!normalized.startsWith("refs/")) return Result.err({ message: `invalid git ref: ${ref}` });
+  if (normalized.length > 1024) return Result.err({ message: `invalid git ref: ${ref}` });
+  if (normalized.startsWith("/") || normalized.endsWith("/") || normalized.includes("//")) {
+    return Result.err({ message: `invalid git ref: ${ref}` });
+  }
+  if (normalized.endsWith(".") || normalized.includes("..") || normalized.includes("@{") || normalized === "@") {
+    return Result.err({ message: `invalid git ref: ${ref}` });
+  }
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(normalized)) {
+    return Result.err({ message: `invalid git ref: ${ref}` });
+  }
+  const parts = normalized.split("/");
+  if (parts.length < 3) return Result.err({ message: `invalid git ref: ${ref}` });
+  for (const part of parts) {
+    if (part === "" || part.startsWith(".") || part.endsWith(".lock")) {
+      return Result.err({ message: `invalid git ref: ${ref}` });
+    }
+  }
+  return Result.ok(normalized);
 }
 
 export function routingKeyForGitRef(ref: string): string {
@@ -31,12 +59,18 @@ export function isGitRefTransactionRecord(record: GitRepoRecord): record is GitR
 }
 
 export function validateRefUpdateResult(update: GitRefUpdate): Result<GitRefUpdate, GitRefError> {
-  const ref = normalizeGitRef(update.ref);
-  if (!/^refs\/[A-Za-z0-9._/\-]+$/.test(ref) && ref !== "HEAD") {
-    return Result.err({ message: `invalid git ref: ${update.ref}` });
+  if (!update || typeof update !== "object") return Result.err({ message: "ref update must be an object" });
+  if (typeof update.ref !== "string" || update.ref.trim() === "") return Result.err({ message: "ref update ref must be a non-empty string" });
+  const refRes = validateGitRefNameResult(update.ref, { allowHead: false });
+  if (Result.isError(refRes)) return refRes;
+  if (update.oldOid !== null && update.oldOid !== undefined && typeof update.oldOid !== "string") {
+    return Result.err({ message: `oldOid for ${update.ref} must be a string or null` });
+  }
+  if (update.newOid !== null && update.newOid !== undefined && typeof update.newOid !== "string") {
+    return Result.err({ message: `newOid for ${update.ref} must be a string or null` });
   }
   return Result.ok({
-    ref,
+    ref: refRes.value,
     oldOid: update.oldOid ?? null,
     newOid: update.newOid ?? null,
   });
@@ -47,9 +81,12 @@ export function validateRefTransactionRequestResult(body: GitRefTransactionReque
   if (!Array.isArray(body.refUpdates) || body.refUpdates.length === 0) {
     return Result.err({ message: "refUpdates must be a non-empty array" });
   }
+  if (body.refUpdates.length > MAX_GIT_REF_UPDATES) {
+    return Result.err({ message: `refUpdates must contain at most ${MAX_GIT_REF_UPDATES} entries` });
+  }
   const refUpdates: GitRefUpdate[] = [];
   const seenRefs = new Set<string>();
-  for (const raw of body.refUpdates.slice(0, 1000)) {
+  for (const raw of body.refUpdates) {
     const updateRes = validateRefUpdateResult(raw);
     if (Result.isError(updateRes)) return updateRes;
     if (seenRefs.has(updateRes.value.ref)) return Result.err({ message: `duplicate ref update: ${updateRes.value.ref}` });

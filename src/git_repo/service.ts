@@ -1,21 +1,24 @@
 import { Buffer } from "node:buffer";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Result } from "better-result";
 import type { ObjectStore } from "../objectstore/interface";
+import { encodeOffset } from "../offset";
 import type { StreamReader } from "../reader";
 import type { StreamProfileAppendJsonRecord, StreamProfileAppendJsonResult, StreamProfileAppendJsonError } from "../profiles/profile";
 import {
   type GitLooseObjectResponse,
   type GitObjectFormat,
   type GitObjectType,
+  type GitRefCheckpoint,
   type GitRefTransactionCommittedRecord,
   type GitRefTransactionRequest,
   type GitRepoObjectSet,
   type GitRepoRecord,
 } from "./types";
-import type { GitObject } from "./objects";
-import { gitLooseObjectKey, gitObjectArtifactPrefix } from "./artifacts";
-import { applyRefUpdatesResult, buildRefs, findTransaction, routingKeyForGitTxn } from "./refs";
+import { hashGitObject, type GitObject } from "./objects";
+import { gitLatestRefCheckpointKey, gitLooseObjectKey, gitObjectArtifactPrefix, gitRefCheckpointKey } from "./artifacts";
+import { applyRefUpdatesResult, buildRefs, findTransaction, routingKeyForGitTxn, validateRefTransactionRequestResult } from "./refs";
+import { parseGitCommitBodyResult, parseGitTreeBodyResult } from "./tree";
 
 export type GitRepoServiceError = {
   status: 400 | 404 | 409 | 500;
@@ -94,6 +97,93 @@ export async function readGitRecordsResult(args: Pick<GitRepoServiceArgs, "strea
   return Result.ok(snapshotRes.value.records);
 }
 
+async function readGitRecordsAfterOffsetResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "reader">,
+  offset: number
+): Promise<Result<GitRepoRecord[], GitRepoServiceError>> {
+  const values: GitRepoRecord[] = [];
+  let cursor = offset < 0 ? "-1" : encodeOffset(0, BigInt(offset), 0);
+  for (;;) {
+    const batchRes = await args.reader.readResult({ stream: args.stream, offset: cursor, key: null, format: "raw", filter: null });
+    if (Result.isError(batchRes)) {
+      if (batchRes.error.kind === "not_found" || batchRes.error.kind === "gone") return Result.ok(values);
+      return Result.err({ status: 500, message: batchRes.error.message });
+    }
+    for (const record of batchRes.value.records) {
+      try {
+        const parsed = JSON.parse(TEXT_DECODER.decode(record.payload)) as Partial<GitRepoRecord>;
+        if (typeof parsed.type === "string") values.push(parsed as GitRepoRecord);
+      } catch {
+        return Result.err({ status: 500, message: `invalid JSON record in ${args.stream}` });
+      }
+    }
+    if (batchRes.value.nextOffsetSeq >= batchRes.value.endOffsetSeq) return Result.ok(values);
+    cursor = batchRes.value.nextOffset;
+  }
+}
+
+function applyRecordsToRefs(refs: Record<string, string | null>, records: GitRepoRecord[]): Record<string, string | null> {
+  const next = { ...refs };
+  for (const record of records) {
+    if (record.type !== "ref-transaction-committed") continue;
+    for (const update of record.refUpdates) next[update.ref] = update.newOid ?? null;
+  }
+  return next;
+}
+
+function parseRefCheckpointBytesResult(bytes: Uint8Array, stream: string): Result<GitRefCheckpoint, GitRepoServiceError> {
+  try {
+    const parsed = JSON.parse(TEXT_DECODER.decode(bytes)) as Partial<GitRefCheckpoint>;
+    if (parsed.repoId !== stream) return Result.err({ status: 500, message: "git ref checkpoint belongs to another repo" });
+    if (!Number.isSafeInteger(parsed.streamOffset)) return Result.err({ status: 500, message: "git ref checkpoint streamOffset is invalid" });
+    if (!parsed.refs || typeof parsed.refs !== "object" || Array.isArray(parsed.refs)) {
+      return Result.err({ status: 500, message: "git ref checkpoint refs are invalid" });
+    }
+    if (!parsed.head || typeof parsed.head.symbolicRef !== "string") {
+      return Result.err({ status: 500, message: "git ref checkpoint head is invalid" });
+    }
+    return Result.ok(parsed as GitRefCheckpoint);
+  } catch {
+    return Result.err({ status: 500, message: "git ref checkpoint JSON is invalid" });
+  }
+}
+
+export async function writeGitRefCheckpointArtifactsResult(args: GitRepoServiceArgs & {
+  format: GitObjectFormat;
+  checkpoint: GitRefCheckpoint;
+}): Promise<Result<{ refCheckpointUri: string; latestRefCheckpointUri: string }, GitRepoServiceError>> {
+  const bytes = new TextEncoder().encode(JSON.stringify(args.checkpoint));
+  const refCheckpointUri = gitRefCheckpointKey(args.stream, args.format, args.checkpoint.generation);
+  const latestRefCheckpointUri = gitLatestRefCheckpointKey(args.stream, args.format);
+  const putCheckpointRes = await putObjectStoreResult(args.objectStore, refCheckpointUri, bytes, "application/json");
+  if (Result.isError(putCheckpointRes)) return putCheckpointRes;
+  const putLatestRes = await putObjectStoreResult(args.objectStore, latestRefCheckpointUri, bytes, "application/json");
+  if (Result.isError(putLatestRes)) return putLatestRes;
+  return Result.ok({ refCheckpointUri, latestRefCheckpointUri });
+}
+
+export async function readGitRefsSnapshotResult(args: GitRepoServiceArgs & {
+  format: GitObjectFormat;
+}): Promise<Result<{ refs: Record<string, string | null>; checkpoint: GitRefCheckpoint | null }, GitRepoServiceError>> {
+  const latestKey = gitLatestRefCheckpointKey(args.stream, args.format);
+  const checkpointBytesRes = await getObjectStoreBytesResult(args.objectStore, latestKey);
+  if (Result.isError(checkpointBytesRes)) return checkpointBytesRes;
+  if (checkpointBytesRes.value) {
+    const checkpointRes = parseRefCheckpointBytesResult(checkpointBytesRes.value, args.stream);
+    if (Result.isError(checkpointRes)) return checkpointRes;
+    const tailRes = await readGitRecordsAfterOffsetResult(args, checkpointRes.value.streamOffset);
+    if (Result.isError(tailRes)) return tailRes;
+    return Result.ok({
+      refs: applyRecordsToRefs(checkpointRes.value.refs, tailRes.value),
+      checkpoint: checkpointRes.value,
+    });
+  }
+
+  const recordsRes = await readGitRecordsResult(args);
+  if (Result.isError(recordsRes)) return recordsRes;
+  return Result.ok({ refs: buildRefs(recordsRes.value), checkpoint: null });
+}
+
 export async function appendGitRecordResult(
   args: Pick<GitRepoServiceArgs, "stream" | "appendJsonRecords">,
   record: GitRepoRecord,
@@ -147,6 +237,17 @@ export async function getObjectStoreRangeResult(
 ): Promise<Result<Uint8Array | null, GitRepoServiceError>> {
   try {
     return Result.ok(await objectStore.get(key, { range: { start, end } }));
+  } catch {
+    return Result.err({ status: 500, message: "git object-store GET failed" });
+  }
+}
+
+async function getObjectStoreBytesResult(
+  objectStore: ObjectStore,
+  key: string
+): Promise<Result<Uint8Array | null, GitRepoServiceError>> {
+  try {
+    return Result.ok(await objectStore.get(key));
   } catch {
     return Result.err({ status: 500, message: "git object-store GET failed" });
   }
@@ -282,17 +383,176 @@ export async function validateObjectSetResult(args: {
   return Result.ok(undefined);
 }
 
+function oidPattern(format: GitObjectFormat): RegExp {
+  return format === "sha256" ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
+}
+
+function gitError(status: GitRepoServiceError["status"], message: string): GitRepoServiceError {
+  return { status, message };
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
+function sortedObjectSet(objects: GitRepoObjectSet | undefined): GitRepoObjectSet | undefined {
+  if (!objects) return undefined;
+  return {
+    ...objects,
+    looseObjectUris: objects.looseObjectUris ? objects.looseObjectUris.slice().sort((a, b) => a.localeCompare(b)) : undefined,
+  };
+}
+
+function requestHashForRefTransaction(request: GitRefTransactionRequest): string {
+  const refUpdates = request.refUpdates
+    .slice()
+    .sort((a, b) => a.ref.localeCompare(b.ref))
+    .map((update) => ({ ref: update.ref, oldOid: update.oldOid ?? null, newOid: update.newOid ?? null }));
+  return createHash("sha256").update(canonicalJson({ refUpdates, objects: sortedObjectSet(request.objects) })).digest("hex");
+}
+
+function parseTagTarget(body: Uint8Array, format: GitObjectFormat): string | null {
+  const text = TEXT_DECODER.decode(body);
+  const objectLine = text.split("\n").find((line) => line.startsWith("object "));
+  if (!objectLine) return null;
+  const oid = objectLine.slice("object ".length).trim();
+  return oidPattern(format).test(oid) ? oid : null;
+}
+
+async function readVerifiedObjectResult(args: {
+  repoStream: string;
+  objectStore: ObjectStore;
+  format: GitObjectFormat;
+  oid: string;
+}): Promise<Result<{ header: GitLooseObjectHeader; body: Uint8Array }, GitRepoServiceError>> {
+  const objectRes = await readLooseGitObjectBodyResult({
+    repoStream: args.repoStream,
+    objectStore: args.objectStore,
+    format: args.format,
+    oid: args.oid,
+  });
+  if (Result.isError(objectRes)) {
+    if (objectRes.error.status === 404) return Result.err(gitError(409, `referenced git object is missing: ${args.oid}`));
+    return objectRes;
+  }
+  const actualOid = hashGitObject(objectRes.value.header.type, objectRes.value.body, args.format);
+  if (actualOid !== args.oid) return Result.err(gitError(409, `git object hash mismatch for ${args.oid}`));
+  return objectRes;
+}
+
+function expectedChildType(entryType: "file" | "dir" | "symlink"): GitObjectType {
+  return entryType === "dir" ? "tree" : "blob";
+}
+
+async function validateReachableGitObjectGraphResult(args: {
+  repoStream: string;
+  objectStore: ObjectStore;
+  format: GitObjectFormat;
+  ref: string;
+  rootOid: string;
+}): Promise<Result<void, GitRepoServiceError>> {
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  const visit = async (oid: string, expectedType?: GitObjectType): Promise<Result<void, GitRepoServiceError>> => {
+    if (visited.has(oid)) return Result.ok(undefined);
+    if (visiting.has(oid)) return Result.ok(undefined);
+    if (!oidPattern(args.format).test(oid)) return Result.err(gitError(400, `invalid git object id: ${oid}`));
+    visiting.add(oid);
+    const objectRes = await readVerifiedObjectResult({
+      repoStream: args.repoStream,
+      objectStore: args.objectStore,
+      format: args.format,
+      oid,
+    });
+    if (Result.isError(objectRes)) return objectRes;
+    const objectType = objectRes.value.header.type;
+    if (expectedType && objectType !== expectedType) {
+      return Result.err(gitError(409, `git object ${oid} is ${objectType}, expected ${expectedType}`));
+    }
+    if (oid === args.rootOid && args.ref.startsWith("refs/heads/") && objectType !== "commit") {
+      return Result.err(gitError(409, `branch ref ${args.ref} must point at a commit`));
+    }
+    if (oid === args.rootOid && objectType !== "commit" && objectType !== "tag") {
+      return Result.err(gitError(409, `ref ${args.ref} must point at a commit or tag`));
+    }
+
+    if (objectType === "commit") {
+      const commitRes = parseGitCommitBodyResult(objectRes.value.body, args.format);
+      if (Result.isError(commitRes)) return Result.err(gitError(409, commitRes.error.message));
+      const treeRes = await visit(commitRes.value.tree, "tree");
+      if (Result.isError(treeRes)) return treeRes;
+      for (const parent of commitRes.value.parents) {
+        const parentRes = await visit(parent, "commit");
+        if (Result.isError(parentRes)) return parentRes;
+      }
+    } else if (objectType === "tree") {
+      const treeRes = parseGitTreeBodyResult(objectRes.value.body, args.format);
+      if (Result.isError(treeRes)) return Result.err(gitError(409, treeRes.error.message));
+      for (const entry of treeRes.value) {
+        const childRes = await visit(entry.oid, expectedChildType(entry.type));
+        if (Result.isError(childRes)) return childRes;
+      }
+    } else if (objectType === "tag") {
+      const target = parseTagTarget(objectRes.value.body, args.format);
+      if (!target) return Result.err(gitError(409, `git tag ${oid} is missing an object target`));
+      const targetRes = await visit(target);
+      if (Result.isError(targetRes)) return targetRes;
+    }
+
+    visiting.delete(oid);
+    visited.add(oid);
+    return Result.ok(undefined);
+  };
+
+  return visit(args.rootOid);
+}
+
+async function validateRefTransactionObjectsResult(args: {
+  repoStream: string;
+  objectStore: ObjectStore;
+  format: GitObjectFormat;
+  request: GitRefTransactionRequest;
+}): Promise<Result<void, GitRepoServiceError>> {
+  for (const update of args.request.refUpdates) {
+    if (!update.newOid) continue;
+    const graphRes = await validateReachableGitObjectGraphResult({
+      repoStream: args.repoStream,
+      objectStore: args.objectStore,
+      format: args.format,
+      ref: update.ref,
+      rootOid: update.newOid,
+    });
+    if (Result.isError(graphRes)) return graphRes;
+  }
+  return Result.ok(undefined);
+}
+
+function validateRefTransactionOidShapesResult(format: GitObjectFormat, request: GitRefTransactionRequest): Result<void, GitRepoServiceError> {
+  const oidRe = oidPattern(format);
+  for (const update of request.refUpdates) {
+    if (update.oldOid !== null && !oidRe.test(update.oldOid)) return Result.err(gitError(400, `invalid oldOid for ${update.ref}`));
+    if (update.newOid !== null && !oidRe.test(update.newOid)) return Result.err(gitError(400, `invalid newOid for ${update.ref}`));
+  }
+  return Result.ok(undefined);
+}
+
 export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
   format: GitObjectFormat;
   request: GitRefTransactionRequest;
 }): Promise<Result<GitRefTransactionCommitResult, GitRepoServiceError>> {
-  const objectSetRes = await validateObjectSetResult({
-    repoStream: args.stream,
-    objectStore: args.objectStore,
-    format: args.format,
-    objectSet: args.request.objects,
-  });
-  if (Result.isError(objectSetRes)) return objectSetRes;
+  const requestRes = validateRefTransactionRequestResult(args.request);
+  if (Result.isError(requestRes)) return Result.err({ status: 400, message: requestRes.error.message });
+  const request = requestRes.value;
+  const requestHash = requestHashForRefTransaction(request);
+  const oidShapeRes = validateRefTransactionOidShapesResult(args.format, request);
+  if (Result.isError(oidShapeRes)) return oidShapeRes;
+  let requestObjectsValidated = false;
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const snapshotRes = await readGitRecordSnapshotResult(args);
@@ -300,10 +560,13 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
     const records = snapshotRes.value.records;
 
     const existing = findTransaction(records, {
-      txnId: args.request.txnId,
-      idempotencyKey: args.request.idempotencyKey,
+      txnId: request.txnId,
+      idempotencyKey: request.idempotencyKey,
     });
     if (existing) {
+      if (existing.requestHash !== requestHash) {
+        return Result.err({ status: 409, message: "idempotency key or transaction id was already used for a different request" });
+      }
       return Result.ok({
         transaction: existing,
         refs: buildRefs(records),
@@ -312,18 +575,37 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
     }
 
     const currentRefs = buildRefs(records);
-    const nextRefsRes = applyRefUpdatesResult(currentRefs, args.request.refUpdates);
+    const nextRefsRes = applyRefUpdatesResult(currentRefs, request.refUpdates);
     if (Result.isError(nextRefsRes)) return Result.err({ status: 409, message: nextRefsRes.error.message });
+
+    if (!requestObjectsValidated) {
+      const objectSetRes = await validateObjectSetResult({
+        repoStream: args.stream,
+        objectStore: args.objectStore,
+        format: args.format,
+        objectSet: request.objects,
+      });
+      if (Result.isError(objectSetRes)) return objectSetRes;
+      const graphRes = await validateRefTransactionObjectsResult({
+        repoStream: args.stream,
+        objectStore: args.objectStore,
+        format: args.format,
+        request,
+      });
+      if (Result.isError(graphRes)) return graphRes;
+      requestObjectsValidated = true;
+    }
 
     const transaction: GitRefTransactionCommittedRecord = {
       type: "ref-transaction-committed",
       repoId: args.stream,
-      txnId: args.request.txnId ?? randomUUID(),
-      idempotencyKey: args.request.idempotencyKey,
-      actor: args.request.actor,
+      txnId: request.txnId ?? randomUUID(),
+      idempotencyKey: request.idempotencyKey,
+      requestHash,
+      actor: request.actor,
       createdAt: new Date().toISOString(),
-      refUpdates: args.request.refUpdates,
-      objects: args.request.objects,
+      refUpdates: request.refUpdates,
+      objects: request.objects,
     };
     const appendRes = await appendGitRecordResult(args, transaction, routingKeyForGitTxn(transaction.txnId), snapshotRes.value.nextOffset);
     if (Result.isError(appendRes)) {

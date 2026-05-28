@@ -14,18 +14,20 @@ import {
 import {
   commitGitRefTransactionResult,
   readGitRecordsResult,
+  readGitRecordSnapshotResult,
   readLooseGitObjectBodyResult,
   appendGitRecordResult,
   getObjectStoreRangeResult,
   headObjectStoreResult,
   putObjectStoreResult,
+  writeGitRefCheckpointArtifactsResult,
   writeLooseGitObjectResult,
   type GitRepoServiceArgs,
   type GitRepoServiceError,
 } from "./service";
 import { buildRefCheckpoint } from "./maintenance";
 import { gitObjectArtifactPrefix, gitPackIndexPath, gitPackPath } from "./artifacts";
-import { buildRefs, normalizeGitRef } from "./refs";
+import { buildRefs, normalizeGitRef, validateGitRefNameResult } from "./refs";
 import { parseGitCommitBodyResult, parseGitTreeBodyResult } from "./tree";
 import type {
   GitImportRequest,
@@ -80,6 +82,26 @@ function maxPushBytes(config: GitRepoProfileConfig): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : maxImportExportBytes(config);
 }
 
+function gitCommandTimeoutMs(config: GitRepoProfileConfig): number {
+  const value = config.importExport?.gitCommandTimeoutMs;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 30_000;
+}
+
+function sanitizedGitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: tmpdir(),
+    XDG_CONFIG_HOME: tmpdir(),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    SSH_ASKPASS: "",
+    LC_ALL: "C",
+  };
+  return extra ? { ...env, ...extra } : env;
+}
+
 function runGitResult(
   config: GitRepoProfileConfig,
   args: string[],
@@ -87,11 +109,16 @@ function runGitResult(
 ): Result<Buffer, GitRepoServiceError> {
   const proc = spawnSync(gitBinary(config), args, {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : undefined,
+    env: sanitizedGitEnv(opts.env),
     input: opts.input ? Buffer.from(opts.input.buffer, opts.input.byteOffset, opts.input.byteLength) : undefined,
     maxBuffer: opts.maxBuffer ?? maxImportExportBytes(config),
+    timeout: gitCommandTimeoutMs(config),
   });
-  if (proc.error) return Result.err(gitError(500, proc.error.message));
+  if (proc.error) {
+    const code = typeof (proc.error as NodeJS.ErrnoException).code === "string" ? (proc.error as NodeJS.ErrnoException).code : "";
+    if (code === "ETIMEDOUT") return Result.err(gitError(500, `git ${args[0] ?? ""} timed out`));
+    return Result.err(gitError(500, proc.error.message));
+  }
   if (proc.status !== 0) {
     const stderr = TEXT_DECODER.decode(proc.stderr).trim();
     return Result.err(gitError(opts.status ?? 409, stderr || `git ${args[0] ?? ""} failed`));
@@ -103,17 +130,23 @@ function isGitObjectType(value: string): value is GitObjectType {
   return value === "blob" || value === "tree" || value === "commit" || value === "tag";
 }
 
-function parseRefsMap(value: unknown): Result<Record<string, GitOid>, GitRepoServiceError> {
+function oidPattern(format: GitObjectFormat): RegExp {
+  return format === "sha256" ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
+}
+
+function parseRefsMap(value: unknown, format: GitObjectFormat): Result<Record<string, GitOid>, GitRepoServiceError> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return Result.err(gitError(400, "refs must be an object"));
   const refs: Record<string, GitOid> = {};
   for (const [rawRef, rawOid] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof rawOid !== "string" || !/^[0-9a-f]{40}$/.test(rawOid)) return Result.err(gitError(400, `invalid oid for ref ${rawRef}`));
-    refs[normalizeGitRef(rawRef)] = rawOid;
+    const refRes = validateGitRefNameResult(rawRef, { allowHead: false });
+    if (Result.isError(refRes)) return Result.err(gitError(400, refRes.error.message));
+    if (typeof rawOid !== "string" || !oidPattern(format).test(rawOid)) return Result.err(gitError(400, `invalid oid for ref ${rawRef}`));
+    refs[refRes.value] = rawOid;
   }
   return Result.ok(refs);
 }
 
-function parseImportRequestResult(raw: unknown): Result<GitImportRequest, GitRepoServiceError> {
+function parseImportRequestResult(raw: unknown, format: GitObjectFormat): Result<GitImportRequest, GitRepoServiceError> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return Result.err(gitError(400, "git import request must be an object"));
   const body = raw as Record<string, unknown>;
   const common = {
@@ -127,7 +160,7 @@ function parseImportRequestResult(raw: unknown): Result<GitImportRequest, GitRep
   }
   if (body.format === "pack") {
     if (typeof body.packBase64 !== "string") return Result.err(gitError(400, "packBase64 must be base64"));
-    const refsRes = parseRefsMap(body.refs);
+    const refsRes = parseRefsMap(body.refs, format);
     if (Result.isError(refsRes)) return refsRes;
     return Result.ok({ format: "pack", packBase64: body.packBase64, refs: refsRes.value, ...common });
   }
@@ -336,7 +369,7 @@ export async function importGitRepoResult(
   rawRequest: unknown
 ): Promise<Result<GitImportResponse, GitRepoServiceError>> {
   if (!importExportEnabled(args.config)) return Result.err(gitError(404, "git import/export is disabled for this git-repo profile"));
-  const requestRes = parseImportRequestResult(rawRequest);
+  const requestRes = parseImportRequestResult(rawRequest, args.config.objectFormat);
   if (Result.isError(requestRes)) return requestRes;
   const request = requestRes.value;
   const root = mkdtempSync(join(tmpdir(), "streams-git-import-"));
@@ -707,8 +740,8 @@ export async function publishGitPackArtifactsResult(
     const idxPutRes = await putObjectStoreResult(args.objectStore, idxUri, idxBytes, "application/x-git-packed-objects-index");
     if (Result.isError(idxPutRes)) return idxPutRes;
 
-    const recordsRes = await readGitRecordsResult(args);
-    if (Result.isError(recordsRes)) return recordsRes;
+    const snapshotRes = await readGitRecordSnapshotResult(args);
+    if (Result.isError(snapshotRes)) return snapshotRes;
     const preferredClonePacks: GitPreferredClonePack[] = [{
       packUri,
       idxUri,
@@ -720,17 +753,28 @@ export async function publishGitPackArtifactsResult(
         .map((object) => object.oid)
         .sort(),
     }];
+    const refCheckpoint = buildRefCheckpoint({
+      repoId: args.stream,
+      records: snapshotRes.value.records,
+      streamOffset: Number(snapshotRes.value.nextOffset - 1n),
+      generation: snapshotRes.value.records.filter((candidate) => candidate.type === "maintenance-published").length + 1,
+      defaultBranch: args.config.defaultBranch,
+    });
+    const checkpointArtifactRes = await writeGitRefCheckpointArtifactsResult({
+      stream: args.stream,
+      reader: args.reader,
+      objectStore: args.objectStore,
+      appendJsonRecords: args.appendJsonRecords,
+      format: args.config.objectFormat,
+      checkpoint: refCheckpoint,
+    });
+    if (Result.isError(checkpointArtifactRes)) return checkpointArtifactRes;
     const record: GitMaintenancePublishedRecord = {
       type: "maintenance-published",
       repoId: args.stream,
       createdAt: new Date().toISOString(),
-      refCheckpoint: buildRefCheckpoint({
-        repoId: args.stream,
-        records: recordsRes.value,
-        streamOffset: recordsRes.value.length,
-        generation: recordsRes.value.filter((candidate) => candidate.type === "maintenance-published").length + 1,
-        defaultBranch: args.config.defaultBranch,
-      }),
+      refCheckpointUri: checkpointArtifactRes.value.refCheckpointUri,
+      refCheckpoint,
       packIndexManifestUri: idxUri,
       preferredClonePackUris: [packUri],
       preferredClonePacks,

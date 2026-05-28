@@ -1,26 +1,40 @@
-# `workspace-fs` Profile Direction
+# `workspace-fs` Profile
 
-Status: compatibility layer
+Status: initial implementation
 
-`workspace-fs` is the agent workspace layer that is being split out of the
-original `vfs-repo` MVP. It is responsible for lazy writable checkouts, durable
-draft operations, just-bash integration, and explicit commits back to a
-canonical repository.
+`workspace-fs` is the agent workspace layer. It is responsible for lazy
+writable checkouts, durable draft operations, just-bash integration, and
+explicit commits back to a canonical `git-repo` repository.
 
-The current implementation provides an installable `workspace-fs` profile kind
-that shares the compatibility `/_vfs/*` route implementation in `src/vfs/`.
-The older `vfs-repo` profile remains readable for MVP data. The public
-TypeScript surface also exports workspace-facing aliases such as:
+Install it on a JSON stream and configure the canonical Git repository stream:
+
+```json
+{
+  "apiVersion": "durable.streams/profile/v1",
+  "profile": {
+    "kind": "workspace-fs",
+    "version": 1,
+    "gitRepo": {
+      "stream": "git/tenant/repo"
+    }
+  }
+}
+```
+
+The public TypeScript surface lives under `src/workspace_fs`:
 
 ```ts
 import {
   openWorkspaceFsRepo,
   PrismaStreamsWorkspaceFs,
   createWorkspaceGitCommands,
-} from "../src/vfs";
+} from "../src/workspace_fs";
 ```
 
-The compatibility profile keeps these proven behaviors:
+`openWorkspaceFsRepo(...).ensure({ gitRepoStream })` installs a
+`workspace-fs` profile. It does not install `vfs-repo`.
+
+The profile supports these workspace behaviors:
 
 - checkout creates a durable workspace stream
 - file operations append workspace draft records
@@ -34,9 +48,9 @@ The compatibility profile keeps these proven behaviors:
   artifacts, and commits create a canonical Git commit through a `git-repo` ref
   transaction
 
-## Target Responsibilities
+## Responsibilities
 
-`workspace-fs` should own:
+`workspace-fs` owns:
 
 - workspace stream lifecycle and TTL
 - workspace operation log
@@ -45,10 +59,10 @@ The compatibility profile keeps these proven behaviors:
 - just-bash adapter
 - agent-facing Git-like commands
 
-`workspace-fs` should not own canonical refs, Git object identity, packfiles, or
+`workspace-fs` does not own canonical refs, Git object identity, packfiles, or
 Git import/export. Those belong to [profile-git-repo.md](./profile-git-repo.md).
 
-## Target Commit Flow
+## Commit Flow
 
 ```text
 workspace checkout
@@ -58,11 +72,8 @@ workspace checkout
   -> workspace committed marker
 ```
 
-The `workspace-fs` and compatibility `vfs-repo` profiles can be configured
-with `gitRepo.stream`.
-
-For `workspace-fs`, the canonical branch head is read from `git-repo` during
-checkout. Base metadata and file reads are path-local over Git commit/tree/blob
+The canonical branch head is read from `git-repo` during checkout. Base
+metadata and file reads are path-local over Git commit/tree/blob
 objects, while workspace draft operations are overlaid from the workspace stream.
 The hot path does not recursively expand the full repository tree.
 
@@ -70,10 +81,6 @@ Commit reads the current Git head, compares it with the workspace expected head,
 builds only the affected Git tree path objects plus changed blobs and the new
 commit object, then submits a `git-repo` ref transaction. A workspace committed
 marker is appended only after the canonical transaction succeeds.
-
-For the older `vfs-repo` compatibility profile, commits can also mirror into a
-configured `git-repo`, but the compatibility VFS ref records and tree pages
-remain for existing MVP data.
 
 ## Overlay Index Endpoints
 

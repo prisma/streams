@@ -12,8 +12,8 @@ import {
   rejectUnknownKeysResult,
   type StreamProfileSpec,
 } from "./profile";
-import { handleVfsRepoRoute } from "../vfs/server";
 import { VFS_PROFILE_VERSION } from "../vfs/types";
+import { handleWorkspaceFsRoute } from "../workspace_fs/server";
 
 export const WORKSPACE_FS_PROFILE_KIND = "workspace-fs" as const;
 
@@ -110,7 +110,7 @@ export const WORKSPACE_FS_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
 
   vfs: {
     handleRoute(args) {
-      return handleVfsRepoRoute(args);
+      return handleWorkspaceFsRoute(args);
     },
   },
 };

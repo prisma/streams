@@ -158,9 +158,8 @@ See [profile-vfs-repo.md](./profile-vfs-repo.md) for the detailed contract.
 ## `workspace-fs`
 
 `workspace-fs` is the installable profile name for derived agent workspaces.
-The current implementation shares the compatibility `/_vfs/*` route surface
-with `vfs-repo`, while new code should use this profile name when the stream is
-serving durable workspaces that commit back to a configured `git-repo` stream.
+Use this profile name when the stream serves durable workspaces that commit
+back to a configured `git-repo` stream.
 
 It means:
 
@@ -171,7 +170,7 @@ It means:
   Git object writes and ref transactions during workspace commit
 
 See [profile-workspace-fs.md](./profile-workspace-fs.md) for the detailed
-contract and compatibility notes.
+contract.
 
 ## Ownership Matrix
 

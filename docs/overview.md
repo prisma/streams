@@ -20,9 +20,11 @@ Every stream has a profile.
 - `git-repo` is the built-in canonical Git repository profile for Git object
   identity, path-local reads, import/export, pack maintenance publication, ref
   transactions, and repository maintenance checkpoints.
-- `vfs-repo` is the compatibility Git-like virtual filesystem MVP profile for
-  durable agent workspaces, lazy blob reads, CAS ref commits, and just-bash
-  adapters. It is being split into `git-repo` plus a workspace-fs layer.
+- `workspace-fs` is the built-in agent workspace profile for lazy writable
+  checkouts, durable draft operations, just-bash adapters, and explicit commits
+  back to `git-repo`.
+- `vfs-repo` is the older Git-like virtual filesystem MVP profile. New
+  repository/workspace code should target `git-repo` and `workspace-fs`.
 - Profiles define stream semantics; schemas define payload shape.
 
 See [stream-profiles.md](./stream-profiles.md).

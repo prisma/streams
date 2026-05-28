@@ -267,7 +267,11 @@ function parseNonNegativeInt(value: string): number | null {
 function parseTopLevelGitRoute(path: string): { stream: string; segments: string[] } | null {
   const decodeStream = (raw: string): string | null => {
     try {
-      return decodeURIComponent(raw);
+      const stream = decodeURIComponent(raw);
+      if (stream.includes("\0") || stream.includes("\\")) return null;
+      const parts = stream.split("/");
+      if (parts.some((part) => part === "" || part === "." || part === "..")) return null;
+      return stream;
     } catch {
       return null;
     }

@@ -226,12 +226,46 @@ describe("git-repo profile", () => {
       expect(new Uint8Array(await range.arrayBuffer())).toEqual(bytes.slice(10, 20));
       expect(store.stats().getBytes).toBeLessThan(2048);
 
+      const tree = writeGitTreeResult([{ mode: "100644", name: "blob.bin", oid: expected.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commitObject = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_050,
+          timezone: "+0000",
+        },
+        message: "Object range source\n",
+      });
+      expect(Result.isOk(commitObject)).toBe(true);
+      if (Result.isError(commitObject)) throw new Error(commitObject.error.message);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commitObject.value);
+
       const commit = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           txnId: "object-txn",
-          refUpdates: [{ ref: "main", oldOid: null, newOid: expected.oid }],
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commitObject.value.oid }],
+          objects: {
+            looseObjectUris: [create.body.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: create.body.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(commit.status).toBe(200);
+      expect(commit.body.refs["refs/heads/main"]).toBe(commitObject.value.oid);
+
+      const blobRef = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "blob-ref-txn",
+          refUpdates: [{ ref: "refs/heads/blob", oldOid: null, newOid: expected.oid }],
           objects: {
             looseObjectUris: [create.body.objectKey],
             objectCount: 1,
@@ -239,19 +273,18 @@ describe("git-repo profile", () => {
           },
         }),
       });
-      expect(commit.status).toBe(200);
-      expect(commit.body.refs["refs/heads/main"]).toBe(expected.oid);
+      expect(blobRef.status).toBe(409);
 
       const missing = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           txnId: "missing-object-txn",
-          refUpdates: [{ ref: "refs/heads/other", oldOid: null, newOid: expected.oid }],
+          refUpdates: [{ ref: "refs/heads/other", oldOid: null, newOid: commitObject.value.oid }],
           objects: {
-            looseObjectUris: [`${create.body.objectKey}.missing`],
-            objectCount: 1,
-            bytes: create.body.framedSize,
+            looseObjectUris: [`${commitArtifact.objectKey}.missing`],
+            objectCount: 3,
+            bytes: create.body.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
           },
         }),
       });
@@ -271,19 +304,43 @@ describe("git-repo profile", () => {
       await installGitRepoProfile(app, stream);
 
       const blob = writeGitBlob(TEXT_ENCODER.encode("hello\n"));
+      const tree = writeGitTreeResult([{ mode: "100644", name: "hello.txt", oid: blob.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commitObject = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_075,
+          timezone: "+0000",
+        },
+        message: "CAS source\n",
+      });
+      expect(Result.isOk(commitObject)).toBe(true);
+      if (Result.isError(commitObject)) throw new Error(commitObject.error.message);
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commitObject.value);
+      const objectSet = {
+        looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+        objectCount: 3,
+        bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+      };
       const commit = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           txnId: "txn-1",
           actor: "agent",
-          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: blob.oid }],
-          objects: { objectCount: 1, bytes: blob.size },
+          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: commitObject.value.oid }],
+          objects: objectSet,
         }),
       });
       expect(commit.status).toBe(200);
       expect(commit.body.idempotent).toBe(false);
-      expect(commit.body.refs["refs/heads/main"]).toBe(blob.oid);
+      expect(commit.body.refs["refs/heads/main"]).toBe(commitObject.value.oid);
+      expect(commit.body.transaction.requestHash).toMatch(/^[0-9a-f]{64}$/);
 
       const txnStatus = await fetchJsonApp(app, `${base}/_git/transactions/txn-1`, { method: "GET" });
       expect(txnStatus.status).toBe(200);
@@ -300,29 +357,148 @@ describe("git-repo profile", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           txnId: "txn-1",
-          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: blob.oid }],
+          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: commitObject.value.oid }],
+          objects: objectSet,
         }),
       });
       expect(idempotent.status).toBe(200);
       expect(idempotent.body.idempotent).toBe(true);
+
+      const idempotencyConflict = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "txn-1",
+          refUpdates: [{ ref: "refs/heads/main", oldOid: commitObject.value.oid, newOid: null }],
+        }),
+      });
+      expect(idempotencyConflict.status).toBe(409);
+
+      const nextBlob = writeGitBlob("next\n");
+      const nextTree = writeGitTreeResult([{ mode: "100644", name: "next.txt", oid: nextBlob.oid }]);
+      expect(Result.isOk(nextTree)).toBe(true);
+      if (Result.isError(nextTree)) throw new Error(nextTree.error.message);
+      const nextCommit = writeGitCommitResult({
+        tree: nextTree.value.oid,
+        parents: [commitObject.value.oid],
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_076,
+          timezone: "+0000",
+        },
+        message: "Next\n",
+      });
+      expect(Result.isOk(nextCommit)).toBe(true);
+      if (Result.isError(nextCommit)) throw new Error(nextCommit.error.message);
+      const nextBlobArtifact = await writeGitObjectApp(app, base, nextBlob);
+      const nextTreeArtifact = await writeGitObjectApp(app, base, nextTree.value);
+      const nextCommitArtifact = await writeGitObjectApp(app, base, nextCommit.value);
 
       const stale = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           txnId: "txn-2",
-          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: writeGitBlob("next\n").oid }],
+          refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: nextCommit.value.oid }],
+          objects: {
+            looseObjectUris: [nextBlobArtifact.objectKey, nextTreeArtifact.objectKey, nextCommitArtifact.objectKey],
+            objectCount: 3,
+            bytes: nextBlobArtifact.framedSize + nextTreeArtifact.framedSize + nextCommitArtifact.framedSize,
+          },
         }),
       });
       expect(stale.status).toBe(409);
 
       const ref = await fetchJsonApp(app, `${base}/_git/ref/refs/heads/main`, { method: "GET" });
       expect(ref.status).toBe(200);
-      expect(ref.body.oid).toBe(blob.oid);
+      expect(ref.body.oid).toBe(commitObject.value.oid);
 
       const checkpoint = await fetchJsonApp(app, `${base}/_git/maintenance/publish-ref-checkpoint`, { method: "POST" });
       expect(checkpoint.status).toBe(200);
-      expect(checkpoint.body.checkpoint.refs["refs/heads/main"]).toBe(blob.oid);
+      expect(checkpoint.body.checkpoint.refs["refs/heads/main"]).toBe(commitObject.value.oid);
+      expect(checkpoint.body.record.refCheckpointUri).toContain("/git/sha1/checkpoints/");
+
+      const afterCheckpoint = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "txn-3",
+          refUpdates: [{ ref: "refs/heads/main", oldOid: commitObject.value.oid, newOid: nextCommit.value.oid }],
+          objects: {
+            looseObjectUris: [nextBlobArtifact.objectKey, nextTreeArtifact.objectKey, nextCommitArtifact.objectKey],
+            objectCount: 3,
+            bytes: nextBlobArtifact.framedSize + nextTreeArtifact.framedSize + nextCommitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(afterCheckpoint.status).toBe(200);
+      const refsAfterCheckpoint = await fetchJsonApp(app, `${base}/_git/refs`, { method: "GET" });
+      expect(refsAfterCheckpoint.status).toBe(200);
+      expect(refsAfterCheckpoint.body.refs["refs/heads/main"]).toBe(nextCommit.value.oid);
+      expect(refsAfterCheckpoint.body.checkpoint.refs["refs/heads/main"]).toBe(commitObject.value.oid);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects invalid ref transactions before updating refs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-ref-validation-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const stream = "git/test/ref-validation";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream);
+
+      for (const ref of [
+        "HEAD",
+        "refs/heads/.hidden",
+        "refs/heads/main.lock",
+        "refs/heads/foo..bar",
+        "refs/heads/trailing.",
+        "refs/heads/double//slash",
+        "refs/heads/has@{brace",
+        "refs/heads/has\\backslash",
+      ]) {
+        const rejected = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            txnId: `bad-${Buffer.from(ref).toString("hex")}`,
+            refUpdates: [{ ref, oldOid: null, newOid: null }],
+          }),
+        });
+        expect(rejected.status).toBe(400);
+      }
+
+      const tooMany = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "too-many",
+          refUpdates: Array.from({ length: 1001 }, (_, index) => ({
+            ref: `refs/heads/ref-${index}`,
+            oldOid: null,
+            newOid: null,
+          })),
+        }),
+      });
+      expect(tooMany.status).toBe(400);
+
+      const badOid = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "bad-oid",
+          refUpdates: [{ ref: "refs/heads/main", oldOid: "not-an-oid", newOid: null }],
+        }),
+      });
+      expect(badOid.status).toBe(400);
+
+      const refs = await fetchJsonApp(app, `${base}/_git/refs`, { method: "GET" });
+      expect(refs.status).toBe(200);
+      expect(refs.body.refs).toEqual({});
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });
@@ -332,7 +508,14 @@ describe("git-repo profile", () => {
   test("retries durable stream offset races before committing a ref transaction", async () => {
     const mainOid = writeGitBlob("main\n").oid;
     const sideOid = writeGitBlob("side\n").oid;
-    const records: any[] = [];
+    const records: any[] = [{
+      type: "ref-transaction-committed",
+      repoId: "git/test/race",
+      txnId: "seed-main",
+      requestHash: "seed",
+      createdAt: new Date().toISOString(),
+      refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: mainOid }],
+    }];
     let raced = false;
     let successfulExpectedOffset: bigint | null = null;
 
@@ -363,6 +546,7 @@ describe("git-repo profile", () => {
           type: "ref-transaction-committed",
           repoId: "git/test/race",
           txnId: "competing-txn",
+          requestHash: "competing",
           createdAt: new Date().toISOString(),
           refUpdates: [{ ref: "refs/heads/side", oldOid: null, newOid: sideOid }],
         });
@@ -388,15 +572,15 @@ describe("git-repo profile", () => {
       format: "sha1",
       request: {
         txnId: "main-txn",
-        refUpdates: [{ ref: "refs/heads/main", oldOid: null, newOid: mainOid }],
+        refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
       },
     });
 
     expect(Result.isOk(result)).toBe(true);
     if (Result.isError(result)) throw new Error(result.error.message);
-    expect(successfulExpectedOffset).toBe(1n);
+    expect(successfulExpectedOffset).toBe(2n);
     expect(result.value.refs["refs/heads/side"]).toBe(sideOid);
-    expect(result.value.refs["refs/heads/main"]).toBe(mainOid);
+    expect(result.value.refs["refs/heads/main"]).toBeNull();
   });
 
   test("exports bundles and packs and imports a bundle into another git-repo profile", async () => {
@@ -487,6 +671,7 @@ describe("git-repo profile", () => {
       expect(publishedPack.body.objectCount).toBe(3);
       expect(store.has(publishedPack.body.packUri)).toBe(true);
       expect(store.has(publishedPack.body.idxUri)).toBe(true);
+      expect(store.has(publishedPack.body.record.refCheckpointUri)).toBe(true);
       expect(publishedPack.body.record.preferredClonePackUris).toEqual([publishedPack.body.packUri]);
       expect(publishedPack.body.record.preferredClonePacks[0].packHash).toBe(publishedPack.body.packHash);
       expect(publishedPack.body.record.refCheckpoint.refs["refs/heads/main"]).toBe(commit.value.oid);
@@ -751,6 +936,77 @@ describe("git-repo profile", () => {
       }));
       expect(rejected.status).toBe(400);
       expect(await rejected.text()).toContain("filter fetches are disabled");
+    } finally {
+      server.stop(true);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("handles top-level Git routes for encoded slash repo names and rejects traversal names", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-top-route-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    try {
+      const stream = "git/test/top-route";
+      await installGitRepoProfile(app, stream, {
+        http: { enabled: true, allowFetch: true, allowPush: false },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: false },
+      });
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      const blob = writeGitBlob("top route\n");
+      const tree = writeGitTreeResult([{ mode: "100644", name: "README.md", oid: blob.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commit = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_400,
+          timezone: "+0000",
+        },
+        message: "Top route\n",
+      });
+      expect(Result.isOk(commit)).toBe(true);
+      if (Result.isError(commit)) throw new Error(commit.error.message);
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commit.value);
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "top-route-seed",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commit.value.oid }],
+          objects: {
+            looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const advertised = await fetch(`http://127.0.0.1:${server.port}/${encodeURIComponent(stream)}.git/info/refs?service=git-upload-pack`, {
+        method: "GET",
+        headers: { "git-protocol": "version=2" },
+      });
+      expect(advertised.status).toBe(200);
+      expect(advertised.headers.get("content-type")).toBe("application/x-git-upload-pack-advertisement");
+
+      for (const path of [
+        "/%2e%2e.git/info/refs?service=git-upload-pack",
+        "/git%2F..%2Ftop-route.git/info/refs?service=git-upload-pack",
+        "/git%2Ftest%2F.%2Ftop-route.git/info/refs?service=git-upload-pack",
+        "/git%2Ftest%2F%2Ftop-route.git/info/refs?service=git-upload-pack",
+      ]) {
+        const rejected = await fetch(`http://127.0.0.1:${server.port}${path}`, {
+          method: "GET",
+          headers: { "git-protocol": "version=2" },
+        });
+        expect(rejected.status).not.toBe(200);
+      }
     } finally {
       server.stop(true);
       app.close();

@@ -28,7 +28,7 @@ and tooling.
 - [profile-state-protocol.md](./profile-state-protocol.md) — reference for the `state-protocol` profile
 - [profile-evlog.md](./profile-evlog.md) — design and reference for the `evlog` profile
 - [profile-git-repo.md](./profile-git-repo.md) — canonical Git repository profile, ref transactions, and Git object identity
-- [profile-workspace-fs.md](./profile-workspace-fs.md) — agent workspace filesystem direction and compatibility aliases
+- [profile-workspace-fs.md](./profile-workspace-fs.md) — agent workspace filesystem profile, durable overlays, and just-bash integration
 - [profile-vfs-repo.md](./profile-vfs-repo.md) — compatibility Git-like VFS MVP profile, workspace overlays, and just-bash integration
 - [git-repo-workspace-fs-split.md](./git-repo-workspace-fs-split.md) — architecture split between canonical repos and agent workspaces
 - [vfs-mvp-migration.md](./vfs-mvp-migration.md) — one-way migration from `vfs-repo` MVP data to `git-repo`

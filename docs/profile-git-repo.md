@@ -70,6 +70,7 @@ type GitRepoProfileConfig = {
     allowLocalPathImport: boolean;
     maxBytes: number;
     gitBinary: string;
+    gitCommandTimeoutMs: number;
   };
 };
 ```
@@ -96,6 +97,7 @@ type GitRepoRecord =
       repoId: string;
       txnId: string;
       idempotencyKey?: string;
+      requestHash: string;
       actor?: string;
       createdAt: string;
       refUpdates: Array<{
@@ -134,22 +136,25 @@ type GitRepoRecord =
     };
 ```
 
-The current implementation stores ref checkpoints inline in
-`maintenance-published` records. Object-store checkpoint artifacts are planned
-but not implemented yet.
+The current implementation stores ref checkpoints both inline in
+`maintenance-published` records and as profile-owned object-store artifacts. A
+fixed latest-checkpoint artifact lets hot ref reads load the checkpoint and
+replay only the durable stream tail after `streamOffset` instead of replaying
+the full repository history.
 
 ## Object Store Data
 
 `git-repo` stores canonical Git object bytes as immutable object-store
 artifacts, not as base64 payloads in the durable stream. The durable stream
-contains ref transactions and artifact pointers. A loose object is stored under
-a repo-scoped, content-addressed key:
+contains ref transactions and artifact pointers. A framed Git object artifact
+is stored under a repo-scoped, content-addressed key:
 
 ```text
 streams/{streamHash}/git/{objectFormat}/objects/{oid[0..2]}/{oid[2..]}
 ```
 
-The object-store value is the framed Git object:
+The object-store value is the framed Git object, not Git's zlib-compressed
+loose-object file format:
 
 ```text
 <type> <size>\0<body>
@@ -166,10 +171,12 @@ requested body range from the object store. A request such as
 
 Ref transactions may include `objects.looseObjectUris`. The profile verifies
 that each referenced URI belongs to the same repo stream prefix and exists in
-the object store before committing the transaction. The ref transaction record
-is still the visibility point: object artifacts can be uploaded first, but they
-are not reachable as repository state until a committed ref transaction points
-at them.
+the object store before committing the transaction. New ref targets are also
+read back from the object store, hash-checked against their OID, type-checked,
+and walked through reachable commit, tree, tag, and blob objects before the ref
+transaction is accepted. The ref transaction record is still the visibility
+point: object artifacts can be uploaded first, but they are not reachable as
+repository state until a committed ref transaction points at them.
 
 ## Endpoints
 
@@ -210,6 +217,9 @@ If neither is present, they use the profile `defaultBranch`.
 - `checkout` returns the resolved commit OID and root tree OID for a ref
 - `refs?publishedOnly=true` returns refs derived only from records at or below
   the stream `uploaded_through` marker
+- normal `status`, `refs`, `ref`, and checkout ref resolution use the latest
+  ref checkpoint artifact when present, then replay only records after the
+  checkpoint `streamOffset`
 - `stat` resolves one path by loading only trees along that path
 - `readdir` loads one tree and returns a paginated directory listing
 - `blob` resolves a file path, then range-reads only the requested blob bytes
@@ -251,8 +261,25 @@ Ref transactions use compare-and-swap semantics:
 ```
 
 If any current ref does not match its requested `oldOid`, the transaction
-returns `409 Conflict`. Reusing an already committed `txnId` or
-`idempotencyKey` returns the previous transaction result.
+returns `409 Conflict`. Ref names are normalized to `refs/heads/*` for short
+branch names and then checked against Git refname rules. `HEAD` is rejected as a
+symbolic ref, and empty components, repeated slashes, `..`, `@{`, trailing
+dots, `.lock` components, backslashes, control characters, spaces, and Git
+wildcard characters are rejected. Requests with more than 1000 ref updates are
+rejected rather than truncated.
+
+Every committed transaction stores `requestHash`, a SHA-256 hash of the
+canonicalized `refUpdates` and object set. Reusing an already committed `txnId`
+or `idempotencyKey` with the same request hash returns the previous transaction
+result. Reusing either value with a different request body returns
+`409 Conflict`.
+
+Before a transaction becomes visible, every non-null `oldOid` and `newOid` must
+match the repository object format. Every `newOid` must exist as a framed Git
+object artifact, branch refs must point at commits, other refs must point at
+commits or tags, and the referenced commit/tag/tree/blob graph is walked and
+hash-verified. Malformed objects, missing reachable objects, wrong tree-entry
+target types, and object hash mismatches reject the transaction.
 
 `GET /_git/transactions/{txnId}` reports whether the transaction is
 `accepted` or `published`. `accepted` means the transaction record is locally
@@ -344,7 +371,9 @@ the stream transaction commits, the profile returns `409 Conflict` and does not
 publish the pushed refs.
 
 The top-level route maps `{repo}` directly to the stream name, so streams
-containing slashes can be addressed with raw slashes or percent encoding.
+containing slashes can be addressed with raw slashes or percent encoding. The
+top-level Git route rejects decoded stream names containing null bytes,
+backslashes, empty path components, `.`, or `..` before profile dispatch.
 
 Import accepts:
 
@@ -378,6 +407,10 @@ operator-controlled migration jobs, not tenant-supplied requests.
 
 The current import/export implementation requires `objectFormat: "sha1"`
 because it delegates bundle and pack validation to the local Git CLI.
+Git subprocesses run with a bounded timeout (`importExport.gitCommandTimeoutMs`,
+default 30000), no terminal prompting, `GIT_CONFIG_NOSYSTEM=1`, and a disabled
+global Git config path so request-path behavior does not depend on host-level
+Git configuration.
 
 ## Ref Race Avoidance
 
@@ -386,15 +419,20 @@ For a ref transaction, the server:
 
 1. Reads the git-repo stream to a stable end offset.
 2. Builds the current ref map from committed transaction records.
-3. Verifies every requested `oldOid` against that map.
-4. Appends exactly one `ref-transaction-committed` record with the stream's
+3. Verifies every requested `oldOid` against that map, so stale updates fail
+   before object graph work.
+4. Validates ref names, object IDs, object artifacts, and the reachable Git
+   object graph for new ref targets.
+5. Appends exactly one `ref-transaction-committed` record with the stream's
    expected next offset.
 
 If another process or request appends to the repository stream between steps 1
 and 4, the append fails with an offset mismatch. The profile then rereads the
 stream and retries the transaction. If the retry sees that a requested ref head
 changed, it returns `409 Conflict`; if it sees the same `txnId` or
-`idempotencyKey`, it returns the previously committed result.
+`idempotencyKey` with the same `requestHash`, it returns the previously
+committed result. If the hash differs, the retry is rejected as an idempotency
+conflict.
 
 ## Git Object Identity
 
@@ -406,7 +444,8 @@ tree   oid = hash("tree <size>\0" + canonical tree bytes)
 commit oid = hash("commit <size>\0" + canonical commit bytes)
 ```
 
-The test suite checks blob, tree, and commit hashes against `git hash-object`.
+The test suite checks blob, tree, and commit hashes against `git hash-object`,
+`git mktree`, and `git commit-tree`.
 
 ## Demo
 
@@ -423,11 +462,11 @@ canonical Git objects.
 
 ## Workspace Commits
 
-The compatibility `vfs-repo` profile can be configured with:
+The `workspace-fs` profile can be configured with:
 
 ```json
 {
-  "kind": "vfs-repo",
+  "kind": "workspace-fs",
   "version": 1,
   "gitRepo": {
     "stream": "git/tenant/repo"
@@ -435,20 +474,20 @@ The compatibility `vfs-repo` profile can be configured with:
 }
 ```
 
-When configured, the `workspace-fs` profile treats the configured `git-repo`
-stream as canonical. Checkout reads the Git ref head, base path metadata resolves
-from Git tree objects, base file reads use the Git loose-object range reader, and
+When configured, `workspace-fs` treats the configured `git-repo` stream as
+canonical. Checkout reads the Git ref head, base path metadata resolves from
+Git tree objects, base file reads use the Git loose-object range reader, and
 commit builds a Git commit before submitting a `git-repo` ref transaction. The
 workspace stream only records draft operations and the final committed marker.
-
-The older `vfs-repo` compatibility profile can also mirror commits into
-`git-repo`, but it still appends compatibility VFS ref records for MVP data.
 
 ## Current Limits
 
 - Loose Git object artifacts, bundle/pack import/export, and pack/idx
   maintenance publication are implemented. Incremental pack compaction policy is
   still minimal.
+- Ref checkpoint artifacts are implemented for hot ref reads. Transaction
+  idempotency lookup still scans the durable transaction log until a separate
+  transaction-key index exists.
 - Upload-pack and receive-pack smart HTTP are implemented under `_git/smart/*`
   and `/{repo}.git/*` when enabled in profile config. Upload-pack supports
   protocol v2 negotiation, blob filters when `fetch.allowFilter=true`, and
@@ -458,6 +497,5 @@ The older `vfs-repo` compatibility profile can also mirror commits into
   `uploadpack.blobPackfileUri` mechanism against the latest published pack.
   More granular pack partitioning and resumable clone state are future
   maintenance work.
-- `workspace-fs` checkout/read/commit paths can use `git-repo` as the canonical
-  repository. The older `vfs-repo` profile still retains compatibility VFS
-  trees and refs.
+- `workspace-fs` checkout/read/commit paths use `git-repo` as the canonical
+  repository when configured with `gitRepo.stream`.

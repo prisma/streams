@@ -7,6 +7,7 @@ import { Bash, InMemoryFs, MountableFs } from "just-bash";
 import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
 import { migrateVfsRepoToGitRepoResult, openVfsRepo, PrismaStreamsVfsFs, createVfsGitCommands, type VfsFetch } from "../src/vfs";
 import { objectsStreamName, toBase64 } from "../src/vfs/model";
+import { openWorkspaceFsRepo } from "../src/workspace_fs";
 
 function appFetch(app: ReturnType<typeof createProfileTestApp>["app"]): VfsFetch {
   return (input, init) => app.fetch(new Request(input, init));
@@ -237,27 +238,15 @@ describe("vfs-repo profile", () => {
 
       const stream = "workspace/test/profile/control";
       const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
-      const create = await app.fetch(new Request(base, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-      }));
-      expect(create.ok).toBe(true);
-      const profile = await fetchJsonApp(app, `${base}/_profile`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          apiVersion: "durable.streams/profile/v1",
-          profile: { kind: "workspace-fs", version: 1, gitRepo: { stream: gitStream } },
-        }),
-      });
-      expect(profile.status).toBe(200);
-      expect(profile.body.profile.kind).toBe("workspace-fs");
-
-      const repo = openVfsRepo({
+      const repo = openWorkspaceFsRepo({
         streamsUrl: "http://local",
         stream,
         fetch: appFetch(app),
       });
+      await repo.ensure({ gitRepoStream: gitStream });
+      const profile = await fetchJsonApp(app, `${base}/_profile`, { method: "GET" });
+      expect(profile.status).toBe(200);
+      expect(profile.body.profile.kind).toBe("workspace-fs");
       const workspace = await repo.checkout({ ref: "main", workspaceId: "workspace-fs" });
       await workspace.writeFile("/README.md", "workspace-fs\n");
       await workspace.mkdir("/src");

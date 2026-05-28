@@ -26,7 +26,7 @@ import {
   readGitPackfileArtifactResult,
   verifyGitReachabilityResult,
 } from "./import_export";
-import { buildRefs, normalizeGitRef, validateRefTransactionRequestResult } from "./refs";
+import { buildRefs, validateGitRefNameResult, validateRefTransactionRequestResult } from "./refs";
 import { buildRefCheckpoint, latestInlineRefCheckpoint } from "./maintenance";
 import {
   appendGitRecordResult,
@@ -34,8 +34,10 @@ import {
   parseBase64Result,
   readGitRecordSnapshotResult,
   readGitRecordsResult,
+  readGitRefsSnapshotResult,
   readLooseGitObjectBodyResult,
   readLooseGitObjectHeaderResult,
+  writeGitRefCheckpointArtifactsResult,
   writeLooseGitObjectResult,
   type GitRepoServiceError,
 } from "./service";
@@ -232,10 +234,18 @@ async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Prom
     return Result.ok(oid);
   }
 
-  const ref = normalizeGitRef(args.url.searchParams.get("ref") ?? config.defaultBranch);
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return recordsRes;
-  const refsByName = buildRefs(recordsRes.value);
+  const refRes = validateGitRefNameResult(args.url.searchParams.get("ref") ?? config.defaultBranch, { allowHead: false });
+  if (Result.isError(refRes)) return Result.err({ status: 400, message: refRes.error.message });
+  const ref = refRes.value;
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: config.objectFormat,
+  });
+  if (Result.isError(refsRes)) return refsRes;
+  const refsByName = refsRes.value.refs;
   const oid = Object.prototype.hasOwnProperty.call(refsByName, ref) ? refsByName[ref] ?? null : null;
   if (!oid) return Result.err({ status: 404, message: "git ref not found" });
   return Result.ok(oid);
@@ -339,11 +349,18 @@ async function resolveGitPathResult(
 
 async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const config = profileConfig(args);
-  const ref = normalizeGitRef(args.url.searchParams.get("ref") ?? config.defaultBranch);
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
-  const refsByName = buildRefs(recordsRes.value);
-  const commitOid = Object.prototype.hasOwnProperty.call(refsByName, ref) ? refsByName[ref] ?? null : null;
+  const refRes = validateGitRefNameResult(args.url.searchParams.get("ref") ?? config.defaultBranch, { allowHead: false });
+  if (Result.isError(refRes)) return args.respond.badRequest(refRes.error.message);
+  const ref = refRes.value;
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: config.objectFormat,
+  });
+  if (Result.isError(refsRes)) return responseForError(args, refsRes.error);
+  const commitOid = Object.prototype.hasOwnProperty.call(refsRes.value.refs, ref) ? refsRes.value.refs[ref] ?? null : null;
   let rootTreeOid: string | null = null;
   if (commitOid) {
     const rootRes = await rootTreeOidForCommitResult(args, commitOid);
@@ -483,42 +500,63 @@ async function waitPublished(args: StreamProfileVfsRouteArgs, txnSegments: strin
 }
 
 async function status(args: StreamProfileVfsRouteArgs): Promise<Response> {
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: profileConfig(args).objectFormat,
+  });
+  if (Result.isError(refsRes)) return responseForError(args, refsRes.error);
   return args.respond.json(200, {
     repo: args.stream,
     profile: profileConfig(args),
-    refs: buildRefs(recordsRes.value),
+    refs: refsRes.value.refs,
   });
 }
 
 async function refs(args: StreamProfileVfsRouteArgs): Promise<Response> {
-  let recordsRes;
   if (args.url.searchParams.get("publishedOnly") === "true") {
     const snapshotRes = await readGitRecordSnapshotResult(args);
     if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
     const uploadedThrough = latestUploadedThrough(args);
-    recordsRes = Result.ok(snapshotRes.value.entries
+    const records = snapshotRes.value.entries
       .filter((entry) => entry.offset <= uploadedThrough)
-      .map((entry) => entry.record));
-  } else {
-    recordsRes = await readGitRecordsResult(args);
+      .map((entry) => entry.record);
+    return args.respond.json(200, {
+      refs: buildRefs(records),
+      checkpoint: latestInlineRefCheckpoint(records),
+    });
   }
-  if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: profileConfig(args).objectFormat,
+  });
+  if (Result.isError(refsRes)) return responseForError(args, refsRes.error);
   return args.respond.json(200, {
-    refs: buildRefs(recordsRes.value),
-    checkpoint: latestInlineRefCheckpoint(recordsRes.value),
+    refs: refsRes.value.refs,
+    checkpoint: refsRes.value.checkpoint,
   });
 }
 
 async function refGet(args: StreamProfileVfsRouteArgs, refSegments: string[]): Promise<Response> {
-  const ref = normalizeGitRef(decodeURIComponent(refSegments.join("/")));
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
-  const refsByName = buildRefs(recordsRes.value);
+  const refRes = validateGitRefNameResult(decodeURIComponent(refSegments.join("/")), { allowHead: false });
+  if (Result.isError(refRes)) return args.respond.badRequest(refRes.error.message);
+  const ref = refRes.value;
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: profileConfig(args).objectFormat,
+  });
+  if (Result.isError(refsRes)) return responseForError(args, refsRes.error);
   return args.respond.json(200, {
     ref,
-    oid: Object.prototype.hasOwnProperty.call(refsByName, ref) ? refsByName[ref] ?? null : null,
+    oid: Object.prototype.hasOwnProperty.call(refsRes.value.refs, ref) ? refsRes.value.refs[ref] ?? null : null,
   });
 }
 
@@ -541,19 +579,29 @@ async function refTransaction(args: StreamProfileVfsRouteArgs): Promise<Response
 }
 
 async function publishRefCheckpoint(args: StreamProfileVfsRouteArgs): Promise<Response> {
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
+  const snapshotRes = await readGitRecordSnapshotResult(args);
+  if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
   const checkpoint = buildRefCheckpoint({
     repoId: args.stream,
-    records: recordsRes.value,
-    streamOffset: recordsRes.value.length,
-    generation: recordsRes.value.filter((record) => record.type === "maintenance-published").length + 1,
+    records: snapshotRes.value.records,
+    streamOffset: Number(snapshotRes.value.nextOffset - 1n),
+    generation: snapshotRes.value.records.filter((record) => record.type === "maintenance-published").length + 1,
     defaultBranch: profileConfig(args).defaultBranch,
   });
+  const artifactRes = await writeGitRefCheckpointArtifactsResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: profileConfig(args).objectFormat,
+    checkpoint,
+  });
+  if (Result.isError(artifactRes)) return responseForError(args, artifactRes.error);
   const record: GitMaintenancePublishedRecord = {
     type: "maintenance-published",
     repoId: args.stream,
     createdAt: checkpoint.createdAt,
+    refCheckpointUri: artifactRes.value.refCheckpointUri,
     refCheckpoint: checkpoint,
   };
   const appendRes = await appendGitRecordResult(args, record, "git-maintenance:ref-checkpoint");
