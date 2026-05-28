@@ -2,20 +2,20 @@ import { createHash, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { Result } from "better-result";
 import type {
-  VfsBlobManifest,
-  VfsChunkObject,
-  VfsObjectId,
-  VfsStoredObject,
-  VfsWorkspaceOp,
-  VfsWorkspaceRecord,
+  WorkspaceFsBlobManifest,
+  WorkspaceFsChunkObject,
+  WorkspaceFsObjectId,
+  WorkspaceFsStoredObject,
+  WorkspaceFsWorkspaceOp,
+  WorkspaceFsWorkspaceRecord,
 } from "./types";
 
-export const VFS_DEFAULT_REF = "refs/heads/main";
-export const VFS_WORKSPACE_TTL_SECONDS = 24 * 60 * 60;
-export const VFS_INLINE_BLOB_MAX_BYTES = 4 * 1024;
-export const VFS_CHUNK_SIZE_BYTES = 64 * 1024;
+export const WORKSPACE_FS_DEFAULT_REF = "refs/heads/main";
+export const WORKSPACE_FS_WORKSPACE_TTL_SECONDS = 24 * 60 * 60;
+export const WORKSPACE_FS_INLINE_BLOB_MAX_BYTES = 4 * 1024;
+export const WORKSPACE_FS_CHUNK_SIZE_BYTES = 64 * 1024;
 
-export type VfsModelError = {
+export type WorkspaceFsModelError = {
   message: string;
 };
 
@@ -30,7 +30,7 @@ export function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
-export function fromBase64(value: string): Result<Uint8Array, VfsModelError> {
+export function fromBase64(value: string): Result<Uint8Array, WorkspaceFsModelError> {
   try {
     return Result.ok(new Uint8Array(Buffer.from(value, "base64")));
   } catch {
@@ -52,7 +52,7 @@ export function bytesFromContent(content: string | Uint8Array): Uint8Array {
 
 export function normalizeRef(ref: string | null | undefined): string {
   const raw = ref?.trim();
-  if (!raw) return VFS_DEFAULT_REF;
+  if (!raw) return WORKSPACE_FS_DEFAULT_REF;
   return raw.startsWith("refs/") ? raw : `refs/heads/${raw}`;
 }
 
@@ -72,7 +72,7 @@ export function workspaceStreamName(repoStream: string, workspaceId: string): st
   return `${repoStream}/_workspace/workspaces/${encodeURIComponent(workspaceId)}`;
 }
 
-export function canonicalizeVfsPath(path: string): Result<string, VfsModelError> {
+export function canonicalizeWorkspaceFsPath(path: string): Result<string, WorkspaceFsModelError> {
   if (typeof path !== "string" || path.trim() === "") return Result.err({ message: "path must be a non-empty string" });
   if (path.includes("\0")) return Result.err({ message: "path must not contain null bytes" });
   const rawParts = path.replace(/\\/g, "/").split("/");
@@ -118,15 +118,15 @@ export function hashHex(bytesOrText: Uint8Array | string): string {
   return hash.digest("hex");
 }
 
-export function objectId(kind: string, value: unknown): VfsObjectId {
+export function objectId(kind: string, value: unknown): WorkspaceFsObjectId {
   return `sha256:${hashHex(`${kind}\0${stableStringify(value)}`)}`;
 }
 
 export function makeBlobObjects(bytes: Uint8Array, opts: { executable?: boolean; contentType?: string } = {}): {
-  manifest: VfsBlobManifest;
-  chunks: VfsChunkObject[];
+  manifest: WorkspaceFsBlobManifest;
+  chunks: WorkspaceFsChunkObject[];
 } {
-  if (bytes.byteLength <= VFS_INLINE_BLOB_MAX_BYTES) {
+  if (bytes.byteLength <= WORKSPACE_FS_INLINE_BLOB_MAX_BYTES) {
     const body = {
       kind: "blob" as const,
       size: bytes.byteLength,
@@ -141,10 +141,10 @@ export function makeBlobObjects(bytes: Uint8Array, opts: { executable?: boolean;
     };
   }
 
-  const chunks: VfsChunkObject[] = [];
+  const chunks: WorkspaceFsChunkObject[] = [];
   const chunkRefs = [];
-  for (let offset = 0; offset < bytes.byteLength; offset += VFS_CHUNK_SIZE_BYTES) {
-    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + VFS_CHUNK_SIZE_BYTES));
+  for (let offset = 0; offset < bytes.byteLength; offset += WORKSPACE_FS_CHUNK_SIZE_BYTES) {
+    const chunk = bytes.slice(offset, Math.min(bytes.byteLength, offset + WORKSPACE_FS_CHUNK_SIZE_BYTES));
     const id = `sha256:${hashHex(chunk)}`;
     chunks.push({
       kind: "chunk",
@@ -174,8 +174,8 @@ export function makeBlobObjects(bytes: Uint8Array, opts: { executable?: boolean;
   };
 }
 
-export function workspaceOpsFromRecords(records: VfsWorkspaceRecord[]): VfsWorkspaceOp[] {
-  return records.filter((record): record is VfsWorkspaceOp => {
+export function workspaceOpsFromRecords(records: WorkspaceFsWorkspaceRecord[]): WorkspaceFsWorkspaceOp[] {
+  return records.filter((record): record is WorkspaceFsWorkspaceOp => {
     return (
       record.kind === "put-file" ||
       record.kind === "delete" ||
@@ -186,7 +186,7 @@ export function workspaceOpsFromRecords(records: VfsWorkspaceRecord[]): VfsWorks
   });
 }
 
-export function isWorkspaceClosed(records: VfsWorkspaceRecord[]): { state: "open" | "committed" | "discarded"; commitId?: string } {
+export function isWorkspaceClosed(records: WorkspaceFsWorkspaceRecord[]): { state: "open" | "committed" | "discarded"; commitId?: string } {
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i]!;
     if (record.kind === "workspace-committed") return { state: "committed", commitId: record.commitId };
@@ -195,11 +195,11 @@ export function isWorkspaceClosed(records: VfsWorkspaceRecord[]): { state: "open
   return { state: "open" };
 }
 
-export function decodeStoredObject(raw: unknown): Result<VfsStoredObject, VfsModelError> {
+export function decodeStoredObject(raw: unknown): Result<WorkspaceFsStoredObject, WorkspaceFsModelError> {
   if (!raw || typeof raw !== "object") return Result.err({ message: "stored object must be an object" });
   const kind = (raw as { kind?: unknown }).kind;
   if (kind !== "blob" && kind !== "chunk") {
     return Result.err({ message: "unsupported stored object kind" });
   }
-  return Result.ok(raw as VfsStoredObject);
+  return Result.ok(raw as WorkspaceFsStoredObject);
 }

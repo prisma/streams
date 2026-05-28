@@ -2,29 +2,29 @@ import { Buffer } from "node:buffer";
 import { Result } from "better-result";
 import { parseStoredProfileJsonResult, type StreamProfileRouteArgs } from "../profiles/profile";
 import type {
-  VfsBatchReadBlobsRequest,
-  VfsBatchReadMetadataRequest,
-  VfsBatchStatRequest,
-  VfsBlobManifest,
-  VfsChunkObject,
-  VfsCommit,
-  VfsCommitRequest,
-  VfsCommitResponse,
-  VfsCanonicalGitCommit,
-  VfsNodeStat,
-  VfsStoredObject,
-  VfsWorkspaceConflictsResponse,
-  VfsWorkspaceOp,
-  VfsWorkspaceOpInput,
-  VfsWorkspaceRebaseResponse,
-  VfsWorkspaceRecord,
+  WorkspaceFsBatchReadBlobsRequest,
+  WorkspaceFsBatchReadMetadataRequest,
+  WorkspaceFsBatchStatRequest,
+  WorkspaceFsBlobManifest,
+  WorkspaceFsChunkObject,
+  WorkspaceFsCommit,
+  WorkspaceFsCommitRequest,
+  WorkspaceFsCommitResponse,
+  WorkspaceFsCanonicalGitCommit,
+  WorkspaceFsNodeStat,
+  WorkspaceFsStoredObject,
+  WorkspaceFsWorkspaceConflictsResponse,
+  WorkspaceFsWorkspaceOp,
+  WorkspaceFsWorkspaceOpInput,
+  WorkspaceFsWorkspaceRebaseResponse,
+  WorkspaceFsWorkspaceRecord,
 } from "./types";
 import {
-  VFS_DEFAULT_REF,
-  VFS_WORKSPACE_TTL_SECONDS,
+  WORKSPACE_FS_DEFAULT_REF,
+  WORKSPACE_FS_WORKSPACE_TTL_SECONDS,
   basename,
   bytesFromText,
-  canonicalizeVfsPath,
+  canonicalizeWorkspaceFsPath,
   decodeStoredObject,
   fromBase64,
   isWorkspaceClosed,
@@ -66,7 +66,7 @@ import {
   readLooseGitObjectHeaderResult,
 } from "../git_repo";
 
-type VfsServerError = {
+type WorkspaceFsServerError = {
   status: 400 | 404 | 409 | 500;
   message: string;
 };
@@ -80,13 +80,13 @@ type WorkspaceCheckoutRecord = {
 };
 
 type LoadedWorkspace = {
-  records: VfsWorkspaceRecord[];
+  records: WorkspaceFsWorkspaceRecord[];
   checkout: WorkspaceCheckoutRecord | null;
-  ops: VfsWorkspaceOp[];
+  ops: WorkspaceFsWorkspaceOp[];
   state: ReturnType<typeof isWorkspaceClosed>;
 };
 
-function normalizeCommitDurabilityResult(body: VfsCommitRequest): Result<{ durability: Exclude<GitTransactionStatus, "accepted"> | "accepted"; timeoutMs: number }, VfsServerError> {
+function normalizeCommitDurabilityResult(body: WorkspaceFsCommitRequest): Result<{ durability: Exclude<GitTransactionStatus, "accepted"> | "accepted"; timeoutMs: number }, WorkspaceFsServerError> {
   const durability = body.durability ?? "accepted";
   if (durability !== "accepted" && durability !== "published" && durability !== "verified") {
     return Result.err({ status: 400, message: "durability must be accepted, published, or verified" });
@@ -99,33 +99,33 @@ function normalizeCommitDurabilityResult(body: VfsCommitRequest): Result<{ durab
 }
 
 type PreparedWorkspaceOp = {
-  op: VfsWorkspaceOp;
-  objects: VfsStoredObject[];
+  op: WorkspaceFsWorkspaceOp;
+  objects: WorkspaceFsStoredObject[];
 };
 
 type WorkspaceOverlayIndex = {
-  latestByPath: Map<string, VfsWorkspaceOp>;
+  latestByPath: Map<string, WorkspaceFsWorkspaceOp>;
   childrenByDir: Map<string, Set<string>>;
   deletedPaths: Set<string>;
 };
 
 const TEXT_DECODER = new TextDecoder();
 
-function responseForError(args: StreamProfileRouteArgs, err: VfsServerError): Response {
+function responseForError(args: StreamProfileRouteArgs, err: WorkspaceFsServerError): Response {
   if (err.status === 400) return args.respond.badRequest(err.message);
   if (err.status === 404) return args.respond.notFound(err.message);
   if (err.status === 409) return args.respond.conflict(err.message);
   return args.respond.internalError(err.message);
 }
 
-function parseJsonObjectBodyResult(body: unknown, label: string): Result<Record<string, unknown>, VfsServerError> {
+function parseJsonObjectBodyResult(body: unknown, label: string): Result<Record<string, unknown>, WorkspaceFsServerError> {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return Result.err({ status: 400, message: `${label} must be a JSON object` });
   }
   return Result.ok(body as Record<string, unknown>);
 }
 
-async function readRequestJsonResult(req: Request, label: string): Promise<Result<unknown, VfsServerError>> {
+async function readRequestJsonResult(req: Request, label: string): Promise<Result<unknown, WorkspaceFsServerError>> {
   try {
     return Result.ok(await req.json());
   } catch {
@@ -137,7 +137,7 @@ async function readJsonRecordsResult(
   args: StreamProfileRouteArgs,
   stream: string,
   key: string | null = null
-): Promise<Result<unknown[], VfsServerError>> {
+): Promise<Result<unknown[], WorkspaceFsServerError>> {
   const srow = args.db.getStream(stream);
   if (!srow || args.db.isDeleted(srow)) return Result.ok([]);
   if (srow.expires_at_ms != null && args.db.nowMs() > srow.expires_at_ms) return Result.ok([]);
@@ -167,7 +167,7 @@ async function appendJsonResult(
   stream: string,
   records: Array<{ value: unknown; routingKey?: string | null }>,
   ttlSeconds: number | null = null
-): Promise<Result<void, VfsServerError>> {
+): Promise<Result<void, WorkspaceFsServerError>> {
   const appendRes = await args.appendJsonRecords({ stream, records, ttlSeconds });
   if (Result.isError(appendRes)) {
     if (appendRes.error.kind === "overloaded") return Result.err({ status: 500, message: "VFS append overloaded" });
@@ -179,9 +179,9 @@ async function appendJsonResult(
   return Result.ok(undefined);
 }
 
-async function writeObjectsResult(args: StreamProfileRouteArgs, objects: VfsStoredObject[]): Promise<Result<void, VfsServerError>> {
+async function writeObjectsResult(args: StreamProfileRouteArgs, objects: WorkspaceFsStoredObject[]): Promise<Result<void, WorkspaceFsServerError>> {
   if (objects.length === 0) return Result.ok(undefined);
-  const uniqueObjects = uniqueVfsObjects(objects);
+  const uniqueObjects = uniqueWorkspaceFsObjects(objects);
   const stream = objectsStreamName(args.stream);
   const appendRes = await appendJsonResult(
     args,
@@ -192,9 +192,9 @@ async function writeObjectsResult(args: StreamProfileRouteArgs, objects: VfsStor
   return Result.ok(undefined);
 }
 
-function uniqueVfsObjects(objects: VfsStoredObject[]): VfsStoredObject[] {
+function uniqueWorkspaceFsObjects(objects: WorkspaceFsStoredObject[]): WorkspaceFsStoredObject[] {
   const seen = new Set<string>();
-  const unique: VfsStoredObject[] = [];
+  const unique: WorkspaceFsStoredObject[] = [];
   for (const object of objects) {
     if (seen.has(object.id)) continue;
     seen.add(object.id);
@@ -206,7 +206,7 @@ function uniqueVfsObjects(objects: VfsStoredObject[]): VfsStoredObject[] {
 async function loadObjectResult(
   args: StreamProfileRouteArgs,
   id: string
-): Promise<Result<VfsStoredObject | null, VfsServerError>> {
+): Promise<Result<WorkspaceFsStoredObject | null, WorkspaceFsServerError>> {
   const recordsRes = await readJsonRecordsResult(args, objectsStreamName(args.stream), objectKey(id));
   if (Result.isError(recordsRes)) return recordsRes;
   if (recordsRes.value.length === 0) return Result.ok(null);
@@ -216,20 +216,20 @@ async function loadObjectResult(
   return Result.ok(objectRes.value);
 }
 
-async function loadRequiredObjectResult<T extends VfsStoredObject>(
+async function loadRequiredObjectResult<T extends WorkspaceFsStoredObject>(
   args: StreamProfileRouteArgs,
   id: string,
   kind: T["kind"]
-): Promise<Result<T, VfsServerError>> {
+): Promise<Result<T, WorkspaceFsServerError>> {
   const objectRes = await loadObjectResult(args, id);
   if (Result.isError(objectRes)) return objectRes;
-  if (!objectRes.value) return Result.err({ status: 404, message: `VFS object not found: ${id}` });
-  if (objectRes.value.kind !== kind) return Result.err({ status: 500, message: `VFS object ${id} is not ${kind}` });
+  if (!objectRes.value) return Result.err({ status: 404, message: `workspace object not found: ${id}` });
+  if (objectRes.value.kind !== kind) return Result.err({ status: 500, message: `workspace object ${id} is not ${kind}` });
   return Result.ok(objectRes.value as T);
 }
 
-async function readBlobBytesResult(args: StreamProfileRouteArgs, blobId: string): Promise<Result<Uint8Array, VfsServerError>> {
-  const manifestRes = await loadRequiredObjectResult<VfsBlobManifest>(args, blobId, "blob");
+async function readBlobBytesResult(args: StreamProfileRouteArgs, blobId: string): Promise<Result<Uint8Array, WorkspaceFsServerError>> {
+  const manifestRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
   if (Result.isError(manifestRes)) return manifestRes;
   const manifest = manifestRes.value;
   if (manifest.inlineBase64 !== undefined) {
@@ -240,7 +240,7 @@ async function readBlobBytesResult(args: StreamProfileRouteArgs, blobId: string)
   const chunks = manifest.chunks ?? [];
   const out = new Uint8Array(manifest.size);
   for (const chunkRef of chunks) {
-    const chunkRes = await loadRequiredObjectResult<VfsChunkObject>(args, chunkRef.id, "chunk");
+    const chunkRes = await loadRequiredObjectResult<WorkspaceFsChunkObject>(args, chunkRef.id, "chunk");
     if (Result.isError(chunkRes)) return chunkRes;
     const bytesRes = fromBase64(chunkRes.value.dataBase64);
     if (Result.isError(bytesRes)) return Result.err({ status: 500, message: bytesRes.error.message });
@@ -269,7 +269,7 @@ async function appendWorkspaceAuditEventResult(
     status?: "started" | "succeeded" | "failed" | "conflict";
     context?: Record<string, unknown>;
   }
-): Promise<Result<void, VfsServerError>> {
+): Promise<Result<void, WorkspaceFsServerError>> {
   const auditStream = auditStreamForWorkspaceProfile(args);
   if (!auditStream) return Result.ok(undefined);
   const row = args.db.getStream(auditStream);
@@ -311,7 +311,7 @@ async function appendWorkspaceAuditEventResult(
   return Result.ok(undefined);
 }
 
-function gitRepoProfileConfigResult(args: StreamProfileRouteArgs, stream: string): Result<GitRepoProfileConfig, VfsServerError> {
+function gitRepoProfileConfigResult(args: StreamProfileRouteArgs, stream: string): Result<GitRepoProfileConfig, WorkspaceFsServerError> {
   const srow = args.db.getStream(stream);
   if (!srow || args.db.isDeleted(srow)) return Result.err({ status: 404, message: "git-repo stream not found" });
   if (srow.expires_at_ms != null && args.db.nowMs() > srow.expires_at_ms) return Result.err({ status: 404, message: "git-repo stream expired" });
@@ -372,7 +372,7 @@ function gitEntryToVfsStat(args: {
   format: GitObjectFormat;
   size: number;
   symlinkTarget?: string;
-}): VfsNodeStat {
+}): WorkspaceFsNodeStat {
   if (args.entry.type === "dir") {
     return {
       path: args.path,
@@ -418,7 +418,7 @@ async function writeGitObjectOnceResult(args: {
   format: GitObjectFormat;
   object: GitObject;
   written: Map<string, GitLooseObjectResponse>;
-}): Promise<Result<GitLooseObjectResponse, VfsServerError>> {
+}): Promise<Result<GitLooseObjectResponse, WorkspaceFsServerError>> {
   const existing = args.written.get(args.object.oid);
   if (existing) return Result.ok(existing);
   const writeRes = await writeLooseGitObjectResult({
@@ -443,7 +443,7 @@ async function baseGitRootForCommitResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   commitOid: string | null;
-}): Promise<Result<string | null, VfsServerError>> {
+}): Promise<Result<string | null, WorkspaceFsServerError>> {
   if (!args.commitOid) return Result.ok(null);
   return rootGitTreeOidForCommitResult({
     route: args.route,
@@ -458,12 +458,12 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   baseCommitOid: string | null;
-  ops: VfsWorkspaceOp[];
+  ops: WorkspaceFsWorkspaceOp[];
 }): Promise<Result<{
   rootTreeOid: string;
   written: Map<string, GitLooseObjectResponse>;
   changeSummary: { added: number; modified: number; deleted: number; renamed: number };
-}, VfsServerError>> {
+}, WorkspaceFsServerError>> {
   const rootTreeRes = await baseGitRootForCommitResult({
     route: args.route,
     gitRepoStream: args.gitRepoStream,
@@ -515,7 +515,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     }
   }
 
-  async function loadDir(dir: string): Promise<Result<GitTreeEntryInput[], VfsServerError>> {
+  async function loadDir(dir: string): Promise<Result<GitTreeEntryInput[], WorkspaceFsServerError>> {
     const cached = entriesByDir.get(dir);
     if (cached) return Result.ok(cached);
     if (!treeOidsByDir.has(dir) && dir !== "/") {
@@ -550,7 +550,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     return Result.ok(entries);
   }
 
-  async function ensureDirectoryResult(dir: string): Promise<Result<void, VfsServerError>> {
+  async function ensureDirectoryResult(dir: string): Promise<Result<void, WorkspaceFsServerError>> {
     if (dir === "/") {
       const rootRes = await loadDir("/");
       if (Result.isError(rootRes)) return rootRes;
@@ -577,7 +577,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     return Result.ok(undefined);
   }
 
-  async function upsertPathEntryResult(path: string, entry: GitTreeEntryInput): Promise<Result<void, VfsServerError>> {
+  async function upsertPathEntryResult(path: string, entry: GitTreeEntryInput): Promise<Result<void, WorkspaceFsServerError>> {
     const parent = parentPath(path);
     const ensureRes = await ensureDirectoryResult(parent);
     if (Result.isError(ensureRes)) return ensureRes;
@@ -707,7 +707,7 @@ async function currentGitHeadResult(
   args: StreamProfileRouteArgs,
   gitRepoStream: string,
   ref: string
-): Promise<Result<string | null, VfsServerError>> {
+): Promise<Result<string | null, WorkspaceFsServerError>> {
   const recordsRes = await readGitRecordsResult({ stream: gitRepoStream, reader: args.reader });
   if (Result.isError(recordsRes)) return Result.err(recordsRes.error);
   const refs = buildGitRefs(recordsRes.value);
@@ -726,7 +726,7 @@ async function waitGitTransactionDurabilityResult(args: {
   txnId: string;
   durability: "accepted" | "published" | "verified";
   timeoutMs: number;
-}): Promise<Result<GitTransactionStatus, VfsServerError>> {
+}): Promise<Result<GitTransactionStatus, WorkspaceFsServerError>> {
   if (args.durability === "accepted") return Result.ok("accepted");
   const deadline = Date.now() + args.timeoutMs;
   for (;;) {
@@ -761,7 +761,7 @@ async function rootGitTreeOidForCommitResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   commitOid: string;
-}): Promise<Result<string, VfsServerError>> {
+}): Promise<Result<string, WorkspaceFsServerError>> {
   const commitRes = await readLooseGitObjectBodyResult({
     repoStream: args.gitRepoStream,
     objectStore: args.route.objectStore,
@@ -780,7 +780,7 @@ async function loadGitTreeEntriesResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   treeOid: string;
-}): Promise<Result<GitTreeEntry[], VfsServerError>> {
+}): Promise<Result<GitTreeEntry[], WorkspaceFsServerError>> {
   const treeRes = await readLooseGitObjectBodyResult({
     repoStream: args.gitRepoStream,
     objectStore: args.route.objectStore,
@@ -800,7 +800,7 @@ async function statGitEntryResult(args: {
   format: GitObjectFormat;
   path: string;
   entry: GitTreeEntry;
-}): Promise<Result<VfsNodeStat, VfsServerError>> {
+}): Promise<Result<WorkspaceFsNodeStat, WorkspaceFsServerError>> {
   if (args.entry.type === "dir") {
     return Result.ok(gitEntryToVfsStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
   }
@@ -844,7 +844,7 @@ async function gitBlobSizeResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   oid: string;
-}): Promise<Result<number, VfsServerError>> {
+}): Promise<Result<number, WorkspaceFsServerError>> {
   const headerRes = await readLooseGitObjectHeaderResult({
     repoStream: args.gitRepoStream,
     objectStore: args.route.objectStore,
@@ -862,7 +862,7 @@ async function statGitEntryLazyResult(args: {
   format: GitObjectFormat;
   path: string;
   entry: GitTreeEntry;
-}): Promise<Result<VfsNodeStat, VfsServerError>> {
+}): Promise<Result<WorkspaceFsNodeStat, WorkspaceFsServerError>> {
   if (args.entry.type === "dir") {
     return Result.ok(gitEntryToVfsStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
   }
@@ -889,7 +889,7 @@ async function resolveGitPathForWorkspaceResult(args: {
   format: GitObjectFormat;
   commitOid: string;
   path: string;
-}): Promise<Result<{ node: VfsNodeStat; treeOid: string }, VfsServerError>> {
+}): Promise<Result<{ node: WorkspaceFsNodeStat; treeOid: string }, WorkspaceFsServerError>> {
   const rootRes = await rootGitTreeOidForCommitResult(args);
   if (Result.isError(rootRes)) return rootRes;
   if (args.path === "/") {
@@ -918,7 +918,7 @@ async function resolveGitPathForWorkspaceResult(args: {
   return Result.err({ status: 404, message: "path not found" });
 }
 
-function workspaceCheckout(records: VfsWorkspaceRecord[]): WorkspaceCheckoutRecord | null {
+function workspaceCheckout(records: WorkspaceFsWorkspaceRecord[]): WorkspaceCheckoutRecord | null {
   for (let i = records.length - 1; i >= 0; i--) {
     const record = records[i];
     if (record?.kind === "workspace-checkout") return record;
@@ -935,10 +935,10 @@ function workspaceCheckout(records: VfsWorkspaceRecord[]): WorkspaceCheckoutReco
   return null;
 }
 
-async function loadWorkspaceResult(args: StreamProfileRouteArgs, workspaceId: string): Promise<Result<LoadedWorkspace, VfsServerError>> {
+async function loadWorkspaceResult(args: StreamProfileRouteArgs, workspaceId: string): Promise<Result<LoadedWorkspace, WorkspaceFsServerError>> {
   const recordsRes = await readJsonRecordsResult(args, workspaceStreamName(args.stream, workspaceId));
   if (Result.isError(recordsRes)) return recordsRes;
-  const records = recordsRes.value as VfsWorkspaceRecord[];
+  const records = recordsRes.value as WorkspaceFsWorkspaceRecord[];
   return Result.ok({
     records,
     checkout: workspaceCheckout(records),
@@ -947,7 +947,7 @@ async function loadWorkspaceResult(args: StreamProfileRouteArgs, workspaceId: st
   });
 }
 
-function overlayStatFromOp(op: VfsWorkspaceOp): VfsNodeStat | null {
+function overlayStatFromOp(op: WorkspaceFsWorkspaceOp): WorkspaceFsNodeStat | null {
   if (op.kind === "put-file") {
     return {
       path: op.path,
@@ -991,7 +991,7 @@ function deleteOverlayPath(index: WorkspaceOverlayIndex, path: string): void {
   }
 }
 
-function addOverlayPath(index: WorkspaceOverlayIndex, path: string, op: VfsWorkspaceOp): void {
+function addOverlayPath(index: WorkspaceOverlayIndex, path: string, op: WorkspaceFsWorkspaceOp): void {
   index.latestByPath.set(path, op);
   let current = parentPath(path);
   while (current !== "/") {
@@ -1013,7 +1013,7 @@ function addOverlayPath(index: WorkspaceOverlayIndex, path: string, op: VfsWorks
   children.add(basename(path));
 }
 
-function buildWorkspaceOverlayIndex(ops: VfsWorkspaceOp[]): WorkspaceOverlayIndex {
+function buildWorkspaceOverlayIndex(ops: WorkspaceFsWorkspaceOp[]): WorkspaceOverlayIndex {
   const index: WorkspaceOverlayIndex = {
     latestByPath: new Map(),
     childrenByDir: new Map(),
@@ -1027,11 +1027,11 @@ function buildWorkspaceOverlayIndex(ops: VfsWorkspaceOp[]): WorkspaceOverlayInde
       continue;
     }
     if (op.kind === "rename") {
-      const moved: Array<{ from: string; to: string; op: VfsWorkspaceOp }> = [];
+      const moved: Array<{ from: string; to: string; op: WorkspaceFsWorkspaceOp }> = [];
       for (const [path, existing] of index.latestByPath.entries()) {
         if (path === op.from || path.startsWith(`${op.from}/`)) {
           const suffix = path === op.from ? "" : path.slice(op.from.length);
-          moved.push({ from: path, to: `${op.to}${suffix}`, op: { ...existing, path: `${op.to}${suffix}` } as VfsWorkspaceOp });
+          moved.push({ from: path, to: `${op.to}${suffix}`, op: { ...existing, path: `${op.to}${suffix}` } as WorkspaceFsWorkspaceOp });
         }
       }
       deleteOverlayPath(index, op.from);
@@ -1074,7 +1074,7 @@ async function gitWorkspaceBaseResult(args: StreamProfileRouteArgs, workspaceId:
   gitRepoStream: string;
   gitConfig: GitRepoProfileConfig;
   baseCommitOid: string | null;
-}, VfsServerError>> {
+}, WorkspaceFsServerError>> {
   const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (!gitRepoStream || !isWorkspaceFsProfile(args)) return Result.err({ status: 404, message: "workspace-fs git backing is not enabled" });
   const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
@@ -1094,7 +1094,7 @@ async function statGitBackedWorkspaceResult(
   args: StreamProfileRouteArgs,
   path: string,
   workspaceId: string
-): Promise<Result<VfsNodeStat, VfsServerError>> {
+): Promise<Result<WorkspaceFsNodeStat, WorkspaceFsServerError>> {
   const baseRes = await gitWorkspaceBaseResult(args, workspaceId);
   if (Result.isError(baseRes)) return baseRes;
   const overlay = buildWorkspaceOverlayIndex(baseRes.value.workspace.ops);
@@ -1125,13 +1125,13 @@ async function readdirGitBackedWorkspaceResult(
   workspaceId: string,
   cursor: string | null,
   limit: number
-): Promise<Result<{ entries: VfsNodeStat[]; nextCursor: string | null }, VfsServerError>> {
+): Promise<Result<{ entries: WorkspaceFsNodeStat[]; nextCursor: string | null }, WorkspaceFsServerError>> {
   const baseRes = await gitWorkspaceBaseResult(args, workspaceId);
   if (Result.isError(baseRes)) return baseRes;
   const overlay = buildWorkspaceOverlayIndex(baseRes.value.workspace.ops);
   if (pathHiddenByOverlay(overlay, dir)) return Result.err({ status: 404, message: "path not found" });
 
-  const byName = new Map<string, VfsNodeStat>();
+  const byName = new Map<string, WorkspaceFsNodeStat>();
   let baseDirExists = false;
   let baseTreeOid: string | null = null;
   if (baseRes.value.baseCommitOid) {
@@ -1199,11 +1199,11 @@ async function checkout(args: StreamProfileRouteArgs): Promise<Response> {
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "checkout request");
   if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
-  const ref = normalizeRef(typeof bodyObjRes.value.ref === "string" ? bodyObjRes.value.ref : VFS_DEFAULT_REF);
+  const ref = normalizeRef(typeof bodyObjRes.value.ref === "string" ? bodyObjRes.value.ref : WORKSPACE_FS_DEFAULT_REF);
   const workspaceId = typeof bodyObjRes.value.workspaceId === "string" && bodyObjRes.value.workspaceId.trim() !== "" ? bodyObjRes.value.workspaceId : newWorkspaceId();
   const ttlSeconds = typeof bodyObjRes.value.ttlSeconds === "number" && Number.isFinite(bodyObjRes.value.ttlSeconds)
     ? Math.max(1, Math.floor(bodyObjRes.value.ttlSeconds))
-    : VFS_WORKSPACE_TTL_SECONDS;
+    : WORKSPACE_FS_WORKSPACE_TTL_SECONDS;
 
   const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (!gitRepoStream || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace checkout requires git-repo backing");
@@ -1279,7 +1279,7 @@ async function refGet(args: StreamProfileRouteArgs, refSegments: string[]): Prom
 }
 
 async function stat(args: StreamProfileRouteArgs): Promise<Response> {
-  const pathRes = canonicalizeVfsPath(args.url.searchParams.get("path") ?? "/");
+  const pathRes = canonicalizeWorkspaceFsPath(args.url.searchParams.get("path") ?? "/");
   if (Result.isError(pathRes)) return args.respond.badRequest(pathRes.error.message);
   const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (!gitRepoStream || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace stat requires git-repo backing");
@@ -1308,7 +1308,7 @@ async function stat(args: StreamProfileRouteArgs): Promise<Response> {
 }
 
 async function readdir(args: StreamProfileRouteArgs): Promise<Response> {
-  const pathRes = canonicalizeVfsPath(args.url.searchParams.get("path") ?? "/");
+  const pathRes = canonicalizeWorkspaceFsPath(args.url.searchParams.get("path") ?? "/");
   if (Result.isError(pathRes)) return args.respond.badRequest(pathRes.error.message);
   const rawLimit = Number(args.url.searchParams.get("limit") ?? "500");
   const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
@@ -1345,7 +1345,7 @@ async function readdir(args: StreamProfileRouteArgs): Promise<Response> {
       treeOid: resolvedRes.value.node.treeId ?? "",
     });
     if (Result.isError(entriesRes)) return responseForError(args, entriesRes.error);
-    const stats: VfsNodeStat[] = [];
+    const stats: WorkspaceFsNodeStat[] = [];
     for (const entry of entriesRes.value) {
       const statRes = await statGitEntryLazyResult({
         route: args,
@@ -1384,12 +1384,12 @@ async function auditBlobReadResult(
   blobId: string,
   range: { start: number; end: number } | null,
   size: number
-): Promise<Result<void, VfsServerError>> {
+): Promise<Result<void, WorkspaceFsServerError>> {
   const workspaceId = args.url.searchParams.get("workspaceId");
   const rawPath = args.url.searchParams.get("path");
   if (!workspaceId && !rawPath) return Result.ok(undefined);
   if (!workspaceId || !rawPath) return Result.err({ status: 400, message: "workspaceId and path are required for audited blob reads" });
-  const pathRes = canonicalizeVfsPath(rawPath);
+  const pathRes = canonicalizeWorkspaceFsPath(rawPath);
   if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
   return appendWorkspaceAuditEventResult(args, {
     type: "workspace_file_read",
@@ -1456,40 +1456,40 @@ async function blob(args: StreamProfileRouteArgs, blobId: string): Promise<Respo
 
 async function prepareWorkspaceOpResult(
   args: StreamProfileRouteArgs,
-  op: VfsWorkspaceOpInput
-): Promise<Result<PreparedWorkspaceOp, VfsServerError>> {
+  op: WorkspaceFsWorkspaceOpInput
+): Promise<Result<PreparedWorkspaceOp, WorkspaceFsServerError>> {
   const createdAt = new Date().toISOString();
   if (op.kind === "mkdir") {
-    const pathRes = canonicalizeVfsPath(op.path);
+    const pathRes = canonicalizeWorkspaceFsPath(op.path);
     if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
     return Result.ok({ op: { kind: "mkdir", path: pathRes.value, createdAt }, objects: [] });
   }
   if (op.kind === "delete") {
-    const pathRes = canonicalizeVfsPath(op.path);
+    const pathRes = canonicalizeWorkspaceFsPath(op.path);
     if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
     if (pathRes.value === "/") return Result.err({ status: 400, message: "cannot delete workspace root" });
     return Result.ok({ op: { kind: "delete", path: pathRes.value, recursive: op.recursive, force: op.force, createdAt }, objects: [] });
   }
   if (op.kind === "rename") {
-    const fromRes = canonicalizeVfsPath(op.from);
-    const toRes = canonicalizeVfsPath(op.to);
+    const fromRes = canonicalizeWorkspaceFsPath(op.from);
+    const toRes = canonicalizeWorkspaceFsPath(op.to);
     if (Result.isError(fromRes)) return Result.err({ status: 400, message: fromRes.error.message });
     if (Result.isError(toRes)) return Result.err({ status: 400, message: toRes.error.message });
     if (fromRes.value === "/" || toRes.value === "/") return Result.err({ status: 400, message: "cannot rename workspace root" });
     return Result.ok({ op: { kind: "rename", from: fromRes.value, to: toRes.value, createdAt }, objects: [] });
   }
   if (op.kind === "symlink") {
-    const pathRes = canonicalizeVfsPath(op.path);
+    const pathRes = canonicalizeWorkspaceFsPath(op.path);
     if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
     return Result.ok({ op: { kind: "symlink", path: pathRes.value, target: op.target, createdAt }, objects: [] });
   }
   if (op.kind === "put-file") {
-    const pathRes = canonicalizeVfsPath(op.path);
+    const pathRes = canonicalizeWorkspaceFsPath(op.path);
     if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
     if (pathRes.value === "/") return Result.err({ status: 400, message: "cannot write workspace root" });
     let blobId = op.blobId;
     let size = 0;
-    let objects: VfsStoredObject[] = [];
+    let objects: WorkspaceFsStoredObject[] = [];
     if (!blobId) {
       const bytesRes = op.contentBase64 !== undefined ? fromBase64(op.contentBase64) : Result.ok(bytesFromText(op.text ?? ""));
       if (Result.isError(bytesRes)) return Result.err({ status: 400, message: bytesRes.error.message });
@@ -1498,7 +1498,7 @@ async function prepareWorkspaceOpResult(
       blobId = blob.manifest.id;
       size = blob.manifest.size;
     } else {
-      const blobRes = await loadRequiredObjectResult<VfsBlobManifest>(args, blobId, "blob");
+      const blobRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
       if (Result.isError(blobRes)) return blobRes;
       size = blobRes.value.size;
     }
@@ -1531,10 +1531,10 @@ async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): 
   if (!Array.isArray(rawOps) || rawOps.length === 0) return args.respond.badRequest("ops must be a non-empty array");
   if (rawOps.length > 1000) return args.respond.badRequest("too many ops");
 
-  const ops: VfsWorkspaceOp[] = [];
-  const objects: VfsStoredObject[] = [];
+  const ops: WorkspaceFsWorkspaceOp[] = [];
+  const objects: WorkspaceFsStoredObject[] = [];
   for (const rawOp of rawOps) {
-    const opRes = await prepareWorkspaceOpResult(args, rawOp as VfsWorkspaceOpInput);
+    const opRes = await prepareWorkspaceOpResult(args, rawOp as WorkspaceFsWorkspaceOpInput);
     if (Result.isError(opRes)) return responseForError(args, opRes.error);
     ops.push(opRes.value.op);
     objects.push(...opRes.value.objects);
@@ -1550,7 +1550,7 @@ async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): 
       value,
       routingKey: value.kind === "rename" ? workspaceOpKey(value.from) : workspaceOpKey(value.path),
     })),
-    VFS_WORKSPACE_TTL_SECONDS
+    WORKSPACE_FS_WORKSPACE_TTL_SECONDS
   );
   if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
   const auditRes = await appendWorkspaceAuditEventResult(args, {
@@ -1569,7 +1569,7 @@ async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): 
   return args.respond.json(200, { workspaceId, appended: ops.length, ops });
 }
 
-function changedPaths(ops: VfsWorkspaceOp[]): string[] {
+function changedPaths(ops: WorkspaceFsWorkspaceOp[]): string[] {
   const paths = new Set<string>();
   for (const op of ops) {
     if (op.kind === "rename") {
@@ -1587,7 +1587,7 @@ async function gitPathDescriptorsForCommitResult(args: {
   gitRepoStream: string;
   format: GitObjectFormat;
   commitOid: string | null;
-}): Promise<Result<Map<string, string>, VfsServerError>> {
+}): Promise<Result<Map<string, string>, WorkspaceFsServerError>> {
   const paths = new Map<string, string>();
   if (!args.commitOid) return Result.ok(paths);
   const rootRes = await rootGitTreeOidForCommitResult({
@@ -1598,7 +1598,7 @@ async function gitPathDescriptorsForCommitResult(args: {
   });
   if (Result.isError(rootRes)) return rootRes;
 
-  async function walk(dir: string, treeOid: string): Promise<Result<void, VfsServerError>> {
+  async function walk(dir: string, treeOid: string): Promise<Result<void, WorkspaceFsServerError>> {
     const entriesRes = await loadGitTreeEntriesResult({
       route: args.route,
       gitRepoStream: args.gitRepoStream,
@@ -1630,7 +1630,7 @@ async function changedGitPathsBetweenCommitsResult(args: {
   format: GitObjectFormat;
   baseCommitOid: string | null;
   headCommitOid: string | null;
-}): Promise<Result<string[], VfsServerError>> {
+}): Promise<Result<string[], WorkspaceFsServerError>> {
   if (args.baseCommitOid === args.headCommitOid) return Result.ok([]);
   const baseRes = await gitPathDescriptorsForCommitResult({
     route: args.route,
@@ -1672,7 +1672,7 @@ function workspaceConflictPaths(workspaceChangedPaths: string[], upstreamChanged
 async function workspaceConflictSnapshotResult(
   args: StreamProfileRouteArgs,
   workspaceId: string
-): Promise<Result<VfsWorkspaceConflictsResponse, VfsServerError>> {
+): Promise<Result<WorkspaceFsWorkspaceConflictsResponse, WorkspaceFsServerError>> {
   const workspaceRes = await loadWorkspaceResult(args, workspaceId);
   if (Result.isError(workspaceRes)) return workspaceRes;
   const workspace = workspaceRes.value;
@@ -1751,7 +1751,7 @@ async function workspaceIndex(args: StreamProfileRouteArgs, workspaceId: string)
   const rawPath = args.url.searchParams.get("path");
   let path: string | null = null;
   if (rawPath != null) {
-    const pathRes = canonicalizeVfsPath(rawPath);
+    const pathRes = canonicalizeWorkspaceFsPath(rawPath);
     if (Result.isError(pathRes)) return args.respond.badRequest(pathRes.error.message);
     path = pathRes.value;
   }
@@ -1761,7 +1761,7 @@ async function workspaceIndex(args: StreamProfileRouteArgs, workspaceId: string)
 async function workspaceChanges(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
   const workspaceRes = await loadWorkspaceResult(args, workspaceId);
   if (Result.isError(workspaceRes)) return responseForError(args, workspaceRes.error);
-  const prefixRes = canonicalizeVfsPath(args.url.searchParams.get("prefix") ?? "/");
+  const prefixRes = canonicalizeWorkspaceFsPath(args.url.searchParams.get("prefix") ?? "/");
   if (Result.isError(prefixRes)) return args.respond.badRequest(prefixRes.error.message);
   const prefix = prefixRes.value;
   const paths = changedPaths(workspaceRes.value.ops).filter((path) => prefix === "/" || path === prefix || path.startsWith(`${prefix}/`));
@@ -1836,11 +1836,11 @@ async function rebaseWorkspace(args: StreamProfileRouteArgs, workspaceId: string
         },
         routingKey: "workspace",
       },
-    ], VFS_WORKSPACE_TTL_SECONDS);
+    ], WORKSPACE_FS_WORKSPACE_TTL_SECONDS);
     if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
   }
 
-  const response: VfsWorkspaceRebaseResponse = {
+  const response: WorkspaceFsWorkspaceRebaseResponse = {
     ...snapshot,
     baseCommitId: snapshot.currentHead,
     rebased,
@@ -1884,7 +1884,7 @@ async function compactWorkspace(args: StreamProfileRouteArgs, workspaceId: strin
       },
       routingKey: "workspace-index",
     },
-  ], VFS_WORKSPACE_TTL_SECONDS);
+  ], WORKSPACE_FS_WORKSPACE_TTL_SECONDS);
   if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
   return args.respond.json(200, snapshot);
 }
@@ -1909,7 +1909,7 @@ async function commitGitBackedWorkspaceResult(args: {
   author: { id: string; name?: string };
   durability: "accepted" | "published" | "verified";
   durabilityTimeoutMs: number;
-}): Promise<Result<VfsCommitResponse, VfsServerError>> {
+}): Promise<Result<WorkspaceFsCommitResponse, WorkspaceFsServerError>> {
   const currentHeadRes = await currentGitHeadResult(args.route, args.gitRepoStream, args.ref);
   if (Result.isError(currentHeadRes)) return currentHeadRes;
   const currentHead = currentHeadRes.value;
@@ -1954,7 +1954,6 @@ async function commitGitBackedWorkspaceResult(args: {
     format: args.gitConfig.objectFormat,
     request: {
       txnId,
-      idempotencyKey: txnId,
       actor: args.author.id,
       refUpdates: [{
         ref: normalizeGitRef(args.ref),
@@ -1979,7 +1978,7 @@ async function commitGitBackedWorkspaceResult(args: {
   });
   if (Result.isError(durabilityRes)) return durabilityRes;
 
-  const gitCommit: VfsCanonicalGitCommit = {
+  const gitCommit: WorkspaceFsCanonicalGitCommit = {
     repoStream: args.gitRepoStream,
     ref: normalizeGitRef(args.ref),
     oldOid: currentHead,
@@ -1989,7 +1988,7 @@ async function commitGitBackedWorkspaceResult(args: {
     bytes: artifacts.reduce((sum, artifact) => sum + artifact.framedSize, 0),
     durability: durabilityRes.value,
   };
-  const commit: VfsCommit = {
+  const commit: WorkspaceFsCommit = {
     kind: "commit",
     id: commitObjectRes.value.oid,
     parents: currentHead ? [currentHead] : [],
@@ -2007,7 +2006,7 @@ async function commitGitBackedWorkspaceResult(args: {
       value: { kind: "workspace-committed", commitId: commit.id, git: gitCommit, createdAt },
       routingKey: "workspace",
     },
-  ], VFS_WORKSPACE_TTL_SECONDS);
+  ], WORKSPACE_FS_WORKSPACE_TTL_SECONDS);
   if (Result.isError(markerAppendRes)) return markerAppendRes;
 
   return Result.ok({
@@ -2024,7 +2023,7 @@ async function commitWorkspace(args: StreamProfileRouteArgs, workspaceId: string
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "commit request");
   if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
-  const body = bodyObjRes.value as VfsCommitRequest;
+  const body = bodyObjRes.value as WorkspaceFsCommitRequest;
   if (typeof body.message !== "string" || body.message.trim() === "") return args.respond.badRequest("message is required");
   if (!body.author || typeof body.author !== "object" || typeof body.author.id !== "string" || body.author.id.trim() === "") {
     return args.respond.badRequest("author.id is required");
@@ -2099,7 +2098,7 @@ async function discardWorkspace(args: StreamProfileRouteArgs, workspaceId: strin
       value: { kind: "workspace-discarded", createdAt: new Date().toISOString() },
       routingKey: "workspace",
     },
-  ], VFS_WORKSPACE_TTL_SECONDS);
+  ], WORKSPACE_FS_WORKSPACE_TTL_SECONDS);
   if (Result.isError(markerAppendRes)) return responseForError(args, markerAppendRes.error);
   const auditRes = await appendWorkspaceAuditEventResult(args, {
     type: "workspace_discarded",
@@ -2115,7 +2114,7 @@ async function loadGitCommitAsVfsResult(args: {
   gitRepoStream: string;
   gitConfig: GitRepoProfileConfig;
   commitOid: string;
-}): Promise<Result<VfsCommit, VfsServerError>> {
+}): Promise<Result<WorkspaceFsCommit, WorkspaceFsServerError>> {
   const commitRes = await readLooseGitObjectBodyResult({
     repoStream: args.gitRepoStream,
     objectStore: args.route.objectStore,
@@ -2156,7 +2155,7 @@ async function log(args: StreamProfileRouteArgs): Promise<Response> {
   if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
   const headRes = await currentGitHeadResult(args, gitRepoStream, ref);
   if (Result.isError(headRes)) return responseForError(args, headRes.error);
-  const commits: VfsCommit[] = [];
+  const commits: WorkspaceFsCommit[] = [];
   let commitId = headRes.value;
   while (commitId && commits.length < limit) {
     const commitRes = await loadGitCommitAsVfsResult({
@@ -2192,7 +2191,7 @@ async function show(args: StreamProfileRouteArgs, commitId: string): Promise<Res
 async function batchStat(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "batch stat request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
-  const body = bodyRes.value as VfsBatchStatRequest;
+  const body = bodyRes.value as WorkspaceFsBatchStatRequest;
   if (!Array.isArray(body.paths)) return args.respond.badRequest("paths must be an array");
   if (body.paths.length > 1000) return args.respond.badRequest("paths exceeds maximum of 1000");
   const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
@@ -2203,7 +2202,7 @@ async function batchStat(args: StreamProfileRouteArgs): Promise<Response> {
   if (body.commit && gitConfigRes && !oidPattern(gitConfigRes.value.objectFormat).test(body.commit)) return args.respond.badRequest("invalid git commit id");
   const stats = [];
   for (const rawPath of body.paths) {
-    const pathRes = canonicalizeVfsPath(rawPath);
+    const pathRes = canonicalizeWorkspaceFsPath(rawPath);
     if (Result.isError(pathRes)) {
       stats.push({ path: rawPath, node: null, error: pathRes.error.message });
       continue;
@@ -2236,7 +2235,7 @@ async function batchStat(args: StreamProfileRouteArgs): Promise<Response> {
 async function batchReadMetadata(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "batch metadata request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
-  const body = bodyRes.value as VfsBatchReadMetadataRequest;
+  const body = bodyRes.value as WorkspaceFsBatchReadMetadataRequest;
   if (!Array.isArray(body.ids)) return args.respond.badRequest("ids must be an array");
   const objects = [];
   for (const id of body.ids.slice(0, 1000)) {
@@ -2250,7 +2249,7 @@ async function batchReadMetadata(args: StreamProfileRouteArgs): Promise<Response
 async function batchReadBlobs(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "batch blob request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
-  const body = bodyRes.value as VfsBatchReadBlobsRequest;
+  const body = bodyRes.value as WorkspaceFsBatchReadBlobsRequest;
   if (!Array.isArray(body.blobIds)) return args.respond.badRequest("blobIds must be an array");
   const blobs = [];
   for (const blobId of body.blobIds.slice(0, 100)) {

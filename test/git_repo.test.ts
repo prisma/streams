@@ -767,11 +767,26 @@ describe("git-repo profile", () => {
         },
       });
     };
+    const objectStore = {
+      async get() {
+        return null;
+      },
+      async head() {
+        return null;
+      },
+      async put() {
+        return { etag: "unused" };
+      },
+      async delete() {},
+      async list() {
+        return [];
+      },
+    };
 
     const result = await commitGitRefTransactionResult({
       stream: "git/test/race",
       reader: reader as any,
-      objectStore: {} as any,
+      objectStore: objectStore as any,
       appendJsonRecords: appendJsonRecords as any,
       format: "sha1",
       request: {
@@ -783,6 +798,116 @@ describe("git-repo profile", () => {
     expect(Result.isOk(result)).toBe(true);
     if (Result.isError(result)) throw new Error(result.error.message);
     expect(successfulExpectedOffset).toBe(2n);
+    expect(result.value.refs["refs/heads/side"]).toBe(sideOid);
+    expect(result.value.refs["refs/heads/main"]).toBeNull();
+  });
+
+  test("commits ref transactions from a ref checkpoint without replaying the full stream", async () => {
+    const repo = "git/test/checkpoint-hot-path";
+    const mainOid = writeGitBlob("main\n").oid;
+    const sideOid = writeGitBlob("side\n").oid;
+    const checkpoint = {
+      repoId: repo,
+      generation: 1,
+      streamOffset: 999,
+      refs: { "refs/heads/main": mainOid },
+      head: { symbolicRef: "refs/heads/main" },
+      createdAt: new Date().toISOString(),
+    };
+    const tailRecord = {
+      type: "ref-transaction-committed",
+      repoId: repo,
+      txnId: "tail-side",
+      requestHash: "tail",
+      createdAt: new Date().toISOString(),
+      refUpdates: [{ ref: "refs/heads/side", oldOid: null, newOid: sideOid }],
+    };
+    let fullReplays = 0;
+    let tailReads = 0;
+    let keyedReads = 0;
+    let successfulExpectedOffset: bigint | null = null;
+    const reader = {
+      async readResult(args: { offset: string; key?: string | null }) {
+        if (args.key) {
+          keyedReads++;
+          return Result.ok({
+            stream: repo,
+            format: "raw" as const,
+            key: args.key,
+            requestOffset: args.offset,
+            endOffset: "unused",
+            nextOffset: "unused",
+            endOffsetSeq: 1000n,
+            nextOffsetSeq: 1000n,
+            records: [],
+          });
+        }
+        if (args.offset === "-1") {
+          fullReplays++;
+          throw new Error("unexpected full git-repo stream replay");
+        }
+        tailReads++;
+        return Result.ok({
+          stream: repo,
+          format: "raw" as const,
+          key: null,
+          requestOffset: args.offset,
+          endOffset: "unused",
+          nextOffset: "unused",
+          endOffsetSeq: 1000n,
+          nextOffsetSeq: 1000n,
+          records: [{
+            offset: 1000n,
+            payload: TEXT_ENCODER.encode(JSON.stringify(tailRecord)),
+          }],
+        });
+      },
+    };
+    const objectStore = {
+      async get() {
+        return TEXT_ENCODER.encode(JSON.stringify(checkpoint));
+      },
+      async head() {
+        return null;
+      },
+      async put() {
+        return { etag: "unused" };
+      },
+      async delete() {},
+      async list() {
+        return [];
+      },
+    };
+    const appendJsonRecords = async (args: { records: Array<{ value: unknown }>; expectedNextOffset?: bigint | null }) => {
+      successfulExpectedOffset = args.expectedNextOffset ?? null;
+      return Result.ok({
+        result: {
+          lastOffset: args.expectedNextOffset ?? 1001n,
+          appendedRows: args.records.length,
+          closed: false,
+          duplicate: false,
+        },
+      });
+    };
+
+    const result = await commitGitRefTransactionResult({
+      stream: repo,
+      reader: reader as any,
+      objectStore: objectStore as any,
+      appendJsonRecords: appendJsonRecords as any,
+      format: "sha1",
+      request: {
+        txnId: "checkpoint-txn",
+        refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
+      },
+    });
+
+    expect(Result.isOk(result)).toBe(true);
+    if (Result.isError(result)) throw new Error(result.error.message);
+    expect(fullReplays).toBe(0);
+    expect(tailReads).toBe(1);
+    expect(keyedReads).toBe(1);
+    expect(successfulExpectedOffset).toBe(1001n);
     expect(result.value.refs["refs/heads/side"]).toBe(sideOid);
     expect(result.value.refs["refs/heads/main"]).toBeNull();
   });

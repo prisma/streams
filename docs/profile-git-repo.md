@@ -492,8 +492,13 @@ on host-level Git configuration.
 The profile does not rely on a process-local repository lock for correctness.
 For a ref transaction, the server:
 
-1. Reads the git-repo stream to a stable end offset.
-2. Builds the current ref map from committed transaction records.
+1. Loads the latest ref checkpoint artifact when present and replays only the
+   durable stream tail after its `streamOffset`.
+2. Builds the current ref map and stable expected next stream offset from that
+   checkpoint plus tail. Transactions with a `txnId` use a keyed transaction
+   lookup for idempotent replay; transactions that supply an independent
+   `idempotencyKey` fall back to a full transaction-log scan until a dedicated
+   idempotency-key index exists.
 3. Verifies every requested `oldOid` against that map, so stale updates fail
    before object graph work.
 4. Validates ref names, object IDs, object artifacts, and the reachable Git
@@ -563,9 +568,10 @@ canonical transaction state before returning.
 - Loose Git object artifacts, bundle/pack import/export, and pack/idx
   maintenance publication are implemented. Incremental pack compaction policy is
   still minimal.
-- Ref checkpoint artifacts are implemented for hot ref reads. Transaction
-  idempotency lookup still scans the durable transaction log until a separate
-  transaction-key index exists.
+- Ref checkpoint artifacts are implemented for hot ref reads and ordinary ref
+  transactions. `txnId` replay uses keyed reads. Requests that provide a
+  separate `idempotencyKey` still scan the durable transaction log until a
+  separate idempotency-key index exists.
 - Tree index artifacts are implemented for large directory hot paths. They are
   published by maintenance and used opportunistically by `stat` and `readdir`;
   canonical Git trees remain the source of truth.

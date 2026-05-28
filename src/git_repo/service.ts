@@ -60,6 +60,8 @@ export type GitRepoRecordSnapshot = {
   nextOffset: bigint;
 };
 
+type GitRepoTailSnapshot = GitRepoRecordSnapshot;
+
 export async function readGitRecordSnapshotResult(
   args: Pick<GitRepoServiceArgs, "stream" | "reader">
 ): Promise<Result<GitRepoRecordSnapshot, GitRepoServiceError>> {
@@ -97,29 +99,45 @@ export async function readGitRecordsResult(args: Pick<GitRepoServiceArgs, "strea
   return Result.ok(snapshotRes.value.records);
 }
 
-async function readGitRecordsAfterOffsetResult(
+async function readGitRecordTailAfterOffsetResult(
   args: Pick<GitRepoServiceArgs, "stream" | "reader">,
   offset: number
-): Promise<Result<GitRepoRecord[], GitRepoServiceError>> {
+): Promise<Result<GitRepoTailSnapshot, GitRepoServiceError>> {
   const values: GitRepoRecord[] = [];
+  const entries: Array<{ offset: bigint; record: GitRepoRecord }> = [];
   let cursor = offset < 0 ? "-1" : encodeOffset(0, BigInt(offset), 0);
   for (;;) {
     const batchRes = await args.reader.readResult({ stream: args.stream, offset: cursor, key: null, format: "raw", filter: null });
     if (Result.isError(batchRes)) {
-      if (batchRes.error.kind === "not_found" || batchRes.error.kind === "gone") return Result.ok(values);
+      if (batchRes.error.kind === "not_found" || batchRes.error.kind === "gone") return Result.ok({ records: values, entries, nextOffset: 0n });
       return Result.err({ status: 500, message: batchRes.error.message });
     }
     for (const record of batchRes.value.records) {
       try {
         const parsed = JSON.parse(TEXT_DECODER.decode(record.payload)) as Partial<GitRepoRecord>;
-        if (typeof parsed.type === "string") values.push(parsed as GitRepoRecord);
+        if (typeof parsed.type === "string") {
+          const value = parsed as GitRepoRecord;
+          values.push(value);
+          entries.push({ offset: record.offset, record: value });
+        }
       } catch {
         return Result.err({ status: 500, message: `invalid JSON record in ${args.stream}` });
       }
     }
-    if (batchRes.value.nextOffsetSeq >= batchRes.value.endOffsetSeq) return Result.ok(values);
+    if (batchRes.value.nextOffsetSeq >= batchRes.value.endOffsetSeq) {
+      return Result.ok({ records: values, entries, nextOffset: batchRes.value.endOffsetSeq + 1n });
+    }
     cursor = batchRes.value.nextOffset;
   }
+}
+
+async function readGitRecordsAfterOffsetResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "reader">,
+  offset: number
+): Promise<Result<GitRepoRecord[], GitRepoServiceError>> {
+  const tailRes = await readGitRecordTailAfterOffsetResult(args, offset);
+  if (Result.isError(tailRes)) return tailRes;
+  return Result.ok(tailRes.value.records);
 }
 
 function applyRecordsToRefs(refs: Record<string, string | null>, records: GitRepoRecord[]): Record<string, string | null> {
@@ -164,24 +182,25 @@ export async function writeGitRefCheckpointArtifactsResult(args: GitRepoServiceA
 
 export async function readGitRefsSnapshotResult(args: GitRepoServiceArgs & {
   format: GitObjectFormat;
-}): Promise<Result<{ refs: Record<string, string | null>; checkpoint: GitRefCheckpoint | null }, GitRepoServiceError>> {
+}): Promise<Result<{ refs: Record<string, string | null>; checkpoint: GitRefCheckpoint | null; nextOffset: bigint }, GitRepoServiceError>> {
   const latestKey = gitLatestRefCheckpointKey(args.stream, args.format);
   const checkpointBytesRes = await getObjectStoreBytesResult(args.objectStore, latestKey);
   if (Result.isError(checkpointBytesRes)) return checkpointBytesRes;
   if (checkpointBytesRes.value) {
     const checkpointRes = parseRefCheckpointBytesResult(checkpointBytesRes.value, args.stream);
     if (Result.isError(checkpointRes)) return checkpointRes;
-    const tailRes = await readGitRecordsAfterOffsetResult(args, checkpointRes.value.streamOffset);
+    const tailRes = await readGitRecordTailAfterOffsetResult(args, checkpointRes.value.streamOffset);
     if (Result.isError(tailRes)) return tailRes;
     return Result.ok({
-      refs: applyRecordsToRefs(checkpointRes.value.refs, tailRes.value),
+      refs: applyRecordsToRefs(checkpointRes.value.refs, tailRes.value.records),
       checkpoint: checkpointRes.value,
+      nextOffset: tailRes.value.nextOffset,
     });
   }
 
-  const recordsRes = await readGitRecordsResult(args);
-  if (Result.isError(recordsRes)) return recordsRes;
-  return Result.ok({ refs: buildRefs(recordsRes.value), checkpoint: null });
+  const snapshotRes = await readGitRecordSnapshotResult(args);
+  if (Result.isError(snapshotRes)) return snapshotRes;
+  return Result.ok({ refs: buildRefs(snapshotRes.value.records), checkpoint: null, nextOffset: snapshotRes.value.nextOffset });
 }
 
 export async function appendGitRecordResult(
@@ -416,6 +435,33 @@ function requestHashForRefTransaction(request: GitRefTransactionRequest): string
   return createHash("sha256").update(canonicalJson({ refUpdates, objects: sortedObjectSet(request.objects) })).digest("hex");
 }
 
+async function readGitTransactionByTxnIdResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "reader">,
+  txnId: string
+): Promise<Result<GitRefTransactionCommittedRecord | null, GitRepoServiceError>> {
+  let cursor = "-1";
+  const key = routingKeyForGitTxn(txnId);
+  for (;;) {
+    const batchRes = await args.reader.readResult({ stream: args.stream, offset: cursor, key, format: "raw", filter: null });
+    if (Result.isError(batchRes)) {
+      if (batchRes.error.kind === "not_found" || batchRes.error.kind === "gone") return Result.ok(null);
+      return Result.err({ status: 500, message: batchRes.error.message });
+    }
+    for (const record of batchRes.value.records) {
+      try {
+        const parsed = JSON.parse(TEXT_DECODER.decode(record.payload)) as Partial<GitRepoRecord>;
+        if (parsed.type === "ref-transaction-committed" && parsed.txnId === txnId) {
+          return Result.ok(parsed as GitRefTransactionCommittedRecord);
+        }
+      } catch {
+        return Result.err({ status: 500, message: `invalid JSON record in ${args.stream}` });
+      }
+    }
+    if (batchRes.value.nextOffsetSeq >= batchRes.value.endOffsetSeq) return Result.ok(null);
+    cursor = batchRes.value.nextOffset;
+  }
+}
+
 function parseTagTarget(body: Uint8Array, format: GitObjectFormat): string | null {
   const text = TEXT_DECODER.decode(body);
   const objectLine = text.split("\n").find((line) => line.startsWith("object "));
@@ -576,28 +622,43 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
   const oidShapeRes = validateRefTransactionOidShapesResult(args.format, request);
   if (Result.isError(oidShapeRes)) return oidShapeRes;
   let requestObjectsValidated = false;
+  const canUseCheckpointHotPath = !request.idempotencyKey;
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const snapshotRes = await readGitRecordSnapshotResult(args);
-    if (Result.isError(snapshotRes)) return snapshotRes;
-    const records = snapshotRes.value.records;
-
-    const existing = findTransaction(records, {
-      txnId: request.txnId,
-      idempotencyKey: request.idempotencyKey,
-    });
+    let currentRefs: Record<string, string | null>;
+    let expectedNextOffset: bigint;
+    let existing: GitRefTransactionCommittedRecord | null = null;
+    if (canUseCheckpointHotPath) {
+      const refsSnapshotRes = await readGitRefsSnapshotResult(args);
+      if (Result.isError(refsSnapshotRes)) return refsSnapshotRes;
+      currentRefs = refsSnapshotRes.value.refs;
+      expectedNextOffset = refsSnapshotRes.value.nextOffset;
+      if (request.txnId) {
+        const existingRes = await readGitTransactionByTxnIdResult(args, request.txnId);
+        if (Result.isError(existingRes)) return existingRes;
+        existing = existingRes.value;
+      }
+    } else {
+      const snapshotRes = await readGitRecordSnapshotResult(args);
+      if (Result.isError(snapshotRes)) return snapshotRes;
+      currentRefs = buildRefs(snapshotRes.value.records);
+      expectedNextOffset = snapshotRes.value.nextOffset;
+      existing = findTransaction(snapshotRes.value.records, {
+        txnId: request.txnId,
+        idempotencyKey: request.idempotencyKey,
+      });
+    }
     if (existing) {
       if (existing.requestHash !== requestHash) {
         return Result.err({ status: 409, message: "idempotency key or transaction id was already used for a different request" });
       }
       return Result.ok({
         transaction: existing,
-        refs: buildRefs(records),
+        refs: currentRefs,
         idempotent: true,
       });
     }
 
-    const currentRefs = buildRefs(records);
     const nextRefsRes = applyRefUpdatesResult(currentRefs, request.refUpdates);
     if (Result.isError(nextRefsRes)) return Result.err({ status: 409, message: nextRefsRes.error.message });
 
@@ -630,7 +691,7 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
       refUpdates: request.refUpdates,
       objects: request.objects,
     };
-    const appendRes = await appendGitRecordResult(args, transaction, routingKeyForGitTxn(transaction.txnId), snapshotRes.value.nextOffset);
+    const appendRes = await appendGitRecordResult(args, transaction, routingKeyForGitTxn(transaction.txnId), expectedNextOffset);
     if (Result.isError(appendRes)) {
       if (appendRes.error.status === 409 && appendRes.error.message === "git-repo stream changed") continue;
       return appendRes;

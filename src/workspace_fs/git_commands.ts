@@ -2,7 +2,7 @@ import { defineCommand, type CustomCommand } from "just-bash";
 import type { WorkspaceFsWorkspace } from "./client";
 import { WorkspaceFsClientError } from "./client";
 import { normalizeRef } from "./model";
-import type { VfsCommit } from "./types";
+import type { WorkspaceFsCommit } from "./types";
 
 export type WorkspaceGitCommandOptions = {
   getWorkspace: () => WorkspaceFsWorkspace;
@@ -36,7 +36,7 @@ function shortId(id: string | null | undefined): string {
   return raw.slice(0, 12);
 }
 
-function formatCommit(commit: VfsCommit): string {
+function formatCommit(commit: WorkspaceFsCommit): string {
   const lines = [
     `commit ${commit.id}`,
     ...(commit.git ? [`Git-Commit: ${commit.git.newOid}`] : []),

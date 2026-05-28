@@ -1,203 +1,203 @@
 export const WORKSPACE_FS_PROFILE_KIND = "workspace-fs" as const;
 export const WORKSPACE_FS_PROFILE_VERSION = 1 as const;
 
-export type VfsObjectId = string;
-export type VfsCommitId = string;
-export type VfsTreeId = string;
-export type VfsBlobId = string;
-export type VfsChunkId = string;
-export type VfsRefName = `refs/${string}` | string;
+export type WorkspaceFsObjectId = string;
+export type WorkspaceFsCommitId = string;
+export type WorkspaceFsTreeId = string;
+export type WorkspaceFsBlobId = string;
+export type WorkspaceFsChunkId = string;
+export type WorkspaceFsRefName = `refs/${string}` | string;
 
-export type VfsAuthor = {
+export type WorkspaceFsAuthor = {
   id: string;
   name?: string;
 };
 
-export type VfsBlobChunkRef = {
-  id: VfsChunkId;
+export type WorkspaceFsBlobChunkRef = {
+  id: WorkspaceFsChunkId;
   offset: number;
   size: number;
   compression?: "none";
 };
 
-export type VfsBlobManifest = {
+export type WorkspaceFsBlobManifest = {
   kind: "blob";
-  id: VfsBlobId;
+  id: WorkspaceFsBlobId;
   size: number;
   executable?: boolean;
   contentType?: string;
   inlineBase64?: string;
-  chunks?: VfsBlobChunkRef[];
+  chunks?: WorkspaceFsBlobChunkRef[];
 };
 
-export type VfsChunkObject = {
+export type WorkspaceFsChunkObject = {
   kind: "chunk";
-  id: VfsChunkId;
+  id: WorkspaceFsChunkId;
   size: number;
   dataBase64: string;
 };
 
-export type VfsTreeEntryType = "file" | "dir" | "symlink";
+export type WorkspaceFsTreeEntryType = "file" | "dir" | "symlink";
 
-export type VfsChangeSummary = {
+export type WorkspaceFsChangeSummary = {
   added: number;
   modified: number;
   deleted: number;
   renamed: number;
 };
 
-export type VfsCanonicalGitCommit = {
+export type WorkspaceFsCanonicalGitCommit = {
   repoStream: string;
-  ref: VfsRefName;
+  ref: WorkspaceFsRefName;
   oldOid: string | null;
   newOid: string;
   txnId: string;
   objectCount: number;
   bytes: number;
-  durability?: VfsCommitDurability;
+  durability?: WorkspaceFsCommitDurability;
 };
 
-export type VfsCommit = {
+export type WorkspaceFsCommit = {
   kind: "commit";
-  id: VfsCommitId;
-  parents: VfsCommitId[];
-  rootTreeId: VfsTreeId | null;
-  author: VfsAuthor;
+  id: WorkspaceFsCommitId;
+  parents: WorkspaceFsCommitId[];
+  rootTreeId: WorkspaceFsTreeId | null;
+  author: WorkspaceFsAuthor;
   message: string;
   createdAt: string;
   workspaceId?: string;
-  changeSummary?: VfsChangeSummary;
-  git?: VfsCanonicalGitCommit;
+  changeSummary?: WorkspaceFsChangeSummary;
+  git?: WorkspaceFsCanonicalGitCommit;
 };
 
-export type VfsStoredObject = VfsBlobManifest | VfsChunkObject;
+export type WorkspaceFsStoredObject = WorkspaceFsBlobManifest | WorkspaceFsChunkObject;
 
-export type VfsNodeStat = {
+export type WorkspaceFsNodeStat = {
   path: string;
-  type: VfsTreeEntryType;
+  type: WorkspaceFsTreeEntryType;
   mode: number;
   size: number;
   mtime?: string;
-  blobId?: VfsBlobId;
-  treeId?: VfsTreeId | null;
+  blobId?: WorkspaceFsBlobId;
+  treeId?: WorkspaceFsTreeId | null;
   symlinkTarget?: string;
 };
 
-export type VfsCheckoutRequest = {
-  ref?: VfsRefName;
+export type WorkspaceFsCheckoutRequest = {
+  ref?: WorkspaceFsRefName;
   workspaceId?: string;
   ttlSeconds?: number;
 };
 
-export type VfsCheckoutResponse = {
+export type WorkspaceFsCheckoutResponse = {
   repo: string;
-  ref: VfsRefName;
+  ref: WorkspaceFsRefName;
   workspaceId: string;
-  baseCommitId: VfsCommitId | null;
-  rootTreeId: VfsTreeId | null;
+  baseCommitId: WorkspaceFsCommitId | null;
+  rootTreeId: WorkspaceFsTreeId | null;
 };
 
-export type VfsWorkspacePutFileInput = {
+export type WorkspaceFsWorkspacePutFileInput = {
   kind: "put-file";
   path: string;
   contentBase64?: string;
   text?: string;
-  blobId?: VfsBlobId;
+  blobId?: WorkspaceFsBlobId;
   executable?: boolean;
   contentType?: string;
 };
 
-export type VfsWorkspaceDeleteInput = {
+export type WorkspaceFsWorkspaceDeleteInput = {
   kind: "delete";
   path: string;
   recursive?: boolean;
   force?: boolean;
 };
 
-export type VfsWorkspaceMkdirInput = {
+export type WorkspaceFsWorkspaceMkdirInput = {
   kind: "mkdir";
   path: string;
 };
 
-export type VfsWorkspaceRenameInput = {
+export type WorkspaceFsWorkspaceRenameInput = {
   kind: "rename";
   from: string;
   to: string;
 };
 
-export type VfsWorkspaceSymlinkInput = {
+export type WorkspaceFsWorkspaceSymlinkInput = {
   kind: "symlink";
   target: string;
   path: string;
 };
 
-export type VfsWorkspaceOpInput =
-  | VfsWorkspacePutFileInput
-  | VfsWorkspaceDeleteInput
-  | VfsWorkspaceMkdirInput
-  | VfsWorkspaceRenameInput
-  | VfsWorkspaceSymlinkInput;
+export type WorkspaceFsWorkspaceOpInput =
+  | WorkspaceFsWorkspacePutFileInput
+  | WorkspaceFsWorkspaceDeleteInput
+  | WorkspaceFsWorkspaceMkdirInput
+  | WorkspaceFsWorkspaceRenameInput
+  | WorkspaceFsWorkspaceSymlinkInput;
 
-export type VfsWorkspacePutFileOp = {
+export type WorkspaceFsWorkspacePutFileOp = {
   kind: "put-file";
   path: string;
-  blobId: VfsBlobId;
+  blobId: WorkspaceFsBlobId;
   size: number;
   executable?: boolean;
   contentType?: string;
-  previousBaseBlobId?: VfsBlobId;
+  previousBaseBlobId?: WorkspaceFsBlobId;
   createdAt: string;
 };
 
-export type VfsWorkspaceDeleteOp = {
+export type WorkspaceFsWorkspaceDeleteOp = {
   kind: "delete";
   path: string;
   recursive?: boolean;
   force?: boolean;
-  previousBaseObjectId?: VfsObjectId;
+  previousBaseObjectId?: WorkspaceFsObjectId;
   createdAt: string;
 };
 
-export type VfsWorkspaceMkdirOp = {
+export type WorkspaceFsWorkspaceMkdirOp = {
   kind: "mkdir";
   path: string;
   createdAt: string;
 };
 
-export type VfsWorkspaceRenameOp = {
+export type WorkspaceFsWorkspaceRenameOp = {
   kind: "rename";
   from: string;
   to: string;
   createdAt: string;
 };
 
-export type VfsWorkspaceSymlinkOp = {
+export type WorkspaceFsWorkspaceSymlinkOp = {
   kind: "symlink";
   target: string;
   path: string;
   createdAt: string;
 };
 
-export type VfsWorkspaceMarker =
+export type WorkspaceFsWorkspaceMarker =
   | {
       kind: "workspace-checkout";
-      ref: VfsRefName;
-      baseCommitId: VfsCommitId | null;
-      rootTreeId: VfsTreeId | null;
+      ref: WorkspaceFsRefName;
+      baseCommitId: WorkspaceFsCommitId | null;
+      rootTreeId: WorkspaceFsTreeId | null;
       createdAt: string;
     }
   | {
       kind: "workspace-rebased";
-      ref: VfsRefName;
-      oldBaseCommitId: VfsCommitId | null;
-      baseCommitId: VfsCommitId | null;
-      rootTreeId: VfsTreeId | null;
+      ref: WorkspaceFsRefName;
+      oldBaseCommitId: WorkspaceFsCommitId | null;
+      baseCommitId: WorkspaceFsCommitId | null;
+      rootTreeId: WorkspaceFsTreeId | null;
       createdAt: string;
     }
   | {
       kind: "workspace-committed";
-      commitId: VfsCommitId;
-      git?: VfsCanonicalGitCommit;
+      commitId: WorkspaceFsCommitId;
+      git?: WorkspaceFsCanonicalGitCommit;
       createdAt: string;
     }
   | {
@@ -207,7 +207,7 @@ export type VfsWorkspaceMarker =
   | {
       kind: "workspace-overlay-index";
       workspaceId: string;
-      baseCommitId: VfsCommitId | null;
+      baseCommitId: WorkspaceFsCommitId | null;
       generation: number;
       opCount: number;
       latestPaths: string[];
@@ -216,41 +216,41 @@ export type VfsWorkspaceMarker =
       createdAt: string;
     };
 
-export type VfsWorkspaceOp =
-  | VfsWorkspacePutFileOp
-  | VfsWorkspaceDeleteOp
-  | VfsWorkspaceMkdirOp
-  | VfsWorkspaceRenameOp
-  | VfsWorkspaceSymlinkOp;
+export type WorkspaceFsWorkspaceOp =
+  | WorkspaceFsWorkspacePutFileOp
+  | WorkspaceFsWorkspaceDeleteOp
+  | WorkspaceFsWorkspaceMkdirOp
+  | WorkspaceFsWorkspaceRenameOp
+  | WorkspaceFsWorkspaceSymlinkOp;
 
-export type VfsWorkspaceRecord = VfsWorkspaceOp | VfsWorkspaceMarker;
+export type WorkspaceFsWorkspaceRecord = WorkspaceFsWorkspaceOp | WorkspaceFsWorkspaceMarker;
 
-export type VfsWorkspaceOpsRequest = {
-  ops: VfsWorkspaceOpInput[];
+export type WorkspaceFsWorkspaceOpsRequest = {
+  ops: WorkspaceFsWorkspaceOpInput[];
 };
 
-export type VfsWorkspaceOpsResponse = {
+export type WorkspaceFsWorkspaceOpsResponse = {
   workspaceId: string;
   appended: number;
-  ops: VfsWorkspaceOp[];
+  ops: WorkspaceFsWorkspaceOp[];
 };
 
-export type VfsWorkspaceStatusResponse = {
+export type WorkspaceFsWorkspaceStatusResponse = {
   workspaceId: string;
   state: "open" | "committed" | "discarded";
-  baseCommitId: VfsCommitId | null;
+  baseCommitId: WorkspaceFsCommitId | null;
   opCount: number;
   changedPaths: string[];
-  lastCommitId?: VfsCommitId;
+  lastCommitId?: WorkspaceFsCommitId;
 };
 
-export type VfsWorkspaceIndexResponse = {
+export type WorkspaceFsWorkspaceIndexResponse = {
   workspaceId: string;
-  baseCommitId: VfsCommitId | null;
+  baseCommitId: WorkspaceFsCommitId | null;
   generation: number;
   opCount: number;
   path: string | null;
-  latest: VfsWorkspaceOp | null;
+  latest: WorkspaceFsWorkspaceOp | null;
   deleted: boolean;
   children?: string[];
   latestPaths: string[];
@@ -258,123 +258,96 @@ export type VfsWorkspaceIndexResponse = {
   deletedPaths: string[];
 };
 
-export type VfsWorkspaceChangesResponse = {
+export type WorkspaceFsWorkspaceChangesResponse = {
   workspaceId: string;
-  baseCommitId: VfsCommitId | null;
+  baseCommitId: WorkspaceFsCommitId | null;
   generation: number;
   prefix: string;
   paths: string[];
 };
 
-export type VfsWorkspaceConflictsResponse = {
+export type WorkspaceFsWorkspaceConflictsResponse = {
   workspaceId: string;
-  ref: VfsRefName;
-  baseCommitId: VfsCommitId | null;
-  currentHead: VfsCommitId | null;
+  ref: WorkspaceFsRefName;
+  baseCommitId: WorkspaceFsCommitId | null;
+  currentHead: WorkspaceFsCommitId | null;
   changedPaths: string[];
   upstreamChangedPaths: string[];
   conflictPaths: string[];
   canRebase: boolean;
 };
 
-export type VfsWorkspaceRebaseResponse = VfsWorkspaceConflictsResponse & {
+export type WorkspaceFsWorkspaceRebaseResponse = WorkspaceFsWorkspaceConflictsResponse & {
   rebased: boolean;
-  oldBaseCommitId: VfsCommitId | null;
-  newBaseCommitId: VfsCommitId | null;
-  rootTreeId: VfsTreeId | null;
+  oldBaseCommitId: WorkspaceFsCommitId | null;
+  newBaseCommitId: WorkspaceFsCommitId | null;
+  rootTreeId: WorkspaceFsTreeId | null;
 };
 
-export type VfsCommitDurability = "accepted" | "published" | "verified";
+export type WorkspaceFsCommitDurability = "accepted" | "published" | "verified";
 
-export type VfsCommitRequest = {
-  ref?: VfsRefName;
-  expectedHead?: VfsCommitId | null;
+export type WorkspaceFsCommitRequest = {
+  ref?: WorkspaceFsRefName;
+  expectedHead?: WorkspaceFsCommitId | null;
   message: string;
-  author: VfsAuthor;
-  durability?: VfsCommitDurability;
+  author: WorkspaceFsAuthor;
+  durability?: WorkspaceFsCommitDurability;
   durabilityTimeoutMs?: number;
 };
 
-export type VfsCommitResponse = {
-  ref: VfsRefName;
-  oldCommitId: VfsCommitId | null;
-  newCommitId: VfsCommitId;
-  commit: VfsCommit;
-  git?: VfsCanonicalGitCommit;
+export type WorkspaceFsCommitResponse = {
+  ref: WorkspaceFsRefName;
+  oldCommitId: WorkspaceFsCommitId | null;
+  newCommitId: WorkspaceFsCommitId;
+  commit: WorkspaceFsCommit;
+  git?: WorkspaceFsCanonicalGitCommit;
 };
 
-export type VfsStatResponse = {
-  node: VfsNodeStat;
+export type WorkspaceFsStatResponse = {
+  node: WorkspaceFsNodeStat;
 };
 
-export type VfsReaddirResponse = {
+export type WorkspaceFsReaddirResponse = {
   path: string;
-  entries: VfsNodeStat[];
+  entries: WorkspaceFsNodeStat[];
   nextCursor: string | null;
 };
 
-export type VfsRefResponse = {
-  ref: VfsRefName;
-  commitId: VfsCommitId | null;
+export type WorkspaceFsRefResponse = {
+  ref: WorkspaceFsRefName;
+  commitId: WorkspaceFsCommitId | null;
 };
 
-export type VfsLogResponse = {
-  commits: VfsCommit[];
+export type WorkspaceFsLogResponse = {
+  commits: WorkspaceFsCommit[];
 };
 
-export type VfsShowResponse = {
-  commit: VfsCommit;
+export type WorkspaceFsShowResponse = {
+  commit: WorkspaceFsCommit;
 };
 
-export type VfsBatchStatRequest = {
-  commit?: VfsCommitId | null;
+export type WorkspaceFsBatchStatRequest = {
+  commit?: WorkspaceFsCommitId | null;
   workspaceId?: string;
   paths: string[];
 };
 
-export type VfsBatchStatResponse = {
-  stats: Array<{ path: string; node: VfsNodeStat | null; error?: string }>;
+export type WorkspaceFsBatchStatResponse = {
+  stats: Array<{ path: string; node: WorkspaceFsNodeStat | null; error?: string }>;
 };
 
-export type VfsBatchReadMetadataRequest = {
-  ids: VfsObjectId[];
+export type WorkspaceFsBatchReadMetadataRequest = {
+  ids: WorkspaceFsObjectId[];
 };
 
-export type VfsBatchReadMetadataResponse = {
-  objects: Array<{ id: VfsObjectId; object: VfsStoredObject | null }>;
+export type WorkspaceFsBatchReadMetadataResponse = {
+  objects: Array<{ id: WorkspaceFsObjectId; object: WorkspaceFsStoredObject | null }>;
 };
 
-export type VfsBatchReadBlobsRequest = {
-  blobIds: VfsBlobId[];
+export type WorkspaceFsBatchReadBlobsRequest = {
+  blobIds: WorkspaceFsBlobId[];
 };
 
-export type VfsBatchReadBlobsResponse = {
-  blobs: Array<{ blobId: VfsBlobId; contentBase64: string | null; error?: string }>;
+export type WorkspaceFsBatchReadBlobsResponse = {
+  blobs: Array<{ blobId: WorkspaceFsBlobId; contentBase64: string | null; error?: string }>;
 };
-
-export type WorkspaceFsObjectId = VfsObjectId;
-export type WorkspaceFsCommitId = VfsCommitId;
-export type WorkspaceFsTreeId = VfsTreeId;
-export type WorkspaceFsBlobId = VfsBlobId;
-export type WorkspaceFsChunkId = VfsChunkId;
-export type WorkspaceFsRefName = VfsRefName;
-export type WorkspaceFsAuthor = VfsAuthor;
-export type WorkspaceFsNodeStat = VfsNodeStat;
-export type WorkspaceFsCheckoutRequest = VfsCheckoutRequest;
-export type WorkspaceFsCheckoutResponse = VfsCheckoutResponse;
-export type WorkspaceFsWorkspaceOpInput = VfsWorkspaceOpInput;
-export type WorkspaceFsWorkspaceOp = VfsWorkspaceOp;
-export type WorkspaceFsWorkspaceRecord = VfsWorkspaceRecord;
-export type WorkspaceFsWorkspaceOpsResponse = VfsWorkspaceOpsResponse;
-export type WorkspaceFsWorkspaceStatusResponse = VfsWorkspaceStatusResponse;
-export type WorkspaceFsWorkspaceIndexResponse = VfsWorkspaceIndexResponse;
-export type WorkspaceFsWorkspaceChangesResponse = VfsWorkspaceChangesResponse;
-export type WorkspaceFsWorkspaceConflictsResponse = VfsWorkspaceConflictsResponse;
-export type WorkspaceFsWorkspaceRebaseResponse = VfsWorkspaceRebaseResponse;
-export type WorkspaceFsCommitDurability = VfsCommitDurability;
-export type WorkspaceFsCommitRequest = VfsCommitRequest;
-export type WorkspaceFsCommitResponse = VfsCommitResponse;
-export type WorkspaceFsReaddirResponse = VfsReaddirResponse;
-export type WorkspaceFsRefResponse = VfsRefResponse;
-export type WorkspaceFsLogResponse = VfsLogResponse;
-export type WorkspaceFsShowResponse = VfsShowResponse;

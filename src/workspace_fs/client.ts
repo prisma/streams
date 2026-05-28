@@ -1,29 +1,29 @@
 import { Buffer } from "node:buffer";
 import type {
-  VfsBatchReadBlobsResponse,
-  VfsBatchReadMetadataResponse,
-  VfsBatchStatResponse,
-  VfsCheckoutRequest,
-  VfsCheckoutResponse,
-  VfsCommit,
-  VfsCommitRequest,
-  VfsCommitResponse,
-  VfsLogResponse,
-  VfsNodeStat,
-  VfsReaddirResponse,
-  VfsRefName,
-  VfsRefResponse,
-  VfsShowResponse,
-  VfsStoredObject,
-  VfsWorkspaceOpInput,
-  VfsWorkspaceChangesResponse,
-  VfsWorkspaceConflictsResponse,
-  VfsWorkspaceIndexResponse,
-  VfsWorkspaceOpsResponse,
-  VfsWorkspaceRebaseResponse,
-  VfsWorkspaceStatusResponse,
+  WorkspaceFsBatchReadBlobsResponse,
+  WorkspaceFsBatchReadMetadataResponse,
+  WorkspaceFsBatchStatResponse,
+  WorkspaceFsCheckoutRequest,
+  WorkspaceFsCheckoutResponse,
+  WorkspaceFsCommit,
+  WorkspaceFsCommitRequest,
+  WorkspaceFsCommitResponse,
+  WorkspaceFsLogResponse,
+  WorkspaceFsNodeStat,
+  WorkspaceFsReaddirResponse,
+  WorkspaceFsRefName,
+  WorkspaceFsRefResponse,
+  WorkspaceFsShowResponse,
+  WorkspaceFsStoredObject,
+  WorkspaceFsWorkspaceOpInput,
+  WorkspaceFsWorkspaceChangesResponse,
+  WorkspaceFsWorkspaceConflictsResponse,
+  WorkspaceFsWorkspaceIndexResponse,
+  WorkspaceFsWorkspaceOpsResponse,
+  WorkspaceFsWorkspaceRebaseResponse,
+  WorkspaceFsWorkspaceStatusResponse,
 } from "./types";
-import { bytesFromContent, canonicalizeVfsPath, fromBase64, normalizeRef, toBase64 } from "./model";
+import { bytesFromContent, canonicalizeWorkspaceFsPath, fromBase64, normalizeRef, toBase64 } from "./model";
 import { Result } from "better-result";
 
 export type WorkspaceFsFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -42,11 +42,11 @@ export type WorkspaceFsEnsureOptions = {
   auditStream?: string;
 };
 
-export type WorkspaceCheckoutOptions = Omit<VfsCheckoutRequest, "ref"> & {
-  ref?: VfsRefName;
+export type WorkspaceFsCheckoutOptions = Omit<WorkspaceFsCheckoutRequest, "ref"> & {
+  ref?: WorkspaceFsRefName;
 };
 
-export type WorkspaceCommitOptions = Omit<VfsCommitRequest, "expectedHead"> & {
+export type WorkspaceFsCommitOptions = Omit<WorkspaceFsCommitRequest, "expectedHead"> & {
   expectedHead?: string | null;
 };
 
@@ -171,9 +171,9 @@ export class WorkspaceFsClient {
     });
   }
 
-  async checkout(options: WorkspaceCheckoutOptions = {}): Promise<WorkspaceFsWorkspace> {
+  async checkout(options: WorkspaceFsCheckoutOptions = {}): Promise<WorkspaceFsWorkspace> {
     const ref = normalizeRef(options.ref);
-    const res = await this.requestJson<VfsCheckoutResponse>("/_workspace/checkout", {
+    const res = await this.requestJson<WorkspaceFsCheckoutResponse>("/_workspace/checkout", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...options, ref }),
@@ -181,12 +181,12 @@ export class WorkspaceFsClient {
     return new WorkspaceFsWorkspace(this, res);
   }
 
-  async getRef(ref: string): Promise<VfsRefResponse> {
-    return this.requestJson<VfsRefResponse>(`/_workspace/ref/${encodeURIComponent(normalizeRef(ref))}`);
+  async getRef(ref: string): Promise<WorkspaceFsRefResponse> {
+    return this.requestJson<WorkspaceFsRefResponse>(`/_workspace/ref/${encodeURIComponent(normalizeRef(ref))}`);
   }
 
-  async stat(path: string, opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<VfsNodeStat> {
-    const res = await this.requestJson<{ node: VfsNodeStat }>("/_workspace/stat", { method: "GET" }, {
+  async stat(path: string, opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<WorkspaceFsNodeStat> {
+    const res = await this.requestJson<{ node: WorkspaceFsNodeStat }>("/_workspace/stat", { method: "GET" }, {
       path,
       commit: opts.commit ?? undefined,
       workspaceId: opts.workspaceId ?? undefined,
@@ -194,7 +194,7 @@ export class WorkspaceFsClient {
     return res.node;
   }
 
-  async maybeStat(path: string, opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<VfsNodeStat | null> {
+  async maybeStat(path: string, opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<WorkspaceFsNodeStat | null> {
     try {
       return await this.stat(path, opts);
     } catch (error) {
@@ -203,8 +203,8 @@ export class WorkspaceFsClient {
     }
   }
 
-  async readdir(path: string, opts: { commit?: string | null; workspaceId?: string | null; cursor?: string | null; limit?: number } = {}): Promise<VfsReaddirResponse> {
-    return this.requestJson<VfsReaddirResponse>("/_workspace/readdir", { method: "GET" }, {
+  async readdir(path: string, opts: { commit?: string | null; workspaceId?: string | null; cursor?: string | null; limit?: number } = {}): Promise<WorkspaceFsReaddirResponse> {
+    return this.requestJson<WorkspaceFsReaddirResponse>("/_workspace/readdir", { method: "GET" }, {
       path,
       commit: opts.commit ?? undefined,
       workspaceId: opts.workspaceId ?? undefined,
@@ -221,26 +221,26 @@ export class WorkspaceFsClient {
     });
   }
 
-  async log(ref: string = "main", limit = 20): Promise<VfsCommit[]> {
-    const res = await this.requestJson<VfsLogResponse>("/_workspace/log", { method: "GET" }, { ref: normalizeRef(ref), limit });
+  async log(ref: string = "main", limit = 20): Promise<WorkspaceFsCommit[]> {
+    const res = await this.requestJson<WorkspaceFsLogResponse>("/_workspace/log", { method: "GET" }, { ref: normalizeRef(ref), limit });
     return res.commits;
   }
 
-  async show(commitId: string): Promise<VfsCommit> {
-    const res = await this.requestJson<VfsShowResponse>(`/_workspace/show/${encodeURIComponent(commitId)}`, { method: "GET" });
+  async show(commitId: string): Promise<WorkspaceFsCommit> {
+    const res = await this.requestJson<WorkspaceFsShowResponse>(`/_workspace/show/${encodeURIComponent(commitId)}`, { method: "GET" });
     return res.commit;
   }
 
-  async batchStat(paths: string[], opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<VfsBatchStatResponse> {
-    return this.requestJson<VfsBatchStatResponse>("/_workspace/batch/stat", {
+  async batchStat(paths: string[], opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<WorkspaceFsBatchStatResponse> {
+    return this.requestJson<WorkspaceFsBatchStatResponse>("/_workspace/batch/stat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ paths, commit: opts.commit ?? null, workspaceId: opts.workspaceId ?? undefined }),
     });
   }
 
-  async batchReadMetadata(ids: string[]): Promise<Array<{ id: string; object: VfsStoredObject | null }>> {
-    const res = await this.requestJson<VfsBatchReadMetadataResponse>("/_workspace/batch/read-metadata", {
+  async batchReadMetadata(ids: string[]): Promise<Array<{ id: string; object: WorkspaceFsStoredObject | null }>> {
+    const res = await this.requestJson<WorkspaceFsBatchReadMetadataResponse>("/_workspace/batch/read-metadata", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -248,8 +248,8 @@ export class WorkspaceFsClient {
     return res.objects;
   }
 
-  async batchReadBlobs(blobIds: string[]): Promise<VfsBatchReadBlobsResponse["blobs"]> {
-    const res = await this.requestJson<VfsBatchReadBlobsResponse>("/_workspace/batch/read-blobs", {
+  async batchReadBlobs(blobIds: string[]): Promise<WorkspaceFsBatchReadBlobsResponse["blobs"]> {
+    const res = await this.requestJson<WorkspaceFsBatchReadBlobsResponse>("/_workspace/batch/read-blobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ blobIds }),
@@ -257,44 +257,44 @@ export class WorkspaceFsClient {
     return res.blobs;
   }
 
-  async appendWorkspaceOps(workspaceId: string, ops: VfsWorkspaceOpInput[]): Promise<VfsWorkspaceOpsResponse> {
-    return this.requestJson<VfsWorkspaceOpsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/ops`, {
+  async appendWorkspaceOps(workspaceId: string, ops: WorkspaceFsWorkspaceOpInput[]): Promise<WorkspaceFsWorkspaceOpsResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceOpsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/ops`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ops }),
     });
   }
 
-  async workspaceStatus(workspaceId: string): Promise<VfsWorkspaceStatusResponse> {
-    return this.requestJson<VfsWorkspaceStatusResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/status`);
+  async workspaceStatus(workspaceId: string): Promise<WorkspaceFsWorkspaceStatusResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceStatusResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/status`);
   }
 
-  async workspaceIndex(workspaceId: string, opts: { path?: string | null } = {}): Promise<VfsWorkspaceIndexResponse> {
-    return this.requestJson<VfsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/index`, { method: "GET" }, {
+  async workspaceIndex(workspaceId: string, opts: { path?: string | null } = {}): Promise<WorkspaceFsWorkspaceIndexResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/index`, { method: "GET" }, {
       path: opts.path ?? undefined,
     });
   }
 
-  async workspaceChanges(workspaceId: string, opts: { prefix?: string | null } = {}): Promise<VfsWorkspaceChangesResponse> {
-    return this.requestJson<VfsWorkspaceChangesResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/changes`, { method: "GET" }, {
+  async workspaceChanges(workspaceId: string, opts: { prefix?: string | null } = {}): Promise<WorkspaceFsWorkspaceChangesResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceChangesResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/changes`, { method: "GET" }, {
       prefix: opts.prefix ?? undefined,
     });
   }
 
-  async workspaceConflicts(workspaceId: string): Promise<VfsWorkspaceConflictsResponse> {
-    return this.requestJson<VfsWorkspaceConflictsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/conflicts`, { method: "GET" });
+  async workspaceConflicts(workspaceId: string): Promise<WorkspaceFsWorkspaceConflictsResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceConflictsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/conflicts`, { method: "GET" });
   }
 
-  async rebaseWorkspace(workspaceId: string): Promise<VfsWorkspaceRebaseResponse> {
-    return this.requestJson<VfsWorkspaceRebaseResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/rebase`, { method: "POST" });
+  async rebaseWorkspace(workspaceId: string): Promise<WorkspaceFsWorkspaceRebaseResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceRebaseResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/rebase`, { method: "POST" });
   }
 
-  async compactWorkspace(workspaceId: string): Promise<VfsWorkspaceIndexResponse> {
-    return this.requestJson<VfsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
+  async compactWorkspace(workspaceId: string): Promise<WorkspaceFsWorkspaceIndexResponse> {
+    return this.requestJson<WorkspaceFsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
   }
 
-  async commitWorkspace(workspaceId: string, options: WorkspaceCommitOptions): Promise<VfsCommitResponse> {
-    return this.requestJson<VfsCommitResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/commit`, {
+  async commitWorkspace(workspaceId: string, options: WorkspaceFsCommitOptions): Promise<WorkspaceFsCommitResponse> {
+    return this.requestJson<WorkspaceFsCommitResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/commit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
@@ -315,7 +315,7 @@ export class WorkspaceFsWorkspace {
   baseCommitId: string | null;
   rootTreeId: string | null;
 
-  constructor(repo: WorkspaceFsClient, checkout: VfsCheckoutResponse) {
+  constructor(repo: WorkspaceFsClient, checkout: WorkspaceFsCheckoutResponse) {
     this.repo = repo;
     this.ref = checkout.ref;
     this.workspaceId = checkout.workspaceId;
@@ -323,15 +323,15 @@ export class WorkspaceFsWorkspace {
     this.rootTreeId = checkout.rootTreeId;
   }
 
-  async stat(path: string): Promise<VfsNodeStat> {
+  async stat(path: string): Promise<WorkspaceFsNodeStat> {
     return this.repo.stat(path, { workspaceId: this.workspaceId });
   }
 
-  async maybeStat(path: string): Promise<VfsNodeStat | null> {
+  async maybeStat(path: string): Promise<WorkspaceFsNodeStat | null> {
     return this.repo.maybeStat(path, { workspaceId: this.workspaceId });
   }
 
-  async readdir(path: string, opts: { cursor?: string | null; limit?: number } = {}): Promise<VfsReaddirResponse> {
+  async readdir(path: string, opts: { cursor?: string | null; limit?: number } = {}): Promise<WorkspaceFsReaddirResponse> {
     return this.repo.readdir(path, { workspaceId: this.workspaceId, cursor: opts.cursor, limit: opts.limit });
   }
 
@@ -352,7 +352,7 @@ export class WorkspaceFsWorkspace {
   }
 
   async writeFile(path: string, content: string | Uint8Array, opts: { executable?: boolean; contentType?: string } = {}): Promise<void> {
-    const normalizedRes = canonicalizeVfsPath(path);
+    const normalizedRes = canonicalizeWorkspaceFsPath(path);
     if (Result.isError(normalizedRes)) throw new WorkspaceFsClientError(normalizedRes.error.message, 400);
     const bytes = bytesFromContent(content);
     await this.repo.appendWorkspaceOps(this.workspaceId, [
@@ -391,34 +391,34 @@ export class WorkspaceFsWorkspace {
     await this.repo.appendWorkspaceOps(this.workspaceId, [{ kind: "symlink", target, path }]);
   }
 
-  async status(): Promise<VfsWorkspaceStatusResponse> {
+  async status(): Promise<WorkspaceFsWorkspaceStatusResponse> {
     return this.repo.workspaceStatus(this.workspaceId);
   }
 
-  async index(path?: string): Promise<VfsWorkspaceIndexResponse> {
+  async index(path?: string): Promise<WorkspaceFsWorkspaceIndexResponse> {
     return this.repo.workspaceIndex(this.workspaceId, { path });
   }
 
-  async changes(prefix?: string): Promise<VfsWorkspaceChangesResponse> {
+  async changes(prefix?: string): Promise<WorkspaceFsWorkspaceChangesResponse> {
     return this.repo.workspaceChanges(this.workspaceId, { prefix });
   }
 
-  async conflicts(): Promise<VfsWorkspaceConflictsResponse> {
+  async conflicts(): Promise<WorkspaceFsWorkspaceConflictsResponse> {
     return this.repo.workspaceConflicts(this.workspaceId);
   }
 
-  async rebase(): Promise<VfsWorkspaceRebaseResponse> {
+  async rebase(): Promise<WorkspaceFsWorkspaceRebaseResponse> {
     const res = await this.repo.rebaseWorkspace(this.workspaceId);
     this.baseCommitId = res.newBaseCommitId;
     this.rootTreeId = res.rootTreeId;
     return res;
   }
 
-  async compact(): Promise<VfsWorkspaceIndexResponse> {
+  async compact(): Promise<WorkspaceFsWorkspaceIndexResponse> {
     return this.repo.compactWorkspace(this.workspaceId);
   }
 
-  async commit(options: WorkspaceCommitOptions): Promise<VfsCommitResponse> {
+  async commit(options: WorkspaceFsCommitOptions): Promise<WorkspaceFsCommitResponse> {
     const res = await this.repo.commitWorkspace(this.workspaceId, {
       ...options,
       ref: normalizeRef(options.ref ?? this.ref),
@@ -448,8 +448,8 @@ export class WorkspaceFsWorkspace {
 async function renderPathDiff(
   workspace: WorkspaceFsWorkspace,
   path: string,
-  before: VfsNodeStat | null,
-  after: VfsNodeStat | null
+  before: WorkspaceFsNodeStat | null,
+  after: WorkspaceFsNodeStat | null
 ): Promise<string> {
   if (!before && !after) return "";
   if (before?.type === "dir" || after?.type === "dir") {

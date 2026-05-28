@@ -10,7 +10,7 @@ import type {
 } from "just-bash";
 import type { ByteString } from "just-bash";
 import { WorkspaceFsClientError, type WorkspaceFsWorkspace } from "./client";
-import { canonicalizeVfsPath } from "./model";
+import { canonicalizeWorkspaceFsPath } from "./model";
 import { Result } from "better-result";
 
 type WorkspaceFsDirentEntry = Awaited<ReturnType<NonNullable<IFileSystem["readdirWithFileTypes"]>>>[number];
@@ -34,7 +34,7 @@ function encodingFromOptions(options?: ReadFileOptions | WriteFileOptions | Buff
 }
 
 function normalizeFsPath(path: string): string {
-  const res = canonicalizeVfsPath(path);
+  const res = canonicalizeWorkspaceFsPath(path);
   if (Result.isError(res)) throw new PrismaStreamsWorkspaceFsError(res.error.message);
   return res.value;
 }
