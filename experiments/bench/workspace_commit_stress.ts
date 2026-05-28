@@ -1,15 +1,15 @@
 /**
- * VFS commit stress benchmark.
+ * workspace-fs commit stress benchmark.
  *
  * Default workload:
- *   - 1000 individual VFS commits
+ *   - 1000 individual workspace-fs commits
  *   - 100000 file edits total
  *   - 1 GiB target written to the object store
  *   - MockR2 PUT delay of 50ms
  *
  * Usage:
- *   bun run experiments/bench/vfs_commit_stress.ts
- *   bun run experiments/bench/vfs_commit_stress.ts --commits 10 --files 1000 --target-object-store-bytes 64mb
+ *   bun run experiments/bench/workspace_commit_stress.ts
+ *   bun run experiments/bench/workspace_commit_stress.ts --commits 10 --files 1000 --target-object-store-bytes 64mb
  */
 
 import { Buffer } from "node:buffer";
@@ -20,8 +20,8 @@ import { createApp } from "../../src/app";
 import { loadConfig } from "../../src/config";
 import { formatBytes } from "../../src/memory";
 import { MockR2Store } from "../../src/objectstore/mock_r2";
-import { openVfsRepo, VfsClientError, type VfsFetch } from "../../src/vfs";
-import type { VfsWorkspaceOpInput } from "../../src/vfs/types";
+import { openWorkspaceFsRepo, WorkspaceFsClientError, type WorkspaceFsFetch } from "../../src/workspace_fs";
+import type { WorkspaceFsWorkspaceOpInput } from "../../src/workspace_fs/types";
 import { dsError } from "../../src/util/ds_error.ts";
 
 type BenchOptions = {
@@ -34,6 +34,7 @@ type BenchOptions = {
   filesPerDir: number;
   segmentMaxBytes: number;
   uploadConcurrency: number;
+  backgroundIntervalMs: number;
   keepRoot: boolean;
 };
 
@@ -100,6 +101,7 @@ function parseOptions(): BenchOptions {
     filesPerDir: parseNumberArg("--files-per-dir", Math.max(1, Math.ceil(files / commits))),
     segmentMaxBytes: parseBytesArg("--segment-max-bytes", 16 * 1024 * 1024),
     uploadConcurrency: parseNumberArg("--upload-concurrency", 4),
+    backgroundIntervalMs: parseNumberArg("--background-interval-ms", 60_000),
     keepRoot: hasFlag("--keep-root"),
   };
 }
@@ -126,8 +128,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function appFetch(app: ReturnType<typeof createApp>): VfsFetch {
+function appFetch(app: ReturnType<typeof createApp>): WorkspaceFsFetch {
   return (input, init) => app.fetch(new Request(input, init));
+}
+
+async function fetchJson(app: ReturnType<typeof createApp>, url: string, init: RequestInit): Promise<unknown> {
+  const res = await app.fetch(new Request(url, init));
+  const text = await res.text();
+  if (!res.ok) throw dsError(`${init.method ?? "GET"} ${url} failed: ${res.status} ${text}`);
+  return text === "" ? null : JSON.parse(text);
+}
+
+async function installGitRepoProfile(app: ReturnType<typeof createApp>, stream: string): Promise<void> {
+  const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+  const create = await app.fetch(new Request(base, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+  }));
+  if (!create.ok) throw dsError(`git-repo stream create failed: ${create.status} ${await create.text()}`);
+  await fetchJson(app, `${base}/_profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: { kind: "git-repo", version: 1, objectFormat: "sha1", defaultBranch: "main" },
+    }),
+  });
 }
 
 function fillPayload(fileIndex: number, size: number): Buffer {
@@ -153,8 +179,8 @@ function fileRangeForCommit(commitIndex: number, commits: number, files: number)
   return { start, end };
 }
 
-function buildOps(start: number, end: number, payloadBytesPerFile: number, filesPerDir: number): VfsWorkspaceOpInput[] {
-  const ops: VfsWorkspaceOpInput[] = [];
+function buildOps(start: number, end: number, payloadBytesPerFile: number, filesPerDir: number): WorkspaceFsWorkspaceOpInput[] {
+  const ops: WorkspaceFsWorkspaceOpInput[] = [];
   for (let fileIndex = start; fileIndex < end; fileIndex++) {
     ops.push({
       kind: "put-file",
@@ -205,7 +231,7 @@ function logProgress(
 
 async function run(): Promise<void> {
   const opts = parseOptions();
-  const root = mkdtempSync(join(tmpdir(), "ds-vfs-commit-stress-"));
+  const root = mkdtempSync(join(tmpdir(), "ds-workspace-commit-stress-"));
   const payloadBytesPerFile = Math.max(1, Math.ceil(opts.targetObjectStoreBytes / opts.files));
   const store = new MockR2Store({
     faults: { putDelayMs: opts.mockPutDelayMs },
@@ -218,16 +244,19 @@ async function run(): Promise<void> {
     dbPath: join(root, "wal.sqlite"),
     segmentMaxBytes: opts.segmentMaxBytes,
     blockMaxBytes: Math.min(opts.segmentMaxBytes, 256 * 1024),
-    segmentCheckIntervalMs: 25,
-    segmentMaxIntervalMs: 1000,
-    uploadIntervalMs: 25,
+    segmentCheckIntervalMs: opts.backgroundIntervalMs,
+    segmentMaxIntervalMs: opts.backgroundIntervalMs,
+    uploadIntervalMs: opts.backgroundIntervalMs,
     uploadConcurrency: opts.uploadConcurrency,
     metricsFlushIntervalMs: 0,
   };
   const app = createApp(cfg, store);
-  const repo = openVfsRepo({
+  const suffix = `stress-${Date.now()}`;
+  const gitStream = `git/bench/${suffix}`;
+  const workspaceStream = `workspace/bench/${suffix}/control`;
+  const repo = openWorkspaceFsRepo({
     streamsUrl: "http://local",
-    stream: `vfs/bench/stress-${Date.now()}/control`,
+    stream: workspaceStream,
     fetch: appFetch(app),
   });
   const started = process.hrtime.bigint();
@@ -237,8 +266,10 @@ async function run(): Promise<void> {
   let activeCommit = 0;
   let activeStage = "setup";
 
-  console.log("VFS commit stress benchmark");
+  console.log("workspace-fs commit stress benchmark");
   console.log(`root=${root}`);
+  console.log(`gitStream=${gitStream}`);
+  console.log(`workspaceStream=${workspaceStream}`);
   console.log(`commits=${opts.commits}`);
   console.log(`files=${opts.files}`);
   console.log(`payloadBytesPerFile=${payloadBytesPerFile}`);
@@ -246,9 +277,11 @@ async function run(): Promise<void> {
   console.log(`mockPutDelayMs=${opts.mockPutDelayMs}`);
   console.log(`segmentMaxBytes=${formatBytes(opts.segmentMaxBytes)}`);
   console.log(`uploadConcurrency=${opts.uploadConcurrency}`);
+  console.log(`backgroundIntervalMs=${opts.backgroundIntervalMs}`);
 
   try {
-    await repo.ensure();
+    await installGitRepoProfile(app, gitStream);
+    await repo.ensure({ gitRepoStream: gitStream });
     for (let commitIndex = 0; commitIndex < opts.commits; commitIndex++) {
       activeCommit = commitIndex + 1;
       const { start, end } = fileRangeForCommit(commitIndex, opts.commits, opts.files);
@@ -263,7 +296,7 @@ async function run(): Promise<void> {
         ref: "main",
         expectedHead: head,
         message: `stress commit ${commitIndex + 1}`,
-        author: { id: "vfs-stress" },
+        author: { id: "workspace-stress" },
       });
       head = result.newCommitId;
       committedFiles += ops.length;
@@ -293,6 +326,7 @@ async function run(): Promise<void> {
     console.log(`logicalFileBytes=${formatBytes(logicalBytes)}`);
     console.log(`objectStorePutBytes=${formatBytes(finalStats.putBytes)}`);
     console.log(`objectStorePuts=${finalStats.puts}`);
+    console.log(`objectStoreMaxConcurrentPuts=${finalStats.maxConcurrentPuts}`);
     console.log(`objectStoreMemoryBytes=${formatBytes(finalStats.memoryBytes)}`);
     console.log(`commitRate=${fmtRate(opts.commits, afterCommitsMs, "commits")}`);
     console.log(`objectStoreWriteRate=${fmtRate(finalStats.putBytes, totalMs, "bytes")}`);
@@ -306,9 +340,10 @@ async function run(): Promise<void> {
     console.error(`logicalFileBytes=${formatBytes(logicalBytes)}`);
     console.error(`objectStorePutBytes=${formatBytes(stats.putBytes)}`);
     console.error(`objectStorePuts=${stats.puts}`);
-    if (error instanceof VfsClientError) {
-      console.error(`vfsStatus=${error.status}`);
-      console.error(`vfsMessage=${error.message}`);
+    console.error(`objectStoreMaxConcurrentPuts=${stats.maxConcurrentPuts}`);
+    if (error instanceof WorkspaceFsClientError) {
+      console.error(`workspaceStatus=${error.status}`);
+      console.error(`workspaceMessage=${error.message}`);
     }
     throw error;
   } finally {

@@ -94,6 +94,17 @@ marker is appended only after the canonical transaction succeeds. Workspace
 commits do not append local JSON `ref-update` records or maintain a
 workspace-owned canonical commit log.
 
+Changed file content in git-backed workspaces is written to canonical Git blob
+artifacts during workspace-op append, not reread from a growing workspace object
+stream during commit. The current implementation uses a bounded 128-way write
+queue, so many independent file edits are bounded by object-store latency waves
+rather than one PUT per file in series. Commit then applies the already-written
+Git blob OIDs to affected tree paths, writes changed tree/commit objects, and
+submits the ref transaction. Because `workspace-fs` just created the changed Git
+objects, its internal `git-repo` transaction uses changed-object verification
+instead of full historical graph revalidation. Public `git-repo` ref transaction
+requests still use full reachable-graph validation.
+
 Commit requests accept an optional durability target:
 
 ```ts
@@ -110,6 +121,29 @@ durable. `published` waits until the git-repo stream record reaches the remote
 visibility point. `verified` waits until the published transaction's object
 artifacts still exist and the new Git ref target walks through a hash-checked
 reachable object graph. The default is `accepted`.
+
+## Commit Stress Benchmark
+
+The commit stress benchmark exercises the default high-latency object-store
+path:
+
+```bash
+bun run bench:workspace-commit-stress
+```
+
+By default it performs 1000 individual commits, edits 100000 files, uses the
+existing `MockR2Store` with a 50ms PUT delay, and waits until at least 1 GiB has
+been written to the object store by canonical Git object artifacts. The
+benchmark keeps background segment/upload loops quiet during the commit phase by
+default so it measures workspace commit and Git object paths instead of
+request-path contention with background maintenance. The summary prints the
+commit phase duration, total time until the object-store target is reached,
+commit rate, object-store write rate, total PUTs, and maximum observed
+concurrent PUTs. Use smaller arguments for smoke runs, for example:
+
+```bash
+bun run bench:workspace-commit-stress --commits 10 --files 1000 --target-object-store-bytes 64mb
+```
 
 ## Conflict And Rebase Endpoints
 

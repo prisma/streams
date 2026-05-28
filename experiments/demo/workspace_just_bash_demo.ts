@@ -5,7 +5,7 @@ import { Bash, InMemoryFs, MountableFs } from "just-bash";
 import { createApp } from "../../src/app";
 import { loadConfig } from "../../src/config";
 import { MockR2Store } from "../../src/objectstore/mock_r2";
-import { createVfsGitCommands, openVfsRepo, PrismaStreamsVfsFs, type VfsFetch } from "../../src/vfs";
+import { createWorkspaceGitCommands, openWorkspaceFsRepo, PrismaStreamsWorkspaceFs, type WorkspaceFsFetch } from "../../src/workspace_fs";
 
 function makeDemoApp(rootDir: string) {
   const cfg = {
@@ -20,7 +20,7 @@ function makeDemoApp(rootDir: string) {
   return createApp(cfg, new MockR2Store());
 }
 
-function appFetch(app: ReturnType<typeof makeDemoApp>): VfsFetch {
+function appFetch(app: ReturnType<typeof makeDemoApp>): WorkspaceFsFetch {
   return (input, init) => app.fetch(new Request(input, init));
 }
 
@@ -39,7 +39,7 @@ async function runAndPrint(bash: Bash, command: string): Promise<void> {
   process.stdout.write(`[exit ${result.exitCode}]\n`);
 }
 
-const root = mkdtempSync(join(tmpdir(), "streams-vfs-demo-"));
+const root = mkdtempSync(join(tmpdir(), "streams-workspace-demo-"));
 const app = makeDemoApp(root);
 
 try {
@@ -58,38 +58,39 @@ try {
     }),
   });
 
-  const repo = openVfsRepo({
+  const workspaceStream = "workspace/demo/agent-repo/control";
+  const repo = openWorkspaceFsRepo({
     streamsUrl: "http://local",
-    stream: "vfs/demo/agent-repo/control",
+    stream: workspaceStream,
     fetch: appFetch(app),
   });
   await repo.ensure({ gitRepoStream: gitStream });
 
   const seed = await repo.checkout({ ref: "main", workspaceId: "seed" });
-  await seed.writeFile("/README.md", "# VFS demo\n\nThis repository lives in Prisma Streams.\n");
+  await seed.writeFile("/README.md", "# workspace-fs demo\n\nThis repository lives in Prisma Streams.\n");
   await seed.mkdir("/src");
   await seed.writeFile("/src/app.ts", 'export function greeting() {\n  return "hello streams";\n}\n');
   await seed.writeFile("/package.json", '{ "type": "module", "scripts": { "test": "echo ok" } }\n');
   await seed.commit({
-    message: "Initial VFS demo import",
+    message: "Initial workspace-fs demo import",
     author: { id: "demo-seed", name: "Demo Seed" },
   });
 
   let workspace = await repo.checkout({ ref: "main", workspaceId: "agent-demo" });
-  const vfsFs = new PrismaStreamsVfsFs(workspace, { mountPath: "/" });
+  const workspaceFs = new PrismaStreamsWorkspaceFs(workspace, { mountPath: "/" });
   const fs = new MountableFs({
     base: new InMemoryFs(),
-    mounts: [{ mountPoint: "/workspace", filesystem: vfsFs }],
+    mounts: [{ mountPoint: "/workspace", filesystem: workspaceFs }],
   });
   const bash = new Bash({
     fs,
     cwd: "/workspace",
     commands: ["cat", "echo", "find", "grep", "head", "ls", "mkdir", "pwd", "sed", "wc"],
-    customCommands: createVfsGitCommands({
+    customCommands: createWorkspaceGitCommands({
       getWorkspace: () => workspace,
       setWorkspace: (next) => {
         workspace = next;
-        vfsFs.setWorkspace(next);
+        workspaceFs.setWorkspace(next);
       },
       author: { id: "agent-demo", name: "Demo Agent" },
     }),
@@ -109,7 +110,7 @@ try {
   await runAndPrint(bash, 'git commit -m "Agent edits through just-bash"');
   await runAndPrint(bash, "git log");
   const refs = await fetchJson(app, `${gitBase}/_git/refs`, { method: "GET" });
-  process.stdout.write(`\ncanonical git refs: ${JSON.stringify(refs.refs, null, 2)}\n`);
+  process.stdout.write(`\ncanonical git refs: ${JSON.stringify((refs as { refs: unknown }).refs, null, 2)}\n`);
 } finally {
   app.close();
   rmSync(root, { recursive: true, force: true });

@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bash, InMemoryFs, MountableFs } from "just-bash";
-import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
+import { createApp } from "../src/app";
+import { MockR2Store } from "../src/objectstore/mock_r2";
+import { createProfileTestApp, fetchJsonApp, makeProfileTestConfig } from "./profile_test_utils";
 import { createWorkspaceGitCommands, openWorkspaceFsRepo, PrismaStreamsWorkspaceFs, type WorkspaceFsFetch, WorkspaceFsClientError } from "../src/workspace_fs";
 
 function appFetch(app: ReturnType<typeof createProfileTestApp>["app"]): WorkspaceFsFetch {
@@ -155,6 +158,42 @@ describe("workspace-fs profile", () => {
 
       const log = await repo.log("main");
       expect(log.map((entry) => entry.message)).toEqual(["Update workspace-fs over Git\n", "Workspace profile commit\n"]);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("writes changed Git blobs concurrently before workspace commit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-workspace-concurrent-commit-"));
+    const store = new MockR2Store({
+      faults: { putDelayMs: 25 },
+      maxInMemoryBytes: 1,
+      spillDir: join(root, "mock-r2"),
+    });
+    const app = createApp(makeProfileTestConfig(root, { metricsFlushIntervalMs: 0 }), store);
+    try {
+      const gitStream = "git/test/workspace-concurrent-commit";
+      await installGitRepoProfile(app, gitStream);
+
+      const repo = openWorkspaceFsRepo({
+        streamsUrl: "http://local",
+        stream: "workspace/test/concurrent-commit/control",
+        fetch: appFetch(app),
+      });
+      await repo.ensure({ gitRepoStream: gitStream });
+      const workspace = await repo.checkout({ ref: "main", workspaceId: "concurrent-commit" });
+      const fileCount = 24;
+      store.resetStats();
+      await repo.appendWorkspaceOps(workspace.workspaceId, Array.from({ length: fileCount }, (_, idx) => ({
+        kind: "put-file",
+        path: `/batch/file-${String(idx).padStart(3, "0")}.bin`,
+        contentBase64: Buffer.alloc(8192, idx).toString("base64"),
+      })));
+      const stats = store.stats();
+      expect(stats.puts).toBeGreaterThanOrEqual(fileCount);
+      expect(stats.maxConcurrentPuts).toBeGreaterThan(1);
+      await workspace.commit({ message: "Concurrent object writes", author: { id: "agent" } });
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

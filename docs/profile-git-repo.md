@@ -516,6 +516,15 @@ For a ref transaction, the server:
    `transaction-key-indexed` record when an idempotency key is present, with the
    stream's expected next offset.
 
+The public `_git/transactions/ref` endpoint uses full reachable-graph
+validation. Trusted internal producers that just built the new Git objects, such
+as `workspace-fs`, may call the service with changed-object verification: the
+service still validates ref CAS state, object IDs, object artifact existence,
+and the new ref tip object type/hash, but it does not re-walk every historical
+tree and blob reachable from the old head. This keeps incremental workspace
+commits from rereading the whole repository while preserving full validation for
+external ref transaction requests.
+
 If another process or request appends to the repository stream between steps 1
 and 4, the append fails with an offset mismatch. The profile then rereads the
 stream and retries the transaction. If the retry sees that a requested ref head

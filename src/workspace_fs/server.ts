@@ -41,12 +41,13 @@ import {
 } from "./model";
 import {
   GIT_REPO_PROFILE_KIND,
-  buildRefs as buildGitRefs,
   commitGitRefTransactionResult,
   defaultGitRepoProfileConfig,
+  gitLooseObjectKey,
+  headObjectStoreResult,
   normalizeGitRef,
   readGitRecordSnapshotResult,
-  readGitRecordsResult,
+  readGitRefsSnapshotResult,
   verifyGitRefTransactionRecordResult,
   writeGitBlob,
   writeGitCommitResult,
@@ -110,6 +111,36 @@ type WorkspaceOverlayIndex = {
 };
 
 const TEXT_DECODER = new TextDecoder();
+const WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY = 128;
+
+async function mapConcurrentWorkspaceResult<T, U>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<Result<U, WorkspaceFsServerError>>
+): Promise<Result<U[], WorkspaceFsServerError>> {
+  if (items.length === 0) return Result.ok([]);
+  const results = new Array<U>(items.length);
+  let next = 0;
+  let firstError: WorkspaceFsServerError | null = null;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      if (firstError) return;
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      const res = await fn(items[index]!, index);
+      if (Result.isError(res)) {
+        firstError = res.error;
+        return;
+      }
+      results[index] = res.value;
+    }
+  });
+  await Promise.all(workers);
+  if (firstError) return Result.err(firstError);
+  return Result.ok(results);
+}
 
 function responseForError(args: StreamProfileRouteArgs, err: WorkspaceFsServerError): Response {
   if (err.status === 400) return args.respond.badRequest(err.message);
@@ -170,7 +201,7 @@ async function appendJsonResult(
 ): Promise<Result<void, WorkspaceFsServerError>> {
   const appendRes = await args.appendJsonRecords({ stream, records, ttlSeconds });
   if (Result.isError(appendRes)) {
-    if (appendRes.error.kind === "overloaded") return Result.err({ status: 500, message: "VFS append overloaded" });
+    if (appendRes.error.kind === "overloaded") return Result.err({ status: 500, message: "workspace-fs append overloaded" });
     if (appendRes.error.kind === "not_found" || appendRes.error.kind === "gone") return Result.err({ status: 404, message: "stream not found" });
     if (appendRes.error.kind === "offset_mismatch") return Result.err({ status: 409, message: "stream changed" });
     if (appendRes.error.kind === "content_type_mismatch") return Result.err({ status: 409, message: "content-type mismatch" });
@@ -229,6 +260,18 @@ async function loadRequiredObjectResult<T extends WorkspaceFsStoredObject>(
 }
 
 async function readBlobBytesResult(args: StreamProfileRouteArgs, blobId: string): Promise<Result<Uint8Array, WorkspaceFsServerError>> {
+  const gitBlob = decodeGitBlobId(blobId);
+  if (gitBlob) {
+    const bodyRes = await readLooseGitObjectBodyResult({
+      repoStream: gitBlob.repoStream,
+      objectStore: args.objectStore,
+      format: gitBlob.format,
+      oid: gitBlob.oid,
+      expectedType: "blob",
+    });
+    if (Result.isError(bodyRes)) return Result.err(bodyRes.error);
+    return Result.ok(bodyRes.value.body);
+  }
   const manifestRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
   if (Result.isError(manifestRes)) return manifestRes;
   const manifest = manifestRes.value;
@@ -247,6 +290,36 @@ async function readBlobBytesResult(args: StreamProfileRouteArgs, blobId: string)
     out.set(bytesRes.value, chunkRef.offset);
   }
   return Result.ok(out);
+}
+
+async function gitBlobArtifactResult(args: {
+  route: StreamProfileRouteArgs;
+  repoStream: string;
+  format: GitObjectFormat;
+  oid: string;
+}): Promise<Result<GitLooseObjectResponse, WorkspaceFsServerError>> {
+  const headerRes = await readLooseGitObjectHeaderResult({
+    repoStream: args.repoStream,
+    objectStore: args.route.objectStore,
+    format: args.format,
+    oid: args.oid,
+  });
+  if (Result.isError(headerRes)) return Result.err(headerRes.error);
+  if (headerRes.value.type !== "blob") return Result.err({ status: 409, message: "git blob id does not point at a blob" });
+  const objectKey = gitLooseObjectKey(args.repoStream, args.format, args.oid);
+  const headRes = await headObjectStoreResult(args.route.objectStore, objectKey);
+  if (Result.isError(headRes)) return Result.err(headRes.error);
+  if (!headRes.value) return Result.err({ status: 404, message: "git blob artifact not found" });
+  return Result.ok({
+    oid: args.oid,
+    type: "blob",
+    format: args.format,
+    size: headerRes.value.size,
+    framedSize: headRes.value.size,
+    objectKey,
+    etag: headRes.value.etag,
+    deduplicated: true,
+  });
 }
 
 function gitRepoStreamForWorkspaceProfile(args: StreamProfileRouteArgs): string | null {
@@ -358,14 +431,14 @@ function decodeGitBlobId(blobId: string): { repoStream: string; format: GitObjec
   }
 }
 
-function gitModeToVfsMode(mode: string): number {
+function gitModeToWorkspaceMode(mode: string): number {
   if (mode === "40000") return 0o040755;
   if (mode === "120000") return 0o120777;
   if (mode === "100755") return 0o100755;
   return 0o100644;
 }
 
-function gitEntryToVfsStat(args: {
+function gitEntryToWorkspaceStat(args: {
   path: string;
   entry: GitTreeEntry;
   repoStream: string;
@@ -377,7 +450,7 @@ function gitEntryToVfsStat(args: {
     return {
       path: args.path,
       type: "dir",
-      mode: gitModeToVfsMode(args.entry.mode),
+      mode: gitModeToWorkspaceMode(args.entry.mode),
       size: 0,
       treeId: args.entry.oid,
     };
@@ -386,7 +459,7 @@ function gitEntryToVfsStat(args: {
     return {
       path: args.path,
       type: "symlink",
-      mode: gitModeToVfsMode(args.entry.mode),
+      mode: gitModeToWorkspaceMode(args.entry.mode),
       size: args.size,
       symlinkTarget: args.symlinkTarget ?? "",
     };
@@ -394,7 +467,7 @@ function gitEntryToVfsStat(args: {
   return {
     path: args.path,
     type: "file",
-    mode: gitModeToVfsMode(args.entry.mode),
+    mode: gitModeToWorkspaceMode(args.entry.mode),
     size: args.size,
     blobId: encodeGitBlobId(args.repoStream, args.format, args.entry.oid),
   };
@@ -591,11 +664,59 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     return Result.ok(undefined);
   }
 
-  for (const op of args.ops) {
-    if (op.kind === "put-file") {
-      const bytesRes = await readBlobBytesResult(args.route, op.blobId);
-      if (Result.isError(bytesRes)) return bytesRes;
-      const object = writeGitBlob(bytesRes.value, args.format);
+  const gitWriteTargets = args.ops
+    .map((op, opIndex) => ({ op, opIndex }))
+    .filter((target): target is { op: Extract<WorkspaceFsWorkspaceOp, { kind: "put-file" | "symlink" }>; opIndex: number } =>
+      target.op.kind === "put-file" || target.op.kind === "symlink");
+  type PreparedGitWrite = { opIndex: number; entry: GitTreeEntryInput };
+  const preparedGitWritesRes = await mapConcurrentWorkspaceResult<typeof gitWriteTargets[number], PreparedGitWrite>(
+    gitWriteTargets,
+    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
+    async (target) => {
+      if (target.op.kind === "put-file") {
+        const gitBlob = decodeGitBlobId(target.op.blobId);
+        if (gitBlob) {
+          if (gitBlob.repoStream !== args.gitRepoStream || gitBlob.format !== args.format) {
+            return Result.err({ status: 409, message: "workspace git blob belongs to another repo" });
+          }
+          const artifactRes = await gitBlobArtifactResult({
+            route: args.route,
+            repoStream: gitBlob.repoStream,
+            format: gitBlob.format,
+            oid: gitBlob.oid,
+          });
+          if (Result.isError(artifactRes)) return Result.err(artifactRes.error);
+          written.set(gitBlob.oid, artifactRes.value);
+          return Result.ok({
+            opIndex: target.opIndex,
+            entry: {
+              mode: target.op.executable === true ? "100755" : "100644",
+              name: basename(target.op.path),
+              oid: gitBlob.oid,
+            } satisfies GitTreeEntryInput,
+          });
+        }
+        const bytesRes = await readBlobBytesResult(args.route, target.op.blobId);
+        if (Result.isError(bytesRes)) return Result.err(bytesRes.error);
+        const object = writeGitBlob(bytesRes.value, args.format);
+        const writeRes = await writeGitObjectOnceResult({
+          route: args.route,
+          gitRepoStream: args.gitRepoStream,
+          format: args.format,
+          object,
+          written,
+        });
+        if (Result.isError(writeRes)) return Result.err(writeRes.error);
+        return Result.ok({
+          opIndex: target.opIndex,
+          entry: {
+            mode: target.op.executable === true ? "100755" : "100644",
+            name: basename(target.op.path),
+            oid: object.oid,
+          } satisfies GitTreeEntryInput,
+        });
+      }
+      const object = writeGitBlob(target.op.target, args.format);
       const writeRes = await writeGitObjectOnceResult({
         route: args.route,
         gitRepoStream: args.gitRepoStream,
@@ -603,28 +724,30 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
         object,
         written,
       });
-      if (Result.isError(writeRes)) return writeRes;
-      const applyRes = await upsertPathEntryResult(op.path, {
-        mode: op.executable === true ? "100755" : "100644",
-        name: basename(op.path),
-        oid: object.oid,
+      if (Result.isError(writeRes)) return Result.err(writeRes.error);
+      return Result.ok({
+        opIndex: target.opIndex,
+        entry: {
+          mode: "120000",
+          name: basename(target.op.path),
+          oid: object.oid,
+        } satisfies GitTreeEntryInput,
       });
+    }
+  );
+  if (Result.isError(preparedGitWritesRes)) return preparedGitWritesRes;
+  const preparedGitWrites = new Map(preparedGitWritesRes.value.map((prepared) => [prepared.opIndex, prepared.entry]));
+
+  for (const [opIndex, op] of args.ops.entries()) {
+    if (op.kind === "put-file") {
+      const entry = preparedGitWrites.get(opIndex);
+      if (!entry) return Result.err({ status: 500, message: "prepared git blob entry missing" });
+      const applyRes = await upsertPathEntryResult(op.path, entry);
       if (Result.isError(applyRes)) return applyRes;
     } else if (op.kind === "symlink") {
-      const object = writeGitBlob(op.target, args.format);
-      const writeRes = await writeGitObjectOnceResult({
-        route: args.route,
-        gitRepoStream: args.gitRepoStream,
-        format: args.format,
-        object,
-        written,
-      });
-      if (Result.isError(writeRes)) return writeRes;
-      const applyRes = await upsertPathEntryResult(op.path, {
-        mode: "120000",
-        name: basename(op.path),
-        oid: object.oid,
-      });
+      const entry = preparedGitWrites.get(opIndex);
+      if (!entry) return Result.err({ status: 500, message: "prepared git symlink entry missing" });
+      const applyRes = await upsertPathEntryResult(op.path, entry);
       if (Result.isError(applyRes)) return applyRes;
     } else if (op.kind === "mkdir") {
       const ensureRes = await ensureDirectoryResult(op.path);
@@ -708,9 +831,17 @@ async function currentGitHeadResult(
   gitRepoStream: string,
   ref: string
 ): Promise<Result<string | null, WorkspaceFsServerError>> {
-  const recordsRes = await readGitRecordsResult({ stream: gitRepoStream, reader: args.reader });
-  if (Result.isError(recordsRes)) return Result.err(recordsRes.error);
-  const refs = buildGitRefs(recordsRes.value);
+  const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
+  if (Result.isError(gitConfigRes)) return gitConfigRes;
+  const refsRes = await readGitRefsSnapshotResult({
+    stream: gitRepoStream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    format: gitConfigRes.value.objectFormat,
+  });
+  if (Result.isError(refsRes)) return Result.err(refsRes.error);
+  const refs = refsRes.value.refs;
   const normalized = normalizeGitRef(ref);
   return Result.ok(Object.prototype.hasOwnProperty.call(refs, normalized) ? refs[normalized] ?? null : null);
 }
@@ -802,7 +933,7 @@ async function statGitEntryResult(args: {
   entry: GitTreeEntry;
 }): Promise<Result<WorkspaceFsNodeStat, WorkspaceFsServerError>> {
   if (args.entry.type === "dir") {
-    return Result.ok(gitEntryToVfsStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
+    return Result.ok(gitEntryToWorkspaceStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
   }
   if (args.entry.type === "file") {
     const sizeRes = await gitBlobSizeResult({
@@ -812,7 +943,7 @@ async function statGitEntryResult(args: {
       oid: args.entry.oid,
     });
     if (Result.isError(sizeRes)) return sizeRes;
-    return Result.ok(gitEntryToVfsStat({
+    return Result.ok(gitEntryToWorkspaceStat({
       path: args.path,
       entry: args.entry,
       repoStream: args.gitRepoStream,
@@ -829,7 +960,7 @@ async function statGitEntryResult(args: {
   });
   if (Result.isError(bodyRes)) return Result.err(bodyRes.error);
   const symlinkTarget = new TextDecoder().decode(bodyRes.value.body);
-  return Result.ok(gitEntryToVfsStat({
+  return Result.ok(gitEntryToWorkspaceStat({
     path: args.path,
     entry: args.entry,
     repoStream: args.gitRepoStream,
@@ -864,7 +995,7 @@ async function statGitEntryLazyResult(args: {
   entry: GitTreeEntry;
 }): Promise<Result<WorkspaceFsNodeStat, WorkspaceFsServerError>> {
   if (args.entry.type === "dir") {
-    return Result.ok(gitEntryToVfsStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
+    return Result.ok(gitEntryToWorkspaceStat({ ...args, repoStream: args.gitRepoStream, size: 0 }));
   }
   if (args.entry.type === "symlink") return statGitEntryResult(args);
   const sizeRes = await gitBlobSizeResult({
@@ -874,7 +1005,7 @@ async function statGitEntryLazyResult(args: {
     oid: args.entry.oid,
   });
   if (Result.isError(sizeRes)) return sizeRes;
-  return Result.ok(gitEntryToVfsStat({
+  return Result.ok(gitEntryToWorkspaceStat({
     path: args.path,
     entry: args.entry,
     repoStream: args.gitRepoStream,
@@ -1493,14 +1624,46 @@ async function prepareWorkspaceOpResult(
     if (!blobId) {
       const bytesRes = op.contentBase64 !== undefined ? fromBase64(op.contentBase64) : Result.ok(bytesFromText(op.text ?? ""));
       if (Result.isError(bytesRes)) return Result.err({ status: 400, message: bytesRes.error.message });
-      const blob = makeBlobObjects(bytesRes.value, { executable: op.executable, contentType: op.contentType });
-      objects = [...blob.chunks, blob.manifest];
-      blobId = blob.manifest.id;
-      size = blob.manifest.size;
+      const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
+      if (gitRepoStream && isWorkspaceFsProfile(args)) {
+        const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
+        if (Result.isError(gitConfigRes)) return gitConfigRes;
+        const object = writeGitBlob(bytesRes.value, gitConfigRes.value.objectFormat);
+        const writeRes = await writeLooseGitObjectResult({
+          repoStream: gitRepoStream,
+          objectStore: args.objectStore,
+          format: gitConfigRes.value.objectFormat,
+          object,
+        });
+        if (Result.isError(writeRes)) return Result.err(writeRes.error);
+        blobId = encodeGitBlobId(gitRepoStream, gitConfigRes.value.objectFormat, object.oid);
+        size = object.size;
+      } else {
+        const blob = makeBlobObjects(bytesRes.value, { executable: op.executable, contentType: op.contentType });
+        objects = [...blob.chunks, blob.manifest];
+        blobId = blob.manifest.id;
+        size = blob.manifest.size;
+      }
     } else {
-      const blobRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
-      if (Result.isError(blobRes)) return blobRes;
-      size = blobRes.value.size;
+      const gitBlob = decodeGitBlobId(blobId);
+      if (gitBlob) {
+        const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
+        if (gitRepoStream && gitBlob.repoStream !== gitRepoStream) {
+          return Result.err({ status: 409, message: "workspace git blob belongs to another repo" });
+        }
+        const artifactRes = await gitBlobArtifactResult({
+          route: args,
+          repoStream: gitBlob.repoStream,
+          format: gitBlob.format,
+          oid: gitBlob.oid,
+        });
+        if (Result.isError(artifactRes)) return artifactRes;
+        size = artifactRes.value.size;
+      } else {
+        const blobRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
+        if (Result.isError(blobRes)) return blobRes;
+        size = blobRes.value.size;
+      }
     }
     return Result.ok({
       op: {
@@ -1531,13 +1694,17 @@ async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): 
   if (!Array.isArray(rawOps) || rawOps.length === 0) return args.respond.badRequest("ops must be a non-empty array");
   if (rawOps.length > 1000) return args.respond.badRequest("too many ops");
 
+  const preparedOpsRes = await mapConcurrentWorkspaceResult(
+    rawOps as WorkspaceFsWorkspaceOpInput[],
+    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
+    (rawOp) => prepareWorkspaceOpResult(args, rawOp)
+  );
+  if (Result.isError(preparedOpsRes)) return responseForError(args, preparedOpsRes.error);
   const ops: WorkspaceFsWorkspaceOp[] = [];
   const objects: WorkspaceFsStoredObject[] = [];
-  for (const rawOp of rawOps) {
-    const opRes = await prepareWorkspaceOpResult(args, rawOp as WorkspaceFsWorkspaceOpInput);
-    if (Result.isError(opRes)) return responseForError(args, opRes.error);
-    ops.push(opRes.value.op);
-    objects.push(...opRes.value.objects);
+  for (const prepared of preparedOpsRes.value) {
+    ops.push(prepared.op);
+    objects.push(...prepared.objects);
   }
 
   const writeObjectsRes = await writeObjectsResult(args, objects);
@@ -1952,6 +2119,7 @@ async function commitGitBackedWorkspaceResult(args: {
     objectStore: args.route.objectStore,
     appendJsonRecords: args.route.appendJsonRecords,
     format: args.gitConfig.objectFormat,
+    verificationMode: "changed-objects",
     request: {
       txnId,
       actor: args.author.id,
@@ -2109,7 +2277,7 @@ async function discardWorkspace(args: StreamProfileRouteArgs, workspaceId: strin
   return args.respond.json(200, { workspaceId, state: "discarded" });
 }
 
-async function loadGitCommitAsVfsResult(args: {
+async function loadGitCommitAsWorkspaceResult(args: {
   route: StreamProfileRouteArgs;
   gitRepoStream: string;
   gitConfig: GitRepoProfileConfig;
@@ -2158,7 +2326,7 @@ async function log(args: StreamProfileRouteArgs): Promise<Response> {
   const commits: WorkspaceFsCommit[] = [];
   let commitId = headRes.value;
   while (commitId && commits.length < limit) {
-    const commitRes = await loadGitCommitAsVfsResult({
+    const commitRes = await loadGitCommitAsWorkspaceResult({
       route: args,
       gitRepoStream,
       gitConfig: gitConfigRes.value,
@@ -2178,7 +2346,7 @@ async function show(args: StreamProfileRouteArgs, commitId: string): Promise<Res
   if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
   const decoded = decodeURIComponent(commitId);
   if (!oidPattern(gitConfigRes.value.objectFormat).test(decoded)) return args.respond.badRequest("invalid git commit id");
-  const commitRes = await loadGitCommitAsVfsResult({
+  const commitRes = await loadGitCommitAsWorkspaceResult({
     route: args,
     gitRepoStream,
     gitConfig: gitConfigRes.value,

@@ -46,8 +46,40 @@ export type GitRefTransactionCommitResult = {
   idempotent: boolean;
 };
 
+export type GitRefTransactionVerificationMode = "full" | "changed-objects";
+
 const TEXT_DECODER = new TextDecoder();
 const GIT_OBJECT_HEADER_READ_BYTES = 512;
+const GIT_OBJECT_SET_HEAD_CONCURRENCY = 128;
+
+async function mapConcurrentGitResult<T, U>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<Result<U, GitRepoServiceError>>
+): Promise<Result<U[], GitRepoServiceError>> {
+  if (items.length === 0) return Result.ok([]);
+  const results = new Array<U>(items.length);
+  let next = 0;
+  let firstError: GitRepoServiceError | null = null;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      if (firstError) return;
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      const res = await fn(items[index]!, index);
+      if (Result.isError(res)) {
+        firstError = res.error;
+        return;
+      }
+      results[index] = res.value;
+    }
+  });
+  await Promise.all(workers);
+  if (firstError) return Result.err(firstError);
+  return Result.ok(results);
+}
 
 export type GitLooseObjectHeader = {
   type: GitObjectType;
@@ -400,14 +432,16 @@ export async function validateObjectSetResult(args: {
     uris.push(...objects.looseObjectUris);
   }
 
-  for (const uri of uris) {
+  const headRes = await mapConcurrentGitResult(uris, GIT_OBJECT_SET_HEAD_CONCURRENCY, async (uri) => {
     if (typeof uri !== "string" || !uri.startsWith(prefix)) {
       return Result.err({ status: 400, message: "object artifact URI is outside this git-repo stream" });
     }
-    const headRes = await headObjectStoreResult(args.objectStore, uri);
-    if (Result.isError(headRes)) return headRes;
-    if (!headRes.value) return Result.err({ status: 409, message: `object artifact missing: ${uri}` });
-  }
+    const itemHeadRes = await headObjectStoreResult(args.objectStore, uri);
+    if (Result.isError(itemHeadRes)) return itemHeadRes;
+    if (!itemHeadRes.value) return Result.err({ status: 409, message: `object artifact missing: ${uri}` });
+    return Result.ok(undefined);
+  });
+  if (Result.isError(headRes)) return headRes;
   return Result.ok(undefined);
 }
 
@@ -642,6 +676,32 @@ async function validateRefTransactionObjectsResult(args: {
   return Result.ok(undefined);
 }
 
+async function validateChangedRefTransactionObjectsResult(args: {
+  repoStream: string;
+  objectStore: ObjectStore;
+  format: GitObjectFormat;
+  request: GitRefTransactionRequest;
+}): Promise<Result<void, GitRepoServiceError>> {
+  for (const update of args.request.refUpdates) {
+    if (!update.newOid) continue;
+    const objectRes = await readVerifiedObjectResult({
+      repoStream: args.repoStream,
+      objectStore: args.objectStore,
+      format: args.format,
+      oid: update.newOid,
+    });
+    if (Result.isError(objectRes)) return objectRes;
+    const objectType = objectRes.value.header.type;
+    if (update.ref.startsWith("refs/heads/") && objectType !== "commit") {
+      return Result.err(gitError(409, `branch ref ${update.ref} must point at a commit`));
+    }
+    if (objectType !== "commit" && objectType !== "tag") {
+      return Result.err(gitError(409, `ref ${update.ref} must point at a commit or tag`));
+    }
+  }
+  return Result.ok(undefined);
+}
+
 export async function verifyGitRefTransactionRecordResult(args: {
   repoStream: string;
   objectStore: ObjectStore;
@@ -677,6 +737,7 @@ function validateRefTransactionOidShapesResult(format: GitObjectFormat, request:
 export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
   format: GitObjectFormat;
   request: GitRefTransactionRequest;
+  verificationMode?: GitRefTransactionVerificationMode;
 }): Promise<Result<GitRefTransactionCommitResult, GitRepoServiceError>> {
   const requestRes = validateRefTransactionRequestResult(args.request);
   if (Result.isError(requestRes)) return Result.err({ status: 400, message: requestRes.error.message });
@@ -684,6 +745,7 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
   const requestHash = requestHashForRefTransaction(request);
   const oidShapeRes = validateRefTransactionOidShapesResult(args.format, request);
   if (Result.isError(oidShapeRes)) return oidShapeRes;
+  const verificationMode = args.verificationMode ?? "full";
   let requestObjectsValidated = false;
 
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -716,12 +778,19 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
         objectSet: request.objects,
       });
       if (Result.isError(objectSetRes)) return objectSetRes;
-      const graphRes = await validateRefTransactionObjectsResult({
-        repoStream: args.stream,
-        objectStore: args.objectStore,
-        format: args.format,
-        request,
-      });
+      const graphRes = verificationMode === "full"
+        ? await validateRefTransactionObjectsResult({
+            repoStream: args.stream,
+            objectStore: args.objectStore,
+            format: args.format,
+            request,
+          })
+        : await validateChangedRefTransactionObjectsResult({
+            repoStream: args.stream,
+            objectStore: args.objectStore,
+            format: args.format,
+            request,
+          });
       if (Result.isError(graphRes)) return graphRes;
       requestObjectsValidated = true;
     }

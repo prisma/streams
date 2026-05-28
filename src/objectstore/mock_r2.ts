@@ -52,6 +52,8 @@ export class MockR2Store implements ObjectStore {
   private putBytes = 0;
   private getBytes = 0;
   private memBytes = 0;
+  private activePuts = 0;
+  private maxConcurrentPuts = 0;
 
   constructor(opts: MockR2Options | MockR2Faults = {}) {
     if ("failPutEvery" in opts || "putDelayMs" in opts) {
@@ -82,7 +84,7 @@ export class MockR2Store implements ObjectStore {
 
   private mkPath(key: string): string {
     const hex = createHash("sha256").update(key).digest("hex");
-    return this.spillDir ? join(this.spillDir, `${hex}.bin`) : hex;
+    return this.spillDir ? join(this.spillDir, hex.slice(0, 2), `${hex}.bin`) : hex;
   }
 
   private shouldSpill(len: number): boolean {
@@ -97,69 +99,88 @@ export class MockR2Store implements ObjectStore {
     if (every && count % every === 0) throw dsError(msg ?? "MockR2: injected timeout");
   }
 
+  private enterPut(): void {
+    this.activePuts += 1;
+    this.maxConcurrentPuts = Math.max(this.maxConcurrentPuts, this.activePuts);
+  }
+
+  private exitPut(): void {
+    this.activePuts = Math.max(0, this.activePuts - 1);
+  }
+
   async put(key: string, bytes: Uint8Array): Promise<PutResult> {
     this.putCount++;
-    if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
-      throw dsError(`MockR2: injected PUT failure for ${key}`);
+    this.enterPut();
+    try {
+      if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
+        throw dsError(`MockR2: injected PUT failure for ${key}`);
+      }
+      this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
+      this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
+      await sleep(this.faults.putDelayMs ?? 0);
+
+      const copy = new Uint8Array(bytes);
+      const etag = this.mkEtag(copy);
+      const size = copy.byteLength;
+      this.putBytes += size;
+
+      const existing = this.data.get(key);
+      if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
+      if (existing?.path) {
+        try { unlinkSync(existing.path); } catch { /* ignore */ }
+      }
+
+      if (this.shouldSpill(size)) {
+        const path = this.mkPath(key);
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, copy);
+        this.data.set(key, { etag, size, path });
+      } else {
+        this.memBytes += size;
+        this.data.set(key, { etag, size, bytes: copy });
+      }
+
+      return { etag };
+    } finally {
+      this.exitPut();
     }
-    this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
-    this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
-    await sleep(this.faults.putDelayMs ?? 0);
-
-    const copy = new Uint8Array(bytes);
-    const etag = this.mkEtag(copy);
-    const size = copy.byteLength;
-    this.putBytes += size;
-
-    const existing = this.data.get(key);
-    if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
-    if (existing?.path) {
-      try { unlinkSync(existing.path); } catch { /* ignore */ }
-    }
-
-    if (this.shouldSpill(size)) {
-      const path = this.mkPath(key);
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, copy);
-      this.data.set(key, { etag, size, path });
-    } else {
-      this.memBytes += size;
-      this.data.set(key, { etag, size, bytes: copy });
-    }
-
-    return { etag };
   }
 
   async putFile(key: string, path: string, size: number): Promise<PutResult> {
     this.putCount++;
-    if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
-      throw dsError(`MockR2: injected PUT failure for ${key}`);
+    this.enterPut();
+    try {
+      if (this.faults.failPutPrefix && key.startsWith(this.faults.failPutPrefix)) {
+        throw dsError(`MockR2: injected PUT failure for ${key}`);
+      }
+      this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
+      this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
+      await sleep(this.faults.putDelayMs ?? 0);
+
+      const etag = await this.hashFile(path);
+      this.putBytes += size;
+
+      const existing = this.data.get(key);
+      if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
+      if (existing?.path) {
+        try { unlinkSync(existing.path); } catch { /* ignore */ }
+      }
+
+      if (this.shouldSpill(size)) {
+        const dest = this.mkPath(key);
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(path, dest);
+        this.data.set(key, { etag, size, path: dest });
+      } else {
+        const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+        this.memBytes += bytes.byteLength;
+        this.data.set(key, { etag, size, bytes });
+      }
+
+      return { etag };
+    } finally {
+      this.exitPut();
     }
-    this.maybeFail(this.putCount, this.faults.failPutEvery, `MockR2: injected PUT failure for ${key}`);
-    this.maybeTimeout(this.putCount, this.faults.timeoutPutEvery, `MockR2: injected PUT timeout for ${key}`);
-    await sleep(this.faults.putDelayMs ?? 0);
-
-    const etag = await this.hashFile(path);
-    this.putBytes += size;
-
-    const existing = this.data.get(key);
-    if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
-    if (existing?.path) {
-      try { unlinkSync(existing.path); } catch { /* ignore */ }
-    }
-
-    if (this.shouldSpill(size)) {
-      const dest = this.mkPath(key);
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(path, dest);
-      this.data.set(key, { etag, size, path: dest });
-    } else {
-      const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
-      this.memBytes += bytes.byteLength;
-      this.data.set(key, { etag, size, bytes });
-    }
-
-    return { etag };
   }
 
   async get(key: string, opts: GetOptions = {}): Promise<Uint8Array | null> {
@@ -257,7 +278,17 @@ export class MockR2Store implements ObjectStore {
     return this.memBytes;
   }
 
-  stats(): { puts: number; gets: number; heads: number; lists: number; putBytes: number; getBytes: number; memoryBytes: number } {
+  stats(): {
+    puts: number;
+    gets: number;
+    heads: number;
+    lists: number;
+    putBytes: number;
+    getBytes: number;
+    memoryBytes: number;
+    activePuts: number;
+    maxConcurrentPuts: number;
+  } {
     return {
       puts: this.putCount,
       gets: this.getCount,
@@ -266,6 +297,8 @@ export class MockR2Store implements ObjectStore {
       putBytes: this.putBytes,
       getBytes: this.getBytes,
       memoryBytes: this.memBytes,
+      activePuts: this.activePuts,
+      maxConcurrentPuts: this.maxConcurrentPuts,
     };
   }
 
@@ -276,5 +309,7 @@ export class MockR2Store implements ObjectStore {
     this.listCount = 0;
     this.putBytes = 0;
     this.getBytes = 0;
+    this.activePuts = 0;
+    this.maxConcurrentPuts = 0;
   }
 }
