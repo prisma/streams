@@ -39,6 +39,7 @@ export type OpenWorkspaceFsRepoOptions = {
 
 export type WorkspaceFsEnsureOptions = {
   gitRepoStream?: string;
+  auditStream?: string;
 };
 
 export type WorkspaceCheckoutOptions = Omit<VfsCheckoutRequest, "ref"> & {
@@ -164,6 +165,7 @@ export class WorkspaceFsClient {
           kind: "workspace-fs",
           version: 1,
           gitRepo: options.gitRepoStream ? { stream: options.gitRepoStream } : undefined,
+          audit: options.auditStream ? { stream: options.auditStream } : undefined,
         },
       }),
     });

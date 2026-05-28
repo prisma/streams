@@ -21,6 +21,9 @@ export type WorkspaceFsStreamProfile = {
   gitRepo?: {
     stream: string;
   };
+  audit?: {
+    stream: string;
+  };
 };
 
 function cloneWorkspaceFsProfile(): WorkspaceFsStreamProfile {
@@ -31,7 +34,7 @@ function validateWorkspaceFsProfileResult(raw: unknown, path: string): Result<Wo
   const objRes = expectPlainObjectResult(raw, path);
   if (Result.isError(objRes)) return objRes;
   if (objRes.value.kind !== WORKSPACE_FS_PROFILE_KIND) return Result.err({ message: `${path}.kind must be ${WORKSPACE_FS_PROFILE_KIND}` });
-  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "version", "gitRepo"], path);
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "version", "gitRepo", "audit"], path);
   if (Result.isError(keyCheck)) return keyCheck;
   if (objRes.value.version !== undefined && objRes.value.version !== WORKSPACE_FS_PROFILE_VERSION) {
     return Result.err({ message: `${path}.version must be ${WORKSPACE_FS_PROFILE_VERSION}` });
@@ -46,6 +49,16 @@ function validateWorkspaceFsProfileResult(raw: unknown, path: string): Result<Wo
       return Result.err({ message: `${path}.gitRepo.stream must be a non-empty string` });
     }
     profile.gitRepo = { stream: gitRepoRes.value.stream.trim() };
+  }
+  if (objRes.value.audit !== undefined) {
+    const auditRes = expectPlainObjectResult(objRes.value.audit, `${path}.audit`);
+    if (Result.isError(auditRes)) return auditRes;
+    const auditKeyCheck = rejectUnknownKeysResult(auditRes.value, ["stream"], `${path}.audit`);
+    if (Result.isError(auditKeyCheck)) return auditKeyCheck;
+    if (typeof auditRes.value.stream !== "string" || auditRes.value.stream.trim() === "") {
+      return Result.err({ message: `${path}.audit.stream must be a non-empty string` });
+    }
+    profile.audit = { stream: auditRes.value.stream.trim() };
   }
   return Result.ok(profile);
 }

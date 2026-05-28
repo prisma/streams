@@ -31,6 +31,24 @@ async function installGitRepoProfile(app: ReturnType<typeof createProfileTestApp
   expect(profile.status).toBe(200);
 }
 
+async function installEvlogProfile(app: ReturnType<typeof createProfileTestApp>["app"], stream: string): Promise<void> {
+  const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+  const create = await app.fetch(new Request(base, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+  }));
+  expect(create.ok).toBe(true);
+  const profile = await fetchJsonApp(app, `${base}/_profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: { kind: "evlog" },
+    }),
+  });
+  expect(profile.status).toBe(200);
+}
+
 describe("vfs-repo profile", () => {
   test("commits durable workspace ops and serves lazy file metadata/content", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-vfs-repo-"));
@@ -368,6 +386,64 @@ describe("vfs-repo profile", () => {
           error: { code: "workspace_conflict" },
         });
       }
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("writes workspace-fs audit events to an evlog stream", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-workspace-audit-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const gitStream = "git/test/workspace-audit-canonical";
+      const auditStream = "evlog/test/workspace-audit";
+      await installGitRepoProfile(app, gitStream);
+      await installEvlogProfile(app, auditStream);
+
+      const workspaceStream = "workspace/test/audit/control";
+      const repo = openWorkspaceFsRepo({
+        streamsUrl: "http://local",
+        stream: workspaceStream,
+        fetch: appFetch(app),
+      });
+      await repo.ensure({ gitRepoStream: gitStream, auditStream });
+
+      const workspace = await repo.checkout({ ref: "main", workspaceId: "audit-agent" });
+      await workspace.writeFile("/README.md", "audited\n");
+      const commit = await workspace.commit({ message: "Audited commit", author: { id: "agent" } });
+      expect(commit.newCommitId).toMatch(/^[0-9a-f]{40}$/);
+
+      const draft = await repo.checkout({ ref: "main", workspaceId: "audit-discard" });
+      await draft.discard();
+
+      const read = await fetchJsonApp(app, `http://local/v1/stream/${encodeURIComponent(auditStream)}?format=json`, { method: "GET" });
+      expect(read.status).toBe(200);
+      const events = read.body as Array<{ message: string; service: string; context: Record<string, unknown> }>;
+      expect(events.map((event) => event.message)).toEqual([
+        "workspace_checked_out",
+        "workspace_ops_appended",
+        "workspace_commit_started",
+        "workspace_commit_succeeded",
+        "workspace_checked_out",
+        "workspace_discarded",
+      ]);
+      expect(events.every((event) => event.service === "workspace-fs")).toBe(true);
+      const opEvent = events.find((event) => event.message === "workspace_ops_appended");
+      expect(opEvent?.context).toMatchObject({
+        workspaceStream,
+        workspaceId: "audit-agent",
+        event: "workspace_ops_appended",
+        changedPaths: ["/README.md"],
+      });
+      const commitEvent = events.find((event) => event.message === "workspace_commit_succeeded");
+      expect(commitEvent?.context).toMatchObject({
+        workspaceStream,
+        workspaceId: "audit-agent",
+        actorId: "agent",
+        event: "workspace_commit_succeeded",
+        newCommitId: commit.newCommitId,
+      });
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

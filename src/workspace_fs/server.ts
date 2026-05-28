@@ -318,6 +318,63 @@ function gitRepoStreamForVfsProfile(args: StreamProfileVfsRouteArgs): string | n
   return typeof gitRepo?.stream === "string" && gitRepo.stream.trim() !== "" ? gitRepo.stream.trim() : null;
 }
 
+function auditStreamForWorkspaceProfile(args: StreamProfileVfsRouteArgs): string | null {
+  const audit = (args.profile as { audit?: { stream?: unknown } }).audit;
+  return typeof audit?.stream === "string" && audit.stream.trim() !== "" ? audit.stream.trim() : null;
+}
+
+async function appendWorkspaceAuditEventResult(
+  args: StreamProfileVfsRouteArgs,
+  event: {
+    type: string;
+    workspaceId?: string;
+    ref?: string;
+    actorId?: string;
+    status?: "started" | "succeeded" | "failed" | "conflict";
+    context?: Record<string, unknown>;
+  }
+): Promise<Result<void, VfsServerError>> {
+  const auditStream = auditStreamForWorkspaceProfile(args);
+  if (!auditStream) return Result.ok(undefined);
+  const row = args.db.getStream(auditStream);
+  if (!row || args.db.isDeleted(row)) return Result.err({ status: 404, message: "workspace audit stream not found" });
+  if (row.profile !== "evlog") return Result.err({ status: 409, message: "workspace audit stream must use the evlog profile" });
+  const appendRes = await args.appendJsonRecords({
+    stream: auditStream,
+    records: [{
+      routingKey: event.workspaceId ?? args.stream,
+      value: {
+        timestamp: new Date().toISOString(),
+        service: "workspace-fs",
+        level: event.status === "failed" || event.status === "conflict" ? "warn" : "info",
+        message: event.type,
+        context: {
+          event: event.type,
+          workspaceStream: args.stream,
+          workspaceId: event.workspaceId,
+          ref: event.ref,
+          actorId: event.actorId,
+          status: event.status,
+          ...event.context,
+        },
+      },
+    }],
+  });
+  if (Result.isError(appendRes)) {
+    if (appendRes.error.kind === "not_found" || appendRes.error.kind === "gone") {
+      return Result.err({ status: 404, message: "workspace audit stream not found" });
+    }
+    if (appendRes.error.kind === "content_type_mismatch") {
+      return Result.err({ status: 409, message: "workspace audit stream content-type mismatch" });
+    }
+    if (appendRes.error.kind === "offset_mismatch") {
+      return Result.err({ status: 409, message: "workspace audit stream changed" });
+    }
+    return Result.err({ status: 500, message: appendRes.error.message });
+  }
+  return Result.ok(undefined);
+}
+
 function gitRepoProfileConfigResult(args: StreamProfileVfsRouteArgs, stream: string): Result<GitRepoProfileConfig, VfsServerError> {
   const srow = args.db.getStream(stream);
   if (!srow || args.db.isDeleted(srow)) return Result.err({ status: 404, message: "git-repo stream not found" });
@@ -1576,6 +1633,7 @@ async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
 
   const workspaceRes = await loadWorkspaceResult(args, workspaceId);
   if (Result.isError(workspaceRes)) return responseForError(args, workspaceRes.error);
+  let createdWorkspace = false;
   if (!workspaceRes.value.checkout) {
     const appendRes = await appendJsonResult(
       args,
@@ -1595,7 +1653,16 @@ async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
       ttlSeconds
     );
     if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
+    createdWorkspace = true;
   }
+  const auditRes = await appendWorkspaceAuditEventResult(args, {
+    type: "workspace_checked_out",
+    workspaceId,
+    ref,
+    status: "succeeded",
+    context: { baseCommitId, rootTreeId, createdWorkspace },
+  });
+  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
 
   return args.respond.json(200, {
     repo: args.stream,
@@ -1885,6 +1952,19 @@ async function workspaceOps(args: StreamProfileVfsRouteArgs, workspaceId: string
     VFS_WORKSPACE_TTL_SECONDS
   );
   if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
+  const auditRes = await appendWorkspaceAuditEventResult(args, {
+    type: "workspace_ops_appended",
+    workspaceId,
+    status: "succeeded",
+    context: {
+      opCount: ops.length,
+      changedPaths: changedPaths(ops),
+      ops: ops.map((op) => op.kind === "rename"
+        ? { kind: op.kind, from: op.from, to: op.to }
+        : { kind: op.kind, path: op.path }),
+    },
+  });
+  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
   return args.respond.json(200, { workspaceId, appended: ops.length, ops });
 }
 
@@ -2105,6 +2185,18 @@ async function rebaseWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
     if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
     const snapshot = snapshotRes.value;
     if (snapshot.conflictPaths.length > 0) {
+      const auditRes = await appendWorkspaceAuditEventResult(args, {
+        type: "workspace_rebase_failed",
+        workspaceId,
+        ref: snapshot.ref,
+        status: "conflict",
+        context: {
+          baseCommitId: snapshot.baseCommitId,
+          currentHead: snapshot.currentHead,
+          conflictPaths: snapshot.conflictPaths,
+        },
+      });
+      if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
       return args.respond.json(409, {
         error: {
           code: "workspace_conflict",
@@ -2156,6 +2248,19 @@ async function rebaseWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
       newBaseCommitId: snapshot.currentHead,
       rootTreeId,
     };
+    const auditRes = await appendWorkspaceAuditEventResult(args, {
+      type: "workspace_rebased",
+      workspaceId,
+      ref: snapshot.ref,
+      status: "succeeded",
+      context: {
+        rebased,
+        oldBaseCommitId: snapshot.baseCommitId,
+        newBaseCommitId: snapshot.currentHead,
+        rootTreeId,
+      },
+    });
+    if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
     return args.respond.json(200, response);
   });
 }
@@ -2605,6 +2710,15 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
   const durabilityRes = normalizeCommitDurabilityResult(body);
   if (Result.isError(durabilityRes)) return responseForError(args, durabilityRes.error);
   const durability = durabilityRes.value;
+  const startAuditRes = await appendWorkspaceAuditEventResult(args, {
+    type: "workspace_commit_started",
+    workspaceId,
+    ref,
+    actorId: body.author.id,
+    status: "started",
+    context: { durability: durability.durability },
+  });
+  if (Result.isError(startAuditRes)) return responseForError(args, startAuditRes.error);
 
   return withRepoLock(args.stream, async () => {
     const workspaceRes = await loadWorkspaceResult(args, workspaceId);
@@ -2629,7 +2743,31 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
         durability: durability.durability,
         durabilityTimeoutMs: durability.timeoutMs,
       });
-      if (Result.isError(commitRes)) return responseForError(args, commitRes.error);
+      if (Result.isError(commitRes)) {
+        const auditRes = await appendWorkspaceAuditEventResult(args, {
+          type: "workspace_commit_failed",
+          workspaceId,
+          ref,
+          actorId: body.author.id,
+          status: commitRes.error.status === 409 ? "conflict" : "failed",
+          context: { message: commitRes.error.message },
+        });
+        if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
+        return responseForError(args, commitRes.error);
+      }
+      const auditRes = await appendWorkspaceAuditEventResult(args, {
+        type: "workspace_commit_succeeded",
+        workspaceId,
+        ref,
+        actorId: body.author.id,
+        status: "succeeded",
+        context: {
+          oldCommitId: commitRes.value.oldCommitId,
+          newCommitId: commitRes.value.newCommitId,
+          git: commitRes.value.git,
+        },
+      });
+      if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
       return args.respond.json(200, commitRes.value);
     }
 
@@ -2637,7 +2775,18 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
     if (Result.isError(refRes)) return responseForError(args, refRes.error);
     const currentHead = refRes.value?.newCommitId ?? null;
     const expectedHead = body.expectedHead === undefined ? workspaceRes.value.checkout.baseCommitId : body.expectedHead;
-    if (currentHead !== expectedHead) return args.respond.conflict("ref head changed");
+    if (currentHead !== expectedHead) {
+      const auditRes = await appendWorkspaceAuditEventResult(args, {
+        type: "workspace_commit_failed",
+        workspaceId,
+        ref,
+        actorId: body.author.id,
+        status: "conflict",
+        context: { message: "ref head changed", expectedHead, currentHead },
+      });
+      if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
+      return args.respond.conflict("ref head changed");
+    }
 
     const treePlanRes = canBuildIncrementalTree(workspaceRes.value.ops)
       ? await rootTreeIdForCommitResult(args, currentHead)
@@ -2721,6 +2870,19 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
       },
     ], VFS_WORKSPACE_TTL_SECONDS);
     if (Result.isError(markerAppendRes)) return responseForError(args, markerAppendRes.error);
+    const auditRes = await appendWorkspaceAuditEventResult(args, {
+      type: "workspace_commit_succeeded",
+      workspaceId,
+      ref,
+      actorId: body.author.id,
+      status: "succeeded",
+      context: {
+        oldCommitId: currentHead,
+        newCommitId: commit.id,
+        git: gitCommit,
+      },
+    });
+    if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
 
     return args.respond.json(200, {
       ref,
@@ -2740,6 +2902,12 @@ async function discardWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: st
     },
   ], VFS_WORKSPACE_TTL_SECONDS);
   if (Result.isError(markerAppendRes)) return responseForError(args, markerAppendRes.error);
+  const auditRes = await appendWorkspaceAuditEventResult(args, {
+    type: "workspace_discarded",
+    workspaceId,
+    status: "succeeded",
+  });
+  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
   return args.respond.json(200, { workspaceId, state: "discarded" });
 }
 

@@ -16,6 +16,9 @@ Install it on a JSON stream and configure the canonical Git repository stream:
     "version": 1,
     "gitRepo": {
       "stream": "git/tenant/repo"
+    },
+    "audit": {
+      "stream": "evlog/tenant/repo/agent-audit"
     }
   }
 }
@@ -52,6 +55,9 @@ The profile supports these workspace behaviors:
   base `stat`/`readdir`/file reads resolve from Git trees and loose object
   artifacts, and commits create a canonical Git commit through a `git-repo` ref
   transaction
+- when configured with `audit.stream`, workspace lifecycle, draft operation,
+  commit, rebase, and discard events are appended to that stream; the target
+  must be an existing `evlog` stream
 
 ## Responsibilities
 
@@ -128,6 +134,37 @@ new base commit and replay the existing draft operations over that base.
 This is intentionally a path-level primitive. It does not perform text merges
 or conflict resolution yet. If conflicts exist, `rebase` returns `409` with the
 same conflict details so agents can inspect the paths before retrying.
+
+## Audit Events
+
+`workspace-fs` can write an agent audit trail to an `evlog` stream:
+
+```ts
+await openWorkspaceFsRepo(...).ensure({
+  gitRepoStream: "git/tenant/repo",
+  auditStream: "evlog/tenant/repo/agent-audit",
+});
+```
+
+The audit stream must already exist, use `application/json`, and have the
+`evlog` profile installed. When configured, audit appends are part of the
+workspace operation path; if the audit stream is missing or not `evlog`, the
+workspace request fails instead of silently losing the event.
+
+Current event names:
+
+- `workspace_checked_out`
+- `workspace_ops_appended`
+- `workspace_commit_started`
+- `workspace_commit_succeeded`
+- `workspace_commit_failed`
+- `workspace_rebased`
+- `workspace_rebase_failed`
+- `workspace_discarded`
+
+Events are normalized by `evlog` and include the workspace stream, workspace id,
+ref, actor id when available, status, and operation-specific details in
+`context`.
 
 ## Overlay Index Endpoints
 
