@@ -38,7 +38,7 @@ export type OpenWorkspaceFsRepoOptions = {
 };
 
 export type WorkspaceFsEnsureOptions = {
-  gitRepoStream?: string;
+  gitRepoStream: string;
   auditStream?: string;
 };
 
@@ -146,7 +146,7 @@ export class WorkspaceFsClient {
     return new Uint8Array(await res.arrayBuffer());
   }
 
-  async ensure(options: WorkspaceFsEnsureOptions = {}): Promise<void> {
+  async ensure(options: WorkspaceFsEnsureOptions): Promise<void> {
     const res = await this.fetchImpl(joinUrl(this.streamsUrl, encodeStreamPath(this.stream)), {
       method: "PUT",
       headers: this.headers({ "content-type": "application/json" }),
@@ -164,7 +164,7 @@ export class WorkspaceFsClient {
         profile: {
           kind: "workspace-fs",
           version: 1,
-          gitRepo: options.gitRepoStream ? { stream: options.gitRepoStream } : undefined,
+          gitRepo: { stream: options.gitRepoStream },
           audit: options.auditStream ? { stream: options.auditStream } : undefined,
         },
       }),

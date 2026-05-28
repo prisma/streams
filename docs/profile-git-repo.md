@@ -579,4 +579,4 @@ canonical transaction state before returning.
   More granular pack partitioning and resumable clone state are future
   maintenance work.
 - `workspace-fs` checkout/read/commit paths use `git-repo` as the canonical
-  repository when configured with `gitRepo.stream`.
+  repository.

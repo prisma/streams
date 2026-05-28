@@ -41,15 +41,12 @@ agent
         -> Git objects / packs / checkpoints
 ```
 
-The current `vfs-repo` profile remains only as an MVP compatibility profile.
-Its route delegates to the `workspace-fs` server implementation. New canonical
-repository work should target `git-repo`, and new agent workspace work should
-target `workspace-fs`.
+The old MVP `vfs-repo` profile has been removed. Canonical repository work
+targets `git-repo`, and agent workspace work targets `workspace-fs`.
 
 ## Commit Semantics
 
-Workspace commits now follow this shape for `workspace-fs` profiles configured
-with `gitRepo.stream`:
+Workspace commits now follow this shape:
 
 ```text
 1. Read base Git commit/ref from git-repo.

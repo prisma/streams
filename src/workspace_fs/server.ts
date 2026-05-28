@@ -313,7 +313,7 @@ async function readBlobBytesResult(args: StreamProfileVfsRouteArgs, blobId: stri
   return Result.ok(out);
 }
 
-function gitRepoStreamForVfsProfile(args: StreamProfileVfsRouteArgs): string | null {
+function gitRepoStreamForWorkspaceProfile(args: StreamProfileVfsRouteArgs): string | null {
   const gitRepo = (args.profile as { gitRepo?: { stream?: unknown } }).gitRepo;
   return typeof gitRepo?.stream === "string" && gitRepo.stream.trim() !== "" ? gitRepo.stream.trim() : null;
 }
@@ -1471,7 +1471,7 @@ async function gitWorkspaceBaseResult(args: StreamProfileVfsRouteArgs, workspace
   gitConfig: GitRepoProfileConfig;
   baseCommitOid: string | null;
 }, VfsServerError>> {
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (!gitRepoStream || !isWorkspaceFsProfile(args)) return Result.err({ status: 404, message: "workspace-fs git backing is not enabled" });
   const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
   if (Result.isError(gitConfigRes)) return gitConfigRes;
@@ -1603,7 +1603,7 @@ async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
 
   let baseCommitId: string | null = null;
   let rootTreeId: string | null = null;
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -1675,7 +1675,7 @@ async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
 
 async function refGet(args: StreamProfileVfsRouteArgs, refSegments: string[]): Promise<Response> {
   const ref = normalizeRef(decodeURIComponent(refSegments.join("/")));
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitHeadRes = await currentGitHeadResult(args, gitRepoStream, ref);
     if (Result.isError(gitHeadRes)) return responseForError(args, gitHeadRes.error);
@@ -1698,13 +1698,13 @@ async function stat(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const pathRes = canonicalizeVfsPath(args.url.searchParams.get("path") ?? "/");
   if (Result.isError(pathRes)) return args.respond.badRequest(pathRes.error.message);
   const workspaceId = parseWorkspaceParam(args.url);
-  if (workspaceId && gitRepoStreamForVfsProfile(args) && isWorkspaceFsProfile(args)) {
+  if (workspaceId && gitRepoStreamForWorkspaceProfile(args) && isWorkspaceFsProfile(args)) {
     const statRes = await statGitBackedWorkspaceResult(args, pathRes.value, workspaceId);
     if (Result.isError(statRes)) return responseForError(args, statRes.error);
     return args.respond.json(200, { node: statRes.value });
   }
   const gitCommitId = parseCommitParam(args.url);
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitCommitId && gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -1734,7 +1734,7 @@ async function readdir(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const rawLimit = Number(args.url.searchParams.get("limit") ?? "500");
   const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(1000, Math.floor(rawLimit))) : 500;
   const workspaceId = parseWorkspaceParam(args.url);
-  if (workspaceId && gitRepoStreamForVfsProfile(args) && isWorkspaceFsProfile(args)) {
+  if (workspaceId && gitRepoStreamForWorkspaceProfile(args) && isWorkspaceFsProfile(args)) {
     const entriesRes = await readdirGitBackedWorkspaceResult(args, pathRes.value, workspaceId, args.url.searchParams.get("cursor"), limit);
     if (Result.isError(entriesRes)) return responseForError(args, entriesRes.error);
     return args.respond.json(200, {
@@ -1744,7 +1744,7 @@ async function readdir(args: StreamProfileVfsRouteArgs): Promise<Response> {
     });
   }
   const gitCommitId = parseCommitParam(args.url);
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitCommitId && gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -2107,7 +2107,7 @@ async function workspaceConflictSnapshotResult(
   if (!workspace.checkout) return Result.err({ status: 404, message: "workspace not found" });
   if (workspace.state.state !== "open") return Result.err({ status: 409, message: `workspace is ${workspace.state.state}` });
 
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (!gitRepoStream || !isWorkspaceFsProfile(args)) {
     return Result.err({ status: 400, message: "workspace rebase requires git-repo backing" });
   }
@@ -2235,7 +2235,7 @@ async function rebaseWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
       });
     }
 
-    const gitRepoStream = gitRepoStreamForVfsProfile(args);
+    const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
     if (!gitRepoStream || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace rebase requires git-repo backing");
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -2755,7 +2755,7 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
     if (!workspaceRes.value.checkout) return args.respond.notFound("workspace not found");
     if (workspaceRes.value.state.state !== "open") return args.respond.conflict(`workspace is ${workspaceRes.value.state.state}`);
 
-    const gitRepoStreamForWorkspace = gitRepoStreamForVfsProfile(args);
+    const gitRepoStreamForWorkspace = gitRepoStreamForWorkspaceProfile(args);
     if (gitRepoStreamForWorkspace && isWorkspaceFsProfile(args)) {
       const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStreamForWorkspace);
       if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -2852,7 +2852,7 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
       id: makeCommitId(commitWithoutId),
     };
     let gitCommit: VfsCanonicalGitCommit | undefined;
-    const gitRepoStream = gitRepoStreamForVfsProfile(args);
+    const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
     if (!gitRepoStream && durability.durability !== "accepted") {
       return args.respond.badRequest("published and verified durability require git-repo backing");
     }
@@ -2980,7 +2980,7 @@ async function log(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const ref = normalizeRef(args.url.searchParams.get("ref"));
   const limitRaw = Number(args.url.searchParams.get("limit") ?? "20");
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -3015,7 +3015,7 @@ async function log(args: StreamProfileVfsRouteArgs): Promise<Response> {
 }
 
 async function show(args: StreamProfileVfsRouteArgs, commitId: string): Promise<Response> {
-  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  const gitRepoStream = gitRepoStreamForWorkspaceProfile(args);
   if (gitRepoStream && isWorkspaceFsProfile(args)) {
     const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
     if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -3040,7 +3040,7 @@ async function batchStat(args: StreamProfileVfsRouteArgs): Promise<Response> {
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const body = bodyRes.value as VfsBatchStatRequest;
   if (!Array.isArray(body.paths)) return args.respond.badRequest("paths must be an array");
-  if (body.workspaceId && gitRepoStreamForVfsProfile(args) && isWorkspaceFsProfile(args)) {
+  if (body.workspaceId && gitRepoStreamForWorkspaceProfile(args) && isWorkspaceFsProfile(args)) {
     const stats = [];
     for (const rawPath of body.paths.slice(0, 1000)) {
       const pathRes = canonicalizeVfsPath(rawPath);

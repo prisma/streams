@@ -40,16 +40,17 @@ function validateWorkspaceFsProfileResult(raw: unknown, path: string): Result<Wo
     return Result.err({ message: `${path}.version must be ${WORKSPACE_FS_PROFILE_VERSION}` });
   }
   const profile = cloneWorkspaceFsProfile();
-  if (objRes.value.gitRepo !== undefined) {
-    const gitRepoRes = expectPlainObjectResult(objRes.value.gitRepo, `${path}.gitRepo`);
-    if (Result.isError(gitRepoRes)) return gitRepoRes;
-    const gitKeyCheck = rejectUnknownKeysResult(gitRepoRes.value, ["stream"], `${path}.gitRepo`);
-    if (Result.isError(gitKeyCheck)) return gitKeyCheck;
-    if (typeof gitRepoRes.value.stream !== "string" || gitRepoRes.value.stream.trim() === "") {
-      return Result.err({ message: `${path}.gitRepo.stream must be a non-empty string` });
-    }
-    profile.gitRepo = { stream: gitRepoRes.value.stream.trim() };
+  if (objRes.value.gitRepo === undefined) {
+    return Result.err({ message: `${path}.gitRepo is required` });
   }
+  const gitRepoRes = expectPlainObjectResult(objRes.value.gitRepo, `${path}.gitRepo`);
+  if (Result.isError(gitRepoRes)) return gitRepoRes;
+  const gitKeyCheck = rejectUnknownKeysResult(gitRepoRes.value, ["stream"], `${path}.gitRepo`);
+  if (Result.isError(gitKeyCheck)) return gitKeyCheck;
+  if (typeof gitRepoRes.value.stream !== "string" || gitRepoRes.value.stream.trim() === "") {
+    return Result.err({ message: `${path}.gitRepo.stream must be a non-empty string` });
+  }
+  profile.gitRepo = { stream: gitRepoRes.value.stream.trim() };
   if (objRes.value.audit !== undefined) {
     const auditRes = expectPlainObjectResult(objRes.value.audit, `${path}.audit`);
     if (Result.isError(auditRes)) return auditRes;
@@ -76,7 +77,7 @@ export const WORKSPACE_FS_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
   },
 
   readProfileResult({ row, cached }): Result<StreamProfileReadResult, { message: string }> {
-    if (!row) return Result.ok({ profile: cloneWorkspaceFsProfile(), cache: null });
+    if (!row) return Result.err({ message: "workspace-fs profile metadata is missing" });
     if (cached && cached.updatedAtMs === row.updated_at_ms) {
       return Result.ok({ profile: cloneStreamProfileSpec(cached.profile), cache: cached });
     }

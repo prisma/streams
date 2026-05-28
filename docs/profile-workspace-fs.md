@@ -36,11 +36,8 @@ import {
 ```
 
 `openWorkspaceFsRepo(...).ensure({ gitRepoStream })` installs a
-`workspace-fs` profile. It does not install `vfs-repo`.
-
-The legacy `vfs-repo` route now delegates to the workspace-fs server module for
-workspace behavior. New code should import from `src/workspace_fs`; do not add
-new workspace behavior under `src/vfs`.
+`workspace-fs` profile. `gitRepo.stream` is required; workspace-fs is always a
+derived workspace over a canonical `git-repo` stream.
 
 The profile supports these workspace behaviors:
 
@@ -51,10 +48,9 @@ The profile supports these workspace behaviors:
 - just-bash can mount the workspace filesystem at `/workspace`
 - custom `git status`, `git diff`, `git commit`, `git log`, `git show`, and
   `git checkout` commands run inside just-bash without a real `.git` directory
-- when configured with `gitRepo.stream`, checkout reads the canonical Git ref,
-  base `stat`/`readdir`/file reads resolve from Git trees and loose object
-  artifacts, and commits create a canonical Git commit through a `git-repo` ref
-  transaction
+- checkout reads the canonical Git ref, base `stat`/`readdir`/file reads
+  resolve from Git trees and loose object artifacts, and commits create a
+  canonical Git commit through a `git-repo` ref transaction
 - when configured with `audit.stream`, workspace lifecycle, draft operation,
   commit, rebase, and discard events are appended to that stream; the target
   must be an existing `evlog` stream

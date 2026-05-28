@@ -23,15 +23,12 @@ Every stream has a profile.
 - `workspace-fs` is the built-in agent workspace profile for lazy writable
   checkouts, durable draft operations, just-bash adapters, and explicit commits
   back to `git-repo`.
-- `vfs-repo` is the older Git-like virtual filesystem MVP profile. New
-  repository/workspace code should target `git-repo` and `workspace-fs`.
 - Profiles define stream semantics; schemas define payload shape.
 
 See [stream-profiles.md](./stream-profiles.md).
 See [profile-git-repo.md](./profile-git-repo.md),
-[profile-workspace-fs.md](./profile-workspace-fs.md), and
-[profile-vfs-repo.md](./profile-vfs-repo.md) for repository/workspace details
-and the just-bash demo.
+[profile-workspace-fs.md](./profile-workspace-fs.md) for repository/workspace
+details and the just-bash demo.
 
 This repository currently contains two server modes:
 

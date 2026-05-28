@@ -334,7 +334,7 @@ function permissionForGitProfileRoute(method: string, segments: string[], url: U
   return "write";
 }
 
-function permissionForVfsProfileRoute(method: string): AuthPermission {
+function permissionForWorkspaceFsProfileRoute(method: string): AuthPermission {
   return method === "GET" || method === "HEAD" ? "read" : "write";
 }
 
@@ -431,7 +431,7 @@ function parseV1StreamAccess(path: string, method: string, url: URL): { stream: 
   if (vfsSegments) {
     return {
       stream,
-      permission: vfsNamespace === "_git" ? permissionForGitProfileRoute(method, vfsSegments, url) : permissionForVfsProfileRoute(method),
+      permission: vfsNamespace === "_git" ? permissionForGitProfileRoute(method, vfsSegments, url) : permissionForWorkspaceFsProfileRoute(method),
     };
   }
   return {
