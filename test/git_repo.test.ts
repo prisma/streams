@@ -444,6 +444,7 @@ describe("git-repo profile", () => {
 
       const publishedPack = await fetchJsonApp(app, `${sourceBase}/_git/maintenance/publish-pack`, { method: "POST" });
       expect(publishedPack.status).toBe(200);
+      expect(publishedPack.body.packHash).toMatch(/^[0-9a-f]{40}$/);
       expect(publishedPack.body.packUri).toContain("/git/sha1/packs/");
       expect(publishedPack.body.idxUri).toContain("/git/sha1/packs/");
       expect(publishedPack.body.packBytes).toBeGreaterThan(0);
@@ -452,6 +453,7 @@ describe("git-repo profile", () => {
       expect(store.has(publishedPack.body.packUri)).toBe(true);
       expect(store.has(publishedPack.body.idxUri)).toBe(true);
       expect(publishedPack.body.record.preferredClonePackUris).toEqual([publishedPack.body.packUri]);
+      expect(publishedPack.body.record.preferredClonePacks[0].packHash).toBe(publishedPack.body.packHash);
       expect(publishedPack.body.record.refCheckpoint.refs["refs/heads/main"]).toBe(commit.value.oid);
 
       const localPathDenied = await fetchJsonApp(app, `${targetBase}/_git/import`, {
@@ -480,6 +482,110 @@ describe("git-repo profile", () => {
       expect(importedBlob.status).toBe(200);
       expect(await importedBlob.text()).toBe("hello import/export\n");
     } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("publishes packfile-uri packs for protocol v2 fetches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-packfile-uri-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    try {
+      const stream = "git-packfile-uri-test";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        http: { enabled: true, allowFetch: true, allowPush: false },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: true },
+      });
+
+      const blob = writeGitBlob("blob served by a published packfile-uri\n".repeat(256));
+      const tree = writeGitTreeResult([{ mode: "100644", name: "packed.txt", oid: blob.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commit = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_300,
+          timezone: "+0000",
+        },
+        message: "Packfile URI source\n",
+      });
+      expect(Result.isOk(commit)).toBe(true);
+      if (Result.isError(commit)) throw new Error(commit.error.message);
+
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commit.value);
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "packfile-uri-source",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commit.value.oid }],
+          objects: {
+            looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const publishedPack = await fetchJsonApp(app, `${base}/_git/maintenance/publish-pack`, { method: "POST" });
+      expect(publishedPack.status).toBe(200);
+      expect(publishedPack.body.packHash).toMatch(/^[0-9a-f]{40}$/);
+      expect(publishedPack.body.record.preferredClonePacks[0]).toMatchObject({
+        packUri: publishedPack.body.packUri,
+        idxUri: publishedPack.body.idxUri,
+        packHash: publishedPack.body.packHash,
+        objectCount: 3,
+      });
+      expect(publishedPack.body.record.preferredClonePacks[0].blobOids).toEqual([blob.oid]);
+
+      const advertised = await fetch(`http://127.0.0.1:${server.port}/${stream}.git/info/refs?service=git-upload-pack`, {
+        method: "GET",
+        headers: { "git-protocol": "version=2" },
+      });
+      expect(advertised.status).toBe(200);
+      expect(Buffer.from(await advertised.arrayBuffer()).toString("utf8")).toContain("packfile-uris");
+
+      const packfile = await app.fetch(new Request(`${base}/_git/packfile/${publishedPack.body.packHash}.pack`, { method: "GET" }));
+      expect(packfile.status).toBe(200);
+      expect(packfile.headers.get("content-type")).toBe("application/x-git-packed-objects");
+      expect(packfile.headers.get("x-git-pack-hash")).toBe(publishedPack.body.packHash);
+      const packBytes = Buffer.from(await packfile.arrayBuffer());
+      expect(packBytes.subarray(0, 4).toString()).toBe("PACK");
+      expect(packBytes.byteLength).toBe(publishedPack.body.packBytes);
+
+      const uploadPack = await app.fetch(new Request(`${base}/_git/smart/git-upload-pack`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-git-upload-pack-request",
+          "git-protocol": "version=2",
+        },
+        body: Buffer.concat([
+          pktLine("command=fetch\n"),
+          pktLine("agent=test\n"),
+          Buffer.from("0001"),
+          pktLine(`want ${commit.value.oid}\n`),
+          pktLine("thin-pack\n"),
+          pktLine("ofs-delta\n"),
+          pktLine("sideband-all\n"),
+          pktLine("packfile-uris http\n"),
+          pktLine("done\n"),
+          Buffer.from("0000"),
+        ]),
+      }));
+      expect(uploadPack.status).toBe(200);
+      const uploadPackBody = Buffer.from(await uploadPack.arrayBuffer()).toString("utf8");
+      expect(uploadPackBody).toContain("packfile-uris");
+      expect(uploadPackBody).toContain(publishedPack.body.packHash);
+      expect(uploadPackBody).toContain(`/_git/packfile/${publishedPack.body.packHash}.pack`);
+    } finally {
+      server.stop(true);
       app.close();
       rmSync(root, { recursive: true, force: true });
     }

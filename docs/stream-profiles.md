@@ -117,6 +117,8 @@ It means:
   `_git/smart/*` and `/{repo}.git/*` when enabled
 - upload-pack forwards Git protocol v2 negotiation and supports blob filters
   when `fetch.allowFilter=true`
+- published preferred clone packs can be advertised through Git packfile URIs
+  when `fetch.allowPackfileUris=true`
 
 See [profile-git-repo.md](./profile-git-repo.md) for the detailed contract.
 

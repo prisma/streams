@@ -117,6 +117,15 @@ export type GitRefCheckpoint = {
   createdAt: string;
 };
 
+export type GitPreferredClonePack = {
+  packUri: string;
+  idxUri: string;
+  packHash: string;
+  objectCount: number;
+  bytes: number;
+  blobOids: GitOid[];
+};
+
 export type GitMaintenancePublishedRecord = {
   type: "maintenance-published";
   repoId: string;
@@ -124,6 +133,7 @@ export type GitMaintenancePublishedRecord = {
   refCheckpointUri?: string;
   packIndexManifestUri?: string;
   preferredClonePackUris?: string[];
+  preferredClonePacks?: GitPreferredClonePack[];
   refCheckpoint?: GitRefCheckpoint;
 };
 

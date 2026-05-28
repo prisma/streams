@@ -16,6 +16,8 @@ import {
   readGitRecordsResult,
   readLooseGitObjectBodyResult,
   appendGitRecordResult,
+  getObjectStoreRangeResult,
+  headObjectStoreResult,
   putObjectStoreResult,
   writeLooseGitObjectResult,
   type GitRepoServiceArgs,
@@ -33,13 +35,16 @@ import type {
   GitObjectFormat,
   GitObjectType,
   GitOid,
+  GitPreferredClonePack,
   GitRefUpdate,
+  GitRepoRecord,
   GitRepoProfileConfig,
 } from "./types";
 
 type GitImportExportArgs = GitRepoServiceArgs & {
   config: GitRepoProfileConfig;
   gitProtocol?: string | null;
+  requestUrl?: URL;
 };
 
 type GitCliObject = {
@@ -431,14 +436,14 @@ async function materializeBareRepoResult(
   args: GitImportExportArgs,
   root: string,
   opts: { allowEmpty?: boolean } = {}
-): Promise<Result<{ gitDir: string; refs: Record<string, GitOid>; objectCount: number }, GitRepoServiceError>> {
+): Promise<Result<{ gitDir: string; refs: Record<string, GitOid>; objectCount: number; objects: Map<GitOid, ExportObject> }, GitRepoServiceError>> {
   if (args.config.objectFormat !== "sha1") return Result.err(gitError(400, "Git CLI export currently requires sha1 objectFormat"));
   const recordsRes = await readGitRecordsResult(args);
   if (Result.isError(recordsRes)) return recordsRes;
   const refs = Object.fromEntries(Object.entries(buildRefs(recordsRes.value)).filter((entry): entry is [string, GitOid] => typeof entry[1] === "string"));
   const roots = Object.values(refs);
   let objectCount = 0;
-  let objects: Map<GitOid, ExportObject> | null = null;
+  let objects = new Map<GitOid, ExportObject>();
   if (roots.length === 0) {
     if (!opts.allowEmpty) return Result.err(gitError(404, "git repository has no refs to export"));
   } else {
@@ -449,7 +454,7 @@ async function materializeBareRepoResult(
   }
   const gitDirRes = createBareRepoResult(args.config, root);
   if (Result.isError(gitDirRes)) return gitDirRes;
-  for (const object of objects?.values() ?? []) {
+  for (const object of objects.values()) {
     writeLooseObjectToGitDir(gitDirRes.value, {
       ...object,
       size: object.body.byteLength,
@@ -463,7 +468,7 @@ async function materializeBareRepoResult(
   const headRef = normalizeGitRef(args.config.defaultBranch);
   const headRes = runGitResult(args.config, ["--git-dir", gitDirRes.value, "symbolic-ref", "HEAD", headRef]);
   if (Result.isError(headRes)) return headRes;
-  return Result.ok({ gitDir: gitDirRes.value, refs, objectCount });
+  return Result.ok({ gitDir: gitDirRes.value, refs, objectCount, objects });
 }
 
 export async function exportGitBundleResult(args: GitImportExportArgs): Promise<Result<Uint8Array, GitRepoServiceError>> {
@@ -502,9 +507,11 @@ export async function exportGitPackResult(args: GitImportExportArgs): Promise<Re
 export type GitPackMaintenanceResponse = {
   packUri: string;
   idxUri: string;
+  packHash: string;
   packBytes: number;
   idxBytes: number;
   objectCount: number;
+  preferredClonePacks: GitPreferredClonePack[];
   record: GitMaintenancePublishedRecord;
 };
 
@@ -577,10 +584,50 @@ function configureUploadPackRepoResult(config: GitRepoProfileConfig, gitDir: str
     ["uploadpack.allowReachableSHA1InWant", "true"],
     ["uploadpack.allowTipSHA1InWant", "true"],
     ["uploadpack.allowRefInWant", "true"],
+    ["uploadpack.allowSidebandAll", "true"],
   ];
   for (const [key, value] of entries) {
     const configRes = runGitResult(config, ["--git-dir", gitDir, "config", key, value]);
     if (Result.isError(configRes)) return configRes;
+  }
+  return Result.ok(undefined);
+}
+
+function latestPreferredClonePacks(records: GitRepoRecord[]): GitPreferredClonePack[] {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i]!;
+    if (record.type === "maintenance-published" && record.preferredClonePacks && record.preferredClonePacks.length > 0) {
+      return record.preferredClonePacks;
+    }
+  }
+  return [];
+}
+
+function preferredPackHttpUrl(args: GitImportExportArgs, pack: GitPreferredClonePack): string | null {
+  if (!args.requestUrl) return null;
+  const path = `/v1/stream/${encodeURIComponent(args.stream)}/_git/packfile/${pack.packHash}.pack`;
+  return new URL(path, args.requestUrl).toString();
+}
+
+async function configurePackfileUriRepoResult(args: GitImportExportArgs, gitDir: string): Promise<Result<void, GitRepoServiceError>> {
+  if (args.config.fetch?.allowPackfileUris !== true) return Result.ok(undefined);
+  const recordsRes = await readGitRecordsResult(args);
+  if (Result.isError(recordsRes)) return recordsRes;
+  const packs = latestPreferredClonePacks(recordsRes.value);
+  for (const pack of packs) {
+    const uri = preferredPackHttpUrl(args, pack);
+    if (!uri) continue;
+    for (const blobOid of pack.blobOids) {
+      const configRes = runGitResult(args.config, [
+        "--git-dir",
+        gitDir,
+        "config",
+        "--add",
+        "uploadpack.blobPackfileUri",
+        `${blobOid} ${pack.packHash} ${uri}`,
+      ]);
+      if (Result.isError(configRes)) return configRes;
+    }
   }
   return Result.ok(undefined);
 }
@@ -649,7 +696,9 @@ export async function publishGitPackArtifactsResult(
 
     const packBytes = new Uint8Array(readFileSync(packPath));
     const idxBytes = new Uint8Array(readFileSync(idxPath));
-    const packId = bytesHashHex(packBytes).slice(0, 32);
+    const packHash = TEXT_DECODER.decode(indexRes.value).trim();
+    if (!/^[0-9a-f]{40}$/.test(packHash)) return Result.err(gitError(500, "git index-pack did not return a pack hash"));
+    const packId = packHash;
     const prefix = gitObjectArtifactPrefix(args.stream, args.config.objectFormat);
     const packUri = `${prefix}/${gitPackPath(packId)}`;
     const idxUri = `${prefix}/${gitPackIndexPath(packId)}`;
@@ -660,6 +709,17 @@ export async function publishGitPackArtifactsResult(
 
     const recordsRes = await readGitRecordsResult(args);
     if (Result.isError(recordsRes)) return recordsRes;
+    const preferredClonePacks: GitPreferredClonePack[] = [{
+      packUri,
+      idxUri,
+      packHash,
+      objectCount: materializedRes.value.objectCount,
+      bytes: packBytes.byteLength,
+      blobOids: Array.from(materializedRes.value.objects.values())
+        .filter((object) => object.type === "blob")
+        .map((object) => object.oid)
+        .sort(),
+    }];
     const record: GitMaintenancePublishedRecord = {
       type: "maintenance-published",
       repoId: args.stream,
@@ -673,15 +733,18 @@ export async function publishGitPackArtifactsResult(
       }),
       packIndexManifestUri: idxUri,
       preferredClonePackUris: [packUri],
+      preferredClonePacks,
     };
     const appendRes = await appendGitRecordResult(args, record, "git-maintenance:pack");
     if (Result.isError(appendRes)) return appendRes;
     return Result.ok({
       packUri,
       idxUri,
+      packHash,
       packBytes: packBytes.byteLength,
       idxBytes: idxBytes.byteLength,
       objectCount: materializedRes.value.objectCount,
+      preferredClonePacks,
       record,
     });
   } finally {
@@ -719,6 +782,8 @@ export async function gitUploadPackAdvertiseRefsResult(
     if (Result.isError(materializedRes)) return materializedRes;
     const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
+    const packfileUriConfigRes = await configurePackfileUriRepoResult(args, materializedRes.value.gitDir);
+    if (Result.isError(packfileUriConfigRes)) return packfileUriConfigRes;
     const refsRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
       maxBuffer: maxImportExportBytes(args.config),
       env: gitProtocolEnv(args.gitProtocol),
@@ -747,6 +812,8 @@ export async function gitUploadPackRpcResult(
     if (Result.isError(materializedRes)) return materializedRes;
     const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
+    const packfileUriConfigRes = await configurePackfileUriRepoResult(args, materializedRes.value.gitDir);
+    if (Result.isError(packfileUriConfigRes)) return packfileUriConfigRes;
     const packRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", materializedRes.value.gitDir], {
       input: requestBody,
       maxBuffer: maxImportExportBytes(args.config),
@@ -760,6 +827,29 @@ export async function gitUploadPackRpcResult(
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+export async function readGitPackfileArtifactResult(
+  args: GitImportExportArgs,
+  packHash: string,
+  range?: { start: number; end?: number } | null
+): Promise<Result<{ pack: GitPreferredClonePack; bytes: Uint8Array; size: number }, GitRepoServiceError>> {
+  if (args.config.fetch?.allowPackfileUris !== true) return Result.err(gitError(404, "git packfile-uri downloads are disabled for this git-repo profile"));
+  if (!/^[0-9a-f]{40}$/.test(packHash)) return Result.err(gitError(400, "invalid git pack hash"));
+  const recordsRes = await readGitRecordsResult(args);
+  if (Result.isError(recordsRes)) return recordsRes;
+  const pack = latestPreferredClonePacks(recordsRes.value).find((candidate) => candidate.packHash === packHash);
+  if (!pack) return Result.err(gitError(404, "git packfile artifact not found"));
+  const headRes = await headObjectStoreResult(args.objectStore, pack.packUri);
+  if (Result.isError(headRes)) return headRes;
+  if (!headRes.value) return Result.err(gitError(404, "git packfile artifact missing"));
+  const size = headRes.value.size;
+  const bytesRes = range
+    ? await getObjectStoreRangeResult(args.objectStore, pack.packUri, range.start, range.end ?? size - 1)
+    : await getObjectStoreRangeResult(args.objectStore, pack.packUri, 0, Math.max(0, size - 1));
+  if (Result.isError(bytesRes)) return bytesRes;
+  if (!bytesRes.value) return Result.err(gitError(404, "git packfile artifact missing"));
+  return Result.ok({ pack, bytes: bytesRes.value, size });
 }
 
 export async function gitReceivePackAdvertiseRefsResult(

@@ -23,6 +23,7 @@ import {
   gitUploadPackRpcResult,
   importGitRepoResult,
   publishGitPackArtifactsResult,
+  readGitPackfileArtifactResult,
   verifyGitReachabilityResult,
 } from "./import_export";
 import { buildRefs, normalizeGitRef, validateRefTransactionRequestResult } from "./refs";
@@ -584,6 +585,27 @@ async function verifyReachability(args: StreamProfileVfsRouteArgs): Promise<Resp
   return args.respond.json(200, verifyRes.value);
 }
 
+async function readPackfile(args: StreamProfileVfsRouteArgs, packHash: string): Promise<Response> {
+  const packRes = await readGitPackfileArtifactResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    config: profileConfig(args),
+  }, decodeURIComponent(packHash).replace(/\.pack$/, ""));
+  if (Result.isError(packRes)) return responseForError(args, packRes.error);
+  const body = packRes.value.bytes.buffer.slice(packRes.value.bytes.byteOffset, packRes.value.bytes.byteOffset + packRes.value.bytes.byteLength) as ArrayBuffer;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "application/x-git-packed-objects",
+      "content-length": String(packRes.value.bytes.byteLength),
+      "cache-control": "immutable, max-age=31536000",
+      "x-git-pack-hash": packRes.value.pack.packHash,
+    },
+  });
+}
+
 function binaryResponse(value: { contentType: string; body: Uint8Array }): Response {
   const body = value.body.buffer.slice(value.body.byteOffset, value.body.byteOffset + value.body.byteLength) as ArrayBuffer;
   return new Response(body, {
@@ -605,6 +627,7 @@ async function smartInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response>
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
     gitProtocol: args.req.headers.get("git-protocol"),
+    requestUrl: args.url,
   };
   const refsRes = service === "git-upload-pack"
     ? await gitUploadPackAdvertiseRefsResult(requestArgs)
@@ -624,6 +647,7 @@ async function uploadPackRpc(args: StreamProfileVfsRouteArgs): Promise<Response>
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
     gitProtocol: args.req.headers.get("git-protocol"),
+    requestUrl: args.url,
   }, requestBody);
   if (Result.isError(rpcRes)) return responseForError(args, rpcRes.error);
   return binaryResponse(rpcRes.value);
@@ -659,6 +683,7 @@ export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promi
   if (args.req.method === "POST" && first === "import") return importRepo(args);
   if (args.req.method === "GET" && first === "export.bundle") return exportBundle(args);
   if (args.req.method === "GET" && first === "export.pack") return exportPack(args);
+  if (args.req.method === "GET" && first === "packfile" && second) return readPackfile(args, second);
   if (args.req.method === "POST" && first === "objects") return writeLooseObject(args);
   if (args.req.method === "GET" && first === "object" && second) return readLooseObject(args, second);
   if (args.req.method === "POST" && first === "transactions" && second === "ref") return refTransaction(args);

@@ -13,7 +13,9 @@ export and bundle/pack/local-bare-repo import are implemented as profile
 endpoints, pack/idx artifact maintenance publication, and smart HTTP
 upload-pack/receive-pack compatibility are implemented. Upload-pack forwards
 Git protocol v2 negotiation and supports blob filters when `fetch.allowFilter`
-is enabled.
+is enabled. When `fetch.allowPackfileUris` is enabled and a pack has been
+published, upload-pack advertises Git packfile URIs backed by profile-owned
+pack artifacts.
 
 Install it on an empty JSON stream:
 
@@ -116,6 +118,14 @@ type GitRepoRecord =
       refCheckpointUri?: string;
       packIndexManifestUri?: string;
       preferredClonePackUris?: string[];
+      preferredClonePacks?: Array<{
+        packUri: string;
+        idxUri: string;
+        packHash: string;
+        objectCount: number;
+        bytes: number;
+        blobOids: string[];
+      }>;
     }
   | {
       type: "repo-deleted";
@@ -177,6 +187,7 @@ GET  /v1/stream/{repo}/_git/export.bundle
 GET  /v1/stream/{repo}/_git/export.pack
 POST /v1/stream/{repo}/_git/objects
 GET  /v1/stream/{repo}/_git/object/{oid}
+GET  /v1/stream/{repo}/_git/packfile/{packHash}.pack
 POST /v1/stream/{repo}/_git/transactions/ref
 GET  /v1/stream/{repo}/_git/transactions/{txnId}
 POST /v1/stream/{repo}/_git/transactions/{txnId}/wait-published
@@ -270,7 +281,13 @@ request finishes.
 set into a Git pack and idx pair, writes both immutable artifacts to the
 repo-scoped Git object-store prefix, and appends a `maintenance-published`
 record containing a ref checkpoint, `packIndexManifestUri`, and
-`preferredClonePackUris`.
+`preferredClonePackUris`. The record also includes `preferredClonePacks`, which
+captures the Git pack hash, pack/idx artifact URIs, object count, byte size, and
+the blob OIDs that can be replaced by a packfile URI during fetch.
+
+`GET /_git/packfile/{packHash}.pack` serves a published preferred clone pack
+from the object store when `fetch.allowPackfileUris=true`. The endpoint is used
+as the HTTP URI advertised to Git clients that opt into packfile URIs.
 
 `POST /_git/maintenance/verify-reachability` walks current refs through commit,
 tree, tag, and blob objects and returns `verified` only when all reachable
@@ -299,6 +316,15 @@ requests containing a filter line are rejected before invoking Git. If
 `fetch.allowDepth=false`, shallow fetch requests containing deepen commands are
 rejected before invoking Git.
 
+If `fetch.allowPackfileUris=true`, upload-pack also configures Git's
+experimental `uploadpack.blobPackfileUri` entries from the latest published
+preferred clone pack. Protocol v2 clients that opt in with
+`fetch.uriprotocols=http` can receive a `packfile-uris` section that points at
+`/_git/packfile/{packHash}.pack`. Git still sends the normal packfile section;
+clients download and index both before checking connectivity. This follows
+Git's packfile URI protocol model while keeping the immutable pack bytes owned
+by the profile object-store namespace.
+
 When `http.allowPush=true`, the same profile also exposes receive-pack:
 
 ```text
@@ -319,7 +345,6 @@ publish the pushed refs.
 
 The top-level route maps `{repo}` directly to the stream name, so streams
 containing slashes can be addressed with raw slashes or percent encoding.
-Packfile-uri support is not implemented yet.
 
 Import accepts:
 
@@ -426,8 +451,13 @@ The older `vfs-repo` compatibility profile can also mirror commits into
   still minimal.
 - Upload-pack and receive-pack smart HTTP are implemented under `_git/smart/*`
   and `/{repo}.git/*` when enabled in profile config. Upload-pack supports
-  protocol v2 negotiation and blob filters when `fetch.allowFilter=true`.
-  Packfile-uri support is not implemented.
+  protocol v2 negotiation, blob filters when `fetch.allowFilter=true`, and
+  packfile URI advertisement/download when `fetch.allowPackfileUris=true` and a
+  preferred clone pack has been published.
+- Packfile URI support currently uses Git's blob-level
+  `uploadpack.blobPackfileUri` mechanism against the latest published pack.
+  More granular pack partitioning and resumable clone state are future
+  maintenance work.
 - `workspace-fs` checkout/read/commit paths can use `git-repo` as the canonical
   repository. The older `vfs-repo` profile still retains compatibility VFS
   trees and refs.

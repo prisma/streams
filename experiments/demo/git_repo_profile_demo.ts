@@ -65,6 +65,11 @@ async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
   }
 }
 
+function pktLine(text: string): Buffer {
+  const body = Buffer.from(text);
+  return Buffer.concat([Buffer.from((body.byteLength + 4).toString(16).padStart(4, "0")), body]);
+}
+
 const root = mkdtempSync(join(tmpdir(), "streams-git-repo-demo-"));
 const { app, store } = makeDemoApp(root);
 const server = Bun.serve({ port: 0, fetch: app.fetch });
@@ -87,7 +92,7 @@ try {
         objectFormat: "sha1",
         defaultBranch: "main",
         http: { enabled: true, allowFetch: true, allowPush: true },
-        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: false },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: true },
       },
     }),
   });
@@ -199,6 +204,30 @@ try {
   const partialFilter = runGitOutput(["git", "-C", partialClone, "config", "--get", "remote.origin.partialclonefilter"]);
   const partialMissing = runGitOutput(["git", "-C", partialClone, "rev-list", "--objects", "--missing=print", "HEAD"]);
 
+  const publishedPack = await fetchJson(app, `${base}/_git/maintenance/publish-pack`, { method: "POST" });
+  const publishedPackResponse = await app.fetch(new Request(`${base}/_git/packfile/${publishedPack.packHash}.pack`, { method: "GET" }));
+  const publishedPackBytes = Buffer.from(await publishedPackResponse.arrayBuffer());
+  const packfileUriRpc = await app.fetch(new Request(`${base}/_git/smart/git-upload-pack`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-git-upload-pack-request",
+      "git-protocol": "version=2",
+    },
+    body: Buffer.concat([
+      pktLine("command=fetch\n"),
+      pktLine("agent=demo\n"),
+      Buffer.from("0001"),
+      pktLine(`want ${commitRes.value.oid}\n`),
+      pktLine("thin-pack\n"),
+      pktLine("ofs-delta\n"),
+      pktLine("sideband-all\n"),
+      pktLine("packfile-uris http\n"),
+      pktLine("done\n"),
+      Buffer.from("0000"),
+    ]),
+  }));
+  const packfileUriBody = Buffer.from(await packfileUriRpc.arrayBuffer()).toString("utf8");
+
   console.log("git-repo profile demo");
   console.log(`stream=${stream}`);
   console.log(`blob=${blob.oid}`);
@@ -221,6 +250,9 @@ try {
   console.log(`smart HTTP pushed file=${JSON.stringify(pushedBlob)}`);
   console.log(`partial clone filter=${partialFilter}`);
   console.log(`partial clone promised README=${partialMissing.includes(`?${blob.oid}`)}`);
+  console.log(`published packfile-uri hash=${publishedPack.packHash}`);
+  console.log(`packfile-uri pack starts=${publishedPackBytes.subarray(0, 4).toString()} bytes=${publishedPackBytes.byteLength}`);
+  console.log(`upload-pack packfile-uri advertised=${packfileUriBody.includes(publishedPack.packHash)}`);
   console.log(`mockR2 puts=${store.stats().puts} getBytes=${store.stats().getBytes}`);
 } finally {
   server.stop(true);
