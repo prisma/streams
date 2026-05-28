@@ -1807,6 +1807,31 @@ function parseRange(value: string | null, size: number): { start: number; end: n
   return { start, end: Math.min(end, size - 1) };
 }
 
+async function auditBlobReadResult(
+  args: StreamProfileVfsRouteArgs,
+  blobId: string,
+  range: { start: number; end: number } | null,
+  size: number
+): Promise<Result<void, VfsServerError>> {
+  const workspaceId = args.url.searchParams.get("workspaceId");
+  const rawPath = args.url.searchParams.get("path");
+  if (!workspaceId && !rawPath) return Result.ok(undefined);
+  if (!workspaceId || !rawPath) return Result.err({ status: 400, message: "workspaceId and path are required for audited blob reads" });
+  const pathRes = canonicalizeVfsPath(rawPath);
+  if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
+  return appendWorkspaceAuditEventResult(args, {
+    type: "workspace_file_read",
+    workspaceId,
+    status: "succeeded",
+    context: {
+      path: pathRes.value,
+      blobId,
+      size,
+      range: range ? { start: range.start, end: range.end } : null,
+    },
+  });
+}
+
 async function blob(args: StreamProfileVfsRouteArgs, blobId: string): Promise<Response> {
   const decodedBlobId = decodeURIComponent(blobId);
   const gitBlob = decodeGitBlobId(decodedBlobId);
@@ -1836,6 +1861,8 @@ async function blob(args: StreamProfileVfsRouteArgs, blobId: string): Promise<Re
       "x-git-blob-oid": gitBlob.oid,
     };
     if (range) headers["content-range"] = `bytes ${range.start}-${range.end}/${headerRes.value.size}`;
+    const auditRes = await auditBlobReadResult(args, decodedBlobId, range, headerRes.value.size);
+    if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
     const body = bytesRes.value.body.buffer.slice(bytesRes.value.body.byteOffset, bytesRes.value.body.byteOffset + bytesRes.value.body.byteLength) as ArrayBuffer;
     return new Response(body, { status: range ? 206 : 200, headers });
   }
@@ -1849,6 +1876,8 @@ async function blob(args: StreamProfileVfsRouteArgs, blobId: string): Promise<Re
     "content-length": String(bytes.byteLength),
   };
   if (range) headers["content-range"] = `bytes ${range.start}-${range.end}/${bytesRes.value.byteLength}`;
+  const auditRes = await auditBlobReadResult(args, decodedBlobId, range, bytesRes.value.byteLength);
+  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
   const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   return new Response(body, { status: range ? 206 : 200, headers });
 }

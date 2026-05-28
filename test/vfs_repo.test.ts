@@ -411,6 +411,7 @@ describe("vfs-repo profile", () => {
 
       const workspace = await repo.checkout({ ref: "main", workspaceId: "audit-agent" });
       await workspace.writeFile("/README.md", "audited\n");
+      expect(await workspace.readFile("/README.md")).toBe("audited\n");
       const commit = await workspace.commit({ message: "Audited commit", author: { id: "agent" } });
       expect(commit.newCommitId).toMatch(/^[0-9a-f]{40}$/);
 
@@ -423,6 +424,7 @@ describe("vfs-repo profile", () => {
       expect(events.map((event) => event.message)).toEqual([
         "workspace_checked_out",
         "workspace_ops_appended",
+        "workspace_file_read",
         "workspace_commit_started",
         "workspace_commit_succeeded",
         "workspace_checked_out",
@@ -435,6 +437,13 @@ describe("vfs-repo profile", () => {
         workspaceId: "audit-agent",
         event: "workspace_ops_appended",
         changedPaths: ["/README.md"],
+      });
+      const readEvent = events.find((event) => event.message === "workspace_file_read");
+      expect(readEvent?.context).toMatchObject({
+        workspaceStream,
+        workspaceId: "audit-agent",
+        event: "workspace_file_read",
+        path: "/README.md",
       });
       const commitEvent = events.find((event) => event.message === "workspace_commit_succeeded");
       expect(commitEvent?.context).toMatchObject({

@@ -154,6 +154,7 @@ workspace request fails instead of silently losing the event.
 Current event names:
 
 - `workspace_checked_out`
+- `workspace_file_read`
 - `workspace_ops_appended`
 - `workspace_commit_started`
 - `workspace_commit_succeeded`

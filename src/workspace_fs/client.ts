@@ -213,8 +213,12 @@ export class WorkspaceFsClient {
     });
   }
 
-  async readBlob(blobId: string, opts: { range?: string } = {}): Promise<Uint8Array> {
-    return this.requestBytes(`/_vfs/blob/${encodeURIComponent(blobId)}`, { method: "GET" }, { range: opts.range });
+  async readBlob(blobId: string, opts: { range?: string; workspaceId?: string; path?: string } = {}): Promise<Uint8Array> {
+    return this.requestBytes(`/_vfs/blob/${encodeURIComponent(blobId)}`, { method: "GET" }, {
+      range: opts.range,
+      workspaceId: opts.workspaceId,
+      path: opts.path,
+    });
   }
 
   async log(ref: string = "main", limit = 20): Promise<VfsCommit[]> {
@@ -339,7 +343,7 @@ export class WorkspaceFsWorkspace {
     if (node.type !== "file" || !node.blobId) {
       throw new WorkspaceFsClientError(`${path} is not a file`, 400);
     }
-    return this.repo.readBlob(node.blobId);
+    return this.repo.readBlob(node.blobId, { workspaceId: this.workspaceId, path });
   }
 
   async readFile(path: string, encoding: BufferEncoding = "utf8"): Promise<string> {
