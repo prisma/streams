@@ -39,6 +39,7 @@ function shortId(id: string | null | undefined): string {
 function formatCommit(commit: VfsCommit): string {
   const lines = [
     `commit ${commit.id}`,
+    ...(commit.git ? [`Git-Commit: ${commit.git.newOid}`] : []),
     `Author: ${commit.author.name ? `${commit.author.name} <${commit.author.id}>` : commit.author.id}`,
     `Date:   ${commit.createdAt}`,
     "",
@@ -95,7 +96,8 @@ export function createVfsGitCommands(options: VfsGitCommandOptions): CustomComma
           message,
           author: options.author,
         });
-        return ok(`[${workspace.ref.replace(/^refs\/heads\//, "")} ${shortId(res.newCommitId)}] ${message}\n`);
+        const gitSuffix = res.git ? ` git:${shortId(res.git.newOid)}` : "";
+        return ok(`[${workspace.ref.replace(/^refs\/heads\//, "")} ${shortId(res.newCommitId)}${gitSuffix}] ${message}\n`);
       }
 
       if (subcommand === "log") {

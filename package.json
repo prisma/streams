@@ -59,10 +59,12 @@
     "test:conformance:local": "vitest run -c vitest.conformance.local.config.ts",
     "bench:synth": "bun run experiments/bench/synth.ts",
     "bench:vfs-commit-stress": "bun run experiments/bench/vfs_commit_stress.ts",
+    "vfs:migrate-to-git-repo": "bun run scripts/vfs_migrate_to_git_repo.ts",
     "demo:ingest": "bun run experiments/demo/wal_demo_ingest.ts",
     "demo:subscribe": "bun run experiments/demo/wal_demo_subscribe.ts",
     "demo:live-fields": "bun run experiments/demo/live_fields_app.ts",
     "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts",
+    "demo:git-repo": "bun run experiments/demo/git_repo_profile_demo.ts",
     "demo:vfs-just-bash": "bun run experiments/demo/vfs_just_bash_demo.ts",
     "demo:compute-verify": "bun run experiments/demo/compute/verify.ts"
   },

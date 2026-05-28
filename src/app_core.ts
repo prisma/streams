@@ -1199,6 +1199,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     rows: AppendRow[];
     contentType: string | null;
     close: boolean;
+    expectedNextOffset?: bigint | null;
     streamSeq?: string | null;
     producer?: ProducerInfo | null;
   }) =>
@@ -1207,6 +1208,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       baseAppendMs: args.baseAppendMs,
       rows: args.rows,
       contentType: args.contentType,
+      expectedNextOffset: args.expectedNextOffset,
       streamSeq: args.streamSeq,
       producer: args.producer,
       close: args.close,
@@ -1269,6 +1271,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     stream: string;
     records: StreamProfileAppendJsonRecord[];
     ttlSeconds?: number | null;
+    expectedNextOffset?: bigint | null;
   }) => {
     const ensureRes = ensureJsonStream({ stream: args.stream, ttlSeconds: args.ttlSeconds });
     if (Result.isError(ensureRes)) {
@@ -1285,10 +1288,17 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       rows,
       contentType: "application/json",
       close: false,
+      expectedNextOffset: args.expectedNextOffset,
     });
     if (Result.isError(appendRes)) {
       const err = appendRes.error;
       if (err.kind === "overloaded") return Result.err({ kind: "overloaded" as const, message: "ingest queue full" });
+      if (err.kind === "offset_mismatch") {
+        return Result.err({
+          kind: "offset_mismatch" as const,
+          message: `expected next offset ${err.expectedNext}, got ${err.received}`,
+        });
+      }
       if (err.kind === "not_found" || err.kind === "gone" || err.kind === "content_type_mismatch" || err.kind === "closed") {
         return Result.err({ kind: err.kind, message: err.kind });
       }
@@ -1742,6 +1752,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isIndexStatus = false;
         let isRoutingKeys = false;
         let vfsSegments: string[] | null = null;
+        let vfsNamespace: "_vfs" | "_git" | null = null;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
@@ -1766,8 +1777,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           isRoutingKeys = true;
           segments.pop();
         } else {
-          const vfsIndex = segments.lastIndexOf("_vfs");
+          const vfsIndex = Math.max(segments.lastIndexOf("_vfs"), segments.lastIndexOf("_git"));
           if (vfsIndex >= 0) {
+            vfsNamespace = segments[vfsIndex] === "_git" ? "_git" : "_vfs";
             vfsSegments = segments.slice(vfsIndex + 1);
             segments.splice(vfsIndex);
           }
@@ -1905,8 +1917,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           const profileRes = profiles.getProfileResult(stream, srow);
           if (Result.isError(profileRes)) return internalError("invalid stream profile");
           const vfsCapability = resolveVfsCapability(profileRes.value);
-          if (!vfsCapability) return notFound("vfs not enabled");
+          if (!vfsCapability) return notFound("profile route not enabled");
           return vfsCapability.handleRoute({
+            namespace: vfsNamespace ?? "_vfs",
             segments: vfsSegments,
             req,
             url,
@@ -1915,6 +1928,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             profile: profileRes.value,
             db,
             reader,
+            objectStore: store,
             ensureJsonStream,
             appendJsonRecords,
             respond: { json, badRequest, internalError, notFound, conflict },

@@ -1,0 +1,93 @@
+# `workspace-fs` Profile Direction
+
+Status: compatibility layer
+
+`workspace-fs` is the agent workspace layer that is being split out of the
+original `vfs-repo` MVP. It is responsible for lazy writable checkouts, durable
+draft operations, just-bash integration, and explicit commits back to a
+canonical repository.
+
+The current implementation provides an installable `workspace-fs` profile kind
+that shares the compatibility `/_vfs/*` route implementation in `src/vfs/`.
+The older `vfs-repo` profile remains readable for MVP data. The public
+TypeScript surface also exports workspace-facing aliases such as:
+
+```ts
+import {
+  openWorkspaceFsRepo,
+  PrismaStreamsWorkspaceFs,
+  createWorkspaceGitCommands,
+} from "../src/vfs";
+```
+
+The compatibility profile keeps these proven behaviors:
+
+- checkout creates a durable workspace stream
+- file operations append workspace draft records
+- reads resolve overlay changes before base content
+- commit checks an expected head
+- just-bash can mount the workspace filesystem at `/workspace`
+- custom `git status`, `git diff`, `git commit`, `git log`, `git show`, and
+  `git checkout` commands run inside just-bash without a real `.git` directory
+- when configured with `gitRepo.stream`, checkout reads the canonical Git ref,
+  base `stat`/`readdir`/file reads resolve from Git trees and loose object
+  artifacts, and commits create a canonical Git commit through a `git-repo` ref
+  transaction
+
+## Target Responsibilities
+
+`workspace-fs` should own:
+
+- workspace stream lifecycle and TTL
+- workspace operation log
+- compacted overlay indexes for large workspaces
+- path-local `stat`, `readdir`, and file resolution
+- just-bash adapter
+- agent-facing Git-like commands
+
+`workspace-fs` should not own canonical refs, Git object identity, packfiles, or
+Git import/export. Those belong to [profile-git-repo.md](./profile-git-repo.md).
+
+## Target Commit Flow
+
+```text
+workspace checkout
+  -> durable workspace ops
+  -> build Git blobs/trees/commit
+  -> git-repo ref transaction
+  -> workspace committed marker
+```
+
+The `workspace-fs` and compatibility `vfs-repo` profiles can be configured
+with `gitRepo.stream`.
+
+For `workspace-fs`, the canonical branch head is read from `git-repo` during
+checkout. Base metadata and file reads are path-local over Git commit/tree/blob
+objects, while workspace draft operations are overlaid from the workspace stream.
+The hot path does not recursively expand the full repository tree.
+
+Commit reads the current Git head, compares it with the workspace expected head,
+builds only the affected Git tree path objects plus changed blobs and the new
+commit object, then submits a `git-repo` ref transaction. A workspace committed
+marker is appended only after the canonical transaction succeeds.
+
+For the older `vfs-repo` compatibility profile, commits can also mirror into a
+configured `git-repo`, but the compatibility VFS ref records and tree pages
+remain for existing MVP data.
+
+## Overlay Index Endpoints
+
+Workspace streams expose a compact overlay view for agents and indexers:
+
+```text
+GET  /v1/stream/{workspace}/_vfs/workspace/{id}/index?path=/src
+GET  /v1/stream/{workspace}/_vfs/workspace/{id}/changes?prefix=/src
+POST /v1/stream/{workspace}/_vfs/workspace/{id}/compact
+```
+
+`index` returns the current latest operation by path, child names by directory,
+deleted paths, and a generation equal to the indexed op count. `changes` returns
+changed paths under a prefix. `compact` appends a `workspace-overlay-index`
+record to the workspace stream and returns the same snapshot, so large workspace
+readers can use a profile-owned compaction point instead of deriving structure
+from raw ops themselves.

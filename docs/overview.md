@@ -17,13 +17,19 @@ Every stream has a profile.
   default search/rollups, and object-store-native metrics companions.
 - `state-protocol` is the built-in live/touch profile for JSON State Protocol
   streams.
-- `vfs-repo` is the built-in Git-like virtual filesystem profile for durable
-  agent workspaces, lazy blob reads, CAS ref commits, and just-bash adapters.
+- `git-repo` is the built-in canonical Git repository profile for Git object
+  identity, path-local reads, import/export, pack maintenance publication, ref
+  transactions, and repository maintenance checkpoints.
+- `vfs-repo` is the compatibility Git-like virtual filesystem MVP profile for
+  durable agent workspaces, lazy blob reads, CAS ref commits, and just-bash
+  adapters. It is being split into `git-repo` plus a workspace-fs layer.
 - Profiles define stream semantics; schemas define payload shape.
 
 See [stream-profiles.md](./stream-profiles.md).
-See [profile-vfs-repo.md](./profile-vfs-repo.md) for the VFS profile and
-just-bash demo.
+See [profile-git-repo.md](./profile-git-repo.md),
+[profile-workspace-fs.md](./profile-workspace-fs.md), and
+[profile-vfs-repo.md](./profile-vfs-repo.md) for repository/workspace details
+and the just-bash demo.
 
 This repository currently contains two server modes:
 

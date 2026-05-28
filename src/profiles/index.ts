@@ -26,6 +26,8 @@ import {
 } from "./profile";
 import { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 import { VFS_REPO_STREAM_PROFILE_DEFINITION } from "./vfsRepo";
+import { GIT_REPO_STREAM_PROFILE_DEFINITION } from "./gitRepo";
+import { WORKSPACE_FS_STREAM_PROFILE_DEFINITION } from "./workspaceFs";
 
 export * from "./profile";
 export { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
@@ -33,6 +35,8 @@ export { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
 export { METRICS_STREAM_PROFILE_DEFINITION } from "./metrics";
 export { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 export { VFS_REPO_STREAM_PROFILE_DEFINITION } from "./vfsRepo";
+export { GIT_REPO_STREAM_PROFILE_DEFINITION } from "./gitRepo";
+export { WORKSPACE_FS_STREAM_PROFILE_DEFINITION } from "./workspaceFs";
 
 const STREAM_PROFILE_DEFINITIONS: Record<string, StreamProfileDefinition> = {
   [EVLOG_STREAM_PROFILE_DEFINITION.kind]: EVLOG_STREAM_PROFILE_DEFINITION,
@@ -40,6 +44,8 @@ const STREAM_PROFILE_DEFINITIONS: Record<string, StreamProfileDefinition> = {
   [METRICS_STREAM_PROFILE_DEFINITION.kind]: METRICS_STREAM_PROFILE_DEFINITION,
   [STATE_PROTOCOL_STREAM_PROFILE_DEFINITION.kind]: STATE_PROTOCOL_STREAM_PROFILE_DEFINITION,
   [VFS_REPO_STREAM_PROFILE_DEFINITION.kind]: VFS_REPO_STREAM_PROFILE_DEFINITION,
+  [GIT_REPO_STREAM_PROFILE_DEFINITION.kind]: GIT_REPO_STREAM_PROFILE_DEFINITION,
+  [WORKSPACE_FS_STREAM_PROFILE_DEFINITION.kind]: WORKSPACE_FS_STREAM_PROFILE_DEFINITION,
 };
 // New built-in profiles are wired here. Core runtime paths must resolve the
 // definition and dispatch through its hooks rather than branching on profile

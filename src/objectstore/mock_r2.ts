@@ -50,6 +50,7 @@ export class MockR2Store implements ObjectStore {
   private headCount = 0;
   private listCount = 0;
   private putBytes = 0;
+  private getBytes = 0;
   private memBytes = 0;
 
   constructor(opts: MockR2Options | MockR2Faults = {}) {
@@ -200,9 +201,12 @@ export class MockR2Store implements ObjectStore {
 
     if (this.faults.partialGetEvery && this.getCount % this.faults.partialGetEvery === 0) {
       const half = Math.max(0, Math.floor(out.byteLength / 2));
-      return out.slice(0, half);
+      const partial = out.slice(0, half);
+      this.getBytes += partial.byteLength;
+      return partial;
     }
 
+    this.getBytes += out.byteLength;
     return out;
   }
 
@@ -253,13 +257,14 @@ export class MockR2Store implements ObjectStore {
     return this.memBytes;
   }
 
-  stats(): { puts: number; gets: number; heads: number; lists: number; putBytes: number; memoryBytes: number } {
+  stats(): { puts: number; gets: number; heads: number; lists: number; putBytes: number; getBytes: number; memoryBytes: number } {
     return {
       puts: this.putCount,
       gets: this.getCount,
       heads: this.headCount,
       lists: this.listCount,
       putBytes: this.putBytes,
+      getBytes: this.getBytes,
       memoryBytes: this.memBytes,
     };
   }
@@ -270,5 +275,6 @@ export class MockR2Store implements ObjectStore {
     this.headCount = 0;
     this.listCount = 0;
     this.putBytes = 0;
+    this.getBytes = 0;
   }
 }

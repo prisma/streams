@@ -7,6 +7,7 @@ import type { TouchConfig } from "../touch/spec";
 import type { AggSummaryState } from "../search/agg_format";
 import type { StreamReader } from "../reader";
 import type { AppendSuccess } from "../ingest";
+import type { ObjectStore } from "../objectstore/interface";
 
 export const STREAM_PROFILE_API_VERSION = "durable.streams/profile/v1" as const;
 export const DEFAULT_STREAM_PROFILE = "generic" as const;
@@ -133,7 +134,7 @@ export type StreamProfileAppendJsonRecord = {
 };
 
 export type StreamProfileAppendJsonError = {
-  kind: "overloaded" | "append_failed" | "content_type_mismatch" | "gone" | "not_found" | "closed";
+  kind: "overloaded" | "append_failed" | "content_type_mismatch" | "offset_mismatch" | "gone" | "not_found" | "closed";
   message: string;
 };
 
@@ -142,6 +143,7 @@ export type StreamProfileAppendJsonResult = {
 };
 
 export type StreamProfileVfsRouteArgs = {
+  namespace: "_vfs" | "_git";
   segments: string[];
   req: Request;
   url: URL;
@@ -150,11 +152,13 @@ export type StreamProfileVfsRouteArgs = {
   profile: StreamProfileSpec;
   db: SqliteDurableStore;
   reader: StreamReader;
+  objectStore: ObjectStore;
   ensureJsonStream(args: { stream: string; ttlSeconds?: number | null }): Result<void, { message: string }>;
   appendJsonRecords(args: {
     stream: string;
     records: StreamProfileAppendJsonRecord[];
     ttlSeconds?: number | null;
+    expectedNextOffset?: bigint | null;
   }): Promise<Result<StreamProfileAppendJsonResult, StreamProfileAppendJsonError>>;
   respond: StreamProfileVfsResponder;
 };

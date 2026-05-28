@@ -24,6 +24,13 @@ function appFetch(app: ReturnType<typeof makeDemoApp>): VfsFetch {
   return (input, init) => app.fetch(new Request(input, init));
 }
 
+async function fetchJson(app: ReturnType<typeof makeDemoApp>, url: string, init: RequestInit) {
+  const res = await app.fetch(new Request(url, init));
+  const text = await res.text();
+  if (!res.ok) throw new Error(`${init.method ?? "GET"} ${url} failed: ${res.status} ${text}`);
+  return text === "" ? null : JSON.parse(text);
+}
+
 async function runAndPrint(bash: Bash, command: string): Promise<void> {
   const result = await bash.exec(command);
   process.stdout.write(`\n$ ${command}\n`);
@@ -36,12 +43,27 @@ const root = mkdtempSync(join(tmpdir(), "streams-vfs-demo-"));
 const app = makeDemoApp(root);
 
 try {
+  const gitStream = "git/demo/agent-repo";
+  const gitBase = `http://local/v1/stream/${encodeURIComponent(gitStream)}`;
+  await app.fetch(new Request(gitBase, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+  }));
+  await fetchJson(app, `${gitBase}/_profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: { kind: "git-repo", version: 1, objectFormat: "sha1", defaultBranch: "main" },
+    }),
+  });
+
   const repo = openVfsRepo({
     streamsUrl: "http://local",
     stream: "vfs/demo/agent-repo/control",
     fetch: appFetch(app),
   });
-  await repo.ensure();
+  await repo.ensure({ gitRepoStream: gitStream });
 
   const seed = await repo.checkout({ ref: "main", workspaceId: "seed" });
   await seed.writeFile("/README.md", "# VFS demo\n\nThis repository lives in Prisma Streams.\n");
@@ -86,6 +108,8 @@ try {
   await runAndPrint(bash, "git diff");
   await runAndPrint(bash, 'git commit -m "Agent edits through just-bash"');
   await runAndPrint(bash, "git log");
+  const refs = await fetchJson(app, `${gitBase}/_git/refs`, { method: "GET" });
+  process.stdout.write(`\ncanonical git refs: ${JSON.stringify(refs.refs, null, 2)}\n`);
 } finally {
   app.close();
   rmSync(root, { recursive: true, force: true });

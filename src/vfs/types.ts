@@ -75,6 +75,16 @@ export type VfsChangeSummary = {
   renamed: number;
 };
 
+export type VfsCanonicalGitCommit = {
+  repoStream: string;
+  ref: VfsRefName;
+  oldOid: string | null;
+  newOid: string;
+  txnId: string;
+  objectCount: number;
+  bytes: number;
+};
+
 export type VfsCommit = {
   kind: "commit";
   id: VfsCommitId;
@@ -85,6 +95,7 @@ export type VfsCommit = {
   createdAt: string;
   workspaceId?: string;
   changeSummary?: VfsChangeSummary;
+  git?: VfsCanonicalGitCommit;
 };
 
 export type VfsRefUpdate = {
@@ -215,10 +226,22 @@ export type VfsWorkspaceMarker =
   | {
       kind: "workspace-committed";
       commitId: VfsCommitId;
+      git?: VfsCanonicalGitCommit;
       createdAt: string;
     }
   | {
       kind: "workspace-discarded";
+      createdAt: string;
+    }
+  | {
+      kind: "workspace-overlay-index";
+      workspaceId: string;
+      baseCommitId: VfsCommitId | null;
+      generation: number;
+      opCount: number;
+      latestPaths: string[];
+      childDirs: Array<{ dir: string; names: string[] }>;
+      deletedPaths: string[];
       createdAt: string;
     };
 
@@ -250,6 +273,28 @@ export type VfsWorkspaceStatusResponse = {
   lastCommitId?: VfsCommitId;
 };
 
+export type VfsWorkspaceIndexResponse = {
+  workspaceId: string;
+  baseCommitId: VfsCommitId | null;
+  generation: number;
+  opCount: number;
+  path: string | null;
+  latest: VfsWorkspaceOp | null;
+  deleted: boolean;
+  children?: string[];
+  latestPaths: string[];
+  childDirs: Array<{ dir: string; names: string[] }>;
+  deletedPaths: string[];
+};
+
+export type VfsWorkspaceChangesResponse = {
+  workspaceId: string;
+  baseCommitId: VfsCommitId | null;
+  generation: number;
+  prefix: string;
+  paths: string[];
+};
+
 export type VfsCommitRequest = {
   ref?: VfsRefName;
   expectedHead?: VfsCommitId | null;
@@ -262,6 +307,7 @@ export type VfsCommitResponse = {
   oldCommitId: VfsCommitId | null;
   newCommitId: VfsCommitId;
   commit: VfsCommit;
+  git?: VfsCanonicalGitCommit;
 };
 
 export type VfsStatResponse = {

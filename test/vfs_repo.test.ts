@@ -2,13 +2,32 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Result } from "better-result";
 import { Bash, InMemoryFs, MountableFs } from "just-bash";
-import { createProfileTestApp } from "./profile_test_utils";
-import { openVfsRepo, PrismaStreamsVfsFs, createVfsGitCommands, type VfsFetch } from "../src/vfs";
+import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
+import { migrateVfsRepoToGitRepoResult, openVfsRepo, PrismaStreamsVfsFs, createVfsGitCommands, type VfsFetch } from "../src/vfs";
 import { objectsStreamName, toBase64 } from "../src/vfs/model";
 
 function appFetch(app: ReturnType<typeof createProfileTestApp>["app"]): VfsFetch {
   return (input, init) => app.fetch(new Request(input, init));
+}
+
+async function installGitRepoProfile(app: ReturnType<typeof createProfileTestApp>["app"], stream: string): Promise<void> {
+  const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+  const create = await app.fetch(new Request(base, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+  }));
+  expect(create.ok).toBe(true);
+  const profile = await fetchJsonApp(app, `${base}/_profile`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      apiVersion: "durable.streams/profile/v1",
+      profile: { kind: "git-repo", version: 1, objectFormat: "sha1", defaultBranch: "main" },
+    }),
+  });
+  expect(profile.status).toBe(200);
 }
 
 describe("vfs-repo profile", () => {
@@ -44,6 +63,12 @@ describe("vfs-repo profile", () => {
       const status = await wc.status();
       expect(status.state).toBe("open");
       expect(status.changedPaths).toEqual(["/notes.txt", "/src/app.ts"]);
+      const index = await wc.index("/src");
+      expect(index.children).toEqual(["app.ts"]);
+      const changes = await wc.changes("/src");
+      expect(changes.paths).toEqual(["/src/app.ts"]);
+      const compacted = await wc.compact();
+      expect(compacted.latestPaths).toEqual(["/notes.txt", "/src/app.ts"]);
       expect(await wc.readFile("/notes.txt")).toBe("draft\n");
 
       const second = await wc.commit({
@@ -116,6 +141,198 @@ describe("vfs-repo profile", () => {
       const reader = await repo.checkout({ ref: "main", workspaceId: "reader" });
       expect(await reader.readFileBuffer("/a.bin")).toEqual(content);
       expect(await reader.readFileBuffer("/b.bin")).toEqual(content);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("can commit workspace snapshots into a canonical git-repo stream", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-vfs-git-commit-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const gitStream = "git/test/workspace-canonical";
+      await installGitRepoProfile(app, gitStream);
+
+      const repo = openVfsRepo({
+        streamsUrl: "http://local",
+        stream: "vfs/test/workspace-git/control",
+        fetch: appFetch(app),
+      });
+      await repo.ensure({ gitRepoStream: gitStream });
+
+      const seed = await repo.checkout({ ref: "main", workspaceId: "seed" });
+      await seed.writeFile("/README.md", "# canonical git\n");
+      await seed.mkdir("/src");
+      await seed.writeFile("/src/app.ts", "export const value = 1;\n");
+      const first = await seed.commit({ message: "Initial Git-backed import", author: { id: "seed", name: "Seed Agent" } });
+      expect(first.git?.repoStream).toBe(gitStream);
+      expect(first.git?.oldOid).toBeNull();
+      expect(first.git?.objectCount).toBeGreaterThanOrEqual(5);
+
+      const gitBase = `http://local/v1/stream/${encodeURIComponent(gitStream)}`;
+      const gitRef = await fetchJsonApp(app, `${gitBase}/_git/ref/main`, { method: "GET" });
+      expect(gitRef.status).toBe(200);
+      expect(gitRef.body.oid).toBe(first.git?.newOid);
+
+      const firstCommit = await app.fetch(new Request(`${gitBase}/_git/object/${first.git!.newOid}`, { method: "GET" }));
+      expect(firstCommit.status).toBe(200);
+      const firstCommitText = await firstCommit.text();
+      expect(firstCommitText).toContain("tree ");
+      expect(firstCommitText).toContain("Initial Git-backed import");
+
+      const wc = await repo.checkout({ ref: "main", workspaceId: "agent" });
+      await wc.writeFile("/src/app.ts", "export const value = 2;\n");
+      const second = await wc.commit({ message: "Update Git-backed workspace", author: { id: "agent" } });
+      expect(second.git?.oldOid).toBe(first.git?.newOid);
+
+      const secondCommit = await app.fetch(new Request(`${gitBase}/_git/object/${second.git!.newOid}`, { method: "GET" }));
+      expect(secondCommit.status).toBe(200);
+      const secondCommitText = await secondCommit.text();
+      expect(secondCommitText).toContain(`parent ${first.git!.newOid}`);
+      expect(secondCommitText).toContain("Update Git-backed workspace");
+
+      const gitCheckout = await fetchJsonApp(app, `${gitBase}/_git/checkout?ref=main`, { method: "GET" });
+      expect(gitCheckout.status).toBe(200);
+      expect(gitCheckout.body.commitOid).toBe(second.git?.newOid);
+      expect(gitCheckout.body.rootTreeOid).toMatch(/^[0-9a-f]{40}$/);
+
+      const gitRoot = await fetchJsonApp(app, `${gitBase}/_git/readdir?commit=${second.git!.newOid}&path=${encodeURIComponent("/")}`, { method: "GET" });
+      expect(gitRoot.status).toBe(200);
+      expect(gitRoot.body.entries.map((entry: { path: string }) => entry.path).sort()).toEqual(["/README.md", "/src"]);
+
+      const gitStat = await fetchJsonApp(app, `${gitBase}/_git/stat?commit=${second.git!.newOid}&path=${encodeURIComponent("/src/app.ts")}`, { method: "GET" });
+      expect(gitStat.status).toBe(200);
+      expect(gitStat.body.node).toMatchObject({
+        path: "/src/app.ts",
+        type: "file",
+        mode: "100644",
+        size: "export const value = 2;\n".length,
+      });
+
+      const gitBlob = await app.fetch(new Request(`${gitBase}/_git/blob?commit=${second.git!.newOid}&path=${encodeURIComponent("/src/app.ts")}`, {
+        method: "GET",
+        headers: { range: "bytes=0-5" },
+      }));
+      expect(gitBlob.status).toBe(206);
+      expect(gitBlob.headers.get("content-range")).toBe(`bytes 0-5/${"export const value = 2;\n".length}`);
+      expect(await gitBlob.text()).toBe("export");
+
+      const status = await wc.status();
+      expect(status.lastCommitId).toBe(second.newCommitId);
+      const stored = await repo.show(second.newCommitId);
+      expect(stored.git?.newOid).toBe(second.git?.newOid);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("workspace-fs profile name serves the workspace route surface", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-workspace-fs-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const gitStream = "git/test/workspace-fs-canonical";
+      await installGitRepoProfile(app, gitStream);
+
+      const stream = "workspace/test/profile/control";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      const create = await app.fetch(new Request(base, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+      }));
+      expect(create.ok).toBe(true);
+      const profile = await fetchJsonApp(app, `${base}/_profile`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: { kind: "workspace-fs", version: 1, gitRepo: { stream: gitStream } },
+        }),
+      });
+      expect(profile.status).toBe(200);
+      expect(profile.body.profile.kind).toBe("workspace-fs");
+
+      const repo = openVfsRepo({
+        streamsUrl: "http://local",
+        stream,
+        fetch: appFetch(app),
+      });
+      const workspace = await repo.checkout({ ref: "main", workspaceId: "workspace-fs" });
+      await workspace.writeFile("/README.md", "workspace-fs\n");
+      await workspace.mkdir("/src");
+      await workspace.writeFile("/src/app.ts", "export const value = 1;\n");
+      const commit = await workspace.commit({ message: "Workspace profile commit", author: { id: "workspace-fs" } });
+      expect(commit.git?.repoStream).toBe(gitStream);
+      expect(commit.newCommitId).toBe(commit.git?.newOid);
+
+      const gitBase = `http://local/v1/stream/${encodeURIComponent(gitStream)}`;
+      const gitRef = await fetchJsonApp(app, `${gitBase}/_git/ref/main`, { method: "GET" });
+      expect(gitRef.status).toBe(200);
+      expect(gitRef.body.oid).toBe(commit.git?.newOid);
+
+      const reader = await repo.checkout({ ref: "main", workspaceId: "workspace-fs-reader" });
+      expect(reader.baseCommitId).toBe(commit.git?.newOid);
+      expect(await reader.readFile("/README.md")).toBe("workspace-fs\n");
+      const root = await reader.readdir("/");
+      expect(root.entries.map((entry) => entry.path).sort()).toEqual(["/README.md", "/src"]);
+
+      await reader.writeFile("/src/app.ts", "export const value = 2;\n");
+      const status = await reader.status();
+      expect(status.changedPaths).toEqual(["/src/app.ts"]);
+      expect(await reader.diff()).toContain("-export const value = 1;");
+      expect(await reader.diff()).toContain("+export const value = 2;");
+      const second = await reader.commit({ message: "Update workspace-fs over Git", author: { id: "agent" } });
+      expect(second.git?.oldOid).toBe(commit.git?.newOid);
+      const gitBlob = await app.fetch(new Request(`${gitBase}/_git/blob?commit=${second.git!.newOid}&path=${encodeURIComponent("/src/app.ts")}`, { method: "GET" }));
+      expect(gitBlob.status).toBe(200);
+      expect(await gitBlob.text()).toBe("export const value = 2;\n");
+
+      const log = await repo.log("main");
+      expect(log.map((entry) => entry.message)).toEqual(["Update workspace-fs over Git\n", "Workspace profile commit\n"]);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("migrates MVP vfs-repo commits into a canonical git-repo stream", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-vfs-migrate-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const sourceStream = "vfs/test/migrate/source/control";
+      const targetStream = "git/test/migrate/target";
+      const repo = openVfsRepo({
+        streamsUrl: "http://local",
+        stream: sourceStream,
+        fetch: appFetch(app),
+      });
+      await repo.ensure();
+      const seed = await repo.checkout({ ref: "main", workspaceId: "migrate-seed" });
+      await seed.writeFile("/README.md", "migrated\n");
+      await seed.mkdir("/src");
+      await seed.writeFile("/src/app.ts", "export const migrated = true;\n");
+      await seed.commit({ message: "VFS source commit", author: { id: "source" } });
+
+      const migration = await migrateVfsRepoToGitRepoResult({
+        streamsUrl: "http://local",
+        sourceStream,
+        targetStream,
+        fetch: appFetch(app),
+      });
+      expect(Result.isOk(migration)).toBe(true);
+      if (Result.isError(migration)) throw new Error(migration.error.message);
+      expect(migration.value.migratedCommits).toBe(1);
+      expect(migration.value.newOid).toMatch(/^[0-9a-f]{40}$/);
+
+      const gitBase = `http://local/v1/stream/${encodeURIComponent(targetStream)}`;
+      const gitRef = await fetchJsonApp(app, `${gitBase}/_git/ref/main`, { method: "GET" });
+      expect(gitRef.status).toBe(200);
+      expect(gitRef.body.oid).toBe(migration.value.newOid);
+
+      const migratedReadme = await app.fetch(new Request(`${gitBase}/_git/blob?commit=${migration.value.newOid}&path=${encodeURIComponent("/README.md")}`, { method: "GET" }));
+      expect(migratedReadme.status).toBe(200);
+      expect(await migratedReadme.text()).toBe("migrated\n");
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

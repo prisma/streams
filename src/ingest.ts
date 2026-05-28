@@ -28,6 +28,7 @@ export type AppendSuccess = {
 
 export type AppendError =
   | { kind: "not_found" | "gone" | "content_type_mismatch" | "overloaded" | "internal" }
+  | { kind: "offset_mismatch"; expectedNext: bigint; received: bigint }
   | { kind: "stream_seq"; expected: string; received: string }
   | { kind: "closed"; lastOffset: bigint }
   | { kind: "producer_stale_epoch"; producerEpoch: number }
@@ -41,6 +42,7 @@ type AppendTask = {
   baseAppendMs: bigint;
   rows: AppendRow[];
   contentType: string | null;
+  expectedNextOffset: bigint | null;
   streamSeq: string | null;
   producer: ProducerInfo | null;
   close: boolean;
@@ -142,6 +144,7 @@ export class IngestQueue {
     baseAppendMs: bigint;
     rows: AppendRow[];
     contentType: string | null;
+    expectedNextOffset?: bigint | null;
     streamSeq?: string | null;
     producer?: ProducerInfo | null;
     close?: boolean;
@@ -165,6 +168,7 @@ export class IngestQueue {
         baseAppendMs: args.baseAppendMs,
         rows: args.rows,
         contentType: args.contentType ?? null,
+        expectedNextOffset: args.expectedNextOffset ?? null,
         streamSeq: args.streamSeq ?? null,
         producer: args.producer ?? null,
         close: args.close ?? false,
@@ -418,6 +422,15 @@ export class IngestQueue {
             continue;
           }
           results[idx] = Result.err({ kind: "closed", lastOffset: tailOffset });
+          continue;
+        }
+
+        if (task.expectedNextOffset != null && task.expectedNextOffset !== st.nextOffset) {
+          results[idx] = Result.err({
+            kind: "offset_mismatch",
+            expectedNext: st.nextOffset,
+            received: task.expectedNextOffset,
+          });
           continue;
         }
 

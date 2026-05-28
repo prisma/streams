@@ -30,16 +30,20 @@ Current rule:
 Implemented built-ins today:
 
 - `evlog`
+- `git-repo`
 - `generic`
 - `metrics`
 - `state-protocol`
+- `vfs-repo`
 
 `generic` adds no canonical payload envelope and leaves schema management to the
 user. `evlog` owns canonical wide-event normalization, redaction, and its
-default schema/search/rollup registry on JSON append. `metrics` owns canonical
-metrics interval normalization, its default schema/search/rollup registry, and
-the metrics-block companion family. `state-protocol` owns the live `/touch/*`
-surface and its touch configuration.
+default schema/search/rollup registry on JSON append. `git-repo` owns
+canonical Git repository ref transactions and `_git/*` routes. `metrics` owns
+canonical metrics interval normalization, its default schema/search/rollup
+registry, and the metrics-block companion family. `state-protocol` owns the
+live `/touch/*` surface and its touch configuration. `vfs-repo` owns the
+compatibility workspace/VFS `_vfs/*` surface.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
@@ -150,6 +154,18 @@ Today, `metrics` uses the same model to own:
 - the `.mblk` metrics-block companion family
 - bundled per-segment `PSCIX2` `.cix` search companions for metrics-serving
   state
+
+Today, `git-repo` uses this model to own:
+
+- `git-repo` profile validation and stored profile config
+- `_git/*` status/ref/path-read/import/export/ref-transaction routes
+- Git ref checkpoint and pack artifact publication
+
+Today, `vfs-repo` uses this model to own:
+
+- the compatibility workspace/VFS `_vfs/*` routes
+- durable workspace operation streams
+- just-bash-oriented lazy filesystem behavior
 
 ## Control-Plane Metadata
 

@@ -1,8 +1,13 @@
 # `vfs-repo` Profile
 
-`vfs-repo` is the MVP Git-like virtual filesystem profile for agent
-workspaces. It stores immutable snapshot objects and durable workspace draft
-operations on top of ordinary Prisma Streams JSON appends.
+`vfs-repo` is the MVP Git-like virtual filesystem profile for agent workspaces.
+It is now a compatibility profile while the repository architecture is split
+into [git-repo](./profile-git-repo.md) for canonical repository storage and
+[workspace-fs](./profile-workspace-fs.md) for derived lazy agent workspaces.
+
+The profile still stores immutable snapshot objects and durable workspace draft
+operations on top of ordinary Prisma Streams JSON appends, but new canonical
+repository work should target `git-repo` rather than expanding `vfs-repo`.
 
 Install it on an empty JSON stream:
 
@@ -15,9 +20,20 @@ Content-Type: application/json
 
 {
   "apiVersion": "durable.streams/profile/v1",
-  "profile": { "kind": "vfs-repo", "version": 1 }
+  "profile": {
+    "kind": "vfs-repo",
+    "version": 1,
+    "gitRepo": {
+      "stream": "git/tenant/repo"
+    }
+  }
 }
 ```
+
+`gitRepo.stream` is optional. When it is set, workspace commits still write the
+compatibility VFS snapshot records, but they first materialize the workspace
+tree as real Git blob/tree/commit objects in the configured `git-repo` stream
+and commit that stream's ref transaction.
 
 The repo control stream stores ref updates keyed by `ref:<ref>`. Companion
 streams under the repo name store immutable objects and workspace operations:
@@ -212,6 +228,22 @@ commit endpoint holds an in-process per-repo lock, checks the expected ref head,
 materializes the workspace overlay into new tree pages, writes the commit
 object, appends the ref update, and marks the workspace committed. A stale
 expected head returns `409 Conflict`.
+
+If `gitRepo.stream` is configured, the commit endpoint also converts the new VFS
+tree into Git objects:
+
+```text
+VFS blob/symlink/dir entries
+  -> Git blob/tree objects in the git-repo object store
+  -> Git commit object
+  -> git-repo ref transaction with oldOid/newOid
+  -> VFS ref update and workspace committed marker
+```
+
+The VFS ref update and `workspace-committed` marker are appended only after the
+`git-repo` transaction is accepted. The commit response includes a `git` object
+with the canonical repo stream, Git ref, old OID, new commit OID, transaction
+id, object count, and framed object bytes.
 
 ## Endpoints
 

@@ -44,9 +44,11 @@ Current built-ins:
 
 - `evlog`
 - `generic`
+- `git-repo`
 - `metrics`
 - `state-protocol`
 - `vfs-repo`
+- `workspace-fs`
 
 ## `generic`
 
@@ -97,6 +99,25 @@ It means:
 See [profile-metrics.md](./profile-metrics.md) and [metrics.md](./metrics.md)
 for the detailed contract.
 
+## `git-repo`
+
+`git-repo` is the built-in profile for canonical Git repository storage.
+
+It means:
+
+- the stream content type must be `application/json`
+- repository mutations are appended as repo transaction records
+- Git object identity is used for blobs, trees, and commits
+- loose Git objects are stored as content-addressed object-store artifacts
+- `/_git/*` endpoints provide status, refs, ref lookup, path-local
+  checkout/stat/readdir/blob reads, ref transactions, and ref checkpoint
+  publication, pack maintenance publication, import/export, plus loose object
+  writes and range reads
+- a read-only upload-pack smart HTTP facade is available under `_git/smart/*`
+  when enabled; receive-pack push is a planned follow-up layer
+
+See [profile-git-repo.md](./profile-git-repo.md) for the detailed contract.
+
 ## `state-protocol`
 
 `state-protocol` is the built-in profile for streams that carry State Protocol
@@ -114,7 +135,9 @@ the JSON payload shape, but they do not own live/touch behavior.
 
 ## `vfs-repo`
 
-`vfs-repo` is the built-in profile for Git-like virtual filesystem repositories.
+`vfs-repo` is the compatibility MVP profile for Git-like virtual filesystem
+repositories. It is being split into `git-repo` for canonical repository state
+and workspace-fs for derived agent workspaces.
 
 It means:
 
@@ -127,6 +150,24 @@ It means:
   ops/status/commit/discard, logs, and small batch reads
 
 See [profile-vfs-repo.md](./profile-vfs-repo.md) for the detailed contract.
+
+## `workspace-fs`
+
+`workspace-fs` is the installable profile name for derived agent workspaces.
+The current implementation shares the compatibility `/_vfs/*` route surface
+with `vfs-repo`, while new code should use this profile name when the stream is
+serving durable workspaces that commit back to a configured `git-repo` stream.
+
+It means:
+
+- the workspace control stream content type must be `application/json`
+- workspace checkout, draft operation, status, commit, discard, and just-bash
+  adapter flows use the `/_vfs/*` endpoints
+- `gitRepo.stream` can point at the canonical `git-repo` stream that receives
+  Git object writes and ref transactions during workspace commit
+
+See [profile-workspace-fs.md](./profile-workspace-fs.md) for the detailed
+contract and compatibility notes.
 
 ## Ownership Matrix
 

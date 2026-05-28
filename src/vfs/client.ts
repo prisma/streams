@@ -16,6 +16,8 @@ import type {
   VfsShowResponse,
   VfsStoredObject,
   VfsWorkspaceOpInput,
+  VfsWorkspaceChangesResponse,
+  VfsWorkspaceIndexResponse,
   VfsWorkspaceOpsResponse,
   VfsWorkspaceStatusResponse,
 } from "./types";
@@ -31,6 +33,10 @@ export type OpenVfsRepoOptions = {
   repoId?: string;
   authToken?: string;
   fetch?: VfsFetch;
+};
+
+export type VfsEnsureOptions = {
+  gitRepoStream?: string;
 };
 
 export type CheckoutOptions = Omit<VfsCheckoutRequest, "ref"> & {
@@ -137,7 +143,7 @@ export class VfsRepoClient {
     return new Uint8Array(await res.arrayBuffer());
   }
 
-  async ensure(): Promise<void> {
+  async ensure(options: VfsEnsureOptions = {}): Promise<void> {
     const res = await this.fetchImpl(joinUrl(this.streamsUrl, encodeStreamPath(this.stream)), {
       method: "PUT",
       headers: this.headers({ "content-type": "application/json" }),
@@ -152,7 +158,11 @@ export class VfsRepoClient {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         apiVersion: "durable.streams/profile/v1",
-        profile: { kind: "vfs-repo", version: 1 },
+        profile: {
+          kind: "vfs-repo",
+          version: 1,
+          gitRepo: options.gitRepoStream ? { stream: options.gitRepoStream } : undefined,
+        },
       }),
     });
   }
@@ -249,6 +259,22 @@ export class VfsRepoClient {
 
   async workspaceStatus(workspaceId: string): Promise<VfsWorkspaceStatusResponse> {
     return this.requestJson<VfsWorkspaceStatusResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/status`);
+  }
+
+  async workspaceIndex(workspaceId: string, opts: { path?: string | null } = {}): Promise<VfsWorkspaceIndexResponse> {
+    return this.requestJson<VfsWorkspaceIndexResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/index`, { method: "GET" }, {
+      path: opts.path ?? undefined,
+    });
+  }
+
+  async workspaceChanges(workspaceId: string, opts: { prefix?: string | null } = {}): Promise<VfsWorkspaceChangesResponse> {
+    return this.requestJson<VfsWorkspaceChangesResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/changes`, { method: "GET" }, {
+      prefix: opts.prefix ?? undefined,
+    });
+  }
+
+  async compactWorkspace(workspaceId: string): Promise<VfsWorkspaceIndexResponse> {
+    return this.requestJson<VfsWorkspaceIndexResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
   }
 
   async commitWorkspace(workspaceId: string, options: VfsWorkspaceCommitOptions): Promise<VfsCommitResponse> {
@@ -351,6 +377,18 @@ export class VfsWorkspace {
 
   async status(): Promise<VfsWorkspaceStatusResponse> {
     return this.repo.workspaceStatus(this.workspaceId);
+  }
+
+  async index(path?: string): Promise<VfsWorkspaceIndexResponse> {
+    return this.repo.workspaceIndex(this.workspaceId, { path });
+  }
+
+  async changes(prefix?: string): Promise<VfsWorkspaceChangesResponse> {
+    return this.repo.workspaceChanges(this.workspaceId, { prefix });
+  }
+
+  async compact(): Promise<VfsWorkspaceIndexResponse> {
+    return this.repo.compactWorkspace(this.workspaceId);
   }
 
   async commit(options: VfsWorkspaceCommitOptions): Promise<VfsCommitResponse> {
