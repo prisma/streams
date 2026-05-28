@@ -58,6 +58,21 @@ async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
   }
 }
 
+function runGitWithInput(cmd: string[], cwd: string, input: string | Uint8Array = "", env?: Record<string, string>): string {
+  const proc = Bun.spawnSync({
+    cmd,
+    cwd,
+    stdin: typeof input === "string" ? Buffer.from(input) : input,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: env ? { ...process.env, ...env } : undefined,
+  });
+  if (proc.exitCode !== 0) {
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${TEXT_DECODER.decode(proc.stderr)}`);
+  }
+  return TEXT_DECODER.decode(proc.stdout).trim();
+}
+
 function pktLine(text: string): Buffer {
   const body = Buffer.from(text);
   return Buffer.concat([Buffer.from((body.byteLength + 4).toString(16).padStart(4, "0")), body]);
@@ -119,6 +134,7 @@ describe("git object writer", () => {
     expect(Result.isOk(tree)).toBe(true);
     if (Result.isError(tree)) throw new Error(tree.error.message);
     expect(hashObjectWithGit("tree", treeBody.value)).toBe(tree.value.oid);
+    const root = mkdtempSync(join(tmpdir(), "ds-git-object-writer-"));
 
     const commitInput = {
       tree: tree.value.oid,
@@ -137,6 +153,25 @@ describe("git object writer", () => {
     expect(Result.isOk(commit)).toBe(true);
     if (Result.isError(commit)) throw new Error(commit.error.message);
     expect(hashObjectWithGit("commit", commitBody.value)).toBe(commit.value.oid);
+
+    try {
+      runGitChecked(["git", "init"], root);
+      const gitBlobOid = runGitWithInput(["git", "hash-object", "-w", "--stdin"], root, "hello\n");
+      expect(gitBlobOid).toBe(blob.oid);
+      const gitTreeOid = runGitWithInput(["git", "mktree"], root, `100644 blob ${blob.oid}\thello.txt\n`);
+      expect(gitTreeOid).toBe(tree.value.oid);
+      const gitCommitOid = runGitWithInput(["git", "commit-tree", gitTreeOid, "-m", "Initial import"], root, "", {
+        GIT_AUTHOR_NAME: "Agent",
+        GIT_AUTHOR_EMAIL: "agent@example.com",
+        GIT_AUTHOR_DATE: "1700000000 +0000",
+        GIT_COMMITTER_NAME: "Agent",
+        GIT_COMMITTER_EMAIL: "agent@example.com",
+        GIT_COMMITTER_DATE: "1700000000 +0000",
+      });
+      expect(gitCommitOid).toBe(commit.value.oid);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
