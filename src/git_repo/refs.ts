@@ -1,4 +1,5 @@
 import { Result } from "better-result";
+import { createHash } from "node:crypto";
 import type {
   GitOid,
   GitRefTransactionCommittedRecord,
@@ -52,6 +53,10 @@ export function routingKeyForGitRef(ref: string): string {
 
 export function routingKeyForGitTxn(txnId: string): string {
   return `git-txn:${txnId}`;
+}
+
+export function routingKeyForGitIdempotencyKey(idempotencyKey: string): string {
+  return `git-idempotency:${createHash("sha256").update(idempotencyKey).digest("hex")}`;
 }
 
 export function isGitRefTransactionRecord(record: GitRepoRecord): record is GitRefTransactionCommittedRecord {

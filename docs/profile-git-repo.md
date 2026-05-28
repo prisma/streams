@@ -116,6 +116,15 @@ type GitRepoRecord =
       };
     }
   | {
+      type: "transaction-key-indexed";
+      repoId: string;
+      keyType: "idempotency-key";
+      key: string;
+      txnId: string;
+      requestHash: string;
+      createdAt: string;
+    }
+  | {
       type: "maintenance-published";
       repoId: string;
       createdAt: string;
@@ -496,15 +505,16 @@ For a ref transaction, the server:
    durable stream tail after its `streamOffset`.
 2. Builds the current ref map and stable expected next stream offset from that
    checkpoint plus tail. Transactions with a `txnId` use a keyed transaction
-   lookup for idempotent replay; transactions that supply an independent
-   `idempotencyKey` fall back to a full transaction-log scan until a dedicated
-   idempotency-key index exists.
+   lookup for idempotent replay. Transactions with an `idempotencyKey` use a
+   keyed `transaction-key-indexed` record that points to the canonical
+   transaction id and request hash.
 3. Verifies every requested `oldOid` against that map, so stale updates fail
    before object graph work.
 4. Validates ref names, object IDs, object artifacts, and the reachable Git
    object graph for new ref targets.
-5. Appends exactly one `ref-transaction-committed` record with the stream's
-   expected next offset.
+5. Appends exactly one `ref-transaction-committed` record, plus one
+   `transaction-key-indexed` record when an idempotency key is present, with the
+   stream's expected next offset.
 
 If another process or request appends to the repository stream between steps 1
 and 4, the append fails with an offset mismatch. The profile then rereads the
@@ -569,9 +579,7 @@ canonical transaction state before returning.
   maintenance publication are implemented. Incremental pack compaction policy is
   still minimal.
 - Ref checkpoint artifacts are implemented for hot ref reads and ordinary ref
-  transactions. `txnId` replay uses keyed reads. Requests that provide a
-  separate `idempotencyKey` still scan the durable transaction log until a
-  separate idempotency-key index exists.
+  transactions. `txnId` and `idempotencyKey` replay use keyed reads.
 - Tree index artifacts are implemented for large directory hot paths. They are
   published by maintenance and used opportunistically by `stat` and `readdir`;
   canonical Git trees remain the source of truth.

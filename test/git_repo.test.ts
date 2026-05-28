@@ -11,6 +11,7 @@ import {
   writeGitCommitResult,
   writeGitTreeResult,
 } from "../src/git_repo";
+import { routingKeyForGitIdempotencyKey, routingKeyForGitTxn } from "../src/git_repo/refs";
 import { commitGitRefTransactionResult } from "../src/git_repo/service";
 import { Result } from "better-result";
 
@@ -826,6 +827,7 @@ describe("git-repo profile", () => {
     let tailReads = 0;
     let keyedReads = 0;
     let successfulExpectedOffset: bigint | null = null;
+    let appendedRecords: unknown[] = [];
     const reader = {
       async readResult(args: { offset: string; key?: string | null }) {
         if (args.key) {
@@ -880,6 +882,7 @@ describe("git-repo profile", () => {
     };
     const appendJsonRecords = async (args: { records: Array<{ value: unknown }>; expectedNextOffset?: bigint | null }) => {
       successfulExpectedOffset = args.expectedNextOffset ?? null;
+      appendedRecords = args.records.map((record) => record.value);
       return Result.ok({
         result: {
           lastOffset: args.expectedNextOffset ?? 1001n,
@@ -898,6 +901,7 @@ describe("git-repo profile", () => {
       format: "sha1",
       request: {
         txnId: "checkpoint-txn",
+        idempotencyKey: "client-retry-key",
         refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
       },
     });
@@ -906,10 +910,219 @@ describe("git-repo profile", () => {
     if (Result.isError(result)) throw new Error(result.error.message);
     expect(fullReplays).toBe(0);
     expect(tailReads).toBe(1);
-    expect(keyedReads).toBe(1);
+    expect(keyedReads).toBe(2);
     expect(successfulExpectedOffset).toBe(1001n);
+    expect(appendedRecords.map((record: any) => record.type)).toEqual(["ref-transaction-committed", "transaction-key-indexed"]);
+    expect((appendedRecords[1] as any).key).toBe("client-retry-key");
+    expect((appendedRecords[1] as any).txnId).toBe("checkpoint-txn");
     expect(result.value.refs["refs/heads/side"]).toBe(sideOid);
     expect(result.value.refs["refs/heads/main"]).toBeNull();
+  });
+
+  test("replays idempotency keys through the transaction key index", async () => {
+    const repo = "git/test/idempotency-key-hot-path";
+    const mainOid = writeGitBlob("main\n").oid;
+    const checkpoint = {
+      repoId: repo,
+      generation: 1,
+      streamOffset: 10,
+      refs: { "refs/heads/main": mainOid },
+      head: { symbolicRef: "refs/heads/main" },
+      createdAt: new Date().toISOString(),
+    };
+    const transaction = {
+      type: "ref-transaction-committed",
+      repoId: repo,
+      txnId: "existing-txn",
+      idempotencyKey: "retry-key",
+      requestHash: "placeholder",
+      createdAt: new Date().toISOString(),
+      refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
+    };
+    const first = await commitGitRefTransactionResult({
+      stream: repo,
+      reader: {
+        async readResult(args: { offset: string; key?: string | null }) {
+          if (args.key) {
+            return Result.ok({
+              stream: repo,
+              format: "raw" as const,
+              key: args.key,
+              requestOffset: args.offset,
+              endOffset: "unused",
+              nextOffset: "unused",
+              endOffsetSeq: 10n,
+              nextOffsetSeq: 10n,
+              records: [],
+            });
+          }
+          if (args.offset === "-1") throw new Error("unexpected full git-repo stream replay");
+          return Result.ok({
+            stream: repo,
+            format: "raw" as const,
+            key: args.key ?? null,
+            requestOffset: args.offset,
+            endOffset: "unused",
+            nextOffset: "unused",
+            endOffsetSeq: 10n,
+            nextOffsetSeq: 10n,
+            records: [],
+          });
+        },
+      } as any,
+      objectStore: {
+        async get() {
+          return TEXT_ENCODER.encode(JSON.stringify(checkpoint));
+        },
+        async head() {
+          return null;
+        },
+        async put() {
+          return { etag: "unused" };
+        },
+        async delete() {},
+        async list() {
+          return [];
+        },
+      } as any,
+      appendJsonRecords: (async (args: { records: Array<{ value: any }> }) => {
+        transaction.requestHash = args.records[0]!.value.requestHash;
+        return Result.ok({
+          result: {
+            lastOffset: 12n,
+            appendedRows: args.records.length,
+            closed: false,
+            duplicate: false,
+          },
+        });
+      }) as any,
+      format: "sha1",
+      request: {
+        txnId: "existing-txn",
+        idempotencyKey: "retry-key",
+        refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
+      },
+    });
+    expect(Result.isOk(first)).toBe(true);
+    if (Result.isError(first)) throw new Error(first.error.message);
+
+    let fullReplays = 0;
+    let idempotencyKeyReads = 0;
+    let txnKeyReads = 0;
+    const replay = await commitGitRefTransactionResult({
+      stream: repo,
+      reader: {
+        async readResult(args: { offset: string; key?: string | null }) {
+          if (args.key === routingKeyForGitIdempotencyKey("retry-key")) {
+            idempotencyKeyReads++;
+            return Result.ok({
+              stream: repo,
+              format: "raw" as const,
+              key: args.key,
+              requestOffset: args.offset,
+              endOffset: "unused",
+              nextOffset: "unused",
+              endOffsetSeq: 12n,
+              nextOffsetSeq: 12n,
+              records: [{
+                offset: 12n,
+                payload: TEXT_ENCODER.encode(JSON.stringify({
+                  type: "transaction-key-indexed",
+                  repoId: repo,
+                  keyType: "idempotency-key",
+                  key: "retry-key",
+                  txnId: "existing-txn",
+                  requestHash: transaction.requestHash,
+                  createdAt: transaction.createdAt,
+                })),
+              }],
+            });
+          }
+          if (args.key === routingKeyForGitTxn("existing-txn")) {
+            txnKeyReads++;
+            return Result.ok({
+              stream: repo,
+              format: "raw" as const,
+              key: args.key,
+              requestOffset: args.offset,
+              endOffset: "unused",
+              nextOffset: "unused",
+              endOffsetSeq: 12n,
+              nextOffsetSeq: 12n,
+              records: [{
+                offset: 11n,
+                payload: TEXT_ENCODER.encode(JSON.stringify(transaction)),
+              }],
+            });
+          }
+          if (args.offset === "-1") {
+            fullReplays++;
+            throw new Error("unexpected full git-repo stream replay");
+          }
+          return Result.ok({
+            stream: repo,
+            format: "raw" as const,
+            key: args.key ?? null,
+            requestOffset: args.offset,
+            endOffset: "unused",
+            nextOffset: "unused",
+            endOffsetSeq: 12n,
+            nextOffsetSeq: 12n,
+            records: [
+              {
+                offset: 11n,
+                payload: TEXT_ENCODER.encode(JSON.stringify(transaction)),
+              },
+              {
+                offset: 12n,
+                payload: TEXT_ENCODER.encode(JSON.stringify({
+                  type: "transaction-key-indexed",
+                  repoId: repo,
+                  keyType: "idempotency-key",
+                  key: "retry-key",
+                  txnId: "existing-txn",
+                  requestHash: transaction.requestHash,
+                  createdAt: transaction.createdAt,
+                })),
+              },
+            ],
+          });
+        },
+      } as any,
+      objectStore: {
+        async get() {
+          return TEXT_ENCODER.encode(JSON.stringify(checkpoint));
+        },
+        async head() {
+          return null;
+        },
+        async put() {
+          return { etag: "unused" };
+        },
+        async delete() {},
+        async list() {
+          return [];
+        },
+      } as any,
+      appendJsonRecords: (async () => {
+        throw new Error("idempotent replay should not append");
+      }) as any,
+      format: "sha1",
+      request: {
+        txnId: "existing-txn",
+        idempotencyKey: "retry-key",
+        refUpdates: [{ ref: "refs/heads/main", oldOid: mainOid, newOid: null }],
+      },
+    });
+
+    expect(Result.isOk(replay)).toBe(true);
+    if (Result.isError(replay)) throw new Error(replay.error.message);
+    expect(replay.value.idempotent).toBe(true);
+    expect(replay.value.transaction.txnId).toBe("existing-txn");
+    expect(replay.value.refs["refs/heads/main"]).toBeNull();
+    expect(fullReplays).toBe(0);
+    expect(idempotencyKeyReads).toBe(1);
+    expect(txnKeyReads).toBe(2);
   });
 
   test("exports bundles and packs and imports a bundle into another git-repo profile", async () => {

@@ -113,6 +113,16 @@ export type GitRefTransactionCommittedRecord = {
   objects?: GitRepoObjectSet;
 };
 
+export type GitTransactionKeyIndexedRecord = {
+  type: "transaction-key-indexed";
+  repoId: string;
+  keyType: "idempotency-key";
+  key: string;
+  txnId: string;
+  requestHash: string;
+  createdAt: string;
+};
+
 export type GitRefCheckpoint = {
   repoId: string;
   generation: number;
@@ -186,6 +196,7 @@ export type GitRepoDeletedRecord = {
 export type GitRepoRecord =
   | GitRepoCreatedRecord
   | GitRefTransactionCommittedRecord
+  | GitTransactionKeyIndexedRecord
   | GitMaintenancePublishedRecord
   | GitRepoDeletedRecord;
 

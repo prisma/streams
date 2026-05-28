@@ -14,10 +14,11 @@ import {
   type GitRefTransactionRequest,
   type GitRepoObjectSet,
   type GitRepoRecord,
+  type GitTransactionKeyIndexedRecord,
 } from "./types";
 import { hashGitObject, type GitObject } from "./objects";
 import { gitLatestRefCheckpointKey, gitLooseObjectKey, gitObjectArtifactPrefix, gitRefCheckpointKey } from "./artifacts";
-import { applyRefUpdatesResult, buildRefs, findTransaction, routingKeyForGitTxn, validateRefTransactionRequestResult } from "./refs";
+import { applyRefUpdatesResult, buildRefs, routingKeyForGitIdempotencyKey, routingKeyForGitTxn, validateRefTransactionRequestResult } from "./refs";
 import { parseGitCommitBodyResult, parseGitTreeBodyResult } from "./tree";
 
 export type GitRepoServiceError = {
@@ -209,9 +210,17 @@ export async function appendGitRecordResult(
   routingKey: string | null,
   expectedNextOffset?: bigint | null
 ): Promise<Result<void, GitRepoServiceError>> {
+  return appendGitRecordsResult(args, [{ value: record, routingKey }], expectedNextOffset);
+}
+
+async function appendGitRecordsResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "appendJsonRecords">,
+  records: Array<{ value: GitRepoRecord; routingKey: string | null }>,
+  expectedNextOffset?: bigint | null
+): Promise<Result<void, GitRepoServiceError>> {
   const appendRes = await args.appendJsonRecords({
     stream: args.stream,
-    records: [{ value: record, routingKey }],
+    records,
     expectedNextOffset,
   });
   if (Result.isError(appendRes)) {
@@ -462,6 +471,60 @@ async function readGitTransactionByTxnIdResult(
   }
 }
 
+async function readGitTransactionByIdempotencyKeyResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "reader">,
+  idempotencyKey: string
+): Promise<Result<GitRefTransactionCommittedRecord | null, GitRepoServiceError>> {
+  let cursor = "-1";
+  const key = routingKeyForGitIdempotencyKey(idempotencyKey);
+  for (;;) {
+    const batchRes = await args.reader.readResult({ stream: args.stream, offset: cursor, key, format: "raw", filter: null });
+    if (Result.isError(batchRes)) {
+      if (batchRes.error.kind === "not_found" || batchRes.error.kind === "gone") return Result.ok(null);
+      return Result.err({ status: 500, message: batchRes.error.message });
+    }
+    for (const record of batchRes.value.records) {
+      try {
+        const parsed = JSON.parse(TEXT_DECODER.decode(record.payload)) as Partial<GitRepoRecord>;
+        if (
+          parsed.type === "transaction-key-indexed" &&
+          parsed.keyType === "idempotency-key" &&
+          parsed.key === idempotencyKey &&
+          typeof parsed.txnId === "string"
+        ) {
+          const txnRes = await readGitTransactionByTxnIdResult(args, parsed.txnId);
+          if (Result.isError(txnRes)) return txnRes;
+          if (!txnRes.value) return Result.err({ status: 500, message: "git idempotency index points at a missing transaction" });
+          if (txnRes.value.requestHash !== parsed.requestHash) {
+            return Result.err({ status: 500, message: "git idempotency index request hash mismatch" });
+          }
+          return Result.ok(txnRes.value);
+        }
+      } catch {
+        return Result.err({ status: 500, message: `invalid JSON record in ${args.stream}` });
+      }
+    }
+    if (batchRes.value.nextOffsetSeq >= batchRes.value.endOffsetSeq) return Result.ok(null);
+    cursor = batchRes.value.nextOffset;
+  }
+}
+
+async function readExistingTransactionResult(
+  args: Pick<GitRepoServiceArgs, "stream" | "reader">,
+  request: GitRefTransactionRequest
+): Promise<Result<GitRefTransactionCommittedRecord | null, GitRepoServiceError>> {
+  const txnRes = request.txnId ? await readGitTransactionByTxnIdResult(args, request.txnId) : Result.ok(null);
+  if (Result.isError(txnRes)) return txnRes;
+  const idempotencyRes = request.idempotencyKey
+    ? await readGitTransactionByIdempotencyKeyResult(args, request.idempotencyKey)
+    : Result.ok(null);
+  if (Result.isError(idempotencyRes)) return idempotencyRes;
+  if (txnRes.value && idempotencyRes.value && txnRes.value.txnId !== idempotencyRes.value.txnId) {
+    return Result.err({ status: 409, message: "transaction id and idempotency key refer to different transactions" });
+  }
+  return Result.ok(txnRes.value ?? idempotencyRes.value);
+}
+
 function parseTagTarget(body: Uint8Array, format: GitObjectFormat): string | null {
   const text = TEXT_DECODER.decode(body);
   const objectLine = text.split("\n").find((line) => line.startsWith("object "));
@@ -622,32 +685,15 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
   const oidShapeRes = validateRefTransactionOidShapesResult(args.format, request);
   if (Result.isError(oidShapeRes)) return oidShapeRes;
   let requestObjectsValidated = false;
-  const canUseCheckpointHotPath = !request.idempotencyKey;
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    let currentRefs: Record<string, string | null>;
-    let expectedNextOffset: bigint;
-    let existing: GitRefTransactionCommittedRecord | null = null;
-    if (canUseCheckpointHotPath) {
-      const refsSnapshotRes = await readGitRefsSnapshotResult(args);
-      if (Result.isError(refsSnapshotRes)) return refsSnapshotRes;
-      currentRefs = refsSnapshotRes.value.refs;
-      expectedNextOffset = refsSnapshotRes.value.nextOffset;
-      if (request.txnId) {
-        const existingRes = await readGitTransactionByTxnIdResult(args, request.txnId);
-        if (Result.isError(existingRes)) return existingRes;
-        existing = existingRes.value;
-      }
-    } else {
-      const snapshotRes = await readGitRecordSnapshotResult(args);
-      if (Result.isError(snapshotRes)) return snapshotRes;
-      currentRefs = buildRefs(snapshotRes.value.records);
-      expectedNextOffset = snapshotRes.value.nextOffset;
-      existing = findTransaction(snapshotRes.value.records, {
-        txnId: request.txnId,
-        idempotencyKey: request.idempotencyKey,
-      });
-    }
+    const refsSnapshotRes = await readGitRefsSnapshotResult(args);
+    if (Result.isError(refsSnapshotRes)) return refsSnapshotRes;
+    const currentRefs = refsSnapshotRes.value.refs;
+    const expectedNextOffset = refsSnapshotRes.value.nextOffset;
+    const existingRes = await readExistingTransactionResult(args, request);
+    if (Result.isError(existingRes)) return existingRes;
+    const existing = existingRes.value;
     if (existing) {
       if (existing.requestHash !== requestHash) {
         return Result.err({ status: 409, message: "idempotency key or transaction id was already used for a different request" });
@@ -691,7 +737,22 @@ export async function commitGitRefTransactionResult(args: GitRepoServiceArgs & {
       refUpdates: request.refUpdates,
       objects: request.objects,
     };
-    const appendRes = await appendGitRecordResult(args, transaction, routingKeyForGitTxn(transaction.txnId), expectedNextOffset);
+    const records: Array<{ value: GitRepoRecord; routingKey: string | null }> = [
+      { value: transaction, routingKey: routingKeyForGitTxn(transaction.txnId) },
+    ];
+    if (request.idempotencyKey) {
+      const idempotencyIndex: GitTransactionKeyIndexedRecord = {
+        type: "transaction-key-indexed",
+        repoId: args.stream,
+        keyType: "idempotency-key",
+        key: request.idempotencyKey,
+        txnId: transaction.txnId,
+        requestHash,
+        createdAt: transaction.createdAt,
+      };
+      records.push({ value: idempotencyIndex, routingKey: routingKeyForGitIdempotencyKey(request.idempotencyKey) });
+    }
+    const appendRes = await appendGitRecordsResult(args, records, expectedNextOffset);
     if (Result.isError(appendRes)) {
       if (appendRes.error.status === 409 && appendRes.error.message === "git-repo stream changed") continue;
       return appendRes;
