@@ -29,6 +29,7 @@ export type GitRepoProfileConfig = {
   materialization?: {
     publishRefCheckpoint: boolean;
     targetPackSizeBytes: number;
+    treeIndexPageSize: number;
   };
   importExport?: {
     enabled: boolean;
@@ -65,6 +66,7 @@ export function defaultGitRepoProfileConfig(): GitRepoProfileConfig {
     materialization: {
       publishRefCheckpoint: true,
       targetPackSizeBytes: 64 * 1024 * 1024,
+      treeIndexPageSize: 512,
     },
     importExport: {
       enabled: true,
@@ -119,6 +121,39 @@ export type GitRefCheckpoint = {
   head: {
     symbolicRef: string;
   };
+  createdAt: string;
+};
+
+export type GitTreeIndexEntry = {
+  name: string;
+  mode: string;
+  type: "file" | "dir" | "symlink";
+  oid: GitOid;
+  size: number;
+};
+
+export type GitTreeIndexPage = {
+  repoId: string;
+  treeOid: GitOid;
+  page: number;
+  firstName: string;
+  lastName: string;
+  entries: GitTreeIndexEntry[];
+  createdAt: string;
+};
+
+export type GitTreeIndexManifest = {
+  repoId: string;
+  treeOid: GitOid;
+  entryCount: number;
+  pageSize: number;
+  pages: Array<{
+    page: number;
+    firstName: string;
+    lastName: string;
+    count: number;
+    uri: string;
+  }>;
   createdAt: string;
 };
 
@@ -210,6 +245,18 @@ export type GitTransactionStatusResponse = {
 export type GitPublishRefCheckpointResponse = {
   checkpoint: GitRefCheckpoint;
   record: GitMaintenancePublishedRecord;
+};
+
+export type GitPublishTreeIndexRequest = {
+  treeOid?: GitOid;
+  commit?: GitOid;
+  ref?: string;
+  path?: string;
+  pageSize?: number;
+};
+
+export type GitPublishTreeIndexResponse = {
+  index: GitTreeIndexManifest;
 };
 
 export type GitWriteObjectRequest = {

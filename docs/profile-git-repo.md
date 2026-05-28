@@ -64,6 +64,7 @@ type GitRepoProfileConfig = {
   materialization?: {
     publishRefCheckpoint: boolean;
     targetPackSizeBytes: number;
+    treeIndexPageSize: number;
   };
   importExport?: {
     enabled: boolean;
@@ -201,6 +202,7 @@ GET  /v1/stream/{repo}/_git/transactions/{txnId}
 POST /v1/stream/{repo}/_git/transactions/{txnId}/wait-published
 POST /v1/stream/{repo}/_git/transactions/{txnId}/wait-verified
 POST /v1/stream/{repo}/_git/maintenance/publish-ref-checkpoint
+POST /v1/stream/{repo}/_git/maintenance/publish-tree-index
 POST /v1/stream/{repo}/_git/maintenance/publish-pack
 POST /v1/stream/{repo}/_git/maintenance/verify-reachability
 GET  /v1/stream/{repo}/_git/smart/info/refs?service=git-upload-pack
@@ -224,7 +226,29 @@ If neither is present, they use the profile `defaultBranch`.
   checkpoint `streamOffset`
 - `stat` resolves one path by loading only trees along that path
 - `readdir` loads one tree and returns a paginated directory listing
+- when a tree index artifact exists for a directory tree, `stat` loads only the
+  matching index page and `readdir` loads only the pages needed for the
+  requested cursor/limit
 - `blob` resolves a file path, then range-reads only the requested blob bytes
+
+Publish a paged tree index artifact for a large directory:
+
+```json
+POST /_git/maintenance/publish-tree-index
+
+{
+  "ref": "main",
+  "path": "/src",
+  "pageSize": 512
+}
+```
+
+The endpoint can also accept `treeOid` directly. The manifest is keyed by the
+Git tree OID under the repo object-store prefix, and pages are keyed by both tree
+OID and page size. That avoids mixed-page races when two maintenance jobs build
+the same immutable tree with different page sizes. Pages contain sorted entries
+plus blob sizes, allowing directory listing and exact-name lookup without
+reparsing the monolithic Git tree object on hot paths.
 
 Write a loose object artifact:
 
@@ -503,6 +527,9 @@ canonical transaction state before returning.
 - Ref checkpoint artifacts are implemented for hot ref reads. Transaction
   idempotency lookup still scans the durable transaction log until a separate
   transaction-key index exists.
+- Tree index artifacts are implemented for large directory hot paths. They are
+  published by maintenance and used opportunistically by `stat` and `readdir`;
+  canonical Git trees remain the source of truth.
 - Upload-pack and receive-pack smart HTTP are implemented under `_git/smart/*`
   and `/{repo}.git/*` when enabled in profile config. Upload-pack supports
   protocol v2 negotiation, blob filters when `fetch.allowFilter=true`, and

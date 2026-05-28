@@ -242,7 +242,7 @@ export async function getObjectStoreRangeResult(
   }
 }
 
-async function getObjectStoreBytesResult(
+export async function getObjectStoreBytesResult(
   objectStore: ObjectStore,
   key: string
 ): Promise<Result<Uint8Array | null, GitRepoServiceError>> {

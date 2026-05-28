@@ -6,13 +6,19 @@ import {
   type GitImportRequest,
   type GitMaintenancePublishedRecord,
   type GitNodeStat,
+  type GitPublishTreeIndexRequest,
+  type GitPublishTreeIndexResponse,
   type GitRefTransactionRequest,
   type GitReaddirResponse,
   type GitRepoProfileConfig,
   type GitStatResponse,
+  type GitTreeIndexEntry,
+  type GitTreeIndexManifest,
+  type GitTreeIndexPage,
   type GitTransactionStatusResponse,
   type GitWriteObjectRequest,
 } from "./types";
+import { gitTreeIndexManifestKey, gitTreeIndexPageKey } from "./artifacts";
 import { buildGitObject } from "./objects";
 import {
   exportGitBundleResult,
@@ -32,12 +38,14 @@ import {
   appendGitRecordResult,
   commitGitRefTransactionResult,
   parseBase64Result,
+  getObjectStoreBytesResult,
   readGitRecordSnapshotResult,
   readGitRecordsResult,
   readGitRefsSnapshotResult,
   readLooseGitObjectBodyResult,
   readLooseGitObjectHeaderResult,
   verifyGitRefTransactionRecordResult,
+  putObjectStoreResult,
   writeGitRefCheckpointArtifactsResult,
   writeLooseGitObjectResult,
   type GitRepoServiceError,
@@ -45,6 +53,8 @@ import {
 import { parseGitCommitBodyResult, parseGitTreeBodyResult, type GitTreeEntry } from "./tree";
 
 type GitServerError = GitRepoServiceError;
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 function responseForError(args: StreamProfileVfsRouteArgs, err: GitServerError): Response {
   if (err.status === 400) return args.respond.badRequest(err.message);
@@ -226,16 +236,19 @@ function childPath(dir: string, name: string): string {
   return dir === "/" ? `/${name}` : `${dir}/${name}`;
 }
 
-async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Promise<Result<string, GitServerError>> {
+async function commitOidFromValuesResult(
+  args: StreamProfileVfsRouteArgs,
+  values: { commit?: string | null; ref?: string | null }
+): Promise<Result<string, GitServerError>> {
   const config = profileConfig(args);
-  const explicit = args.url.searchParams.get("commit");
+  const explicit = values.commit;
   if (explicit && explicit.trim() !== "") {
     const oid = explicit.trim();
     if (!oidPattern(config.objectFormat).test(oid)) return Result.err({ status: 400, message: "invalid git commit id" });
     return Result.ok(oid);
   }
 
-  const refRes = validateGitRefNameResult(args.url.searchParams.get("ref") ?? config.defaultBranch, { allowHead: false });
+  const refRes = validateGitRefNameResult(values.ref ?? config.defaultBranch, { allowHead: false });
   if (Result.isError(refRes)) return Result.err({ status: 400, message: refRes.error.message });
   const ref = refRes.value;
   const refsRes = await readGitRefsSnapshotResult({
@@ -250,6 +263,13 @@ async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Prom
   const oid = Object.prototype.hasOwnProperty.call(refsByName, ref) ? refsByName[ref] ?? null : null;
   if (!oid) return Result.err({ status: 404, message: "git ref not found" });
   return Result.ok(oid);
+}
+
+async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Promise<Result<string, GitServerError>> {
+  return commitOidFromValuesResult(args, {
+    commit: args.url.searchParams.get("commit"),
+    ref: args.url.searchParams.get("ref"),
+  });
 }
 
 async function rootTreeOidForCommitResult(
@@ -288,6 +308,114 @@ async function loadTreeEntriesResult(
   return Result.ok(parsedRes.value);
 }
 
+function treeIndexPageSize(config: GitRepoProfileConfig, requested?: unknown): number {
+  const raw = typeof requested === "number" ? requested : config.materialization?.treeIndexPageSize;
+  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw <= 0) return 512;
+  return Math.max(1, Math.min(5000, Math.floor(raw)));
+}
+
+function parseTreeIndexManifestResult(
+  bytes: Uint8Array,
+  repoId: string,
+  treeOid: string
+): Result<GitTreeIndexManifest, GitServerError> {
+  try {
+    const parsed = JSON.parse(TEXT_DECODER.decode(bytes)) as Partial<GitTreeIndexManifest>;
+    if (parsed.repoId !== repoId || parsed.treeOid !== treeOid) return Result.err({ status: 500, message: "git tree index belongs to another tree" });
+    if (!Number.isSafeInteger(parsed.entryCount) || !Number.isSafeInteger(parsed.pageSize) || !Array.isArray(parsed.pages)) {
+      return Result.err({ status: 500, message: "git tree index manifest is invalid" });
+    }
+    return Result.ok(parsed as GitTreeIndexManifest);
+  } catch {
+    return Result.err({ status: 500, message: "git tree index manifest JSON is invalid" });
+  }
+}
+
+function parseTreeIndexPageResult(
+  bytes: Uint8Array,
+  repoId: string,
+  treeOid: string,
+  page: number
+): Result<GitTreeIndexPage, GitServerError> {
+  try {
+    const parsed = JSON.parse(TEXT_DECODER.decode(bytes)) as Partial<GitTreeIndexPage>;
+    if (parsed.repoId !== repoId || parsed.treeOid !== treeOid || parsed.page !== page) {
+      return Result.err({ status: 500, message: "git tree index page belongs to another tree" });
+    }
+    if (!Array.isArray(parsed.entries)) return Result.err({ status: 500, message: "git tree index page entries are invalid" });
+    return Result.ok(parsed as GitTreeIndexPage);
+  } catch {
+    return Result.err({ status: 500, message: "git tree index page JSON is invalid" });
+  }
+}
+
+async function readTreeIndexManifestResult(
+  args: StreamProfileVfsRouteArgs,
+  treeOid: string
+): Promise<Result<GitTreeIndexManifest | null, GitServerError>> {
+  const config = profileConfig(args);
+  const key = gitTreeIndexManifestKey(args.stream, config.objectFormat, treeOid);
+  const bytesRes = await getObjectStoreBytesResult(args.objectStore, key);
+  if (Result.isError(bytesRes)) return bytesRes;
+  if (!bytesRes.value) return Result.ok(null);
+  return parseTreeIndexManifestResult(bytesRes.value, args.stream, treeOid);
+}
+
+async function readTreeIndexPageResult(
+  args: StreamProfileVfsRouteArgs,
+  treeOid: string,
+  page: GitTreeIndexManifest["pages"][number]
+): Promise<Result<GitTreeIndexPage, GitServerError>> {
+  const bytesRes = await getObjectStoreBytesResult(args.objectStore, page.uri);
+  if (Result.isError(bytesRes)) return bytesRes;
+  if (!bytesRes.value) return Result.err({ status: 404, message: "git tree index page not found" });
+  return parseTreeIndexPageResult(bytesRes.value, args.stream, treeOid, page.page);
+}
+
+async function findIndexedTreeEntryResult(
+  args: StreamProfileVfsRouteArgs,
+  treeOid: string,
+  name: string
+): Promise<Result<GitTreeIndexEntry | null, GitServerError>> {
+  const manifestRes = await readTreeIndexManifestResult(args, treeOid);
+  if (Result.isError(manifestRes)) return manifestRes;
+  const manifest = manifestRes.value;
+  if (!manifest) return Result.ok(null);
+  const page = manifest.pages.find((candidate) => candidate.firstName.localeCompare(name) <= 0 && candidate.lastName.localeCompare(name) >= 0);
+  if (!page) return Result.ok(null);
+  const pageRes = await readTreeIndexPageResult(args, treeOid, page);
+  if (Result.isError(pageRes)) return pageRes;
+  return Result.ok(pageRes.value.entries.find((entry) => entry.name === name) ?? null);
+}
+
+async function readIndexedTreePageResult(
+  args: StreamProfileVfsRouteArgs,
+  treeOid: string,
+  cursor: string | null,
+  limit: number
+): Promise<Result<{ entries: GitTreeIndexEntry[]; nextCursor: string | null } | null, GitServerError>> {
+  const manifestRes = await readTreeIndexManifestResult(args, treeOid);
+  if (Result.isError(manifestRes)) return manifestRes;
+  const manifest = manifestRes.value;
+  if (!manifest) return Result.ok(null);
+
+  const entries: GitTreeIndexEntry[] = [];
+  let hasMore = false;
+  for (const page of manifest.pages) {
+    if (cursor && page.lastName.localeCompare(cursor) <= 0) continue;
+    const pageRes = await readTreeIndexPageResult(args, treeOid, page);
+    if (Result.isError(pageRes)) return pageRes;
+    const candidates = pageRes.value.entries.filter((entry) => !cursor || entry.name.localeCompare(cursor) > 0);
+    const remaining = limit - entries.length;
+    entries.push(...candidates.slice(0, remaining));
+    if (candidates.length > remaining || entries.length >= limit) {
+      hasMore = candidates.length > remaining || page.page < manifest.pages[manifest.pages.length - 1]!.page;
+      break;
+    }
+  }
+  return Result.ok({ entries, nextCursor: hasMore && entries.length > 0 ? entries[entries.length - 1]!.name : null });
+}
+
 async function statForEntryResult(
   args: StreamProfileVfsRouteArgs,
   path: string,
@@ -305,6 +433,10 @@ async function statForEntryResult(
   if (Result.isError(headerRes)) return headerRes;
   if (headerRes.value.type !== "blob") return Result.err({ status: 500, message: "git tree file entry does not point at a blob" });
   return Result.ok({ path, type: entry.type, mode: entry.mode, oid: entry.oid, size: headerRes.value.size });
+}
+
+function statForIndexedEntry(path: string, entry: GitTreeIndexEntry): GitNodeStat {
+  return { path, type: entry.type, mode: entry.mode, oid: entry.oid, size: entry.type === "dir" ? 0 : entry.size };
 }
 
 type ResolvedGitPath = {
@@ -332,12 +464,18 @@ async function resolveGitPathResult(
   let currentPath = "/";
   const parts = path.split("/").filter(Boolean);
   for (let i = 0; i < parts.length; i++) {
-    const entriesRes = await loadTreeEntriesResult(args, treeOid);
-    if (Result.isError(entriesRes)) return entriesRes;
-    const entry = entriesRes.value.find((candidate) => candidate.name === parts[i]);
+    const indexedEntryRes = await findIndexedTreeEntryResult(args, treeOid, parts[i]!);
+    if (Result.isError(indexedEntryRes)) return indexedEntryRes;
+    let entry: GitTreeEntry | GitTreeIndexEntry | null = indexedEntryRes.value;
+    if (!entry) {
+      const entriesRes = await loadTreeEntriesResult(args, treeOid);
+      if (Result.isError(entriesRes)) return entriesRes;
+      entry = entriesRes.value.find((candidate) => candidate.name === parts[i]) ?? null;
+    }
     if (!entry) return Result.err({ status: 404, message: "path not found" });
     currentPath = childPath(currentPath, entry.name);
     if (i === parts.length - 1) {
+      if ("size" in entry) return Result.ok({ commitOid, rootTreeOid: rootTreeRes.value, node: statForIndexedEntry(currentPath, entry) });
       const statRes = await statForEntryResult(args, currentPath, entry);
       if (Result.isError(statRes)) return statRes;
       return Result.ok({ commitOid, rootTreeOid: rootTreeRes.value, node: statRes.value });
@@ -399,10 +537,20 @@ async function readdir(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const resolvedRes = await resolveGitPathResult(args, commitRes.value, pathRes.value);
   if (Result.isError(resolvedRes)) return responseForError(args, resolvedRes.error);
   if (resolvedRes.value.node.type !== "dir") return args.respond.badRequest("path is not a directory");
+  const cursor = args.url.searchParams.get("cursor");
+  const indexedPageRes = await readIndexedTreePageResult(args, resolvedRes.value.node.oid, cursor, limit);
+  if (Result.isError(indexedPageRes)) return responseForError(args, indexedPageRes.error);
+  if (indexedPageRes.value) {
+    return args.respond.json(200, {
+      commitOid: commitRes.value,
+      path: pathRes.value,
+      entries: indexedPageRes.value.entries.map((entry) => statForIndexedEntry(childPath(pathRes.value, entry.name), entry)),
+      nextCursor: indexedPageRes.value.nextCursor,
+    } satisfies GitReaddirResponse);
+  }
   const entriesRes = await loadTreeEntriesResult(args, resolvedRes.value.node.oid);
   if (Result.isError(entriesRes)) return responseForError(args, entriesRes.error);
   const sorted = entriesRes.value.slice().sort((a, b) => a.name.localeCompare(b.name));
-  const cursor = args.url.searchParams.get("cursor");
   const start = cursor ? sorted.findIndex((entry) => entry.name > cursor) : 0;
   const safeStart = start < 0 ? sorted.length : start;
   const page = sorted.slice(safeStart, safeStart + limit);
@@ -450,6 +598,109 @@ async function blobByPath(args: StreamProfileVfsRouteArgs): Promise<Response> {
   if (rangeRes.value) headers["content-range"] = `bytes ${rangeRes.value.start}-${rangeRes.value.end}/${resolvedRes.value.node.size}`;
   const body = bytesRes.value.body.buffer.slice(bytesRes.value.body.byteOffset, bytesRes.value.body.byteOffset + bytesRes.value.body.byteLength) as ArrayBuffer;
   return new Response(body, { status: rangeRes.value ? 206 : 200, headers });
+}
+
+async function treeOidForIndexRequestResult(
+  args: StreamProfileVfsRouteArgs,
+  body: Partial<GitPublishTreeIndexRequest>
+): Promise<Result<string, GitServerError>> {
+  const config = profileConfig(args);
+  if (typeof body.treeOid === "string" && body.treeOid.trim() !== "") {
+    const treeOid = body.treeOid.trim();
+    if (!oidPattern(config.objectFormat).test(treeOid)) return Result.err({ status: 400, message: "treeOid is invalid" });
+    const headerRes = await readLooseGitObjectHeaderResult({
+      repoStream: args.stream,
+      objectStore: args.objectStore,
+      format: config.objectFormat,
+      oid: treeOid,
+    });
+    if (Result.isError(headerRes)) return headerRes;
+    if (headerRes.value.type !== "tree") return Result.err({ status: 400, message: "treeOid must point at a tree object" });
+    return Result.ok(treeOid);
+  }
+
+  const commitRes = await commitOidFromValuesResult(args, {
+    commit: typeof body.commit === "string" ? body.commit : null,
+    ref: typeof body.ref === "string" ? body.ref : null,
+  });
+  if (Result.isError(commitRes)) return commitRes;
+  const pathRes = canonicalGitPathResult(typeof body.path === "string" ? body.path : "/");
+  if (Result.isError(pathRes)) return pathRes;
+  const resolvedRes = await resolveGitPathResult(args, commitRes.value, pathRes.value);
+  if (Result.isError(resolvedRes)) return resolvedRes;
+  if (resolvedRes.value.node.type !== "dir") return Result.err({ status: 400, message: "path must resolve to a tree" });
+  return Result.ok(resolvedRes.value.node.oid);
+}
+
+async function indexEntryForTreeEntryResult(
+  args: StreamProfileVfsRouteArgs,
+  entry: GitTreeEntry
+): Promise<Result<GitTreeIndexEntry, GitServerError>> {
+  if (entry.type === "dir") return Result.ok({ ...entry, size: 0 });
+  const headerRes = await readLooseGitObjectHeaderResult({
+    repoStream: args.stream,
+    objectStore: args.objectStore,
+    format: profileConfig(args).objectFormat,
+    oid: entry.oid,
+  });
+  if (Result.isError(headerRes)) return headerRes;
+  if (headerRes.value.type !== "blob") return Result.err({ status: 500, message: "git tree file entry does not point at a blob" });
+  return Result.ok({ ...entry, size: headerRes.value.size });
+}
+
+async function publishTreeIndex(args: StreamProfileVfsRouteArgs): Promise<Response> {
+  const bodyRes = await readRequestJsonResult(args.req, "git tree index request");
+  if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
+  const body = bodyRes.value && typeof bodyRes.value === "object" && !Array.isArray(bodyRes.value)
+    ? (bodyRes.value as Partial<GitPublishTreeIndexRequest>)
+    : {};
+  const treeOidRes = await treeOidForIndexRequestResult(args, body);
+  if (Result.isError(treeOidRes)) return responseForError(args, treeOidRes.error);
+  const treeOid = treeOidRes.value;
+  const entriesRes = await loadTreeEntriesResult(args, treeOid);
+  if (Result.isError(entriesRes)) return responseForError(args, entriesRes.error);
+  const pageSize = treeIndexPageSize(profileConfig(args), body.pageSize);
+  const createdAt = new Date().toISOString();
+  const indexedEntries: GitTreeIndexEntry[] = [];
+  for (const entry of entriesRes.value.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+    const indexedRes = await indexEntryForTreeEntryResult(args, entry);
+    if (Result.isError(indexedRes)) return responseForError(args, indexedRes.error);
+    indexedEntries.push(indexedRes.value);
+  }
+
+  const config = profileConfig(args);
+  const manifestPages: GitTreeIndexManifest["pages"] = [];
+  for (let start = 0, page = 0; start < indexedEntries.length; start += pageSize, page++) {
+    const entries = indexedEntries.slice(start, start + pageSize);
+    const firstName = entries[0]?.name ?? "";
+    const lastName = entries[entries.length - 1]?.name ?? "";
+    const uri = gitTreeIndexPageKey(args.stream, config.objectFormat, treeOid, pageSize, page);
+    const pageBody: GitTreeIndexPage = {
+      repoId: args.stream,
+      treeOid,
+      page,
+      firstName,
+      lastName,
+      entries,
+      createdAt,
+    };
+    const pagePutRes = await putObjectStoreResult(args.objectStore, uri, TEXT_ENCODER.encode(JSON.stringify(pageBody)), "application/json");
+    if (Result.isError(pagePutRes)) return responseForError(args, pagePutRes.error);
+    manifestPages.push({ page, firstName, lastName, count: entries.length, uri });
+  }
+
+  const manifest: GitTreeIndexManifest = {
+    repoId: args.stream,
+    treeOid,
+    entryCount: indexedEntries.length,
+    pageSize,
+    pages: manifestPages,
+    createdAt,
+  };
+  const manifestKey = gitTreeIndexManifestKey(args.stream, config.objectFormat, treeOid);
+  const manifestPutRes = await putObjectStoreResult(args.objectStore, manifestKey, TEXT_ENCODER.encode(JSON.stringify(manifest)), "application/json");
+  if (Result.isError(manifestPutRes)) return responseForError(args, manifestPutRes.error);
+  return args.respond.json(200, { index: manifest } satisfies GitPublishTreeIndexResponse);
 }
 
 function latestUploadedThrough(args: StreamProfileVfsRouteArgs): bigint {
@@ -780,6 +1031,7 @@ export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promi
     }
   }
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-ref-checkpoint") return publishRefCheckpoint(args);
+  if (args.req.method === "POST" && first === "maintenance" && second === "publish-tree-index") return publishTreeIndex(args);
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-pack") return publishPack(args);
   if (args.req.method === "POST" && first === "maintenance" && second === "verify-reachability") return verifyReachability(args);
   if (args.req.method === "GET" && first === "smart" && second === "info" && third === "refs") return smartInfoRefs(args);

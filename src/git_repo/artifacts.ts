@@ -49,3 +49,19 @@ export function gitRefCheckpointKey(repoStream: string, format: GitObjectFormat,
 export function gitLatestRefCheckpointKey(repoStream: string, format: GitObjectFormat): string {
   return `${gitObjectArtifactPrefix(repoStream, format)}/${gitLatestRefCheckpointPath()}`;
 }
+
+export function gitTreeIndexManifestPath(treeOid: GitOid): string {
+  return `tree-indexes/${treeOid}/index.json`;
+}
+
+export function gitTreeIndexPagePath(treeOid: GitOid, pageSize: number, page: number): string {
+  return `tree-indexes/${treeOid}/pages-${pageSize}/${String(page).padStart(8, "0")}.json`;
+}
+
+export function gitTreeIndexManifestKey(repoStream: string, format: GitObjectFormat, treeOid: GitOid): string {
+  return `${gitObjectArtifactPrefix(repoStream, format)}/${gitTreeIndexManifestPath(treeOid)}`;
+}
+
+export function gitTreeIndexPageKey(repoStream: string, format: GitObjectFormat, treeOid: GitOid, pageSize: number, page: number): string {
+  return `${gitObjectArtifactPrefix(repoStream, format)}/${gitTreeIndexPagePath(treeOid, pageSize, page)}`;
+}

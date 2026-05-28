@@ -453,6 +453,91 @@ describe("git-repo profile", () => {
     }
   });
 
+  test("publishes paged tree index artifacts for large directory reads", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-tree-index-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const stream = "git/test/tree-index";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        materialization: {
+          treeIndexPageSize: 2,
+        },
+      });
+
+      const blobs = Array.from({ length: 5 }, (_, index) => {
+        const name = `file-${String(index + 1).padStart(3, "0")}.txt`;
+        const object = writeGitBlob(`${name}\n`);
+        return { name, object };
+      });
+      const blobArtifacts = [];
+      for (const blob of blobs) {
+        blobArtifacts.push(await writeGitObjectApp(app, base, blob.object));
+      }
+      const tree = writeGitTreeResult(blobs.map((blob) => ({ mode: "100644", name: blob.name, oid: blob.object.oid })));
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commitObject = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_095,
+          timezone: "+0000",
+        },
+        message: "Tree index source\n",
+      });
+      expect(Result.isOk(commitObject)).toBe(true);
+      if (Result.isError(commitObject)) throw new Error(commitObject.error.message);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commitObject.value);
+      const objectArtifacts = [...blobArtifacts, treeArtifact, commitArtifact];
+
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "tree-index-txn",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commitObject.value.oid }],
+          objects: {
+            looseObjectUris: objectArtifacts.map((artifact) => artifact.objectKey),
+            objectCount: objectArtifacts.length,
+            bytes: objectArtifacts.reduce((sum, artifact) => sum + artifact.framedSize, 0),
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const published = await fetchJsonApp(app, `${base}/_git/maintenance/publish-tree-index`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ref: "main", path: "/", pageSize: 2 }),
+      });
+      expect(published.status).toBe(200);
+      expect(published.body.index.treeOid).toBe(tree.value.oid);
+      expect(published.body.index.entryCount).toBe(5);
+      expect(published.body.index.pages.map((page: { count: number }) => page.count)).toEqual([2, 2, 1]);
+
+      const firstPage = await fetchJsonApp(app, `${base}/_git/readdir?ref=main&path=/&limit=2`, { method: "GET" });
+      expect(firstPage.status).toBe(200);
+      expect(firstPage.body.entries.map((entry: { path: string }) => entry.path)).toEqual(["/file-001.txt", "/file-002.txt"]);
+      expect(firstPage.body.nextCursor).toBe("file-002.txt");
+
+      const secondPage = await fetchJsonApp(app, `${base}/_git/readdir?ref=main&path=/&limit=2&cursor=file-002.txt`, { method: "GET" });
+      expect(secondPage.status).toBe(200);
+      expect(secondPage.body.entries.map((entry: { path: string }) => entry.path)).toEqual(["/file-003.txt", "/file-004.txt"]);
+      expect(secondPage.body.nextCursor).toBe("file-004.txt");
+
+      const stat = await fetchJsonApp(app, `${base}/_git/stat?ref=main&path=${encodeURIComponent("/file-004.txt")}`, { method: "GET" });
+      expect(stat.status).toBe(200);
+      expect(stat.body.node.oid).toBe(blobs[3]!.object.oid);
+      expect(stat.body.node.size).toBe(Buffer.byteLength("file-004.txt\n"));
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects invalid ref transactions before updating refs", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-git-ref-validation-"));
     const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
