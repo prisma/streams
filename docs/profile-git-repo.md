@@ -11,7 +11,9 @@ path-local commit/tree/blob reads. Ref transactions use a durable stream
 expected-offset append to avoid cross-process races. Git CLI-backed bundle/pack
 export and bundle/pack/local-bare-repo import are implemented as profile
 endpoints, pack/idx artifact maintenance publication, and smart HTTP
-upload-pack/receive-pack compatibility are implemented.
+upload-pack/receive-pack compatibility are implemented. Upload-pack forwards
+Git protocol v2 negotiation and supports blob filters when `fetch.allowFilter`
+is enabled.
 
 Install it on an empty JSON stream:
 
@@ -288,8 +290,16 @@ POST /{repo}.git/git-upload-pack
 
 Fetch materializes the current canonical refs and loose objects into a
 temporary bare repository and delegates protocol bytes to Git's
-`upload-pack --stateless-rpc`. When `http.allowPush=true`, the same profile
-also exposes receive-pack:
+`upload-pack --stateless-rpc`. The profile forwards the HTTP `Git-Protocol`
+header to the Git process, so protocol v2 clients can negotiate fetch
+capabilities. `fetch.allowFilter=true` configures the temporary repository with
+`uploadpack.allowFilter=true`, enabling partial-clone requests such as
+`git clone --filter=blob:none`. If `fetch.allowFilter=false`, upload-pack
+requests containing a filter line are rejected before invoking Git. If
+`fetch.allowDepth=false`, shallow fetch requests containing deepen commands are
+rejected before invoking Git.
+
+When `http.allowPush=true`, the same profile also exposes receive-pack:
 
 ```text
 GET  /_git/smart/info/refs?service=git-receive-pack
@@ -309,7 +319,7 @@ publish the pushed refs.
 
 The top-level route maps `{repo}` directly to the stream name, so streams
 containing slashes can be addressed with raw slashes or percent encoding.
-Partial clone filters and packfile-uri support are not implemented yet.
+Packfile-uri support is not implemented yet.
 
 Import accepts:
 
@@ -415,8 +425,9 @@ The older `vfs-repo` compatibility profile can also mirror commits into
   maintenance publication are implemented. Incremental pack compaction policy is
   still minimal.
 - Upload-pack and receive-pack smart HTTP are implemented under `_git/smart/*`
-  and `/{repo}.git/*` when enabled in profile config. Partial clone filters and
-  packfile-uri support are not implemented.
+  and `/{repo}.git/*` when enabled in profile config. Upload-pack supports
+  protocol v2 negotiation and blob filters when `fetch.allowFilter=true`.
+  Packfile-uri support is not implemented.
 - `workspace-fs` checkout/read/commit paths can use `git-repo` as the canonical
   repository. The older `vfs-repo` profile still retains compatibility VFS
   trees and refs.

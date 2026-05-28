@@ -55,12 +55,13 @@ function runGitChecked(cmd: string[], cwd?: string): void {
 
 async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
   const proc = Bun.spawn({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stderr] = await Promise.all([
+  const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
+    new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   if (exitCode !== 0) {
-    throw new Error(`git command failed: ${cmd.join(" ")}\n${stderr}`);
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${stdout}${stderr}`);
   }
 }
 
@@ -86,6 +87,7 @@ try {
         objectFormat: "sha1",
         defaultBranch: "main",
         http: { enabled: true, allowFetch: true, allowPush: true },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: false },
       },
     }),
   });
@@ -192,6 +194,11 @@ try {
     method: "GET",
   }))).text();
 
+  const partialClone = join(root, "partial-clone");
+  await runGitCheckedAsync(["git", "clone", "--filter=blob:none", "--no-checkout", remote, partialClone]);
+  const partialFilter = runGitOutput(["git", "-C", partialClone, "config", "--get", "remote.origin.partialclonefilter"]);
+  const partialMissing = runGitOutput(["git", "-C", partialClone, "rev-list", "--objects", "--missing=print", "HEAD"]);
+
   console.log("git-repo profile demo");
   console.log(`stream=${stream}`);
   console.log(`blob=${blob.oid}`);
@@ -212,6 +219,8 @@ try {
   console.log(`smart HTTP pushed ref=${pushedRefs.refs["refs/heads/pushed"]}`);
   console.log(`smart HTTP pushed commit=${pushedOid}`);
   console.log(`smart HTTP pushed file=${JSON.stringify(pushedBlob)}`);
+  console.log(`partial clone filter=${partialFilter}`);
+  console.log(`partial clone promised README=${partialMissing.includes(`?${blob.oid}`)}`);
   console.log(`mockR2 puts=${store.stats().puts} getBytes=${store.stats().getBytes}`);
 } finally {
   server.stop(true);

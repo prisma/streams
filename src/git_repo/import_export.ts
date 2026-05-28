@@ -39,6 +39,7 @@ import type {
 
 type GitImportExportArgs = GitRepoServiceArgs & {
   config: GitRepoProfileConfig;
+  gitProtocol?: string | null;
 };
 
 type GitCliObject = {
@@ -77,10 +78,11 @@ function maxPushBytes(config: GitRepoProfileConfig): number {
 function runGitResult(
   config: GitRepoProfileConfig,
   args: string[],
-  opts: { input?: Uint8Array; cwd?: string; maxBuffer?: number; status?: GitRepoServiceError["status"] } = {}
+  opts: { input?: Uint8Array; cwd?: string; maxBuffer?: number; status?: GitRepoServiceError["status"]; env?: Record<string, string> } = {}
 ): Result<Buffer, GitRepoServiceError> {
   const proc = spawnSync(gitBinary(config), args, {
     cwd: opts.cwd,
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
     input: opts.input ? Buffer.from(opts.input.buffer, opts.input.byteOffset, opts.input.byteLength) : undefined,
     maxBuffer: opts.maxBuffer ?? maxImportExportBytes(config),
   });
@@ -569,6 +571,55 @@ function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: st
   return Result.ok(undefined);
 }
 
+function configureUploadPackRepoResult(config: GitRepoProfileConfig, gitDir: string): Result<void, GitRepoServiceError> {
+  const entries = [
+    ["uploadpack.allowFilter", config.fetch?.allowFilter === true ? "true" : "false"],
+    ["uploadpack.allowReachableSHA1InWant", "true"],
+    ["uploadpack.allowTipSHA1InWant", "true"],
+    ["uploadpack.allowRefInWant", "true"],
+  ];
+  for (const [key, value] of entries) {
+    const configRes = runGitResult(config, ["--git-dir", gitDir, "config", key, value]);
+    if (Result.isError(configRes)) return configRes;
+  }
+  return Result.ok(undefined);
+}
+
+function gitProtocolEnv(value: string | null | undefined): Record<string, string> | undefined {
+  const protocol = value?.trim();
+  if (!protocol || protocol.length > 1024 || /[\0\r\n]/.test(protocol)) return undefined;
+  return { GIT_PROTOCOL: protocol };
+}
+
+function decodePktLinePayloads(bytes: Uint8Array): string[] | null {
+  const payloads: string[] = [];
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    if (offset + 4 > bytes.byteLength) return null;
+    const header = TEXT_DECODER.decode(bytes.slice(offset, offset + 4));
+    if (!/^[0-9a-fA-F]{4}$/.test(header)) return null;
+    const length = Number.parseInt(header, 16);
+    offset += 4;
+    if (length === 0 || length === 1 || length === 2) continue;
+    if (length < 4 || offset + length - 4 > bytes.byteLength) return null;
+    payloads.push(TEXT_DECODER.decode(bytes.slice(offset, offset + length - 4)));
+    offset += length - 4;
+  }
+  return payloads;
+}
+
+function validateUploadPackRequestResult(config: GitRepoProfileConfig, requestBody: Uint8Array): Result<void, GitRepoServiceError> {
+  const payloads = decodePktLinePayloads(requestBody);
+  if (!payloads) return Result.ok(undefined);
+  if (config.fetch?.allowFilter !== true && payloads.some((payload) => payload.startsWith("filter ") || payload.includes(" filter "))) {
+    return Result.err(gitError(400, "git upload-pack filter fetches are disabled for this git-repo profile"));
+  }
+  if (config.fetch?.allowDepth === false && payloads.some((payload) => payload.startsWith("deepen ") || payload.startsWith("deepen-since ") || payload.startsWith("deepen-not "))) {
+    return Result.err(gitError(400, "git upload-pack shallow fetches are disabled for this git-repo profile"));
+  }
+  return Result.ok(undefined);
+}
+
 async function importObjectsFromMaybeEmptyGitDirResult(
   args: GitImportExportArgs,
   gitDir: string,
@@ -666,8 +717,11 @@ export async function gitUploadPackAdvertiseRefsResult(
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
+    const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
+    if (Result.isError(configRes)) return configRes;
     const refsRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
       maxBuffer: maxImportExportBytes(args.config),
+      env: gitProtocolEnv(args.gitProtocol),
     });
     if (Result.isError(refsRes)) return refsRes;
     return Result.ok({
@@ -685,13 +739,18 @@ export async function gitUploadPackRpcResult(
 ): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
   if (!smartHttpFetchEnabled(args.config)) return Result.err(gitError(404, "git upload-pack is disabled for this git-repo profile"));
   if (requestBody.byteLength > maxImportExportBytes(args.config)) return Result.err(gitError(400, "git-upload-pack request exceeds maxBytes"));
+  const requestRes = validateUploadPackRequestResult(args.config, requestBody);
+  if (Result.isError(requestRes)) return requestRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-upload-pack-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
+    const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
+    if (Result.isError(configRes)) return configRes;
     const packRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", materializedRes.value.gitDir], {
       input: requestBody,
       maxBuffer: maxImportExportBytes(args.config),
+      env: gitProtocolEnv(args.gitProtocol),
     });
     if (Result.isError(packRes)) return packRes;
     return Result.ok({
@@ -715,6 +774,7 @@ export async function gitReceivePackAdvertiseRefsResult(
     if (Result.isError(configRes)) return configRes;
     const refsRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
       maxBuffer: maxPushBytes(args.config),
+      env: gitProtocolEnv(args.gitProtocol),
     });
     if (Result.isError(refsRes)) return refsRes;
     return Result.ok({
@@ -742,6 +802,7 @@ export async function gitReceivePackRpcResult(
     const receiveRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", materializedRes.value.gitDir], {
       input: requestBody,
       maxBuffer: maxPushBytes(args.config),
+      env: gitProtocolEnv(args.gitProtocol),
     });
     if (Result.isError(receiveRes)) return receiveRes;
 

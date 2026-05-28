@@ -48,13 +48,19 @@ function runGitOutput(cmd: string[], cwd?: string): string {
 
 async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
   const proc = Bun.spawn({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stderr] = await Promise.all([
+  const [exitCode, stdout, stderr] = await Promise.all([
     proc.exited,
+    new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   if (exitCode !== 0) {
-    throw new Error(`git command failed: ${cmd.join(" ")}\n${stderr}`);
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${stdout}${stderr}`);
   }
+}
+
+function pktLine(text: string): Buffer {
+  const body = Buffer.from(text);
+  return Buffer.concat([Buffer.from((body.byteLength + 4).toString(16).padStart(4, "0")), body]);
 }
 
 async function installGitRepoProfile(
@@ -519,6 +525,91 @@ describe("git-repo profile", () => {
       expect(verified.body.status).toBe("verified");
       expect(verified.body.refs["refs/heads/main"]).toBe(pushedOid);
       expect(verified.body.objectCount).toBe(3);
+    } finally {
+      server.stop(true);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("supports partial clone blob filters through upload-pack", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-partial-clone-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    try {
+      const stream = "git-filter-test";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        http: { enabled: true, allowFetch: true, allowPush: false },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: false },
+      });
+
+      const blob = writeGitBlob("large-ish blob that should stay promised\n".repeat(1024));
+      const tree = writeGitTreeResult([{ mode: "100644", name: "big.txt", oid: blob.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commit = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_200,
+          timezone: "+0000",
+        },
+        message: "Partial clone source\n",
+      });
+      expect(Result.isOk(commit)).toBe(true);
+      if (Result.isError(commit)) throw new Error(commit.error.message);
+
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commit.value);
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "partial-clone-source",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commit.value.oid }],
+          objects: {
+            looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const v2Advertised = await fetch(`http://127.0.0.1:${server.port}/${stream}.git/info/refs?service=git-upload-pack`, {
+        method: "GET",
+        headers: { "git-protocol": "version=2" },
+      });
+      expect(v2Advertised.status).toBe(200);
+      expect(Buffer.from(await v2Advertised.arrayBuffer()).toString("utf8")).toContain("filter");
+
+      const cloneDir = join(root, "clone");
+      const remote = `http://127.0.0.1:${server.port}/${stream}.git`;
+      await runGitCheckedAsync(["git", "clone", "--filter=blob:none", "--no-checkout", remote, cloneDir]);
+      expect(runGitOutput(["git", "-C", cloneDir, "config", "--get", "remote.origin.promisor"])).toBe("true");
+      expect(runGitOutput(["git", "-C", cloneDir, "config", "--get", "remote.origin.partialclonefilter"])).toBe("blob:none");
+      const missing = runGitOutput(["git", "-C", cloneDir, "rev-list", "--objects", "--missing=print", "HEAD"]);
+      expect(missing).toContain(`?${blob.oid}`);
+
+      const disallowedStream = "git-filter-disabled";
+      const disallowedBase = `http://local/v1/stream/${encodeURIComponent(disallowedStream)}`;
+      await installGitRepoProfile(app, disallowedStream, {
+        http: { enabled: true, allowFetch: true, allowPush: false },
+        fetch: { protocolVersion: 2, allowFilter: false, allowDepth: true, allowPackfileUris: false },
+      });
+      const rejected = await app.fetch(new Request(`${disallowedBase}/_git/smart/git-upload-pack`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-git-upload-pack-request",
+          "git-protocol": "version=2",
+        },
+        body: Buffer.concat([pktLine("command=fetch\n"), pktLine("filter blob:none\n"), Buffer.from("0000")]),
+      }));
+      expect(rejected.status).toBe(400);
+      expect(await rejected.text()).toContain("filter fetches are disabled");
     } finally {
       server.stop(true);
       app.close();

@@ -604,6 +604,7 @@ async function smartInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response>
     objectStore: args.objectStore,
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
+    gitProtocol: args.req.headers.get("git-protocol"),
   };
   const refsRes = service === "git-upload-pack"
     ? await gitUploadPackAdvertiseRefsResult(requestArgs)
@@ -622,6 +623,7 @@ async function uploadPackRpc(args: StreamProfileVfsRouteArgs): Promise<Response>
     objectStore: args.objectStore,
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
+    gitProtocol: args.req.headers.get("git-protocol"),
   }, requestBody);
   if (Result.isError(rpcRes)) return responseForError(args, rpcRes.error);
   return binaryResponse(rpcRes.value);
@@ -635,6 +637,7 @@ async function receivePackRpc(args: StreamProfileVfsRouteArgs): Promise<Response
     objectStore: args.objectStore,
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
+    gitProtocol: args.req.headers.get("git-protocol"),
   }, requestBody);
   if (Result.isError(rpcRes)) return responseForError(args, rpcRes.error);
   return binaryResponse(rpcRes.value);
