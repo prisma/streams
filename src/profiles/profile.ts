@@ -5,6 +5,8 @@ import type { TouchProcessorManager } from "../touch/manager";
 import type { CanonicalChange } from "../touch/canonical_change";
 import type { TouchConfig } from "../touch/spec";
 import type { AggSummaryState } from "../search/agg_format";
+import type { StreamReader } from "../reader";
+import type { AppendSuccess } from "../ingest";
 
 export const STREAM_PROFILE_API_VERSION = "durable.streams/profile/v1" as const;
 export const DEFAULT_STREAM_PROFILE = "generic" as const;
@@ -117,11 +119,55 @@ export type StreamTouchRouteArgs = {
   respond: StreamProfileTouchResponder;
 };
 
+export type StreamProfileVfsResponder = {
+  json(status: number, body: any, headers?: HeadersInit): Response;
+  badRequest(message: string): Response;
+  internalError(message?: string): Response;
+  notFound(message?: string): Response;
+  conflict(message: string, headers?: HeadersInit): Response;
+};
+
+export type StreamProfileAppendJsonRecord = {
+  value: unknown;
+  routingKey?: string | null;
+};
+
+export type StreamProfileAppendJsonError = {
+  kind: "overloaded" | "append_failed" | "content_type_mismatch" | "gone" | "not_found" | "closed";
+  message: string;
+};
+
+export type StreamProfileAppendJsonResult = {
+  result: AppendSuccess;
+};
+
+export type StreamProfileVfsRouteArgs = {
+  segments: string[];
+  req: Request;
+  url: URL;
+  stream: string;
+  streamRow: StreamRow;
+  profile: StreamProfileSpec;
+  db: SqliteDurableStore;
+  reader: StreamReader;
+  ensureJsonStream(args: { stream: string; ttlSeconds?: number | null }): Result<void, { message: string }>;
+  appendJsonRecords(args: {
+    stream: string;
+    records: StreamProfileAppendJsonRecord[];
+    ttlSeconds?: number | null;
+  }): Promise<Result<StreamProfileAppendJsonResult, StreamProfileAppendJsonError>>;
+  respond: StreamProfileVfsResponder;
+};
+
 export interface StreamTouchCapability {
   getTouchConfig(profile: StreamProfileSpec): TouchConfig | null;
   syncState(args: { db: SqliteDurableStore; stream: string; profile: StreamProfileSpec }): void;
   deriveCanonicalChanges(record: unknown, profile: StreamProfileSpec): CanonicalChange[];
   handleRoute?(args: StreamTouchRouteArgs): Promise<Response>;
+}
+
+export interface StreamProfileVfsCapability {
+  handleRoute(args: StreamProfileVfsRouteArgs): Promise<Response>;
 }
 
 export interface StreamProfileJsonIngestCapability {
@@ -146,6 +192,7 @@ export interface StreamProfileDefinition {
   touch?: StreamTouchCapability;
   jsonIngest?: StreamProfileJsonIngestCapability;
   metrics?: StreamProfileMetricsCapability;
+  vfs?: StreamProfileVfsCapability;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {

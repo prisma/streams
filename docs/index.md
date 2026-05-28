@@ -27,6 +27,7 @@ and tooling.
 - [profile-metrics.md](./profile-metrics.md) — reference for the built-in `metrics` profile
 - [profile-state-protocol.md](./profile-state-protocol.md) — reference for the `state-protocol` profile
 - [profile-evlog.md](./profile-evlog.md) — design and reference for the `evlog` profile
+- [profile-vfs-repo.md](./profile-vfs-repo.md) — Git-like VFS profile, workspace overlays, and just-bash integration
 - [schemas.md](./schemas.md) — schema registry and lens behavior
 - [durable-lens-v1-schema.md](./durable-lens-v1-schema.md) — reference schema for `durable.lens/v1`
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations

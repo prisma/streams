@@ -58,10 +58,12 @@
     "test:conformance": "vitest run -c vitest.conformance.config.ts",
     "test:conformance:local": "vitest run -c vitest.conformance.local.config.ts",
     "bench:synth": "bun run experiments/bench/synth.ts",
+    "bench:vfs-commit-stress": "bun run experiments/bench/vfs_commit_stress.ts",
     "demo:ingest": "bun run experiments/demo/wal_demo_ingest.ts",
     "demo:subscribe": "bun run experiments/demo/wal_demo_subscribe.ts",
     "demo:live-fields": "bun run experiments/demo/live_fields_app.ts",
     "demo:gharchive": "bun run experiments/demo/gharchive_demo.ts",
+    "demo:vfs-just-bash": "bun run experiments/demo/vfs_just_bash_demo.ts",
     "demo:compute-verify": "bun run experiments/demo/compute/verify.ts"
   },
   "exports": {
@@ -88,6 +90,7 @@
     "ajv": "^8.12.0",
     "better-result": "^2.7.0",
     "env-paths": "^3.0.0",
+    "just-bash": "^3.0.1",
     "proper-lockfile": "^4.1.2"
   }
 }

@@ -51,6 +51,11 @@ implementation.
 - `GET  /v1/stream/{name}/_profile` get stream profile metadata
 - `POST /v1/stream/{name}/_profile` update stream profile
 
+Profile-owned subresources may exist under a stream when the installed profile
+defines them. The `vfs-repo` profile owns `/_vfs/*`; see
+[profile-vfs-repo.md](./profile-vfs-repo.md). These endpoints are outside the
+generic Durable Streams append/read contract.
+
 ### 2.4 Search and inspection subresources
 
 - `GET  /v1/stream/{name}/_search?q=...` search

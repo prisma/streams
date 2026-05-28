@@ -46,6 +46,7 @@ Current built-ins:
 - `generic`
 - `metrics`
 - `state-protocol`
+- `vfs-repo`
 
 ## `generic`
 
@@ -110,6 +111,22 @@ It means:
 
 Schemas remain optional on `state-protocol` streams. If present, they validate
 the JSON payload shape, but they do not own live/touch behavior.
+
+## `vfs-repo`
+
+`vfs-repo` is the built-in profile for Git-like virtual filesystem repositories.
+
+It means:
+
+- the control stream content type must be `application/json`
+- ref updates are appended to the control stream with ref routing keys
+- immutable blob, chunk, tree-page, and commit objects are stored in companion
+  JSON streams under the repo stream name
+- durable workspace operation streams hold draft writes until commit
+- `/_vfs/*` endpoints provide checkout, stat, readdir, blob reads, workspace
+  ops/status/commit/discard, logs, and small batch reads
+
+See [profile-vfs-repo.md](./profile-vfs-repo.md) for the detailed contract.
 
 ## Ownership Matrix
 

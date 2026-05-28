@@ -53,7 +53,9 @@ import {
   parseProfileUpdateResult,
   resolveJsonIngestCapability,
   resolveTouchCapability,
+  resolveVfsCapability,
   type StreamTouchRoute,
+  type StreamProfileAppendJsonRecord,
 } from "./profiles";
 import { dsError } from "./util/ds_error.ts";
 import { streamHash16Hex } from "./util/stream_paths";
@@ -1240,6 +1242,71 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     }
   };
 
+  const ensureJsonStream = (args: { stream: string; ttlSeconds?: number | null }): Result<void, { message: string }> => {
+    const contentType = "application/json";
+    let srow = db.getStream(args.stream);
+    if (srow && db.isDeleted(srow)) {
+      db.hardDeleteStream(args.stream);
+      srow = null;
+    }
+    if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
+      db.hardDeleteStream(args.stream);
+      srow = null;
+    }
+    if (srow) {
+      const existingContentType = normalizeContentType(srow.content_type) ?? srow.content_type;
+      if (existingContentType !== contentType) return Result.err({ message: "stream content-type mismatch" });
+      return Result.ok(undefined);
+    }
+    const ttlSeconds = args.ttlSeconds == null ? null : Math.max(1, Math.floor(args.ttlSeconds));
+    const expiresAtMs = ttlSeconds == null ? null : db.nowMs() + BigInt(ttlSeconds) * 1000n;
+    db.ensureStream(args.stream, { contentType, ttlSeconds, expiresAtMs, closed: false });
+    notifier.notifyDetailsChanged(args.stream);
+    return Result.ok(undefined);
+  };
+
+  const appendJsonRecords = async (args: {
+    stream: string;
+    records: StreamProfileAppendJsonRecord[];
+    ttlSeconds?: number | null;
+  }) => {
+    const ensureRes = ensureJsonStream({ stream: args.stream, ttlSeconds: args.ttlSeconds });
+    if (Result.isError(ensureRes)) {
+      return Result.err({ kind: "content_type_mismatch" as const, message: ensureRes.error.message });
+    }
+    const rows = args.records.map((record) => ({
+      routingKey: keyBytesFromString(record.routingKey ?? null),
+      contentType: "application/json",
+      payload: JSON_TEXT_ENCODER.encode(JSON.stringify(record.value)),
+    }));
+    const appendRes = await enqueueAppend({
+      stream: args.stream,
+      baseAppendMs: db.nowMs(),
+      rows,
+      contentType: "application/json",
+      close: false,
+    });
+    if (Result.isError(appendRes)) {
+      const err = appendRes.error;
+      if (err.kind === "overloaded") return Result.err({ kind: "overloaded" as const, message: "ingest queue full" });
+      if (err.kind === "not_found" || err.kind === "gone" || err.kind === "content_type_mismatch" || err.kind === "closed") {
+        return Result.err({ kind: err.kind, message: err.kind });
+      }
+      return Result.err({ kind: "append_failed" as const, message: "append failed" });
+    }
+    const payloadBytes = rows.reduce((sum, row) => sum + row.payload.byteLength, 0);
+    recordAppendOutcome({
+      stream: args.stream,
+      lastOffset: appendRes.value.lastOffset,
+      appendedRows: appendRes.value.appendedRows,
+      metricsBytes: payloadBytes,
+      ingestedBytes: payloadBytes,
+      touched: appendRes.value.appendedRows > 0,
+      closed: appendRes.value.closed,
+    });
+    return Result.ok({ result: appendRes.value });
+  };
+
   const decodeJsonRecords = (
     stream: string,
     records: Array<{ offset: bigint; payload: Uint8Array }>
@@ -1674,6 +1741,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isDetails = false;
         let isIndexStatus = false;
         let isRoutingKeys = false;
+        let vfsSegments: string[] | null = null;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
@@ -1697,23 +1765,32 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         } else if (segments[segments.length - 1] === "_routing_keys") {
           isRoutingKeys = true;
           segments.pop();
-        } else if (
-          segments.length >= 3 &&
-          segments[segments.length - 3] === "touch" &&
-          segments[segments.length - 2] === "templates" &&
-          segments[segments.length - 1] === "activate"
-        ) {
-          touchMode = { kind: "templates_activate" };
-          segments.splice(segments.length - 3, 3);
-        } else if (segments.length >= 2 && segments[segments.length - 2] === "touch" && segments[segments.length - 1] === "meta") {
-          touchMode = { kind: "meta" };
-          segments.splice(segments.length - 2, 2);
-        } else if (segments.length >= 2 && segments[segments.length - 2] === "touch" && segments[segments.length - 1] === "wait") {
-          touchMode = { kind: "wait" };
-          segments.splice(segments.length - 2, 2);
-        } else if (segments.length >= 2 && segments[segments.length - 2] === "pk") {
-          pathKeyParam = decodeURIComponent(segments[segments.length - 1]);
-          segments.splice(segments.length - 2, 2);
+        } else {
+          const vfsIndex = segments.lastIndexOf("_vfs");
+          if (vfsIndex >= 0) {
+            vfsSegments = segments.slice(vfsIndex + 1);
+            segments.splice(vfsIndex);
+          }
+        }
+        if (!vfsSegments) {
+          if (
+            segments.length >= 3 &&
+            segments[segments.length - 3] === "touch" &&
+            segments[segments.length - 2] === "templates" &&
+            segments[segments.length - 1] === "activate"
+          ) {
+            touchMode = { kind: "templates_activate" };
+            segments.splice(segments.length - 3, 3);
+          } else if (segments.length >= 2 && segments[segments.length - 2] === "touch" && segments[segments.length - 1] === "meta") {
+            touchMode = { kind: "meta" };
+            segments.splice(segments.length - 2, 2);
+          } else if (segments.length >= 2 && segments[segments.length - 2] === "touch" && segments[segments.length - 1] === "wait") {
+            touchMode = { kind: "wait" };
+            segments.splice(segments.length - 2, 2);
+          } else if (segments.length >= 2 && segments[segments.length - 2] === "pk") {
+            pathKeyParam = decodeURIComponent(segments[segments.length - 1]);
+            segments.splice(segments.length - 2, 2);
+          }
         }
         const streamPart = segments.join("/");
         if (streamPart.length === 0) return badRequest("missing stream name");
@@ -1818,6 +1895,30 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           }
 
           return badRequest("unsupported method");
+        }
+
+        if (vfsSegments) {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+
+          const profileRes = profiles.getProfileResult(stream, srow);
+          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+          const vfsCapability = resolveVfsCapability(profileRes.value);
+          if (!vfsCapability) return notFound("vfs not enabled");
+          return vfsCapability.handleRoute({
+            segments: vfsSegments,
+            req,
+            url,
+            stream,
+            streamRow: srow,
+            profile: profileRes.value,
+            db,
+            reader,
+            ensureJsonStream,
+            appendJsonRecords,
+            respond: { json, badRequest, internalError, notFound, conflict },
+          });
         }
 
         if (isDetails || isIndexStatus) {

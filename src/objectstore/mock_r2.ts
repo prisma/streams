@@ -49,6 +49,7 @@ export class MockR2Store implements ObjectStore {
   private getCount = 0;
   private headCount = 0;
   private listCount = 0;
+  private putBytes = 0;
   private memBytes = 0;
 
   constructor(opts: MockR2Options | MockR2Faults = {}) {
@@ -107,6 +108,7 @@ export class MockR2Store implements ObjectStore {
     const copy = new Uint8Array(bytes);
     const etag = this.mkEtag(copy);
     const size = copy.byteLength;
+    this.putBytes += size;
 
     const existing = this.data.get(key);
     if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
@@ -137,6 +139,7 @@ export class MockR2Store implements ObjectStore {
     await sleep(this.faults.putDelayMs ?? 0);
 
     const etag = await this.hashFile(path);
+    this.putBytes += size;
 
     const existing = this.data.get(key);
     if (existing?.bytes) this.memBytes -= existing.bytes.byteLength;
@@ -250,12 +253,13 @@ export class MockR2Store implements ObjectStore {
     return this.memBytes;
   }
 
-  stats(): { puts: number; gets: number; heads: number; lists: number; memoryBytes: number } {
+  stats(): { puts: number; gets: number; heads: number; lists: number; putBytes: number; memoryBytes: number } {
     return {
       puts: this.putCount,
       gets: this.getCount,
       heads: this.headCount,
       lists: this.listCount,
+      putBytes: this.putBytes,
       memoryBytes: this.memBytes,
     };
   }
@@ -265,5 +269,6 @@ export class MockR2Store implements ObjectStore {
     this.getCount = 0;
     this.headCount = 0;
     this.listCount = 0;
+    this.putBytes = 0;
   }
 }

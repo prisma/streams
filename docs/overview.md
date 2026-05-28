@@ -17,9 +17,13 @@ Every stream has a profile.
   default search/rollups, and object-store-native metrics companions.
 - `state-protocol` is the built-in live/touch profile for JSON State Protocol
   streams.
+- `vfs-repo` is the built-in Git-like virtual filesystem profile for durable
+  agent workspaces, lazy blob reads, CAS ref commits, and just-bash adapters.
 - Profiles define stream semantics; schemas define payload shape.
 
 See [stream-profiles.md](./stream-profiles.md).
+See [profile-vfs-repo.md](./profile-vfs-repo.md) for the VFS profile and
+just-bash demo.
 
 This repository currently contains two server modes:
 
