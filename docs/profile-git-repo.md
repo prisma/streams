@@ -10,8 +10,8 @@ remote object store, Git object encoding helpers, lazy object range reads, and
 path-local commit/tree/blob reads. Ref transactions use a durable stream
 expected-offset append to avoid cross-process races. Git CLI-backed bundle/pack
 export and bundle/pack/local-bare-repo import are implemented as profile
-endpoints, pack/idx artifact maintenance publication, and read-only upload-pack
-smart HTTP are implemented. Receive-pack push is follow-up work.
+endpoints, pack/idx artifact maintenance publication, and smart HTTP
+upload-pack/receive-pack compatibility are implemented.
 
 Install it on an empty JSON stream:
 
@@ -182,9 +182,13 @@ POST /v1/stream/{repo}/_git/maintenance/publish-ref-checkpoint
 POST /v1/stream/{repo}/_git/maintenance/publish-pack
 POST /v1/stream/{repo}/_git/maintenance/verify-reachability
 GET  /v1/stream/{repo}/_git/smart/info/refs?service=git-upload-pack
+GET  /v1/stream/{repo}/_git/smart/info/refs?service=git-receive-pack
 POST /v1/stream/{repo}/_git/smart/git-upload-pack
+POST /v1/stream/{repo}/_git/smart/git-receive-pack
 GET  /{repo}.git/info/refs?service=git-upload-pack
+GET  /{repo}.git/info/refs?service=git-receive-pack
 POST /{repo}.git/git-upload-pack
+POST /{repo}.git/git-receive-pack
 ```
 
 The path-local read endpoints accept either `commit=<oid>` or `ref=<ref>`.
@@ -273,7 +277,7 @@ objects are available from the canonical object-store namespace.
 ## Smart HTTP Facade
 
 When profile config sets `http.enabled=true` and `http.allowFetch=true`,
-`git-repo` exposes a read-only Git upload-pack facade:
+`git-repo` exposes a Git upload-pack facade:
 
 ```text
 GET  /_git/smart/info/refs?service=git-upload-pack
@@ -282,13 +286,30 @@ GET  /{repo}.git/info/refs?service=git-upload-pack
 POST /{repo}.git/git-upload-pack
 ```
 
-The facade materializes the current canonical refs and loose objects into a
+Fetch materializes the current canonical refs and loose objects into a
 temporary bare repository and delegates protocol bytes to Git's
-`upload-pack --stateless-rpc`. This is an initial compatibility layer for
-fetch/clone behavior. The top-level route maps `{repo}` directly to the stream
-name, so streams containing slashes can be addressed with raw slashes or percent
-encoding. It does not yet provide receive-pack push, partial clone filters, or
-packfile-uri support.
+`upload-pack --stateless-rpc`. When `http.allowPush=true`, the same profile
+also exposes receive-pack:
+
+```text
+GET  /_git/smart/info/refs?service=git-receive-pack
+POST /_git/smart/git-receive-pack
+GET  /{repo}.git/info/refs?service=git-receive-pack
+POST /{repo}.git/git-receive-pack
+```
+
+Push requests are unpacked and validated by Git in a temporary bare repository.
+The profile then imports the reachable loose objects into the repo-scoped
+object-store namespace and commits the resulting ref changes through the
+durable `git-repo` ref transaction service. This keeps the stream transaction
+as the canonical visibility point and avoids process-local ref races. If the
+canonical refs change after the temporary receive-pack accepts a push but before
+the stream transaction commits, the profile returns `409 Conflict` and does not
+publish the pushed refs.
+
+The top-level route maps `{repo}` directly to the stream name, so streams
+containing slashes can be addressed with raw slashes or percent encoding.
+Partial clone filters and packfile-uri support are not implemented yet.
 
 Import accepts:
 
@@ -393,9 +414,9 @@ The older `vfs-repo` compatibility profile can also mirror commits into
 - Loose Git object artifacts, bundle/pack import/export, and pack/idx
   maintenance publication are implemented. Incremental pack compaction policy is
   still minimal.
-- Read-only upload-pack smart HTTP is implemented under `_git/smart/*` and
-  `/{repo}.git/*` when enabled in profile config. Receive-pack push, partial
-  clone filters, and packfile-uri support are not implemented.
+- Upload-pack and receive-pack smart HTTP are implemented under `_git/smart/*`
+  and `/{repo}.git/*` when enabled in profile config. Partial clone filters and
+  packfile-uri support are not implemented.
 - `workspace-fs` checkout/read/commit paths can use `git-repo` as the canonical
   repository. The older `vfs-repo` profile still retains compatibility VFS
   trees and refs.

@@ -288,6 +288,14 @@ function parseTopLevelGitRoute(path: string): { stream: string; segments: string
     return stream ? { stream, segments: ["smart", "git-upload-pack"] } : null;
   }
 
+  const receivePackSuffix = ".git/git-receive-pack";
+  if (path.endsWith(receivePackSuffix)) {
+    const rawStream = path.slice(1, -receivePackSuffix.length);
+    if (rawStream.length === 0) return null;
+    const stream = decodeStream(rawStream);
+    return stream ? { stream, segments: ["smart", "git-receive-pack"] } : null;
+  }
+
   return null;
 }
 

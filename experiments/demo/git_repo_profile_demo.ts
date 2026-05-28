@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../../src/app";
@@ -41,8 +41,32 @@ async function writeObject(app: ReturnType<typeof createApp>, base: string, obje
   });
 }
 
+function runGitOutput(cmd: string[], cwd?: string): string {
+  const proc = Bun.spawnSync({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) {
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${new TextDecoder().decode(proc.stderr)}`);
+  }
+  return new TextDecoder().decode(proc.stdout).trim();
+}
+
+function runGitChecked(cmd: string[], cwd?: string): void {
+  runGitOutput(cmd, cwd);
+}
+
+async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
+  const proc = Bun.spawn({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${stderr}`);
+  }
+}
+
 const root = mkdtempSync(join(tmpdir(), "streams-git-repo-demo-"));
 const { app, store } = makeDemoApp(root);
+const server = Bun.serve({ port: 0, fetch: app.fetch });
 
 try {
   const stream = "git/demo/repo";
@@ -56,7 +80,13 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       apiVersion: "durable.streams/profile/v1",
-      profile: { kind: "git-repo", version: 1, objectFormat: "sha1", defaultBranch: "main" },
+      profile: {
+        kind: "git-repo",
+        version: 1,
+        objectFormat: "sha1",
+        defaultBranch: "main",
+        http: { enabled: true, allowFetch: true, allowPush: true },
+      },
     }),
   });
   store.resetStats();
@@ -146,6 +176,22 @@ try {
     method: "GET",
   }))).text();
 
+  const pushWork = join(root, "push-work");
+  mkdirSync(pushWork, { recursive: true });
+  runGitChecked(["git", "init"], pushWork);
+  runGitChecked(["git", "config", "user.email", "demo@example.com"], pushWork);
+  runGitChecked(["git", "config", "user.name", "Demo Agent"], pushWork);
+  writeFileSync(join(pushWork, "PUSHED.md"), "created through git receive-pack\n");
+  runGitChecked(["git", "add", "PUSHED.md"], pushWork);
+  runGitChecked(["git", "commit", "-m", "Push through smart HTTP"], pushWork);
+  const pushedOid = runGitOutput(["git", "rev-parse", "HEAD"], pushWork);
+  const remote = `http://127.0.0.1:${server.port}/${encodeURIComponent(stream)}.git`;
+  await runGitCheckedAsync(["git", "push", remote, "HEAD:refs/heads/pushed"], pushWork);
+  const pushedRefs = await fetchJson(app, `${base}/_git/refs`, { method: "GET" });
+  const pushedBlob = await (await app.fetch(new Request(`${base}/_git/blob?ref=pushed&path=${encodeURIComponent("/PUSHED.md")}`, {
+    method: "GET",
+  }))).text();
+
   console.log("git-repo profile demo");
   console.log(`stream=${stream}`);
   console.log(`blob=${blob.oid}`);
@@ -163,8 +209,12 @@ try {
   console.log(`export pack bytes=${packBytes.byteLength}`);
   console.log(`imported refs=${imported.imported.refs} objects=${imported.imported.objects}`);
   console.log(`imported README=${JSON.stringify(importedBlob)}`);
+  console.log(`smart HTTP pushed ref=${pushedRefs.refs["refs/heads/pushed"]}`);
+  console.log(`smart HTTP pushed commit=${pushedOid}`);
+  console.log(`smart HTTP pushed file=${JSON.stringify(pushedBlob)}`);
   console.log(`mockR2 puts=${store.stats().puts} getBytes=${store.stats().getBytes}`);
 } finally {
+  server.stop(true);
   app.close();
   rmSync(root, { recursive: true, force: true });
 }

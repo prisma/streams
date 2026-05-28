@@ -33,6 +33,7 @@ import type {
   GitObjectFormat,
   GitObjectType,
   GitOid,
+  GitRefUpdate,
   GitRepoProfileConfig,
 } from "./types";
 
@@ -66,6 +67,11 @@ function importExportEnabled(config: GitRepoProfileConfig): boolean {
 function maxImportExportBytes(config: GitRepoProfileConfig): number {
   const value = config.importExport?.maxBytes;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 512 * 1024 * 1024;
+}
+
+function maxPushBytes(config: GitRepoProfileConfig): number {
+  const value = config.push?.maxPackBytes;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : maxImportExportBytes(config);
 }
 
 function runGitResult(
@@ -421,19 +427,27 @@ function writeLooseObjectToGitDir(gitDir: string, object: GitObject): void {
 
 async function materializeBareRepoResult(
   args: GitImportExportArgs,
-  root: string
+  root: string,
+  opts: { allowEmpty?: boolean } = {}
 ): Promise<Result<{ gitDir: string; refs: Record<string, GitOid>; objectCount: number }, GitRepoServiceError>> {
   if (args.config.objectFormat !== "sha1") return Result.err(gitError(400, "Git CLI export currently requires sha1 objectFormat"));
   const recordsRes = await readGitRecordsResult(args);
   if (Result.isError(recordsRes)) return recordsRes;
   const refs = Object.fromEntries(Object.entries(buildRefs(recordsRes.value)).filter((entry): entry is [string, GitOid] => typeof entry[1] === "string"));
   const roots = Object.values(refs);
-  if (roots.length === 0) return Result.err(gitError(404, "git repository has no refs to export"));
-  const objectsRes = await collectReachableObjectsResult(args, roots);
-  if (Result.isError(objectsRes)) return objectsRes;
+  let objectCount = 0;
+  let objects: Map<GitOid, ExportObject> | null = null;
+  if (roots.length === 0) {
+    if (!opts.allowEmpty) return Result.err(gitError(404, "git repository has no refs to export"));
+  } else {
+    const objectsRes = await collectReachableObjectsResult(args, roots);
+    if (Result.isError(objectsRes)) return objectsRes;
+    objects = objectsRes.value;
+    objectCount = objects.size;
+  }
   const gitDirRes = createBareRepoResult(args.config, root);
   if (Result.isError(gitDirRes)) return gitDirRes;
-  for (const object of objectsRes.value.values()) {
+  for (const object of objects?.values() ?? []) {
     writeLooseObjectToGitDir(gitDirRes.value, {
       ...object,
       size: object.body.byteLength,
@@ -445,11 +459,9 @@ async function materializeBareRepoResult(
     if (Result.isError(updateRes)) return updateRes;
   }
   const headRef = normalizeGitRef(args.config.defaultBranch);
-  if (refs[headRef]) {
-    const headRes = runGitResult(args.config, ["--git-dir", gitDirRes.value, "symbolic-ref", "HEAD", headRef]);
-    if (Result.isError(headRes)) return headRes;
-  }
-  return Result.ok({ gitDir: gitDirRes.value, refs, objectCount: objectsRes.value.size });
+  const headRes = runGitResult(args.config, ["--git-dir", gitDirRes.value, "symbolic-ref", "HEAD", headRef]);
+  if (Result.isError(headRes)) return headRes;
+  return Result.ok({ gitDir: gitDirRes.value, refs, objectCount });
 }
 
 export async function exportGitBundleResult(args: GitImportExportArgs): Promise<Result<Uint8Array, GitRepoServiceError>> {
@@ -509,6 +521,10 @@ function smartHttpFetchEnabled(config: GitRepoProfileConfig): boolean {
   return config.http?.enabled === true && config.http.allowFetch === true;
 }
 
+function smartHttpPushEnabled(config: GitRepoProfileConfig): boolean {
+  return config.http?.enabled === true && config.http.allowPush === true;
+}
+
 function pktLine(text: string): Buffer {
   const body = Buffer.from(text);
   const length = (body.byteLength + 4).toString(16).padStart(4, "0");
@@ -517,6 +533,49 @@ function pktLine(text: string): Buffer {
 
 function bytesHashHex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function stableRefsDigest(refs: Record<string, GitOid>): string {
+  const canonical = Object.entries(refs).sort(([a], [b]) => a.localeCompare(b));
+  return bytesHashHex(Buffer.from(JSON.stringify(canonical)));
+}
+
+function changedRefUpdates(before: Record<string, GitOid>, after: Record<string, GitOid>): GitRefUpdate[] {
+  const refs = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return Array.from(refs).sort().flatMap((ref) => {
+    const oldOid = before[ref] ?? null;
+    const newOid = after[ref] ?? null;
+    return oldOid === newOid ? [] : [{ ref, oldOid, newOid }];
+  });
+}
+
+function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: string): Result<void, GitRepoServiceError> {
+  const deleteRes = runGitResult(config, [
+    "--git-dir",
+    gitDir,
+    "config",
+    "receive.denyDeletes",
+    config.push?.allowDeleteRefs === true ? "false" : "true",
+  ]);
+  if (Result.isError(deleteRes)) return deleteRes;
+  const atomicRes = runGitResult(config, [
+    "--git-dir",
+    gitDir,
+    "config",
+    "receive.advertiseAtomic",
+    config.push?.allowAtomic === false ? "false" : "true",
+  ]);
+  if (Result.isError(atomicRes)) return atomicRes;
+  return Result.ok(undefined);
+}
+
+async function importObjectsFromMaybeEmptyGitDirResult(
+  args: GitImportExportArgs,
+  gitDir: string,
+  refs: Record<string, GitOid>,
+): Promise<Result<{ artifacts: GitLooseObjectResponse[]; objectCount: number; bytes: number }, GitRepoServiceError>> {
+  if (Object.keys(refs).length === 0) return Result.ok({ artifacts: [], objectCount: 0, bytes: 0 });
+  return importObjectsFromGitDirResult(args, gitDir, refs);
 }
 
 export async function publishGitPackArtifactsResult(
@@ -638,6 +697,87 @@ export async function gitUploadPackRpcResult(
     return Result.ok({
       contentType: "application/x-git-upload-pack-result",
       body: new Uint8Array(packRes.value),
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+export async function gitReceivePackAdvertiseRefsResult(
+  args: GitImportExportArgs
+): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
+  if (!smartHttpPushEnabled(args.config)) return Result.err(gitError(404, "git receive-pack is disabled for this git-repo profile"));
+  const root = mkdtempSync(join(tmpdir(), "streams-git-receive-pack-"));
+  try {
+    const materializedRes = await materializeBareRepoResult(args, root, { allowEmpty: true });
+    if (Result.isError(materializedRes)) return materializedRes;
+    const configRes = configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
+    if (Result.isError(configRes)) return configRes;
+    const refsRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
+      maxBuffer: maxPushBytes(args.config),
+    });
+    if (Result.isError(refsRes)) return refsRes;
+    return Result.ok({
+      contentType: "application/x-git-receive-pack-advertisement",
+      body: new Uint8Array(Buffer.concat([pktLine("# service=git-receive-pack\n"), Buffer.from("0000"), refsRes.value])),
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+export async function gitReceivePackRpcResult(
+  args: GitImportExportArgs,
+  requestBody: Uint8Array
+): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
+  if (!smartHttpPushEnabled(args.config)) return Result.err(gitError(404, "git receive-pack is disabled for this git-repo profile"));
+  if (requestBody.byteLength > maxPushBytes(args.config)) return Result.err(gitError(400, "git-receive-pack request exceeds maxPackBytes"));
+  const root = mkdtempSync(join(tmpdir(), "streams-git-receive-pack-"));
+  try {
+    const materializedRes = await materializeBareRepoResult(args, root, { allowEmpty: true });
+    if (Result.isError(materializedRes)) return materializedRes;
+    const configRes = configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
+    if (Result.isError(configRes)) return configRes;
+
+    const receiveRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", materializedRes.value.gitDir], {
+      input: requestBody,
+      maxBuffer: maxPushBytes(args.config),
+    });
+    if (Result.isError(receiveRes)) return receiveRes;
+
+    const afterRefsRes = listRefsFromGitDirResult(args.config, materializedRes.value.gitDir);
+    if (Result.isError(afterRefsRes)) return afterRefsRes;
+    const refUpdates = changedRefUpdates(materializedRes.value.refs, afterRefsRes.value);
+    if (refUpdates.length > 0) {
+      if (args.config.push?.allowDeleteRefs !== true && refUpdates.some((update) => update.newOid === null)) {
+        return Result.err(gitError(409, "git receive-pack delete refs are disabled for this git-repo profile"));
+      }
+      const objectsRes = await importObjectsFromMaybeEmptyGitDirResult(args, materializedRes.value.gitDir, afterRefsRes.value);
+      if (Result.isError(objectsRes)) return objectsRes;
+      const txnRes = await commitGitRefTransactionResult({
+        stream: args.stream,
+        reader: args.reader,
+        objectStore: args.objectStore,
+        appendJsonRecords: args.appendJsonRecords,
+        format: args.config.objectFormat,
+        request: {
+          txnId: `git-receive-pack:${randomUUID()}`,
+          idempotencyKey: `git-receive-pack:${bytesHashHex(requestBody)}:${stableRefsDigest(materializedRes.value.refs)}`,
+          actor: "git-receive-pack",
+          refUpdates,
+          objects: {
+            looseObjectUris: objectsRes.value.artifacts.map((artifact) => artifact.objectKey),
+            objectCount: objectsRes.value.objectCount,
+            bytes: objectsRes.value.bytes,
+          },
+        },
+      });
+      if (Result.isError(txnRes)) return txnRes;
+    }
+
+    return Result.ok({
+      contentType: "application/x-git-receive-pack-result",
+      body: new Uint8Array(receiveRes.value),
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

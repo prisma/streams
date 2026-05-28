@@ -113,9 +113,8 @@ It means:
   checkout/stat/readdir/blob reads, ref transactions, and ref checkpoint
   publication, pack maintenance publication, reachability verification,
   import/export, plus loose object writes and range reads
-- a read-only upload-pack smart HTTP facade is available under `_git/smart/*`
-  and `/{repo}.git/*` when enabled; receive-pack push is a planned follow-up
-  layer
+- upload-pack and receive-pack smart HTTP facades are available under
+  `_git/smart/*` and `/{repo}.git/*` when enabled
 
 See [profile-git-repo.md](./profile-git-repo.md) for the detailed contract.
 

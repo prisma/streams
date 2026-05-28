@@ -17,6 +17,8 @@ import { buildGitObject } from "./objects";
 import {
   exportGitBundleResult,
   exportGitPackResult,
+  gitReceivePackAdvertiseRefsResult,
+  gitReceivePackRpcResult,
   gitUploadPackAdvertiseRefsResult,
   gitUploadPackRpcResult,
   importGitRepoResult,
@@ -594,15 +596,20 @@ function binaryResponse(value: { contentType: string; body: Uint8Array }): Respo
   });
 }
 
-async function uploadPackInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response> {
-  if (args.url.searchParams.get("service") !== "git-upload-pack") return args.respond.badRequest("service must be git-upload-pack");
-  const refsRes = await gitUploadPackAdvertiseRefsResult({
+async function smartInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response> {
+  const service = args.url.searchParams.get("service");
+  const requestArgs = {
     stream: args.stream,
     reader: args.reader,
     objectStore: args.objectStore,
     appendJsonRecords: args.appendJsonRecords,
     config: profileConfig(args),
-  });
+  };
+  const refsRes = service === "git-upload-pack"
+    ? await gitUploadPackAdvertiseRefsResult(requestArgs)
+    : service === "git-receive-pack"
+      ? await gitReceivePackAdvertiseRefsResult(requestArgs)
+      : Result.err({ status: 400 as const, message: "service must be git-upload-pack or git-receive-pack" });
   if (Result.isError(refsRes)) return responseForError(args, refsRes.error);
   return binaryResponse(refsRes.value);
 }
@@ -610,6 +617,19 @@ async function uploadPackInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Resp
 async function uploadPackRpc(args: StreamProfileVfsRouteArgs): Promise<Response> {
   const requestBody = new Uint8Array(await args.req.arrayBuffer());
   const rpcRes = await gitUploadPackRpcResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    config: profileConfig(args),
+  }, requestBody);
+  if (Result.isError(rpcRes)) return responseForError(args, rpcRes.error);
+  return binaryResponse(rpcRes.value);
+}
+
+async function receivePackRpc(args: StreamProfileVfsRouteArgs): Promise<Response> {
+  const requestBody = new Uint8Array(await args.req.arrayBuffer());
+  const rpcRes = await gitReceivePackRpcResult({
     stream: args.stream,
     reader: args.reader,
     objectStore: args.objectStore,
@@ -649,8 +669,9 @@ export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promi
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-ref-checkpoint") return publishRefCheckpoint(args);
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-pack") return publishPack(args);
   if (args.req.method === "POST" && first === "maintenance" && second === "verify-reachability") return verifyReachability(args);
-  if (args.req.method === "GET" && first === "smart" && second === "info" && third === "refs") return uploadPackInfoRefs(args);
+  if (args.req.method === "GET" && first === "smart" && second === "info" && third === "refs") return smartInfoRefs(args);
   if (args.req.method === "POST" && first === "smart" && second === "git-upload-pack") return uploadPackRpc(args);
+  if (args.req.method === "POST" && first === "smart" && second === "git-receive-pack") return receivePackRpc(args);
 
   return args.respond.notFound("unknown git-repo route");
 }

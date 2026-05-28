@@ -38,6 +38,25 @@ function runGitChecked(cmd: string[], cwd?: string): void {
   }
 }
 
+function runGitOutput(cmd: string[], cwd?: string): string {
+  const proc = Bun.spawnSync({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) {
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${TEXT_DECODER.decode(proc.stderr)}`);
+  }
+  return TEXT_DECODER.decode(proc.stdout).trim();
+}
+
+async function runGitCheckedAsync(cmd: string[], cwd?: string): Promise<void> {
+  const proc = Bun.spawn({ cmd, cwd, stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`git command failed: ${cmd.join(" ")}\n${stderr}`);
+  }
+}
+
 async function installGitRepoProfile(
   app: ReturnType<typeof createProfileTestApp>["app"],
   stream: string,
@@ -455,6 +474,53 @@ describe("git-repo profile", () => {
       expect(importedBlob.status).toBe(200);
       expect(await importedBlob.text()).toBe("hello import/export\n");
     } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts Git smart HTTP receive-pack pushes through durable ref transactions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-receive-pack-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const server = Bun.serve({ port: 0, fetch: app.fetch });
+    try {
+      const stream = "git-push-test";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, { http: { enabled: true, allowFetch: true, allowPush: true } });
+
+      const work = join(root, "work");
+      mkdirSync(work, { recursive: true });
+      runGitChecked(["git", "init"], work);
+      runGitChecked(["git", "config", "user.email", "agent@example.com"], work);
+      runGitChecked(["git", "config", "user.name", "Agent"], work);
+      writeFileSync(join(work, "README.md"), "pushed over smart http\n");
+      runGitChecked(["git", "add", "README.md"], work);
+      runGitChecked(["git", "commit", "-m", "Smart HTTP push"], work);
+      const pushedOid = runGitOutput(["git", "rev-parse", "HEAD"], work);
+
+      const remote = `http://127.0.0.1:${server.port}/${encodeURIComponent(stream)}.git`;
+      const advertised = await fetch(`${remote}/info/refs?service=git-receive-pack`, { method: "GET" });
+      expect(advertised.status).toBe(200);
+      expect(advertised.headers.get("content-type")).toBe("application/x-git-receive-pack-advertisement");
+      expect(Buffer.from(await advertised.arrayBuffer()).toString("utf8")).toContain("# service=git-receive-pack");
+
+      await runGitCheckedAsync(["git", "push", remote, "HEAD:refs/heads/main"], work);
+
+      const refs = await fetchJsonApp(app, `${base}/_git/refs`, { method: "GET" });
+      expect(refs.status).toBe(200);
+      expect(refs.body.refs["refs/heads/main"]).toBe(pushedOid);
+
+      const pushedReadme = await app.fetch(new Request(`${base}/_git/blob?ref=main&path=${encodeURIComponent("/README.md")}`, { method: "GET" }));
+      expect(pushedReadme.status).toBe(200);
+      expect(await pushedReadme.text()).toBe("pushed over smart http\n");
+
+      const verified = await fetchJsonApp(app, `${base}/_git/maintenance/verify-reachability`, { method: "POST" });
+      expect(verified.status).toBe(200);
+      expect(verified.body.status).toBe("verified");
+      expect(verified.body.refs["refs/heads/main"]).toBe(pushedOid);
+      expect(verified.body.objectCount).toBe(3);
+    } finally {
+      server.stop(true);
       app.close();
       rmSync(root, { recursive: true, force: true });
     }
