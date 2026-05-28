@@ -83,6 +83,7 @@ export type VfsCanonicalGitCommit = {
   txnId: string;
   objectCount: number;
   bytes: number;
+  durability?: VfsCommitDurability;
 };
 
 export type VfsCommit = {
@@ -295,11 +296,15 @@ export type VfsWorkspaceChangesResponse = {
   paths: string[];
 };
 
+export type VfsCommitDurability = "accepted" | "published" | "verified";
+
 export type VfsCommitRequest = {
   ref?: VfsRefName;
   expectedHead?: VfsCommitId | null;
   message: string;
   author: VfsAuthor;
+  durability?: VfsCommitDurability;
+  durabilityTimeoutMs?: number;
 };
 
 export type VfsCommitResponse = {

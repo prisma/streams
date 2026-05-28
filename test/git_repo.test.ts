@@ -297,7 +297,12 @@ describe("git-repo profile", () => {
 
   test("commits ref transactions with compare-and-swap semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-git-repo-"));
-    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const { app } = createProfileTestApp(root, {
+      metricsFlushIntervalMs: 0,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      segmentTargetRows: 1,
+    });
     try {
       const stream = "git/test/repo";
       const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
@@ -346,11 +351,16 @@ describe("git-repo profile", () => {
       expect(txnStatus.status).toBe(200);
       expect(txnStatus.body.txnId).toBe("txn-1");
       expect(txnStatus.body.transaction.txnId).toBe("txn-1");
-      expect(["accepted", "published"]).toContain(txnStatus.body.status);
+      expect(["accepted", "published", "verified"]).toContain(txnStatus.body.status);
 
       const waitStatus = await fetchJsonApp(app, `${base}/_git/transactions/txn-1/wait-published?timeout_ms=1`, { method: "POST" });
       expect([200, 202]).toContain(waitStatus.status);
       expect(waitStatus.body.txnId).toBe("txn-1");
+
+      const waitVerified = await fetchJsonApp(app, `${base}/_git/transactions/txn-1/wait-verified?timeout_ms=5000`, { method: "POST" });
+      expect(waitVerified.status).toBe(200);
+      expect(waitVerified.body.status).toBe("verified");
+      expect(waitVerified.body.verification.status).toBe("verified");
 
       const idempotent = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
         method: "POST",

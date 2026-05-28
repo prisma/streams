@@ -56,7 +56,9 @@ import {
   commitGitRefTransactionResult,
   defaultGitRepoProfileConfig,
   normalizeGitRef,
+  readGitRecordSnapshotResult,
   readGitRecordsResult,
+  verifyGitRefTransactionRecordResult,
   writeGitBlob,
   writeGitCommitResult,
   writeGitTreeResult,
@@ -66,6 +68,7 @@ import {
   type GitObjectFormat,
   type GitPerson,
   type GitRepoProfileConfig,
+  type GitTransactionStatus,
   type GitTreeEntry,
   type GitTreeEntryInput,
   parseGitCommitBodyResult,
@@ -92,6 +95,18 @@ type LoadedTree = {
   tree: MutableVfsTree;
   treeIdsByPath: Map<string, string | null>;
 };
+
+function normalizeCommitDurabilityResult(body: VfsCommitRequest): Result<{ durability: Exclude<GitTransactionStatus, "accepted"> | "accepted"; timeoutMs: number }, VfsServerError> {
+  const durability = body.durability ?? "accepted";
+  if (durability !== "accepted" && durability !== "published" && durability !== "verified") {
+    return Result.err({ status: 400, message: "durability must be accepted, published, or verified" });
+  }
+  const timeout = body.durabilityTimeoutMs;
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout < 0)) {
+    return Result.err({ status: 400, message: "durabilityTimeoutMs must be a non-negative integer" });
+  }
+  return Result.ok({ durability, timeoutMs: timeout ?? 30_000 });
+}
 
 type PreparedWorkspaceOp = {
   op: VfsWorkspaceOp;
@@ -808,6 +823,47 @@ async function currentGitHeadResult(
   return Result.ok(Object.prototype.hasOwnProperty.call(refs, normalized) ? refs[normalized] ?? null : null);
 }
 
+function latestUploadedThroughForStream(args: StreamProfileVfsRouteArgs, stream: string): bigint {
+  return args.db.getStream(stream)?.uploaded_through ?? -1n;
+}
+
+async function waitGitTransactionDurabilityResult(args: {
+  route: StreamProfileVfsRouteArgs;
+  gitRepoStream: string;
+  gitConfig: GitRepoProfileConfig;
+  txnId: string;
+  durability: "accepted" | "published" | "verified";
+  timeoutMs: number;
+}): Promise<Result<GitTransactionStatus, VfsServerError>> {
+  if (args.durability === "accepted") return Result.ok("accepted");
+  const deadline = Date.now() + args.timeoutMs;
+  for (;;) {
+    const snapshotRes = await readGitRecordSnapshotResult({ stream: args.gitRepoStream, reader: args.route.reader });
+    if (Result.isError(snapshotRes)) return Result.err(snapshotRes.error);
+    const entry = snapshotRes.value.entries.find(
+      (candidate) => candidate.record.type === "ref-transaction-committed" && candidate.record.txnId === args.txnId
+    );
+    if (!entry || entry.record.type !== "ref-transaction-committed") {
+      return Result.err({ status: 404, message: "git transaction not found" });
+    }
+    if (entry.offset <= latestUploadedThroughForStream(args.route, args.gitRepoStream)) {
+      if (args.durability === "published") return Result.ok("published");
+      const verificationRes = await verifyGitRefTransactionRecordResult({
+        repoStream: args.gitRepoStream,
+        objectStore: args.route.objectStore,
+        format: args.gitConfig.objectFormat,
+        transaction: entry.record,
+      });
+      if (Result.isError(verificationRes)) return Result.err(verificationRes.error);
+      return Result.ok("verified");
+    }
+    if (Date.now() >= deadline) {
+      return Result.err({ status: 409, message: `git transaction did not reach ${args.durability} durability before timeout` });
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+  }
+}
+
 async function rootGitTreeOidForCommitResult(args: {
   route: StreamProfileVfsRouteArgs;
   gitRepoStream: string;
@@ -982,6 +1038,8 @@ async function commitWorkspaceToGitRepoResult(args: {
   author: { id: string; name?: string };
   createdAt: string;
   vfsCommitId: string;
+  durability: "accepted" | "published" | "verified";
+  durabilityTimeoutMs: number;
 }): Promise<Result<VfsCanonicalGitCommit, VfsServerError>> {
   const overlay = new Map<string, VfsStoredObject>();
   for (const object of args.newObjects) overlay.set(object.id, object);
@@ -1041,6 +1099,15 @@ async function commitWorkspaceToGitRepoResult(args: {
     },
   });
   if (Result.isError(txnRes)) return Result.err(txnRes.error);
+  const durabilityRes = await waitGitTransactionDurabilityResult({
+    route: args.route,
+    gitRepoStream: args.gitRepoStream,
+    gitConfig: args.gitConfig,
+    txnId: txnRes.value.transaction.txnId,
+    durability: args.durability,
+    timeoutMs: args.durabilityTimeoutMs,
+  });
+  if (Result.isError(durabilityRes)) return durabilityRes;
   const objectBytes = artifacts.reduce((sum, artifact) => sum + artifact.framedSize, 0);
   return Result.ok({
     repoStream: args.gitRepoStream,
@@ -1050,6 +1117,7 @@ async function commitWorkspaceToGitRepoResult(args: {
     txnId: txnRes.value.transaction.txnId,
     objectCount: artifacts.length,
     bytes: objectBytes,
+    durability: durabilityRes.value,
   });
 }
 
@@ -2197,6 +2265,8 @@ async function commitGitBackedWorkspaceResult(args: {
   expectedHead: string | null | undefined;
   message: string;
   author: { id: string; name?: string };
+  durability: "accepted" | "published" | "verified";
+  durabilityTimeoutMs: number;
 }): Promise<Result<VfsCommitResponse, VfsServerError>> {
   const currentHeadRes = await currentGitHeadResult(args.route, args.gitRepoStream, args.ref);
   if (Result.isError(currentHeadRes)) return currentHeadRes;
@@ -2257,6 +2327,15 @@ async function commitGitBackedWorkspaceResult(args: {
     },
   });
   if (Result.isError(txnRes)) return Result.err(txnRes.error);
+  const durabilityRes = await waitGitTransactionDurabilityResult({
+    route: args.route,
+    gitRepoStream: args.gitRepoStream,
+    gitConfig: args.gitConfig,
+    txnId: txnRes.value.transaction.txnId,
+    durability: args.durability,
+    timeoutMs: args.durabilityTimeoutMs,
+  });
+  if (Result.isError(durabilityRes)) return durabilityRes;
 
   const gitCommit: VfsCanonicalGitCommit = {
     repoStream: args.gitRepoStream,
@@ -2266,6 +2345,7 @@ async function commitGitBackedWorkspaceResult(args: {
     txnId: txnRes.value.transaction.txnId,
     objectCount: artifacts.length,
     bytes: artifacts.reduce((sum, artifact) => sum + artifact.framedSize, 0),
+    durability: durabilityRes.value,
   };
   const commit: VfsCommit = {
     kind: "commit",
@@ -2310,6 +2390,9 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
     return args.respond.badRequest("author.id is required");
   }
   const ref = normalizeRef(body.ref);
+  const durabilityRes = normalizeCommitDurabilityResult(body);
+  if (Result.isError(durabilityRes)) return responseForError(args, durabilityRes.error);
+  const durability = durabilityRes.value;
 
   return withRepoLock(args.stream, async () => {
     const workspaceRes = await loadWorkspaceResult(args, workspaceId);
@@ -2331,6 +2414,8 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
         expectedHead: body.expectedHead,
         message: body.message,
         author: body.author,
+        durability: durability.durability,
+        durabilityTimeoutMs: durability.timeoutMs,
       });
       if (Result.isError(commitRes)) return responseForError(args, commitRes.error);
       return args.respond.json(200, commitRes.value);
@@ -2378,6 +2463,9 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
     };
     let gitCommit: VfsCanonicalGitCommit | undefined;
     const gitRepoStream = gitRepoStreamForVfsProfile(args);
+    if (!gitRepoStream && durability.durability !== "accepted") {
+      return args.respond.badRequest("published and verified durability require git-repo backing");
+    }
     if (gitRepoStream) {
       const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
       if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
@@ -2393,6 +2481,8 @@ async function commitWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: str
         author: body.author,
         createdAt: commit.createdAt,
         vfsCommitId: commit.id,
+        durability: durability.durability,
+        durabilityTimeoutMs: durability.timeoutMs,
       });
       if (Result.isError(gitCommitRes)) return responseForError(args, gitCommitRes.error);
       gitCommit = gitCommitRes.value;

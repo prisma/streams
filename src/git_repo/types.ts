@@ -182,11 +182,24 @@ export type GitRefTransactionResponse = {
   idempotent: boolean;
 };
 
-export type GitTransactionStatus = "accepted" | "published";
+export type GitTransactionStatus = "accepted" | "published" | "verified";
+
+export type GitTransactionVerification =
+  | {
+      status: "not_checked";
+    }
+  | {
+      status: "verified";
+    }
+  | {
+      status: "failed";
+      message: string;
+    };
 
 export type GitTransactionStatusResponse = {
   txnId: string;
   status: GitTransactionStatus;
+  verification: GitTransactionVerification;
   transaction: GitRefTransactionCommittedRecord;
   offset: string;
   publishedThrough: string;

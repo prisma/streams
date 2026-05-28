@@ -231,7 +231,12 @@ describe("vfs-repo profile", () => {
 
   test("workspace-fs profile name serves the workspace route surface", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-workspace-fs-"));
-    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    const { app } = createProfileTestApp(root, {
+      metricsFlushIntervalMs: 0,
+      segmentCheckIntervalMs: 10,
+      uploadIntervalMs: 10,
+      segmentTargetRows: 1,
+    });
     try {
       const gitStream = "git/test/workspace-fs-canonical";
       await installGitRepoProfile(app, gitStream);
@@ -251,9 +256,15 @@ describe("vfs-repo profile", () => {
       await workspace.writeFile("/README.md", "workspace-fs\n");
       await workspace.mkdir("/src");
       await workspace.writeFile("/src/app.ts", "export const value = 1;\n");
-      const commit = await workspace.commit({ message: "Workspace profile commit", author: { id: "workspace-fs" } });
+      const commit = await workspace.commit({
+        message: "Workspace profile commit",
+        author: { id: "workspace-fs" },
+        durability: "verified",
+        durabilityTimeoutMs: 5000,
+      });
       expect(commit.git?.repoStream).toBe(gitStream);
       expect(commit.newCommitId).toBe(commit.git?.newOid);
+      expect(commit.git?.durability).toBe("verified");
 
       const gitBase = `http://local/v1/stream/${encodeURIComponent(gitStream)}`;
       const gitRef = await fetchJsonApp(app, `${gitBase}/_git/ref/main`, { method: "GET" });

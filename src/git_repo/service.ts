@@ -533,6 +533,29 @@ async function validateRefTransactionObjectsResult(args: {
   return Result.ok(undefined);
 }
 
+export async function verifyGitRefTransactionRecordResult(args: {
+  repoStream: string;
+  objectStore: ObjectStore;
+  format: GitObjectFormat;
+  transaction: GitRefTransactionCommittedRecord;
+}): Promise<Result<void, GitRepoServiceError>> {
+  const oidShapeRes = validateRefTransactionOidShapesResult(args.format, args.transaction);
+  if (Result.isError(oidShapeRes)) return oidShapeRes;
+  const objectSetRes = await validateObjectSetResult({
+    repoStream: args.repoStream,
+    objectStore: args.objectStore,
+    format: args.format,
+    objectSet: args.transaction.objects,
+  });
+  if (Result.isError(objectSetRes)) return objectSetRes;
+  return validateRefTransactionObjectsResult({
+    repoStream: args.repoStream,
+    objectStore: args.objectStore,
+    format: args.format,
+    request: args.transaction,
+  });
+}
+
 function validateRefTransactionOidShapesResult(format: GitObjectFormat, request: GitRefTransactionRequest): Result<void, GitRepoServiceError> {
   const oidRe = oidPattern(format);
   for (const update of request.refUpdates) {

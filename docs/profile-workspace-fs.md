@@ -82,6 +82,23 @@ builds only the affected Git tree path objects plus changed blobs and the new
 commit object, then submits a `git-repo` ref transaction. A workspace committed
 marker is appended only after the canonical transaction succeeds.
 
+Commit requests accept an optional durability target:
+
+```ts
+await workspace.commit({
+  message: "Update parser",
+  author: { id: "agent" },
+  durability: "verified",
+  durabilityTimeoutMs: 30_000,
+});
+```
+
+`accepted` returns after the canonical `git-repo` transaction is locally
+durable. `published` waits until the git-repo stream record reaches the remote
+visibility point. `verified` waits until the published transaction's object
+artifacts still exist and the new Git ref target walks through a hash-checked
+reachable object graph. The default is `accepted`.
+
 ## Overlay Index Endpoints
 
 Workspace streams expose a compact overlay view for agents and indexers:

@@ -37,6 +37,7 @@ import {
   readGitRefsSnapshotResult,
   readLooseGitObjectBodyResult,
   readLooseGitObjectHeaderResult,
+  verifyGitRefTransactionRecordResult,
   writeGitRefCheckpointArtifactsResult,
   writeLooseGitObjectResult,
   type GitRepoServiceError,
@@ -467,9 +468,27 @@ async function transactionStatusBodyResult(
   );
   if (!entry || entry.record.type !== "ref-transaction-committed") return Result.err({ status: 404, message: "git transaction not found" });
   const publishedThrough = latestUploadedThrough(args);
+  const published = entry.offset <= publishedThrough;
+  let status: GitTransactionStatusResponse["status"] = published ? "published" : "accepted";
+  let verification: GitTransactionStatusResponse["verification"] = { status: "not_checked" };
+  if (published) {
+    const verificationRes = await verifyGitRefTransactionRecordResult({
+      repoStream: args.stream,
+      objectStore: args.objectStore,
+      format: profileConfig(args).objectFormat,
+      transaction: entry.record,
+    });
+    if (Result.isOk(verificationRes)) {
+      status = "verified";
+      verification = { status: "verified" };
+    } else {
+      verification = { status: "failed", message: verificationRes.error.message };
+    }
+  }
   return Result.ok({
     txnId,
-    status: entry.offset <= publishedThrough ? "published" : "accepted",
+    status,
+    verification,
     transaction: entry.record,
     offset: entry.offset.toString(),
     publishedThrough: publishedThrough.toString(),
@@ -493,7 +512,22 @@ async function waitPublished(args: StreamProfileVfsRouteArgs, txnSegments: strin
   for (;;) {
     const statusRes = await transactionStatusBodyResult(args, txnId);
     if (Result.isError(statusRes)) return responseForError(args, statusRes.error);
-    if (statusRes.value.status === "published") return args.respond.json(200, statusRes.value);
+    if (statusRes.value.status === "published" || statusRes.value.status === "verified") return args.respond.json(200, statusRes.value);
+    if (Date.now() >= deadline) return args.respond.json(202, statusRes.value);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+  }
+}
+
+async function waitVerified(args: StreamProfileVfsRouteArgs, txnSegments: string[]): Promise<Response> {
+  const txnId = decodeURIComponent(txnSegments.join("/"));
+  if (txnId.trim() === "") return args.respond.badRequest("transaction id is required");
+  const rawTimeout = Number(args.url.searchParams.get("timeout_ms") ?? "0");
+  const timeoutMs = Number.isFinite(rawTimeout) ? Math.max(0, Math.min(30_000, Math.floor(rawTimeout))) : 0;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const statusRes = await transactionStatusBodyResult(args, txnId);
+    if (Result.isError(statusRes)) return responseForError(args, statusRes.error);
+    if (statusRes.value.status === "verified") return args.respond.json(200, statusRes.value);
     if (Date.now() >= deadline) return args.respond.json(202, statusRes.value);
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())));
   }
@@ -740,6 +774,9 @@ export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promi
     if (args.req.method === "GET") return transactionStatus(args, txnSegments);
     if (args.req.method === "POST" && txnSegments[txnSegments.length - 1] === "wait-published") {
       return waitPublished(args, txnSegments.slice(0, -1));
+    }
+    if (args.req.method === "POST" && txnSegments[txnSegments.length - 1] === "wait-verified") {
+      return waitVerified(args, txnSegments.slice(0, -1));
     }
   }
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-ref-checkpoint") return publishRefCheckpoint(args);

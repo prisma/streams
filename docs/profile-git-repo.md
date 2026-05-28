@@ -198,6 +198,7 @@ GET  /v1/stream/{repo}/_git/packfile/{packHash}.pack
 POST /v1/stream/{repo}/_git/transactions/ref
 GET  /v1/stream/{repo}/_git/transactions/{txnId}
 POST /v1/stream/{repo}/_git/transactions/{txnId}/wait-published
+POST /v1/stream/{repo}/_git/transactions/{txnId}/wait-verified
 POST /v1/stream/{repo}/_git/maintenance/publish-ref-checkpoint
 POST /v1/stream/{repo}/_git/maintenance/publish-pack
 POST /v1/stream/{repo}/_git/maintenance/verify-reachability
@@ -281,13 +282,21 @@ commits or tags, and the referenced commit/tag/tree/blob graph is walked and
 hash-verified. Malformed objects, missing reachable objects, wrong tree-entry
 target types, and object hash mismatches reject the transaction.
 
-`GET /_git/transactions/{txnId}` reports whether the transaction is
-`accepted` or `published`. `accepted` means the transaction record is locally
-durable in SQLite and visible to the serving process. `published` means the
-stream record offset is at or below the stream's `uploaded_through` marker, so
-the canonical stream record has reached the remote visibility point. Object
-artifacts referenced by the transaction are verified in the object store before
-the transaction can be accepted.
+`GET /_git/transactions/{txnId}` reports `accepted`, `published`, or
+`verified`. `accepted` means the transaction record is locally durable in
+SQLite and visible to the serving process. `published` means the stream record
+offset is at or below the stream's `uploaded_through` marker, so the canonical
+stream record has reached the remote visibility point. `verified` means the
+published transaction's object artifacts still exist and every new ref target
+walks through a hash-checked reachable Git object graph. The response includes a
+`verification` object with `not_checked`, `verified`, or `failed` status so a
+published-but-corrupt transaction is visible instead of being hidden behind a
+generic status.
+
+`POST /_git/transactions/{txnId}/wait-published` waits until the stream record
+is published and returns either `published` or `verified`. `POST
+/_git/transactions/{txnId}/wait-verified` waits until the transaction is both
+published and reachability-verified.
 
 ## Import And Export
 
@@ -479,6 +488,9 @@ canonical. Checkout reads the Git ref head, base path metadata resolves from
 Git tree objects, base file reads use the Git loose-object range reader, and
 commit builds a Git commit before submitting a `git-repo` ref transaction. The
 workspace stream only records draft operations and the final committed marker.
+Workspace callers can request `durability: "published"` or
+`durability: "verified"` to make the commit wait for the corresponding
+canonical transaction state before returning.
 
 ## Current Limits
 
