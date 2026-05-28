@@ -120,7 +120,7 @@ export type StreamTouchRouteArgs = {
   respond: StreamProfileTouchResponder;
 };
 
-export type StreamProfileVfsResponder = {
+export type StreamProfileRouteResponder = {
   json(status: number, body: any, headers?: HeadersInit): Response;
   badRequest(message: string): Response;
   internalError(message?: string): Response;
@@ -142,8 +142,8 @@ export type StreamProfileAppendJsonResult = {
   result: AppendSuccess;
 };
 
-export type StreamProfileVfsRouteArgs = {
-  namespace: "_vfs" | "_git";
+export type StreamProfileRouteArgs = {
+  namespace: "_workspace" | "_git";
   segments: string[];
   req: Request;
   url: URL;
@@ -160,7 +160,7 @@ export type StreamProfileVfsRouteArgs = {
     ttlSeconds?: number | null;
     expectedNextOffset?: bigint | null;
   }): Promise<Result<StreamProfileAppendJsonResult, StreamProfileAppendJsonError>>;
-  respond: StreamProfileVfsResponder;
+  respond: StreamProfileRouteResponder;
 };
 
 export interface StreamTouchCapability {
@@ -170,8 +170,8 @@ export interface StreamTouchCapability {
   handleRoute?(args: StreamTouchRouteArgs): Promise<Response>;
 }
 
-export interface StreamProfileVfsCapability {
-  handleRoute(args: StreamProfileVfsRouteArgs): Promise<Response>;
+export interface StreamProfileRouteCapability {
+  handleRoute(args: StreamProfileRouteArgs): Promise<Response>;
 }
 
 export interface StreamProfileJsonIngestCapability {
@@ -196,7 +196,7 @@ export interface StreamProfileDefinition {
   touch?: StreamTouchCapability;
   jsonIngest?: StreamProfileJsonIngestCapability;
   metrics?: StreamProfileMetricsCapability;
-  vfs?: StreamProfileVfsCapability;
+  routes?: StreamProfileRouteCapability;
 }
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {

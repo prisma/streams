@@ -17,7 +17,7 @@ import {
   type StreamProfileJsonIngestCapability,
   type StreamProfileDefinition,
   type StreamProfileMetricsCapability,
-  type StreamProfileVfsCapability,
+  type StreamProfileRouteCapability,
   type StreamProfileReadError,
   type StreamProfileResource,
   type StreamProfileSpec,
@@ -107,9 +107,9 @@ export function resolveMetricsCapability(profile: StreamProfileSpec | null | und
   return resolveStreamProfileDefinition(profile.kind)?.metrics ?? null;
 }
 
-export function resolveVfsCapability(profile: StreamProfileSpec | null | undefined): StreamProfileVfsCapability | null {
+export function resolveProfileRouteCapability(profile: StreamProfileSpec | null | undefined): StreamProfileRouteCapability | null {
   if (!profile) return null;
-  return resolveStreamProfileDefinition(profile.kind)?.vfs ?? null;
+  return resolveStreamProfileDefinition(profile.kind)?.routes ?? null;
 }
 
 export function resolveEnabledTouchCapability(

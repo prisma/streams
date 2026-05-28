@@ -364,6 +364,15 @@ describe("server auth request enforcement", () => {
     const encodedReadAllowed = await fetch(new Request("http://local/v1/stream/git%2Ftenant-a%2Frepo/_git/refs", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
     expect(encodedReadAllowed.status).toBe(200);
 
+    const workspaceReadAllowed = await fetch(new Request("http://local/v1/stream/workspace/tenant-a/repo/_workspace/workspace/agent/status", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(workspaceReadAllowed.status).toBe(200);
+
+    const workspaceWriteAllowed = await fetch(new Request("http://local/v1/stream/workspace/tenant-a/repo/_workspace/workspace/agent/ops", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TENANT_WRITE_KEY}` },
+    }));
+    expect(workspaceWriteAllowed.status).toBe(200);
+
     const otherTenantRead = await fetch(new Request("http://local/v1/stream/git/tenant-b/repo/_git/refs", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
     expect(otherTenantRead.status).toBe(403);
 
@@ -376,6 +385,8 @@ describe("server auth request enforcement", () => {
     expect(reached).toEqual([
       "GET /v1/stream/git/tenant-a/repo/_git/refs",
       "GET /v1/stream/git%2Ftenant-a%2Frepo/_git/refs",
+      "GET /v1/stream/workspace/tenant-a/repo/_workspace/workspace/agent/status",
+      "POST /v1/stream/workspace/tenant-a/repo/_workspace/workspace/agent/ops",
       "POST /v1/stream/git/tenant-a/repo",
     ]);
   });

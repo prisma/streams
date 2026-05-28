@@ -43,7 +43,7 @@ canonical Git repository ref transactions and `_git/*` routes. `metrics` owns
 canonical metrics interval normalization, its default schema/search/rollup
 registry, and the metrics-block companion family. `state-protocol` owns the
 live `/touch/*` surface and its touch configuration. `workspace-fs` owns the
-agent workspace `_vfs/*` surface.
+agent workspace `_workspace/*` surface.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
@@ -163,7 +163,7 @@ Today, `git-repo` uses this model to own:
 
 Today, `workspace-fs` uses this model to own:
 
-- the agent workspace `_vfs/*` routes
+- the agent workspace `_workspace/*` routes
 - durable workspace operation streams
 - just-bash-oriented lazy filesystem behavior
 

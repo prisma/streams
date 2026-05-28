@@ -39,6 +39,9 @@ import {
 `workspace-fs` profile. `gitRepo.stream` is required; workspace-fs is always a
 derived workspace over a canonical `git-repo` stream.
 
+The workspace HTTP surface is `/_workspace/*`. The old MVP `/_vfs/*` route
+namespace is not installed by `workspace-fs`.
+
 The profile supports these workspace behaviors:
 
 - checkout creates a durable workspace stream
@@ -87,7 +90,9 @@ The hot path does not recursively expand the full repository tree.
 Commit reads the current Git head, compares it with the workspace expected head,
 builds only the affected Git tree path objects plus changed blobs and the new
 commit object, then submits a `git-repo` ref transaction. A workspace committed
-marker is appended only after the canonical transaction succeeds.
+marker is appended only after the canonical transaction succeeds. Workspace
+commits do not append local JSON `ref-update` records or maintain a
+workspace-owned canonical commit log.
 
 Commit requests accept an optional durability target:
 
@@ -111,8 +116,8 @@ reachable object graph. The default is `accepted`.
 Workspace streams expose path-level branch-move handling for agents:
 
 ```text
-GET  /v1/stream/{workspace}/_vfs/workspace/{id}/conflicts
-POST /v1/stream/{workspace}/_vfs/workspace/{id}/rebase
+GET  /v1/stream/{workspace}/_workspace/workspace/{id}/conflicts
+POST /v1/stream/{workspace}/_workspace/workspace/{id}/rebase
 ```
 
 `conflicts` compares the workspace base commit with the current canonical Git
@@ -168,9 +173,9 @@ ref, actor id when available, status, and operation-specific details in
 Workspace streams expose a compact overlay view for agents and indexers:
 
 ```text
-GET  /v1/stream/{workspace}/_vfs/workspace/{id}/index?path=/src
-GET  /v1/stream/{workspace}/_vfs/workspace/{id}/changes?prefix=/src
-POST /v1/stream/{workspace}/_vfs/workspace/{id}/compact
+GET  /v1/stream/{workspace}/_workspace/workspace/{id}/index?path=/src
+GET  /v1/stream/{workspace}/_workspace/workspace/{id}/changes?prefix=/src
+POST /v1/stream/{workspace}/_workspace/workspace/{id}/compact
 ```
 
 `index` returns the current latest operation by path, child names by directory,

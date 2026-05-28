@@ -1,5 +1,5 @@
 import { Result } from "better-result";
-import type { StreamProfileVfsRouteArgs } from "../profiles/profile";
+import type { StreamProfileRouteArgs } from "../profiles/profile";
 import {
   GIT_REPO_PROFILE_KIND,
   type GitCheckoutResponse,
@@ -56,14 +56,14 @@ type GitServerError = GitRepoServiceError;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
-function responseForError(args: StreamProfileVfsRouteArgs, err: GitServerError): Response {
+function responseForError(args: StreamProfileRouteArgs, err: GitServerError): Response {
   if (err.status === 400) return args.respond.badRequest(err.message);
   if (err.status === 404) return args.respond.notFound(err.message);
   if (err.status === 409) return args.respond.conflict(err.message);
   return args.respond.internalError(err.message);
 }
 
-function profileConfig(args: StreamProfileVfsRouteArgs): GitRepoProfileConfig {
+function profileConfig(args: StreamProfileRouteArgs): GitRepoProfileConfig {
   return args.profile as GitRepoProfileConfig;
 }
 
@@ -83,7 +83,7 @@ function oidPattern(format: GitRepoProfileConfig["objectFormat"]): RegExp {
   return format === "sha256" ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
 }
 
-async function writeLooseObject(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function writeLooseObject(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "git object request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const body = bodyRes.value as Partial<GitWriteObjectRequest>;
@@ -107,7 +107,7 @@ async function writeLooseObject(args: StreamProfileVfsRouteArgs): Promise<Respon
   return args.respond.json(200, writeRes.value);
 }
 
-async function importRepo(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function importRepo(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "git import request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const importRes = await importGitRepoResult({
@@ -121,7 +121,7 @@ async function importRepo(args: StreamProfileVfsRouteArgs): Promise<Response> {
   return args.respond.json(200, importRes.value);
 }
 
-async function exportBundle(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function exportBundle(args: StreamProfileRouteArgs): Promise<Response> {
   const exportRes = await exportGitBundleResult({
     stream: args.stream,
     reader: args.reader,
@@ -141,7 +141,7 @@ async function exportBundle(args: StreamProfileVfsRouteArgs): Promise<Response> 
   });
 }
 
-async function exportPack(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function exportPack(args: StreamProfileRouteArgs): Promise<Response> {
   const exportRes = await exportGitPackResult({
     stream: args.stream,
     reader: args.reader,
@@ -174,7 +174,7 @@ function parseBodyRangeResult(value: string | null, size: number): Result<{ star
   return Result.ok({ start, end: Math.min(end, size - 1) });
 }
 
-async function readLooseObject(args: StreamProfileVfsRouteArgs, oid: string): Promise<Response> {
+async function readLooseObject(args: StreamProfileRouteArgs, oid: string): Promise<Response> {
   const config = profileConfig(args);
   const objectId = decodeURIComponent(oid);
   if (!oidPattern(config.objectFormat).test(objectId)) return args.respond.badRequest("invalid git object id");
@@ -237,7 +237,7 @@ function childPath(dir: string, name: string): string {
 }
 
 async function commitOidFromValuesResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   values: { commit?: string | null; ref?: string | null }
 ): Promise<Result<string, GitServerError>> {
   const config = profileConfig(args);
@@ -265,7 +265,7 @@ async function commitOidFromValuesResult(
   return Result.ok(oid);
 }
 
-async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Promise<Result<string, GitServerError>> {
+async function commitOidFromRequestResult(args: StreamProfileRouteArgs): Promise<Result<string, GitServerError>> {
   return commitOidFromValuesResult(args, {
     commit: args.url.searchParams.get("commit"),
     ref: args.url.searchParams.get("ref"),
@@ -273,7 +273,7 @@ async function commitOidFromRequestResult(args: StreamProfileVfsRouteArgs): Prom
 }
 
 async function rootTreeOidForCommitResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   commitOid: string
 ): Promise<Result<string, GitServerError>> {
   const config = profileConfig(args);
@@ -291,7 +291,7 @@ async function rootTreeOidForCommitResult(
 }
 
 async function loadTreeEntriesResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   treeOid: string
 ): Promise<Result<GitTreeEntry[], GitServerError>> {
   const config = profileConfig(args);
@@ -350,7 +350,7 @@ function parseTreeIndexPageResult(
 }
 
 async function readTreeIndexManifestResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   treeOid: string
 ): Promise<Result<GitTreeIndexManifest | null, GitServerError>> {
   const config = profileConfig(args);
@@ -362,7 +362,7 @@ async function readTreeIndexManifestResult(
 }
 
 async function readTreeIndexPageResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   treeOid: string,
   page: GitTreeIndexManifest["pages"][number]
 ): Promise<Result<GitTreeIndexPage, GitServerError>> {
@@ -373,7 +373,7 @@ async function readTreeIndexPageResult(
 }
 
 async function findIndexedTreeEntryResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   treeOid: string,
   name: string
 ): Promise<Result<GitTreeIndexEntry | null, GitServerError>> {
@@ -389,7 +389,7 @@ async function findIndexedTreeEntryResult(
 }
 
 async function readIndexedTreePageResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   treeOid: string,
   cursor: string | null,
   limit: number
@@ -417,7 +417,7 @@ async function readIndexedTreePageResult(
 }
 
 async function statForEntryResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   path: string,
   entry: GitTreeEntry
 ): Promise<Result<GitNodeStat, GitServerError>> {
@@ -446,7 +446,7 @@ type ResolvedGitPath = {
 };
 
 async function resolveGitPathResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   commitOid: string,
   path: string
 ): Promise<Result<ResolvedGitPath, GitServerError>> {
@@ -486,7 +486,7 @@ async function resolveGitPathResult(
   return Result.err({ status: 404, message: "path not found" });
 }
 
-async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function checkout(args: StreamProfileRouteArgs): Promise<Response> {
   const config = profileConfig(args);
   const refRes = validateGitRefNameResult(args.url.searchParams.get("ref") ?? config.defaultBranch, { allowHead: false });
   if (Result.isError(refRes)) return args.respond.badRequest(refRes.error.message);
@@ -514,7 +514,7 @@ async function checkout(args: StreamProfileVfsRouteArgs): Promise<Response> {
   } satisfies GitCheckoutResponse);
 }
 
-async function stat(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function stat(args: StreamProfileRouteArgs): Promise<Response> {
   const pathRes = canonicalGitPathResult(args.url.searchParams.get("path"));
   if (Result.isError(pathRes)) return responseForError(args, pathRes.error);
   const commitRes = await commitOidFromRequestResult(args);
@@ -527,7 +527,7 @@ async function stat(args: StreamProfileVfsRouteArgs): Promise<Response> {
   } satisfies GitStatResponse);
 }
 
-async function readdir(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function readdir(args: StreamProfileRouteArgs): Promise<Response> {
   const pathRes = canonicalGitPathResult(args.url.searchParams.get("path"));
   if (Result.isError(pathRes)) return responseForError(args, pathRes.error);
   const rawLimit = Number(args.url.searchParams.get("limit") ?? "500");
@@ -569,7 +569,7 @@ async function readdir(args: StreamProfileVfsRouteArgs): Promise<Response> {
   } satisfies GitReaddirResponse);
 }
 
-async function blobByPath(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function blobByPath(args: StreamProfileRouteArgs): Promise<Response> {
   const pathRes = canonicalGitPathResult(args.url.searchParams.get("path"));
   if (Result.isError(pathRes)) return responseForError(args, pathRes.error);
   const commitRes = await commitOidFromRequestResult(args);
@@ -601,7 +601,7 @@ async function blobByPath(args: StreamProfileVfsRouteArgs): Promise<Response> {
 }
 
 async function treeOidForIndexRequestResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   body: Partial<GitPublishTreeIndexRequest>
 ): Promise<Result<string, GitServerError>> {
   const config = profileConfig(args);
@@ -633,7 +633,7 @@ async function treeOidForIndexRequestResult(
 }
 
 async function indexEntryForTreeEntryResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   entry: GitTreeEntry
 ): Promise<Result<GitTreeIndexEntry, GitServerError>> {
   if (entry.type === "dir") return Result.ok({ ...entry, size: 0 });
@@ -648,7 +648,7 @@ async function indexEntryForTreeEntryResult(
   return Result.ok({ ...entry, size: headerRes.value.size });
 }
 
-async function publishTreeIndex(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function publishTreeIndex(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "git tree index request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const body = bodyRes.value && typeof bodyRes.value === "object" && !Array.isArray(bodyRes.value)
@@ -703,13 +703,13 @@ async function publishTreeIndex(args: StreamProfileVfsRouteArgs): Promise<Respon
   return args.respond.json(200, { index: manifest } satisfies GitPublishTreeIndexResponse);
 }
 
-function latestUploadedThrough(args: StreamProfileVfsRouteArgs): bigint {
+function latestUploadedThrough(args: StreamProfileRouteArgs): bigint {
   const row = args.db.getStream(args.stream);
   return row?.uploaded_through ?? args.streamRow.uploaded_through;
 }
 
 async function transactionStatusBodyResult(
-  args: StreamProfileVfsRouteArgs,
+  args: StreamProfileRouteArgs,
   txnId: string
 ): Promise<Result<GitTransactionStatusResponse, GitServerError>> {
   const snapshotRes = await readGitRecordSnapshotResult(args);
@@ -746,7 +746,7 @@ async function transactionStatusBodyResult(
   });
 }
 
-async function transactionStatus(args: StreamProfileVfsRouteArgs, txnSegments: string[]): Promise<Response> {
+async function transactionStatus(args: StreamProfileRouteArgs, txnSegments: string[]): Promise<Response> {
   const txnId = decodeURIComponent(txnSegments.join("/"));
   if (txnId.trim() === "") return args.respond.badRequest("transaction id is required");
   const statusRes = await transactionStatusBodyResult(args, txnId);
@@ -754,7 +754,7 @@ async function transactionStatus(args: StreamProfileVfsRouteArgs, txnSegments: s
   return args.respond.json(200, statusRes.value);
 }
 
-async function waitPublished(args: StreamProfileVfsRouteArgs, txnSegments: string[]): Promise<Response> {
+async function waitPublished(args: StreamProfileRouteArgs, txnSegments: string[]): Promise<Response> {
   const txnId = decodeURIComponent(txnSegments.join("/"));
   if (txnId.trim() === "") return args.respond.badRequest("transaction id is required");
   const rawTimeout = Number(args.url.searchParams.get("timeout_ms") ?? "0");
@@ -769,7 +769,7 @@ async function waitPublished(args: StreamProfileVfsRouteArgs, txnSegments: strin
   }
 }
 
-async function waitVerified(args: StreamProfileVfsRouteArgs, txnSegments: string[]): Promise<Response> {
+async function waitVerified(args: StreamProfileRouteArgs, txnSegments: string[]): Promise<Response> {
   const txnId = decodeURIComponent(txnSegments.join("/"));
   if (txnId.trim() === "") return args.respond.badRequest("transaction id is required");
   const rawTimeout = Number(args.url.searchParams.get("timeout_ms") ?? "0");
@@ -784,7 +784,7 @@ async function waitVerified(args: StreamProfileVfsRouteArgs, txnSegments: string
   }
 }
 
-async function status(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function status(args: StreamProfileRouteArgs): Promise<Response> {
   const refsRes = await readGitRefsSnapshotResult({
     stream: args.stream,
     reader: args.reader,
@@ -800,7 +800,7 @@ async function status(args: StreamProfileVfsRouteArgs): Promise<Response> {
   });
 }
 
-async function refs(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function refs(args: StreamProfileRouteArgs): Promise<Response> {
   if (args.url.searchParams.get("publishedOnly") === "true") {
     const snapshotRes = await readGitRecordSnapshotResult(args);
     if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
@@ -827,7 +827,7 @@ async function refs(args: StreamProfileVfsRouteArgs): Promise<Response> {
   });
 }
 
-async function refGet(args: StreamProfileVfsRouteArgs, refSegments: string[]): Promise<Response> {
+async function refGet(args: StreamProfileRouteArgs, refSegments: string[]): Promise<Response> {
   const refRes = validateGitRefNameResult(decodeURIComponent(refSegments.join("/")), { allowHead: false });
   if (Result.isError(refRes)) return args.respond.badRequest(refRes.error.message);
   const ref = refRes.value;
@@ -845,7 +845,7 @@ async function refGet(args: StreamProfileVfsRouteArgs, refSegments: string[]): P
   });
 }
 
-async function refTransaction(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function refTransaction(args: StreamProfileRouteArgs): Promise<Response> {
   const bodyRes = await readRequestJsonResult(args.req, "ref transaction request");
   if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
   const requestRes = validateRefTransactionRequestResult(bodyRes.value as GitRefTransactionRequest);
@@ -863,7 +863,7 @@ async function refTransaction(args: StreamProfileVfsRouteArgs): Promise<Response
   return args.respond.json(200, commitRes.value);
 }
 
-async function publishRefCheckpoint(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function publishRefCheckpoint(args: StreamProfileRouteArgs): Promise<Response> {
   const snapshotRes = await readGitRecordSnapshotResult(args);
   if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
   const checkpoint = buildRefCheckpoint({
@@ -894,7 +894,7 @@ async function publishRefCheckpoint(args: StreamProfileVfsRouteArgs): Promise<Re
   return args.respond.json(200, { checkpoint, record });
 }
 
-async function publishPack(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function publishPack(args: StreamProfileRouteArgs): Promise<Response> {
   const packRes = await publishGitPackArtifactsResult({
     stream: args.stream,
     reader: args.reader,
@@ -906,7 +906,7 @@ async function publishPack(args: StreamProfileVfsRouteArgs): Promise<Response> {
   return args.respond.json(200, packRes.value);
 }
 
-async function verifyReachability(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function verifyReachability(args: StreamProfileRouteArgs): Promise<Response> {
   const verifyRes = await verifyGitReachabilityResult({
     stream: args.stream,
     reader: args.reader,
@@ -918,7 +918,7 @@ async function verifyReachability(args: StreamProfileVfsRouteArgs): Promise<Resp
   return args.respond.json(200, verifyRes.value);
 }
 
-async function readPackfile(args: StreamProfileVfsRouteArgs, packHash: string): Promise<Response> {
+async function readPackfile(args: StreamProfileRouteArgs, packHash: string): Promise<Response> {
   const packRes = await readGitPackfileArtifactResult({
     stream: args.stream,
     reader: args.reader,
@@ -951,7 +951,7 @@ function binaryResponse(value: { contentType: string; body: Uint8Array }): Respo
   });
 }
 
-async function smartInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function smartInfoRefs(args: StreamProfileRouteArgs): Promise<Response> {
   const service = args.url.searchParams.get("service");
   const requestArgs = {
     stream: args.stream,
@@ -971,7 +971,7 @@ async function smartInfoRefs(args: StreamProfileVfsRouteArgs): Promise<Response>
   return binaryResponse(refsRes.value);
 }
 
-async function uploadPackRpc(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function uploadPackRpc(args: StreamProfileRouteArgs): Promise<Response> {
   const requestBody = new Uint8Array(await args.req.arrayBuffer());
   const rpcRes = await gitUploadPackRpcResult({
     stream: args.stream,
@@ -986,7 +986,7 @@ async function uploadPackRpc(args: StreamProfileVfsRouteArgs): Promise<Response>
   return binaryResponse(rpcRes.value);
 }
 
-async function receivePackRpc(args: StreamProfileVfsRouteArgs): Promise<Response> {
+async function receivePackRpc(args: StreamProfileRouteArgs): Promise<Response> {
   const requestBody = new Uint8Array(await args.req.arrayBuffer());
   const rpcRes = await gitReceivePackRpcResult({
     stream: args.stream,
@@ -1000,7 +1000,7 @@ async function receivePackRpc(args: StreamProfileVfsRouteArgs): Promise<Response
   return binaryResponse(rpcRes.value);
 }
 
-export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promise<Response> {
+export async function handleGitRepoRoute(args: StreamProfileRouteArgs): Promise<Response> {
   if (args.namespace !== "_git") return args.respond.notFound("missing git route");
   if (args.profile.kind !== GIT_REPO_PROFILE_KIND) return args.respond.notFound("git-repo profile not enabled");
   const [first, second, third, ...rest] = args.segments;

@@ -54,7 +54,7 @@ implementation.
 Profile-owned subresources may exist under a stream when the installed profile
 defines them. The `git-repo` profile owns `/_git/*`; see
 [profile-git-repo.md](./profile-git-repo.md). The `workspace-fs` profile owns
-`/_vfs/*`; see [profile-workspace-fs.md](./profile-workspace-fs.md).
+`/_workspace/*`; see [profile-workspace-fs.md](./profile-workspace-fs.md).
 These endpoints are outside the generic Durable Streams append/read contract.
 
 ### 2.4 Search and inspection subresources

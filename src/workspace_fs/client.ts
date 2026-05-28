@@ -173,7 +173,7 @@ export class WorkspaceFsClient {
 
   async checkout(options: WorkspaceCheckoutOptions = {}): Promise<WorkspaceFsWorkspace> {
     const ref = normalizeRef(options.ref);
-    const res = await this.requestJson<VfsCheckoutResponse>("/_vfs/checkout", {
+    const res = await this.requestJson<VfsCheckoutResponse>("/_workspace/checkout", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...options, ref }),
@@ -182,11 +182,11 @@ export class WorkspaceFsClient {
   }
 
   async getRef(ref: string): Promise<VfsRefResponse> {
-    return this.requestJson<VfsRefResponse>(`/_vfs/ref/${encodeURIComponent(normalizeRef(ref))}`);
+    return this.requestJson<VfsRefResponse>(`/_workspace/ref/${encodeURIComponent(normalizeRef(ref))}`);
   }
 
   async stat(path: string, opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<VfsNodeStat> {
-    const res = await this.requestJson<{ node: VfsNodeStat }>("/_vfs/stat", { method: "GET" }, {
+    const res = await this.requestJson<{ node: VfsNodeStat }>("/_workspace/stat", { method: "GET" }, {
       path,
       commit: opts.commit ?? undefined,
       workspaceId: opts.workspaceId ?? undefined,
@@ -204,7 +204,7 @@ export class WorkspaceFsClient {
   }
 
   async readdir(path: string, opts: { commit?: string | null; workspaceId?: string | null; cursor?: string | null; limit?: number } = {}): Promise<VfsReaddirResponse> {
-    return this.requestJson<VfsReaddirResponse>("/_vfs/readdir", { method: "GET" }, {
+    return this.requestJson<VfsReaddirResponse>("/_workspace/readdir", { method: "GET" }, {
       path,
       commit: opts.commit ?? undefined,
       workspaceId: opts.workspaceId ?? undefined,
@@ -214,7 +214,7 @@ export class WorkspaceFsClient {
   }
 
   async readBlob(blobId: string, opts: { range?: string; workspaceId?: string; path?: string } = {}): Promise<Uint8Array> {
-    return this.requestBytes(`/_vfs/blob/${encodeURIComponent(blobId)}`, { method: "GET" }, {
+    return this.requestBytes(`/_workspace/blob/${encodeURIComponent(blobId)}`, { method: "GET" }, {
       range: opts.range,
       workspaceId: opts.workspaceId,
       path: opts.path,
@@ -222,17 +222,17 @@ export class WorkspaceFsClient {
   }
 
   async log(ref: string = "main", limit = 20): Promise<VfsCommit[]> {
-    const res = await this.requestJson<VfsLogResponse>("/_vfs/log", { method: "GET" }, { ref: normalizeRef(ref), limit });
+    const res = await this.requestJson<VfsLogResponse>("/_workspace/log", { method: "GET" }, { ref: normalizeRef(ref), limit });
     return res.commits;
   }
 
   async show(commitId: string): Promise<VfsCommit> {
-    const res = await this.requestJson<VfsShowResponse>(`/_vfs/show/${encodeURIComponent(commitId)}`, { method: "GET" });
+    const res = await this.requestJson<VfsShowResponse>(`/_workspace/show/${encodeURIComponent(commitId)}`, { method: "GET" });
     return res.commit;
   }
 
   async batchStat(paths: string[], opts: { commit?: string | null; workspaceId?: string | null } = {}): Promise<VfsBatchStatResponse> {
-    return this.requestJson<VfsBatchStatResponse>("/_vfs/batch/stat", {
+    return this.requestJson<VfsBatchStatResponse>("/_workspace/batch/stat", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ paths, commit: opts.commit ?? null, workspaceId: opts.workspaceId ?? undefined }),
@@ -240,7 +240,7 @@ export class WorkspaceFsClient {
   }
 
   async batchReadMetadata(ids: string[]): Promise<Array<{ id: string; object: VfsStoredObject | null }>> {
-    const res = await this.requestJson<VfsBatchReadMetadataResponse>("/_vfs/batch/read-metadata", {
+    const res = await this.requestJson<VfsBatchReadMetadataResponse>("/_workspace/batch/read-metadata", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -249,7 +249,7 @@ export class WorkspaceFsClient {
   }
 
   async batchReadBlobs(blobIds: string[]): Promise<VfsBatchReadBlobsResponse["blobs"]> {
-    const res = await this.requestJson<VfsBatchReadBlobsResponse>("/_vfs/batch/read-blobs", {
+    const res = await this.requestJson<VfsBatchReadBlobsResponse>("/_workspace/batch/read-blobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ blobIds }),
@@ -258,7 +258,7 @@ export class WorkspaceFsClient {
   }
 
   async appendWorkspaceOps(workspaceId: string, ops: VfsWorkspaceOpInput[]): Promise<VfsWorkspaceOpsResponse> {
-    return this.requestJson<VfsWorkspaceOpsResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/ops`, {
+    return this.requestJson<VfsWorkspaceOpsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/ops`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ops }),
@@ -266,35 +266,35 @@ export class WorkspaceFsClient {
   }
 
   async workspaceStatus(workspaceId: string): Promise<VfsWorkspaceStatusResponse> {
-    return this.requestJson<VfsWorkspaceStatusResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/status`);
+    return this.requestJson<VfsWorkspaceStatusResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/status`);
   }
 
   async workspaceIndex(workspaceId: string, opts: { path?: string | null } = {}): Promise<VfsWorkspaceIndexResponse> {
-    return this.requestJson<VfsWorkspaceIndexResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/index`, { method: "GET" }, {
+    return this.requestJson<VfsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/index`, { method: "GET" }, {
       path: opts.path ?? undefined,
     });
   }
 
   async workspaceChanges(workspaceId: string, opts: { prefix?: string | null } = {}): Promise<VfsWorkspaceChangesResponse> {
-    return this.requestJson<VfsWorkspaceChangesResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/changes`, { method: "GET" }, {
+    return this.requestJson<VfsWorkspaceChangesResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/changes`, { method: "GET" }, {
       prefix: opts.prefix ?? undefined,
     });
   }
 
   async workspaceConflicts(workspaceId: string): Promise<VfsWorkspaceConflictsResponse> {
-    return this.requestJson<VfsWorkspaceConflictsResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/conflicts`, { method: "GET" });
+    return this.requestJson<VfsWorkspaceConflictsResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/conflicts`, { method: "GET" });
   }
 
   async rebaseWorkspace(workspaceId: string): Promise<VfsWorkspaceRebaseResponse> {
-    return this.requestJson<VfsWorkspaceRebaseResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/rebase`, { method: "POST" });
+    return this.requestJson<VfsWorkspaceRebaseResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/rebase`, { method: "POST" });
   }
 
   async compactWorkspace(workspaceId: string): Promise<VfsWorkspaceIndexResponse> {
-    return this.requestJson<VfsWorkspaceIndexResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
+    return this.requestJson<VfsWorkspaceIndexResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
   }
 
   async commitWorkspace(workspaceId: string, options: WorkspaceCommitOptions): Promise<VfsCommitResponse> {
-    return this.requestJson<VfsCommitResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/commit`, {
+    return this.requestJson<VfsCommitResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/commit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
@@ -302,7 +302,7 @@ export class WorkspaceFsClient {
   }
 
   async discardWorkspace(workspaceId: string): Promise<{ workspaceId: string; state: "discarded" }> {
-    return this.requestJson<{ workspaceId: string; state: "discarded" }>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/discard`, {
+    return this.requestJson<{ workspaceId: string; state: "discarded" }>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/discard`, {
       method: "POST",
     });
   }

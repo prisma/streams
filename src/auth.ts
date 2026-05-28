@@ -372,8 +372,8 @@ function parseV1StreamAccess(path: string, method: string, url: URL): { stream: 
   let isRoutingKeys = false;
   let pathKeyParam = false;
   let touchMode = false;
-  let vfsSegments: string[] | null = null;
-  let vfsNamespace: "_vfs" | "_git" | null = null;
+  let profileRouteSegments: string[] | null = null;
+  let profileRouteNamespace: "_workspace" | "_git" | null = null;
 
   if (segments[segments.length - 1] === "_schema") {
     isSchema = true;
@@ -397,15 +397,15 @@ function parseV1StreamAccess(path: string, method: string, url: URL): { stream: 
     isRoutingKeys = true;
     segments.pop();
   } else {
-    const vfsIndex = Math.max(segments.lastIndexOf("_vfs"), segments.lastIndexOf("_git"));
-    if (vfsIndex >= 0) {
-      vfsNamespace = segments[vfsIndex] === "_git" ? "_git" : "_vfs";
-      vfsSegments = segments.slice(vfsIndex + 1);
-      segments.splice(vfsIndex);
+    const profileRouteIndex = Math.max(segments.lastIndexOf("_workspace"), segments.lastIndexOf("_git"));
+    if (profileRouteIndex >= 0) {
+      profileRouteNamespace = segments[profileRouteIndex] === "_git" ? "_git" : "_workspace";
+      profileRouteSegments = segments.slice(profileRouteIndex + 1);
+      segments.splice(profileRouteIndex);
     }
   }
 
-  if (!vfsSegments) {
+  if (!profileRouteSegments) {
     if (
       segments.length >= 3 &&
       segments[segments.length - 3] === "touch" &&
@@ -428,10 +428,10 @@ function parseV1StreamAccess(path: string, method: string, url: URL): { stream: 
 
   const stream = decodeStreamName(segments.join("/"));
   if (!stream) return null;
-  if (vfsSegments) {
+  if (profileRouteSegments) {
     return {
       stream,
-      permission: vfsNamespace === "_git" ? permissionForGitProfileRoute(method, vfsSegments, url) : permissionForWorkspaceFsProfileRoute(method),
+      permission: profileRouteNamespace === "_git" ? permissionForGitProfileRoute(method, profileRouteSegments, url) : permissionForWorkspaceFsProfileRoute(method),
     };
   }
   return {

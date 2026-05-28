@@ -53,7 +53,7 @@ import {
   parseProfileUpdateResult,
   resolveJsonIngestCapability,
   resolveTouchCapability,
-  resolveVfsCapability,
+  resolveProfileRouteCapability,
   type StreamTouchRoute,
   type StreamProfileAppendJsonRecord,
 } from "./profiles";
@@ -1760,9 +1760,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
         const profileRes = profiles.getProfileResult(topLevelGitRoute.stream, srow);
         if (Result.isError(profileRes)) return internalError("invalid stream profile");
-        const vfsCapability = resolveVfsCapability(profileRes.value);
-        if (!vfsCapability) return notFound("profile route not enabled");
-        return vfsCapability.handleRoute({
+        const profileRouteCapability = resolveProfileRouteCapability(profileRes.value);
+        if (!profileRouteCapability) return notFound("profile route not enabled");
+        return profileRouteCapability.handleRoute({
           namespace: "_git",
           segments: topLevelGitRoute.segments,
           req,
@@ -1817,8 +1817,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isDetails = false;
         let isIndexStatus = false;
         let isRoutingKeys = false;
-        let vfsSegments: string[] | null = null;
-        let vfsNamespace: "_vfs" | "_git" | null = null;
+        let profileRouteSegments: string[] | null = null;
+        let profileRouteNamespace: "_workspace" | "_git" | null = null;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
         if (segments[segments.length - 1] === "_schema") {
@@ -1843,14 +1843,14 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           isRoutingKeys = true;
           segments.pop();
         } else {
-          const vfsIndex = Math.max(segments.lastIndexOf("_vfs"), segments.lastIndexOf("_git"));
-          if (vfsIndex >= 0) {
-            vfsNamespace = segments[vfsIndex] === "_git" ? "_git" : "_vfs";
-            vfsSegments = segments.slice(vfsIndex + 1);
-            segments.splice(vfsIndex);
+          const profileRouteIndex = Math.max(segments.lastIndexOf("_workspace"), segments.lastIndexOf("_git"));
+          if (profileRouteIndex >= 0) {
+            profileRouteNamespace = segments[profileRouteIndex] === "_git" ? "_git" : "_workspace";
+            profileRouteSegments = segments.slice(profileRouteIndex + 1);
+            segments.splice(profileRouteIndex);
           }
         }
-        if (!vfsSegments) {
+        if (!profileRouteSegments) {
           if (
             segments.length >= 3 &&
             segments[segments.length - 3] === "touch" &&
@@ -1975,18 +1975,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           return badRequest("unsupported method");
         }
 
-        if (vfsSegments) {
+        if (profileRouteSegments) {
           const srow = db.getStream(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 
           const profileRes = profiles.getProfileResult(stream, srow);
           if (Result.isError(profileRes)) return internalError("invalid stream profile");
-          const vfsCapability = resolveVfsCapability(profileRes.value);
-          if (!vfsCapability) return notFound("profile route not enabled");
-          return vfsCapability.handleRoute({
-            namespace: vfsNamespace ?? "_vfs",
-            segments: vfsSegments,
+          const profileRouteCapability = resolveProfileRouteCapability(profileRes.value);
+          if (!profileRouteCapability) return notFound("profile route not enabled");
+          return profileRouteCapability.handleRoute({
+            namespace: profileRouteNamespace ?? "_workspace",
+            segments: profileRouteSegments,
             req,
             url,
             stream,

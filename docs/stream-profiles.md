@@ -146,7 +146,7 @@ It means:
 
 - the workspace control stream content type must be `application/json`
 - workspace checkout, draft operation, status, commit, discard, and just-bash
-  adapter flows use the `/_vfs/*` endpoints
+  adapter flows use the `/_workspace/*` endpoints
 - `gitRepo.stream` is required and points at the canonical `git-repo` stream
   that receives Git object writes and ref transactions during workspace commit
 

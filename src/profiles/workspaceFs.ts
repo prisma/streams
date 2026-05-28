@@ -120,7 +120,7 @@ export const WORKSPACE_FS_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     });
   },
 
-  vfs: {
+  routes: {
     handleRoute(args) {
       return handleWorkspaceFsRoute(args);
     },

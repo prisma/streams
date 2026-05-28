@@ -109,6 +109,14 @@ describe("workspace-fs profile", () => {
       const profile = await fetchJsonApp(app, `${base}/_profile`, { method: "GET" });
       expect(profile.status).toBe(200);
       expect(profile.body.profile.kind).toBe("workspace-fs");
+
+      const oldVfsRoute = await fetchJsonApp(app, `${base}/_vfs/checkout`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ref: "main", workspaceId: "old-vfs-route" }),
+      });
+      expect(oldVfsRoute.status).toBe(404);
+
       const workspace = await repo.checkout({ ref: "main", workspaceId: "workspace-fs" });
       await workspace.writeFile("/README.md", "workspace-fs\n");
       await workspace.mkdir("/src");

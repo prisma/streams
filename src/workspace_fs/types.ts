@@ -39,35 +39,6 @@ export type VfsChunkObject = {
 
 export type VfsTreeEntryType = "file" | "dir" | "symlink";
 
-export type VfsTreeEntry = {
-  name: string;
-  type: VfsTreeEntryType;
-  mode: number;
-  size?: number;
-  blobId?: VfsBlobId;
-  treeId?: VfsTreeId;
-  symlinkTarget?: string;
-  mtime?: string;
-};
-
-export type VfsTreePage = {
-  kind: "tree-page";
-  id: VfsTreeId;
-  pathHint?: string;
-  entries: VfsTreeEntry[];
-  nextPageId?: VfsTreeId;
-};
-
-export type VfsTreeIndexPage = {
-  kind: "tree-index-page";
-  id: VfsTreeId;
-  ranges: Array<{
-    fromName: string;
-    toName: string;
-    childPageId: VfsTreeId;
-  }>;
-};
-
 export type VfsChangeSummary = {
   added: number;
   modified: number;
@@ -99,16 +70,7 @@ export type VfsCommit = {
   git?: VfsCanonicalGitCommit;
 };
 
-export type VfsRefUpdate = {
-  kind: "ref-update";
-  ref: VfsRefName;
-  oldCommitId: VfsCommitId | null;
-  newCommitId: VfsCommitId;
-  actorId: string;
-  createdAt: string;
-};
-
-export type VfsStoredObject = VfsBlobManifest | VfsChunkObject | VfsTreePage | VfsTreeIndexPage | VfsCommit;
+export type VfsStoredObject = VfsBlobManifest | VfsChunkObject;
 
 export type VfsNodeStat = {
   path: string;
@@ -354,7 +316,6 @@ export type VfsReaddirResponse = {
 export type VfsRefResponse = {
   ref: VfsRefName;
   commitId: VfsCommitId | null;
-  update: VfsRefUpdate | null;
 };
 
 export type VfsLogResponse = {

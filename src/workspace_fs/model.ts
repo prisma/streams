@@ -4,14 +4,8 @@ import { Result } from "better-result";
 import type {
   VfsBlobManifest,
   VfsChunkObject,
-  VfsCommit,
-  VfsCommitId,
-  VfsNodeStat,
   VfsObjectId,
   VfsStoredObject,
-  VfsTreeEntry,
-  VfsTreeId,
-  VfsTreePage,
   VfsWorkspaceOp,
   VfsWorkspaceRecord,
 } from "./types";
@@ -24,29 +18,6 @@ export const VFS_CHUNK_SIZE_BYTES = 64 * 1024;
 export type VfsModelError = {
   message: string;
 };
-
-export type MutableVfsNode =
-  | {
-      type: "dir";
-      mode: number;
-      mtime?: string;
-    }
-  | {
-      type: "file";
-      mode: number;
-      size: number;
-      blobId: string;
-      mtime?: string;
-    }
-  | {
-      type: "symlink";
-      mode: number;
-      size: number;
-      symlinkTarget: string;
-      mtime?: string;
-    };
-
-export type MutableVfsTree = Map<string, MutableVfsNode>;
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -85,10 +56,6 @@ export function normalizeRef(ref: string | null | undefined): string {
   return raw.startsWith("refs/") ? raw : `refs/heads/${raw}`;
 }
 
-export function controlRefKey(ref: string): string {
-  return `ref:${ref}`;
-}
-
 export function objectKey(id: string): string {
   return `object:${id}`;
 }
@@ -98,11 +65,11 @@ export function workspaceOpKey(path: string): string {
 }
 
 export function objectsStreamName(repoStream: string): string {
-  return `${repoStream}/_vfs/objects`;
+  return `${repoStream}/_workspace/objects`;
 }
 
 export function workspaceStreamName(repoStream: string, workspaceId: string): string {
-  return `${repoStream}/_vfs/workspaces/${encodeURIComponent(workspaceId)}`;
+  return `${repoStream}/_workspace/workspaces/${encodeURIComponent(workspaceId)}`;
 }
 
 export function canonicalizeVfsPath(path: string): Result<string, VfsModelError> {
@@ -131,11 +98,6 @@ export function basename(path: string): string {
   if (path === "/") return "";
   const idx = path.lastIndexOf("/");
   return idx < 0 ? path : path.slice(idx + 1);
-}
-
-export function isPathInside(path: string, candidateParent: string): boolean {
-  if (candidateParent === "/") return path !== "/";
-  return path.startsWith(`${candidateParent}/`);
 }
 
 export function stableStringify(value: unknown): string {
@@ -212,136 +174,6 @@ export function makeBlobObjects(bytes: Uint8Array, opts: { executable?: boolean;
   };
 }
 
-export function makeCommitId(commitWithoutId: Omit<VfsCommit, "id">): VfsCommitId {
-  return objectId("commit", commitWithoutId);
-}
-
-export function makeTreePage(pathHint: string, entries: VfsTreeEntry[], nextPageId?: VfsTreeId): VfsTreePage {
-  const body = {
-    kind: "tree-page" as const,
-    pathHint,
-    entries: entries.slice().sort((a, b) => a.name.localeCompare(b.name)),
-    nextPageId,
-  };
-  const id = objectId("tree-page", body);
-  return { ...body, id };
-}
-
-export function emptyMutableTree(): MutableVfsTree {
-  return new Map([["/", { type: "dir", mode: 0o040755 }]]);
-}
-
-export function nodeStat(path: string, node: MutableVfsNode, treeId: string | null = null): VfsNodeStat {
-  if (node.type === "dir") {
-    return {
-      path,
-      type: "dir",
-      mode: node.mode,
-      size: 0,
-      mtime: node.mtime,
-      treeId,
-    };
-  }
-  if (node.type === "symlink") {
-    return {
-      path,
-      type: "symlink",
-      mode: node.mode,
-      size: node.size,
-      mtime: node.mtime,
-      symlinkTarget: node.symlinkTarget,
-    };
-  }
-  return {
-    path,
-    type: "file",
-    mode: node.mode,
-    size: node.size,
-    mtime: node.mtime,
-    blobId: node.blobId,
-  };
-}
-
-export function ensureParentDirectories(tree: MutableVfsTree, path: string, mtime?: string): void {
-  let current = parentPath(path);
-  const stack: string[] = [];
-  while (current !== "/" && !tree.has(current)) {
-    stack.push(current);
-    current = parentPath(current);
-  }
-  if (!tree.has("/")) tree.set("/", { type: "dir", mode: 0o040755, mtime });
-  for (const dir of stack.reverse()) {
-    tree.set(dir, { type: "dir", mode: 0o040755, mtime });
-  }
-}
-
-export function directChildren(tree: MutableVfsTree, dir: string): Array<{ path: string; node: MutableVfsNode }> {
-  const prefix = dir === "/" ? "/" : `${dir}/`;
-  const out: Array<{ path: string; node: MutableVfsNode }> = [];
-  for (const [path, node] of tree.entries()) {
-    if (path === dir || !path.startsWith(prefix)) continue;
-    const rest = path.slice(prefix.length);
-    if (rest.includes("/")) continue;
-    out.push({ path, node });
-  }
-  out.sort((a, b) => basename(a.path).localeCompare(basename(b.path)));
-  return out;
-}
-
-export function applyWorkspaceOp(tree: MutableVfsTree, op: VfsWorkspaceOp): void {
-  if (op.kind === "mkdir") {
-    ensureParentDirectories(tree, op.path, op.createdAt);
-    tree.set(op.path, { type: "dir", mode: 0o040755, mtime: op.createdAt });
-    return;
-  }
-
-  if (op.kind === "put-file") {
-    ensureParentDirectories(tree, op.path, op.createdAt);
-    tree.set(op.path, {
-      type: "file",
-      mode: op.executable === true ? 0o100755 : 0o100644,
-      size: op.size,
-      blobId: op.blobId,
-      mtime: op.createdAt,
-    });
-    return;
-  }
-
-  if (op.kind === "symlink") {
-    ensureParentDirectories(tree, op.path, op.createdAt);
-    tree.set(op.path, {
-      type: "symlink",
-      mode: 0o120777,
-      size: bytesFromText(op.target).byteLength,
-      symlinkTarget: op.target,
-      mtime: op.createdAt,
-    });
-    return;
-  }
-
-  if (op.kind === "delete") {
-    tree.delete(op.path);
-    for (const path of Array.from(tree.keys())) {
-      if (isPathInside(path, op.path)) tree.delete(path);
-    }
-    return;
-  }
-
-  if (op.kind === "rename") {
-    const moves: Array<{ from: string; to: string; node: MutableVfsNode }> = [];
-    for (const [path, node] of tree.entries()) {
-      if (path === op.from || isPathInside(path, op.from)) {
-        const suffix = path === op.from ? "" : path.slice(op.from.length);
-        moves.push({ from: path, to: `${op.to}${suffix}`, node });
-      }
-    }
-    moves.sort((a, b) => b.from.length - a.from.length);
-    for (const move of moves) tree.delete(move.from);
-    ensureParentDirectories(tree, op.to, op.createdAt);
-    for (const move of moves.reverse()) tree.set(move.to, { ...move.node, mtime: op.createdAt });
-  }
-}
-
 export function workspaceOpsFromRecords(records: VfsWorkspaceRecord[]): VfsWorkspaceOp[] {
   return records.filter((record): record is VfsWorkspaceOp => {
     return (
@@ -366,7 +198,7 @@ export function isWorkspaceClosed(records: VfsWorkspaceRecord[]): { state: "open
 export function decodeStoredObject(raw: unknown): Result<VfsStoredObject, VfsModelError> {
   if (!raw || typeof raw !== "object") return Result.err({ message: "stored object must be an object" });
   const kind = (raw as { kind?: unknown }).kind;
-  if (kind !== "blob" && kind !== "chunk" && kind !== "tree-page" && kind !== "tree-index-page" && kind !== "commit") {
+  if (kind !== "blob" && kind !== "chunk") {
     return Result.err({ message: "unsupported stored object kind" });
   }
   return Result.ok(raw as VfsStoredObject);

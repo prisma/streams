@@ -123,7 +123,7 @@ export const GIT_REPO_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     });
   },
 
-  vfs: {
+  routes: {
     handleRoute(args) {
       return handleGitRepoRoute(args);
     },
