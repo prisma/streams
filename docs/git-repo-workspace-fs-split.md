@@ -15,7 +15,8 @@ git-repo
   ref transactions
   ref checkpoints
   bundle/pack import-export
-  future persistent packs and smart HTTP
+  pack/idx artifacts
+  smart HTTP fetch and push
 
 workspace-fs
   lazy writable checkout for agents
@@ -27,7 +28,7 @@ workspace-fs
 
 Agent runtimes should continue to use the workspace API and just-bash adapter.
 They should not need a real `.git` directory. Human and external tooling can use
-Git import/export and smart HTTP once those layers exist.
+Git import/export and smart HTTP through the canonical `git-repo` profile.
 
 ## Request Path
 
@@ -71,5 +72,5 @@ The split preserves the existing Streams durability distinction:
 - `verified`: refs point only to reachable, available Git objects
 
 Low-latency agent commits can request accepted durability. Strict callers should
-wait for published/verified states once the corresponding endpoints are
-implemented.
+wait for published transaction status and run reachability verification before
+treating a ref as remotely durable.
