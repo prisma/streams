@@ -74,6 +74,11 @@ function importExportEnabled(config: GitRepoProfileConfig): boolean {
   return config.importExport?.enabled !== false;
 }
 
+function requireSha1GitCliResult(config: GitRepoProfileConfig, feature: string): Result<void, GitRepoServiceError> {
+  if (config.objectFormat === "sha1") return Result.ok(undefined);
+  return Result.err(gitError(400, `${feature} currently requires sha1 objectFormat`));
+}
+
 function maxImportExportBytes(config: GitRepoProfileConfig): number {
   const value = config.importExport?.maxBytes;
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 512 * 1024 * 1024;
@@ -433,6 +438,8 @@ export async function importGitRepoResult(
   rawRequest: unknown
 ): Promise<Result<GitImportResponse, GitRepoServiceError>> {
   if (!importExportEnabled(args.config)) return Result.err(gitError(404, "git import/export is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git CLI import");
+  if (Result.isError(formatRes)) return formatRes;
   const requestRes = parseImportRequestResult(rawRequest, args.config.objectFormat);
   if (Result.isError(requestRes)) return requestRes;
   const request = requestRes.value;
@@ -570,6 +577,8 @@ async function materializeBareRepoResult(
 
 export async function exportGitBundleResult(args: GitImportExportArgs): Promise<Result<Uint8Array, GitRepoServiceError>> {
   if (!importExportEnabled(args.config)) return Result.err(gitError(404, "git import/export is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git CLI export");
+  if (Result.isError(formatRes)) return formatRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-export-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
@@ -587,6 +596,8 @@ export async function exportGitBundleResult(args: GitImportExportArgs): Promise<
 
 export async function exportGitPackResult(args: GitImportExportArgs): Promise<Result<Uint8Array, GitRepoServiceError>> {
   if (!importExportEnabled(args.config)) return Result.err(gitError(404, "git import/export is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git CLI export");
+  if (Result.isError(formatRes)) return formatRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-export-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
@@ -777,6 +788,8 @@ export async function publishGitPackArtifactsResult(
   args: GitImportExportArgs
 ): Promise<Result<GitPackMaintenanceResponse, GitRepoServiceError>> {
   if (!importExportEnabled(args.config)) return Result.err(gitError(404, "git import/export is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git pack maintenance");
+  if (Result.isError(formatRes)) return formatRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-pack-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
@@ -884,6 +897,8 @@ export async function gitUploadPackAdvertiseRefsResult(
   args: GitImportExportArgs
 ): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
   if (!smartHttpFetchEnabled(args.config)) return Result.err(gitError(404, "git upload-pack is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git smart HTTP fetch");
+  if (Result.isError(formatRes)) return formatRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-upload-pack-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
@@ -911,6 +926,8 @@ export async function gitUploadPackRpcResult(
   requestBody: Uint8Array
 ): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
   if (!smartHttpFetchEnabled(args.config)) return Result.err(gitError(404, "git upload-pack is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git smart HTTP fetch");
+  if (Result.isError(formatRes)) return formatRes;
   if (requestBody.byteLength > maxImportExportBytes(args.config)) return Result.err(gitError(400, "git-upload-pack request exceeds maxBytes"));
   const requestRes = validateUploadPackRequestResult(args.config, requestBody);
   if (Result.isError(requestRes)) return requestRes;
@@ -943,6 +960,8 @@ export async function readGitPackfileArtifactResult(
   range?: { start: number; end?: number } | null
 ): Promise<Result<{ pack: GitPreferredClonePack; bytes: Uint8Array; size: number }, GitRepoServiceError>> {
   if (args.config.fetch?.allowPackfileUris !== true) return Result.err(gitError(404, "git packfile-uri downloads are disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git packfile-uri downloads");
+  if (Result.isError(formatRes)) return formatRes;
   if (!/^[0-9a-f]{40}$/.test(packHash)) return Result.err(gitError(400, "invalid git pack hash"));
   const recordsRes = await readGitRecordsResult(args);
   if (Result.isError(recordsRes)) return recordsRes;
@@ -964,6 +983,8 @@ export async function gitReceivePackAdvertiseRefsResult(
   args: GitImportExportArgs
 ): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
   if (!smartHttpPushEnabled(args.config)) return Result.err(gitError(404, "git receive-pack is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git smart HTTP push");
+  if (Result.isError(formatRes)) return formatRes;
   const root = mkdtempSync(join(tmpdir(), "streams-git-receive-pack-"));
   try {
     const materializedRes = await materializeBareRepoResult(args, root, { allowEmpty: true });
@@ -989,6 +1010,8 @@ export async function gitReceivePackRpcResult(
   requestBody: Uint8Array
 ): Promise<Result<GitSmartHttpResponse, GitRepoServiceError>> {
   if (!smartHttpPushEnabled(args.config)) return Result.err(gitError(404, "git receive-pack is disabled for this git-repo profile"));
+  const formatRes = requireSha1GitCliResult(args.config, "Git smart HTTP push");
+  if (Result.isError(formatRes)) return formatRes;
   if (requestBody.byteLength > maxPushBytes(args.config)) return Result.err(gitError(400, "git-receive-pack request exceeds maxPackBytes"));
   const root = mkdtempSync(join(tmpdir(), "streams-git-receive-pack-"));
   try {

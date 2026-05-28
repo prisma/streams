@@ -439,8 +439,12 @@ default because it reads server-local paths; it requires
 `importExport.allowLocalPathImport=true` and is intended for development or
 operator-controlled migration jobs, not tenant-supplied requests.
 
-The current import/export implementation requires `objectFormat: "sha1"`
-because it delegates bundle and pack validation to the local Git CLI.
+Loose object writes, path reads, and ref transactions support both
+`objectFormat: "sha1"` and `objectFormat: "sha256"`. The current
+import/export, pack maintenance, packfile URI, and smart HTTP implementations
+require `objectFormat: "sha1"` because they delegate bundle, pack, and protocol
+validation to the local Git CLI. SHA-256 repositories fail those compatibility
+paths early with `400` rather than invoking Git CLI subprocesses.
 Git subprocesses run through an async bounded runner instead of blocking the
 request thread. The runner enforces `importExport.gitCommandTimeoutMs` (default
 30000), caps concurrent Git jobs with `importExport.gitCommandConcurrency`

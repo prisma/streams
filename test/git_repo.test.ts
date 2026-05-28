@@ -538,6 +538,82 @@ describe("git-repo profile", () => {
     }
   });
 
+  test("supports sha256 loose objects while fencing Git CLI compatibility paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-sha256-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const stream = "git/test/sha256";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        objectFormat: "sha256",
+        http: { enabled: true, allowFetch: true, allowPush: true },
+        fetch: { allowPackfileUris: true },
+      });
+
+      const blob = writeGitBlob("sha256 works\n", "sha256");
+      const tree = writeGitTreeResult([{ mode: "100644", name: "README.md", oid: blob.oid }], "sha256");
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commitObject = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_096,
+          timezone: "+0000",
+        },
+        message: "SHA256 source\n",
+      }, "sha256");
+      expect(Result.isOk(commitObject)).toBe(true);
+      if (Result.isError(commitObject)) throw new Error(commitObject.error.message);
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commitObject.value);
+
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "sha256-txn",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commitObject.value.oid }],
+          objects: {
+            looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const readme = await app.fetch(new Request(`${base}/_git/blob?ref=main&path=${encodeURIComponent("/README.md")}`, { method: "GET" }));
+      expect(readme.status).toBe(200);
+      expect(await readme.text()).toBe("sha256 works\n");
+
+      const importRes = await fetchJsonApp(app, `${base}/_git/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ format: "bundle", bundleBase64: Buffer.from("bundle").toString("base64") }),
+      });
+      expect(importRes.status).toBe(400);
+      expect(importRes.body.error.message).toContain("requires sha1 objectFormat");
+
+      const exportRes = await app.fetch(new Request(`${base}/_git/export.bundle`, { method: "GET" }));
+      expect(exportRes.status).toBe(400);
+      expect(await exportRes.text()).toContain("requires sha1 objectFormat");
+
+      const pack = await fetchJsonApp(app, `${base}/_git/maintenance/publish-pack`, { method: "POST" });
+      expect(pack.status).toBe(400);
+      expect(pack.body.error.message).toContain("requires sha1 objectFormat");
+
+      const smart = await app.fetch(new Request(`${base}/_git/smart/info/refs?service=git-upload-pack`, { method: "GET" }));
+      expect(smart.status).toBe(400);
+      expect(await smart.text()).toContain("requires sha1 objectFormat");
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("rejects invalid ref transactions before updating refs", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-git-ref-validation-"));
     const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
