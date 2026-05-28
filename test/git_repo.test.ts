@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
@@ -509,6 +509,39 @@ describe("git-repo profile", () => {
       const refs = await fetchJsonApp(app, `${base}/_git/refs`, { method: "GET" });
       expect(refs.status).toBe(200);
       expect(refs.body.refs).toEqual({});
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("times out Git subprocesses through the async bounded runner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-timeout-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const gitScript = join(root, "slow-git.sh");
+      writeFileSync(gitScript, "#!/bin/sh\nsleep 2\n", { mode: 0o755 });
+      chmodSync(gitScript, 0o755);
+      const stream = "git/test/timeout";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        importExport: {
+          gitBinary: gitScript,
+          gitCommandTimeoutMs: 25,
+          gitCommandConcurrency: 1,
+        },
+      });
+
+      const timeout = await fetchJsonApp(app, `${base}/_git/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          format: "bundle",
+          bundleBase64: Buffer.from("not a real bundle").toString("base64"),
+        }),
+      });
+      expect(timeout.status).toBe(500);
+      expect(timeout.body.error.message).toContain("timed out");
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

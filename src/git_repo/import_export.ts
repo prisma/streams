@@ -1,11 +1,12 @@
 import { Buffer } from "node:buffer";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { createHash, randomUUID } from "node:crypto";
 import { Result } from "better-result";
+import { ConcurrencyGate } from "../concurrency_gate";
 import {
   buildGitObject,
   frameGitObject,
@@ -58,6 +59,7 @@ type GitCliObject = {
 type ExportObject = GitCliObject;
 
 const TEXT_DECODER = new TextDecoder();
+const GIT_COMMAND_GATE = new ConcurrencyGate(2);
 
 function gitError(status: GitRepoServiceError["status"], message: string): GitRepoServiceError {
   return { status, message };
@@ -87,6 +89,11 @@ function gitCommandTimeoutMs(config: GitRepoProfileConfig): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 30_000;
 }
 
+function gitCommandConcurrency(config: GitRepoProfileConfig): number {
+  const value = config.importExport?.gitCommandConcurrency;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 2;
+}
+
 function sanitizedGitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
@@ -102,28 +109,85 @@ function sanitizedGitEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
   return extra ? { ...env, ...extra } : env;
 }
 
-function runGitResult(
+async function runGitResult(
   config: GitRepoProfileConfig,
   args: string[],
   opts: { input?: Uint8Array; cwd?: string; maxBuffer?: number; status?: GitRepoServiceError["status"]; env?: Record<string, string> } = {}
-): Result<Buffer, GitRepoServiceError> {
-  const proc = spawnSync(gitBinary(config), args, {
-    cwd: opts.cwd,
-    env: sanitizedGitEnv(opts.env),
-    input: opts.input ? Buffer.from(opts.input.buffer, opts.input.byteOffset, opts.input.byteLength) : undefined,
-    maxBuffer: opts.maxBuffer ?? maxImportExportBytes(config),
-    timeout: gitCommandTimeoutMs(config),
+): Promise<Result<Buffer, GitRepoServiceError>> {
+  GIT_COMMAND_GATE.setLimit(gitCommandConcurrency(config));
+  return GIT_COMMAND_GATE.run(async () => runGitProcessResult(config, args, opts));
+}
+
+async function runGitProcessResult(
+  config: GitRepoProfileConfig,
+  args: string[],
+  opts: { input?: Uint8Array; cwd?: string; maxBuffer?: number; status?: GitRepoServiceError["status"]; env?: Record<string, string> } = {}
+): Promise<Result<Buffer, GitRepoServiceError>> {
+  const maxBuffer = opts.maxBuffer ?? maxImportExportBytes(config);
+  return await new Promise<Result<Buffer, GitRepoServiceError>>((resolve) => {
+    const proc = spawn(gitBinary(config), args, {
+      cwd: opts.cwd,
+      env: sanitizedGitEnv(opts.env),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let timedOut = false;
+    let exceeded = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGKILL");
+    }, gitCommandTimeoutMs(config));
+
+    const settle = (result: Result<Buffer, GitRepoServiceError>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+
+    proc.on("error", (error) => {
+      settle(Result.err(gitError(500, error.message)));
+    });
+    proc.stdin.on("error", () => {
+      // The process close path reports the actual Git failure; avoid unhandled EPIPE when Git exits early.
+    });
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > maxBuffer) {
+        exceeded = true;
+        proc.kill("SIGKILL");
+        return;
+      }
+      stdoutChunks.push(chunk);
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes <= maxBuffer) stderrChunks.push(chunk);
+    });
+    proc.on("close", (code) => {
+      if (timedOut) {
+        settle(Result.err(gitError(500, `git ${args[0] ?? ""} timed out`)));
+        return;
+      }
+      if (exceeded) {
+        settle(Result.err(gitError(409, `git ${args[0] ?? ""} exceeded max output bytes`)));
+        return;
+      }
+      if (code !== 0) {
+        const stderr = TEXT_DECODER.decode(Buffer.concat(stderrChunks)).trim();
+        settle(Result.err(gitError(opts.status ?? 409, stderr || `git ${args[0] ?? ""} failed`)));
+        return;
+      }
+      settle(Result.ok(Buffer.concat(stdoutChunks)));
+    });
+
+    const input = opts.input ? Buffer.from(opts.input.buffer, opts.input.byteOffset, opts.input.byteLength) : undefined;
+    proc.stdin.end(input);
   });
-  if (proc.error) {
-    const code = typeof (proc.error as NodeJS.ErrnoException).code === "string" ? (proc.error as NodeJS.ErrnoException).code : "";
-    if (code === "ETIMEDOUT") return Result.err(gitError(500, `git ${args[0] ?? ""} timed out`));
-    return Result.err(gitError(500, proc.error.message));
-  }
-  if (proc.status !== 0) {
-    const stderr = TEXT_DECODER.decode(proc.stderr).trim();
-    return Result.err(gitError(opts.status ?? 409, stderr || `git ${args[0] ?? ""} failed`));
-  }
-  return Result.ok(proc.stdout);
 }
 
 function isGitObjectType(value: string): value is GitObjectType {
@@ -182,13 +246,13 @@ function decodeBase64Result(value: string, label: string, maxBytes: number): Res
   }
 }
 
-function listRefsFromGitDirResult(
+async function listRefsFromGitDirResult(
   config: GitRepoProfileConfig,
   gitDir: string,
   requestedRefs?: string[]
-): Result<Record<string, GitOid>, GitRepoServiceError> {
+): Promise<Result<Record<string, GitOid>, GitRepoServiceError>> {
   const args = ["--git-dir", gitDir, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags"];
-  const refsRes = runGitResult(config, args);
+  const refsRes = await runGitResult(config, args);
   if (Result.isError(refsRes)) return refsRes;
   const refs: Record<string, GitOid> = {};
   const requested = requestedRefs ? new Set(requestedRefs.map(normalizeGitRef)) : null;
@@ -204,14 +268,14 @@ function listRefsFromGitDirResult(
   return Result.ok(refs);
 }
 
-function listObjectIdsFromGitDirResult(
+async function listObjectIdsFromGitDirResult(
   config: GitRepoProfileConfig,
   gitDir: string,
   refs: Record<string, GitOid>
-): Result<GitOid[], GitRepoServiceError> {
+): Promise<Result<GitOid[], GitRepoServiceError>> {
   const roots = Object.values(refs);
   if (roots.length === 0) return Result.err(gitError(400, "no refs to import"));
-  const revListRes = runGitResult(config, ["--git-dir", gitDir, "rev-list", "--objects", "--no-object-names", ...roots]);
+  const revListRes = await runGitResult(config, ["--git-dir", gitDir, "rev-list", "--objects", "--no-object-names", ...roots]);
   if (Result.isError(revListRes)) return revListRes;
   const objectIds = new Set<GitOid>(roots);
   for (const line of TEXT_DECODER.decode(revListRes.value).split("\n")) {
@@ -221,16 +285,16 @@ function listObjectIdsFromGitDirResult(
   return Result.ok(Array.from(objectIds).sort());
 }
 
-function readObjectFromGitDirResult(
+async function readObjectFromGitDirResult(
   config: GitRepoProfileConfig,
   gitDir: string,
   oid: GitOid
-): Result<GitCliObject, GitRepoServiceError> {
-  const typeRes = runGitResult(config, ["--git-dir", gitDir, "cat-file", "-t", oid]);
+): Promise<Result<GitCliObject, GitRepoServiceError>> {
+  const typeRes = await runGitResult(config, ["--git-dir", gitDir, "cat-file", "-t", oid]);
   if (Result.isError(typeRes)) return typeRes;
   const type = TEXT_DECODER.decode(typeRes.value).trim();
   if (!isGitObjectType(type)) return Result.err(gitError(409, `unsupported git object type: ${type}`));
-  const bodyRes = runGitResult(config, ["--git-dir", gitDir, "cat-file", type, oid]);
+  const bodyRes = await runGitResult(config, ["--git-dir", gitDir, "cat-file", type, oid]);
   if (Result.isError(bodyRes)) return bodyRes;
   return Result.ok({ oid, type, body: new Uint8Array(bodyRes.value) });
 }
@@ -241,12 +305,12 @@ async function importObjectsFromGitDirResult(
   refs: Record<string, GitOid>,
 ): Promise<Result<{ artifacts: GitLooseObjectResponse[]; objectCount: number; bytes: number }, GitRepoServiceError>> {
   if (args.config.objectFormat !== "sha1") return Result.err(gitError(400, "Git CLI import currently requires sha1 objectFormat"));
-  const objectIdsRes = listObjectIdsFromGitDirResult(args.config, gitDir, refs);
+  const objectIdsRes = await listObjectIdsFromGitDirResult(args.config, gitDir, refs);
   if (Result.isError(objectIdsRes)) return objectIdsRes;
   const artifacts: GitLooseObjectResponse[] = [];
   let bytes = 0;
   for (const oid of objectIdsRes.value) {
-    const objectRes = readObjectFromGitDirResult(args.config, gitDir, oid);
+    const objectRes = await readObjectFromGitDirResult(args.config, gitDir, oid);
     if (Result.isError(objectRes)) return objectRes;
     const object = buildGitObject(objectRes.value.type, objectRes.value.body, args.config.objectFormat);
     if (object.oid !== oid) return Result.err(gitError(409, `git object hash mismatch for ${oid}`));
@@ -320,45 +384,45 @@ async function importLocalBareRepoResult(
     return Result.err(gitError(409, "local path import is disabled for this git-repo profile"));
   }
   if (!existsSync(request.path)) return Result.err(gitError(404, "local git path not found"));
-  const refsRes = listRefsFromGitDirResult(args.config, request.path, request.refs);
+  const refsRes = await listRefsFromGitDirResult(args.config, request.path, request.refs);
   if (Result.isError(refsRes)) return refsRes;
   const objectsRes = await importObjectsFromGitDirResult(args, request.path, refsRes.value);
   if (Result.isError(objectsRes)) return objectsRes;
   return commitImportedRefsResult(args, request, refsRes.value, objectsRes.value.artifacts, objectsRes.value.bytes);
 }
 
-function createBareRepoResult(config: GitRepoProfileConfig, root: string): Result<string, GitRepoServiceError> {
+async function createBareRepoResult(config: GitRepoProfileConfig, root: string): Promise<Result<string, GitRepoServiceError>> {
   const gitDir = join(root, "repo.git");
-  const initRes = runGitResult(config, ["init", "--bare", gitDir]);
+  const initRes = await runGitResult(config, ["init", "--bare", gitDir]);
   if (Result.isError(initRes)) return initRes;
   return Result.ok(gitDir);
 }
 
-function writeBundleToBareRepoResult(
+async function writeBundleToBareRepoResult(
   config: GitRepoProfileConfig,
   bundleBytes: Uint8Array,
   root: string
-): Result<string, GitRepoServiceError> {
+): Promise<Result<string, GitRepoServiceError>> {
   const bundlePath = join(root, "repo.bundle");
   const gitDir = join(root, "bundle.git");
   writeFileSync(bundlePath, Buffer.from(bundleBytes.buffer, bundleBytes.byteOffset, bundleBytes.byteLength));
-  const cloneRes = runGitResult(config, ["clone", "--bare", bundlePath, gitDir]);
+  const cloneRes = await runGitResult(config, ["clone", "--bare", bundlePath, gitDir]);
   if (Result.isError(cloneRes)) return cloneRes;
   return Result.ok(gitDir);
 }
 
-function writePackToBareRepoResult(
+async function writePackToBareRepoResult(
   config: GitRepoProfileConfig,
   packBytes: Uint8Array,
   refs: Record<string, GitOid>,
   root: string
-): Result<string, GitRepoServiceError> {
-  const gitDirRes = createBareRepoResult(config, root);
+): Promise<Result<string, GitRepoServiceError>> {
+  const gitDirRes = await createBareRepoResult(config, root);
   if (Result.isError(gitDirRes)) return gitDirRes;
-  const unpackRes = runGitResult(config, ["--git-dir", gitDirRes.value, "unpack-objects"], { input: packBytes });
+  const unpackRes = await runGitResult(config, ["--git-dir", gitDirRes.value, "unpack-objects"], { input: packBytes });
   if (Result.isError(unpackRes)) return unpackRes;
   for (const [ref, oid] of Object.entries(refs)) {
-    const updateRes = runGitResult(config, ["--git-dir", gitDirRes.value, "update-ref", normalizeGitRef(ref), oid]);
+    const updateRes = await runGitResult(config, ["--git-dir", gitDirRes.value, "update-ref", normalizeGitRef(ref), oid]);
     if (Result.isError(updateRes)) return updateRes;
   }
   return Result.ok(gitDirRes.value);
@@ -378,9 +442,9 @@ export async function importGitRepoResult(
     if (request.format === "bundle") {
       const bytesRes = decodeBase64Result(request.bundleBase64, "bundleBase64", maxImportExportBytes(args.config));
       if (Result.isError(bytesRes)) return bytesRes;
-      const gitDirRes = writeBundleToBareRepoResult(args.config, bytesRes.value, root);
+      const gitDirRes = await writeBundleToBareRepoResult(args.config, bytesRes.value, root);
       if (Result.isError(gitDirRes)) return gitDirRes;
-      const refsRes = listRefsFromGitDirResult(args.config, gitDirRes.value);
+      const refsRes = await listRefsFromGitDirResult(args.config, gitDirRes.value);
       if (Result.isError(refsRes)) return refsRes;
       const objectsRes = await importObjectsFromGitDirResult(args, gitDirRes.value, refsRes.value);
       if (Result.isError(objectsRes)) return objectsRes;
@@ -388,7 +452,7 @@ export async function importGitRepoResult(
     }
     const bytesRes = decodeBase64Result(request.packBase64, "packBase64", maxImportExportBytes(args.config));
     if (Result.isError(bytesRes)) return bytesRes;
-    const gitDirRes = writePackToBareRepoResult(args.config, bytesRes.value, request.refs, root);
+    const gitDirRes = await writePackToBareRepoResult(args.config, bytesRes.value, request.refs, root);
     if (Result.isError(gitDirRes)) return gitDirRes;
     const objectsRes = await importObjectsFromGitDirResult(args, gitDirRes.value, request.refs);
     if (Result.isError(objectsRes)) return objectsRes;
@@ -485,7 +549,7 @@ async function materializeBareRepoResult(
     objects = objectsRes.value;
     objectCount = objects.size;
   }
-  const gitDirRes = createBareRepoResult(args.config, root);
+  const gitDirRes = await createBareRepoResult(args.config, root);
   if (Result.isError(gitDirRes)) return gitDirRes;
   for (const object of objects.values()) {
     writeLooseObjectToGitDir(gitDirRes.value, {
@@ -495,11 +559,11 @@ async function materializeBareRepoResult(
     });
   }
   for (const [ref, oid] of Object.entries(refs)) {
-    const updateRes = runGitResult(args.config, ["--git-dir", gitDirRes.value, "update-ref", ref, oid]);
+    const updateRes = await runGitResult(args.config, ["--git-dir", gitDirRes.value, "update-ref", ref, oid]);
     if (Result.isError(updateRes)) return updateRes;
   }
   const headRef = normalizeGitRef(args.config.defaultBranch);
-  const headRes = runGitResult(args.config, ["--git-dir", gitDirRes.value, "symbolic-ref", "HEAD", headRef]);
+  const headRes = await runGitResult(args.config, ["--git-dir", gitDirRes.value, "symbolic-ref", "HEAD", headRef]);
   if (Result.isError(headRes)) return headRes;
   return Result.ok({ gitDir: gitDirRes.value, refs, objectCount, objects });
 }
@@ -511,7 +575,7 @@ export async function exportGitBundleResult(args: GitImportExportArgs): Promise<
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
     const bundlePath = join(root, "repo.bundle");
-    const bundleRes = runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "bundle", "create", bundlePath, "--all"]);
+    const bundleRes = await runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "bundle", "create", bundlePath, "--all"]);
     if (Result.isError(bundleRes)) return bundleRes;
     const bytes = readFileSync(bundlePath);
     if (bytes.byteLength > maxImportExportBytes(args.config)) return Result.err(gitError(409, "exported bundle exceeds maxBytes"));
@@ -527,7 +591,7 @@ export async function exportGitPackResult(args: GitImportExportArgs): Promise<Re
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
-    const packRes = runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "pack-objects", "--stdout", "--all"], {
+    const packRes = await runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "pack-objects", "--stdout", "--all"], {
       maxBuffer: maxImportExportBytes(args.config),
     });
     if (Result.isError(packRes)) return packRes;
@@ -591,8 +655,8 @@ function changedRefUpdates(before: Record<string, GitOid>, after: Record<string,
   });
 }
 
-function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: string): Result<void, GitRepoServiceError> {
-  const deleteRes = runGitResult(config, [
+async function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: string): Promise<Result<void, GitRepoServiceError>> {
+  const deleteRes = await runGitResult(config, [
     "--git-dir",
     gitDir,
     "config",
@@ -600,7 +664,7 @@ function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: st
     config.push?.allowDeleteRefs === true ? "false" : "true",
   ]);
   if (Result.isError(deleteRes)) return deleteRes;
-  const atomicRes = runGitResult(config, [
+  const atomicRes = await runGitResult(config, [
     "--git-dir",
     gitDir,
     "config",
@@ -611,7 +675,7 @@ function configureReceivePackRepoResult(config: GitRepoProfileConfig, gitDir: st
   return Result.ok(undefined);
 }
 
-function configureUploadPackRepoResult(config: GitRepoProfileConfig, gitDir: string): Result<void, GitRepoServiceError> {
+async function configureUploadPackRepoResult(config: GitRepoProfileConfig, gitDir: string): Promise<Result<void, GitRepoServiceError>> {
   const entries = [
     ["uploadpack.allowFilter", config.fetch?.allowFilter === true ? "true" : "false"],
     ["uploadpack.allowReachableSHA1InWant", "true"],
@@ -620,7 +684,7 @@ function configureUploadPackRepoResult(config: GitRepoProfileConfig, gitDir: str
     ["uploadpack.allowSidebandAll", "true"],
   ];
   for (const [key, value] of entries) {
-    const configRes = runGitResult(config, ["--git-dir", gitDir, "config", key, value]);
+    const configRes = await runGitResult(config, ["--git-dir", gitDir, "config", key, value]);
     if (Result.isError(configRes)) return configRes;
   }
   return Result.ok(undefined);
@@ -651,7 +715,7 @@ async function configurePackfileUriRepoResult(args: GitImportExportArgs, gitDir:
     const uri = preferredPackHttpUrl(args, pack);
     if (!uri) continue;
     for (const blobOid of pack.blobOids) {
-      const configRes = runGitResult(args.config, [
+      const configRes = await runGitResult(args.config, [
         "--git-dir",
         gitDir,
         "config",
@@ -719,12 +783,12 @@ export async function publishGitPackArtifactsResult(
     if (Result.isError(materializedRes)) return materializedRes;
     const packPath = join(root, "repo.pack");
     const idxPath = join(root, "repo.idx");
-    const packRes = runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "pack-objects", "--stdout", "--all"], {
+    const packRes = await runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "pack-objects", "--stdout", "--all"], {
       maxBuffer: maxImportExportBytes(args.config),
     });
     if (Result.isError(packRes)) return packRes;
     writeFileSync(packPath, packRes.value);
-    const indexRes = runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "index-pack", "-o", idxPath, packPath]);
+    const indexRes = await runGitResult(args.config, ["--git-dir", materializedRes.value.gitDir, "index-pack", "-o", idxPath, packPath]);
     if (Result.isError(indexRes)) return indexRes;
 
     const packBytes = new Uint8Array(readFileSync(packPath));
@@ -824,11 +888,11 @@ export async function gitUploadPackAdvertiseRefsResult(
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
-    const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
+    const configRes = await configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
     const packfileUriConfigRes = await configurePackfileUriRepoResult(args, materializedRes.value.gitDir);
     if (Result.isError(packfileUriConfigRes)) return packfileUriConfigRes;
-    const refsRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
+    const refsRes = await runGitResult(args.config, ["upload-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
       maxBuffer: maxImportExportBytes(args.config),
       env: gitProtocolEnv(args.gitProtocol),
     });
@@ -854,11 +918,11 @@ export async function gitUploadPackRpcResult(
   try {
     const materializedRes = await materializeBareRepoResult(args, root);
     if (Result.isError(materializedRes)) return materializedRes;
-    const configRes = configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
+    const configRes = await configureUploadPackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
     const packfileUriConfigRes = await configurePackfileUriRepoResult(args, materializedRes.value.gitDir);
     if (Result.isError(packfileUriConfigRes)) return packfileUriConfigRes;
-    const packRes = runGitResult(args.config, ["upload-pack", "--stateless-rpc", materializedRes.value.gitDir], {
+    const packRes = await runGitResult(args.config, ["upload-pack", "--stateless-rpc", materializedRes.value.gitDir], {
       input: requestBody,
       maxBuffer: maxImportExportBytes(args.config),
       env: gitProtocolEnv(args.gitProtocol),
@@ -904,9 +968,9 @@ export async function gitReceivePackAdvertiseRefsResult(
   try {
     const materializedRes = await materializeBareRepoResult(args, root, { allowEmpty: true });
     if (Result.isError(materializedRes)) return materializedRes;
-    const configRes = configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
+    const configRes = await configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
-    const refsRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
+    const refsRes = await runGitResult(args.config, ["receive-pack", "--stateless-rpc", "--advertise-refs", materializedRes.value.gitDir], {
       maxBuffer: maxPushBytes(args.config),
       env: gitProtocolEnv(args.gitProtocol),
     });
@@ -930,17 +994,17 @@ export async function gitReceivePackRpcResult(
   try {
     const materializedRes = await materializeBareRepoResult(args, root, { allowEmpty: true });
     if (Result.isError(materializedRes)) return materializedRes;
-    const configRes = configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
+    const configRes = await configureReceivePackRepoResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(configRes)) return configRes;
 
-    const receiveRes = runGitResult(args.config, ["receive-pack", "--stateless-rpc", materializedRes.value.gitDir], {
+    const receiveRes = await runGitResult(args.config, ["receive-pack", "--stateless-rpc", materializedRes.value.gitDir], {
       input: requestBody,
       maxBuffer: maxPushBytes(args.config),
       env: gitProtocolEnv(args.gitProtocol),
     });
     if (Result.isError(receiveRes)) return receiveRes;
 
-    const afterRefsRes = listRefsFromGitDirResult(args.config, materializedRes.value.gitDir);
+    const afterRefsRes = await listRefsFromGitDirResult(args.config, materializedRes.value.gitDir);
     if (Result.isError(afterRefsRes)) return afterRefsRes;
     const refUpdates = changedRefUpdates(materializedRes.value.refs, afterRefsRes.value);
     if (refUpdates.length > 0) {

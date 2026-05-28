@@ -36,6 +36,7 @@ export type GitRepoProfileConfig = {
     maxBytes: number;
     gitBinary: string;
     gitCommandTimeoutMs: number;
+    gitCommandConcurrency: number;
   };
 };
 
@@ -71,6 +72,7 @@ export function defaultGitRepoProfileConfig(): GitRepoProfileConfig {
       maxBytes: 512 * 1024 * 1024,
       gitBinary: "git",
       gitCommandTimeoutMs: 30_000,
+      gitCommandConcurrency: 2,
     },
   };
 }

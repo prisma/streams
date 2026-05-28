@@ -71,6 +71,7 @@ type GitRepoProfileConfig = {
     maxBytes: number;
     gitBinary: string;
     gitCommandTimeoutMs: number;
+    gitCommandConcurrency: number;
   };
 };
 ```
@@ -416,10 +417,12 @@ operator-controlled migration jobs, not tenant-supplied requests.
 
 The current import/export implementation requires `objectFormat: "sha1"`
 because it delegates bundle and pack validation to the local Git CLI.
-Git subprocesses run with a bounded timeout (`importExport.gitCommandTimeoutMs`,
-default 30000), no terminal prompting, `GIT_CONFIG_NOSYSTEM=1`, and a disabled
-global Git config path so request-path behavior does not depend on host-level
-Git configuration.
+Git subprocesses run through an async bounded runner instead of blocking the
+request thread. The runner enforces `importExport.gitCommandTimeoutMs` (default
+30000), caps concurrent Git jobs with `importExport.gitCommandConcurrency`
+(default 2), disables terminal prompting, sets `GIT_CONFIG_NOSYSTEM=1`, and
+uses a disabled global Git config path so request-path behavior does not depend
+on host-level Git configuration.
 
 ## Ref Race Avoidance
 
