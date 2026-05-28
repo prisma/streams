@@ -21,6 +21,7 @@ import {
   gitUploadPackRpcResult,
   importGitRepoResult,
   publishGitPackArtifactsResult,
+  verifyGitReachabilityResult,
 } from "./import_export";
 import { buildRefs, normalizeGitRef, validateRefTransactionRequestResult } from "./refs";
 import { buildRefCheckpoint, latestInlineRefCheckpoint } from "./maintenance";
@@ -489,7 +490,17 @@ async function status(args: StreamProfileVfsRouteArgs): Promise<Response> {
 }
 
 async function refs(args: StreamProfileVfsRouteArgs): Promise<Response> {
-  const recordsRes = await readGitRecordsResult(args);
+  let recordsRes;
+  if (args.url.searchParams.get("publishedOnly") === "true") {
+    const snapshotRes = await readGitRecordSnapshotResult(args);
+    if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
+    const uploadedThrough = latestUploadedThrough(args);
+    recordsRes = Result.ok(snapshotRes.value.entries
+      .filter((entry) => entry.offset <= uploadedThrough)
+      .map((entry) => entry.record));
+  } else {
+    recordsRes = await readGitRecordsResult(args);
+  }
   if (Result.isError(recordsRes)) return responseForError(args, recordsRes.error);
   return args.respond.json(200, {
     refs: buildRefs(recordsRes.value),
@@ -559,6 +570,18 @@ async function publishPack(args: StreamProfileVfsRouteArgs): Promise<Response> {
   return args.respond.json(200, packRes.value);
 }
 
+async function verifyReachability(args: StreamProfileVfsRouteArgs): Promise<Response> {
+  const verifyRes = await verifyGitReachabilityResult({
+    stream: args.stream,
+    reader: args.reader,
+    objectStore: args.objectStore,
+    appendJsonRecords: args.appendJsonRecords,
+    config: profileConfig(args),
+  });
+  if (Result.isError(verifyRes)) return responseForError(args, verifyRes.error);
+  return args.respond.json(200, verifyRes.value);
+}
+
 function binaryResponse(value: { contentType: string; body: Uint8Array }): Response {
   const body = value.body.buffer.slice(value.body.byteOffset, value.body.byteOffset + value.body.byteLength) as ArrayBuffer;
   return new Response(body, {
@@ -625,6 +648,7 @@ export async function handleGitRepoRoute(args: StreamProfileVfsRouteArgs): Promi
   }
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-ref-checkpoint") return publishRefCheckpoint(args);
   if (args.req.method === "POST" && first === "maintenance" && second === "publish-pack") return publishPack(args);
+  if (args.req.method === "POST" && first === "maintenance" && second === "verify-reachability") return verifyReachability(args);
   if (args.req.method === "GET" && first === "smart" && second === "info" && third === "refs") return uploadPackInfoRefs(args);
   if (args.req.method === "POST" && first === "smart" && second === "git-upload-pack") return uploadPackRpc(args);
 

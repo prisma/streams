@@ -111,10 +111,11 @@ It means:
 - loose Git objects are stored as content-addressed object-store artifacts
 - `/_git/*` endpoints provide status, refs, ref lookup, path-local
   checkout/stat/readdir/blob reads, ref transactions, and ref checkpoint
-  publication, pack maintenance publication, import/export, plus loose object
-  writes and range reads
+  publication, pack maintenance publication, reachability verification,
+  import/export, plus loose object writes and range reads
 - a read-only upload-pack smart HTTP facade is available under `_git/smart/*`
-  when enabled; receive-pack push is a planned follow-up layer
+  and `/{repo}.git/*` when enabled; receive-pack push is a planned follow-up
+  layer
 
 See [profile-git-repo.md](./profile-git-repo.md) for the detailed contract.
 

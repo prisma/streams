@@ -494,6 +494,12 @@ export type GitPackMaintenanceResponse = {
   record: GitMaintenancePublishedRecord;
 };
 
+export type GitReachabilityVerificationResponse = {
+  status: "verified";
+  refs: Record<string, GitOid>;
+  objectCount: number;
+};
+
 export type GitSmartHttpResponse = {
   contentType: string;
   body: Uint8Array;
@@ -571,6 +577,26 @@ export async function publishGitPackArtifactsResult(
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+export async function verifyGitReachabilityResult(
+  args: GitImportExportArgs
+): Promise<Result<GitReachabilityVerificationResponse, GitRepoServiceError>> {
+  const recordsRes = await readGitRecordsResult(args);
+  if (Result.isError(recordsRes)) return recordsRes;
+  const refs = Object.fromEntries(Object.entries(buildRefs(recordsRes.value)).filter((entry): entry is [string, GitOid] => typeof entry[1] === "string"));
+  const roots = Object.values(refs);
+  if (roots.length === 0) return Result.ok({ status: "verified", refs, objectCount: 0 });
+  const objectsRes = await collectReachableObjectsResult(args, roots);
+  if (Result.isError(objectsRes)) {
+    const status = objectsRes.error.status === 404 ? 409 : objectsRes.error.status;
+    return Result.err(gitError(status, `git reachability verification failed: ${objectsRes.error.message}`));
+  }
+  return Result.ok({
+    status: "verified",
+    refs,
+    objectCount: objectsRes.value.size,
+  });
 }
 
 export async function gitUploadPackAdvertiseRefsResult(

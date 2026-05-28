@@ -264,6 +264,33 @@ function parseNonNegativeInt(value: string): number | null {
   return n;
 }
 
+function parseTopLevelGitRoute(path: string): { stream: string; segments: string[] } | null {
+  const decodeStream = (raw: string): string | null => {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return null;
+    }
+  };
+  const infoRefsSuffix = ".git/info/refs";
+  if (path.endsWith(infoRefsSuffix)) {
+    const rawStream = path.slice(1, -infoRefsSuffix.length);
+    if (rawStream.length === 0) return null;
+    const stream = decodeStream(rawStream);
+    return stream ? { stream, segments: ["smart", "info", "refs"] } : null;
+  }
+
+  const uploadPackSuffix = ".git/git-upload-pack";
+  if (path.endsWith(uploadPackSuffix)) {
+    const rawStream = path.slice(1, -uploadPackSuffix.length);
+    if (rawStream.length === 0) return null;
+    const stream = decodeStream(rawStream);
+    return stream ? { stream, segments: ["smart", "git-upload-pack"] } : null;
+  }
+
+  return null;
+}
+
 function splitSseLines(data: string): string[] {
   if (data === "") return [""];
   return data.split(/\r\n|\r|\n/);
@@ -1711,6 +1738,33 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       }
       if (req.method === "GET" && path === "/v1/server/_mem") {
         return json(200, buildServerMem());
+      }
+
+      const topLevelGitRoute = parseTopLevelGitRoute(path);
+      if (topLevelGitRoute) {
+        const srow = db.getStream(topLevelGitRoute.stream);
+        if (!srow || db.isDeleted(srow)) return notFound();
+        if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+
+        const profileRes = profiles.getProfileResult(topLevelGitRoute.stream, srow);
+        if (Result.isError(profileRes)) return internalError("invalid stream profile");
+        const vfsCapability = resolveVfsCapability(profileRes.value);
+        if (!vfsCapability) return notFound("profile route not enabled");
+        return vfsCapability.handleRoute({
+          namespace: "_git",
+          segments: topLevelGitRoute.segments,
+          req,
+          url,
+          stream: topLevelGitRoute.stream,
+          streamRow: srow,
+          profile: profileRes.value,
+          db,
+          reader,
+          objectStore: store,
+          ensureJsonStream,
+          appendJsonRecords,
+          respond: { json, badRequest, internalError, notFound, conflict },
+        });
       }
 
       // /v1/streams

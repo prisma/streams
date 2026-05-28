@@ -385,6 +385,16 @@ describe("git-repo profile", () => {
       });
       expect(txn.status).toBe(200);
 
+      const unpublishedRefs = await fetchJsonApp(app, `${sourceBase}/_git/refs?publishedOnly=true`, { method: "GET" });
+      expect(unpublishedRefs.status).toBe(200);
+      expect(unpublishedRefs.body.refs["refs/heads/main"]).toBeUndefined();
+
+      const verified = await fetchJsonApp(app, `${sourceBase}/_git/maintenance/verify-reachability`, { method: "POST" });
+      expect(verified.status).toBe(200);
+      expect(verified.body.status).toBe("verified");
+      expect(verified.body.refs["refs/heads/main"]).toBe(commit.value.oid);
+      expect(verified.body.objectCount).toBe(3);
+
       const bundleRes = await app.fetch(new Request(`${sourceBase}/_git/export.bundle`, { method: "GET" }));
       expect(bundleRes.status).toBe(200);
       const bundle = Buffer.from(await bundleRes.arrayBuffer());
@@ -401,6 +411,11 @@ describe("git-repo profile", () => {
       const advertised = Buffer.from(await uploadPackRefs.arrayBuffer()).toString("utf8");
       expect(advertised).toContain("# service=git-upload-pack");
       expect(advertised).toContain(commit.value.oid);
+
+      const topLevelRefs = await app.fetch(new Request(`http://local/${source}.git/info/refs?service=git-upload-pack`, { method: "GET" }));
+      expect(topLevelRefs.status).toBe(200);
+      expect(topLevelRefs.headers.get("content-type")).toBe("application/x-git-upload-pack-advertisement");
+      expect(Buffer.from(await topLevelRefs.arrayBuffer()).toString("utf8")).toContain(commit.value.oid);
 
       const publishedPack = await fetchJsonApp(app, `${sourceBase}/_git/maintenance/publish-pack`, { method: "POST" });
       expect(publishedPack.status).toBe(200);

@@ -31,7 +31,7 @@ and tooling.
 - [profile-workspace-fs.md](./profile-workspace-fs.md) — agent workspace filesystem direction and compatibility aliases
 - [profile-vfs-repo.md](./profile-vfs-repo.md) — compatibility Git-like VFS MVP profile, workspace overlays, and just-bash integration
 - [git-repo-workspace-fs-split.md](./git-repo-workspace-fs-split.md) — architecture split between canonical repos and agent workspaces
-- [vfs-mvp-migration.md](./vfs-mvp-migration.md) — planned migration from `vfs-repo` MVP data to `git-repo`
+- [vfs-mvp-migration.md](./vfs-mvp-migration.md) — one-way migration from `vfs-repo` MVP data to `git-repo`
 - [schemas.md](./schemas.md) — schema registry and lens behavior
 - [durable-lens-v1-schema.md](./durable-lens-v1-schema.md) — reference schema for `durable.lens/v1`
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations
