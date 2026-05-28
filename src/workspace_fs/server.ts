@@ -11,6 +11,7 @@ import type {
   WorkspaceFsCommitRequest,
   WorkspaceFsCommitResponse,
   WorkspaceFsCanonicalGitCommit,
+  WorkspaceFsGitBlobArtifact,
   WorkspaceFsNodeStat,
   WorkspaceFsStoredObject,
   WorkspaceFsWorkspaceConflictsResponse,
@@ -46,6 +47,7 @@ import {
   gitLooseObjectKey,
   headObjectStoreResult,
   normalizeGitRef,
+  putObjectStoreResult,
   readGitRecordSnapshotResult,
   readGitRefsSnapshotResult,
   verifyGitRefTransactionRecordResult,
@@ -102,6 +104,14 @@ function normalizeCommitDurabilityResult(body: WorkspaceFsCommitRequest): Result
 type PreparedWorkspaceOp = {
   op: WorkspaceFsWorkspaceOp;
   objects: WorkspaceFsStoredObject[];
+};
+
+type PreparedWorkspaceCommitOp = PreparedWorkspaceOp & {
+  gitObjects: GitObject[];
+};
+
+type AppendedWorkspaceOps = {
+  ops: WorkspaceFsWorkspaceOp[];
 };
 
 type WorkspaceOverlayIndex = {
@@ -234,6 +244,17 @@ function uniqueWorkspaceFsObjects(objects: WorkspaceFsStoredObject[]): Workspace
   return unique;
 }
 
+function uniqueGitObjects(objects: GitObject[]): GitObject[] {
+  const seen = new Set<string>();
+  const unique: GitObject[] = [];
+  for (const object of objects) {
+    if (seen.has(object.oid)) continue;
+    seen.add(object.oid);
+    unique.push(object);
+  }
+  return unique;
+}
+
 async function loadObjectResult(
   args: StreamProfileRouteArgs,
   id: string
@@ -320,6 +341,50 @@ async function gitBlobArtifactResult(args: {
     etag: headRes.value.etag,
     deduplicated: true,
   });
+}
+
+function workspaceGitBlobArtifactFromWrite(args: {
+  repoStream: string;
+  format: GitObjectFormat;
+  artifact: GitLooseObjectResponse;
+}): WorkspaceFsGitBlobArtifact {
+  return {
+    repoStream: args.repoStream,
+    format: args.format,
+    oid: args.artifact.oid,
+    objectKey: args.artifact.objectKey,
+    size: args.artifact.size,
+    framedSize: args.artifact.framedSize,
+    etag: args.artifact.etag,
+  };
+}
+
+function gitLooseObjectResponseFromWorkspaceArtifact(artifact: WorkspaceFsGitBlobArtifact): GitLooseObjectResponse {
+  return {
+    oid: artifact.oid,
+    type: "blob",
+    format: artifact.format,
+    size: artifact.size,
+    framedSize: artifact.framedSize,
+    objectKey: artifact.objectKey,
+    etag: artifact.etag ?? "",
+    deduplicated: true,
+  };
+}
+
+function validatedWorkspaceGitBlobArtifact(args: {
+  op: Extract<WorkspaceFsWorkspaceOp, { kind: "put-file" }>;
+  gitRepoStream: string;
+  format: GitObjectFormat;
+}): WorkspaceFsGitBlobArtifact | null {
+  if (!args.op.git) return null;
+  const gitBlob = decodeGitBlobId(args.op.blobId);
+  if (!gitBlob) return null;
+  if (gitBlob.repoStream !== args.gitRepoStream || gitBlob.format !== args.format) return null;
+  if (args.op.git.repoStream !== args.gitRepoStream || args.op.git.format !== args.format || args.op.git.oid !== gitBlob.oid) return null;
+  if (args.op.git.objectKey !== gitLooseObjectKey(args.gitRepoStream, args.format, gitBlob.oid)) return null;
+  if (args.op.git.size !== args.op.size || !Number.isSafeInteger(args.op.git.framedSize) || args.op.git.framedSize <= 0) return null;
+  return args.op.git;
 }
 
 function gitRepoStreamForWorkspaceProfile(args: StreamProfileRouteArgs): string | null {
@@ -491,9 +556,27 @@ async function writeGitObjectOnceResult(args: {
   format: GitObjectFormat;
   object: GitObject;
   written: Map<string, GitLooseObjectResponse>;
+  assumeFresh?: boolean;
 }): Promise<Result<GitLooseObjectResponse, WorkspaceFsServerError>> {
   const existing = args.written.get(args.object.oid);
-  if (existing) return Result.ok(existing);
+  if (existing && existing.etag !== "") return Result.ok(existing);
+  if (args.assumeFresh === true) {
+    const objectKey = gitLooseObjectKey(args.gitRepoStream, args.format, args.object.oid);
+    const putRes = await putObjectStoreResult(args.route.objectStore, objectKey, args.object.framed, "application/x-git-loose-object");
+    if (Result.isError(putRes)) return Result.err(putRes.error);
+    const artifact: GitLooseObjectResponse = {
+      oid: args.object.oid,
+      type: args.object.type,
+      format: args.format,
+      size: args.object.size,
+      framedSize: args.object.framed.byteLength,
+      objectKey,
+      etag: putRes.value.etag,
+      deduplicated: false,
+    };
+    args.written.set(args.object.oid, artifact);
+    return Result.ok(artifact);
+  }
   const writeRes = await writeLooseGitObjectResult({
     repoStream: args.gitRepoStream,
     objectStore: args.route.objectStore,
@@ -535,6 +618,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
 }): Promise<Result<{
   rootTreeOid: string;
   written: Map<string, GitLooseObjectResponse>;
+  treeObjects: GitObject[];
   changeSummary: { added: number; modified: number; deleted: number; renamed: number };
 }, WorkspaceFsServerError>> {
   const rootTreeRes = await baseGitRootForCommitResult({
@@ -674,27 +758,25 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
     async (target) => {
       if (target.op.kind === "put-file") {
-        const gitBlob = decodeGitBlobId(target.op.blobId);
-        if (gitBlob) {
-          if (gitBlob.repoStream !== args.gitRepoStream || gitBlob.format !== args.format) {
-            return Result.err({ status: 409, message: "workspace git blob belongs to another repo" });
-          }
-          const artifactRes = await gitBlobArtifactResult({
-            route: args.route,
-            repoStream: gitBlob.repoStream,
-            format: gitBlob.format,
-            oid: gitBlob.oid,
-          });
-          if (Result.isError(artifactRes)) return Result.err(artifactRes.error);
-          written.set(gitBlob.oid, artifactRes.value);
+        const cachedArtifact = validatedWorkspaceGitBlobArtifact({
+          op: target.op,
+          gitRepoStream: args.gitRepoStream,
+          format: args.format,
+        });
+        if (cachedArtifact) {
+          written.set(cachedArtifact.oid, gitLooseObjectResponseFromWorkspaceArtifact(cachedArtifact));
           return Result.ok({
             opIndex: target.opIndex,
             entry: {
               mode: target.op.executable === true ? "100755" : "100644",
               name: basename(target.op.path),
-              oid: gitBlob.oid,
+              oid: cachedArtifact.oid,
             } satisfies GitTreeEntryInput,
           });
+        }
+        const gitBlob = decodeGitBlobId(target.op.blobId);
+        if (gitBlob && (gitBlob.repoStream !== args.gitRepoStream || gitBlob.format !== args.format)) {
+          return Result.err({ status: 409, message: "workspace git blob belongs to another repo" });
         }
         const bytesRes = await readBlobBytesResult(args.route, target.op.blobId);
         if (Result.isError(bytesRes)) return Result.err(bytesRes.error);
@@ -790,11 +872,13 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     return Result.ok({
       rootTreeOid: rootTreeRes.value,
       written,
+      treeObjects: [],
       changeSummary: { added, modified, deleted, renamed },
     });
   }
 
   const newTreeOids = new Map<string, string>();
+  const treeObjects: GitObject[] = [];
   const dirty = Array.from(dirtyDirs).sort((a, b) => pathParts(b).length - pathParts(a).length);
   for (const dir of dirty) {
     const entriesRes = await loadDir(dir);
@@ -806,14 +890,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
     });
     const treeRes = writeGitTreeResult(entries, args.format);
     if (Result.isError(treeRes)) return Result.err({ status: 500, message: treeRes.error.message });
-    const writeRes = await writeGitObjectOnceResult({
-      route: args.route,
-      gitRepoStream: args.gitRepoStream,
-      format: args.format,
-      object: treeRes.value,
-      written,
-    });
-    if (Result.isError(writeRes)) return writeRes;
+    treeObjects.push(treeRes.value);
     newTreeOids.set(dir, treeRes.value.oid);
   }
 
@@ -822,6 +899,7 @@ async function buildGitTreeFromWorkspaceOpsResult(args: {
   return Result.ok({
     rootTreeOid,
     written,
+    treeObjects,
     changeSummary: { added, modified, deleted, renamed },
   });
 }
@@ -1620,6 +1698,7 @@ async function prepareWorkspaceOpResult(
     if (pathRes.value === "/") return Result.err({ status: 400, message: "cannot write workspace root" });
     let blobId = op.blobId;
     let size = 0;
+    let git: WorkspaceFsGitBlobArtifact | undefined;
     let objects: WorkspaceFsStoredObject[] = [];
     if (!blobId) {
       const bytesRes = op.contentBase64 !== undefined ? fromBase64(op.contentBase64) : Result.ok(bytesFromText(op.text ?? ""));
@@ -1638,6 +1717,11 @@ async function prepareWorkspaceOpResult(
         if (Result.isError(writeRes)) return Result.err(writeRes.error);
         blobId = encodeGitBlobId(gitRepoStream, gitConfigRes.value.objectFormat, object.oid);
         size = object.size;
+        git = workspaceGitBlobArtifactFromWrite({
+          repoStream: gitRepoStream,
+          format: gitConfigRes.value.objectFormat,
+          artifact: writeRes.value,
+        });
       } else {
         const blob = makeBlobObjects(bytesRes.value, { executable: op.executable, contentType: op.contentType });
         objects = [...blob.chunks, blob.manifest];
@@ -1659,6 +1743,11 @@ async function prepareWorkspaceOpResult(
         });
         if (Result.isError(artifactRes)) return artifactRes;
         size = artifactRes.value.size;
+        git = workspaceGitBlobArtifactFromWrite({
+          repoStream: gitBlob.repoStream,
+          format: gitBlob.format,
+          artifact: artifactRes.value,
+        });
       } else {
         const blobRes = await loadRequiredObjectResult<WorkspaceFsBlobManifest>(args, blobId, "blob");
         if (Result.isError(blobRes)) return blobRes;
@@ -1671,6 +1760,7 @@ async function prepareWorkspaceOpResult(
         path: pathRes.value,
         blobId,
         size,
+        git,
         executable: op.executable,
         contentType: op.contentType,
         createdAt,
@@ -1681,45 +1771,95 @@ async function prepareWorkspaceOpResult(
   return Result.err({ status: 400, message: "unsupported workspace op" });
 }
 
-async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
-  const loadedRes = await loadWorkspaceResult(args, workspaceId);
-  if (Result.isError(loadedRes)) return responseForError(args, loadedRes.error);
-  if (loadedRes.value.state.state !== "open") return args.respond.conflict(`workspace is ${loadedRes.value.state.state}`);
-
-  const bodyRes = await readRequestJsonResult(args.req, "workspace ops request");
-  if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
-  const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "workspace ops request");
-  if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
-  const rawOps = bodyObjRes.value.ops;
-  if (!Array.isArray(rawOps) || rawOps.length === 0) return args.respond.badRequest("ops must be a non-empty array");
-  if (rawOps.length > 1000) return args.respond.badRequest("too many ops");
-
-  const preparedOpsRes = await mapConcurrentWorkspaceResult(
-    rawOps as WorkspaceFsWorkspaceOpInput[],
-    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
-    (rawOp) => prepareWorkspaceOpResult(args, rawOp)
-  );
-  if (Result.isError(preparedOpsRes)) return responseForError(args, preparedOpsRes.error);
-  const ops: WorkspaceFsWorkspaceOp[] = [];
-  const objects: WorkspaceFsStoredObject[] = [];
-  for (const prepared of preparedOpsRes.value) {
-    ops.push(prepared.op);
-    objects.push(...prepared.objects);
+async function prepareWorkspaceCommitOpResult(args: {
+  route: StreamProfileRouteArgs;
+  op: WorkspaceFsWorkspaceOpInput;
+  gitRepoStream: string;
+  format: GitObjectFormat;
+}): Promise<Result<PreparedWorkspaceCommitOp, WorkspaceFsServerError>> {
+  const op = args.op;
+  if (op.kind !== "put-file" || op.blobId !== undefined) {
+    const preparedRes = await prepareWorkspaceOpResult(args.route, op);
+    if (Result.isError(preparedRes)) return preparedRes;
+    return Result.ok({ ...preparedRes.value, gitObjects: [] });
   }
 
-  const writeObjectsRes = await writeObjectsResult(args, objects);
-  if (Result.isError(writeObjectsRes)) return responseForError(args, writeObjectsRes.error);
+  const createdAt = new Date().toISOString();
+  const pathRes = canonicalizeWorkspaceFsPath(op.path);
+  if (Result.isError(pathRes)) return Result.err({ status: 400, message: pathRes.error.message });
+  if (pathRes.value === "/") return Result.err({ status: 400, message: "cannot write workspace root" });
+  const bytesRes = op.contentBase64 !== undefined ? fromBase64(op.contentBase64) : Result.ok(bytesFromText(op.text ?? ""));
+  if (Result.isError(bytesRes)) return Result.err({ status: 400, message: bytesRes.error.message });
 
+  const object = writeGitBlob(bytesRes.value, args.format);
+  const blobId = encodeGitBlobId(args.gitRepoStream, args.format, object.oid);
+  const git: WorkspaceFsGitBlobArtifact = {
+    repoStream: args.gitRepoStream,
+    format: args.format,
+    oid: object.oid,
+    objectKey: gitLooseObjectKey(args.gitRepoStream, args.format, object.oid),
+    size: object.size,
+    framedSize: object.framed.byteLength,
+  };
+
+  return Result.ok({
+    op: {
+      kind: "put-file",
+      path: pathRes.value,
+      blobId,
+      size: object.size,
+      git,
+      executable: op.executable,
+      contentType: op.contentType,
+      createdAt,
+    },
+    objects: [],
+    gitObjects: [object],
+  });
+}
+
+async function appendPreparedWorkspaceOpsResult(
+  args: StreamProfileRouteArgs,
+  workspaceId: string,
+  ops: WorkspaceFsWorkspaceOp[],
+  objects: WorkspaceFsStoredObject[]
+): Promise<Result<void, WorkspaceFsServerError>> {
+  const writeObjectsRes = await writeObjectsResult(args, objects);
+  if (Result.isError(writeObjectsRes)) return writeObjectsRes;
+
+  return appendWorkspaceCheckoutAndOpsResult(args, workspaceId, null, ops);
+}
+
+async function appendWorkspaceCheckoutAndOpsResult(
+  args: StreamProfileRouteArgs,
+  workspaceId: string,
+  checkout: WorkspaceCheckoutRecord | null,
+  ops: WorkspaceFsWorkspaceOp[]
+): Promise<Result<void, WorkspaceFsServerError>> {
+  const records: Array<{ value: WorkspaceFsWorkspaceRecord; routingKey?: string | null }> = [];
+  if (checkout) records.push({ value: checkout as WorkspaceFsWorkspaceRecord, routingKey: "workspace" });
+  records.push(...ops.map((value) => ({
+    value,
+    routingKey: value.kind === "rename" ? workspaceOpKey(value.from) : workspaceOpKey(value.path),
+  })));
   const appendRes = await appendJsonResult(
     args,
     workspaceStreamName(args.stream, workspaceId),
-    ops.map((value) => ({
-      value,
-      routingKey: value.kind === "rename" ? workspaceOpKey(value.from) : workspaceOpKey(value.path),
-    })),
+    records,
     WORKSPACE_FS_WORKSPACE_TTL_SECONDS
   );
-  if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
+  if (Result.isError(appendRes)) return appendRes;
+  if (checkout) {
+    const checkoutAuditRes = await appendWorkspaceAuditEventResult(args, {
+      type: "workspace_checked_out",
+      workspaceId,
+      ref: checkout.ref,
+      status: "succeeded",
+      context: { baseCommitId: checkout.baseCommitId, rootTreeId: checkout.rootTreeId, createdWorkspace: true },
+    });
+    if (Result.isError(checkoutAuditRes)) return checkoutAuditRes;
+  }
+  if (ops.length === 0) return Result.ok(undefined);
   const auditRes = await appendWorkspaceAuditEventResult(args, {
     type: "workspace_ops_appended",
     workspaceId,
@@ -1732,8 +1872,82 @@ async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): 
         : { kind: op.kind, path: op.path }),
     },
   });
-  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
-  return args.respond.json(200, { workspaceId, appended: ops.length, ops });
+  if (Result.isError(auditRes)) return auditRes;
+  return Result.ok(undefined);
+}
+
+async function workspaceOps(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
+  const loadedRes = await loadWorkspaceResult(args, workspaceId);
+  if (Result.isError(loadedRes)) return responseForError(args, loadedRes.error);
+  if (loadedRes.value.state.state !== "open") return args.respond.conflict(`workspace is ${loadedRes.value.state.state}`);
+
+  const bodyRes = await readRequestJsonResult(args.req, "workspace ops request");
+  if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
+  const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "workspace ops request");
+  if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
+  const appendRes = await appendWorkspaceOpsResult(args, workspaceId, bodyObjRes.value.ops);
+  if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
+  return args.respond.json(200, { workspaceId, appended: appendRes.value.ops.length, ops: appendRes.value.ops });
+}
+
+async function appendWorkspaceOpsResult(
+  args: StreamProfileRouteArgs,
+  workspaceId: string,
+  rawOps: unknown
+): Promise<Result<AppendedWorkspaceOps, WorkspaceFsServerError>> {
+  if (!Array.isArray(rawOps) || rawOps.length === 0) return Result.err({ status: 400, message: "ops must be a non-empty array" });
+  if (rawOps.length > 1000) return Result.err({ status: 400, message: "too many ops" });
+
+  const preparedOpsRes = await mapConcurrentWorkspaceResult(
+    rawOps as WorkspaceFsWorkspaceOpInput[],
+    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
+    (rawOp) => prepareWorkspaceOpResult(args, rawOp)
+  );
+  if (Result.isError(preparedOpsRes)) return preparedOpsRes;
+  const ops: WorkspaceFsWorkspaceOp[] = [];
+  const objects: WorkspaceFsStoredObject[] = [];
+  for (const prepared of preparedOpsRes.value) {
+    ops.push(prepared.op);
+    objects.push(...prepared.objects);
+  }
+
+  const appendRes = await appendPreparedWorkspaceOpsResult(args, workspaceId, ops, objects);
+  if (Result.isError(appendRes)) return appendRes;
+  return Result.ok({ ops });
+}
+
+async function prepareGitBackedCommitOpsResult(args: {
+  route: StreamProfileRouteArgs;
+  rawOps: unknown;
+  gitRepoStream: string;
+  format: GitObjectFormat;
+}): Promise<Result<{
+  ops: WorkspaceFsWorkspaceOp[];
+  workspaceObjects: WorkspaceFsStoredObject[];
+  gitObjects: GitObject[];
+}, WorkspaceFsServerError>> {
+  if (!Array.isArray(args.rawOps) || args.rawOps.length === 0) return Result.err({ status: 400, message: "ops must be a non-empty array" });
+  if (args.rawOps.length > 1000) return Result.err({ status: 400, message: "too many ops" });
+  const preparedOpsRes = await mapConcurrentWorkspaceResult(
+    args.rawOps as WorkspaceFsWorkspaceOpInput[],
+    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
+    (op) => prepareWorkspaceCommitOpResult({
+      route: args.route,
+      op,
+      gitRepoStream: args.gitRepoStream,
+      format: args.format,
+    })
+  );
+  if (Result.isError(preparedOpsRes)) return preparedOpsRes;
+  const ops: WorkspaceFsWorkspaceOp[] = [];
+  const workspaceObjects: WorkspaceFsStoredObject[] = [];
+  const gitObjects: GitObject[] = [];
+  for (const prepared of preparedOpsRes.value) {
+    ops.push(prepared.op);
+    workspaceObjects.push(...prepared.objects);
+    gitObjects.push(...prepared.gitObjects);
+  }
+  return Result.ok({ ops, workspaceObjects, gitObjects });
 }
 
 function changedPaths(ops: WorkspaceFsWorkspaceOp[]): string[] {
@@ -2076,18 +2290,18 @@ async function commitGitBackedWorkspaceResult(args: {
   author: { id: string; name?: string };
   durability: "accepted" | "published" | "verified";
   durabilityTimeoutMs: number;
+  pendingCheckout?: WorkspaceCheckoutRecord | null;
+  pendingOps?: WorkspaceFsWorkspaceOp[];
+  precomputedGitObjects?: GitObject[];
 }): Promise<Result<WorkspaceFsCommitResponse, WorkspaceFsServerError>> {
-  const currentHeadRes = await currentGitHeadResult(args.route, args.gitRepoStream, args.ref);
-  if (Result.isError(currentHeadRes)) return currentHeadRes;
-  const currentHead = currentHeadRes.value;
   const expectedHead = args.expectedHead === undefined ? args.workspace.checkout?.baseCommitId ?? null : args.expectedHead;
-  if (currentHead !== expectedHead) return Result.err({ status: 409, message: "ref head changed" });
+  const baseHead = expectedHead;
 
   const treeRes = await buildGitTreeFromWorkspaceOpsResult({
     route: args.route,
     gitRepoStream: args.gitRepoStream,
     format: args.gitConfig.objectFormat,
-    baseCommitOid: currentHead,
+    baseCommitOid: baseHead,
     ops: args.workspace.ops,
   });
   if (Result.isError(treeRes)) return treeRes;
@@ -2096,20 +2310,35 @@ async function commitGitBackedWorkspaceResult(args: {
   const person = safeGitPerson(args.author, createdAt);
   const commitObjectRes = writeGitCommitResult({
     tree: treeRes.value.rootTreeOid,
-    parents: currentHead ? [currentHead] : [],
+    parents: baseHead ? [baseHead] : [],
     author: person,
     committer: person,
     message: args.message,
   }, args.gitConfig.objectFormat);
   if (Result.isError(commitObjectRes)) return Result.err({ status: 500, message: commitObjectRes.error.message });
-  const writeCommitRes = await writeGitObjectOnceResult({
-    route: args.route,
-    gitRepoStream: args.gitRepoStream,
-    format: args.gitConfig.objectFormat,
-    object: commitObjectRes.value,
-    written: treeRes.value.written,
-  });
-  if (Result.isError(writeCommitRes)) return writeCommitRes;
+  const objectsToWrite = uniqueGitObjects([...(args.precomputedGitObjects ?? []), ...treeRes.value.treeObjects, commitObjectRes.value]);
+  const objectWritesRes = await mapConcurrentWorkspaceResult(
+    objectsToWrite,
+    WORKSPACE_FS_GIT_OBJECT_WRITE_CONCURRENCY,
+    async (object) => {
+      const writeRes = await writeGitObjectOnceResult({
+        route: args.route,
+        gitRepoStream: args.gitRepoStream,
+        format: args.gitConfig.objectFormat,
+        object,
+        written: treeRes.value.written,
+        assumeFresh: true,
+      });
+      if (Result.isError(writeRes)) return Result.err(writeRes.error);
+      return Result.ok(writeRes.value);
+    }
+  );
+  if (Result.isError(objectWritesRes)) return objectWritesRes;
+
+  if (args.pendingCheckout || (args.pendingOps && args.pendingOps.length > 0)) {
+    const appendOpsRes = await appendWorkspaceCheckoutAndOpsResult(args.route, args.workspaceId, args.pendingCheckout ?? null, args.pendingOps ?? []);
+    if (Result.isError(appendOpsRes)) return appendOpsRes;
+  }
 
   const artifacts = Array.from(treeRes.value.written.values());
   const txnId = `workspace:${args.workspaceId}:${commitObjectRes.value.oid}`;
@@ -2125,7 +2354,7 @@ async function commitGitBackedWorkspaceResult(args: {
       actor: args.author.id,
       refUpdates: [{
         ref: normalizeGitRef(args.ref),
-        oldOid: currentHead,
+        oldOid: baseHead,
         newOid: commitObjectRes.value.oid,
       }],
       objects: {
@@ -2149,7 +2378,7 @@ async function commitGitBackedWorkspaceResult(args: {
   const gitCommit: WorkspaceFsCanonicalGitCommit = {
     repoStream: args.gitRepoStream,
     ref: normalizeGitRef(args.ref),
-    oldOid: currentHead,
+    oldOid: baseHead,
     newOid: commitObjectRes.value.oid,
     txnId: txnRes.value.transaction.txnId,
     objectCount: artifacts.length,
@@ -2159,7 +2388,7 @@ async function commitGitBackedWorkspaceResult(args: {
   const commit: WorkspaceFsCommit = {
     kind: "commit",
     id: commitObjectRes.value.oid,
-    parents: currentHead ? [currentHead] : [],
+    parents: baseHead ? [baseHead] : [],
     rootTreeId: treeRes.value.rootTreeOid,
     author: args.author,
     message: args.message,
@@ -2179,11 +2408,80 @@ async function commitGitBackedWorkspaceResult(args: {
 
   return Result.ok({
     ref: normalizeGitRef(args.ref),
-    oldCommitId: currentHead,
+    oldCommitId: baseHead,
     newCommitId: commitObjectRes.value.oid,
     commit,
     git: gitCommit,
   });
+}
+
+async function commitLoadedWorkspaceResponse(args: {
+  route: StreamProfileRouteArgs;
+  workspaceId: string;
+  workspace: LoadedWorkspace;
+  body: WorkspaceFsCommitRequest;
+  ref: string;
+  durability: { durability: Exclude<GitTransactionStatus, "accepted"> | "accepted"; timeoutMs: number };
+  pendingCheckout?: WorkspaceCheckoutRecord | null;
+  pendingOps?: WorkspaceFsWorkspaceOp[];
+  precomputedGitObjects?: GitObject[];
+}): Promise<Response> {
+  const startAuditRes = await appendWorkspaceAuditEventResult(args.route, {
+    type: "workspace_commit_started",
+    workspaceId: args.workspaceId,
+    ref: args.ref,
+    actorId: args.body.author.id,
+    status: "started",
+    context: { durability: args.durability.durability },
+  });
+  if (Result.isError(startAuditRes)) return responseForError(args.route, startAuditRes.error);
+
+  const gitRepoStreamForWorkspace = gitRepoStreamForWorkspaceProfile(args.route);
+  if (!gitRepoStreamForWorkspace || !isWorkspaceFsProfile(args.route)) return args.route.respond.badRequest("workspace commit requires git-repo backing");
+  const gitConfigRes = gitRepoProfileConfigResult(args.route, gitRepoStreamForWorkspace);
+  if (Result.isError(gitConfigRes)) return responseForError(args.route, gitConfigRes.error);
+  const commitRes = await commitGitBackedWorkspaceResult({
+    route: args.route,
+    workspace: args.workspace,
+    workspaceId: args.workspaceId,
+    gitRepoStream: gitRepoStreamForWorkspace,
+    gitConfig: gitConfigRes.value,
+    ref: args.ref,
+    expectedHead: args.body.expectedHead,
+    message: args.body.message,
+    author: args.body.author,
+    durability: args.durability.durability,
+    durabilityTimeoutMs: args.durability.timeoutMs,
+    pendingCheckout: args.pendingCheckout,
+    pendingOps: args.pendingOps,
+    precomputedGitObjects: args.precomputedGitObjects,
+  });
+  if (Result.isError(commitRes)) {
+    const auditRes = await appendWorkspaceAuditEventResult(args.route, {
+      type: "workspace_commit_failed",
+      workspaceId: args.workspaceId,
+      ref: args.ref,
+      actorId: args.body.author.id,
+      status: commitRes.error.status === 409 ? "conflict" : "failed",
+      context: { message: commitRes.error.message },
+    });
+    if (Result.isError(auditRes)) return responseForError(args.route, auditRes.error);
+    return responseForError(args.route, commitRes.error);
+  }
+  const auditRes = await appendWorkspaceAuditEventResult(args.route, {
+    type: "workspace_commit_succeeded",
+    workspaceId: args.workspaceId,
+    ref: args.ref,
+    actorId: args.body.author.id,
+    status: "succeeded",
+    context: {
+      oldCommitId: commitRes.value.oldCommitId,
+      newCommitId: commitRes.value.newCommitId,
+      git: commitRes.value.git,
+    },
+  });
+  if (Result.isError(auditRes)) return responseForError(args.route, auditRes.error);
+  return args.route.respond.json(200, commitRes.value);
 }
 
 async function commitWorkspace(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
@@ -2199,16 +2497,33 @@ async function commitWorkspace(args: StreamProfileRouteArgs, workspaceId: string
   const ref = normalizeRef(body.ref);
   const durabilityRes = normalizeCommitDurabilityResult(body);
   if (Result.isError(durabilityRes)) return responseForError(args, durabilityRes.error);
-  const durability = durabilityRes.value;
-  const startAuditRes = await appendWorkspaceAuditEventResult(args, {
-    type: "workspace_commit_started",
+  const workspaceRes = await loadWorkspaceResult(args, workspaceId);
+  if (Result.isError(workspaceRes)) return responseForError(args, workspaceRes.error);
+  if (!workspaceRes.value.checkout) return args.respond.notFound("workspace not found");
+  if (workspaceRes.value.state.state !== "open") return args.respond.conflict(`workspace is ${workspaceRes.value.state.state}`);
+  return commitLoadedWorkspaceResponse({
+    route: args,
     workspaceId,
+    workspace: workspaceRes.value,
+    body,
     ref,
-    actorId: body.author.id,
-    status: "started",
-    context: { durability: durability.durability },
+    durability: durabilityRes.value,
   });
-  if (Result.isError(startAuditRes)) return responseForError(args, startAuditRes.error);
+}
+
+async function commitWorkspaceOps(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
+  const bodyRes = await readRequestJsonResult(args.req, "commit ops request");
+  if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
+  const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "commit ops request");
+  if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
+  const body = bodyObjRes.value as WorkspaceFsCommitRequest & { ops?: unknown };
+  if (typeof body.message !== "string" || body.message.trim() === "") return args.respond.badRequest("message is required");
+  if (!body.author || typeof body.author !== "object" || typeof body.author.id !== "string" || body.author.id.trim() === "") {
+    return args.respond.badRequest("author.id is required");
+  }
+  const ref = normalizeRef(body.ref);
+  const durabilityRes = normalizeCommitDurabilityResult(body);
+  if (Result.isError(durabilityRes)) return responseForError(args, durabilityRes.error);
 
   const workspaceRes = await loadWorkspaceResult(args, workspaceId);
   if (Result.isError(workspaceRes)) return responseForError(args, workspaceRes.error);
@@ -2219,45 +2534,99 @@ async function commitWorkspace(args: StreamProfileRouteArgs, workspaceId: string
   if (!gitRepoStreamForWorkspace || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace commit requires git-repo backing");
   const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStreamForWorkspace);
   if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
-  const commitRes = await commitGitBackedWorkspaceResult({
+
+  const preparedOpsRes = await prepareGitBackedCommitOpsResult({
     route: args,
-    workspace: workspaceRes.value,
-    workspaceId,
+    rawOps: body.ops,
     gitRepoStream: gitRepoStreamForWorkspace,
-    gitConfig: gitConfigRes.value,
-    ref,
-    expectedHead: body.expectedHead,
-    message: body.message,
-    author: body.author,
-    durability: durability.durability,
-    durabilityTimeoutMs: durability.timeoutMs,
+    format: gitConfigRes.value.objectFormat,
   });
-  if (Result.isError(commitRes)) {
-    const auditRes = await appendWorkspaceAuditEventResult(args, {
-      type: "workspace_commit_failed",
-      workspaceId,
-      ref,
-      actorId: body.author.id,
-      status: commitRes.error.status === 409 ? "conflict" : "failed",
-      context: { message: commitRes.error.message },
-    });
-    if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
-    return responseForError(args, commitRes.error);
+  if (Result.isError(preparedOpsRes)) return responseForError(args, preparedOpsRes.error);
+  if (preparedOpsRes.value.workspaceObjects.length > 0) {
+    const writeObjectsRes = await writeObjectsResult(args, preparedOpsRes.value.workspaceObjects);
+    if (Result.isError(writeObjectsRes)) return responseForError(args, writeObjectsRes.error);
   }
-  const auditRes = await appendWorkspaceAuditEventResult(args, {
-    type: "workspace_commit_succeeded",
+  const workspace: LoadedWorkspace = {
+    ...workspaceRes.value,
+    records: [...workspaceRes.value.records, ...preparedOpsRes.value.ops],
+    ops: [...workspaceRes.value.ops, ...preparedOpsRes.value.ops],
+  };
+  return commitLoadedWorkspaceResponse({
+    route: args,
     workspaceId,
+    workspace,
+    body,
     ref,
-    actorId: body.author.id,
-    status: "succeeded",
-    context: {
-      oldCommitId: commitRes.value.oldCommitId,
-      newCommitId: commitRes.value.newCommitId,
-      git: commitRes.value.git,
-    },
+    durability: durabilityRes.value,
+    pendingOps: preparedOpsRes.value.ops,
+    precomputedGitObjects: preparedOpsRes.value.gitObjects,
   });
-  if (Result.isError(auditRes)) return responseForError(args, auditRes.error);
-  return args.respond.json(200, commitRes.value);
+}
+
+async function commitNewWorkspaceOps(args: StreamProfileRouteArgs): Promise<Response> {
+  const bodyRes = await readRequestJsonResult(args.req, "commit ops request");
+  if (Result.isError(bodyRes)) return responseForError(args, bodyRes.error);
+  const bodyObjRes = parseJsonObjectBodyResult(bodyRes.value, "commit ops request");
+  if (Result.isError(bodyObjRes)) return responseForError(args, bodyObjRes.error);
+  const body = bodyObjRes.value as WorkspaceFsCommitRequest & { ops?: unknown; workspaceId?: unknown };
+  if (typeof body.message !== "string" || body.message.trim() === "") return args.respond.badRequest("message is required");
+  if (!body.author || typeof body.author !== "object" || typeof body.author.id !== "string" || body.author.id.trim() === "") {
+    return args.respond.badRequest("author.id is required");
+  }
+  const workspaceId = typeof body.workspaceId === "string" && body.workspaceId.trim() !== "" ? body.workspaceId.trim() : newWorkspaceId();
+  const existingWorkspaceRes = await loadWorkspaceResult(args, workspaceId);
+  if (Result.isError(existingWorkspaceRes)) return responseForError(args, existingWorkspaceRes.error);
+  if (existingWorkspaceRes.value.records.length > 0) return args.respond.conflict("workspace already exists");
+
+  const ref = normalizeRef(body.ref);
+  const durabilityRes = normalizeCommitDurabilityResult(body);
+  if (Result.isError(durabilityRes)) return responseForError(args, durabilityRes.error);
+  const gitRepoStreamForWorkspace = gitRepoStreamForWorkspaceProfile(args);
+  if (!gitRepoStreamForWorkspace || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace commit requires git-repo backing");
+  const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStreamForWorkspace);
+  if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
+  const baseCommitId = body.expectedHead === undefined
+    ? await currentGitHeadResult(args, gitRepoStreamForWorkspace, ref)
+    : Result.ok(body.expectedHead);
+  if (Result.isError(baseCommitId)) return responseForError(args, baseCommitId.error);
+
+  const preparedOpsRes = await prepareGitBackedCommitOpsResult({
+    route: args,
+    rawOps: body.ops,
+    gitRepoStream: gitRepoStreamForWorkspace,
+    format: gitConfigRes.value.objectFormat,
+  });
+  if (Result.isError(preparedOpsRes)) return responseForError(args, preparedOpsRes.error);
+  if (preparedOpsRes.value.workspaceObjects.length > 0) {
+    const writeObjectsRes = await writeObjectsResult(args, preparedOpsRes.value.workspaceObjects);
+    if (Result.isError(writeObjectsRes)) return responseForError(args, writeObjectsRes.error);
+  }
+
+  const checkout: WorkspaceCheckoutRecord = {
+    kind: "workspace-checkout",
+    ref,
+    baseCommitId: baseCommitId.value,
+    rootTreeId: null,
+    createdAt: new Date().toISOString(),
+  };
+  const records: WorkspaceFsWorkspaceRecord[] = [checkout as WorkspaceFsWorkspaceRecord, ...preparedOpsRes.value.ops];
+  const workspace: LoadedWorkspace = {
+    records,
+    checkout,
+    ops: preparedOpsRes.value.ops,
+    state: isWorkspaceClosed(records),
+  };
+  return commitLoadedWorkspaceResponse({
+    route: args,
+    workspaceId,
+    workspace,
+    body: { ...body, expectedHead: baseCommitId.value },
+    ref,
+    durability: durabilityRes.value,
+    pendingCheckout: checkout,
+    pendingOps: preparedOpsRes.value.ops,
+    precomputedGitObjects: preparedOpsRes.value.gitObjects,
+  });
 }
 
 async function discardWorkspace(args: StreamProfileRouteArgs, workspaceId: string): Promise<Response> {
@@ -2441,6 +2810,7 @@ export async function handleWorkspaceFsRoute(args: StreamProfileRouteArgs): Prom
   if (args.req.method === "GET" && first === "blob" && second) return blob(args, [second, ...rest].join("/"));
   if (args.req.method === "GET" && first === "log") return log(args);
   if (args.req.method === "GET" && first === "show" && second) return show(args, [second, ...rest].join("/"));
+  if (args.req.method === "POST" && first === "commit-ops") return commitNewWorkspaceOps(args);
 
   if (first === "workspace" && second) {
     const workspaceId = decodeURIComponent(second);
@@ -2453,6 +2823,7 @@ export async function handleWorkspaceFsRoute(args: StreamProfileRouteArgs): Prom
     if (args.req.method === "POST" && workspaceRoute === "rebase") return rebaseWorkspace(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "compact") return compactWorkspace(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "commit") return commitWorkspace(args, workspaceId);
+    if (args.req.method === "POST" && workspaceRoute === "commit-ops") return commitWorkspaceOps(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "discard") return discardWorkspace(args, workspaceId);
   }
 

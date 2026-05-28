@@ -232,7 +232,9 @@ If neither is present, they use the profile `defaultBranch`.
   the stream `uploaded_through` marker
 - normal `status`, `refs`, `ref`, and checkout ref resolution use the latest
   ref checkpoint artifact when present, then replay only records after the
-  checkpoint `streamOffset`
+  checkpoint `streamOffset`; within one server process, a bounded ref snapshot
+  cache tails the durable stream from the cached offset so hot ref transactions
+  do not replay the full repo history
 - `stat` resolves one path by loading only trees along that path
 - `readdir` loads one tree and returns a paginated directory listing
 - when a tree index artifact exists for a directory tree, `stat` loads only the
@@ -501,8 +503,10 @@ on host-level Git configuration.
 The profile does not rely on a process-local repository lock for correctness.
 For a ref transaction, the server:
 
-1. Loads the latest ref checkpoint artifact when present and replays only the
-   durable stream tail after its `streamOffset`.
+1. Loads the process-local ref snapshot when present and tails the durable
+   stream from that offset. Without a cache entry, it loads the latest ref
+   checkpoint artifact when present and replays only the durable stream tail
+   after its `streamOffset`.
 2. Builds the current ref map and stable expected next stream offset from that
    checkpoint plus tail. Transactions with a `txnId` use a keyed transaction
    lookup for idempotent replay. Transactions with an `idempotencyKey` use a

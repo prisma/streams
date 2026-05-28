@@ -57,6 +57,16 @@ export type WorkspaceFsCanonicalGitCommit = {
   durability?: WorkspaceFsCommitDurability;
 };
 
+export type WorkspaceFsGitBlobArtifact = {
+  repoStream: string;
+  format: "sha1" | "sha256";
+  oid: string;
+  objectKey: string;
+  size: number;
+  framedSize: number;
+  etag?: string;
+};
+
 export type WorkspaceFsCommit = {
   kind: "commit";
   id: WorkspaceFsCommitId;
@@ -143,6 +153,7 @@ export type WorkspaceFsWorkspacePutFileOp = {
   path: string;
   blobId: WorkspaceFsBlobId;
   size: number;
+  git?: WorkspaceFsGitBlobArtifact;
   executable?: boolean;
   contentType?: string;
   previousBaseBlobId?: WorkspaceFsBlobId;
@@ -293,6 +304,11 @@ export type WorkspaceFsCommitRequest = {
   author: WorkspaceFsAuthor;
   durability?: WorkspaceFsCommitDurability;
   durabilityTimeoutMs?: number;
+};
+
+export type WorkspaceFsCommitOpsRequest = WorkspaceFsCommitRequest & {
+  workspaceId?: string;
+  ops: WorkspaceFsWorkspaceOpInput[];
 };
 
 export type WorkspaceFsCommitResponse = {

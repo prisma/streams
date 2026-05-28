@@ -182,18 +182,19 @@ describe("workspace-fs profile", () => {
         fetch: appFetch(app),
       });
       await repo.ensure({ gitRepoStream: gitStream });
-      const workspace = await repo.checkout({ ref: "main", workspaceId: "concurrent-commit" });
       const fileCount = 24;
       store.resetStats();
-      await repo.appendWorkspaceOps(workspace.workspaceId, Array.from({ length: fileCount }, (_, idx) => ({
+      const commit = await repo.commitOps(Array.from({ length: fileCount }, (_, idx) => ({
         kind: "put-file",
         path: `/batch/file-${String(idx).padStart(3, "0")}.bin`,
         contentBase64: Buffer.alloc(8192, idx).toString("base64"),
-      })));
+      })), { workspaceId: "concurrent-commit", ref: "main", expectedHead: null, message: "Concurrent object writes", author: { id: "agent" } });
       const stats = store.stats();
       expect(stats.puts).toBeGreaterThanOrEqual(fileCount);
-      expect(stats.maxConcurrentPuts).toBeGreaterThan(1);
-      await workspace.commit({ message: "Concurrent object writes", author: { id: "agent" } });
+      expect(stats.maxConcurrentPuts).toBeGreaterThan(fileCount);
+      const reader = await repo.checkout({ ref: "main", workspaceId: "concurrent-reader" });
+      expect(reader.baseCommitId).toBe(commit.newCommitId);
+      expect(await reader.readFile("/batch/file-000.bin")).toBe(Buffer.alloc(8192, 0).toString());
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

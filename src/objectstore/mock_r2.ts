@@ -25,6 +25,7 @@ export type MockR2Options = {
   faults?: MockR2Faults;
   maxInMemoryBytes?: number; // spill when object exceeds this
   spillDir?: string; // optional directory for large objects
+  discardGitBlobBodies?: boolean; // keep HEAD metadata and byte accounting, but do not retain Git blob payloads
 };
 
 type StoredObject = {
@@ -44,6 +45,7 @@ export class MockR2Store implements ObjectStore {
   private readonly faults: MockR2Faults;
   private readonly maxInMemoryBytes: number;
   private readonly spillDir?: string;
+  private readonly discardGitBlobBodies: boolean;
 
   private putCount = 0;
   private getCount = 0;
@@ -59,11 +61,13 @@ export class MockR2Store implements ObjectStore {
     if ("failPutEvery" in opts || "putDelayMs" in opts) {
       this.faults = opts as MockR2Faults;
       this.maxInMemoryBytes = Number.POSITIVE_INFINITY;
+      this.discardGitBlobBodies = false;
     } else {
       const o = opts as MockR2Options;
       this.faults = o.faults ?? {};
       this.maxInMemoryBytes = o.maxInMemoryBytes ?? Number.POSITIVE_INFINITY;
       this.spillDir = o.spillDir;
+      this.discardGitBlobBodies = o.discardGitBlobBodies === true;
     }
   }
 
@@ -89,6 +93,11 @@ export class MockR2Store implements ObjectStore {
 
   private shouldSpill(len: number): boolean {
     return this.spillDir != null && len > this.maxInMemoryBytes;
+  }
+
+  private shouldDiscardGitBlob(bytes: Uint8Array): boolean {
+    if (!this.discardGitBlobBodies || bytes.byteLength < 7) return false;
+    return bytes[0] === 98 && bytes[1] === 108 && bytes[2] === 111 && bytes[3] === 98 && bytes[4] === 32;
   }
 
   private maybeFail(count: number, every?: number, msg?: string): void {
@@ -130,7 +139,9 @@ export class MockR2Store implements ObjectStore {
         try { unlinkSync(existing.path); } catch { /* ignore */ }
       }
 
-      if (this.shouldSpill(size)) {
+      if (this.shouldDiscardGitBlob(copy)) {
+        this.data.set(key, { etag, size });
+      } else if (this.shouldSpill(size)) {
         const path = this.mkPath(key);
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, copy);

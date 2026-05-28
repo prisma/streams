@@ -105,6 +105,25 @@ objects, its internal `git-repo` transaction uses changed-object verification
 instead of full historical graph revalidation. Public `git-repo` ref transaction
 requests still use full reachable-graph validation.
 
+High-throughput agents can combine the draft append and commit into one
+operation:
+
+```text
+POST /v1/stream/{workspace}/_workspace/workspace/{id}/commit-ops
+POST /v1/stream/{workspace}/_workspace/commit-ops
+```
+
+The workspace-scoped route commits ops into an existing checkout. The top-level
+route accepts an optional `workspaceId` and creates the checkout marker and ops
+in the same request, which is the preferred path for high-throughput producers
+that already know the expected head. The request body is a normal commit request
+plus `ops`. For new `put-file` content, the handler computes Git blob OIDs
+without first writing them, builds the affected Git tree objects and commit
+object, writes all new blob/tree/commit artifacts through one bounded
+object-store wave, appends the durable workspace records, and only then submits
+the `git-repo` ref transaction. If the ref transaction conflicts, the workspace
+keeps the just-appended draft ops so the agent can rebase or retry.
+
 Commit requests accept an optional durability target:
 
 ```ts
@@ -134,12 +153,18 @@ bun run bench:workspace-commit-stress
 By default it performs 1000 individual commits, edits 100000 files, uses the
 existing `MockR2Store` with a 50ms PUT delay, and waits until at least 1 GiB has
 been written to the object store by canonical Git object artifacts. The
-benchmark keeps background segment/upload loops quiet during the commit phase by
-default so it measures workspace commit and Git object paths instead of
-request-path contention with background maintenance. The summary prints the
-commit phase duration, total time until the object-store target is reached,
-commit rate, object-store write rate, total PUTs, and maximum observed
-concurrent PUTs. Use smaller arguments for smoke runs, for example:
+benchmark keeps background segment/upload loops quiet during the commit phase
+and configures the mock to count Git blob PUT bytes without retaining every blob
+body in the Bun heap, so it measures the requested object-store delay and
+workspace/Git code paths rather than local heap or filesystem spill overhead.
+Git commit and tree objects remain readable for the next commit's base
+resolution. Pass `--retain-mock-git-blob-bodies` when validating blob readback
+rather than commit throughput. It uses `commit-ops` so changed blobs, trees, and
+the commit object are persisted together before the canonical ref transaction.
+The summary prints the commit phase duration, total time until the object-store
+target is reached, commit rate, object-store write rate, total PUTs, maximum
+observed concurrent PUTs, and per-stage timing. Use smaller arguments for smoke
+runs, for example:
 
 ```bash
 bun run bench:workspace-commit-stress --commits 10 --files 1000 --target-object-store-bytes 64mb

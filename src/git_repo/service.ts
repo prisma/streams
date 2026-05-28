@@ -95,6 +95,14 @@ export type GitRepoRecordSnapshot = {
 
 type GitRepoTailSnapshot = GitRepoRecordSnapshot;
 
+type GitRefsSnapshotCacheEntry = {
+  refs: Record<string, string | null>;
+  checkpoint: GitRefCheckpoint | null;
+  nextOffset: bigint;
+};
+
+const gitRefsSnapshotCache = new Map<string, GitRefsSnapshotCacheEntry>();
+
 export async function readGitRecordSnapshotResult(
   args: Pick<GitRepoServiceArgs, "stream" | "reader">
 ): Promise<Result<GitRepoRecordSnapshot, GitRepoServiceError>> {
@@ -182,6 +190,34 @@ function applyRecordsToRefs(refs: Record<string, string | null>, records: GitRep
   return next;
 }
 
+function cacheGitRefsSnapshot(
+  stream: string,
+  refs: Record<string, string | null>,
+  nextOffset: bigint,
+  checkpoint: GitRefCheckpoint | null = null
+): void {
+  gitRefsSnapshotCache.set(stream, { refs: { ...refs }, checkpoint, nextOffset });
+}
+
+async function readCachedGitRefsSnapshotResult(args: Pick<GitRepoServiceArgs, "stream" | "reader">): Promise<Result<{
+  refs: Record<string, string | null>;
+  checkpoint: GitRefCheckpoint | null;
+  nextOffset: bigint;
+} | null, GitRepoServiceError>> {
+  const cached = gitRefsSnapshotCache.get(args.stream);
+  if (!cached) return Result.ok(null);
+  const lastCachedOffset = cached.nextOffset <= 0n ? -1 : Number(cached.nextOffset - 1n);
+  const tailRes = await readGitRecordTailAfterOffsetResult(args, lastCachedOffset);
+  if (Result.isError(tailRes)) return tailRes;
+  if (tailRes.value.nextOffset < cached.nextOffset) {
+    gitRefsSnapshotCache.delete(args.stream);
+    return Result.ok(null);
+  }
+  const refs = applyRecordsToRefs(cached.refs, tailRes.value.records);
+  cacheGitRefsSnapshot(args.stream, refs, tailRes.value.nextOffset, cached.checkpoint);
+  return Result.ok({ refs, checkpoint: cached.checkpoint, nextOffset: tailRes.value.nextOffset });
+}
+
 function parseRefCheckpointBytesResult(bytes: Uint8Array, stream: string): Result<GitRefCheckpoint, GitRepoServiceError> {
   try {
     const parsed = JSON.parse(TEXT_DECODER.decode(bytes)) as Partial<GitRefCheckpoint>;
@@ -210,12 +246,19 @@ export async function writeGitRefCheckpointArtifactsResult(args: GitRepoServiceA
   if (Result.isError(putCheckpointRes)) return putCheckpointRes;
   const putLatestRes = await putObjectStoreResult(args.objectStore, latestRefCheckpointUri, bytes, "application/json");
   if (Result.isError(putLatestRes)) return putLatestRes;
+  cacheGitRefsSnapshot(args.stream, args.checkpoint.refs, BigInt(args.checkpoint.streamOffset) + 1n, args.checkpoint);
   return Result.ok({ refCheckpointUri, latestRefCheckpointUri });
 }
 
 export async function readGitRefsSnapshotResult(args: GitRepoServiceArgs & {
   format: GitObjectFormat;
 }): Promise<Result<{ refs: Record<string, string | null>; checkpoint: GitRefCheckpoint | null; nextOffset: bigint }, GitRepoServiceError>> {
+  const cachedRes = await readCachedGitRefsSnapshotResult(args);
+  if (Result.isError(cachedRes)) return cachedRes;
+  if (cachedRes.value) {
+    return Result.ok({ refs: cachedRes.value.refs, checkpoint: cachedRes.value.checkpoint, nextOffset: cachedRes.value.nextOffset });
+  }
+
   const latestKey = gitLatestRefCheckpointKey(args.stream, args.format);
   const checkpointBytesRes = await getObjectStoreBytesResult(args.objectStore, latestKey);
   if (Result.isError(checkpointBytesRes)) return checkpointBytesRes;
@@ -224,8 +267,10 @@ export async function readGitRefsSnapshotResult(args: GitRepoServiceArgs & {
     if (Result.isError(checkpointRes)) return checkpointRes;
     const tailRes = await readGitRecordTailAfterOffsetResult(args, checkpointRes.value.streamOffset);
     if (Result.isError(tailRes)) return tailRes;
+    const refs = applyRecordsToRefs(checkpointRes.value.refs, tailRes.value.records);
+    cacheGitRefsSnapshot(args.stream, refs, tailRes.value.nextOffset, checkpointRes.value);
     return Result.ok({
-      refs: applyRecordsToRefs(checkpointRes.value.refs, tailRes.value.records),
+      refs,
       checkpoint: checkpointRes.value,
       nextOffset: tailRes.value.nextOffset,
     });
@@ -233,7 +278,9 @@ export async function readGitRefsSnapshotResult(args: GitRepoServiceArgs & {
 
   const snapshotRes = await readGitRecordSnapshotResult(args);
   if (Result.isError(snapshotRes)) return snapshotRes;
-  return Result.ok({ refs: buildRefs(snapshotRes.value.records), checkpoint: null, nextOffset: snapshotRes.value.nextOffset });
+  const refs = buildRefs(snapshotRes.value.records);
+  cacheGitRefsSnapshot(args.stream, refs, snapshotRes.value.nextOffset);
+  return Result.ok({ refs, checkpoint: null, nextOffset: snapshotRes.value.nextOffset });
 }
 
 export async function appendGitRecordResult(

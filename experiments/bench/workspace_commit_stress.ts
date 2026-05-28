@@ -35,6 +35,8 @@ type BenchOptions = {
   segmentMaxBytes: number;
   uploadConcurrency: number;
   backgroundIntervalMs: number;
+  mockMaxInMemoryBytes: number;
+  retainMockGitBlobBodies: boolean;
   keepRoot: boolean;
 };
 
@@ -102,6 +104,8 @@ function parseOptions(): BenchOptions {
     segmentMaxBytes: parseBytesArg("--segment-max-bytes", 16 * 1024 * 1024),
     uploadConcurrency: parseNumberArg("--upload-concurrency", 4),
     backgroundIntervalMs: parseNumberArg("--background-interval-ms", 60_000),
+    mockMaxInMemoryBytes: parseBytesArg("--mock-max-in-memory-bytes", 64 * 1024),
+    retainMockGitBlobBodies: hasFlag("--retain-mock-git-blob-bodies"),
     keepRoot: hasFlag("--keep-root"),
   };
 }
@@ -235,8 +239,9 @@ async function run(): Promise<void> {
   const payloadBytesPerFile = Math.max(1, Math.ceil(opts.targetObjectStoreBytes / opts.files));
   const store = new MockR2Store({
     faults: { putDelayMs: opts.mockPutDelayMs },
-    maxInMemoryBytes: 1,
+    maxInMemoryBytes: opts.mockMaxInMemoryBytes,
     spillDir: join(root, "mock-r2"),
+    discardGitBlobBodies: !opts.retainMockGitBlobBodies,
   });
   const cfg = {
     ...loadConfig(),
@@ -265,6 +270,10 @@ async function run(): Promise<void> {
   let head: string | null = null;
   let activeCommit = 0;
   let activeStage = "setup";
+  let checkoutMs = 0;
+  let appendOpsMs = 0;
+  let commitMs = 0;
+  let commitOpsMs = 0;
 
   console.log("workspace-fs commit stress benchmark");
   console.log(`root=${root}`);
@@ -275,6 +284,8 @@ async function run(): Promise<void> {
   console.log(`payloadBytesPerFile=${payloadBytesPerFile}`);
   console.log(`targetObjectStoreBytes=${formatBytes(opts.targetObjectStoreBytes)}`);
   console.log(`mockPutDelayMs=${opts.mockPutDelayMs}`);
+  console.log(`mockMaxInMemoryBytes=${formatBytes(opts.mockMaxInMemoryBytes)}`);
+  console.log(`retainMockGitBlobBodies=${opts.retainMockGitBlobBodies}`);
   console.log(`segmentMaxBytes=${formatBytes(opts.segmentMaxBytes)}`);
   console.log(`uploadConcurrency=${opts.uploadConcurrency}`);
   console.log(`backgroundIntervalMs=${opts.backgroundIntervalMs}`);
@@ -286,18 +297,17 @@ async function run(): Promise<void> {
       activeCommit = commitIndex + 1;
       const { start, end } = fileRangeForCommit(commitIndex, opts.commits, opts.files);
       const workspaceId = `stress-${commitIndex + 1}`;
-      activeStage = "checkout";
-      const workspace = await repo.checkout({ ref: "main", workspaceId });
       const ops = buildOps(start, end, payloadBytesPerFile, opts.filesPerDir);
-      activeStage = "append-workspace-ops";
-      await repo.appendWorkspaceOps(workspace.workspaceId, ops);
-      activeStage = "commit";
-      const result = await workspace.commit({
+      activeStage = "commit-ops";
+      const commitOpsStart = process.hrtime.bigint();
+      const result = await repo.commitOps(ops, {
+        workspaceId,
         ref: "main",
         expectedHead: head,
         message: `stress commit ${commitIndex + 1}`,
         author: { id: "workspace-stress" },
       });
+      commitOpsMs += elapsedMs(commitOpsStart);
       head = result.newCommitId;
       committedFiles += ops.length;
       logicalBytes += ops.length * payloadBytesPerFile;
@@ -328,6 +338,14 @@ async function run(): Promise<void> {
     console.log(`objectStorePuts=${finalStats.puts}`);
     console.log(`objectStoreMaxConcurrentPuts=${finalStats.maxConcurrentPuts}`);
     console.log(`objectStoreMemoryBytes=${formatBytes(finalStats.memoryBytes)}`);
+    console.log(`checkoutTotal=${formatDuration(checkoutMs)}`);
+    console.log(`appendOpsTotal=${formatDuration(appendOpsMs)}`);
+    console.log(`commitTotal=${formatDuration(commitMs)}`);
+    console.log(`commitOpsTotal=${formatDuration(commitOpsMs)}`);
+    console.log(`checkoutAvg=${formatDuration(checkoutMs / opts.commits)}`);
+    console.log(`appendOpsAvg=${formatDuration(appendOpsMs / opts.commits)}`);
+    console.log(`commitAvg=${formatDuration(commitMs / opts.commits)}`);
+    console.log(`commitOpsAvg=${formatDuration(commitOpsMs / opts.commits)}`);
     console.log(`commitRate=${fmtRate(opts.commits, afterCommitsMs, "commits")}`);
     console.log(`objectStoreWriteRate=${fmtRate(finalStats.putBytes, totalMs, "bytes")}`);
   } catch (error) {
@@ -341,6 +359,10 @@ async function run(): Promise<void> {
     console.error(`objectStorePutBytes=${formatBytes(stats.putBytes)}`);
     console.error(`objectStorePuts=${stats.puts}`);
     console.error(`objectStoreMaxConcurrentPuts=${stats.maxConcurrentPuts}`);
+    console.error(`checkoutTotal=${formatDuration(checkoutMs)}`);
+    console.error(`appendOpsTotal=${formatDuration(appendOpsMs)}`);
+    console.error(`commitTotal=${formatDuration(commitMs)}`);
+    console.error(`commitOpsTotal=${formatDuration(commitOpsMs)}`);
     if (error instanceof WorkspaceFsClientError) {
       console.error(`workspaceStatus=${error.status}`);
       console.error(`workspaceMessage=${error.message}`);

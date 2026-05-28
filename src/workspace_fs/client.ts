@@ -6,6 +6,7 @@ import type {
   WorkspaceFsCheckoutRequest,
   WorkspaceFsCheckoutResponse,
   WorkspaceFsCommit,
+  WorkspaceFsCommitOpsRequest,
   WorkspaceFsCommitRequest,
   WorkspaceFsCommitResponse,
   WorkspaceFsLogResponse,
@@ -48,6 +49,10 @@ export type WorkspaceFsCheckoutOptions = Omit<WorkspaceFsCheckoutRequest, "ref">
 
 export type WorkspaceFsCommitOptions = Omit<WorkspaceFsCommitRequest, "expectedHead"> & {
   expectedHead?: string | null;
+};
+
+export type WorkspaceFsCommitOpsOptions = WorkspaceFsCommitOptions & {
+  workspaceId?: string;
 };
 
 export class WorkspaceFsClientError extends Error {
@@ -301,6 +306,26 @@ export class WorkspaceFsClient {
     });
   }
 
+  async commitWorkspaceOps(
+    workspaceId: string,
+    ops: WorkspaceFsWorkspaceOpInput[],
+    options: WorkspaceFsCommitOptions
+  ): Promise<WorkspaceFsCommitResponse> {
+    return this.requestJson<WorkspaceFsCommitResponse>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/commit-ops`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...options, ops } satisfies WorkspaceFsCommitOpsRequest),
+    });
+  }
+
+  async commitOps(ops: WorkspaceFsWorkspaceOpInput[], options: WorkspaceFsCommitOpsOptions): Promise<WorkspaceFsCommitResponse> {
+    return this.requestJson<WorkspaceFsCommitResponse>("/_workspace/commit-ops", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...options, ops } satisfies WorkspaceFsCommitOpsRequest),
+    });
+  }
+
   async discardWorkspace(workspaceId: string): Promise<{ workspaceId: string; state: "discarded" }> {
     return this.requestJson<{ workspaceId: string; state: "discarded" }>(`/_workspace/workspace/${encodeURIComponent(workspaceId)}/discard`, {
       method: "POST",
@@ -420,6 +445,17 @@ export class WorkspaceFsWorkspace {
 
   async commit(options: WorkspaceFsCommitOptions): Promise<WorkspaceFsCommitResponse> {
     const res = await this.repo.commitWorkspace(this.workspaceId, {
+      ...options,
+      ref: normalizeRef(options.ref ?? this.ref),
+      expectedHead: options.expectedHead === undefined ? this.baseCommitId : options.expectedHead,
+    });
+    this.baseCommitId = res.newCommitId;
+    this.rootTreeId = res.commit.rootTreeId;
+    return res;
+  }
+
+  async commitOps(ops: WorkspaceFsWorkspaceOpInput[], options: WorkspaceFsCommitOptions): Promise<WorkspaceFsCommitResponse> {
+    const res = await this.repo.commitWorkspaceOps(this.workspaceId, ops, {
       ...options,
       ref: normalizeRef(options.ref ?? this.ref),
       expectedHead: options.expectedHead === undefined ? this.baseCommitId : options.expectedHead,
