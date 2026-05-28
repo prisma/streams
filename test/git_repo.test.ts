@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
@@ -1142,6 +1142,102 @@ describe("git-repo profile", () => {
       expect(await rejected.text()).toContain("filter fetches are disabled");
     } finally {
       server.stop(true);
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("reuses upload-pack bare mirror cache until refs change", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-git-upload-pack-cache-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const logPath = join(root, "git-wrapper.log");
+      const gitWrapper = join(root, "git-wrapper.sh");
+      writeFileSync(gitWrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec git "$@"\n`);
+      chmodSync(gitWrapper, 0o755);
+
+      const stream = "git/test/upload-pack-cache";
+      const base = `http://local/v1/stream/${encodeURIComponent(stream)}`;
+      await installGitRepoProfile(app, stream, {
+        http: { enabled: true, allowFetch: true, allowPush: false },
+        fetch: { protocolVersion: 2, allowFilter: true, allowDepth: true, allowPackfileUris: false },
+        importExport: { gitBinary: gitWrapper },
+      });
+
+      const blob = writeGitBlob("cache me\n");
+      const tree = writeGitTreeResult([{ mode: "100644", name: "README.md", oid: blob.oid }]);
+      expect(Result.isOk(tree)).toBe(true);
+      if (Result.isError(tree)) throw new Error(tree.error.message);
+      const commit = writeGitCommitResult({
+        tree: tree.value.oid,
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_225,
+          timezone: "+0000",
+        },
+        message: "Cache source\n",
+      });
+      expect(Result.isOk(commit)).toBe(true);
+      if (Result.isError(commit)) throw new Error(commit.error.message);
+      const blobArtifact = await writeGitObjectApp(app, base, blob);
+      const treeArtifact = await writeGitObjectApp(app, base, tree.value);
+      const commitArtifact = await writeGitObjectApp(app, base, commit.value);
+      const txn = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "upload-pack-cache-source",
+          refUpdates: [{ ref: "main", oldOid: null, newOid: commit.value.oid }],
+          objects: {
+            looseObjectUris: [blobArtifact.objectKey, treeArtifact.objectKey, commitArtifact.objectKey],
+            objectCount: 3,
+            bytes: blobArtifact.framedSize + treeArtifact.framedSize + commitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(txn.status).toBe(200);
+
+      const first = await app.fetch(new Request(`${base}/_git/smart/info/refs?service=git-upload-pack`, { method: "GET" }));
+      expect(first.status).toBe(200);
+      const second = await app.fetch(new Request(`${base}/_git/smart/info/refs?service=git-upload-pack`, { method: "GET" }));
+      expect(second.status).toBe(200);
+      let log = readFileSync(logPath, "utf8");
+      expect(log.split("\n").filter((line) => line.startsWith("init --bare "))).toHaveLength(1);
+
+      const nextCommit = writeGitCommitResult({
+        tree: tree.value.oid,
+        parents: [commit.value.oid],
+        author: {
+          name: "Agent",
+          email: "agent@example.com",
+          timestampSeconds: 1_700_000_226,
+          timezone: "+0000",
+        },
+        message: "Cache invalidation\n",
+      });
+      expect(Result.isOk(nextCommit)).toBe(true);
+      if (Result.isError(nextCommit)) throw new Error(nextCommit.error.message);
+      const nextCommitArtifact = await writeGitObjectApp(app, base, nextCommit.value);
+      const update = await fetchJsonApp(app, `${base}/_git/transactions/ref`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          txnId: "upload-pack-cache-update",
+          refUpdates: [{ ref: "main", oldOid: commit.value.oid, newOid: nextCommit.value.oid }],
+          objects: {
+            looseObjectUris: [nextCommitArtifact.objectKey],
+            objectCount: 1,
+            bytes: nextCommitArtifact.framedSize,
+          },
+        }),
+      });
+      expect(update.status).toBe(200);
+      const afterRefMove = await app.fetch(new Request(`${base}/_git/smart/info/refs?service=git-upload-pack`, { method: "GET" }));
+      expect(afterRefMove.status).toBe(200);
+      log = readFileSync(logPath, "utf8");
+      expect(log.split("\n").filter((line) => line.startsWith("init --bare "))).toHaveLength(2);
+    } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });
     }

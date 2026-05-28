@@ -367,15 +367,21 @@ POST /{repo}.git/git-upload-pack
 ```
 
 Fetch materializes the current canonical refs and loose objects into a
-temporary bare repository and delegates protocol bytes to Git's
-`upload-pack --stateless-rpc`. The profile forwards the HTTP `Git-Protocol`
-header to the Git process, so protocol v2 clients can negotiate fetch
-capabilities. `fetch.allowFilter=true` configures the temporary repository with
-`uploadpack.allowFilter=true`, enabling partial-clone requests such as
-`git clone --filter=blob:none`. If `fetch.allowFilter=false`, upload-pack
-requests containing a filter line are rejected before invoking Git. If
-`fetch.allowDepth=false`, shallow fetch requests containing deepen commands are
-rejected before invoking Git.
+process-local bare mirror cache keyed by the repository stream and ref digest,
+then delegates protocol bytes to Git's `upload-pack --stateless-rpc`. Repeated
+fetch advertisements and RPC requests reuse the cached mirror while refs are
+unchanged; when refs change, the mirror is rebuilt from canonical `git-repo`
+objects before serving the next fetch. The cache is an optimization only: the
+canonical repository remains the stream transaction log plus object-store Git
+artifacts.
+
+The profile forwards the HTTP `Git-Protocol` header to the Git process, so
+protocol v2 clients can negotiate fetch capabilities. `fetch.allowFilter=true`
+configures the cached repository with `uploadpack.allowFilter=true`, enabling
+partial-clone requests such as `git clone --filter=blob:none`. If
+`fetch.allowFilter=false`, upload-pack requests containing a filter line are
+rejected before invoking Git. If `fetch.allowDepth=false`, shallow fetch
+requests containing deepen commands are rejected before invoking Git.
 
 If `fetch.allowPackfileUris=true`, upload-pack also configures Git's
 experimental `uploadpack.blobPackfileUri` entries from the latest published
