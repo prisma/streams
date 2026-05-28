@@ -3,6 +3,33 @@ import { Result } from "better-result";
 import { authenticateRequest, parseAuthConfigResult, withAuth } from "../src/auth";
 
 const VALID_KEY = "0123456789";
+const TENANT_READ_KEY = "tenant-read-key";
+const TENANT_WRITE_KEY = "tenant-write-key";
+const TENANT_ADMIN_KEY = "tenant-admin-key";
+const SERVER_ADMIN_KEY = "server-admin-key";
+
+const SCOPED_KEYS_JSON = JSON.stringify([
+  {
+    key: TENANT_READ_KEY,
+    streams: ["git/tenant-a/*", "workspace/tenant-a/*"],
+    permissions: ["read"],
+  },
+  {
+    key: TENANT_WRITE_KEY,
+    streams: ["git/tenant-a/*", "workspace/tenant-a/*", "evlog/tenant-a/*"],
+    permissions: ["write"],
+  },
+  {
+    key: TENANT_ADMIN_KEY,
+    streams: ["git/tenant-a/*", "workspace/tenant-a/*"],
+    permissions: ["admin"],
+  },
+  {
+    key: SERVER_ADMIN_KEY,
+    streams: ["*"],
+    permissions: ["admin"],
+  },
+]);
 
 const STREAMS_ENDPOINTS: Array<{ name: string; method: string; path: string; body?: BodyInit }> = [
   { name: "health", method: "GET", path: "/health" },
@@ -87,6 +114,15 @@ describe("server auth configuration", () => {
     }
   });
 
+  test("accepts scoped api-key strategy with per-stream scopes", () => {
+    const result = parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: SCOPED_KEYS_JSON });
+    expect(Result.isOk(result)).toBe(true);
+    if (Result.isOk(result)) {
+      expect(result.value.mode).toBe("scoped-api-key");
+      expect(result.value.keys).toHaveLength(4);
+    }
+  });
+
   test("accepts equals-form api-key strategy", () => {
     const result = parseAuthConfigResult(["--auth-strategy=api-key"], { API_KEY: VALID_KEY });
     expect(Result.isOk(result)).toBe(true);
@@ -100,6 +136,47 @@ describe("server auth configuration", () => {
   test("rejects missing and too-short API_KEY values", () => {
     expect(Result.isError(parseAuthConfigResult(["--auth-strategy", "api-key"], {}))).toBe(true);
     expect(Result.isError(parseAuthConfigResult(["--auth-strategy", "api-key"], { API_KEY: "short" }))).toBe(true);
+  });
+
+  test("rejects malformed scoped api-key configuration", () => {
+    expect(Result.isError(parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {}))).toBe(true);
+    expect(Result.isError(parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: "not-json" }))).toBe(true);
+    expect(Result.isError(parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: "[]" }))).toBe(true);
+    expect(
+      Result.isError(
+        parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {
+          DS_AUTH_SCOPED_KEYS_JSON: JSON.stringify([{ key: "short", streams: ["git/tenant-a/*"], permissions: ["read"] }]),
+        })
+      )
+    ).toBe(true);
+    expect(
+      Result.isError(
+        parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {
+          DS_AUTH_SCOPED_KEYS_JSON: JSON.stringify([{ key: TENANT_READ_KEY, streams: ["git/tenant-a/*"], permissions: ["execute"] }]),
+        })
+      )
+    ).toBe(true);
+    expect(
+      Result.isError(
+        parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {
+          DS_AUTH_SCOPED_KEYS_JSON: JSON.stringify([{ key: TENANT_READ_KEY, streams: ["git/tenant-a/*/bad"], permissions: ["read"] }]),
+        })
+      )
+    ).toBe(true);
+    expect(
+      Result.isError(
+        parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {
+          DS_AUTH_SCOPED_KEYS_JSON: JSON.stringify([{ key: TENANT_READ_KEY, streams: ["git/tenant-a*"], permissions: ["read"] }]),
+        })
+      )
+    ).toBe(true);
+    expect(
+      Result.isError(
+        parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], {
+          DS_AUTH_SCOPED_KEYS_JSON: JSON.stringify([{ key: TENANT_READ_KEY, streams: ["git//tenant-a"], permissions: ["read"] }]),
+        })
+      )
+    ).toBe(true);
   });
 
   test("does not trim API_KEY during validation or comparison", () => {
@@ -268,5 +345,96 @@ describe("server auth request enforcement", () => {
     }
 
     expect(reached).toEqual(COMPUTE_DEMO_ENDPOINTS.map((endpoint) => `${endpoint.method} ${endpoint.path}`));
+  });
+
+  test("enforces scoped stream read and write permissions", async () => {
+    const result = parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: SCOPED_KEYS_JSON });
+    if (Result.isError(result)) throw new Error(result.error.message);
+
+    const reached: string[] = [];
+    const fetch = withAuth(result.value, async (request) => {
+      const url = new URL(request.url);
+      reached.push(`${request.method} ${url.pathname}${url.search}`);
+      return new Response("handler reached");
+    });
+
+    const readAllowed = await fetch(new Request("http://local/v1/stream/git/tenant-a/repo/_git/refs", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(readAllowed.status).toBe(200);
+
+    const encodedReadAllowed = await fetch(new Request("http://local/v1/stream/git%2Ftenant-a%2Frepo/_git/refs", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(encodedReadAllowed.status).toBe(200);
+
+    const otherTenantRead = await fetch(new Request("http://local/v1/stream/git/tenant-b/repo/_git/refs", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(otherTenantRead.status).toBe(403);
+
+    const readOnlyAppend = await fetch(new Request("http://local/v1/stream/git/tenant-a/repo", { method: "POST", headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(readOnlyAppend.status).toBe(403);
+
+    const writeAppend = await fetch(new Request("http://local/v1/stream/git/tenant-a/repo", { method: "POST", headers: { authorization: `Bearer ${TENANT_WRITE_KEY}` } }));
+    expect(writeAppend.status).toBe(200);
+
+    expect(reached).toEqual([
+      "GET /v1/stream/git/tenant-a/repo/_git/refs",
+      "GET /v1/stream/git%2Ftenant-a%2Frepo/_git/refs",
+      "POST /v1/stream/git/tenant-a/repo",
+    ]);
+  });
+
+  test("requires stream admin for schema/profile changes and server admin for global routes", async () => {
+    const result = parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: SCOPED_KEYS_JSON });
+    if (Result.isError(result)) throw new Error(result.error.message);
+
+    const fetch = withAuth(result.value, async () => new Response("handler reached"));
+
+    const writerProfileUpdate = await fetch(new Request("http://local/v1/stream/git/tenant-a/repo/_profile", { method: "POST", headers: { authorization: `Bearer ${TENANT_WRITE_KEY}` } }));
+    expect(writerProfileUpdate.status).toBe(403);
+
+    const adminProfileUpdate = await fetch(new Request("http://local/v1/stream/git/tenant-a/repo/_profile", { method: "POST", headers: { authorization: `Bearer ${TENANT_ADMIN_KEY}` } }));
+    expect(adminProfileUpdate.status).toBe(200);
+
+    const tenantList = await fetch(new Request("http://local/v1/streams", { headers: { authorization: `Bearer ${TENANT_ADMIN_KEY}` } }));
+    expect(tenantList.status).toBe(403);
+
+    const serverList = await fetch(new Request("http://local/v1/streams", { headers: { authorization: `Bearer ${SERVER_ADMIN_KEY}` } }));
+    expect(serverList.status).toBe(200);
+
+    const tenantHealth = await fetch(new Request("http://local/health", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(tenantHealth.status).toBe(200);
+
+    const tenantMetrics = await fetch(new Request("http://local/metrics", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(tenantMetrics.status).toBe(403);
+  });
+
+  test("enforces scoped permissions on top-level Git smart HTTP routes", async () => {
+    const result = parseAuthConfigResult(["--auth-strategy", "scoped-api-key"], { DS_AUTH_SCOPED_KEYS_JSON: SCOPED_KEYS_JSON });
+    if (Result.isError(result)) throw new Error(result.error.message);
+
+    const reached: string[] = [];
+    const fetch = withAuth(result.value, async (request) => {
+      const url = new URL(request.url);
+      reached.push(`${request.method} ${url.pathname}${url.search}`);
+      return new Response("handler reached");
+    });
+
+    const uploadPackInfo = await fetch(new Request("http://local/git/tenant-a/repo.git/info/refs?service=git-upload-pack", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(uploadPackInfo.status).toBe(200);
+
+    const receivePackInfoReadOnly = await fetch(new Request("http://local/git/tenant-a/repo.git/info/refs?service=git-receive-pack", { headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(receivePackInfoReadOnly.status).toBe(403);
+
+    const receivePackInfoWriter = await fetch(new Request("http://local/git/tenant-a/repo.git/info/refs?service=git-receive-pack", { headers: { authorization: `Bearer ${TENANT_WRITE_KEY}` } }));
+    expect(receivePackInfoWriter.status).toBe(200);
+
+    const receivePackRpcReadOnly = await fetch(new Request("http://local/git/tenant-a/repo.git/git-receive-pack", { method: "POST", headers: { authorization: `Bearer ${TENANT_READ_KEY}` } }));
+    expect(receivePackRpcReadOnly.status).toBe(403);
+
+    const receivePackRpcWriter = await fetch(new Request("http://local/git/tenant-a/repo.git/git-receive-pack", { method: "POST", headers: { authorization: `Bearer ${TENANT_WRITE_KEY}` } }));
+    expect(receivePackRpcWriter.status).toBe(200);
+
+    expect(reached).toEqual([
+      "GET /git/tenant-a/repo.git/info/refs?service=git-upload-pack",
+      "GET /git/tenant-a/repo.git/info/refs?service=git-receive-pack",
+      "POST /git/tenant-a/repo.git/git-receive-pack",
+    ]);
   });
 });

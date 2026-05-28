@@ -23,13 +23,17 @@ The full Prisma Streams server requires an explicit startup auth mode:
 
 - `--auth-strategy api-key` enables built-in API key authentication for every
   request
+- `--auth-strategy scoped-api-key` enables built-in bearer authentication plus
+  static per-stream read/write/admin authorization
 - `--no-auth` disables built-in authentication for deployments that rely on a
   trusted external boundary
 
 That has concrete deployment consequences:
 
-- Prefer `--auth-strategy api-key` when the server receives network traffic
-  directly.
+- Prefer `--auth-strategy scoped-api-key` when a single process serves multiple
+  tenants or untrusted agents.
+- Use `--auth-strategy api-key` for isolated single-tenant processes or
+  operator-only access.
 - Use `--no-auth` only behind a trusted reverse proxy, API gateway, VPN
   boundary, or local-only deployment wrapper.
 - Terminate TLS outside the server.

@@ -415,6 +415,35 @@ containing slashes can be addressed with raw slashes or percent encoding. The
 top-level Git route rejects decoded stream names containing null bytes,
 backslashes, empty path components, `.`, or `..` before profile dispatch.
 
+## Multi-Tenant Authorization
+
+Do not expose a multi-tenant `git-repo` server with a raw all-access
+`api-key` credential. Use `--auth-strategy scoped-api-key` or an external
+tenant gateway that enforces equivalent stream-prefix capabilities before
+forwarding to Streams.
+
+For the built-in scoped mode, grant repository streams, workspace streams, and
+audit streams separately:
+
+```json
+[
+  {
+    "key": "tenant-a-agent-token",
+    "streams": [
+      "git/tenant-a/*",
+      "workspace/tenant-a/*",
+      "evlog/tenant-a/*"
+    ],
+    "permissions": ["write"]
+  }
+]
+```
+
+`read` allows upload-pack fetch, ref/object reads, and workspace reads. `write`
+allows receive-pack push, workspace commits, object uploads, and ref
+transactions. `admin` is required for stream profile/schema changes,
+`git-repo` import, and maintenance endpoints.
+
 Import accepts:
 
 ```json

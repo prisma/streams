@@ -72,6 +72,7 @@ export type Config = {
 };
 
 const KNOWN_DS_ENVS = new Set<string>([
+  "DS_AUTH_SCOPED_KEYS_JSON",
   "DS_ROOT",
   "DS_HOST",
   "DS_DB_PATH",
