@@ -8,6 +8,8 @@ into [git-repo](./profile-git-repo.md) for canonical repository storage and
 The profile still stores immutable snapshot objects and durable workspace draft
 operations on top of ordinary Prisma Streams JSON appends, but new canonical
 repository work should target `git-repo` rather than expanding `vfs-repo`.
+The runtime route is a thin legacy export over the `workspace-fs` server module
+so the agent workspace implementation has one code path.
 
 Install it on an empty JSON stream:
 

@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { Result } from "better-result";
 import { Bash, InMemoryFs, MountableFs } from "just-bash";
 import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
-import { migrateVfsRepoToGitRepoResult, openVfsRepo, PrismaStreamsVfsFs, createVfsGitCommands, type VfsFetch } from "../src/vfs";
+import { migrateVfsRepoToGitRepoResult, openVfsRepo, type VfsFetch } from "../src/vfs";
 import { objectsStreamName, toBase64 } from "../src/vfs/model";
-import { openWorkspaceFsRepo } from "../src/workspace_fs";
+import { createWorkspaceGitCommands, openWorkspaceFsRepo, PrismaStreamsWorkspaceFs } from "../src/workspace_fs";
 
 function appFetch(app: ReturnType<typeof createProfileTestApp>["app"]): VfsFetch {
   return (input, init) => app.fetch(new Request(input, init));
@@ -339,16 +339,18 @@ describe("vfs-repo profile", () => {
     }
   });
 
-  test("runs just-bash with VFS adapter and git-like commands", async () => {
+  test("runs just-bash with workspace-fs adapter and git-like commands", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-vfs-bash-"));
     const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
     try {
-      const repo = openVfsRepo({
+      const gitStream = "git/test/workspace-bash-canonical";
+      await installGitRepoProfile(app, gitStream);
+      const repo = openWorkspaceFsRepo({
         streamsUrl: "http://local",
-        stream: "vfs/test/bash/control",
+        stream: "workspace/test/bash/control",
         fetch: appFetch(app),
       });
-      await repo.ensure();
+      await repo.ensure({ gitRepoStream: gitStream });
 
       const seed = await repo.checkout({ ref: "main", workspaceId: "seed" });
       await seed.writeFile("/README.md", "hello\n");
@@ -357,19 +359,19 @@ describe("vfs-repo profile", () => {
       await seed.commit({ message: "Initial import", author: { id: "seed" } });
 
       let workspace = await repo.checkout({ ref: "main", workspaceId: "shell" });
-      const vfsFs = new PrismaStreamsVfsFs(workspace, { mountPath: "/" });
+      const workspaceFs = new PrismaStreamsWorkspaceFs(workspace, { mountPath: "/" });
       const fs = new MountableFs({
         base: new InMemoryFs(),
-        mounts: [{ mountPoint: "/workspace", filesystem: vfsFs }],
+        mounts: [{ mountPoint: "/workspace", filesystem: workspaceFs }],
       });
       const bash = new Bash({
         fs,
         cwd: "/workspace",
-        customCommands: createVfsGitCommands({
+        customCommands: createWorkspaceGitCommands({
           getWorkspace: () => workspace,
           setWorkspace: (next) => {
             workspace = next;
-            vfsFs.setWorkspace(next);
+            workspaceFs.setWorkspace(next);
           },
           author: { id: "agent", name: "Agent" },
         }),

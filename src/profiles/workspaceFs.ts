@@ -12,21 +12,19 @@ import {
   rejectUnknownKeysResult,
   type StreamProfileSpec,
 } from "./profile";
-import { VFS_PROFILE_VERSION } from "../vfs/types";
+import { WORKSPACE_FS_PROFILE_KIND, WORKSPACE_FS_PROFILE_VERSION } from "../workspace_fs/types";
 import { handleWorkspaceFsRoute } from "../workspace_fs/server";
-
-export const WORKSPACE_FS_PROFILE_KIND = "workspace-fs" as const;
 
 export type WorkspaceFsStreamProfile = {
   kind: typeof WORKSPACE_FS_PROFILE_KIND;
-  version: typeof VFS_PROFILE_VERSION;
+  version: typeof WORKSPACE_FS_PROFILE_VERSION;
   gitRepo?: {
     stream: string;
   };
 };
 
 function cloneWorkspaceFsProfile(): WorkspaceFsStreamProfile {
-  return { kind: WORKSPACE_FS_PROFILE_KIND, version: VFS_PROFILE_VERSION };
+  return { kind: WORKSPACE_FS_PROFILE_KIND, version: WORKSPACE_FS_PROFILE_VERSION };
 }
 
 function validateWorkspaceFsProfileResult(raw: unknown, path: string): Result<WorkspaceFsStreamProfile, { message: string }> {
@@ -35,8 +33,8 @@ function validateWorkspaceFsProfileResult(raw: unknown, path: string): Result<Wo
   if (objRes.value.kind !== WORKSPACE_FS_PROFILE_KIND) return Result.err({ message: `${path}.kind must be ${WORKSPACE_FS_PROFILE_KIND}` });
   const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "version", "gitRepo"], path);
   if (Result.isError(keyCheck)) return keyCheck;
-  if (objRes.value.version !== undefined && objRes.value.version !== VFS_PROFILE_VERSION) {
-    return Result.err({ message: `${path}.version must be ${VFS_PROFILE_VERSION}` });
+  if (objRes.value.version !== undefined && objRes.value.version !== WORKSPACE_FS_PROFILE_VERSION) {
+    return Result.err({ message: `${path}.version must be ${WORKSPACE_FS_PROFILE_VERSION}` });
   }
   const profile = cloneWorkspaceFsProfile();
   if (objRes.value.gitRepo !== undefined) {

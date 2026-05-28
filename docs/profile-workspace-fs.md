@@ -1,6 +1,6 @@
 # `workspace-fs` Profile
 
-Status: initial implementation
+Status: supported agent workspace implementation
 
 `workspace-fs` is the agent workspace layer. It is responsible for lazy
 writable checkouts, durable draft operations, just-bash integration, and
@@ -21,7 +21,8 @@ Install it on a JSON stream and configure the canonical Git repository stream:
 }
 ```
 
-The public TypeScript surface lives under `src/workspace_fs`:
+The profile route, client, model, type surface, just-bash adapter, and
+agent-facing Git commands live under `src/workspace_fs`:
 
 ```ts
 import {
@@ -33,6 +34,10 @@ import {
 
 `openWorkspaceFsRepo(...).ensure({ gitRepoStream })` installs a
 `workspace-fs` profile. It does not install `vfs-repo`.
+
+The legacy `vfs-repo` route now delegates to the workspace-fs server module for
+workspace behavior. New code should import from `src/workspace_fs`; do not add
+new workspace behavior under `src/vfs`.
 
 The profile supports these workspace behaviors:
 

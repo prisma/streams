@@ -1,6 +1,6 @@
 # Git Repo / Workspace FS Split
 
-Status: initial implementation
+Status: implemented split, with remaining scale-path hardening
 
 The VFS MVP proved the agent workflow: lazy checkout, durable workspace ops,
 explicit commit, just-bash filesystem adapter, and Git-like shell commands. It
@@ -41,9 +41,10 @@ agent
         -> Git objects / packs / checkpoints
 ```
 
-The current `vfs-repo` profile remains as an MVP compatibility profile while
-the split lands. New canonical repository work should target `git-repo`, and
-new agent workspace work should target `workspace-fs`.
+The current `vfs-repo` profile remains only as an MVP compatibility profile.
+Its route delegates to the `workspace-fs` server implementation. New canonical
+repository work should target `git-repo`, and new agent workspace work should
+target `workspace-fs`.
 
 ## Commit Semantics
 
