@@ -104,6 +104,31 @@ visibility point. `verified` waits until the published transaction's object
 artifacts still exist and the new Git ref target walks through a hash-checked
 reachable object graph. The default is `accepted`.
 
+## Conflict And Rebase Endpoints
+
+Workspace streams expose path-level branch-move handling for agents:
+
+```text
+GET  /v1/stream/{workspace}/_vfs/workspace/{id}/conflicts
+POST /v1/stream/{workspace}/_vfs/workspace/{id}/rebase
+```
+
+`conflicts` compares the workspace base commit with the current canonical Git
+head for the checked-out ref, then reports:
+
+- workspace changed paths from the durable operation log
+- upstream changed paths from the Git commit range `base..head`
+- conflict paths where a workspace path and upstream path are identical or have
+  an ancestor/descendant relationship
+
+`rebase` appends a `workspace-rebased` marker when there are no path conflicts.
+The workspace operation log is not rewritten; future reads and commits use the
+new base commit and replay the existing draft operations over that base.
+
+This is intentionally a path-level primitive. It does not perform text merges
+or conflict resolution yet. If conflicts exist, `rebase` returns `409` with the
+same conflict details so agents can inspect the paths before retrying.
+
 ## Overlay Index Endpoints
 
 Workspace streams expose a compact overlay view for agents and indexers:

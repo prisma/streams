@@ -16,8 +16,10 @@ import type {
   VfsStoredObject,
   VfsTreeEntry,
   VfsTreePage,
+  VfsWorkspaceConflictsResponse,
   VfsWorkspaceOp,
   VfsWorkspaceOpInput,
+  VfsWorkspaceRebaseResponse,
   VfsWorkspaceRecord,
 } from "./types";
 import {
@@ -82,7 +84,13 @@ type VfsServerError = {
   message: string;
 };
 
-type WorkspaceCheckoutRecord = Extract<VfsWorkspaceRecord, { kind: "workspace-checkout" }>;
+type WorkspaceCheckoutRecord = {
+  kind: "workspace-checkout" | "workspace-rebased";
+  ref: string;
+  baseCommitId: string | null;
+  rootTreeId: string | null;
+  createdAt: string;
+};
 
 type LoadedWorkspace = {
   records: VfsWorkspaceRecord[];
@@ -1138,8 +1146,18 @@ async function latestRefResult(args: StreamProfileVfsRouteArgs, ref: string): Pr
 }
 
 function workspaceCheckout(records: VfsWorkspaceRecord[]): WorkspaceCheckoutRecord | null {
-  for (const record of records) {
-    if (record.kind === "workspace-checkout") return record;
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i];
+    if (record?.kind === "workspace-checkout") return record;
+    if (record?.kind === "workspace-rebased") {
+      return {
+        kind: "workspace-rebased",
+        ref: record.ref,
+        baseCommitId: record.baseCommitId,
+        rootTreeId: record.rootTreeId,
+        createdAt: record.createdAt,
+      };
+    }
   }
   return null;
 }
@@ -1883,6 +1901,133 @@ function changedPaths(ops: VfsWorkspaceOp[]): string[] {
   return Array.from(paths).sort((a, b) => a.localeCompare(b));
 }
 
+async function gitPathDescriptorsForCommitResult(args: {
+  route: StreamProfileVfsRouteArgs;
+  gitRepoStream: string;
+  format: GitObjectFormat;
+  commitOid: string | null;
+}): Promise<Result<Map<string, string>, VfsServerError>> {
+  const paths = new Map<string, string>();
+  if (!args.commitOid) return Result.ok(paths);
+  const rootRes = await rootGitTreeOidForCommitResult({
+    route: args.route,
+    gitRepoStream: args.gitRepoStream,
+    format: args.format,
+    commitOid: args.commitOid,
+  });
+  if (Result.isError(rootRes)) return rootRes;
+
+  async function walk(dir: string, treeOid: string): Promise<Result<void, VfsServerError>> {
+    const entriesRes = await loadGitTreeEntriesResult({
+      route: args.route,
+      gitRepoStream: args.gitRepoStream,
+      format: args.format,
+      treeOid,
+    });
+    if (Result.isError(entriesRes)) return entriesRes;
+    for (const entry of entriesRes.value) {
+      const path = childPath(dir, entry.name);
+      if (entry.type === "dir") {
+        paths.set(path, `${gitTreeInputMode(entry)}:dir`);
+        const childRes = await walk(path, entry.oid);
+        if (Result.isError(childRes)) return childRes;
+      } else {
+        paths.set(path, `${gitTreeInputMode(entry)}:${entry.type}:${entry.oid}`);
+      }
+    }
+    return Result.ok(undefined);
+  }
+
+  const walkRes = await walk("/", rootRes.value);
+  if (Result.isError(walkRes)) return walkRes;
+  return Result.ok(paths);
+}
+
+async function changedGitPathsBetweenCommitsResult(args: {
+  route: StreamProfileVfsRouteArgs;
+  gitRepoStream: string;
+  format: GitObjectFormat;
+  baseCommitOid: string | null;
+  headCommitOid: string | null;
+}): Promise<Result<string[], VfsServerError>> {
+  if (args.baseCommitOid === args.headCommitOid) return Result.ok([]);
+  const baseRes = await gitPathDescriptorsForCommitResult({
+    route: args.route,
+    gitRepoStream: args.gitRepoStream,
+    format: args.format,
+    commitOid: args.baseCommitOid,
+  });
+  if (Result.isError(baseRes)) return baseRes;
+  const headRes = await gitPathDescriptorsForCommitResult({
+    route: args.route,
+    gitRepoStream: args.gitRepoStream,
+    format: args.format,
+    commitOid: args.headCommitOid,
+  });
+  if (Result.isError(headRes)) return headRes;
+
+  const changed = new Set<string>();
+  for (const path of baseRes.value.keys()) {
+    if (baseRes.value.get(path) !== headRes.value.get(path)) changed.add(path);
+  }
+  for (const path of headRes.value.keys()) {
+    if (!baseRes.value.has(path)) changed.add(path);
+  }
+  return Result.ok(Array.from(changed).sort((a, b) => a.localeCompare(b)));
+}
+
+function workspacePathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function workspaceConflictPaths(workspaceChangedPaths: string[], upstreamChangedPaths: string[]): string[] {
+  const conflicts = new Set<string>();
+  for (const path of workspaceChangedPaths) {
+    if (upstreamChangedPaths.some((upstreamPath) => workspacePathsOverlap(path, upstreamPath))) conflicts.add(path);
+  }
+  return Array.from(conflicts).sort((a, b) => a.localeCompare(b));
+}
+
+async function workspaceConflictSnapshotResult(
+  args: StreamProfileVfsRouteArgs,
+  workspaceId: string
+): Promise<Result<VfsWorkspaceConflictsResponse, VfsServerError>> {
+  const workspaceRes = await loadWorkspaceResult(args, workspaceId);
+  if (Result.isError(workspaceRes)) return workspaceRes;
+  const workspace = workspaceRes.value;
+  if (!workspace.checkout) return Result.err({ status: 404, message: "workspace not found" });
+  if (workspace.state.state !== "open") return Result.err({ status: 409, message: `workspace is ${workspace.state.state}` });
+
+  const gitRepoStream = gitRepoStreamForVfsProfile(args);
+  if (!gitRepoStream || !isWorkspaceFsProfile(args)) {
+    return Result.err({ status: 400, message: "workspace rebase requires git-repo backing" });
+  }
+  const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
+  if (Result.isError(gitConfigRes)) return gitConfigRes;
+  const currentHeadRes = await currentGitHeadResult(args, gitRepoStream, workspace.checkout.ref);
+  if (Result.isError(currentHeadRes)) return currentHeadRes;
+  const workspaceChangedPaths = changedPaths(workspace.ops);
+  const upstreamChangedRes = await changedGitPathsBetweenCommitsResult({
+    route: args,
+    gitRepoStream,
+    format: gitConfigRes.value.objectFormat,
+    baseCommitOid: workspace.checkout.baseCommitId,
+    headCommitOid: currentHeadRes.value,
+  });
+  if (Result.isError(upstreamChangedRes)) return upstreamChangedRes;
+  const conflictPaths = workspaceConflictPaths(workspaceChangedPaths, upstreamChangedRes.value);
+  return Result.ok({
+    workspaceId,
+    ref: normalizeGitRef(workspace.checkout.ref),
+    baseCommitId: workspace.checkout.baseCommitId,
+    currentHead: currentHeadRes.value,
+    changedPaths: workspaceChangedPaths,
+    upstreamChangedPaths: upstreamChangedRes.value,
+    conflictPaths,
+    canRebase: conflictPaths.length === 0,
+  });
+}
+
 async function workspaceStatus(args: StreamProfileVfsRouteArgs, workspaceId: string): Promise<Response> {
   const workspaceRes = await loadWorkspaceResult(args, workspaceId);
   if (Result.isError(workspaceRes)) return responseForError(args, workspaceRes.error);
@@ -1945,6 +2090,73 @@ async function workspaceChanges(args: StreamProfileVfsRouteArgs, workspaceId: st
     generation: workspaceRes.value.ops.length,
     prefix,
     paths,
+  });
+}
+
+async function workspaceConflicts(args: StreamProfileVfsRouteArgs, workspaceId: string): Promise<Response> {
+  const snapshotRes = await workspaceConflictSnapshotResult(args, workspaceId);
+  if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
+  return args.respond.json(200, snapshotRes.value);
+}
+
+async function rebaseWorkspace(args: StreamProfileVfsRouteArgs, workspaceId: string): Promise<Response> {
+  return withRepoLock(args.stream, async () => {
+    const snapshotRes = await workspaceConflictSnapshotResult(args, workspaceId);
+    if (Result.isError(snapshotRes)) return responseForError(args, snapshotRes.error);
+    const snapshot = snapshotRes.value;
+    if (snapshot.conflictPaths.length > 0) {
+      return args.respond.json(409, {
+        error: {
+          code: "workspace_conflict",
+          message: "workspace has path conflicts",
+        },
+        ...snapshot,
+      });
+    }
+
+    const gitRepoStream = gitRepoStreamForVfsProfile(args);
+    if (!gitRepoStream || !isWorkspaceFsProfile(args)) return args.respond.badRequest("workspace rebase requires git-repo backing");
+    const gitConfigRes = gitRepoProfileConfigResult(args, gitRepoStream);
+    if (Result.isError(gitConfigRes)) return responseForError(args, gitConfigRes.error);
+    let rootTreeId: string | null = null;
+    if (snapshot.currentHead) {
+      const rootRes = await rootGitTreeOidForCommitResult({
+        route: args,
+        gitRepoStream,
+        format: gitConfigRes.value.objectFormat,
+        commitOid: snapshot.currentHead,
+      });
+      if (Result.isError(rootRes)) return responseForError(args, rootRes.error);
+      rootTreeId = rootRes.value;
+    }
+
+    const rebased = snapshot.baseCommitId !== snapshot.currentHead;
+    if (rebased) {
+      const appendRes = await appendJsonResult(args, workspaceStreamName(args.stream, workspaceId), [
+        {
+          value: {
+            kind: "workspace-rebased",
+            ref: snapshot.ref,
+            oldBaseCommitId: snapshot.baseCommitId,
+            baseCommitId: snapshot.currentHead,
+            rootTreeId,
+            createdAt: new Date().toISOString(),
+          },
+          routingKey: "workspace",
+        },
+      ], VFS_WORKSPACE_TTL_SECONDS);
+      if (Result.isError(appendRes)) return responseForError(args, appendRes.error);
+    }
+
+    const response: VfsWorkspaceRebaseResponse = {
+      ...snapshot,
+      baseCommitId: snapshot.currentHead,
+      rebased,
+      oldBaseCommitId: snapshot.baseCommitId,
+      newBaseCommitId: snapshot.currentHead,
+      rootTreeId,
+    };
+    return args.respond.json(200, response);
   });
 }
 
@@ -2714,6 +2926,8 @@ export async function handleWorkspaceFsRoute(args: StreamProfileVfsRouteArgs): P
     if (args.req.method === "GET" && workspaceRoute === "status") return workspaceStatus(args, workspaceId);
     if (args.req.method === "GET" && workspaceRoute === "index") return workspaceIndex(args, workspaceId);
     if (args.req.method === "GET" && workspaceRoute === "changes") return workspaceChanges(args, workspaceId);
+    if (args.req.method === "GET" && workspaceRoute === "conflicts") return workspaceConflicts(args, workspaceId);
+    if (args.req.method === "POST" && workspaceRoute === "rebase") return rebaseWorkspace(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "compact") return compactWorkspace(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "commit") return commitWorkspace(args, workspaceId);
     if (args.req.method === "POST" && workspaceRoute === "discard") return discardWorkspace(args, workspaceId);

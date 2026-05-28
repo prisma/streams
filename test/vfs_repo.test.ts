@@ -7,7 +7,7 @@ import { Bash, InMemoryFs, MountableFs } from "just-bash";
 import { createProfileTestApp, fetchJsonApp } from "./profile_test_utils";
 import { migrateVfsRepoToGitRepoResult, openVfsRepo, type VfsFetch } from "../src/vfs";
 import { objectsStreamName, toBase64 } from "../src/vfs/model";
-import { createWorkspaceGitCommands, openWorkspaceFsRepo, PrismaStreamsWorkspaceFs } from "../src/workspace_fs";
+import { createWorkspaceGitCommands, openWorkspaceFsRepo, PrismaStreamsWorkspaceFs, WorkspaceFsClientError } from "../src/workspace_fs";
 
 function appFetch(app: ReturnType<typeof createProfileTestApp>["app"]): VfsFetch {
   return (input, init) => app.fetch(new Request(input, init));
@@ -290,6 +290,84 @@ describe("vfs-repo profile", () => {
 
       const log = await repo.log("main");
       expect(log.map((entry) => entry.message)).toEqual(["Update workspace-fs over Git\n", "Workspace profile commit\n"]);
+    } finally {
+      app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rebases git-backed workspaces with path-level conflict detection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ds-workspace-rebase-"));
+    const { app } = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
+    try {
+      const gitStream = "git/test/workspace-rebase-canonical";
+      await installGitRepoProfile(app, gitStream);
+
+      const repo = openWorkspaceFsRepo({
+        streamsUrl: "http://local",
+        stream: "workspace/test/rebase/control",
+        fetch: appFetch(app),
+      });
+      await repo.ensure({ gitRepoStream: gitStream });
+
+      const seed = await repo.checkout({ ref: "main", workspaceId: "rebase-seed" });
+      await seed.writeFile("/README.md", "base\n");
+      await seed.mkdir("/src");
+      await seed.writeFile("/src/app.ts", "export const value = 1;\n");
+      const initial = await seed.commit({ message: "Initial", author: { id: "seed" } });
+
+      const agent = await repo.checkout({ ref: "main", workspaceId: "rebase-agent" });
+      await agent.writeFile("/notes.txt", "agent notes\n");
+
+      const mover = await repo.checkout({ ref: "main", workspaceId: "rebase-mover" });
+      await mover.writeFile("/src/app.ts", "export const value = 2;\n");
+      const upstream = await mover.commit({ message: "Move branch", author: { id: "mover" } });
+      expect(upstream.oldCommitId).toBe(initial.newCommitId);
+
+      const cleanConflicts = await agent.conflicts();
+      expect(cleanConflicts.baseCommitId).toBe(initial.newCommitId);
+      expect(cleanConflicts.currentHead).toBe(upstream.newCommitId);
+      expect(cleanConflicts.changedPaths).toEqual(["/notes.txt"]);
+      expect(cleanConflicts.upstreamChangedPaths).toEqual(["/src/app.ts"]);
+      expect(cleanConflicts.conflictPaths).toEqual([]);
+      expect(cleanConflicts.canRebase).toBe(true);
+
+      const rebase = await agent.rebase();
+      expect(rebase.rebased).toBe(true);
+      expect(rebase.oldBaseCommitId).toBe(initial.newCommitId);
+      expect(rebase.newBaseCommitId).toBe(upstream.newCommitId);
+      expect(agent.baseCommitId).toBe(upstream.newCommitId);
+
+      const agentCommit = await agent.commit({ message: "Agent notes", author: { id: "agent" } });
+      expect(agentCommit.oldCommitId).toBe(upstream.newCommitId);
+      const reader = await repo.checkout({ ref: "main", workspaceId: "rebase-reader" });
+      expect(await reader.readFile("/src/app.ts")).toBe("export const value = 2;\n");
+      expect(await reader.readFile("/notes.txt")).toBe("agent notes\n");
+
+      const conflictAgent = await repo.checkout({ ref: "main", workspaceId: "conflict-agent" });
+      const conflictMover = await repo.checkout({ ref: "main", workspaceId: "conflict-mover" });
+      await conflictAgent.writeFile("/src/app.ts", "export const value = 3;\n");
+      await conflictMover.writeFile("/src/app.ts", "export const value = 4;\n");
+      const conflictHead = await conflictMover.commit({ message: "Conflicting move", author: { id: "mover" } });
+
+      const conflicts = await conflictAgent.conflicts();
+      expect(conflicts.currentHead).toBe(conflictHead.newCommitId);
+      expect(conflicts.changedPaths).toEqual(["/src/app.ts"]);
+      expect(conflicts.upstreamChangedPaths).toEqual(["/src/app.ts"]);
+      expect(conflicts.conflictPaths).toEqual(["/src/app.ts"]);
+      expect(conflicts.canRebase).toBe(false);
+
+      try {
+        await conflictAgent.rebase();
+        throw new Error("expected rebase conflict");
+      } catch (error) {
+        expect(error).toBeInstanceOf(WorkspaceFsClientError);
+        expect((error as WorkspaceFsClientError).status).toBe(409);
+        expect((error as WorkspaceFsClientError).body).toMatchObject({
+          conflictPaths: ["/src/app.ts"],
+          error: { code: "workspace_conflict" },
+        });
+      }
     } finally {
       app.close();
       rmSync(root, { recursive: true, force: true });

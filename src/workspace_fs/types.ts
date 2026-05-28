@@ -225,6 +225,14 @@ export type VfsWorkspaceMarker =
       createdAt: string;
     }
   | {
+      kind: "workspace-rebased";
+      ref: VfsRefName;
+      oldBaseCommitId: VfsCommitId | null;
+      baseCommitId: VfsCommitId | null;
+      rootTreeId: VfsTreeId | null;
+      createdAt: string;
+    }
+  | {
       kind: "workspace-committed";
       commitId: VfsCommitId;
       git?: VfsCanonicalGitCommit;
@@ -294,6 +302,24 @@ export type VfsWorkspaceChangesResponse = {
   generation: number;
   prefix: string;
   paths: string[];
+};
+
+export type VfsWorkspaceConflictsResponse = {
+  workspaceId: string;
+  ref: VfsRefName;
+  baseCommitId: VfsCommitId | null;
+  currentHead: VfsCommitId | null;
+  changedPaths: string[];
+  upstreamChangedPaths: string[];
+  conflictPaths: string[];
+  canRebase: boolean;
+};
+
+export type VfsWorkspaceRebaseResponse = VfsWorkspaceConflictsResponse & {
+  rebased: boolean;
+  oldBaseCommitId: VfsCommitId | null;
+  newBaseCommitId: VfsCommitId | null;
+  rootTreeId: VfsTreeId | null;
 };
 
 export type VfsCommitDurability = "accepted" | "published" | "verified";
@@ -382,6 +408,8 @@ export type WorkspaceFsWorkspaceOpsResponse = VfsWorkspaceOpsResponse;
 export type WorkspaceFsWorkspaceStatusResponse = VfsWorkspaceStatusResponse;
 export type WorkspaceFsWorkspaceIndexResponse = VfsWorkspaceIndexResponse;
 export type WorkspaceFsWorkspaceChangesResponse = VfsWorkspaceChangesResponse;
+export type WorkspaceFsWorkspaceConflictsResponse = VfsWorkspaceConflictsResponse;
+export type WorkspaceFsWorkspaceRebaseResponse = VfsWorkspaceRebaseResponse;
 export type WorkspaceFsCommitDurability = VfsCommitDurability;
 export type WorkspaceFsCommitRequest = VfsCommitRequest;
 export type WorkspaceFsCommitResponse = VfsCommitResponse;

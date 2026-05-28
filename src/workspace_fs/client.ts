@@ -17,8 +17,10 @@ import type {
   VfsStoredObject,
   VfsWorkspaceOpInput,
   VfsWorkspaceChangesResponse,
+  VfsWorkspaceConflictsResponse,
   VfsWorkspaceIndexResponse,
   VfsWorkspaceOpsResponse,
+  VfsWorkspaceRebaseResponse,
   VfsWorkspaceStatusResponse,
 } from "./types";
 import { bytesFromContent, canonicalizeVfsPath, fromBase64, normalizeRef, toBase64 } from "./model";
@@ -273,6 +275,14 @@ export class WorkspaceFsClient {
     });
   }
 
+  async workspaceConflicts(workspaceId: string): Promise<VfsWorkspaceConflictsResponse> {
+    return this.requestJson<VfsWorkspaceConflictsResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/conflicts`, { method: "GET" });
+  }
+
+  async rebaseWorkspace(workspaceId: string): Promise<VfsWorkspaceRebaseResponse> {
+    return this.requestJson<VfsWorkspaceRebaseResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/rebase`, { method: "POST" });
+  }
+
   async compactWorkspace(workspaceId: string): Promise<VfsWorkspaceIndexResponse> {
     return this.requestJson<VfsWorkspaceIndexResponse>(`/_vfs/workspace/${encodeURIComponent(workspaceId)}/compact`, { method: "POST" });
   }
@@ -385,6 +395,17 @@ export class WorkspaceFsWorkspace {
 
   async changes(prefix?: string): Promise<VfsWorkspaceChangesResponse> {
     return this.repo.workspaceChanges(this.workspaceId, { prefix });
+  }
+
+  async conflicts(): Promise<VfsWorkspaceConflictsResponse> {
+    return this.repo.workspaceConflicts(this.workspaceId);
+  }
+
+  async rebase(): Promise<VfsWorkspaceRebaseResponse> {
+    const res = await this.repo.rebaseWorkspace(this.workspaceId);
+    this.baseCommitId = res.newBaseCommitId;
+    this.rootTreeId = res.rootTreeId;
+    return res;
   }
 
   async compact(): Promise<VfsWorkspaceIndexResponse> {
