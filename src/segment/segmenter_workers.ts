@@ -39,19 +39,25 @@ export class SegmenterWorkerPool implements SegmenterController {
     }
   }
 
-  stop(_hard?: boolean): void {
+  async stop(_hard?: boolean): Promise<void> {
     if (!this.started) return;
     this.started = false;
-    for (const w of this.workers) {
-      try {
-        w.postMessage({ type: "stop" });
-      } catch {
-        // ignore
-      }
-      void w.terminate();
-    }
+    const workers = this.workers.slice();
     this.workers.length = 0;
     this.workerMemory.clear();
+    // Await termination so the worker threads are gone before stop() resolves;
+    // see the note in TouchProcessorWorkerPool.stop -- a lingering worker thread
+    // racing the host process's WASM teardown can abort the process on Linux.
+    await Promise.all(
+      workers.map((w) => {
+        try {
+          w.postMessage({ type: "stop" });
+        } catch {
+          // ignore
+        }
+        return w.terminate();
+      }),
+    );
   }
 
   getMemoryStats(): SegmenterMemoryStats {

@@ -65,7 +65,7 @@ export async function startLocalDurableStreamsServer(opts: {
           if (http) await http.close();
         } finally {
           try {
-            app?.close();
+            await app?.close();
           } finally {
             await releaseLock();
           }
@@ -79,7 +79,7 @@ export async function startLocalDurableStreamsServer(opts: {
       // ignore
     }
     try {
-      app?.close();
+      await app?.close();
     } catch {
       // ignore
     }

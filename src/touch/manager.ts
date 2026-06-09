@@ -198,11 +198,11 @@ export class TouchProcessorManager {
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.pool.stop();
+    await this.pool.stop();
     this.liveMetrics.stop();
     for (const j of this.journals.values()) j.stop();
     this.journals.clear();
@@ -305,7 +305,7 @@ export class TouchProcessorManager {
       if (this.restartWorkerPoolRequested) {
         this.restartWorkerPoolRequested = false;
         try {
-          this.pool.restart();
+          await this.pool.restart();
           this.lastWorkerPoolRestartAtMs = Date.now();
         } catch (e) {
           // eslint-disable-next-line no-console

@@ -2858,12 +2858,17 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     }
   };
 
-  const close = () => {
+  const close = async () => {
     closing = true;
-    touch.stop();
+    // Await the worker-thread pools so their threads are fully gone before we
+    // return. The host process (e.g. @prisma/dev) frees other native resources
+    // -- PGlite's WebAssembly JIT pages -- right after this resolves; a worker
+    // thread still tearing down at that moment races V8's process-global JIT
+    // bookkeeping and can abort the process on Linux.
+    await touch.stop();
+    await segmenter.stop(true);
     uploader.stop(true);
     indexer?.stop();
-    segmenter.stop(true);
     metricsEmitter.stop();
     expirySweeper.stop();
     streamSizeReconciler.stop();

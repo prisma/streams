@@ -193,7 +193,7 @@ statsReporter?.start();
 histReporter?.start();
 
 let shuttingDown = false;
-const shutdown = (signal: NodeJS.Signals) => {
+const shutdown = async (signal: NodeJS.Signals) => {
   if (shuttingDown) return;
   shuttingDown = true;
   // eslint-disable-next-line no-console
@@ -207,7 +207,7 @@ const shutdown = (signal: NodeJS.Signals) => {
     console.error("failed to stop HTTP server cleanly", err);
   }
   try {
-    app.close();
+    await app.close();
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("failed to close application cleanly", err);

@@ -38,28 +38,36 @@ export class TouchProcessorWorkerPool {
     for (let i = 0; i < this.workerCount; i++) this.spawnWorker(i, generation);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
     this.generation += 1;
-    for (const w of this.workers) {
-      try {
-        w.worker.postMessage({ type: "stop" });
-      } catch {
-        // ignore
-      }
-      void w.worker.terminate();
-    }
+    const workers = this.workers.slice();
     this.workers.length = 0;
     this.queue.length = 0;
     for (const [id, p] of this.pending.entries()) {
       p.resolve(Result.err({ kind: "worker_pool_failure", message: "worker pool stopped" }));
       this.pending.delete(id);
     }
+    // Await termination so the worker threads are actually gone before stop()
+    // resolves. Callers (the local server's close path) rely on this: a worker
+    // thread still tearing down while the host process frees other native
+    // resources -- e.g. PGlite's WebAssembly JIT pages in @prisma/dev -- races
+    // V8's process-global JIT bookkeeping and can abort the process on Linux.
+    await Promise.all(
+      workers.map((w) => {
+        try {
+          w.worker.postMessage({ type: "stop" });
+        } catch {
+          // ignore
+        }
+        return w.worker.terminate();
+      }),
+    );
   }
 
-  restart(): void {
-    this.stop();
+  async restart(): Promise<void> {
+    await this.stop();
     this.start();
   }
 
