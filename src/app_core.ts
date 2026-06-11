@@ -4,7 +4,7 @@ import type { Config } from "./config";
 import { SqliteDurableStore, type StreamRow } from "./db/db";
 import { IngestQueue, type ProducerInfo, type AppendRow, type AppendResult } from "./ingest";
 import type { ObjectStore } from "./objectstore/interface";
-import type { StreamReader, ReadBatch, ReaderError, SearchResultBatch } from "./reader";
+import type { StreamReader, ReadBatch, ReaderError, SearchHit, SearchResultBatch } from "./reader";
 import { StreamNotifier } from "./notifier";
 import { encodeOffset, parseOffsetResult, offsetToSeqOrNeg1, canonicalizeOffset, type ParsedOffset } from "./offset";
 import { parseDurationMsResult } from "./util/duration";
@@ -51,6 +51,7 @@ import { parseAggregateRequestBodyResult } from "./search/aggregate";
 import {
   StreamProfileStore,
   parseProfileUpdateResult,
+  resolveCorrelationCapability,
   resolveOtlpTracesCapability,
   resolveJsonIngestCapability,
   resolveTouchCapability,
@@ -58,6 +59,17 @@ import {
   type StreamTouchRoute,
 } from "./profiles";
 import { encodeOtlpTraceExportResponse } from "./profiles/otelTraces/otlp";
+import {
+  buildObserveSummary,
+  buildTimeSearchClauses,
+  buildTraceDetails,
+  choosePrimaryEvent,
+  combineSearchClauses,
+  parseObserveRequestResult,
+  quoteSearchValue,
+  sortTimeline,
+  summarizeSearchCoverage,
+} from "./observe/request";
 import { dsError } from "./util/ds_error.ts";
 import { streamHash16Hex } from "./util/stream_paths";
 
@@ -227,6 +239,10 @@ function normalizeContentType(value: string | null): string | null {
   if (!value) return null;
   const base = value.split(";")[0]?.trim().toLowerCase();
   return base ? base : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function isJsonContentType(value: string | null): boolean {
@@ -1763,6 +1779,262 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
       };
 
+      const handleObserveRequest = async (): Promise<Response> => {
+        if (req.method !== "POST") return badRequest("unsupported method");
+        let body: unknown;
+        try {
+          body = await req.json();
+        } catch {
+          return badRequest("observe request must be valid JSON");
+        }
+        const requestRes = parseObserveRequestResult(body);
+        if (Result.isError(requestRes)) return badRequest(requestRes.error.message);
+        const observeReq = requestRes.value;
+
+        const loadCorrelationCapability = (stream: string): ReturnType<typeof resolveCorrelationCapability> | Response => {
+          const srow = db.getStream(stream);
+          if (!srow || db.isDeleted(srow)) return notFound();
+          if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+          const profileRes = profiles.getProfileResult(stream, srow);
+          if (Result.isError(profileRes)) return internalError("invalid stream profile");
+          const capability = resolveCorrelationCapability(profileRes.value);
+          if (!capability) return badRequest(`stream ${stream} profile does not support observability correlation`);
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return internalError(regRes.error.message);
+          if (!regRes.value.search) return badRequest(`stream ${stream} does not have search configured`);
+          return capability;
+        };
+
+        const eventCorrelation =
+          observeReq.include.events && observeReq.streams.events ? loadCorrelationCapability(observeReq.streams.events) : null;
+        if (eventCorrelation instanceof Response) return eventCorrelation;
+        const traceCorrelation =
+          observeReq.include.trace && observeReq.streams.traces ? loadCorrelationCapability(observeReq.streams.traces) : null;
+        if (traceCorrelation instanceof Response) return traceCorrelation;
+
+        const runPagedSearch = async (
+          stream: string,
+          q: string,
+          limit: number,
+          sort: string[]
+        ): Promise<{ hits: SearchHit[]; batches: SearchResultBatch[]; limitReached: boolean } | Response> => {
+          const regRes = registry.getRegistryResult(stream);
+          if (Result.isError(regRes)) return internalError(regRes.error.message);
+          const hits: SearchHit[] = [];
+          const batches: SearchResultBatch[] = [];
+          const seenOffsets = new Set<string>();
+          let searchAfter: unknown[] | null = null;
+          let limitReached = false;
+          while (hits.length < limit) {
+            const size = Math.min(500, limit - hits.length);
+            const requestBody: Record<string, unknown> = {
+              q,
+              size,
+              sort,
+              timeout_ms: SEARCH_REQUEST_TIMEOUT_MS,
+            };
+            if (searchAfter) requestBody.search_after = searchAfter;
+            const parsedRes = parseSearchRequestBodyResult(regRes.value, requestBody);
+            if (Result.isError(parsedRes)) return badRequest(parsedRes.error.message);
+            const request = {
+              ...parsedRes.value,
+              timeoutMs: clampSearchRequestTimeoutMs(parsedRes.value.timeoutMs),
+            };
+            const searchRes = await runForegroundWithGate(searchGate, () => reader.searchResult({ stream, request }));
+            if (Result.isError(searchRes)) return readerErrorResponse(searchRes.error);
+            batches.push(searchRes.value);
+            for (const hit of searchRes.value.hits) {
+              if (seenOffsets.has(hit.offset)) continue;
+              seenOffsets.add(hit.offset);
+              hits.push(hit);
+              if (hits.length >= limit) break;
+            }
+            if (!searchRes.value.nextSearchAfter || searchRes.value.hits.length === 0) break;
+            searchAfter = searchRes.value.nextSearchAfter;
+            if (hits.length >= limit) {
+              limitReached = true;
+              break;
+            }
+          }
+          return { hits, batches, limitReached };
+        };
+
+        const timeClauses = buildTimeSearchClauses(observeReq.time);
+        const lookupClause = (field: "req" | "trace" | "span", value: string) => `${field}:${quoteSearchValue(value)}`;
+        const eventSort = ["timestamp:desc", "offset:desc"];
+        const traceSort = ["timestamp:asc", "spanId:asc"];
+        let eventHits: SearchHit[] = [];
+        let eventBatches: SearchResultBatch[] = [];
+        let eventLimitReached = false;
+        let traceHits: SearchHit[] = [];
+        let traceBatches: SearchResultBatch[] = [];
+        let traceLimitReached = false;
+        const candidateTraceIds = new Set<string>();
+        const addTraceIdsFromHits = (hits: SearchHit[]) => {
+          for (const hit of hits) {
+            if (!isRecord(hit.source)) continue;
+            const traceId = typeof hit.source.traceId === "string" ? hit.source.traceId : null;
+            if (traceId) candidateTraceIds.add(traceId);
+          }
+        };
+        const appendSearch = (
+          target: "events" | "traces",
+          result: { hits: SearchHit[]; batches: SearchResultBatch[]; limitReached: boolean }
+        ) => {
+          if (target === "events") {
+            const seen = new Set(eventHits.map((hit) => hit.offset));
+            for (const hit of result.hits) {
+              if (seen.has(hit.offset)) continue;
+              seen.add(hit.offset);
+              eventHits.push(hit);
+            }
+            eventBatches.push(...result.batches);
+            eventLimitReached = eventLimitReached || result.limitReached || eventHits.length >= observeReq.limits.events && !!result.batches.at(-1)?.nextSearchAfter;
+          } else {
+            const seen = new Set(traceHits.map((hit) => hit.offset));
+            for (const hit of result.hits) {
+              if (seen.has(hit.offset)) continue;
+              seen.add(hit.offset);
+              traceHits.push(hit);
+            }
+            traceBatches.push(...result.batches);
+            traceLimitReached = traceLimitReached || result.limitReached || traceHits.length >= observeReq.limits.spans && !!result.batches.at(-1)?.nextSearchAfter;
+          }
+        };
+
+        const searchEvents = async (field: "req" | "trace" | "span", value: string): Promise<Response | null> => {
+          if (!observeReq.include.events || !observeReq.streams.events) return null;
+          if (eventHits.length >= observeReq.limits.events) return null;
+          const q = combineSearchClauses(lookupClause(field, value), ...timeClauses);
+          const result = await runPagedSearch(observeReq.streams.events, q, observeReq.limits.events - eventHits.length, eventSort);
+          if (result instanceof Response) return result;
+          appendSearch("events", result);
+          addTraceIdsFromHits(result.hits);
+          return null;
+        };
+
+        const searchTraces = async (field: "req" | "trace" | "span", value: string): Promise<Response | null> => {
+          if (!observeReq.include.trace || !observeReq.streams.traces) return null;
+          if (traceHits.length >= observeReq.limits.spans) return null;
+          const q = combineSearchClauses(lookupClause(field, value), ...timeClauses);
+          const result = await runPagedSearch(observeReq.streams.traces, q, observeReq.limits.spans - traceHits.length, traceSort);
+          if (result instanceof Response) return result;
+          appendSearch("traces", result);
+          addTraceIdsFromHits(result.hits);
+          return null;
+        };
+
+        if (observeReq.lookup.requestId) {
+          const eventResponse = await searchEvents("req", observeReq.lookup.requestId);
+          if (eventResponse) return eventResponse;
+          if (candidateTraceIds.size > 0) {
+            for (const traceId of candidateTraceIds) {
+              const traceResponse = await searchTraces("trace", traceId);
+              if (traceResponse) return traceResponse;
+            }
+          } else {
+            const traceResponse = await searchTraces("req", observeReq.lookup.requestId);
+            if (traceResponse) return traceResponse;
+          }
+        } else if (observeReq.lookup.traceId) {
+          candidateTraceIds.add(observeReq.lookup.traceId);
+          const traceResponse = await searchTraces("trace", observeReq.lookup.traceId);
+          if (traceResponse) return traceResponse;
+          const eventResponse = await searchEvents("trace", observeReq.lookup.traceId);
+          if (eventResponse) return eventResponse;
+        } else if (observeReq.lookup.spanId) {
+          const traceResponse = await searchTraces("span", observeReq.lookup.spanId);
+          if (traceResponse) return traceResponse;
+          if (candidateTraceIds.size > 0) {
+            for (const traceId of Array.from(candidateTraceIds)) {
+              const fullTraceResponse = await searchTraces("trace", traceId);
+              if (fullTraceResponse) return fullTraceResponse;
+              const eventResponse = await searchEvents("trace", traceId);
+              if (eventResponse) return eventResponse;
+            }
+          } else {
+            const eventResponse = await searchEvents("span", observeReq.lookup.spanId);
+            if (eventResponse) return eventResponse;
+          }
+        }
+
+        const eventCoverage = summarizeSearchCoverage(eventBatches, eventHits, eventLimitReached);
+        const traceCoverage = summarizeSearchCoverage(traceBatches, traceHits, traceLimitReached);
+        const trace = buildTraceDetails(
+          traceHits.map((hit) => hit.source),
+          { spanLimitReached: traceCoverage.limit_reached, coverageComplete: traceCoverage.complete }
+        );
+        const primaryEventHit = choosePrimaryEvent(eventHits, trace.traceId ?? observeReq.lookup.traceId);
+        const primaryEvent = primaryEventHit && isRecord(primaryEventHit.source) ? primaryEventHit.source : null;
+        const timeline: unknown[] = [];
+        if (observeReq.include.timeline) {
+          const items: any[] = [];
+          if (eventCorrelation && observeReq.streams.events) {
+            for (const hit of eventHits) {
+              items.push(...eventCorrelation.toTimelineItems({ stream: observeReq.streams.events, offset: hit.offset, record: hit.source }));
+            }
+          }
+          if (traceCorrelation && observeReq.streams.traces) {
+            for (const hit of traceHits) {
+              items.push(...traceCorrelation.toTimelineItems({ stream: observeReq.streams.traces, offset: hit.offset, record: hit.source }));
+            }
+          }
+          timeline.push(...sortTimeline(items));
+        }
+
+        const warnings: string[] = [];
+        if (observeReq.include.trace && traceHits.length === 0) warnings.push("no trace spans found");
+        if (observeReq.include.events && eventHits.length === 0) warnings.push("no evlog events found");
+        if (eventCoverage.limit_reached) warnings.push("event limit reached");
+        if (traceCoverage.limit_reached) warnings.push("span limit reached");
+        if (!eventCoverage.complete && eventCoverage.searched) warnings.push("event search coverage incomplete");
+        if (!traceCoverage.complete && traceCoverage.searched) warnings.push("trace search coverage incomplete");
+        if (trace.missingParents.length > 0) warnings.push("trace has missing parent spans");
+
+        return json(200, {
+          lookup: {
+            requestId:
+              observeReq.lookup.requestId ??
+              (primaryEvent && typeof primaryEvent.requestId === "string" ? primaryEvent.requestId : null) ??
+              null,
+            traceId: observeReq.lookup.traceId ?? trace.traceId,
+            spanId: observeReq.lookup.spanId,
+          },
+          summary: buildObserveSummary({ lookup: observeReq.lookup, primaryEvent, trace }),
+          evlog: observeReq.include.events
+            ? {
+                stream: observeReq.streams.events ?? null,
+                primary: primaryEvent,
+                matches: eventHits.map((hit) => ({
+                  offset: hit.offset,
+                  source: hit.source,
+                })),
+              }
+            : null,
+          trace: observeReq.include.trace
+            ? {
+                stream: observeReq.streams.traces ?? null,
+                traceId: trace.traceId,
+                rootSpanId: trace.rootSpanId,
+                spans: trace.spans,
+                tree: trace.tree,
+                serviceMap: trace.serviceMap,
+                criticalPath: trace.criticalPath,
+                errors: trace.errors,
+                partial: trace.partial,
+                missingParents: trace.missingParents,
+                duplicateSpans: trace.duplicateSpans,
+              }
+            : null,
+          timeline,
+          coverage: {
+            events: eventCoverage,
+            traces: traceCoverage,
+            warnings,
+          },
+        });
+      };
+
       if (path === "/health") {
         return json(200, { ok: true });
       }
@@ -1779,6 +2051,9 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         const stream = cfg.otlpTracesStream;
         if (!stream) return badRequest("DS_OTLP_TRACES_STREAM is not configured");
         return handleOtlpTracesIngest(stream, cfg.otlpAutoCreate);
+      }
+      if (path === "/v1/observe/request") {
+        return handleObserveRequest();
       }
 
       // /v1/streams
