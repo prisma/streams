@@ -68,6 +68,8 @@ export type Config = {
   touchCheckIntervalMs: number;
   touchMaxBatchRows: number;
   touchMaxBatchBytes: number;
+  otlpTracesStream: string | null;
+  otlpAutoCreate: boolean;
   port: number;
 };
 
@@ -143,6 +145,8 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_TOUCH_CHECK_MS",
   "DS_TOUCH_MAX_BATCH_ROWS",
   "DS_TOUCH_MAX_BATCH_BYTES",
+  "DS_OTLP_TRACES_STREAM",
+  "DS_OTLP_AUTO_CREATE",
   "DS_AUTO_TUNE_REQUESTED_MB",
   "DS_AUTO_TUNE_PRESET_MB",
   "DS_AUTO_TUNE_EFFECTIVE_MEMORY_LIMIT_MB",
@@ -216,6 +220,15 @@ function envNum(name: string, def: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) throw dsError(`invalid ${name}: ${v}`);
   return n;
+}
+
+function envBool(name: string, def: boolean): boolean {
+  const v = process.env[name];
+  if (v == null || v === "") return def;
+  const normalized = v.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") return true;
+  if (normalized === "0" || normalized === "false" || normalized === "no") return false;
+  throw dsError(`invalid ${name}: ${v}`);
 }
 
 function envBytes(name: string): number | null {
@@ -354,6 +367,8 @@ export function loadConfig(): Config {
     touchCheckIntervalMs: envNum("DS_TOUCH_CHECK_MS", 250),
     touchMaxBatchRows: envNum("DS_TOUCH_MAX_BATCH_ROWS", 500),
     touchMaxBatchBytes: envNum("DS_TOUCH_MAX_BATCH_BYTES", 4 * 1024 * 1024),
+    otlpTracesStream: process.env.DS_OTLP_TRACES_STREAM?.trim() || null,
+    otlpAutoCreate: envBool("DS_OTLP_AUTO_CREATE", false),
     port: envNum("PORT", 8080),
   };
 }

@@ -6,6 +6,7 @@ import type {
   StreamProfilePersistResult,
   StreamProfileReadResult,
   StreamProfileSpec,
+  UnifiedTimelineItem,
 } from "./profile";
 import {
   cloneStreamProfileSpec,
@@ -20,6 +21,11 @@ import { buildEvlogDefaultRegistry } from "./evlog/schema";
 export type EvlogStreamProfile = {
   kind: "evlog";
   redactKeys?: string[];
+  correlation?: {
+    requestIdFields?: string[];
+    traceContextFields?: string[];
+    parseTraceparent?: boolean;
+  };
 };
 
 const DEFAULT_REDACT_KEYS = ["password", "token", "secret", "authorization", "cookie", "apikey"] as const;
@@ -86,17 +92,59 @@ function parseRedactKeysResult(raw: unknown, path: string): Result<string[] | un
   return Result.ok(normalized);
 }
 
+function parseStringListResult(raw: unknown, path: string, maxItems: number): Result<string[] | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  if (!Array.isArray(raw)) return Result.err({ message: `${path} must be an array of strings` });
+  if (raw.length > maxItems) return Result.err({ message: `${path} too large (max ${maxItems})` });
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") return Result.err({ message: `${path} must be an array of strings` });
+    const value = item.trim();
+    if (value === "") return Result.err({ message: `${path} must not contain empty strings` });
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return Result.ok(out);
+}
+
+function parseEvlogCorrelationResult(raw: unknown, path: string): Result<EvlogStreamProfile["correlation"] | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  const objRes = expectPlainObjectResult(raw, path);
+  if (Result.isError(objRes)) return objRes;
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["requestIdFields", "traceContextFields", "parseTraceparent"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+  const requestIdFieldsRes = parseStringListResult(objRes.value.requestIdFields, `${path}.requestIdFields`, 64);
+  if (Result.isError(requestIdFieldsRes)) return requestIdFieldsRes;
+  const traceContextFieldsRes = parseStringListResult(objRes.value.traceContextFields, `${path}.traceContextFields`, 64);
+  if (Result.isError(traceContextFieldsRes)) return traceContextFieldsRes;
+  if (objRes.value.parseTraceparent !== undefined && typeof objRes.value.parseTraceparent !== "boolean") {
+    return Result.err({ message: `${path}.parseTraceparent must be boolean` });
+  }
+  const correlation: NonNullable<EvlogStreamProfile["correlation"]> = {};
+  if (requestIdFieldsRes.value) correlation.requestIdFields = requestIdFieldsRes.value;
+  if (traceContextFieldsRes.value) correlation.traceContextFields = traceContextFieldsRes.value;
+  if (objRes.value.parseTraceparent !== undefined) correlation.parseTraceparent = objRes.value.parseTraceparent;
+  return Result.ok(Object.keys(correlation).length > 0 ? correlation : undefined);
+}
+
 function validateEvlogProfileResult(raw: unknown, path: string): Result<EvlogStreamProfile, { message: string }> {
   const objRes = expectPlainObjectResult(raw, path);
   if (Result.isError(objRes)) return objRes;
   if (objRes.value.kind !== "evlog") {
     return Result.err({ message: `${path}.kind must be evlog` });
   }
-  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "redactKeys"], path);
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "redactKeys", "correlation"], path);
   if (Result.isError(keyCheck)) return keyCheck;
   const redactKeysRes = parseRedactKeysResult(objRes.value.redactKeys, `${path}.redactKeys`);
   if (Result.isError(redactKeysRes)) return redactKeysRes;
-  return Result.ok(redactKeysRes.value ? { kind: "evlog", redactKeys: redactKeysRes.value } : { kind: "evlog" });
+  const correlationRes = parseEvlogCorrelationResult(objRes.value.correlation, `${path}.correlation`);
+  if (Result.isError(correlationRes)) return correlationRes;
+  const profile: EvlogStreamProfile = { kind: "evlog" };
+  if (redactKeysRes.value) profile.redactKeys = redactKeysRes.value;
+  if (correlationRes.value) profile.correlation = correlationRes.value;
+  return Result.ok(profile);
 }
 
 function normalizeString(value: unknown): string | null {
@@ -110,6 +158,49 @@ function normalizeTraceField(input: Record<string, unknown>, field: "traceId" | 
   if (direct) return direct;
   const traceContext = isPlainObject(input.traceContext) ? input.traceContext : null;
   return traceContext ? normalizeString(traceContext[field]) : null;
+}
+
+function readDottedString(input: Record<string, unknown>, path: string): string | null {
+  let cur: unknown = input;
+  for (const part of path.split(".")) {
+    if (!isPlainObject(cur)) return null;
+    cur = cur[part];
+  }
+  return normalizeString(cur);
+}
+
+function normalizeRequestId(input: Record<string, unknown>, profile: EvlogStreamProfile): string | null {
+  const fields = profile.correlation?.requestIdFields ?? ["requestId", "context.requestId"];
+  for (const field of fields) {
+    const value = readDottedString(input, field);
+    if (value) return value;
+  }
+  return null;
+}
+
+function normalizeConfiguredTraceField(input: Record<string, unknown>, profile: EvlogStreamProfile, field: "traceId" | "spanId"): string | null {
+  const fields = profile.correlation?.traceContextFields;
+  if (!fields) return normalizeTraceField(input, field);
+  for (const path of fields) {
+    if (path !== field && !path.endsWith(`.${field}`)) continue;
+    const value = readDottedString(input, path);
+    if (value) return value;
+  }
+  return normalizeTraceField(input, field);
+}
+
+function parseTraceparent(input: Record<string, unknown>): { traceId: string; spanId: string } | null {
+  for (const path of ["traceparent", "traceContext.traceparent", "context.traceparent", "headers.traceparent"]) {
+    const value = readDottedString(input, path);
+    if (!value) continue;
+    const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})(?:-.+)?$/i.exec(value);
+    if (!match) continue;
+    const traceId = match[2].toLowerCase();
+    const spanId = match[3].toLowerCase();
+    if (/^0+$/.test(traceId) || /^0+$/.test(spanId)) continue;
+    return { traceId, spanId };
+  }
+  return null;
 }
 
 function normalizeOptionalNumber(value: unknown): number | null {
@@ -187,9 +278,10 @@ function normalizeEvlogRecordResult(profile: EvlogStreamProfile, value: unknown)
   const status = normalizeOptionalInteger(input.status);
   const duration = normalizeOptionalNumber(input.duration);
   const timestamp = normalizeString(input.timestamp) ?? new Date().toISOString();
-  const requestId = normalizeString(input.requestId);
-  const traceId = normalizeTraceField(input, "traceId");
-  const spanId = normalizeTraceField(input, "spanId");
+  const requestId = normalizeRequestId(input, profile);
+  const traceparent = profile.correlation?.parseTraceparent === false ? null : parseTraceparent(input);
+  const traceId = normalizeConfiguredTraceField(input, profile, "traceId") ?? traceparent?.traceId ?? null;
+  const spanId = normalizeConfiguredTraceField(input, profile, "spanId") ?? traceparent?.spanId ?? null;
   const contextRes = redactValue(buildContext(input), new Set([...DEFAULT_REDACT_KEYS, ...(profile.redactKeys ?? [])]));
 
   const normalized = {
@@ -219,6 +311,47 @@ function normalizeEvlogRecordResult(profile: EvlogStreamProfile, value: unknown)
     value: normalized,
     routingKey: requestId ?? traceId ?? null,
   });
+}
+
+function evlogSeverity(record: Record<string, unknown>): "debug" | "info" | "warn" | "error" {
+  const level = normalizeString(record.level)?.toLowerCase();
+  if (level === "debug" || level === "info" || level === "warn" || level === "error") return level;
+  const status = normalizeOptionalInteger(record.status);
+  if (status != null && status >= 500) return "error";
+  if (status != null && status >= 400) return "warn";
+  return "info";
+}
+
+function evlogTimelineItems(args: { stream: string; offset?: string; record: unknown }): UnifiedTimelineItem[] {
+  if (!isPlainObject(args.record)) return [];
+  const record = args.record;
+  const timestamp = normalizeString(record.timestamp);
+  if (!timestamp) return [];
+  const message = normalizeString(record.message);
+  const method = normalizeString(record.method);
+  const path = normalizeString(record.path);
+  const title = message ?? ([method, path].filter(Boolean).join(" ") || "evlog event");
+  return [
+    {
+      kind: "evlog.event",
+      time: timestamp,
+      duration: normalizeOptionalNumber(record.duration),
+      service: normalizeString(record.service),
+      title,
+      severity: evlogSeverity(record),
+      ids: {
+        requestId: normalizeString(record.requestId),
+        traceId: normalizeString(record.traceId),
+        spanId: normalizeString(record.spanId),
+      },
+      source: {
+        stream: args.stream,
+        offset: args.offset,
+        profile: "evlog",
+      },
+      data: record,
+    },
+  ];
 }
 
 export const EVLOG_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
@@ -294,6 +427,12 @@ export const EVLOG_STREAM_PROFILE_DEFINITION: StreamProfileDefinition = {
     prepareRecordResult({ profile, value }) {
       if (!isEvlogProfile(profile)) return Result.err({ message: "invalid evlog profile" });
       return normalizeEvlogRecordResult(profile, value);
+    },
+  },
+
+  correlation: {
+    toTimelineItems(args) {
+      return evlogTimelineItems(args);
     },
   },
 };

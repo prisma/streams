@@ -6,6 +6,7 @@ import { dsError } from "../util/ds_error.ts";
 import { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
 import { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
 import { METRICS_STREAM_PROFILE_DEFINITION } from "./metrics";
+import { OTEL_TRACES_STREAM_PROFILE_DEFINITION } from "./otelTraces";
 import {
   buildStreamProfileResource,
   cloneStreamProfileSpec,
@@ -15,6 +16,8 @@ import {
   type CachedStreamProfile,
   type StoredProfileRow,
   type StreamProfileJsonIngestCapability,
+  type StreamProfileOtlpTracesCapability,
+  type StreamProfileCorrelationCapability,
   type StreamProfileDefinition,
   type StreamProfileMetricsCapability,
   type StreamProfileReadError,
@@ -29,12 +32,14 @@ export * from "./profile";
 export { EVLOG_STREAM_PROFILE_DEFINITION } from "./evlog";
 export { GENERIC_STREAM_PROFILE_DEFINITION } from "./generic";
 export { METRICS_STREAM_PROFILE_DEFINITION } from "./metrics";
+export { OTEL_TRACES_STREAM_PROFILE_DEFINITION } from "./otelTraces";
 export { STATE_PROTOCOL_STREAM_PROFILE_DEFINITION } from "./stateProtocol";
 
 const STREAM_PROFILE_DEFINITIONS: Record<string, StreamProfileDefinition> = {
   [EVLOG_STREAM_PROFILE_DEFINITION.kind]: EVLOG_STREAM_PROFILE_DEFINITION,
   [GENERIC_STREAM_PROFILE_DEFINITION.kind]: GENERIC_STREAM_PROFILE_DEFINITION,
   [METRICS_STREAM_PROFILE_DEFINITION.kind]: METRICS_STREAM_PROFILE_DEFINITION,
+  [OTEL_TRACES_STREAM_PROFILE_DEFINITION.kind]: OTEL_TRACES_STREAM_PROFILE_DEFINITION,
   [STATE_PROTOCOL_STREAM_PROFILE_DEFINITION.kind]: STATE_PROTOCOL_STREAM_PROFILE_DEFINITION,
 };
 // New built-in profiles are wired here. Core runtime paths must resolve the
@@ -98,6 +103,16 @@ export function resolveJsonIngestCapability(profile: StreamProfileSpec | null | 
 export function resolveMetricsCapability(profile: StreamProfileSpec | null | undefined): StreamProfileMetricsCapability | null {
   if (!profile) return null;
   return resolveStreamProfileDefinition(profile.kind)?.metrics ?? null;
+}
+
+export function resolveOtlpTracesCapability(profile: StreamProfileSpec | null | undefined): StreamProfileOtlpTracesCapability | null {
+  if (!profile) return null;
+  return resolveStreamProfileDefinition(profile.kind)?.otlpTraces ?? null;
+}
+
+export function resolveCorrelationCapability(profile: StreamProfileSpec | null | undefined): StreamProfileCorrelationCapability | null {
+  if (!profile) return null;
+  return resolveStreamProfileDefinition(profile.kind)?.correlation ?? null;
 }
 
 export function resolveEnabledTouchCapability(

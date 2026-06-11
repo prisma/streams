@@ -72,6 +72,42 @@ export type PreparedJsonRecord = {
   routingKey: string | null;
 };
 
+export type OtlpTraceExportResponseEncoding = "protobuf" | "json";
+
+export type OtlpTraceExportResult = {
+  records: PreparedJsonRecord[];
+  acceptedSpans: number;
+  rejectedSpans: number;
+  warnings: string[];
+  responseEncoding: OtlpTraceExportResponseEncoding;
+};
+
+export type OtlpTraceExportError = {
+  message: string;
+  status?: 400 | 415;
+};
+
+export type UnifiedTimelineItem = {
+  kind: "evlog.event" | "otel.span.start" | "otel.span.end" | "otel.span.event" | "otel.exception";
+  time: string;
+  duration?: number | null;
+  service?: string | null;
+  title: string;
+  severity: "debug" | "info" | "warn" | "error";
+  ids: {
+    requestId?: string | null;
+    traceId?: string | null;
+    spanId?: string | null;
+    parentSpanId?: string | null;
+  };
+  source: {
+    stream: string;
+    offset?: string;
+    profile: string;
+  };
+  data: unknown;
+};
+
 export type MetricsCompanionRecord = {
   metric: string;
   unit: string;
@@ -128,6 +164,21 @@ export interface StreamProfileJsonIngestCapability {
   prepareRecordResult(args: { stream: string; profile: StreamProfileSpec; value: unknown }): Result<PreparedJsonRecord, StreamProfileValidationError>;
 }
 
+export interface StreamProfileOtlpTracesCapability {
+  decodeExportRequestResult(args: {
+    stream: string;
+    profile: StreamProfileSpec;
+    contentType: string;
+    contentEncoding: string | null;
+    body: Uint8Array;
+    maxDecodedBytes: number;
+  }): Result<OtlpTraceExportResult, OtlpTraceExportError>;
+}
+
+export interface StreamProfileCorrelationCapability {
+  toTimelineItems(args: { stream: string; offset?: string; record: unknown }): UnifiedTimelineItem[];
+}
+
 export interface StreamProfileMetricsCapability {
   normalizeRecordResult(args: {
     stream: string;
@@ -145,6 +196,8 @@ export interface StreamProfileDefinition {
   persistProfileResult(args: PersistProfileArgs): Result<StreamProfilePersistResult, StreamProfileMutationError>;
   touch?: StreamTouchCapability;
   jsonIngest?: StreamProfileJsonIngestCapability;
+  otlpTraces?: StreamProfileOtlpTracesCapability;
+  correlation?: StreamProfileCorrelationCapability;
   metrics?: StreamProfileMetricsCapability;
 }
 

@@ -51,10 +51,13 @@ import { parseAggregateRequestBodyResult } from "./search/aggregate";
 import {
   StreamProfileStore,
   parseProfileUpdateResult,
+  resolveOtlpTracesCapability,
   resolveJsonIngestCapability,
   resolveTouchCapability,
+  type PreparedJsonRecord,
   type StreamTouchRoute,
 } from "./profiles";
+import { encodeOtlpTraceExportResponse } from "./profiles/otelTraces/otlp";
 import { dsError } from "./util/ds_error.ts";
 import { streamHash16Hex } from "./util/stream_paths";
 
@@ -148,6 +151,10 @@ function internalError(message = "internal server error"): Response {
 
 function badRequest(msg: string): Response {
   return json(400, { error: { code: "bad_request", message: msg } });
+}
+
+function unsupportedMediaType(msg: string): Response {
+  return json(415, { error: { code: "unsupported_media_type", message: msg } });
 }
 
 function notFound(msg = "not_found"): Response {
@@ -1166,6 +1173,32 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     return Result.ok({ rows });
   };
 
+  const buildPreparedJsonRows = (
+    stream: string,
+    records: PreparedJsonRecord[]
+  ): Result<{ rows: AppendRow[] }, { status: 400 | 500; message: string }> => {
+    const regRes = registry.getRegistryResult(stream);
+    if (Result.isError(regRes)) return Result.err({ status: 500, message: regRes.error.message });
+    const reg = regRes.value;
+    const validator = reg.currentVersion > 0 ? registry.getValidatorForVersion(reg, reg.currentVersion) : null;
+    if (reg.currentVersion > 0 && !validator) {
+      return Result.err({ status: 500, message: "schema validator missing" });
+    }
+    const rows: AppendRow[] = [];
+    for (const record of records) {
+      if (validator && !validator(record.value)) {
+        const msg = validator.errors ? validator.errors.map((e) => e.message).join("; ") : "schema validation failed";
+        return Result.err({ status: 400, message: msg });
+      }
+      rows.push({
+        routingKey: keyBytesFromString(record.routingKey),
+        contentType: "application/json",
+        payload: JSON_TEXT_ENCODER.encode(JSON.stringify(record.value)),
+      });
+    }
+    return Result.ok({ rows });
+  };
+
   const buildAppendRowsResult = (
     stream: string,
     bodyBytes: Uint8Array,
@@ -1623,6 +1656,113 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       }
       const path = url.pathname;
 
+      const handleOtlpTracesIngest = async (stream: string, autoCreate: boolean): Promise<Response> => {
+        if (req.method !== "POST") return badRequest("unsupported method");
+        const contentType = req.headers.get("content-type");
+        if (!contentType) return badRequest("missing content-type");
+        const leaveAppendPhase = memorySampler?.enter("append", {
+          route: "otlp_traces",
+          stream,
+          content_type: normalizeContentType(contentType) ?? contentType,
+        });
+        try {
+          return await runWithGate(ingestGate, async () => {
+            let srow = db.getStream(stream);
+            if (!srow && autoCreate) {
+              srow = db.ensureStream(stream, { contentType: "application/json" });
+              const profileRes = profiles.updateProfileResult(stream, srow, { kind: "otel-traces" });
+              if (Result.isError(profileRes)) return badRequest(profileRes.error.message);
+              try {
+                if (profileRes.value.schemaRegistry) {
+                  await uploadSchemaRegistry(stream, profileRes.value.schemaRegistry);
+                }
+                await uploader.publishManifest(stream);
+              } catch {
+                return json(500, { error: { code: "internal", message: "profile upload failed" } });
+              }
+              indexer?.enqueue(stream);
+              notifier.notifyDetailsChanged(stream);
+              srow = db.getStream(stream);
+            }
+            if (!srow || db.isDeleted(srow)) return notFound();
+            if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
+
+            const profileRes = profiles.getProfileResult(stream, srow);
+            if (Result.isError(profileRes)) return internalError("invalid stream profile");
+            const capability = resolveOtlpTracesCapability(profileRes.value);
+            if (!capability) return badRequest("stream profile does not support OTLP traces");
+
+            const ab = await req.arrayBuffer();
+            if (ab.byteLength > cfg.appendMaxBodyBytes) return tooLarge(`body too large (max ${cfg.appendMaxBodyBytes})`);
+            const bodyBytes = new Uint8Array(ab);
+            const decodedRes = capability.decodeExportRequestResult({
+              stream,
+              profile: profileRes.value,
+              contentType,
+              contentEncoding: req.headers.get("content-encoding"),
+              body: bodyBytes,
+              maxDecodedBytes: cfg.appendMaxBodyBytes,
+            });
+            if (Result.isError(decodedRes)) {
+              if (decodedRes.error.status === 415) return unsupportedMediaType(decodedRes.error.message);
+              return badRequest(decodedRes.error.message);
+            }
+
+            const rowsRes = buildPreparedJsonRows(stream, decodedRes.value.records);
+            if (Result.isError(rowsRes)) {
+              if (rowsRes.error.status === 500) return internalError(rowsRes.error.message);
+              return badRequest(rowsRes.error.message);
+            }
+            const rows = rowsRes.value.rows;
+            let appendHeaders: Record<string, string> = {};
+            if (rows.length > 0) {
+              const appendResOrResponse = await awaitAppendWithTimeout(enqueueAppend({
+                stream,
+                baseAppendMs: db.nowMs(),
+                rows,
+                contentType: "application/json",
+                close: false,
+              }));
+              if (appendResOrResponse instanceof Response) return appendResOrResponse;
+              const appendRes = appendResOrResponse;
+              if (Result.isError(appendRes)) {
+                if (appendRes.error.kind === "overloaded") return overloaded();
+                if (appendRes.error.kind === "gone") return notFound("stream expired");
+                if (appendRes.error.kind === "not_found") return notFound();
+                if (appendRes.error.kind === "content_type_mismatch") return conflict("content-type mismatch");
+                return json(500, { error: { code: "internal", message: "append failed" } });
+              }
+              const appendBytes = rows.reduce((acc, row) => acc + row.payload.byteLength, 0);
+              recordAppendOutcome({
+                stream,
+                lastOffset: appendRes.value.lastOffset,
+                appendedRows: appendRes.value.appendedRows,
+                metricsBytes: appendBytes,
+                ingestedBytes: bodyBytes.byteLength,
+                touched: true,
+                closed: appendRes.value.closed,
+              });
+              appendHeaders = {
+                "stream-next-offset": encodeOffset(srow.epoch, appendRes.value.lastOffset),
+              };
+            }
+
+            const encoded = encodeOtlpTraceExportResponse(decodedRes.value);
+            const responseBody = encoded.body instanceof Uint8Array ? bodyBufferFromBytes(encoded.body) : encoded.body;
+            return new Response(responseBody, {
+              status: 200,
+              headers: withNosniff({
+                "content-type": encoded.contentType,
+                "cache-control": "no-store",
+                ...appendHeaders,
+              }),
+            });
+          });
+        } finally {
+          leaveAppendPhase?.();
+        }
+      };
+
       if (path === "/health") {
         return json(200, { ok: true });
       }
@@ -1634,6 +1774,11 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       }
       if (req.method === "GET" && path === "/v1/server/_mem") {
         return json(200, buildServerMem());
+      }
+      if (path === "/v1/traces") {
+        const stream = cfg.otlpTracesStream;
+        if (!stream) return badRequest("DS_OTLP_TRACES_STREAM is not configured");
+        return handleOtlpTracesIngest(stream, cfg.otlpAutoCreate);
       }
 
       // /v1/streams
@@ -1674,9 +1819,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         let isDetails = false;
         let isIndexStatus = false;
         let isRoutingKeys = false;
+        let isOtlpTraces = false;
         let pathKeyParam: string | null = null;
         let touchMode: StreamTouchRoute | null = null;
-        if (segments[segments.length - 1] === "_schema") {
+        if (
+          segments.length >= 3 &&
+          segments[segments.length - 3] === "_otlp" &&
+          segments[segments.length - 2] === "v1" &&
+          segments[segments.length - 1] === "traces"
+        ) {
+          isOtlpTraces = true;
+          segments.splice(segments.length - 3, 3);
+        } else if (segments[segments.length - 1] === "_schema") {
           isSchema = true;
           segments.pop();
         } else if (segments[segments.length - 1] === "_profile") {
@@ -1718,6 +1872,10 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         const streamPart = segments.join("/");
         if (streamPart.length === 0) return badRequest("missing stream name");
         const stream = decodeURIComponent(streamPart);
+
+        if (isOtlpTraces) {
+          return handleOtlpTracesIngest(stream, false);
+        }
 
         if (isSchema) {
           const srow = db.getStream(stream);
