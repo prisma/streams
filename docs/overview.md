@@ -15,11 +15,17 @@ Every stream has a profile.
   validation.
 - `metrics` is the built-in metrics profile for canonical interval summaries,
   default search/rollups, and object-store-native metrics companions.
+- `otel-traces` is the built-in OpenTelemetry trace profile for one canonical
+  JSON span per record, OTLP trace ingestion, trace search/rollups, and request
+  correlation with `evlog`.
 - `state-protocol` is the built-in live/touch profile for JSON State Protocol
   streams.
 - Profiles define stream semantics; schemas define payload shape.
 
 See [stream-profiles.md](./stream-profiles.md).
+See [profile-otel-traces.md](./profile-otel-traces.md) and
+[request-observability.md](./request-observability.md) for trace ingestion and
+cross-stream request lookup.
 
 This repository currently contains two server modes:
 
@@ -179,6 +185,13 @@ Optional flags:
 - `--hist`
 - `--bootstrap-from-r2`
 - `--auto-tune[=MB]`
+
+Optional OTLP trace receiver configuration:
+
+- `DS_OTLP_TRACES_STREAM=<stream>` enables the default `POST /v1/traces`
+  receiver target
+- `DS_OTLP_AUTO_CREATE=true` lets `/v1/traces` create and profile that stream
+  as `otel-traces` before accepting spans
 
 ### Object Store Configuration
 

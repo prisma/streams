@@ -25,8 +25,12 @@ and tooling.
 - [stream-profiles.md](./stream-profiles.md) — stream/profile/schema model and profile subresource
 - [profile-generic.md](./profile-generic.md) — reference for the baseline `generic` profile
 - [profile-metrics.md](./profile-metrics.md) — reference for the built-in `metrics` profile
+- [profile-otel-traces.md](./profile-otel-traces.md) — reference for the built-in
+  `otel-traces` profile and OTLP trace ingestion
 - [profile-state-protocol.md](./profile-state-protocol.md) — reference for the `state-protocol` profile
 - [profile-evlog.md](./profile-evlog.md) — design and reference for the `evlog` profile
+- [request-observability.md](./request-observability.md) — cross-stream request
+  lookup that correlates `evlog` events and `otel-traces` spans
 - [schemas.md](./schemas.md) — schema registry and lens behavior
 - [durable-lens-v1-schema.md](./durable-lens-v1-schema.md) — reference schema for `durable.lens/v1`
 - [sqlite-schema.md](./sqlite-schema.md) — SQLite schema, invariants, and migration expectations

@@ -59,12 +59,19 @@ implementation.
 - `GET  /v1/stream/{name}/_routing_keys` list routing keys alphabetically
 - `GET  /v1/stream/{name}/_index_status` get per-stream index status
 - `GET  /v1/stream/{name}/_details` get combined stream details
+- `POST /v1/stream/{name}/_otlp/v1/traces` ingest OTLP traces into an
+  `otel-traces` stream
 
-### 2.5 Streams collection
+### 2.5 Observability resources
+
+- `POST /v1/traces` ingest OTLP traces into `DS_OTLP_TRACES_STREAM`
+- `POST /v1/observe/request` correlate request events and trace spans
+
+### 2.6 Streams collection
 
 - `GET /v1/streams` list streams
 
-### 2.6 Server inspection
+### 2.7 Server inspection
 
 - `GET /v1/server/_details` get server-scoped configured limits and live runtime state
 
@@ -210,6 +217,104 @@ Optional fields:
 - `q`
 - `group_by`
 - `measures`
+
+### 4.4 OTLP trace ingestion
+
+`POST /v1/traces` accepts OTLP trace export requests and writes accepted spans
+to the stream named by `DS_OTLP_TRACES_STREAM`.
+
+Rules:
+
+- `DS_OTLP_TRACES_STREAM` must be configured, otherwise the endpoint returns
+  `400`.
+- If the target stream does not exist and `DS_OTLP_AUTO_CREATE=true`, the
+  server creates an `application/json` stream, installs the `otel-traces`
+  profile, uploads the profile-owned schema registry, publishes a manifest, and
+  then appends accepted spans.
+- If the target stream does not exist and auto-create is not enabled, the
+  endpoint returns `404`.
+- The target stream must have the `otel-traces` profile.
+
+`POST /v1/stream/{name}/_otlp/v1/traces` accepts the same OTLP payloads for an
+explicit stream. The stream must already exist and have the `otel-traces`
+profile.
+
+Supported request content types:
+
+- `application/x-protobuf`
+- `application/json`
+
+Supported content encodings:
+
+- no encoding / `identity`
+- `gzip`
+
+Successful full acceptance returns HTTP `200` with an empty OTLP
+`ExportTraceServiceResponse` for protobuf or `{}` for JSON. Partial acceptance
+also returns HTTP `200` and includes OTLP partial-success information with the
+number of rejected spans and an error message. Clients must not retry spans
+rejected by a partial-success response.
+
+Malformed payloads return `400`. Unsupported content types or content encodings
+return `415`. Accepted spans are appended as canonical JSON span records using
+`traceId` as the routing key.
+
+### 4.5 Request observability
+
+`POST /v1/observe/request` correlates an event stream and a trace stream at
+query time. It does not append data and does not create a new stream profile.
+
+Request body:
+
+```json
+{
+  "streams": {
+    "events": "app-events",
+    "traces": "app-traces"
+  },
+  "lookup": {
+    "requestId": "req_123"
+  },
+  "time": {
+    "from": "2026-03-27T00:00:00.000Z",
+    "to": "2026-03-28T00:00:00.000Z",
+    "paddingMs": 5000
+  },
+  "include": {
+    "events": true,
+    "trace": true,
+    "timeline": true,
+    "raw": false
+  },
+  "limits": {
+    "events": 100,
+    "spans": 5000
+  }
+}
+```
+
+`lookup` must contain exactly one of `requestId`, `traceId`, or `spanId`.
+`streams.events` is required when `include.events=true`; `streams.traces` is
+required when `include.trace=true`.
+
+The endpoint uses the configured `_search` registries for the referenced
+streams. Event and trace streams must expose the profile correlation capability.
+The response contains:
+
+- `lookup`
+- `summary`
+- `evlog`
+- `trace`
+- `timeline`
+- `coverage`
+
+The trace response deduplicates returned spans by `traceId:spanId` for the
+tree, service map, errors, and critical path. Duplicate span records remain in
+the underlying append-only stream.
+
+The endpoint returns `400` for invalid request bodies, unsupported profile
+combinations, or streams without search configuration. Missing streams return
+`404`.
 
 ---
 

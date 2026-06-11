@@ -45,6 +45,7 @@ Current built-ins:
 - `evlog`
 - `generic`
 - `metrics`
+- `otel-traces`
 - `state-protocol`
 
 ## `generic`
@@ -96,6 +97,26 @@ It means:
 See [profile-metrics.md](./profile-metrics.md) and [metrics.md](./metrics.md)
 for the detailed contract.
 
+## `otel-traces`
+
+`otel-traces` is the built-in profile for OpenTelemetry trace spans.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into the canonical span envelope
+- OTLP trace exports are accepted through `POST /v1/traces` and
+  `POST /v1/stream/{name}/_otlp/v1/traces`
+- installing the profile auto-installs the canonical span schema registry,
+  search fields, and default rollups
+- the canonical routing key is `traceId`
+- request correlation with `evlog` is provided by the cross-stream
+  `/v1/observe/request` API, not by mixing spans into `evlog`
+
+See [profile-otel-traces.md](./profile-otel-traces.md) and
+[request-observability.md](./request-observability.md) for the detailed
+contract.
+
 ## `state-protocol`
 
 `state-protocol` is the built-in profile for streams that carry State Protocol
@@ -126,6 +147,8 @@ Examples:
 - `/touch/*` availability: profile
 - touch configuration: profile
 - metrics canonicalization and `.mblk` enablement: profile
+- OpenTelemetry span normalization and OTLP trace ingestion: profile
+- cross-stream request lookup and timeline construction: query/API layer
 - JSON validation: schema
 - version boundaries and lenses: schema
 - routing-key extraction: schema
@@ -189,6 +212,7 @@ What does **not** belong in `/_schema`:
 - State Protocol runtime behavior
 - evlog envelope normalization or redaction
 - metrics interval normalization and `.mblk` enablement
+- OpenTelemetry span normalization or OTLP trace ingestion
 
 ## Supported API Rules
 

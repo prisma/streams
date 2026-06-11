@@ -77,11 +77,15 @@ Notes:
   fields for schema updates, routing-key updates, and search updates.
 - Profile-owned live/touch configuration belongs in `/_profile`, not `/_schema`.
 
-One profile-owned exception exists in the current shipped system:
+Profile-owned exceptions exist for built-in canonical profiles:
 
 - installing the `evlog` profile auto-installs its canonical schema version `1`
   and default `search` registry, so the default evlog path does not require a
   separate manual `/_schema` call
+- installing the `metrics` profile auto-installs its canonical metrics schema
+  version `1` and default `search`/`search.rollups` registry
+- installing the `otel-traces` profile auto-installs its canonical span schema
+  version `1` and default `search`/`search.rollups` registry
 
 Accepted POST shapes:
 
@@ -168,8 +172,10 @@ If `routingKey` is configured:
 
 Schemas do not define:
 
-- whether a stream is `generic`, `evlog`, `metrics`, or `state-protocol`
+- whether a stream is `generic`, `evlog`, `metrics`, `otel-traces`, or
+  `state-protocol`
 - profile-owned endpoints or runtime hooks
+- OTLP trace ingestion or cross-stream request correlation
 
 Schemas do define payload-owned field extraction, including routing keys and
 schema-owned search field declarations and rollups.

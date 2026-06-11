@@ -32,14 +32,17 @@ Implemented built-ins today:
 - `evlog`
 - `generic`
 - `metrics`
+- `otel-traces`
 - `state-protocol`
 
 `generic` adds no canonical payload envelope and leaves schema management to the
 user. `evlog` owns canonical wide-event normalization, redaction, and its
 default schema/search/rollup registry on JSON append. `metrics` owns canonical
 metrics interval normalization, its default schema/search/rollup registry, and
-the metrics-block companion family. `state-protocol` owns the live `/touch/*`
-surface and its touch configuration.
+the metrics-block companion family. `otel-traces` owns canonical span
+normalization, OTLP trace export decoding, redaction, backend-side trace limits,
+and its default schema/search/rollup registry. `state-protocol` owns the live
+`/touch/*` surface and its touch configuration.
 
 See [stream-profiles.md](./stream-profiles.md) for the normative model.
 
@@ -51,6 +54,8 @@ See [stream-profiles.md](./stream-profiles.md) for the normative model.
 - Implements long-poll reads without busy loops.
 - Resolves the stream profile definition before handling profile-owned
   metadata or routes.
+- Uses profile capabilities for OTLP trace ingestion and correlation timeline
+  conversion instead of hard-coding profile branches in the core route path.
 - Admits ingest, read, and search work through bounded in-process concurrency
   gates instead of a direct memory-based reject path.
 
@@ -150,6 +155,20 @@ Today, `metrics` uses the same model to own:
 - the `.mblk` metrics-block companion family
 - bundled per-segment `PSCIX2` `.cix` search companions for metrics-serving
   state
+
+Today, `otel-traces` uses the same model to own:
+
+- canonical OpenTelemetry span normalization on JSON append
+- OTLP JSON/protobuf trace export decoding on `POST /v1/traces` and
+  `POST /v1/stream/{name}/_otlp/v1/traces`
+- pre-append redaction and backend-side attribute/event/link limits
+- routing-key defaults from `traceId`
+- default schema-owned `search` and `search.rollups` installation
+
+The cross-stream request observability API is a query layer over `evlog` and
+`otel-traces` streams. It uses stream search results and profile correlation
+capabilities to build summaries, trace trees, service edges, and timelines; it
+does not create a separate mutable observability store.
 
 ## Control-Plane Metadata
 
