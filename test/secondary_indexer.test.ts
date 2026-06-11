@@ -125,7 +125,7 @@ describe("secondary indexer", () => {
       });
       expect((manager as any).shouldPauseExactBackgroundWork("evlog")).toBe(true);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -249,7 +249,7 @@ describe("secondary indexer", () => {
       expect(Array.from(apiSegments!.segments).sort((a, b) => a - b)).toEqual([0]);
       expect(Array.from(workerSegments!.segments).sort((a, b) => a - b)).toEqual([1]);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);

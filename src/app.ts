@@ -40,11 +40,13 @@ class CombinedIndexController implements StreamIndexLookup {
     this.lexiconIndex.start();
   }
 
-  stop(): void {
-    this.routingIndex.stop();
-    this.secondaryIndex.stop();
-    this.companionIndex.stop();
-    this.lexiconIndex.stop();
+  async stop(): Promise<void> {
+    await Promise.all([
+      this.routingIndex.stop(),
+      this.secondaryIndex.stop(),
+      this.companionIndex.stop(),
+      this.lexiconIndex.stop(),
+    ]);
   }
 
   enqueue(stream: string): void {

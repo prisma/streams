@@ -104,7 +104,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(404);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -129,7 +129,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(404);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -154,7 +154,7 @@ describe("assumptions", () => {
     expect(arr.length).toBe(2);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -177,7 +177,7 @@ describe("assumptions", () => {
     expect(schemaRes.status).toBe(200);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -210,7 +210,7 @@ describe("assumptions", () => {
     expect(schemaRes.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -236,7 +236,7 @@ describe("assumptions", () => {
     expect(schemaRes.status).toBe(200);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -262,7 +262,7 @@ describe("assumptions", () => {
     expect(schemaRes.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -289,7 +289,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -309,7 +309,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(204);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -329,7 +329,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -358,7 +358,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -379,7 +379,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -395,7 +395,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -414,7 +414,7 @@ describe("assumptions", () => {
     expect(r.status).toBe(400);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -450,7 +450,7 @@ describe("assumptions", () => {
     expect(text).toBe("b");
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -473,7 +473,7 @@ describe("assumptions", () => {
     if (p.kind === "seq") expect(p.epoch).toBe(0);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -504,7 +504,7 @@ describe("assumptions", () => {
     expectAccelerationStateCleared(app.deps.db, "del");
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -524,7 +524,7 @@ describe("assumptions", () => {
       expect(app.deps.db.listLexiconIndexStates("stale")).toHaveLength(1);
       expect(app.deps.db.getSearchCompanionPlan("stale")).not.toBeNull();
     } finally {
-      app.close();
+      await app.close();
     }
 
     const restarted = createApp(cfg, new MockR2Store());
@@ -534,7 +534,7 @@ describe("assumptions", () => {
       expect(deletedRow && restarted.deps.db.isDeleted(deletedRow)).toBe(true);
       expectAccelerationStateCleared(restarted.deps.db, "stale");
     } finally {
-      restarted.close();
+      await restarted.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -566,7 +566,7 @@ describe("assumptions", () => {
     expect(ok.status).toBe(204);
 
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   });
 });

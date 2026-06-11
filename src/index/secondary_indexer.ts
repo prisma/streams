@@ -53,6 +53,10 @@ function binarySearch(values: bigint[], needle: bigint): number {
   return -1;
 }
 
+function errorMessage(e: unknown): string {
+  return String((e as any)?.message ?? e);
+}
+
 const PAYLOAD_DECODER = new TextDecoder();
 const TERM_ENCODER = new TextEncoder();
 export class SecondaryIndexManager {
@@ -77,6 +81,8 @@ export class SecondaryIndexManager {
   private timer: any | null = null;
   private wakeTimer: any | null = null;
   private running = false;
+  private stopped = false;
+  private tickPromise: Promise<void> | null = null;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
@@ -131,21 +137,25 @@ export class SecondaryIndexManager {
   start(): void {
     if (this.span <= 0) return;
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => {
-      void this.tick();
+      if (!this.stopped) this.runTick();
     }, this.cfg.indexCheckIntervalMs);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
     this.wakeTimer = null;
+    while (this.tickPromise) await this.tickPromise;
     this.streamIdleTicks.clear();
+    this.firstQueuedAtMs = null;
   }
 
   enqueue(stream: string): void {
-    if (this.span <= 0) return;
+    if (this.span <= 0 || this.stopped) return;
     if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
     if (shouldDeferEnqueuedIndexWork(this.cfg)) {
@@ -156,9 +166,10 @@ export class SecondaryIndexManager {
   }
 
   private scheduleTick(delayMs = 0): void {
-    if (!this.timer || this.wakeTimer) return;
+    if (this.stopped || !this.timer || this.wakeTimer) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null;
+      if (this.stopped) return;
       if (
         shouldWaitForLowMemoryIndexQuiet(
           this.cfg,
@@ -173,9 +184,30 @@ export class SecondaryIndexManager {
         this.scheduleTick(250);
         return;
       }
-      void this.tick();
+      this.runTick();
     }, delayMs);
     (this.wakeTimer as { unref?: () => void }).unref?.();
+  }
+
+  private runTick(): void {
+    if (this.tickPromise) return;
+    const promise = this.tick()
+      .catch((e) => {
+        const lower = errorMessage(e).toLowerCase();
+        const shutdownError =
+          lower.includes("database has closed") ||
+          lower.includes("closed database") ||
+          lower.includes("statement has finalized") ||
+          lower.includes("disk i/o error");
+        if (!this.stopped || !shutdownError) {
+          // eslint-disable-next-line no-console
+          console.error("secondary index tick failed", e);
+        }
+      })
+      .finally(() => {
+        if (this.tickPromise === promise) this.tickPromise = null;
+      });
+    this.tickPromise = promise;
   }
 
   async candidateSegmentsForSecondaryIndex(
@@ -250,12 +282,13 @@ export class SecondaryIndexManager {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
     try {
       const streams = Array.from(this.queue);
       this.queue.clear();
       for (const stream of streams) {
+        if (this.stopped) break;
         const regRes = this.registry.getRegistryResult(stream);
         if (Result.isError(regRes)) continue;
         if (this.shouldPauseExactBackgroundWork(stream)) {
@@ -305,7 +338,7 @@ export class SecondaryIndexManager {
       }
     } finally {
       this.running = false;
-      if (this.queue.size > 0) {
+      if (!this.stopped && this.queue.size > 0) {
         if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
         this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
       } else {

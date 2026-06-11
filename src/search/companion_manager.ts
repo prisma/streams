@@ -66,6 +66,10 @@ function invalidCompanionBuild<T = never>(message: string): Result<T, CompanionB
   return Result.err({ kind: "invalid_companion_build", message });
 }
 
+function errorMessage(error: unknown): string {
+  return String((error as any)?.message ?? error);
+}
+
 type ColumnFieldBuilder = {
   config: SearchFieldConfig;
   kind: ColFieldInput["kind"];
@@ -217,6 +221,8 @@ export class SearchCompanionManager {
   private timer: any | null = null;
   private wakeTimer: any | null = null;
   private running = false;
+  private stopped = false;
+  private tickPromise: Promise<void> | null = null;
   private firstQueuedAtMs: number | null = null;
 
   constructor(
@@ -255,20 +261,25 @@ export class SearchCompanionManager {
 
   start(): void {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => {
-      void this.tick();
+      if (!this.stopped) this.runTick();
     }, this.cfg.indexCheckIntervalMs);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
     this.wakeTimer = null;
+    while (this.tickPromise) await this.tickPromise;
+    this.firstQueuedAtMs = null;
     this.fileCache.clearMapped();
   }
 
   enqueue(stream: string): void {
+    if (this.stopped) return;
     if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
     if (shouldDeferEnqueuedIndexWork(this.cfg)) {
@@ -279,9 +290,10 @@ export class SearchCompanionManager {
   }
 
   private scheduleTick(delayMs = 0): void {
-    if (!this.timer || this.wakeTimer) return;
+    if (this.stopped || !this.timer || this.wakeTimer) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null;
+      if (this.stopped) return;
       if (
         shouldWaitForLowMemoryIndexQuiet(
           this.cfg,
@@ -296,9 +308,30 @@ export class SearchCompanionManager {
         this.scheduleTick(250);
         return;
       }
-      void this.tick();
+      this.runTick();
     }, delayMs);
     (this.wakeTimer as { unref?: () => void }).unref?.();
+  }
+
+  private runTick(): void {
+    if (this.tickPromise) return;
+    const promise = this.tick()
+      .catch((e) => {
+        const lower = errorMessage(e).toLowerCase();
+        const shutdownError =
+          lower.includes("database has closed") ||
+          lower.includes("closed database") ||
+          lower.includes("statement has finalized") ||
+          lower.includes("disk i/o error");
+        if (!this.stopped || !shutdownError) {
+          // eslint-disable-next-line no-console
+          console.error("bundled companion tick failed", e);
+        }
+      })
+      .finally(() => {
+        if (this.tickPromise === promise) this.tickPromise = null;
+      });
+    this.tickPromise = promise;
   }
 
   async getColSegmentCompanion(stream: string, segmentIndex: number): Promise<ColSectionView | null> {
@@ -499,7 +532,7 @@ export class SearchCompanionManager {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
     try {
       if (this.metrics) {
@@ -509,6 +542,7 @@ export class SearchCompanionManager {
       const streams = Array.from(new Set([...this.db.listSearchCompanionPlanStreams(), ...this.queue]));
       this.queue.clear();
       for (const stream of streams) {
+        if (this.stopped) break;
         try {
           const buildRes = await this.buildPendingSegmentsResult(stream);
           if (Result.isError(buildRes)) {
@@ -522,7 +556,7 @@ export class SearchCompanionManager {
       }
     } finally {
       this.running = false;
-      if (this.queue.size > 0) {
+      if (!this.stopped && this.queue.size > 0) {
         if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
         this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
       } else {

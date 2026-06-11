@@ -52,7 +52,7 @@ describe("state-protocol profile", () => {
       expect(app.deps.db.getStreamProfile("state-install")).not.toBeNull();
       expect(app.deps.db.getStreamTouchState("state-install")).not.toBeNull();
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -92,7 +92,7 @@ describe("state-protocol profile", () => {
       expect(app.deps.db.getStreamProfile("state-non-json")).toBeNull();
       expect(app.deps.db.getStreamTouchState("state-non-json")).toBeNull();
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -139,7 +139,7 @@ describe("state-protocol profile", () => {
       expect(invalidTouchField.status).toBe(400);
       expect(invalidTouchField.body?.error?.message).toContain("profile.touch.storage");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -182,7 +182,7 @@ describe("state-protocol profile", () => {
       const touchMetaRes = await app.fetch(new Request("http://local/v1/stream/state-disabled/touch/meta", { method: "GET" }));
       expect(touchMetaRes.status).toBe(404);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -247,10 +247,10 @@ describe("state-protocol profile", () => {
         const touchMetaRes = await app2.fetch(new Request("http://local/v1/stream/state-bootstrap/touch/meta", { method: "GET" }));
         expect(touchMetaRes.status).toBe(200);
       } finally {
-        app2.close();
+        await app2.close();
       }
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(root2, { recursive: true, force: true });
     }
@@ -326,7 +326,7 @@ describe("state-protocol profile", () => {
         },
       ]);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -427,7 +427,7 @@ describe("state-protocol profile", () => {
         expect(String(appendRes.body?.error?.message ?? ""), tc.name).toContain(tc.message);
       }
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

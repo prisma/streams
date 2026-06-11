@@ -210,7 +210,7 @@ describe("observe request API", () => {
       expect(res.body.coverage.traces.searched).toBe(true);
       expect(res.body.coverage.warnings).toEqual([]);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -232,7 +232,7 @@ describe("observe request API", () => {
       expect(res.body.evlog.primary.traceId).toBe(TRACE_ID);
       expect(res.body.trace.partial).toBe(false);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -254,7 +254,7 @@ describe("observe request API", () => {
       expect(res.body.coverage.traces.limit_reached).toBe(true);
       expect(res.body.coverage.warnings).toContain("span limit reached");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -321,7 +321,7 @@ describe("observe request API", () => {
       expect(res.body.coverage.traces.limit_reached).toBe(false);
       expect(res.body.coverage.warnings).toEqual([]);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

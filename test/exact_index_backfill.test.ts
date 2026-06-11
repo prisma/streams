@@ -164,7 +164,7 @@ describe("exact secondary index backfill", () => {
         markAppendIdle(app);
         await waitForExactIndex(app, EXACT_HASH_V1);
       } finally {
-        app.close();
+        await app.close();
       }
 
       const pausedCfg = makeConfig(root, {
@@ -205,7 +205,7 @@ describe("exact secondary index backfill", () => {
         expect(filterBody).toHaveLength(3);
         expect(filterBody.every((entry: any) => entry.tagB === "current-b")).toBe(true);
       } finally {
-        app.close();
+        await app.close();
       }
 
       app = createApp(buildCfg, store);
@@ -235,7 +235,7 @@ describe("exact secondary index backfill", () => {
         expect(filterBody).toHaveLength(3);
         expect(filterBody.every((entry: any) => entry.tagB === "current-b")).toBe(true);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

@@ -43,7 +43,7 @@ describe("segment recovery", () => {
       });
 
       server1.stop();
-      app1.close();
+      await app1.close();
 
       const db = new SqliteDurableStore(cfg.dbPath);
       db.db.query(`UPDATE streams SET segment_in_progress=1 WHERE stream=?;`).run(stream);
@@ -71,7 +71,7 @@ describe("segment recovery", () => {
       expect(text).toBe("hello");
 
       server2.stop();
-      app2.close();
+      await app2.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

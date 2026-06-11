@@ -29,7 +29,7 @@ describe("restart recovery", () => {
       });
 
       server.stop();
-      app.close();
+      await app.close();
 
       app = createApp(cfg, os);
       server = Bun.serve({ port: 0, fetch: app.fetch });
@@ -39,7 +39,7 @@ describe("restart recovery", () => {
       expect(new TextDecoder().decode(bytes)).toBe("hello");
 
       server.stop();
-      app.close();
+      await app.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

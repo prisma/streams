@@ -34,7 +34,7 @@ describe("generic profile", () => {
       expect(app.deps.db.getStreamProfile("generic-default")).toBeNull();
       expect(app.deps.db.getStreamTouchState("generic-default")).toBeNull();
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -64,7 +64,7 @@ describe("generic profile", () => {
       expect(res.status).toBe(400);
       expect(res.body?.error?.message).toContain("profile.touch");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -118,7 +118,7 @@ describe("generic profile", () => {
       expect(app.deps.db.getStreamProfile("generic-switch")).toBeNull();
       expect(app.deps.db.getStreamTouchState("generic-switch")).toBeNull();
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -136,7 +136,7 @@ describe("generic profile", () => {
       );
       await app.deps.uploader.publishManifest("generic-bootstrap");
     } finally {
-      app.close();
+      await app.close();
     }
 
     const cfg2 = makeProfileTestConfig(root2, { segmentCacheMaxBytes: 0, segmentFooterCacheEntries: 0 });
@@ -158,7 +158,7 @@ describe("generic profile", () => {
       expect(listRes.status).toBe(200);
       expect(listRes.body.find((entry: any) => entry.name === "generic-bootstrap")?.profile).toBe("generic");
     } finally {
-      app2.close();
+      await app2.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(root2, { recursive: true, force: true });
     }

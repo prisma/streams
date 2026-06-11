@@ -31,14 +31,14 @@ describe("durable streams (Bun+TS rewrite)", () => {
     root = mkdtempSync(join(tmpdir(), "ds-bun-ts-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     try {
       server?.stop?.();
     } catch {
       // ignore
     }
     try {
-      app?.close?.();
+      await app?.close?.();
     } catch {
       // ignore
     }

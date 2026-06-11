@@ -146,7 +146,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -242,7 +242,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -351,7 +351,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -397,7 +397,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -549,7 +549,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -719,7 +719,7 @@ describe("live touches (state protocol)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }

@@ -90,7 +90,7 @@ describe("/touch/wait timeout reliability", () => {
         expect(within / N).toBeGreaterThanOrEqual(0.99);
       } finally {
         try {
-          app.close();
+          await app.close();
         } catch {
           // ignore
         }

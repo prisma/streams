@@ -90,7 +90,7 @@ describe("evlog profile", () => {
       expect(schemaRes.body?.schemas?.["1"]).toBeDefined();
       expect(app.deps.db.getSchemaRegistry("evlog-install")).not.toBeNull();
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -163,7 +163,7 @@ describe("evlog profile", () => {
       expect(lateInstallRes.status).toBe(400);
       expect(lateInstallRes.body?.error?.message).toContain("before appending data");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -290,7 +290,7 @@ describe("evlog profile", () => {
       );
       expect(invalidRes.status).toBe(400);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -335,7 +335,7 @@ describe("evlog profile", () => {
       expect(byTraceIdRes.body[0]?.spanId).toBe("span_only_1");
       expect(byTraceIdRes.body[0]?.level).toBe("info");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -453,7 +453,7 @@ describe("evlog profile", () => {
         expect(detailsRes.body?.index_status?.search_families).toEqual(indexStatusRes.body?.search_families);
         expect(detailsRes.body?.index_status?.exact_indexes).toEqual(indexStatusRes.body?.exact_indexes);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -514,10 +514,10 @@ describe("evlog profile", () => {
         expect(listRes.status).toBe(200);
         expect(listRes.body.find((row: any) => row.name === "evlog-bootstrap")?.profile).toBe("evlog");
       } finally {
-        app2.close();
+        await app2.close();
       }
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(root2, { recursive: true, force: true });
     }

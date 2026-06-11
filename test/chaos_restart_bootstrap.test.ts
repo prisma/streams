@@ -188,7 +188,7 @@ describe("chaos restart + bootstrap", () => {
           expected.get(stream)!.push(value);
 
           if (rand() < 0.2) {
-            app.close();
+            await app.close();
             app = createApp(cfg, chaosStore);
           }
           if (rand() < 0.3) await sleep(5);
@@ -218,7 +218,7 @@ describe("chaos restart + bootstrap", () => {
           expect(values).toEqual(expected.get(s));
         }
 
-        app.close();
+        await app.close();
 
         // Snapshot a self-consistent bootstrap source-of-truth from manifests.
         const { store: bootstrapStore, uploadedCounts } = await snapshotBootstrapStore(chaosStore, streams);
@@ -242,11 +242,11 @@ describe("chaos restart + bootstrap", () => {
             expect(meta).not.toBeNull();
           }
         } finally {
-          app2.close();
+          await app2.close();
         }
       } finally {
         try {
-          app.close();
+          await app.close();
         } catch {
           // ignore
         }

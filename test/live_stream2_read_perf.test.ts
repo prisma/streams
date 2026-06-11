@@ -58,7 +58,7 @@ async function withFixtureApp<T>(fn: (app: ReturnType<typeof createApp>) => Prom
   try {
     return await fn(app);
   } finally {
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   }
 }

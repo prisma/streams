@@ -32,7 +32,7 @@ async function withServer<T>(
     return await fn({ baseUrl });
   } finally {
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   }
 }

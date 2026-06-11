@@ -213,7 +213,7 @@ describe("_search http", () => {
       expect(body.coverage.indexed_segments).toBeGreaterThan(0);
       expect(body.hits.length).toBeGreaterThan(0);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { force: true, recursive: true });
     }
   });
@@ -424,7 +424,7 @@ describe("_search http", () => {
         expect(body.hits).toHaveLength(1);
         expect(body.hits[0].fields.requestId).toBe("req_2");
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -582,7 +582,7 @@ describe("_search http", () => {
           },
         });
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -681,7 +681,7 @@ describe("_search http", () => {
         expect(body.hits[0].fields.requestId).toBe("req_6");
         expect(body.coverage.indexed_segments + body.coverage.scanned_segments + Math.min(body.coverage.scanned_tail_docs, 1)).toBe(1);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -723,7 +723,7 @@ describe("_search http", () => {
 
         // Keep this test focused on search behavior while companions are not
         // caught up. Enqueued work normally wakes the managers promptly.
-        app.deps.indexer?.stop();
+        await app.deps.indexer?.stop();
 
         for (const event of [
           {
@@ -778,7 +778,7 @@ describe("_search http", () => {
         expect(body.coverage.possible_missing_wal_rows).toBe(0);
         expect(body.total).toEqual({ value: 2, relation: "eq" });
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -892,7 +892,7 @@ describe("_search http", () => {
         expect(body.coverage.visible_through_primary_timestamp_max).toEqual(expect.any(String));
         expect(body.total).toEqual({ value: 2, relation: "gte" });
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -1007,7 +1007,7 @@ describe("_search http", () => {
         expect(body.total.value).toBeGreaterThan(0);
         expect(["eq", "gte"]).toContain(body.total.relation);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

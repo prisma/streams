@@ -129,7 +129,7 @@ describe("compute demo site", () => {
       expect(assetResponse.headers.get("content-type")).toContain("image/svg+xml");
     } finally {
       site.close();
-      streamsApp.close();
+      await streamsApp.close();
     }
   });
 
@@ -225,7 +225,7 @@ describe("compute demo site", () => {
       );
     } finally {
       site.close();
-      streamsApp.close();
+      await streamsApp.close();
     }
   });
 });

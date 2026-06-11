@@ -66,7 +66,7 @@ async function withServer<T>(
     return await fn({ baseUrl });
   } finally {
     server.stop();
-    app.close();
+    await app.close();
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -930,7 +930,7 @@ describe("http behavior", () => {
       (app.deps.memory as any).isOverLimit = originalIsOverLimit;
     } finally {
       server.stop();
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -972,7 +972,7 @@ describe("http behavior", () => {
         },
       });
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1005,7 +1005,7 @@ describe("http behavior", () => {
     const root = mkdtempSync(join(tmpdir(), "ds-http-close-"));
     const app = createApp(makeConfig(root), new MockR2Store());
     try {
-      app.close();
+      await app.close();
       const r = await app.fetch(new Request("http://local/health"));
       expect(r.status).toBe(503);
       expect(r.headers.get("retry-after")).toBe("5");
@@ -1159,7 +1159,7 @@ describe("http behavior", () => {
       expect(store.getCalls.filter((call) => call.key.endsWith(".bin"))).toHaveLength(0);
     } finally {
       server.stop();
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
     }
@@ -1223,7 +1223,7 @@ describe("http behavior", () => {
         ]);
         expect(findSegmentCalls).toBeLessThanOrEqual(8);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     }
@@ -1283,7 +1283,7 @@ describe("http behavior", () => {
         }
         expect(findSegmentCalls).toBeLessThanOrEqual(4);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     }

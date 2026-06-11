@@ -283,7 +283,7 @@ describe("_aggregate http", () => {
         expect(fallbackBody.buckets).toHaveLength(1);
         expect(fallbackBody.buckets[0].groups[0].measures.requests).toEqual({ count: 1 });
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -392,7 +392,7 @@ describe("_aggregate http", () => {
           },
         ]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -463,7 +463,7 @@ describe("_aggregate http", () => {
         }
 
         await waitForAggFamily(app, 20_000);
-        app.close();
+        await app.close();
 
         app = createApp(queryCfg, store);
         const counters = instrumentAggregateCompanionCounters(app);
@@ -486,7 +486,7 @@ describe("_aggregate http", () => {
         expect(counters.aggCalls).toBe(1);
         expect(counters.colCalls).toBe(0);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -562,7 +562,7 @@ describe("_aggregate http", () => {
         expect(body.buckets).toHaveLength(1);
         expect(body.buckets[0].groups[0].measures.requests).toEqual({ count: 2 });
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -640,7 +640,7 @@ describe("_aggregate http", () => {
         expect(body.coverage.possible_missing_events_upper_bound).toBeGreaterThan(0);
         expect(body.buckets).toEqual([]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

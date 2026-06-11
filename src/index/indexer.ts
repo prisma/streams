@@ -37,7 +37,7 @@ export type CompanionSectionLookupStats = {
 
 export type StreamIndexLookup = {
   start(): void;
-  stop(): void;
+  stop(): Promise<void>;
   enqueue(stream: string): void;
   candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
   candidateSegmentsForSecondaryIndex(stream: string, indexName: string, keyBytes: Uint8Array): Promise<IndexCandidate | null>;
@@ -95,6 +95,8 @@ export class IndexManager {
   private timer: any | null = null;
   private wakeTimer: any | null = null;
   private running = false;
+  private stopped = false;
+  private tickPromise: Promise<void> | null = null;
   private readonly publishManifest?: (stream: string) => Promise<void>;
   private readonly onMetadataChanged?: (stream: string) => void;
   private readonly memorySampler?: RuntimeMemorySampler;
@@ -149,20 +151,24 @@ export class IndexManager {
   start(): void {
     if (this.span <= 0) return;
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => {
-      void this.tick();
+      if (!this.stopped) this.runTick();
     }, this.cfg.indexCheckIntervalMs);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
     this.timer = null;
     this.wakeTimer = null;
+    while (this.tickPromise) await this.tickPromise;
+    this.firstQueuedAtMs = null;
   }
 
   enqueue(stream: string): void {
-    if (this.span <= 0) return;
+    if (this.span <= 0 || this.stopped) return;
     if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
     this.queue.add(stream);
     if (shouldDeferEnqueuedIndexWork(this.cfg)) {
@@ -173,9 +179,10 @@ export class IndexManager {
   }
 
   private scheduleTick(delayMs = 0): void {
-    if (!this.timer || this.wakeTimer) return;
+    if (this.stopped || !this.timer || this.wakeTimer) return;
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null;
+      if (this.stopped) return;
       if (
         shouldWaitForLowMemoryIndexQuiet(
           this.cfg,
@@ -190,9 +197,30 @@ export class IndexManager {
         this.scheduleTick(250);
         return;
       }
-      void this.tick();
+      this.runTick();
     }, delayMs);
     (this.wakeTimer as { unref?: () => void }).unref?.();
+  }
+
+  private runTick(): void {
+    if (this.tickPromise) return;
+    const promise = this.tick()
+      .catch((e) => {
+        const lower = errorMessage(e).toLowerCase();
+        const shutdownError =
+          lower.includes("database has closed") ||
+          lower.includes("closed database") ||
+          lower.includes("statement has finalized") ||
+          lower.includes("disk i/o error");
+        if (!this.stopped || !shutdownError) {
+          // eslint-disable-next-line no-console
+          console.error("index tick failed", e);
+        }
+      })
+      .finally(() => {
+        if (this.tickPromise === promise) this.tickPromise = null;
+      });
+    this.tickPromise = promise;
   }
 
   async candidateSegmentsForRoutingKey(stream: string, keyBytes: Uint8Array): Promise<IndexCandidate | null> {
@@ -277,7 +305,7 @@ export class IndexManager {
   }
 
   private async tick(): Promise<void> {
-    if (this.running) return;
+    if (this.running || this.stopped) return;
     this.running = true;
     try {
       if (this.metrics) {
@@ -287,6 +315,7 @@ export class IndexManager {
       const streams = Array.from(this.queue);
       this.queue.clear();
       for (const stream of streams) {
+        if (this.stopped) break;
         if (!this.isRoutingConfigured(stream)) {
           const hadRoutingState = !!this.db.getIndexState(stream) || this.db.listIndexRunsAll(stream).length > 0;
           if (hadRoutingState) {
@@ -331,7 +360,7 @@ export class IndexManager {
       this.recordCacheStats();
     } finally {
       this.running = false;
-      if (this.queue.size > 0) {
+      if (!this.stopped && this.queue.size > 0) {
         if (this.firstQueuedAtMs == null) this.firstQueuedAtMs = Date.now();
         this.scheduleTick(shouldDeferEnqueuedIndexWork(this.cfg) ? LOW_MEMORY_INDEX_ENQUEUE_QUIET_MS : 0);
       } else {

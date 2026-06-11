@@ -101,7 +101,7 @@ describe("index compaction", () => {
         expect(active[0].level).toBe(1);
         expect(retired.length).toBe(2);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

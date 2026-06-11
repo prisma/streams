@@ -215,7 +215,7 @@ describe("otel-traces profile", () => {
       expect(schemaRes.body?.search?.fields?.["events.name"]?.bindings?.[0]?.jsonPointer).toBe("/eventNames");
       expect(schemaRes.body?.search?.rollups?.spans?.measures?.latency?.field).toBe("duration");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -258,7 +258,7 @@ describe("otel-traces profile", () => {
       expect(lateRes.status).toBe(400);
       expect(lateRes.body?.error?.message).toContain("before appending data");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -351,7 +351,7 @@ describe("otel-traces profile", () => {
         "http.statusCode": 500,
       });
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -389,7 +389,7 @@ describe("otel-traces profile", () => {
         db: { system: "postgresql", statement: null },
       });
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -423,7 +423,7 @@ describe("otel-traces profile", () => {
         status: { code: "ok", message: "ok" },
       });
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -454,7 +454,7 @@ describe("otel-traces profile", () => {
       expect(readRes.body).toHaveLength(1);
       expect(readRes.body[0]?.traceId).toBe(TRACE_ID);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

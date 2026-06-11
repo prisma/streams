@@ -33,7 +33,7 @@ class LocalIndexLookup implements StreamIndexLookup {
 
   start(): void {}
 
-  stop(): void {}
+  async stop(): Promise<void> {}
 
   enqueue(_stream: string): void {}
 

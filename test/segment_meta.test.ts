@@ -82,7 +82,7 @@ describe("segment meta", () => {
       expect(manifest.segment_count).toBe(segs.length);
       expect(manifest.uploaded_through).toBe(segs.length);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

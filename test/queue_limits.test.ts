@@ -66,7 +66,7 @@ describe("queue limits", () => {
       expect([200, 204, 408]).toContain(r2.status);
 
       server.stop();
-      app.close();
+      await app.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

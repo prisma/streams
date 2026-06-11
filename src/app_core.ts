@@ -3301,7 +3301,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     await touch.stop();
     await segmenter.stop(true);
     uploader.stop(true);
-    indexer?.stop();
+    await indexer?.stop();
     metricsEmitter.stop();
     expirySweeper.stop();
     streamSizeReconciler.stop();

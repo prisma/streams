@@ -420,7 +420,7 @@ describe("gharchive demo", () => {
         expect(ftsDetails.index_status.exact_indexes).toEqual([]);
         expect(ftsDetails.index_status.search_families.map((entry: { family: string }) => entry.family)).toEqual(["fts"]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -497,7 +497,7 @@ describe("gharchive demo", () => {
         expect(summary.appendBackoffWaitMs).toBe(0);
         expect(appendOrder.slice(0, 3)).toEqual(["exact:timeout", "exact:ok", "fts:ok"]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -564,7 +564,7 @@ describe("gharchive demo", () => {
         expect(summary.appendBackoffWaitMs).toBe(0);
         expect(appendOrder.slice(0, 3)).toEqual(["exact:server-timeout", "exact:ok", "fts:ok"]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -629,7 +629,7 @@ describe("gharchive demo", () => {
         expect(sawCreateBackoff).toBe(true);
         expect(createOrder.slice(0, 3)).toEqual(["exact:create-backoff", "exact:create-ok", "fts:create-ok"]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -676,7 +676,7 @@ describe("gharchive demo", () => {
         expect(details.index_status.search_families).toEqual([]);
         expect(details.index_status.bundled_companions.object_count).toBe(0);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -722,7 +722,7 @@ describe("gharchive demo", () => {
         expect(details.index_status.exact_indexes).toEqual([]);
         expect(details.index_status.search_families).toEqual([]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -771,7 +771,7 @@ describe("gharchive demo", () => {
         expect(details.index_status.exact_indexes).toEqual([]);
         expect(details.index_status.search_families).toEqual([]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -872,7 +872,7 @@ describe("gharchive demo", () => {
         expect(summary.startHour).toBe("2020-01-01-13");
         expect(summary.streams).toEqual(["golden-stream-2"]);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -936,7 +936,7 @@ describe("gharchive demo", () => {
         expect(stderrLines.join("")).toContain("skipping ahead 10h to 2011-02-12-10");
       } finally {
         process.stderr.write = realStderrWrite;
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -1000,7 +1000,7 @@ describe("gharchive demo", () => {
         expect(stderrLines.join("")).toContain("skipping ahead 12h");
       } finally {
         process.stderr.write = realStderrWrite;
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -1039,7 +1039,7 @@ describe("gharchive demo", () => {
           })
         ).rejects.toThrow("no GH Archive hours were available");
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

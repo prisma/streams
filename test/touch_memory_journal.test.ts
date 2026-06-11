@@ -112,7 +112,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -151,7 +151,7 @@ describe("touch storage=memory (journal cursors)", () => {
 
       // "Restart" by creating a new app+server on the same sqlite state.
       server1.stop();
-      app1.close();
+      await app1.close();
       server1 = null;
       app1 = null;
 
@@ -187,12 +187,12 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app1?.close?.();
+        await app1?.close?.();
       } catch {
         // ignore
       }
       try {
-        app2?.close?.();
+        await app2?.close?.();
       } catch {
         // ignore
       }
@@ -260,7 +260,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -417,7 +417,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -581,7 +581,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -672,7 +672,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -774,7 +774,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -879,7 +879,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }
@@ -985,7 +985,7 @@ describe("touch storage=memory (journal cursors)", () => {
         // ignore
       }
       try {
-        app?.close?.();
+        await app?.close?.();
       } catch {
         // ignore
       }

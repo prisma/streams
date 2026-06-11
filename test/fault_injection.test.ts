@@ -108,7 +108,7 @@ describe("fault injection", () => {
       expect(keys.some((k) => k.includes("/segments/") && k.endsWith(".bin"))).toBe(true);
 
       server.stop();
-      app.close();
+      await app.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -149,7 +149,7 @@ describe("fault injection", () => {
       expect(new Set(os.attemptedSegmentIndexes)).toEqual(new Set([0]));
 
       server.stop();
-      app.close();
+      await app.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

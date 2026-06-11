@@ -598,7 +598,7 @@ describe("large indexed filter integration", () => {
             `fullScanMBps=${scanThroughputMBps.toFixed(2)} batches=${fullScan.batches} limitHits=${fullScan.limitHitBatches}`
         );
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },

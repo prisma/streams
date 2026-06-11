@@ -92,7 +92,7 @@ describe("poison stream isolation", () => {
       expect(poisonKeys.length).toBe(0);
 
       server.stop();
-      app.close();
+      await app.close();
     } finally {
       console.error = origError;
       rmSync(root, { recursive: true, force: true });

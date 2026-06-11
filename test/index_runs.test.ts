@@ -119,7 +119,7 @@ describe("index runs", () => {
       expect(res!.segments.has(1)).toBe(true);
       expect(res!.segments.has(0)).toBe(false);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   }, 20_000);

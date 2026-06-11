@@ -90,7 +90,7 @@ describe("routing key lexicon", () => {
       expect(res.status).toBe(400);
       expect(res.body?.error?.message).toBe("invalid limit");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -125,7 +125,7 @@ describe("routing key lexicon", () => {
       expect(res.body?.coverage?.indexed_segments).toBe(0);
       expect(res.body?.coverage?.scanned_uploaded_segments).toBeGreaterThanOrEqual(1);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -177,7 +177,7 @@ describe("routing key lexicon", () => {
       expect(second.body?.keys).toEqual(["delta/repo", "gamma/repo"]);
       expect(second.body?.next_after).toBe("gamma/repo");
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -216,7 +216,7 @@ describe("routing key lexicon", () => {
       expect(app.deps.db.getLexiconIndexState(stream, "routing_key", "")).toBeNull();
       expect(app.deps.db.listLexiconIndexRuns(stream, "routing_key", "")).toHaveLength(0);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -244,7 +244,7 @@ describe("routing key lexicon", () => {
         return (state?.indexed_through ?? 0) >= 1;
       });
 
-      app.deps.indexer?.stop();
+      await app.deps.indexer?.stop();
       await sleep(50);
       store.resetStats();
 
@@ -276,7 +276,7 @@ describe("routing key lexicon", () => {
       expect([...res.body!.keys].sort()).toEqual(res.body?.keys);
       expect(store.stats().gets).toBe(0);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -316,7 +316,7 @@ describe("routing key lexicon", () => {
         return uploaded >= 18 && (state?.indexed_through ?? 0) >= uploaded;
       }, 20_000);
 
-      app.deps.indexer?.stop();
+      await app.deps.indexer?.stop();
       await appendRepoBatchEvents(
         app,
         stream,
@@ -335,7 +335,7 @@ describe("routing key lexicon", () => {
       expect(res.body?.timing?.fallback_wal_scan_ms).toBeLessThan(100);
       expect(res.body?.coverage?.scanned_uploaded_segments).toBe(0);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -382,7 +382,7 @@ describe("routing key lexicon", () => {
       });
       await app.deps.uploader.publishManifest(stream);
     } finally {
-      app.close();
+      await app.close();
     }
 
     const cfg2 = makeProfileTestConfig(root2, {
@@ -407,7 +407,7 @@ describe("routing key lexicon", () => {
       expect(indexStatus.body?.routing_key_lexicon?.configured).toBe(true);
       expect(indexStatus.body?.routing_key_lexicon?.active_run_count).toBeGreaterThanOrEqual(1);
     } finally {
-      app2.close();
+      await app2.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(root2, { recursive: true, force: true });
     }

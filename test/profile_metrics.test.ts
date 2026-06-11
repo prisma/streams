@@ -130,7 +130,7 @@ describe("metrics profile", () => {
       expect(app.deps.db.getSearchCompanionPlan("__stream_metrics__")).toBeNull();
       expect(app.deps.db.listSearchSegmentCompanions("__stream_metrics__")).toEqual([]);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -200,7 +200,7 @@ describe("metrics profile", () => {
         null
       );
     } finally {
-      first.app.close();
+      await first.app.close();
     }
 
     const second = createProfileTestApp(root, { metricsFlushIntervalMs: 0 });
@@ -218,7 +218,7 @@ describe("metrics profile", () => {
       expect(second.app.deps.db.getSearchCompanionPlan("__stream_metrics__")).toBeNull();
       expect(second.app.deps.db.listSearchSegmentCompanions("__stream_metrics__")).toEqual([]);
     } finally {
-      second.app.close();
+      await second.app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -392,7 +392,7 @@ describe("metrics profile", () => {
         })
       );
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -330,7 +330,7 @@ async function buildFixture(args: {
     appendSeedRows(buildApp, args.stream, totalRows, args.payloadBytes, APPEND_BATCH_ROWS);
     await waitForUploadedCompanions(buildApp, args.stream, args.segments, TIMEOUT_MS);
   } finally {
-    buildApp?.close();
+    await buildApp?.close();
     buildApp = null;
   }
 
@@ -415,7 +415,7 @@ async function buildExactOnlyFixture(args: { stream: string; rows: number; paylo
     appendExactOnlyRows(buildApp, args.stream, args.rows, args.payloadBytes, APPEND_BATCH_ROWS);
     await waitForUploadedCompanions(buildApp, args.stream, 1, TIMEOUT_MS);
   } finally {
-    buildApp?.close();
+    await buildApp?.close();
     buildApp = null;
   }
 
@@ -517,7 +517,7 @@ describe("search performance repro cases", () => {
         expect(result.body.coverage.index_families_used).toContain("fts");
         expectMultiSecondRuntime("default timestamp sort broad filter", result.elapsedMs);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },
@@ -547,7 +547,7 @@ describe("search performance repro cases", () => {
         expect(result.body.coverage.index_families_used).toContain("fts");
         expectMultiSecondRuntime("offset-desc newest segment decode", result.elapsedMs);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },
@@ -579,7 +579,7 @@ describe("search performance repro cases", () => {
         expect(result.parseCalls).toBeLessThanOrEqual(DEFAULT_SORT_ROWS_PER_SEGMENT + 128);
         expectMultiSecondRuntime("explicit timestamp-desc broad filter", result.elapsedMs);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },
@@ -612,7 +612,7 @@ describe("search performance repro cases", () => {
         expect(fixture.app.deps.db.listSecondaryIndexRuns(fixture.stream, "environment")).toHaveLength(0);
         expectMultiSecondRuntime("small stream below exact L0 span", result.elapsedMs);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },
@@ -644,7 +644,7 @@ describe("search performance repro cases", () => {
         expect(warm.body.coverage.scanned_tail_docs).toBe(1);
         expect(warm.elapsedMs).toBeLessThan(cold.elapsedMs);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },
@@ -672,7 +672,7 @@ describe("search performance repro cases", () => {
         expect(result.body.coverage.candidate_doc_ids).toBe(1);
         expect(result.parseCalls).toBeLessThanOrEqual(8);
       } finally {
-        fixture.app.close();
+        await fixture.app.close();
         rmSync(fixture.root, { recursive: true, force: true });
       }
     },

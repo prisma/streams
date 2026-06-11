@@ -53,7 +53,7 @@ describe("ingest queue drain", () => {
 
       const res = await appendPromise;
       expect(Result.isOk(res)).toBe(true);
-      app.close();
+      await app.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

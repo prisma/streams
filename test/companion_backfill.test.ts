@@ -207,7 +207,7 @@ describe("bundled companions and backfill", () => {
 
       expect(app.deps.db.listSearchSegmentCompanions(STREAM)).toHaveLength(0);
     } finally {
-      app.close();
+      await app.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -275,7 +275,7 @@ describe("bundled companions and backfill", () => {
         expect((await store.list(`streams/${streamHash}/agg/segments/`)).length).toBe(0);
         expect((await store.list(`streams/${streamHash}/mblk/segments/`)).length).toBe(0);
       } finally {
-        app.close();
+        await app.close();
       }
 
       const pausedCfg = makeConfig(root, {
@@ -362,7 +362,7 @@ describe("bundled companions and backfill", () => {
         expect(filterBody).toHaveLength(1);
         expect(filterBody[0].status).toBe(505);
       } finally {
-        app.close();
+        await app.close();
       }
 
       app = createApp(buildCfg, store);
@@ -396,7 +396,7 @@ describe("bundled companions and backfill", () => {
         expect(searchBody.hits.length).toBeGreaterThan(0);
         expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -458,7 +458,7 @@ describe("bundled companions and backfill", () => {
 
         await waitForCompanionGeneration(app, 1);
       } finally {
-        app.close();
+        await app.close();
       }
 
       const pausedCfg = makeConfig(root, {
@@ -504,7 +504,7 @@ describe("bundled companions and backfill", () => {
           ])
         );
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -613,7 +613,7 @@ describe("bundled companions and backfill", () => {
         expect(searchBody.hits[0]?.source?.title).toBe("constructor push keeps building");
         expect(searchBody.coverage.index_families_used).toEqual(expect.arrayContaining(["fts"]));
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -764,7 +764,7 @@ describe("bundled companions and backfill", () => {
         expect(String((aggError as { message?: string } | null)?.message ?? aggError).length).toBeGreaterThan(0);
         expect(store.stats().gets).toBe(1);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -855,7 +855,7 @@ describe("bundled companions and backfill", () => {
         const localCachePath = join(root, "cache/companions", row.object_key);
         expect(existsSync(localCachePath)).toBeTrue();
 
-        app.close();
+        await app.close();
         app = createApp(cfg, store);
         store.resetStats();
 
@@ -864,7 +864,7 @@ describe("bundled companions and backfill", () => {
         expect(ftsCompanion?.getField("message")).not.toBeNull();
         expect(store.stats().gets).toBe(0);
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
@@ -997,7 +997,7 @@ describe("bundled companions and backfill", () => {
         expect(yieldCount).toBeGreaterThan(0);
         expect(yieldedTimerWhileBuildPending).toBeTrue();
       } finally {
-        app.close();
+        await app.close();
         rmSync(root, { recursive: true, force: true });
       }
     },
