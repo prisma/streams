@@ -255,9 +255,11 @@ also returns HTTP `200` and includes OTLP partial-success information with the
 number of rejected spans and an error message. Clients must not retry spans
 rejected by a partial-success response.
 
-Malformed payloads return `400`. Unsupported content types or content encodings
-return `415`. Accepted spans are appended as canonical JSON span records using
-`traceId` as the routing key.
+Malformed payloads and requests that exceed resource-span, scope-span, or span
+count limits return `400`. Compressed or decoded OTLP bodies that exceed the
+configured byte limits return `413`. Unsupported content types or content
+encodings return `415`. Accepted spans are appended as canonical JSON span
+records using `traceId` as the routing key.
 
 ### 4.5 Request observability
 
@@ -311,6 +313,17 @@ The response contains:
 The trace response deduplicates returned spans by `traceId:spanId` for the
 tree, service map, errors, and critical path. Duplicate span records remain in
 the underlying append-only stream.
+
+`trace.rootSpanId` is selected from all returned root candidates by preferring
+likely request roots: no parent, server kind, HTTP fields, request ID, and then
+duration. Other roots remain in `trace.tree`. `trace.criticalPath` is an
+interval-aware highlighted path from the selected root when one exists.
+
+`coverage.events` and `coverage.traces` de-duplicate `hits`, `unique_hits`, and
+`total.value` by stream and offset across overlapping lookup searches.
+`query_count` and `batch_count` report the number of underlying `_search`
+batches used. `total.relation` is `gte` when limits, timeouts, incomplete
+coverage, or underlying lower-bound totals prevent an exact unique total.
 
 The endpoint returns `400` for invalid request bodies, unsupported profile
 combinations, or streams without search configuration. Missing streams return

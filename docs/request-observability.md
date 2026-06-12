@@ -184,6 +184,16 @@ first event result.
 Spans are deduplicated by `traceId:spanId` for the trace view. The underlying
 stream remains append-only and keeps duplicate deliveries.
 
+`rootSpanId` is selected from the returned root candidates by scoring likely
+request roots first: no parent, server kind, HTTP fields, request ID, and then
+duration. Other root spans remain in `trace.tree`; the selected root only
+drives summary fields and the highlighted path.
+
+`criticalPath` is an interval-aware highlighted span path that starts at the
+selected root when one exists. Child selection uses each subtree's exclusive
+time plus its longest descendant contribution, so overlapping sibling spans do
+not simply add together.
+
 ## Trace Tree
 
 Tree nodes contain:
@@ -236,11 +246,20 @@ the request:
 - `timed_out`
 - `limit_reached`
 - `hits`
+- `unique_hits`
+- `query_count`
+- `batch_count`
 - `total`
 - `index_families_used`
 - `scanned_tail_docs`
 - `scanned_segments`
 - `possible_missing_events_upper_bound`
+
+`hits`, `unique_hits`, and `total.value` are de-duplicated by stream and offset
+across overlapping lookup searches. `query_count` / `batch_count` show how many
+underlying `_search` batches were used. `total.relation` is `gte` whenever a
+limit, timeout, incomplete coverage, or any underlying lower-bound total means
+the exact unique total is not known.
 
 Warnings are emitted for missing evlog events, missing trace spans, hit limits,
 incomplete search coverage, and missing parent spans. A UI should surface these

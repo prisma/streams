@@ -53,6 +53,13 @@ Content-Type: application/json
       "rawLinks": true
     },
     "dbStatementMode": "drop",
+    "otlpLimits": {
+      "maxCompressedBytes": 4194304,
+      "maxDecodedBytes": 16777216,
+      "maxResourceSpansPerRequest": 1024,
+      "maxScopeSpansPerRequest": 4096,
+      "maxSpansPerRequest": 50000
+    },
     "observability": {
       "request": {
         "eventsStream": "app-events"
@@ -68,6 +75,13 @@ Supported `dbStatementMode` values:
 - `raw` stores the statement after normal attribute value truncation
 
 There is no `redact_literals` mode in the shipped implementation.
+
+Redaction matches configured keys case-insensitively and also checks dotted
+header/metadata suffixes. For example, the built-in `authorization`, `cookie`,
+`set-cookie`, and `x-api-key` entries redact attributes such as
+`http.request.header.authorization`, `http.request.header.cookie`,
+`http.response.header.set-cookie`, `http.request.header.x-api-key`, and
+`rpc.request.metadata.authorization`.
 
 ## Canonical Span Envelope
 
@@ -92,6 +106,11 @@ Trace IDs must be 32-character lowercase hex strings and span IDs must be
 Nanosecond timestamps are preserved as decimal strings. `timestamp`,
 `endTimestamp`, and `duration` are derived for search, sort, aggregation, and
 UI rendering.
+
+When an already-canonical span record is appended again, top-level canonical
+fields such as service, environment, request ID, HTTP fields, error fields,
+duration, and `eventNames` are preserved even if the raw attributes or raw
+events were not retained in the stored record.
 
 ## OTLP Ingestion
 
@@ -132,10 +151,12 @@ Both endpoints support:
 - `application/json`
 - `Content-Encoding: gzip`
 
-Malformed payloads return `400`. Unsupported media types or encodings return
-`415`. A successful full acceptance returns OTLP success. Partial acceptance
-returns HTTP `200` with OTLP `partialSuccess` / `partial_success` information;
-clients should not retry rejected spans from that response.
+Malformed payloads and requests that exceed resource-span, scope-span, or span
+count limits return `400`. Payloads that exceed compressed or decoded byte
+limits return `413`. Unsupported media types or encodings return `415`. A
+successful full acceptance returns OTLP success. Partial acceptance returns
+HTTP `200` with OTLP `partialSuccess` / `partial_success` information; clients
+should not retry rejected spans from that response.
 
 ## JSON Appends
 
@@ -192,10 +213,10 @@ Default rollups:
 
 - `spans` over `service`, `kind`, and `status.code`
 - `http_server` over `service`, `http.method`, `http.route`, and
-  `http.statusCode`
+  `http.statusCode`, filtered to `kind:server`
 
-Each rollup includes count and `duration` summary measures. Filtered count
-measures are not part of the shipped rollup schema.
+Each rollup includes a count measure, an `errors` count measure filtered to
+`error:true`, and a `duration` summary measure.
 
 ## Request Correlation
 

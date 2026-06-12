@@ -68,6 +68,11 @@ Notes:
   and `sortable`.
 - `search.rollups` is optional. When configured, the server builds schema-owned
   `.agg` rollup companions and enables `POST /v1/stream/{name}/_aggregate`.
+- A rollup may set `include` to a normal search query string. Records that do
+  not match that query do not contribute to that rollup.
+- A `count` rollup measure may also set `include`. Matching records contribute
+  `1`; non-matching records contribute `0` to that measure while still
+  contributing to the rest of the rollup row.
 
 ## HTTP API
 
@@ -110,7 +115,7 @@ Accepted POST shapes:
 4) Search update with rollups:
 
 ```json
-{"search": {"primaryTimestampField": "eventTime", "fields": {"eventTime": {"kind": "date", "bindings": [{"version": 1, "jsonPointer": "/eventTime"}], "exact": true, "column": true, "exists": true, "sortable": true}, "service": {"kind": "keyword", "bindings": [{"version": 1, "jsonPointer": "/service"}], "exact": true, "prefix": true, "exists": true}, "duration": {"kind": "float", "bindings": [{"version": 1, "jsonPointer": "/duration"}], "exact": true, "column": true, "exists": true, "sortable": true, "aggregatable": true}}, "rollups": {"requests": {"dimensions": ["service"], "intervals": ["1m"], "measures": {"requests": {"kind": "count"}, "latency": {"kind": "summary", "field": "duration", "histogram": "log2_v1"}}}}}}
+{"search": {"primaryTimestampField": "eventTime", "fields": {"eventTime": {"kind": "date", "bindings": [{"version": 1, "jsonPointer": "/eventTime"}], "exact": true, "column": true, "exists": true, "sortable": true}, "service": {"kind": "keyword", "bindings": [{"version": 1, "jsonPointer": "/service"}], "exact": true, "prefix": true, "exists": true}, "kind": {"kind": "keyword", "bindings": [{"version": 1, "jsonPointer": "/kind"}], "exact": true, "exists": true}, "error": {"kind": "bool", "bindings": [{"version": 1, "jsonPointer": "/error"}], "exact": true, "column": true, "exists": true}, "duration": {"kind": "float", "bindings": [{"version": 1, "jsonPointer": "/duration"}], "exact": true, "column": true, "exists": true, "sortable": true, "aggregatable": true}}, "rollups": {"requests": {"include": "kind:server", "dimensions": ["service"], "intervals": ["1m"], "measures": {"requests": {"kind": "count"}, "errors": {"kind": "count", "include": "error:true"}, "latency": {"kind": "summary", "field": "duration", "histogram": "log2_v1"}}}}}}
 ```
 
 Important rule:

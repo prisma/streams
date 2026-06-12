@@ -119,6 +119,7 @@ Current built-ins:
 - `evlog`
 - `generic`
 - `metrics`
+- `otel-traces`
 - `state-protocol`
 
 Planned next built-ins:
@@ -188,6 +189,20 @@ It means:
 
 The internal `__stream_metrics__` stream is created with this profile
 automatically.
+
+### `otel-traces`
+
+`otel-traces` is the built-in profile for OpenTelemetry trace spans.
+
+It means:
+
+- the stream content type must be `application/json`
+- JSON appends are normalized into the canonical span envelope
+- OTLP trace exports are accepted through `POST /v1/traces` and
+  `POST /v1/stream/{name}/_otlp/v1/traces`
+- installing the profile also installs the canonical trace schema/search and
+  default rollups
+- the canonical routing key is `traceId`
 
 ## Profile Versus Schema
 
@@ -407,11 +422,14 @@ Not implemented today:
 
 The supported behavior is:
 
-- use `/_profile` to choose `generic`, `state-protocol`, or `evlog`
+- use `/_profile` to choose a built-in profile, including `generic`, `evlog`,
+  `metrics`, `otel-traces`, and `state-protocol`
 - use `/_schema` only for schema validation, routing-key config, and schema
   evolution
 - use `/touch/*` only on `state-protocol` streams with touch enabled
 - use normal JSON appends on `evlog` streams to store canonical evlog events
+- use OTLP trace endpoints only on `otel-traces` streams, or on `/v1/traces`
+  when `DS_OTLP_TRACES_STREAM` is configured
 
 Legacy compatibility branches are intentionally not part of the supported
 surface.
