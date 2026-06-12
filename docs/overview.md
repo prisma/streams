@@ -25,7 +25,9 @@ Every stream has a profile.
 See [stream-profiles.md](./stream-profiles.md).
 See [profile-otel-traces.md](./profile-otel-traces.md) and
 [request-observability.md](./request-observability.md) for trace ingestion and
-cross-stream request lookup.
+cross-stream request lookup. UIs should use the explicit
+`observability.request` descriptor from `GET /v1/streams` or
+`GET /v1/stream/{name}/_details` to pair `evlog` and `otel-traces` streams.
 
 This repository currently contains two server modes:
 

@@ -56,6 +56,7 @@ import {
   resolveJsonIngestCapability,
   resolveTouchCapability,
   type PreparedJsonRecord,
+  type StreamProfileSpec,
   type StreamTouchRoute,
 } from "./profiles";
 import { encodeOtlpTraceExportResponse } from "./profiles/otelTraces/otlp";
@@ -70,6 +71,7 @@ import {
   sortTimeline,
   summarizeSearchCoverage,
 } from "./observe/request";
+import { buildRequestObservabilityPairingDescriptor } from "./observe/pairing";
 import { dsError } from "./util/ds_error.ts";
 import { streamHash16Hex } from "./util/stream_paths";
 
@@ -1319,30 +1321,38 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     return Result.ok(Buffer.concat(parts));
   };
 
-  const buildStreamSummary = (stream: string, row: StreamRow, profileKind: string) => ({
-    name: stream,
-    content_type: normalizeContentType(row.content_type) ?? row.content_type,
-    profile: profileKind,
-    created_at: timestampToIsoString(row.created_at_ms),
-    updated_at: timestampToIsoString(row.updated_at_ms),
-    expires_at: timestampToIsoString(row.expires_at_ms),
-    ttl_seconds: row.ttl_seconds,
-    stream_seq: row.stream_seq,
-    closed: row.closed !== 0,
-    epoch: row.epoch,
-    next_offset: row.next_offset.toString(),
-    sealed_through: row.sealed_through.toString(),
-    uploaded_through: row.uploaded_through.toString(),
-    segment_count: db.countSegmentsForStream(stream),
-    uploaded_segment_count: db.countUploadedSegments(stream),
-    pending_rows: row.pending_rows.toString(),
-    pending_bytes: row.pending_bytes.toString(),
-    total_size_bytes: row.logical_size_bytes.toString(),
-    wal_rows: row.wal_rows.toString(),
-    wal_bytes: row.wal_bytes.toString(),
-    last_append_at: timestampToIsoString(row.last_append_ms),
-    last_segment_cut_at: timestampToIsoString(row.last_segment_cut_ms),
-  });
+  const buildStreamSummary = (
+    stream: string,
+    row: StreamRow,
+    profile: StreamProfileSpec
+  ) => {
+    const observability = buildRequestObservabilityPairingDescriptor(stream, profile);
+    return {
+      name: stream,
+      content_type: normalizeContentType(row.content_type) ?? row.content_type,
+      profile: profile.kind,
+      ...(observability ? { observability } : {}),
+      created_at: timestampToIsoString(row.created_at_ms),
+      updated_at: timestampToIsoString(row.updated_at_ms),
+      expires_at: timestampToIsoString(row.expires_at_ms),
+      ttl_seconds: row.ttl_seconds,
+      stream_seq: row.stream_seq,
+      closed: row.closed !== 0,
+      epoch: row.epoch,
+      next_offset: row.next_offset.toString(),
+      sealed_through: row.sealed_through.toString(),
+      uploaded_through: row.uploaded_through.toString(),
+      segment_count: db.countSegmentsForStream(stream),
+      uploaded_segment_count: db.countUploadedSegments(stream),
+      pending_rows: row.pending_rows.toString(),
+      pending_bytes: row.pending_bytes.toString(),
+      total_size_bytes: row.logical_size_bytes.toString(),
+      wal_rows: row.wal_rows.toString(),
+      wal_bytes: row.wal_bytes.toString(),
+      last_append_at: timestampToIsoString(row.last_append_ms),
+      last_segment_cut_at: timestampToIsoString(row.last_segment_cut_ms),
+    };
+  };
 
   const buildIndexLagMs = (stream: string, headRow: StreamRow, coveredSegmentCount: number): string | null => {
     if (coveredSegmentCount <= 0) return null;
@@ -1619,7 +1629,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         mode === "index_status"
           ? indexStatus
           : {
-              stream: buildStreamSummary(stream, srow, profileKind),
+              stream: buildStreamSummary(stream, srow, profileRes.value.profile),
               profile: profileRes.value,
               schema: regRes.value,
               index_status: indexStatus,
@@ -2066,6 +2076,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           const profileRes = profiles.getProfileResult(r.stream, r);
           if (Result.isError(profileRes)) return internalError("invalid stream profile");
           const profile = profileRes.value;
+          const observability = buildRequestObservabilityPairingDescriptor(r.stream, profile);
           out.push({
             name: r.stream,
             created_at: new Date(Number(r.created_at_ms)).toISOString(),
@@ -2075,6 +2086,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
             sealed_through: r.sealed_through.toString(),
             uploaded_through: r.uploaded_through.toString(),
             profile: profile.kind,
+            ...(observability ? { observability } : {}),
           });
         }
         return json(200, out);

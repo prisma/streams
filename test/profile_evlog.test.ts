@@ -53,6 +53,11 @@ describe("evlog profile", () => {
           apiVersion: "durable.streams/profile/v1",
           profile: {
             kind: "evlog",
+            observability: {
+              request: {
+                tracesStream: "app-traces",
+              },
+            },
             redactKeys: ["sessionToken"],
           },
         }),
@@ -62,6 +67,11 @@ describe("evlog profile", () => {
         apiVersion: "durable.streams/profile/v1",
         profile: {
           kind: "evlog",
+          observability: {
+            request: {
+              tracesStream: "app-traces",
+            },
+          },
           redactKeys: ["sessiontoken"],
         },
       });
@@ -70,13 +80,34 @@ describe("evlog profile", () => {
       expect(getRes.status).toBe(200);
       expect(getRes.body?.profile?.kind).toBe("evlog");
       expect(getRes.body?.profile?.redactKeys).toEqual(["sessiontoken"]);
+      expect(getRes.body?.profile?.observability).toEqual({
+        request: {
+          tracesStream: "app-traces",
+        },
+      });
 
       const listRes = await fetchJsonApp(app, "http://local/v1/streams", { method: "GET" });
       expect(listRes.status).toBe(200);
-      expect(listRes.body.find((row: any) => row.name === "evlog-install")?.profile).toBe("evlog");
+      const listRow = listRes.body.find((row: any) => row.name === "evlog-install");
+      expect(listRow?.profile).toBe("evlog");
+      expect(listRow?.observability).toEqual({
+        request: {
+          events_stream: "evlog-install",
+          traces_stream: "app-traces",
+        },
+      });
 
       expect(app.deps.db.getStream("evlog-install")?.profile).toBe("evlog");
       expect(app.deps.db.getStreamProfile("evlog-install")).not.toBeNull();
+
+      const detailsRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-install/_details", { method: "GET" });
+      expect(detailsRes.status).toBe(200);
+      expect(detailsRes.body?.stream?.observability).toEqual({
+        request: {
+          events_stream: "evlog-install",
+          traces_stream: "app-traces",
+        },
+      });
 
       const schemaRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-install/_schema", { method: "GET" });
       expect(schemaRes.status).toBe(200);
@@ -137,6 +168,24 @@ describe("evlog profile", () => {
       });
       expect(invalidConfigRes.status).toBe(400);
       expect(invalidConfigRes.body?.error?.message).toContain("profile.extra");
+
+      const invalidPairingRes = await fetchJsonApp(app, "http://local/v1/stream/evlog-invalid/_profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          apiVersion: "durable.streams/profile/v1",
+          profile: {
+            kind: "evlog",
+            observability: {
+              request: {
+                tracesStream: "",
+              },
+            },
+          },
+        }),
+      });
+      expect(invalidPairingRes.status).toBe(400);
+      expect(invalidPairingRes.body?.error?.message).toContain("profile.observability.request.tracesStream");
 
       await app.fetch(
         new Request("http://local/v1/stream/evlog-late", {

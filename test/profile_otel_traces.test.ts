@@ -194,6 +194,11 @@ describe("otel-traces profile", () => {
         attributeLimits: { maxAttributesPerSpan: 32 },
         store: { rawLinks: false },
         dbStatementMode: "raw",
+        observability: {
+          request: {
+            eventsStream: "app-events",
+          },
+        },
       });
       expect(res.status).toBe(200);
       expect(res.body?.profile).toEqual({
@@ -203,6 +208,11 @@ describe("otel-traces profile", () => {
         attributeLimits: { maxAttributesPerSpan: 32 },
         store: { rawLinks: false },
         dbStatementMode: "raw",
+        observability: {
+          request: {
+            eventsStream: "app-events",
+          },
+        },
       });
 
       const schemaRes = await fetchJsonApp(app, "http://local/v1/stream/otel-install/_schema", { method: "GET" });
@@ -214,6 +224,24 @@ describe("otel-traces profile", () => {
       expect(schemaRes.body?.search?.fields?.duration?.kind).toBe("float");
       expect(schemaRes.body?.search?.fields?.["events.name"]?.bindings?.[0]?.jsonPointer).toBe("/eventNames");
       expect(schemaRes.body?.search?.rollups?.spans?.measures?.latency?.field).toBe("duration");
+
+      const listRes = await fetchJsonApp(app, "http://local/v1/streams", { method: "GET" });
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.find((row: any) => row.name === "otel-install")?.observability).toEqual({
+        request: {
+          events_stream: "app-events",
+          traces_stream: "otel-install",
+        },
+      });
+
+      const detailsRes = await fetchJsonApp(app, "http://local/v1/stream/otel-install/_details", { method: "GET" });
+      expect(detailsRes.status).toBe(200);
+      expect(detailsRes.body?.stream?.observability).toEqual({
+        request: {
+          events_stream: "app-events",
+          traces_stream: "otel-install",
+        },
+      });
     } finally {
       await app.close();
       rmSync(root, { recursive: true, force: true });
@@ -241,6 +269,23 @@ describe("otel-traces profile", () => {
       });
       expect(invalidRes.status).toBe(400);
       expect(invalidRes.body?.error?.message).toContain("dbStatementMode");
+
+      const invalidPairingRes = await fetchJsonApp(app, "http://local/v1/stream/otel-invalid/_profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          profile: {
+            kind: "otel-traces",
+            observability: {
+              request: {
+                eventsStream: "",
+              },
+            },
+          },
+        }),
+      });
+      expect(invalidPairingRes.status).toBe(400);
+      expect(invalidPairingRes.body?.error?.message).toContain("profile.observability.request.eventsStream");
 
       await app.fetch(new Request("http://local/v1/stream/otel-late", { method: "PUT", headers: { "content-type": "application/json" } }));
       await app.fetch(

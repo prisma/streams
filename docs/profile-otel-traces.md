@@ -52,7 +52,12 @@ Content-Type: application/json
       "rawEvents": true,
       "rawLinks": true
     },
-    "dbStatementMode": "drop"
+    "dbStatementMode": "drop",
+    "observability": {
+      "request": {
+        "eventsStream": "app-events"
+      }
+    }
   }
 }
 ```
@@ -209,6 +214,24 @@ default:
 The cross-stream request view is implemented by
 [`request-observability.md`](./request-observability.md), not by merging
 `evlog` and spans into one profile.
+
+`observability.request.eventsStream` declares the explicit `evlog` counterpart
+for request-observability clients. When it is present, `GET /v1/streams` and
+`GET /v1/stream/{name}/_details` expose:
+
+```json
+{
+  "observability": {
+    "request": {
+      "events_stream": "app-events",
+      "traces_stream": "app-traces"
+    }
+  }
+}
+```
+
+Clients must use this descriptor instead of selecting the first `evlog` stream
+they find.
 
 ## Security And Privacy
 

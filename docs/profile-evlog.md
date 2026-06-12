@@ -53,6 +53,11 @@ Supported profile shape:
       "traceContext.spanId"
     ],
     "parseTraceparent": true
+  },
+  "observability": {
+    "request": {
+      "tracesStream": "app-traces"
+    }
   }
 }
 ```
@@ -62,6 +67,24 @@ Supported profile shape:
 When `parseTraceparent` is not false, the profile reads W3C `traceparent` from
 `traceparent`, `traceContext.traceparent`, `context.traceparent`, or
 `headers.traceparent` if explicit trace fields are absent.
+
+`observability.request.tracesStream` declares the explicit `otel-traces`
+counterpart for request-observability clients. When it is present,
+`GET /v1/streams` and `GET /v1/stream/{name}/_details` expose:
+
+```json
+{
+  "observability": {
+    "request": {
+      "events_stream": "app-events",
+      "traces_stream": "app-traces"
+    }
+  }
+}
+```
+
+Clients must use this descriptor instead of guessing the trace stream from
+other stream names or profiles.
 
 ## Canonical Envelope
 
@@ -237,7 +260,9 @@ record/detail surface.
 Recommended integration flow:
 
 1. Create the stream with `application/json`.
-2. Install the `evlog` profile with `POST /v1/stream/{name}/_profile`.
+2. Install the `evlog` profile with `POST /v1/stream/{name}/_profile`. Include
+   `observability.request.tracesStream` when this stream has a known
+   `otel-traces` counterpart.
 3. Read `GET /v1/stream/{name}/_details` when the UI needs the combined
    stream/profile/schema/index descriptor.
 4. Read `GET /v1/stream/{name}/_index_status` for dedicated indexing progress

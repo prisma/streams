@@ -26,6 +26,11 @@ export type EvlogStreamProfile = {
     traceContextFields?: string[];
     parseTraceparent?: boolean;
   };
+  observability?: {
+    request?: {
+      tracesStream: string;
+    };
+  };
 };
 
 const DEFAULT_REDACT_KEYS = ["password", "token", "secret", "authorization", "cookie", "apikey"] as const;
@@ -129,21 +134,55 @@ function parseEvlogCorrelationResult(raw: unknown, path: string): Result<EvlogSt
   return Result.ok(Object.keys(correlation).length > 0 ? correlation : undefined);
 }
 
+function parseStreamNameResult(raw: unknown, path: string): Result<string | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  if (typeof raw !== "string") return Result.err({ message: `${path} must be a string` });
+  const value = raw.trim();
+  if (value === "") return Result.err({ message: `${path} must not be empty` });
+  return Result.ok(value);
+}
+
+function parseEvlogObservabilityResult(raw: unknown, path: string): Result<EvlogStreamProfile["observability"] | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  const objRes = expectPlainObjectResult(raw, path);
+  if (Result.isError(objRes)) return objRes;
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["request"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+
+  if (objRes.value.request === undefined) return Result.ok(undefined);
+  const requestRes = expectPlainObjectResult(objRes.value.request, `${path}.request`);
+  if (Result.isError(requestRes)) return requestRes;
+  const requestKeyCheck = rejectUnknownKeysResult(requestRes.value, ["tracesStream"], `${path}.request`);
+  if (Result.isError(requestKeyCheck)) return requestKeyCheck;
+  const tracesStreamRes = parseStreamNameResult(requestRes.value.tracesStream, `${path}.request.tracesStream`);
+  if (Result.isError(tracesStreamRes)) return tracesStreamRes;
+  if (!tracesStreamRes.value) return Result.ok(undefined);
+
+  return Result.ok({
+    request: {
+      tracesStream: tracesStreamRes.value,
+    },
+  });
+}
+
 function validateEvlogProfileResult(raw: unknown, path: string): Result<EvlogStreamProfile, { message: string }> {
   const objRes = expectPlainObjectResult(raw, path);
   if (Result.isError(objRes)) return objRes;
   if (objRes.value.kind !== "evlog") {
     return Result.err({ message: `${path}.kind must be evlog` });
   }
-  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "redactKeys", "correlation"], path);
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["kind", "redactKeys", "correlation", "observability"], path);
   if (Result.isError(keyCheck)) return keyCheck;
   const redactKeysRes = parseRedactKeysResult(objRes.value.redactKeys, `${path}.redactKeys`);
   if (Result.isError(redactKeysRes)) return redactKeysRes;
   const correlationRes = parseEvlogCorrelationResult(objRes.value.correlation, `${path}.correlation`);
   if (Result.isError(correlationRes)) return correlationRes;
+  const observabilityRes = parseEvlogObservabilityResult(objRes.value.observability, `${path}.observability`);
+  if (Result.isError(observabilityRes)) return observabilityRes;
   const profile: EvlogStreamProfile = { kind: "evlog" };
   if (redactKeysRes.value) profile.redactKeys = redactKeysRes.value;
   if (correlationRes.value) profile.correlation = correlationRes.value;
+  if (observabilityRes.value) profile.observability = observabilityRes.value;
   return Result.ok(profile);
 }
 

@@ -112,6 +112,9 @@ It means:
 - the canonical routing key is `traceId`
 - request correlation with `evlog` is provided by the cross-stream
   `/v1/observe/request` API, not by mixing spans into `evlog`
+- request-observability clients discover explicit pairs through
+  `observability.request` on `GET /v1/streams` or
+  `GET /v1/stream/{name}/_details`, not by guessing from stream names
 
 See [profile-otel-traces.md](./profile-otel-traces.md) and
 [request-observability.md](./request-observability.md) for the detailed

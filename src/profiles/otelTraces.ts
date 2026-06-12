@@ -114,13 +114,44 @@ function parseDbStatementModeResult(raw: unknown, path: string): Result<DbStatem
   return Result.err({ message: `${path} must be drop or raw` });
 }
 
+function parseStreamNameResult(raw: unknown, path: string): Result<string | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  if (typeof raw !== "string") return Result.err({ message: `${path} must be a string` });
+  const value = raw.trim();
+  if (value === "") return Result.err({ message: `${path} must not be empty` });
+  return Result.ok(value);
+}
+
+function parseOtelTracesObservabilityResult(raw: unknown, path: string): Result<OtelTracesStreamProfile["observability"] | undefined, { message: string }> {
+  if (raw === undefined) return Result.ok(undefined);
+  const objRes = expectPlainObjectResult(raw, path);
+  if (Result.isError(objRes)) return objRes;
+  const keyCheck = rejectUnknownKeysResult(objRes.value, ["request"], path);
+  if (Result.isError(keyCheck)) return keyCheck;
+
+  if (objRes.value.request === undefined) return Result.ok(undefined);
+  const requestRes = expectPlainObjectResult(objRes.value.request, `${path}.request`);
+  if (Result.isError(requestRes)) return requestRes;
+  const requestKeyCheck = rejectUnknownKeysResult(requestRes.value, ["eventsStream"], `${path}.request`);
+  if (Result.isError(requestKeyCheck)) return requestKeyCheck;
+  const eventsStreamRes = parseStreamNameResult(requestRes.value.eventsStream, `${path}.request.eventsStream`);
+  if (Result.isError(eventsStreamRes)) return eventsStreamRes;
+  if (!eventsStreamRes.value) return Result.ok(undefined);
+
+  return Result.ok({
+    request: {
+      eventsStream: eventsStreamRes.value,
+    },
+  });
+}
+
 function validateOtelTracesProfileResult(raw: unknown, path: string): Result<OtelTracesStreamProfile, { message: string }> {
   const objRes = expectPlainObjectResult(raw, path);
   if (Result.isError(objRes)) return objRes;
   if (objRes.value.kind !== "otel-traces") return Result.err({ message: `${path}.kind must be otel-traces` });
   const keyCheck = rejectUnknownKeysResult(
     objRes.value,
-    ["kind", "redactKeys", "requestIdAttributes", "attributeLimits", "store", "dbStatementMode"],
+    ["kind", "redactKeys", "requestIdAttributes", "attributeLimits", "store", "dbStatementMode", "observability"],
     path
   );
   if (Result.isError(keyCheck)) return keyCheck;
@@ -134,12 +165,15 @@ function validateOtelTracesProfileResult(raw: unknown, path: string): Result<Ote
   if (Result.isError(storeRes)) return storeRes;
   const dbStatementModeRes = parseDbStatementModeResult(objRes.value.dbStatementMode, `${path}.dbStatementMode`);
   if (Result.isError(dbStatementModeRes)) return dbStatementModeRes;
+  const observabilityRes = parseOtelTracesObservabilityResult(objRes.value.observability, `${path}.observability`);
+  if (Result.isError(observabilityRes)) return observabilityRes;
   const profile: OtelTracesStreamProfile = { kind: "otel-traces" };
   if (redactKeysRes.value) profile.redactKeys = redactKeysRes.value;
   if (requestIdAttributesRes.value) profile.requestIdAttributes = requestIdAttributesRes.value;
   if (limitsRes.value) profile.attributeLimits = limitsRes.value;
   if (storeRes.value) profile.store = storeRes.value;
   if (dbStatementModeRes.value) profile.dbStatementMode = dbStatementModeRes.value;
+  if (observabilityRes.value) profile.observability = observabilityRes.value;
   return Result.ok(profile);
 }
 

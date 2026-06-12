@@ -29,6 +29,11 @@ export type OtelTracesStreamProfile = {
   attributeLimits?: Partial<OtelTraceAttributeLimits>;
   store?: Partial<OtelTraceStoreConfig>;
   dbStatementMode?: DbStatementMode;
+  observability?: {
+    request?: {
+      eventsStream: string;
+    };
+  };
 };
 
 export type DecodedOtelEvent = {

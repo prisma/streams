@@ -68,6 +68,36 @@ Limits:
 The implementation pages internally through `_search` because `_search` pages
 are capped at 500 hits.
 
+## Pairing Descriptor
+
+Clients should discover request-observability pairs from stream metadata before
+calling this endpoint. `GET /v1/streams` and
+`GET /v1/stream/{name}/_details` expose `observability.request` when a stream
+profile declares its counterpart:
+
+```json
+{
+  "name": "app-events",
+  "profile": "evlog",
+  "observability": {
+    "request": {
+      "events_stream": "app-events",
+      "traces_stream": "app-traces"
+    }
+  }
+}
+```
+
+For an `evlog` stream, the descriptor comes from
+`profile.observability.request.tracesStream`.
+For an `otel-traces` stream, it comes from
+`profile.observability.request.eventsStream`.
+
+The descriptor is the supported way to choose the counterpart stream. Clients
+must not pick the first stream with the opposite profile. If a descriptor is
+absent, clients may still call this endpoint with only the active stream and
+set the missing side's include flag to false.
+
 ## Lookup Behavior
 
 ### Request ID
