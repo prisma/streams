@@ -33,6 +33,11 @@ if (autoTune.enabled) {
   }
 }
 
+const lazyRestoreEnabled = args.includes("--lazy-restore");
+if (lazyRestoreEnabled) {
+  process.env.DS_LAZY_RESTORE = "1";
+}
+
 const cfg = loadConfig();
 
 const statsEnabled = args.includes("--stats");
@@ -124,7 +129,7 @@ if (storeChoice === "local") {
   });
 }
 
-if (bootstrapEnabled) {
+if (bootstrapEnabled && !lazyRestoreEnabled) {
   await bootstrapFromR2(cfg, store, { clearLocal: true });
 }
 

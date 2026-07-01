@@ -70,6 +70,7 @@ export type Config = {
   touchMaxBatchBytes: number;
   otlpTracesStream: string | null;
   otlpAutoCreate: boolean;
+  lazyRestore: boolean;
   port: number;
 };
 
@@ -147,6 +148,7 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_TOUCH_MAX_BATCH_BYTES",
   "DS_OTLP_TRACES_STREAM",
   "DS_OTLP_AUTO_CREATE",
+  "DS_LAZY_RESTORE",
   "DS_AUTO_TUNE_REQUESTED_MB",
   "DS_AUTO_TUNE_PRESET_MB",
   "DS_AUTO_TUNE_EFFECTIVE_MEMORY_LIMIT_MB",
@@ -369,6 +371,7 @@ export function loadConfig(): Config {
     touchMaxBatchBytes: envNum("DS_TOUCH_MAX_BATCH_BYTES", 4 * 1024 * 1024),
     otlpTracesStream: process.env.DS_OTLP_TRACES_STREAM?.trim() || null,
     otlpAutoCreate: envBool("DS_OTLP_AUTO_CREATE", false),
+    lazyRestore: envBool("DS_LAZY_RESTORE", false),
     port: envNum("PORT", 8080),
   };
 }

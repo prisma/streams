@@ -50,6 +50,20 @@ object storage. It does not restore transient local SQLite state
 such as the unuploaded WAL tail, producer dedupe state, or runtime live/template
 state.
 
+`--lazy-restore` is an alternative to eager bootstrap for large backlogs. Instead
+of rebuilding every stream's index into local SQLite before the server accepts
+traffic, the server starts immediately and hydrates a stream's index from its R2
+manifest on the first read that misses local SQLite. A read for a stream with no
+R2 manifest is a genuine `404`. The rows a lazy read writes are identical to what
+`--bootstrap-from-r2` would have written for that stream, so the reader's
+segment/WAL merge stays correct either way. This keeps `/health` responsive
+regardless of backlog size, which matters when boot time is gated by a deploy
+health check. When both flags are passed, `--lazy-restore` wins and the eager
+pass is skipped. Concurrent first reads of the same cold stream share one
+hydration. Hydrated rows are not evicted; on a host where local SQLite resets per
+deploy the working set stays bounded, but a long-lived node that reads a very
+large stream set will accumulate index rows (bounded eviction is future work).
+
 A stream becomes recoverable from object storage after its first manifest is
 published.
 
@@ -189,6 +203,8 @@ Optional flags:
 - `--stats`
 - `--hist`
 - `--bootstrap-from-r2`
+- `--lazy-restore` (skip the eager bootstrap; hydrate each stream's index from R2
+  on the first read miss instead; also settable via `DS_LAZY_RESTORE=1`)
 - `--auto-tune[=MB]`
 
 Optional OTLP trace receiver configuration:
