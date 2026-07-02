@@ -9,11 +9,13 @@ export type MockR2Faults = {
   getDelayMs?: number;
   headDelayMs?: number;
   listDelayMs?: number;
+  deleteDelayMs?: number;
   failPutPrefix?: string; // fail PUT when key starts with prefix
   failPutEvery?: number; // fail every Nth PUT
   failGetEvery?: number; // fail every Nth GET
   failHeadEvery?: number;
   failListEvery?: number;
+  failDeleteEvery?: number;
   timeoutPutEvery?: number;
   timeoutGetEvery?: number;
   timeoutHeadEvery?: number;
@@ -49,6 +51,7 @@ export class MockR2Store implements ObjectStore {
   private getCount = 0;
   private headCount = 0;
   private listCount = 0;
+  private deleteCount = 0;
   private memBytes = 0;
 
   constructor(opts: MockR2Options | MockR2Faults = {}) {
@@ -215,6 +218,10 @@ export class MockR2Store implements ObjectStore {
   }
 
   async delete(key: string): Promise<void> {
+    this.deleteCount++;
+    this.maybeFail(this.deleteCount, this.faults.failDeleteEvery, `MockR2: injected DELETE failure for ${key}`);
+    await sleep(this.faults.deleteDelayMs ?? 0);
+
     const v = this.data.get(key);
     if (v?.bytes) this.memBytes -= v.bytes.byteLength;
     if (v?.path) {
@@ -250,12 +257,13 @@ export class MockR2Store implements ObjectStore {
     return this.memBytes;
   }
 
-  stats(): { puts: number; gets: number; heads: number; lists: number; memoryBytes: number } {
+  stats(): { puts: number; gets: number; heads: number; lists: number; deletes: number; memoryBytes: number } {
     return {
       puts: this.putCount,
       gets: this.getCount,
       heads: this.headCount,
       lists: this.listCount,
+      deletes: this.deleteCount,
       memoryBytes: this.memBytes,
     };
   }
@@ -265,5 +273,6 @@ export class MockR2Store implements ObjectStore {
     this.getCount = 0;
     this.headCount = 0;
     this.listCount = 0;
+    this.deleteCount = 0;
   }
 }

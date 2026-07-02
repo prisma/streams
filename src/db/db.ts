@@ -177,6 +177,7 @@ export class SqliteDurableStore {
     candidateStreams: SqliteStatement;
     candidateStreamsNoInterval: SqliteStatement;
     listExpiredStreams: SqliteStatement;
+    listReapableStreams: SqliteStatement;
 
     streamWalRange: SqliteStatement;
     streamWalRangeByKey: SqliteStatement;
@@ -376,6 +377,13 @@ export class SqliteDurableStore {
          ORDER BY expires_at_ms ASC
          LIMIT ?;`
       ),
+      listReapableStreams: this.db.query(
+        `SELECT stream
+         FROM streams
+         WHERE (stream_flags & ?) != 0
+         ORDER BY updated_at_ms ASC
+         LIMIT ?;`
+      ),
 
       streamWalRange: this.db.query(
         `SELECT offset, ts_ms, routing_key, content_type, payload
@@ -432,9 +440,10 @@ export class SqliteDurableStore {
         `UPDATE segments SET r2_etag=?, uploaded_at_ms=? WHERE segment_id=?;`
       ),
       pendingUploadHeads: this.db.query(
-        `SELECT segment_id, stream, segment_index, start_offset, end_offset, block_count, last_append_ms, payload_bytes, size_bytes,
-                local_path, created_at_ms, uploaded_at_ms, r2_etag
+        `SELECT s.segment_id, s.stream, s.segment_index, s.start_offset, s.end_offset, s.block_count, s.last_append_ms, s.payload_bytes, s.size_bytes,
+                s.local_path, s.created_at_ms, s.uploaded_at_ms, s.r2_etag
          FROM segments s
+         JOIN streams st ON st.stream = s.stream AND (st.stream_flags & ?) = 0
          WHERE s.uploaded_at_ms IS NULL
            AND s.segment_index = (
              SELECT MIN(s2.segment_index)
@@ -1058,6 +1067,13 @@ export class SqliteDurableStore {
     return rows.map((r) => String(r.stream));
   }
 
+  /** Soft-deleted streams awaiting object-store cleanup, oldest first. TOUCH
+   * streams are not excluded: an explicitly deleted touch stream must reap. */
+  listReapableStreams(limit: number): string[] {
+    const rows = this.stmts.listReapableStreams.all(STREAM_FLAG_DELETED, limit) as any[];
+    return rows.map((r) => String(r.stream));
+  }
+
   deleteAccelerationState(stream: string): void {
     const tx = this.db.transaction(() => {
       this.stmts.deleteIndexRunsForStream.run(stream);
@@ -1582,7 +1598,9 @@ export class SqliteDurableStore {
   }
 
   pendingUploadHeads(limit: number): SegmentRow[] {
-    const rows = this.stmts.pendingUploadHeads.all(limit) as any[];
+    // Deleted streams are excluded so a reap in progress cannot be re-populated
+    // by late segment uploads (which would also republish the manifest).
+    const rows = this.stmts.pendingUploadHeads.all(STREAM_FLAG_DELETED, limit) as any[];
     return rows.map((r) => this.coerceSegmentRow(r));
   }
 

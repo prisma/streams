@@ -63,6 +63,9 @@ export type Config = {
   objectStoreMaxDelayMs: number;
   expirySweepIntervalMs: number;
   expirySweepBatchLimit: number;
+  retentionReapBatchLimit: number;
+  retentionDeleteConcurrency: number;
+  retentionScanIntervalMs: number;
   metricsFlushIntervalMs: number;
   touchWorkers: number;
   touchCheckIntervalMs: number;
@@ -140,6 +143,9 @@ const KNOWN_DS_ENVS = new Set<string>([
   "DS_LOCAL_DATA_ROOT",
   "DS_EXPIRY_SWEEP_MS",
   "DS_EXPIRY_SWEEP_LIMIT",
+  "DS_RETENTION_REAP_LIMIT",
+  "DS_RETENTION_DELETE_CONCURRENCY",
+  "DS_RETENTION_SCAN_MS",
   "DS_METRICS_FLUSH_MS",
   "DS_TOUCH_WORKERS",
   "DS_TOUCH_CHECK_MS",
@@ -362,6 +368,9 @@ export function loadConfig(): Config {
     objectStoreMaxDelayMs: envNum("DS_OBJECTSTORE_RETRY_MAX_MS", 2000),
     expirySweepIntervalMs: envNum("DS_EXPIRY_SWEEP_MS", 60_000),
     expirySweepBatchLimit: envNum("DS_EXPIRY_SWEEP_LIMIT", 100),
+    retentionReapBatchLimit: envNum("DS_RETENTION_REAP_LIMIT", 20),
+    retentionDeleteConcurrency: envNum("DS_RETENTION_DELETE_CONCURRENCY", 4),
+    retentionScanIntervalMs: envNum("DS_RETENTION_SCAN_MS", 6 * 60 * 60 * 1000),
     metricsFlushIntervalMs: envNum("DS_METRICS_FLUSH_MS", 10_000),
     touchWorkers: envNum("DS_TOUCH_WORKERS", 1),
     touchCheckIntervalMs: envNum("DS_TOUCH_CHECK_MS", 250),

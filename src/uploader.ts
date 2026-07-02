@@ -356,7 +356,7 @@ export class Uploader {
   }
 }
 
-class FailureTracker {
+export class FailureTracker {
   private readonly cache: LruCache<string, { attempts: number; untilMs: number }>;
 
   constructor(maxEntries: number) {
