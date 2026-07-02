@@ -116,6 +116,8 @@ System streams (reserved names):
 Rules:
 - At most one of `Stream-TTL` and `Stream-Expires-At` may be provided.
 - If provided, the stream becomes unavailable for reads/appends after expiry.
+- After expiry, the stream's local and remote storage is reclaimed
+  asynchronously (same ordering as DELETE: data objects first, manifest last).
 
 ### 3.3 Read request headers
 
@@ -1112,8 +1114,12 @@ Headers:
   - exact secondary index state and runs
   - routing-key lexicon state and runs
   - bundled search companion plans and per-segment companion catalog rows
-- Does not synchronously delete already-published segment, manifest, schema, or
-  index objects from remote object storage.
+- Before acking, republishes the manifest carrying the deleted flag, so the
+  stream is a tombstone in remote object storage.
+- Remote objects are then deleted asynchronously and idempotently: data objects
+  (segments, indexes, companions, schema) first, `manifest.json` strictly last,
+  and local state is fully removed only once the stream's remote prefix is
+  verifiably empty. Recreating the same name completes only after that cleanup.
 - Must be idempotent.
 
 ---

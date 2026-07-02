@@ -271,6 +271,17 @@ This implementation emits interval summaries for:
 - `tieredstore.backpressure.limit.bytes`
 - `tieredstore.backpressure.pressure`
 
+### Retention
+
+- `tieredstore.retention.streams_reaped` (tag `trigger`)
+- `tieredstore.retention.objects_deleted`
+- `tieredstore.retention.list_passes`
+- `tieredstore.retention.reap.latency` (tag `outcome`)
+- `tieredstore.retention.reap.failures` (tag `kind`)
+- `tieredstore.retention.scan.latency`
+- `tieredstore.retention.scan.manifests_checked`
+- `tieredstore.retention.scan.tombstones_restored`
+
 ### Process memory
 
 - `process.rss.bytes`

@@ -2,6 +2,15 @@
 
 ## Upcoming
 
+- Reclaim object storage on stream expiry and deletion: a crash-safe retention
+  reaper deletes a doomed stream's remote objects (data first, manifest last)
+  and hard-deletes local rows once the prefix is verifiably empty; a periodic
+  object-store scan reaps doomed manifests whose creating node is gone;
+  restore-from-R2 recovers tombstoned/expired manifests as row-only tombstones;
+  recreating a deleted or expired stream waits for the old incarnation's
+  cleanup; the uploader skips segments of deleted streams. New env knobs:
+  `DS_RETENTION_REAP_LIMIT`, `DS_RETENTION_DELETE_CONCURRENCY`,
+  `DS_RETENTION_SCAN_MS`.
 - Add an `otel-traces` profile with OTLP JSON/protobuf/gzip ingest, canonical
   trace-span normalization, search aliases, privacy controls, and trace rollups.
 - Add request observability pairing descriptors and `POST /v1/observe/request`
