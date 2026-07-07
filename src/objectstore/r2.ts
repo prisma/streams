@@ -1,6 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
+import { createReadStream, openAsBlob } from "node:fs";
 import type { GetOptions, ObjectStore, PutResult } from "./interface";
 import { dsError } from "../util/ds_error.ts";
 
@@ -48,10 +47,6 @@ async function readResponseBytes(res: Response): Promise<Uint8Array> {
 
 async function readResponseText(res: Response): Promise<string> {
   return XML_DECODER.decode(await readResponseBytes(res));
-}
-
-function fileStreamBody(path: string): BodyInit {
-  return Readable.toWeb(createReadStream(path)) as unknown as BodyInit;
 }
 
 async function sha256FileHex(path: string): Promise<string> {
@@ -241,7 +236,8 @@ export class R2ObjectStore implements ObjectStore {
       if (opts.contentType) headers["content-type"] = opts.contentType;
       const res = await this.request("PUT", this.objectPath(key), {
         headers,
-        body: fileStreamBody(path),
+        // fixed-length Blob, not a stream: streams make fetch chunk the body and drop the signed content-length
+        body: await openAsBlob(path),
         payloadHash,
       });
       if (!res.ok) this.wrapStatus("PUT", key, res);

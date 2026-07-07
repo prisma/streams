@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { R2ObjectStore } from "../src/objectstore/r2";
 
 type Entry = {
@@ -11,6 +15,7 @@ const TEXT_ENCODER = new TextEncoder();
 const originalFetch = globalThis.fetch;
 const entries = new Map<string, Entry>();
 const requests: Request[] = [];
+const requestBodies: Array<BodyInit | null | undefined> = [];
 
 function xmlEscape(value: string): string {
   return value
@@ -33,6 +38,7 @@ function etagFor(key: string): string {
 async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const req = new Request(input, init);
   requests.push(req);
+  requestBodies.push(init?.body);
   expect(req.headers.get("authorization")).toStartWith("AWS4-HMAC-SHA256 ");
   expect(req.headers.get("x-amz-date")).not.toBeNull();
   expect(req.headers.get("x-amz-content-sha256")).not.toBeNull();
@@ -96,6 +102,7 @@ describe("R2ObjectStore", () => {
   beforeEach(() => {
     entries.clear();
     requests.length = 0;
+    requestBodies.length = 0;
     globalThis.fetch = fakeFetch;
   });
 
@@ -138,6 +145,37 @@ describe("R2ObjectStore", () => {
 
     await store.put("streams/a", new Uint8Array([1]));
     expect(requests[0]?.url).toBe("http://127.0.0.1:9000/bucket/streams/a");
+  });
+
+  test("putFile sends a fixed-length body so the SigV4 signature covers content-length", async () => {
+    const store = new R2ObjectStore({
+      accountId: "acct",
+      bucket: "bucket",
+      accessKeyId: "key",
+      secretAccessKey: "secret",
+    });
+
+    const dir = mkdtempSync(join(tmpdir(), "r2-putfile-"));
+    const path = join(dir, "payload.bin");
+    const content = new Uint8Array(4096).map((_, i) => (i * 31 + 7) & 0xff);
+    writeFileSync(path, content);
+    try {
+      await store.putFile("streams/file", path, content.byteLength, { contentType: "application/octet-stream" });
+
+      const body = requestBodies[0];
+      expect(body).toBeInstanceOf(Blob);
+      expect(body).not.toBeInstanceOf(ReadableStream);
+      expect((body as Blob).size).toBe(content.byteLength);
+
+      const req = requests[0]!;
+      expect(req.headers.get("content-length")).toBe(String(content.byteLength));
+      const signedHeaders = req.headers.get("authorization")?.match(/SignedHeaders=([^,]+),/)?.[1]?.split(";") ?? [];
+      expect(signedHeaders).toContain("content-length");
+      expect(req.headers.get("x-amz-content-sha256")).toBe(createHash("sha256").update(content).digest("hex"));
+      expect(entries.get("streams/file")?.data).toEqual(content);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("get handles missing objects", async () => {
