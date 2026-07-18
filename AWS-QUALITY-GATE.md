@@ -15,7 +15,7 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 | Area | Mandatory exit evidence | Current verdict |
 |---|---|---|
-| Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, stale topology responses, corrupt immutable SST responses, and pre/post-commit timeout/429/5xx/412 faults are automated. Stale manifest/list injection and general measured recovery bounds remain. |
+| Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, stale topology and manifest-discovery LIST responses, corrupt immutable SST responses, and pre/post-commit timeout/429/5xx/412 faults are automated. General measured recovery bounds remain. |
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. A real RS256/JWKS service drill proves identical-name isolation, per-tenant listing/non-disclosure, prefix/verb denial, live token revocation, and rollback-resistant revocation versions. Durable control-plane audit exists. An independent security review remains. |
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Bounded, durable per-customer limit documents override concurrency/write-byte admission and enforce exact live stream-name counts through a cross-instance CAS lease plus authoritative recount. Every 429 carries a tested machine-readable scope, dimension, limit, observed value, and retry delay; moving shards are not mislabeled as queue pressure. Persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit/limit state is bounded. A production-JWT CI workload now proves an abusive throttled tenant cannot break another tenant's exact writes and enforces a baseline-relative local latency bound. Remaining dimensions are read rates/bytes, connection rates, queue receives, and per-stream weights; target-hardware isolation belongs to the performance gate. |
@@ -111,11 +111,12 @@ documented cell limits. A feature described only in `SPEC.md`,
 - A shard sustained above 60% of the configured, deployment-calibrated byte
   ceiling automatically enters the same split actor. Disabled-by-zero is the
   explicit operator override; the default sustain window is 60 seconds.
-- The S3 emulator can serve a prior object version or flip a response bit
-  while preserving ETag and length. CI proves a v1 topology response cannot
-  regress an installed v2 trie, and that a corrupted compacted SST yields no
-  success or partial plaintext before an exact retry from the unchanged
-  authoritative object.
+- The S3 emulator can serve a prior object version or prior LIST result, or
+  flip a response bit while preserving ETag and length. CI hard-restarts into
+  a stale manifest-discovery LIST that omits the newest immutable manifest,
+  proves a v1 topology response cannot regress an installed v2 trie, and
+  proves a corrupted compacted SST yields no success or partial plaintext
+  before an exact retry from the unchanged authoritative object.
 - CI generates a fresh RSA key, boots the service against real JWKS and
   revocation URLs, and signs multiple scoped customer tokens. Equal stream
   names retain separate keys and bytes, unique names are absent from the
@@ -135,8 +136,8 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 ## Immediate red-gate queue
 
-1. Add stale manifest/list injection, the remaining account/per-stream quota
-   dimensions, and an independent security review.
+1. Add the remaining account/per-stream quota dimensions and an independent
+   security review.
 2. Add crash injection at every split phase, abandoned-generation retention/
    GC, sibling merge, per-stream hot-share enforcement, and an explicit
    storage-format migration/rollback plan.

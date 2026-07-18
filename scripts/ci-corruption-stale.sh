@@ -97,6 +97,65 @@ until curl --fail --silent \
   sleep 0.1
 done
 
+# SlateDB manifests are immutable numbered objects. Their stale-read hazard
+# is therefore discovery: a stale LIST can omit the newest manifest, causing
+# an opener to select an older immutable one. Seed s3lite's prior-list slot,
+# commit another durable WAL/manifest, then hard-restart so lazy shard open
+# sees the stale discovery response. It may fail/retry or recover internally,
+# but it must never return a successful partial history.
+manifest_url="${S3_URL}/streams?list-type=2&prefix=${PREFIX}%2Fshards%2Froot%2Fmanifest%2F"
+curl --fail --silent "${manifest_url}" >"${TMP_DIR}/manifest-before.xml"
+manifest_before="$(grep -o '\.manifest' "${TMP_DIR}/manifest-before.xml" | wc -l | tr -d ' ')"
+curl --fail --silent --show-error -X POST \
+  "${STREAMS_URL}/v1/stream/integrity" "${auth[@]}" \
+  -H 'content-type: text/plain' -d 'after-stale-list|' >/dev/null
+expected+='after-stale-list|'
+attempts=0
+while true; do
+  curl --fail --silent "${manifest_url}" >"${TMP_DIR}/manifest-after.xml"
+  manifest_after="$(grep -o '\.manifest' "${TMP_DIR}/manifest-after.xml" | wc -l | tr -d ' ')"
+  if (( manifest_after > manifest_before )); then
+    break
+  fi
+  attempts=$((attempts + 1))
+  if (( attempts > 100 )); then
+    echo "new manifest did not appear after durable append" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+
+stop_streams
+inject "{\"operation\":\"list\",\"key_contains\":\"${PREFIX}/shards/root/manifest/\",\"remaining\":1,\"status\":200,\"stale_list\":true}"
+start_streams
+status="$(curl --silent --show-error --output "${TMP_DIR}/stale-manifest-body" \
+  --write-out '%{http_code}' "${STREAMS_URL}/v1/stream/integrity" "${auth[@]}" || true)"
+if [[ "${status}" =~ ^2 ]] && \
+  [[ "$(cat "${TMP_DIR}/stale-manifest-body")" != "${expected}" ]]; then
+  echo "stale manifest discovery returned successful partial data" >&2
+  exit 1
+fi
+fault_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "${S3_URL}/_s3lite/fault")"
+[[ "${fault_status}" == "204" ]]
+
+attempts=0
+while true; do
+  status="$(curl --silent --show-error --output "${TMP_DIR}/manifest-recovered-body" \
+    --write-out '%{http_code}' "${STREAMS_URL}/v1/stream/integrity" "${auth[@]}" || true)"
+  if [[ "${status}" == "200" ]]; then
+    break
+  fi
+  [[ "${status}" == "503" || "${status}" == "500" ]]
+  attempts=$((attempts + 1))
+  if (( attempts > 100 )); then
+    tail -150 "${TMP_DIR}/streams.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+done
+[[ "$(cat "${TMP_DIR}/manifest-recovered-body")" == "${expected}" ]]
+
 # Publish topology v2, which leaves v1 in s3lite's bounded previous-version
 # slot. A stale GET must be rejected as a regression; the in-memory topology
 # and data routing stay on v2.
@@ -152,4 +211,4 @@ while true; do
 done
 [[ "$(cat "${TMP_DIR}/recovered-body")" == "${expected}" ]]
 
-echo "stale-topology and corrupt-SST fail-closed drill passed"
+echo "stale-manifest/list, stale-topology, and corrupt-SST fail-closed drill passed"

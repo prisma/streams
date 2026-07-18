@@ -49,6 +49,11 @@ struct StoredObject {
     discarded: bool,
 }
 
+struct ListSnapshot {
+    current: Bytes,
+    previous: Option<Bytes>,
+}
+
 #[derive(Default)]
 struct Stats {
     put: AtomicU64,
@@ -83,6 +88,10 @@ struct FaultRule {
     /// GET only: return the immediately preceding version (body + ETag).
     #[serde(default)]
     stale_body: bool,
+    /// LIST only: return the immediately preceding result for the same
+    /// bucket, prefix, delimiter, page size, and continuation position.
+    #[serde(default)]
+    stale_list: bool,
 }
 
 struct AppState {
@@ -90,6 +99,7 @@ struct AppState {
     discard_substr: Option<String>,
     objects: Mutex<BTreeMap<String, StoredObject>>,
     previous_objects: Mutex<HashMap<String, StoredObject>>,
+    list_snapshots: Mutex<HashMap<String, ListSnapshot>>,
     uploads: Mutex<HashMap<String, BTreeMap<u32, Bytes>>>,
     etag_counter: AtomicU64,
     upload_counter: AtomicU64,
@@ -114,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         discard_substr: args.discard_substr.clone(),
         objects: Mutex::new(BTreeMap::new()),
         previous_objects: Mutex::new(HashMap::new()),
+        list_snapshots: Mutex::new(HashMap::new()),
         uploads: Mutex::new(HashMap::new()),
         etag_counter: AtomicU64::new(1),
         upload_counter: AtomicU64::new(1),
@@ -229,14 +240,16 @@ async fn handle(
                     rule.operation.as_str(),
                     "any" | "get" | "head" | "list" | "put" | "delete" | "multipart"
                 );
-                let body_fault = rule.corrupt_body || rule.stale_body;
-                let status_ok = if body_fault {
-                    rule.status == 200
-                        && rule.operation == "get"
-                        && !rule.after_commit
-                        && rule.corrupt_body != rule.stale_body
-                } else {
-                    matches!(rule.status, 408 | 412 | 429 | 500 | 503)
+                let body_faults = u8::from(rule.corrupt_body)
+                    + u8::from(rule.stale_body)
+                    + u8::from(rule.stale_list);
+                let status_ok = match body_faults {
+                    0 => matches!(rule.status, 408 | 412 | 429 | 500 | 503),
+                    1 if rule.status == 200 && !rule.after_commit => {
+                        (rule.operation == "get" && !rule.stale_list)
+                            || (rule.operation == "list" && rule.stale_list)
+                    }
+                    _ => false,
                 };
                 let key_ok = rule
                     .key_contains
@@ -273,16 +286,23 @@ async fn handle(
     let full_key = format!("{bucket}/{key}");
 
     let operation = operation_name(&method, key.is_empty(), &query);
-    let fault = take_fault(&state, operation, &full_key);
-    if let Some(rule) = fault
-        .as_ref()
-        .filter(|rule| !rule.after_commit && !rule.corrupt_body && !rule.stale_body)
-    {
+    let fault_key = if operation == "list" {
+        format!(
+            "{full_key}?prefix={}",
+            query.get("prefix").map(String::as_str).unwrap_or_default()
+        )
+    } else {
+        full_key.clone()
+    };
+    let fault = take_fault(&state, operation, &fault_key);
+    if let Some(rule) = fault.as_ref().filter(|rule| {
+        !rule.after_commit && !rule.corrupt_body && !rule.stale_body && !rule.stale_list
+    }) {
         return fault_response(rule).await;
     }
     if let Some(rule) = fault
         .as_ref()
-        .filter(|rule| rule.corrupt_body || rule.stale_body)
+        .filter(|rule| rule.corrupt_body || rule.stale_body || rule.stale_list)
         && rule.delay_ms > 0
     {
         tokio::time::sleep(Duration::from_millis(rule.delay_ms)).await;
@@ -290,7 +310,12 @@ async fn handle(
 
     let response = match (method.clone(), key.is_empty()) {
         // ---- bucket-level ----
-        (Method::GET, true) => list_objects(&state, &bucket, &query),
+        (Method::GET, true) => list_objects(
+            &state,
+            &bucket,
+            &query,
+            fault.as_ref().is_some_and(|rule| rule.stale_list),
+        ),
         (Method::POST, true) if query.contains_key("delete") => {
             batch_delete(&state, &bucket, body).await
         }
@@ -660,7 +685,12 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
+fn list_objects(
+    state: &Arc<AppState>,
+    bucket: &str,
+    query: &HashMap<String, String>,
+    stale: bool,
+) -> Response {
     state.stats.list.fetch_add(1, Ordering::Relaxed);
     let prefix = query.get("prefix").cloned().unwrap_or_default();
     let delimiter = query.get("delimiter").cloned();
@@ -752,7 +782,42 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
         ));
     }
     xml.push_str("</ListBucketResult>");
-    ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
+    drop(objects);
+
+    let snapshot_key = format!(
+        "{}\0{}\0{}\0{}\0{}",
+        bucket,
+        prefix,
+        delimiter.as_deref().unwrap_or_default(),
+        max_keys,
+        start_after.as_deref().unwrap_or_default()
+    );
+    let encoded = Bytes::from(xml);
+    let selected = {
+        let mut snapshots = state.list_snapshots.lock().unwrap();
+        let snapshot = snapshots
+            .entry(snapshot_key)
+            .or_insert_with(|| ListSnapshot {
+                current: encoded.clone(),
+                previous: None,
+            });
+        if snapshot.current != encoded {
+            snapshot.previous = Some(std::mem::replace(&mut snapshot.current, encoded));
+        }
+        if stale {
+            snapshot.previous.clone()
+        } else {
+            Some(snapshot.current.clone())
+        }
+    };
+    let Some(body) = selected else {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "NoStaleList",
+            "no preceding list result is available",
+        );
+    };
+    ([(header::CONTENT_TYPE, "application/xml")], body).into_response()
 }
 
 async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Response {
