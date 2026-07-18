@@ -3,7 +3,7 @@
 //! `format=json`, long-poll tails.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -13,22 +13,26 @@ use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use bytes::{Bytes, BytesMut};
+use futures_util::StreamExt;
 use object_store::ObjectStore;
 use serde::Deserialize;
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio::sync::oneshot;
 
+use crate::auth::{AuthError, Authenticator, Principal, Verb};
 use crate::crypto::{
     FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame, hex,
-    stream_hash,
 };
 use crate::history::{KeyCache, read_history};
 use crate::offsets::Offset;
-use crate::registry::{Registry, StreamDesc, shard_for_hash};
+use crate::registry::{Registry, StorageHash, StreamDesc, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
+const MAX_FORK_MATERIALIZE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_ROUTING_KEY_BYTES: usize = 4 * 1024;
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_LONG_POLL: Duration = Duration::from_secs(30);
 
@@ -36,17 +40,24 @@ const MAX_LONG_POLL: Duration = Duration::from_secs(30);
 /// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
 /// previous owner, so ownership follows routing with no coordination.
 pub struct ShardOpener {
-    pub open:
-        Box<dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>> + Send + Sync>,
+    pub open: Box<
+        dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
+            + Send
+            + Sync,
+    >,
 }
 
 pub struct AppState {
     pub registry: Registry,
-    pub shard_prefixes: Vec<String>,
+    /// Last-known-good topology, replaced atomically by the topology watcher.
+    /// Requests never observe a partially parsed or partially applied trie.
+    pub shard_prefixes: std::sync::RwLock<Vec<String>>,
+    pub topology_version: std::sync::atomic::AtomicU64,
+    pub topology_ready: std::sync::atomic::AtomicBool,
     pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
     pub opener: ShardOpener,
     /// Serializes shard opens; also carries anti-flap state.
-    pub open_lock: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
+    pub open_lock: tokio::sync::Mutex<HashMap<String, ShardOpenGate>>,
     /// Counts /v1/stream/* requests for the fleet load vector (§4.2).
     pub fleet_ops: std::sync::atomic::AtomicU64,
     /// Concurrently in-flight HTTP requests (all routes) + windowed peak.
@@ -70,6 +81,12 @@ pub struct AppState {
     pub rss_mb_cached: std::sync::atomic::AtomicU64,
     /// 429s issued by the admission backstop (observability).
     pub admit_shed: std::sync::atomic::AtomicU64,
+    /// Per-customer concurrency isolation. Long polls count for their full
+    /// lifetime, preventing one valid tenant from consuming every ingress
+    /// slot or all shard-queue capacity on an instance.
+    pub tenant_admission: Arc<TenantAdmission>,
+    pub audit: Arc<crate::audit::AuditLog>,
+    pub backup: Option<Arc<streams_slate::backup::BackupStatus>>,
     /// This instance's name plus the ring's active instance set, updated by
     /// the fleet loop from desired.json + heartbeat liveness (a selected
     /// instance that has gone heartbeat-dark >30 s is dropped until it
@@ -90,19 +107,261 @@ pub struct AppState {
     /// suite (which cannot send custom headers) exercises per-key streams.
     pub default_ordering: Option<(String, u32)>,
     /// Bearer token required on /v1/* when set (pilot authn).
+    pub authn: Authenticator,
+    /// Pilot/operator token retained for debug endpoints and the pilot's
+    /// internal metrics client. Tenant JWTs never grant operator access.
     pub auth_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
 }
 
-fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    match &state.auth_token {
-        None => true,
-        Some(t) => headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.strip_prefix("Bearer ").map(|x| x == t).unwrap_or(false))
-            .unwrap_or(false),
+#[derive(Default)]
+pub struct ShardOpenGate {
+    closed_at: Option<std::time::Instant>,
+    failures: u32,
+    retry_at: Option<std::time::Instant>,
+}
+
+fn quarantine_delay(failures: u32) -> Duration {
+    if failures < 3 {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(
+            5u64.saturating_mul(1u64 << failures.saturating_sub(3).min(6))
+                .min(300),
+        )
     }
+}
+
+#[derive(Default)]
+struct TenantAdmissionInner {
+    customers: HashMap<String, TenantAdmissionState>,
+}
+
+struct TenantAdmissionState {
+    inflight: usize,
+    write_tokens: f64,
+    last_refill: std::time::Instant,
+    last_seen: std::time::Instant,
+}
+
+pub struct TenantAdmission {
+    inner: Mutex<TenantAdmissionInner>,
+    max_inflight: usize,
+    write_bytes_per_second: u64,
+    write_burst_bytes: u64,
+    customer_capacity: usize,
+}
+
+impl TenantAdmission {
+    pub fn new(
+        max_inflight: usize,
+        write_bytes_per_second: u64,
+        write_burst_bytes: u64,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(TenantAdmissionInner::default()),
+            max_inflight,
+            write_bytes_per_second,
+            write_burst_bytes: write_burst_bytes.max(1),
+            customer_capacity: 100_000,
+        })
+    }
+
+    fn enter(self: &Arc<Self>, customer_id: &str) -> Option<TenantAdmissionGuard> {
+        if self.max_inflight == 0 && self.write_bytes_per_second == 0 {
+            return Some(TenantAdmissionGuard {
+                admission: None,
+                customer_id: String::new(),
+            });
+        }
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.customers.contains_key(customer_id)
+            && inner.customers.len() >= self.customer_capacity
+        {
+            let evict = inner
+                .customers
+                .iter()
+                .filter(|(_, state)| state.inflight == 0)
+                .min_by_key(|(_, state)| state.last_seen)
+                .map(|(customer, _)| customer.clone())?;
+            inner.customers.remove(&evict);
+        }
+        let now = std::time::Instant::now();
+        let state = inner
+            .customers
+            .entry(customer_id.to_string())
+            .or_insert_with(|| TenantAdmissionState {
+                inflight: 0,
+                write_tokens: self.write_burst_bytes as f64,
+                last_refill: now,
+                last_seen: now,
+            });
+        if self.max_inflight > 0 && state.inflight >= self.max_inflight {
+            return None;
+        }
+        state.inflight += 1;
+        state.last_seen = now;
+        Some(TenantAdmissionGuard {
+            admission: Some(self.clone()),
+            customer_id: customer_id.to_string(),
+        })
+    }
+
+    fn charge_write(&self, customer_id: &str, bytes: usize) -> bool {
+        if self.write_bytes_per_second == 0 || bytes == 0 {
+            return true;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let Some(state) = inner.customers.get_mut(customer_id) else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        let refill = now.duration_since(state.last_refill).as_secs_f64()
+            * self.write_bytes_per_second as f64;
+        state.write_tokens = (state.write_tokens + refill).min(self.write_burst_bytes as f64);
+        state.last_refill = now;
+        state.last_seen = now;
+        if bytes as f64 > state.write_tokens {
+            return false;
+        }
+        state.write_tokens -= bytes as f64;
+        true
+    }
+}
+
+struct TenantAdmissionGuard {
+    admission: Option<Arc<TenantAdmission>>,
+    customer_id: String,
+}
+
+impl Drop for TenantAdmissionGuard {
+    fn drop(&mut self) {
+        let Some(admission) = &self.admission else {
+            return;
+        };
+        let mut inner = admission.inner.lock().unwrap();
+        if let Some(state) = inner.customers.get_mut(&self.customer_id) {
+            state.inflight = state.inflight.saturating_sub(1);
+            state.last_seen = std::time::Instant::now();
+        }
+    }
+}
+
+async fn body_with_quota(
+    body: Body,
+    state: &Arc<AppState>,
+    customer_id: &str,
+    limit: usize,
+) -> Result<Bytes, Response> {
+    let mut stream = body.into_data_stream();
+    let mut buffered = BytesMut::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| {
+            err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                "failed to read body",
+            )
+        })?;
+        if buffered.len().saturating_add(chunk.len()) > limit {
+            return Err(err_resp(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                "body too large",
+            ));
+        }
+        if !state
+            .tenant_admission
+            .charge_write(customer_id, chunk.len())
+        {
+            state
+                .admit_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut response = err_resp(
+                StatusCode::TOO_MANY_REQUESTS,
+                "tenant_write_rate",
+                "customer write-byte rate exceeded; retry",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            return Err(response);
+        }
+        buffered.extend_from_slice(&chunk);
+    }
+    Ok(buffered.freeze())
+}
+
+#[allow(clippy::result_large_err)]
+fn admit_customer(
+    state: &Arc<AppState>,
+    customer_id: &str,
+) -> Result<TenantAdmissionGuard, Response> {
+    state.tenant_admission.enter(customer_id).ok_or_else(|| {
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut response = err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "tenant_overloaded",
+            "customer has reached its concurrent request limit; retry",
+        );
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        response
+    })
+}
+
+fn authorization(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+}
+
+#[allow(clippy::result_large_err)]
+fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
+    state
+        .authn
+        .authenticate(authorization(headers))
+        .map_err(|error| match error {
+            AuthError::Unavailable => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "auth_unavailable",
+                    "authentication keys unavailable",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("5"),
+                );
+                response
+            }
+            AuthError::Missing | AuthError::Invalid => err_resp(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "valid bearer token required",
+            ),
+        })
+}
+
+fn operator_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    if authenticate(state, headers).is_ok_and(|principal| principal.operator) {
+        return true;
+    }
+    state.auth_token.as_deref().is_some_and(|expected| {
+        crate::auth::constant_time_bearer_matches(authorization(headers), expected)
+    })
+}
+
+fn forbidden() -> Response {
+    err_resp(
+        StatusCode::FORBIDDEN,
+        "forbidden",
+        "token does not grant this operation",
+    )
 }
 
 impl AppState {
@@ -110,39 +369,69 @@ impl AppState {
     /// fences any previous owner). A shard that was just fenced away is
     /// held off for 3 s (anti-flap while the router converges) → 503.
     async fn engine_for(self: &Arc<Self>, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
-        let prefix = shard_for_hash(&self.shard_prefixes, hash);
-        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
-            return Ok(e.clone());
+        let prefix = {
+            let topology = self.shard_prefixes.read().unwrap();
+            shard_for_hash(&topology, hash)
+        };
+        // Check placement before consulting the local engine cache. Ring
+        // changes must stop a former owner immediately; the old order let a
+        // cached engine bypass this guard indefinitely.
+        let active = self.ring_active.read().unwrap().clone();
+        if !active.is_empty() && !self.instance_name.is_empty() {
+            let owner = active[ring_pick(&prefix, &active)].clone();
+            if owner != self.instance_name {
+                let mut response = err_resp(
+                    StatusCode::CONFLICT,
+                    "not_ring_owner",
+                    &format!("shard {prefix} belongs to {owner}"),
+                );
+                if let Ok(value) = axum::http::HeaderValue::from_str(&owner) {
+                    response.headers_mut().insert("streams-replay-to", value);
+                }
+                return Err(response);
+            }
+        }
+        let cached = { self.shards.read().unwrap().get(&prefix).cloned() };
+        if let Some(engine) = cached {
+            if let Err(error) = engine.prove_ownership().await {
+                return Err(storage_err_resp(error));
+            }
+            return Ok(engine);
         }
         let mut lock = self.open_lock.lock().await;
-        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
-            return Ok(e.clone()); // raced: someone opened it while we waited
+        let raced = { self.shards.read().unwrap().get(&prefix).cloned() };
+        if let Some(engine) = raced {
+            drop(lock);
+            if let Err(error) = engine.prove_ownership().await {
+                return Err(storage_err_resp(error));
+            }
+            return Ok(engine); // raced: someone opened it while we waited
         }
-        if let Some(closed_at) = lock.get(&prefix) {
-            if closed_at.elapsed() < std::time::Duration::from_secs(3) {
+        if let Some(gate) = lock.get(&prefix) {
+            if gate
+                .closed_at
+                .is_some_and(|closed_at| closed_at.elapsed() < Duration::from_secs(3))
+            {
                 return Err(err_resp(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "shard_moving",
                     "shard recently fenced away; retry",
                 ));
             }
-        }
-        // R2/R3: only the ring owner may claim a shard. A stale router can
-        // still send us one — answer 409 + Streams-Replay-To so the router
-        // corrects itself, instead of fencing the rightful owner.
-        let active = self.ring_active.read().unwrap().clone();
-        if !active.is_empty() && !self.instance_name.is_empty() {
-            let owner = active[ring_pick(&prefix, &active)].clone();
-            if owner != self.instance_name {
-                let mut r = err_resp(
-                    StatusCode::CONFLICT,
-                    "not_ring_owner",
-                    &format!("shard {prefix} belongs to {owner}"),
+            if gate
+                .retry_at
+                .is_some_and(|retry_at| retry_at > std::time::Instant::now())
+            {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_quarantined",
+                    "shard open is quarantined after repeated failures; retry later",
                 );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
-                    r.headers_mut().insert("streams-replay-to", v);
-                }
-                return Err(r);
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return Err(response);
             }
         }
         match (self.opener.open)(prefix.clone()).await {
@@ -151,11 +440,25 @@ impl AppState {
                 self.shards.write().unwrap().insert(prefix, engine.clone());
                 Ok(engine)
             }
-            Err(e) => Err(err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "shard_open",
-                &format!("open shard {prefix}: {e}"),
-            )),
+            Err(e) => {
+                let gate = lock.entry(prefix.clone()).or_default();
+                gate.failures = gate.failures.saturating_add(1);
+                let delay = quarantine_delay(gate.failures);
+                gate.retry_at = (!delay.is_zero()).then(|| std::time::Instant::now() + delay);
+                if !delay.is_zero() {
+                    tracing::error!(
+                        shard = %prefix,
+                        failures = gate.failures,
+                        retry_after_s = delay.as_secs(),
+                        "poison shard quarantined after open failure: {e:#}"
+                    );
+                }
+                Err(err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_open",
+                    &format!("open shard {prefix}: {e}"),
+                ))
+            }
         }
     }
 
@@ -164,12 +467,18 @@ impl AppState {
     pub fn shard_closed(self: &Arc<Self>, prefix: &str) {
         self.shards.write().unwrap().remove(prefix);
         if let Ok(mut l) = self.open_lock.try_lock() {
-            l.insert(prefix.to_string(), std::time::Instant::now());
+            l.entry(prefix.to_string()).or_default().closed_at = Some(std::time::Instant::now());
         } else {
             let state = self.clone();
             let prefix = prefix.to_string();
             tokio::spawn(async move {
-                state.open_lock.lock().await.insert(prefix, std::time::Instant::now());
+                state
+                    .open_lock
+                    .lock()
+                    .await
+                    .entry(prefix)
+                    .or_default()
+                    .closed_at = Some(std::time::Instant::now());
             });
         }
     }
@@ -179,7 +488,9 @@ impl AppState {
 struct InflightGuard(Arc<AppState>);
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -188,12 +499,19 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let cur = state.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    state.inflight_peak.fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
+    let cur = state
+        .inflight
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    state
+        .inflight_peak
+        .fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
     let _guard = InflightGuard(state.clone());
     let path_is_stream = req.uri().path().starts_with("/v1/stream");
     if state.admit_max_inflight > 0 && cur > state.admit_max_inflight && path_is_stream {
-        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
         // non-compliant closed-loop client can generate (an instant 429
         // invites an instant retry — measured as a CPU-starving reject
@@ -201,10 +519,7 @@ async fn track_inflight(
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            [
-                ("retry-after", "1"),
-                ("content-type", "application/json"),
-            ],
+            [("retry-after", "1"), ("content-type", "application/json")],
             r#"{"error":{"code":"overloaded","message":"instance at admission capacity; retry"}}"#,
         )
             .into_response();
@@ -214,17 +529,18 @@ async fn track_inflight(
     if state.admit_rss_shed_mb > 0
         && path_is_stream
         && req.method() != axum::http::Method::GET
-        && state.rss_mb_cached.load(std::sync::atomic::Ordering::Relaxed)
+        && state
+            .rss_mb_cached
+            .load(std::sync::atomic::Ordering::Relaxed)
             > state.admit_rss_shed_mb
     {
-        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            [
-                ("retry-after", "2"),
-                ("content-type", "application/json"),
-            ],
+            [("retry-after", "2"), ("content-type", "application/json")],
             r#"{"error":{"code":"overloaded","message":"instance memory pressure; retry"}}"#,
         )
             .into_response();
@@ -237,23 +553,46 @@ async fn track_inflight(
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
 /// (rate constant regardless of latency).
 async fn debug_sleep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(100).min(5_000);
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
+    let ms: u64 = q
+        .get("ms")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(5_000);
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     "ok".into_response()
 }
 
 /// Live resource gauge for probes: in-flight now, peak since last call,
 /// and RSS.
-async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
+async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
     let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
-    let peak = state.inflight_peak.swap(now, std::sync::atomic::Ordering::Relaxed);
+    let peak = state
+        .inflight_peak
+        .swap(now, std::sync::atomic::Ordering::Relaxed);
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "audit_dropped": state.audit.dropped(),
     }))
     .into_response()
 }
@@ -267,24 +606,37 @@ async fn debug_store(
     headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
     }
-    let window: u64 = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(60).clamp(1, 300);
+    let window: u64 = q
+        .get("window")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60)
+        .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/health", get(|| async { "ok" }))
+        .route("/health", get(health_ready))
+        .route("/health/ready", get(health_ready))
+        .route("/health/live", get(|| async { "ok" }))
         .route("/v1/streams", get(list_streams))
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/sleep", get(debug_sleep))
         .route("/v1/stream/{*name}", any(stream_entry))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), track_inflight))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_inflight,
+        ))
         .layer(axum::middleware::map_response(|mut resp: Response| async {
             resp.headers_mut().insert(
                 "x-content-type-options",
@@ -293,6 +645,30 @@ pub fn router(state: Arc<AppState>) -> Router {
             resp
         }))
         .with_state(state)
+}
+
+async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
+    if state.authn.ready()
+        && state.audit.ready()
+        && state.backup.as_ref().is_none_or(|backup| backup.ready())
+        && state
+            .topology_ready
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"ready":true}"#,
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"ready":false}"#,
+        )
+            .into_response()
+    }
 }
 
 /// Rendezvous over instance NAMES (FNV-1a, identical in the pilot LB) —
@@ -325,14 +701,39 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
         .into_response()
 }
 
+fn storage_err_resp(error: slatedb::Error) -> Response {
+    if matches!(
+        error.kind(),
+        slatedb::ErrorKind::Unavailable | slatedb::ErrorKind::Closed(_)
+    ) {
+        let mut response = err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            "stream storage is temporarily unavailable; retry",
+        );
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        response
+    } else {
+        err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &error.to_string(),
+        )
+    }
+}
+
 /// Commit-pipeline timing samples per shard: how long db.write took vs how
 /// long the group then waited for the durable watermark. Diagnostic only.
-async fn debug_timings(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
     }
     let mut shards = serde_json::Map::new();
     let engines: Vec<(String, Arc<ShardEngine>)> = state
@@ -350,16 +751,18 @@ async fn debug_timings(
             .iter()
             .rev()
             .take(40)
-            .map(|g| json!({
-                "ts_ms": g.ts_ms,
-                "queue_wait_us": g.queue_wait_us,
-                "encode_us": g.encode_us,
-                "write_us": g.write_us,
-                "durable_wait_us": g.durable_wait_us,
-                "reqs": g.reqs,
-                "records": g.records,
-                "bytes": g.bytes,
-            }))
+            .map(|g| {
+                json!({
+                    "ts_ms": g.ts_ms,
+                    "queue_wait_us": g.queue_wait_us,
+                    "encode_us": g.encode_us,
+                    "write_us": g.write_us,
+                    "durable_wait_us": g.durable_wait_us,
+                    "reqs": g.reqs,
+                    "records": g.records,
+                    "bytes": g.bytes,
+                })
+            })
             .collect();
         shards.insert(prefix.clone(), json!(samples));
     }
@@ -370,17 +773,23 @@ async fn debug_timings(
         .into_response()
 }
 
-async fn list_streams(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let principal = match authenticate(&state, &headers) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    if !principal.allows_verb(Verb::List) {
+        return forbidden();
     }
-    match state.registry.list(1000).await {
+    let _tenant_guard = match admit_customer(&state, &principal.customer_id) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    match state.registry.list(&principal.customer_id, 1000).await {
         Ok(streams) => {
             let body: Vec<_> = streams
                 .iter()
+                .filter(|descriptor| principal.allows_name(&descriptor.name))
                 .map(|d| {
                     json!({
                         "name": d.name,
@@ -396,7 +805,11 @@ async fn list_streams(
             )
                 .into_response()
         }
-        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -420,14 +833,90 @@ async fn stream_entry(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    // Browser preflights carry no bearer token. Keep the response generic so
+    // it exposes neither stream existence nor tenant identity.
+    if method == Method::OPTIONS {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET,HEAD,PUT,POST,DELETE")
+            .header("Access-Control-Allow-Headers", "*")
+            .header("Access-Control-Max-Age", "600")
+            .body(Body::empty())
+            .unwrap();
+    }
     let st = state.clone();
-    let resp = stream_entry_inner(State(state), Path(name), Query(params), method, headers, body)
-        .await;
+    let principal = match authenticate(&state, &headers) {
+        Ok(principal) => principal,
+        Err(response) => return response,
+    };
+    let _tenant_guard = match admit_customer(&state, &principal.customer_id) {
+        Ok(guard) => guard,
+        Err(response) => return response,
+    };
+    let started = std::time::Instant::now();
+    let audit_customer = principal.customer_id.clone();
+    let audit_token = principal.token_id.clone();
+    let audit_name = name.clone();
+    let audit_method = method.clone();
+    let resp = stream_entry_inner(
+        State(state),
+        Path(name),
+        Query(params),
+        method,
+        headers,
+        body,
+        principal,
+    )
+    .await;
     // Only successful work counts toward the fleet load vector — otherwise
     // routing noise (409 replays, 404s) masquerades as demand and drives
     // the desired count up on garbage.
     if resp.status().is_success() {
-        st.fleet_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        st.fleet_ops
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let control_plane = matches!(audit_method, Method::PUT | Method::DELETE);
+    let audit_event = crate::audit::AuditEvent {
+        timestamp_ms: now_ms(),
+        customer_id: audit_customer.clone(),
+        token_id: audit_token.clone(),
+        stream: audit_name.clone(),
+        method: audit_method.to_string(),
+        status: resp.status().as_u16(),
+        duration_us: started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+    };
+    let sample_data_plane = !control_plane && rand::random_ratio(1, 100);
+    if control_plane {
+        if let Err(error) = st.audit.record_durable(&audit_event).await {
+            tracing::error!("durable control-plane audit failed: {error}");
+            if resp.status().is_success() {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "audit_unavailable",
+                    "operation completed but its audit record could not be persisted; retry",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return response;
+            }
+        }
+    } else if sample_data_plane {
+        st.audit.record_sampled(audit_event);
+    }
+    if control_plane || sample_data_plane {
+        tracing::info!(
+            target: "streams_audit",
+            customer_id = %audit_customer,
+            token_id = %audit_token,
+            stream = %audit_name,
+            method = %audit_method,
+            status = resp.status().as_u16(),
+            duration_us = started.elapsed().as_micros() as u64,
+            "request audit"
+        );
     }
     resp
 }
@@ -439,35 +928,70 @@ async fn stream_entry_inner(
     method: Method,
     headers: HeaderMap,
     body: Body,
+    principal: Principal,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
-    }
+    let customer_id = principal.customer_id.clone();
     // Queue subresources: /v1/stream/<name>/queue/{consumer}/{receive,ack,extend}
     if let Some((stream, route)) = name.split_once("/queue/") {
-        return queue_entry(state, stream.to_string(), route.to_string(), method, headers, body)
-            .await;
+        if !principal.allows(Verb::Queue, stream) {
+            return forbidden();
+        }
+        return queue_entry(
+            state,
+            customer_id,
+            stream.to_string(),
+            route.to_string(),
+            method,
+            headers,
+            body,
+        )
+        .await;
     }
     // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
     if let Some((stream, route)) = name.split_once("/touch/") {
-        return touch_entry(state, stream.to_string(), route.to_string(), method, headers, params)
-            .await;
+        if !principal.allows(Verb::Touch, stream) {
+            return forbidden();
+        }
+        return touch_entry(
+            state,
+            customer_id,
+            stream.to_string(),
+            route.to_string(),
+            method,
+            headers,
+            params,
+        )
+        .await;
+    }
+    let verb = match method {
+        Method::PUT => Verb::Create,
+        Method::POST => Verb::Append,
+        Method::GET | Method::HEAD => Verb::Read,
+        Method::DELETE => Verb::Delete,
+        _ => {
+            return err_resp(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "unsupported method",
+            );
+        }
+    };
+    if !principal.allows(verb, &name) {
+        return forbidden();
     }
     match method {
         Method::PUT => {
-            let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+            let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES).await {
                 Ok(b) => b,
-                Err(_) => {
-                    return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
-                }
+                Err(response) => return response,
             };
-            create_stream(state, name, headers, body).await
+            create_stream(state, customer_id, name, headers, body).await
         }
-        Method::POST => append(state, name, headers, body).await,
-        Method::GET => read(state, name, params, headers, false).await,
-        Method::HEAD => read(state, name, params, headers, true).await,
-        Method::DELETE => delete_stream(state, name).await,
-        _ => err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "unsupported method"),
+        Method::POST => append(state, customer_id, name, headers, body).await,
+        Method::GET => read(state, customer_id, name, params, headers, false).await,
+        Method::HEAD => read(state, customer_id, name, params, headers, true).await,
+        Method::DELETE => delete_stream(state, customer_id, name).await,
+        _ => unreachable!("method checked above"),
     }
 }
 
@@ -486,22 +1010,6 @@ fn parse_duration(s: &str) -> Option<Duration> {
         return v.parse::<u64>().ok().map(Duration::from_secs);
     }
     s.parse::<u64>().ok().map(Duration::from_secs)
-}
-
-fn parse_expiry(headers: &HeaderMap) -> Result<Option<i64>, String> {
-    let ttl = headers.get("stream-ttl").and_then(|v| v.to_str().ok());
-    let expires = headers.get("stream-expires-at").and_then(|v| v.to_str().ok());
-    match (ttl, expires) {
-        (Some(_), Some(_)) => Err("at most one of Stream-TTL and Stream-Expires-At".into()),
-        (Some(t), None) => {
-            let d = parse_duration(t).ok_or_else(|| format!("invalid Stream-TTL: {t}"))?;
-            Ok(Some(now_ms() + d.as_millis() as i64))
-        }
-        (None, Some(e)) => chrono::DateTime::parse_from_rfc3339(e)
-            .map(|ts| Some(ts.timestamp_millis()))
-            .map_err(|_| format!("invalid Stream-Expires-At: {e}")),
-        (None, None) => Ok(None),
-    }
 }
 
 /// Extract + validate the request's stream key against the descriptor.
@@ -529,22 +1037,75 @@ fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
     let Some(epoch) = desc.epoch_bytes() else {
         return KeyCheck::BadDescriptor;
     };
-    if key.fingerprint(&epoch) != desc.key_fingerprint {
+    let fingerprint = key.fingerprint(&epoch);
+    if !bool::from(
+        fingerprint
+            .as_bytes()
+            .ct_eq(desc.key_fingerprint.as_bytes()),
+    ) {
         return KeyCheck::Wrong;
     }
     KeyCheck::Ok(key, epoch)
 }
 
-fn key_version(headers: &HeaderMap) -> u32 {
-    headers
-        .get("stream-key-version")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0)
+fn key_version(headers: &HeaderMap) -> Result<u32, String> {
+    match headers.get("stream-key-version") {
+        None => Ok(0),
+        Some(value) => {
+            let value = value.to_str().map_err(|_| "invalid Stream-Key-Version")?;
+            parse_uint_strict(value)
+                .and_then(|version| u32::try_from(version).ok())
+                .ok_or_else(|| "invalid Stream-Key-Version".to_string())
+        }
+    }
 }
 
 fn desc_alive(desc: &StreamDesc) -> bool {
     !desc.deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
+}
+
+fn dead_stream_response(desc: &StreamDesc) -> Response {
+    if !desc.fork_children.is_empty() {
+        err_resp(
+            StatusCode::GONE,
+            "stream_soft_deleted",
+            "stream is retained by one or more forks",
+        )
+    } else {
+        err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found")
+    }
+}
+
+async fn renew_sliding_ttl(state: &AppState, desc: &StreamDesc) -> Result<StreamDesc, Response> {
+    if desc.ttl_secs.is_none() {
+        return Ok(desc.clone());
+    }
+    match state
+        .registry
+        .renew_ttl(desc.owner(), &desc.name, &desc.stream_epoch)
+        .await
+    {
+        Ok(Some(renewed)) if desc_alive(&renewed) && renewed.stream_epoch == desc.stream_epoch => {
+            Ok(renewed)
+        }
+        Ok(_) => Err(err_resp(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "stream expired during TTL renewal",
+        )),
+        Err(error) => {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ttl_renewal_unavailable",
+                &error.to_string(),
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            Err(response)
+        }
+    }
 }
 
 fn rand_epoch() -> [u8; 16] {
@@ -573,15 +1134,25 @@ fn parse_uint_strict(s: &str) -> Option<u64> {
 }
 
 fn hdr(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 fn want_close(headers: &HeaderMap) -> bool {
-    hdr(headers, "stream-closed").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false)
+    hdr(headers, "stream-closed")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn tail_token(next: u64) -> String {
-    if next == 0 { Offset::START } else { Offset(Some(next - 1)) }.encode()
+    if next == 0 {
+        Offset::START
+    } else {
+        Offset(Some(next - 1))
+    }
+    .encode()
 }
 
 /// JSON append batching: top-level array = batch (one message per element);
@@ -611,8 +1182,11 @@ fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerRe
     match (id, epoch, seq) {
         (None, None, None) => Ok(None),
         (Some(id), Some(e), Some(s)) => {
-            if id.is_empty() {
-                return Err("Producer-Id must not be empty".into());
+            if id.is_empty() || id.len() > 256 {
+                return Err("Producer-Id must contain 1..=256 bytes".into());
+            }
+            if id.starts_with("__streams_internal/") {
+                return Err("Producer-Id uses a reserved prefix".into());
             }
             let epoch = parse_uint_strict(&e).ok_or("invalid Producer-Epoch")?;
             let seq = parse_uint_strict(&s).ok_or("invalid Producer-Seq")?;
@@ -622,8 +1196,45 @@ fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerRe
     }
 }
 
+fn initial_request_hash(
+    entries: &[Bytes],
+    close: bool,
+    fork_identity: Option<&str>,
+) -> Option<String> {
+    if entries.is_empty() && !close && fork_identity.is_none() {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"streams-create-initial-v1\0");
+    digest.update([u8::from(close)]);
+    if let Some(identity) = fork_identity {
+        digest.update((identity.len() as u64).to_be_bytes());
+        digest.update(identity.as_bytes());
+    } else {
+        digest.update(0u64.to_be_bytes());
+    }
+    digest.update((entries.len() as u64).to_be_bytes());
+    for entry in entries {
+        digest.update((entry.len() as u64).to_be_bytes());
+        digest.update(entry);
+    }
+    Some(hex(&digest.finalize()))
+}
+
+fn initial_config_matches(existing: &StreamDesc, requested: Option<&str>) -> bool {
+    match (existing.initial_request_hash.as_deref(), requested) {
+        (Some(stored), Some(requested)) => stored == requested,
+        (None, Some(_)) => false,
+        // Omitting the body on an idempotent PUT is allowed; it does not
+        // re-run or alter a prior initial append.
+        (_, None) => true,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn fresh_desc(
-    state: &AppState,
+    customer_id: &str,
     name: &str,
     key: &StreamKey,
     content_type: String,
@@ -633,8 +1244,8 @@ fn fresh_desc(
     touch_templates: Vec<crate::registry::PinnedTemplate>,
     ordering: Option<String>,
     segment_count: u32,
+    initial_request_hash: Option<String>,
 ) -> StreamDesc {
-    let _ = state;
     let epoch = rand_epoch();
     let (tt_fpr, sig_key) = if profile.as_deref() == Some("state-protocol") {
         let token = crate::crypto::touch_token(key, &epoch);
@@ -647,6 +1258,7 @@ fn fresh_desc(
         (None, None)
     };
     StreamDesc {
+        customer_id: customer_id.to_string(),
         name: name.to_string(),
         stream_epoch: hex(&epoch),
         key_fingerprint: key.fingerprint(&epoch),
@@ -664,37 +1276,346 @@ fn fresh_desc(
         touch_token_fingerprint: tt_fpr,
         touch_templates,
         touch_sig_key: sig_key,
+        initial_request_hash,
+        forked_from: None,
+        fork_source_epoch: None,
+        fork_offset: None,
+        fork_sub_offset: None,
+        fork_children: Vec::new(),
+        fork_reference_registered: false,
     }
+}
+
+#[derive(Clone)]
+struct ForkPlan {
+    source_name: String,
+    source_epoch: String,
+    offset: String,
+    sub_offset: Option<u64>,
+    inherited: Vec<Bytes>,
+    content_type: String,
+    ttl_secs: Option<u64>,
+    expires_at_ms: Option<i64>,
+}
+
+impl ForkPlan {
+    fn identity(&self) -> String {
+        format!(
+            "{}\0{}\0{}\0{}",
+            self.source_name,
+            self.source_epoch,
+            self.offset,
+            self.sub_offset.unwrap_or(0)
+        )
+    }
+}
+
+fn apply_fork(desc: &mut StreamDesc, plan: Option<&ForkPlan>) {
+    if let Some(plan) = plan {
+        desc.forked_from = Some(plan.source_name.clone());
+        desc.fork_source_epoch = Some(plan.source_epoch.clone());
+        desc.fork_offset = Some(plan.offset.clone());
+        desc.fork_sub_offset = plan.sub_offset;
+    }
+}
+
+fn fork_config_matches(desc: &StreamDesc, plan: Option<&ForkPlan>) -> bool {
+    match plan {
+        Some(plan) => {
+            desc.forked_from.as_deref() == Some(plan.source_name.as_str())
+                && desc.fork_source_epoch.as_deref() == Some(plan.source_epoch.as_str())
+                && desc.fork_offset.as_deref() == Some(plan.offset.as_str())
+                && desc.fork_sub_offset == plan.sub_offset
+        }
+        None => {
+            desc.forked_from.is_none()
+                && desc.fork_source_epoch.is_none()
+                && desc.fork_offset.is_none()
+                && desc.fork_sub_offset.is_none()
+        }
+    }
+}
+
+fn fork_source_name(raw: &str) -> Option<String> {
+    let path = if raw.starts_with("http://") || raw.starts_with("https://") {
+        reqwest::Url::parse(raw).ok()?.path().to_string()
+    } else {
+        raw.to_string()
+    };
+    let name = path.strip_prefix("/v1/stream/")?;
+    if name.is_empty() || name.len() > 1024 {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+async fn prepare_fork(
+    state: &Arc<AppState>,
+    customer_id: &str,
+    target_name: &str,
+    headers: &HeaderMap,
+) -> Result<Option<ForkPlan>, Response> {
+    let source_header = hdr(headers, "stream-forked-from");
+    if source_header.is_none()
+        && (headers.contains_key("stream-fork-offset")
+            || headers.contains_key("stream-fork-sub-offset"))
+    {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork",
+            "fork offset headers require Stream-Forked-From",
+        ));
+    }
+    let Some(source_header) = source_header else {
+        return Ok(None);
+    };
+    let Some(source_name) = fork_source_name(&source_header) else {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork",
+            "invalid Stream-Forked-From",
+        ));
+    };
+    if source_name == target_name {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork",
+            "a stream cannot fork itself",
+        ));
+    }
+    let source = match state.registry.get(customer_id, &source_name).await {
+        Ok(Some(source)) if desc_alive(&source) => source,
+        Ok(Some(_)) => {
+            return Err(err_resp(
+                StatusCode::CONFLICT,
+                "fork_source_deleted",
+                "fork source is deleted or expired",
+            ));
+        }
+        Ok(None) => {
+            return Err(err_resp(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "fork source not found",
+            ));
+        }
+        Err(error) => {
+            return Err(err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &error.to_string(),
+            ));
+        }
+    };
+    if source.is_per_key() {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork",
+            "forking per-key streams is not supported",
+        ));
+    }
+    let (key, epoch) = match check_key(raw_key(headers, state), &source) {
+        KeyCheck::Ok(key, epoch) => (key, epoch),
+        KeyCheck::Missing => {
+            return Err(err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            ));
+        }
+        KeyCheck::Wrong => {
+            return Err(err_resp(
+                StatusCode::FORBIDDEN,
+                "wrong_key",
+                "fork source key mismatch",
+            ));
+        }
+        KeyCheck::BadDescriptor => {
+            return Err(err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad fork source descriptor",
+            ));
+        }
+    };
+    let engine = state.engine_for(&source.routing_hash()).await?;
+    let handle = engine
+        .stream_handle(source.storage_hash())
+        .await
+        .map_err(storage_err_resp)?;
+    let end = handle.state.lock().unwrap().durable.next;
+    let parsed_offset = match hdr(headers, "stream-fork-offset") {
+        // The fork extension specification names the beginning with the
+        // legacy two-word zero token, while ordinary stream offsets use the
+        // canonical Crockford codec. Accept only this exact legacy sentinel.
+        Some(raw) if raw == "0000000000000000_0000000000000000" => Offset::START,
+        Some(raw) => Offset::parse(&raw).map_err(|message| {
+            err_resp(StatusCode::BAD_REQUEST, "invalid_fork_offset", &message)
+        })?,
+        None => {
+            if end == 0 {
+                Offset::START
+            } else {
+                Offset(Some(end - 1))
+            }
+        }
+    };
+    let full_records = parsed_offset.scan_from();
+    if full_records > end {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork_offset",
+            "fork offset is beyond source tail",
+        ));
+    }
+    let sub_offset = match hdr(headers, "stream-fork-sub-offset") {
+        Some(raw) => {
+            let parsed = parse_ttl_strict(&raw).ok_or_else(|| {
+                err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_fork_sub_offset",
+                    "invalid Stream-Fork-Sub-Offset",
+                )
+            })?;
+            (parsed > 0).then_some(parsed)
+        }
+        None => None,
+    };
+    let desired_records = if source.is_json() {
+        full_records
+            .checked_add(sub_offset.unwrap_or(0))
+            .ok_or_else(|| {
+                err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_fork_sub_offset",
+                    "fork sub-offset overflow",
+                )
+            })?
+    } else {
+        full_records + u64::from(sub_offset.is_some())
+    };
+    if desired_records > end {
+        return Err(err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_fork_sub_offset",
+            "fork sub-offset is beyond source data",
+        ));
+    }
+
+    let mut inherited = Vec::new();
+    let mut materialized_bytes = 0usize;
+    let mut scan_from = 0u64;
+    while scan_from < desired_records {
+        let out = read_records(
+            state,
+            &key,
+            &epoch,
+            &handle,
+            &engine,
+            scan_from,
+            None,
+            MAX_READ_BYTES,
+        )
+        .await
+        .map_err(|message| err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message))?;
+        if out.recs.is_empty() {
+            return Err(err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "fork_source_unavailable",
+                "fork source ended before requested boundary",
+            ));
+        }
+        for record in out.recs {
+            if record.off >= desired_records {
+                break;
+            }
+            let payload = if let Some(sub_offset) = sub_offset
+                && !source.is_json()
+                && record.off == full_records
+            {
+                let take = usize::try_from(sub_offset).unwrap_or(usize::MAX);
+                if take > record.payload.len() {
+                    return Err(err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_fork_sub_offset",
+                        "binary fork sub-offset exceeds append length",
+                    ));
+                }
+                record.payload.slice(..take)
+            } else {
+                record.payload
+            };
+            materialized_bytes =
+                materialized_bytes
+                    .checked_add(payload.len())
+                    .ok_or_else(|| {
+                        err_resp(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "fork_too_large",
+                            "fork materialization size overflow",
+                        )
+                    })?;
+            if materialized_bytes > MAX_FORK_MATERIALIZE_BYTES {
+                return Err(err_resp(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "fork_too_large",
+                    "fork materialization exceeds 32 MiB",
+                ));
+            }
+            inherited.push(payload);
+        }
+        scan_from = out.last.map(|last| last + 1).unwrap_or(desired_records);
+    }
+
+    Ok(Some(ForkPlan {
+        source_name,
+        source_epoch: source.stream_epoch,
+        offset: parsed_offset.encode(),
+        sub_offset,
+        inherited,
+        content_type: source.content_type,
+        ttl_secs: source.ttl_secs,
+        expires_at_ms: source.expires_at_ms,
+    }))
 }
 
 async fn create_stream(
     state: Arc<AppState>,
+    customer_id: String,
     name: String,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let Some(raw_key_str) = raw_key(&headers, &state) else {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Stream-Encryption-Key required",
+        );
     };
     let key = match StreamKey::from_b64(raw_key_str) {
         Ok(k) => k,
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m),
     };
-    let content_type = hdr(&headers, "content-type")
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mut content_type =
+        hdr(&headers, "content-type").unwrap_or_else(|| "application/octet-stream".to_string());
     let ttl_hdr = hdr(&headers, "stream-ttl");
     let exp_hdr = hdr(&headers, "stream-expires-at");
     if ttl_hdr.is_some() && exp_hdr.is_some() {
-        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "TTL and Expires-At together");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "TTL and Expires-At together",
+        );
     }
-    let ttl_secs = match &ttl_hdr {
+    let mut ttl_secs = match &ttl_hdr {
         Some(t) => match parse_ttl_strict(t) {
             Some(v) => Some(v),
             None => return err_resp(StatusCode::BAD_REQUEST, "invalid_ttl", "invalid Stream-TTL"),
         },
         None => None,
     };
-    let expires_at_ms = match &exp_hdr {
+    let mut expires_at_ms = match &exp_hdr {
         Some(e) => match chrono::DateTime::parse_from_rfc3339(e) {
             Ok(ts) => Some(ts.timestamp_millis()),
             Err(_) => {
@@ -705,10 +1626,14 @@ async fn create_stream(
     };
     let close = want_close(&headers);
     let profile = hdr(&headers, "stream-profile");
-    if let Some(p) = &profile {
-        if !matches!(p.as_str(), "generic" | "state-protocol" | "queue") {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_profile", "unsupported profile");
-        }
+    if let Some(p) = &profile
+        && !matches!(p.as_str(), "generic" | "state-protocol" | "queue")
+    {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_profile",
+            "unsupported profile",
+        );
     }
     // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
     // order, byte-identical semantics to before this feature existed.
@@ -717,107 +1642,343 @@ async fn create_stream(
         Some(v) if v.eq_ignore_ascii_case("total") => None,
         Some(v) if v.eq_ignore_ascii_case("per-key") => Some("per-key".to_string()),
         Some(_) => {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_ordering", "ordering must be total or per-key");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_ordering",
+                "ordering must be total or per-key",
+            );
         }
     };
     let segment_count: u32 = match hdr(&headers, "stream-segments") {
         None => {
             if ordering.is_some() {
-                state.default_ordering.as_ref().map(|(_, n)| *n).unwrap_or(2)
+                state
+                    .default_ordering
+                    .as_ref()
+                    .map(|(_, n)| *n)
+                    .unwrap_or(2)
             } else {
                 0
             }
         }
         Some(_) if ordering.is_none() => {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "Stream-Segments requires Stream-Ordering: per-key");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Stream-Segments requires Stream-Ordering: per-key",
+            );
         }
         Some(v) => match parse_ttl_strict(&v) {
             Some(n) if (1..=256).contains(&n) && (n as u32).is_power_of_two() => n as u32,
             _ => {
-                return err_resp(StatusCode::BAD_REQUEST, "invalid_segments", "Stream-Segments must be a power of two in 1..=256");
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_segments",
+                    "Stream-Segments must be a power of two in 1..=256",
+                );
             }
         },
     };
-    if ordering.is_some() {
-        if let Some(p) = hdr(&headers, "stream-profile") {
-            if p == "state-protocol" || p == "queue" {
-                return err_resp(StatusCode::BAD_REQUEST, "unsupported_combination", "this profile requires total ordering (v1)");
-            }
+    if ordering.is_some()
+        && matches!(
+            hdr(&headers, "stream-profile").as_deref(),
+            Some("state-protocol" | "queue")
+        )
+    {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unsupported_combination",
+            "this profile requires total ordering (v1)",
+        );
+    }
+    let fork_plan = match prepare_fork(&state, &customer_id, &name, &headers).await {
+        Ok(plan) => plan,
+        Err(response) => return response,
+    };
+    if let Some(plan) = &fork_plan {
+        if hdr(&headers, "content-type").is_some()
+            && crate::registry::media_type(&content_type)
+                != crate::registry::media_type(&plan.content_type)
+        {
+            return err_resp(
+                StatusCode::CONFLICT,
+                "fork_content_type_mismatch",
+                "fork content type must match source",
+            );
+        }
+        if hdr(&headers, "content-type").is_none() {
+            content_type = plan.content_type.clone();
+        }
+        if ttl_hdr.is_none() && exp_hdr.is_none() {
+            ttl_secs = plan.ttl_secs;
+            expires_at_ms = if plan.ttl_secs.is_some() {
+                None
+            } else {
+                plan.expires_at_ms
+            };
+        }
+        if profile
+            .as_deref()
+            .is_some_and(|profile| profile != "generic")
+            || ordering.is_some()
+        {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_fork",
+                "forks require the generic total-order profile",
+            );
         }
     }
     let mut touch_templates: Vec<crate::registry::PinnedTemplate> = Vec::new();
     if let Some(raw) = hdr(&headers, "stream-touch-templates") {
         if profile.as_deref() != Some("state-protocol") {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "templates need state-protocol");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "templates need state-protocol",
+            );
         }
         match serde_json::from_str(&raw) {
             Ok(list) => touch_templates = list,
-            Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string()),
+            Err(e) => {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string());
+            }
         }
         if touch_templates.len() > crate::touch::MAX_TEMPLATES_PER_STREAM
             || touch_templates
                 .iter()
                 .any(|t| t.entity.is_empty() || t.fields.is_empty() || t.fields.len() > 3)
         {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", "bad template shape/caps");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_templates",
+                "bad template shape/caps",
+            );
+        }
+        let mut per_entity: HashMap<&str, usize> = HashMap::new();
+        for template in &touch_templates {
+            let count = per_entity.entry(&template.entity).or_default();
+            *count += 1;
+            if *count > crate::touch::MAX_TEMPLATES_PER_ENTITY
+                || template.entity.len() > 256
+                || template
+                    .fields
+                    .iter()
+                    .any(|field| field.is_empty() || field.len() > 256)
+            {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_templates",
+                    "template entity/field bounds exceeded",
+                );
+            }
         }
     }
 
+    // Validate and canonicalize the initial body BEFORE publishing the
+    // descriptor. Otherwise a malformed JSON create leaves behind a stream
+    // that can only be repaired by delete/recreate.
+    let body_entries: Vec<Bytes> = if body.is_empty() {
+        Vec::new()
+    } else if crate::registry::media_type(&content_type) == "application/json" {
+        match json_entries(&body, true) {
+            Ok(entries) => entries,
+            Err(message) => {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_json", &message);
+            }
+        }
+    } else {
+        vec![body.clone()]
+    };
+    let mut initial_entries = fork_plan
+        .as_ref()
+        .map(|plan| plan.inherited.clone())
+        .unwrap_or_default();
+    initial_entries.extend(body_entries);
+    let fork_identity = fork_plan.as_ref().map(ForkPlan::identity);
+    let requested_initial_hash =
+        initial_request_hash(&initial_entries, close, fork_identity.as_deref());
+
     // Resolve existing.
-    let existing = match state.registry.get(&name).await {
+    let existing = match state.registry.get(&customer_id, &name).await {
         Ok(v) => v,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     let (created, desc) = match existing {
         Some(d) if desc_alive(&d) => {
             // Idempotent PUT: config must match.
-            let same_ct =
-                crate::registry::media_type(&d.content_type) == crate::registry::media_type(&content_type)
-                    || hdr(&headers, "content-type").is_none();
+            let same_ct = crate::registry::media_type(&d.content_type)
+                == crate::registry::media_type(&content_type)
+                || hdr(&headers, "content-type").is_none();
             if !same_ct
                 || d.ttl_secs != ttl_secs
                 || d.ordering != ordering
                 || (ordering.is_some() && d.segment_count != segment_count)
+                || !fork_config_matches(&d, fork_plan.as_ref())
+                || !initial_config_matches(&d, requested_initial_hash.as_deref())
             {
-                return err_resp(StatusCode::CONFLICT, "config_mismatch", "stream exists with different config");
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "config_mismatch",
+                    "stream exists with different config",
+                );
             }
             match check_key(raw_key(&headers, &state), &d) {
                 KeyCheck::Ok(..) => {}
                 KeyCheck::Wrong => {
                     return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
                 }
-                _ => {}
+                KeyCheck::Missing => {
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "missing_key",
+                        "Stream-Encryption-Key required",
+                    );
+                }
+                KeyCheck::BadDescriptor => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "bad descriptor",
+                    );
+                }
             }
             (false, d)
         }
-        Some(_) => {
-            // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
-            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
-            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            match state.registry.recreate(&name, fresh).await {
-                Ok(d) => (true, d),
-                Err(e) => {
-                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
-                }
+        Some(dead) => {
+            if !dead.fork_children.is_empty() {
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "stream_soft_deleted",
+                    "stream name is retained by one or more forks",
+                );
             }
-        }
-        None => {
-            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
-            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            match state.registry.create(fresh).await {
+            if let Err(error) = state.registry.release_fork_chain(&customer_id, &dead).await {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "fork_reference_unavailable",
+                    &error.to_string(),
+                );
+            }
+            // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
+            let mut fresh = fresh_desc(
+                &customer_id,
+                &name,
+                &key,
+                content_type.clone(),
+                ttl_secs,
+                expires_at_ms,
+                profile.clone(),
+                touch_templates.clone(),
+                ordering.clone(),
+                segment_count,
+                requested_initial_hash.clone(),
+            );
+            fresh.queue_max_deliveries =
+                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            apply_fork(&mut fresh, fork_plan.as_ref());
+            match state
+                .registry
+                .recreate(&customer_id, &name, &dead.stream_epoch, fresh)
+                .await
+            {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
-                    // Raced: treat as idempotent-config path.
+                    // A concurrent recreator won. Treat it exactly like an
+                    // already-existing stream; never cache or use the losing
+                    // request's key for the winner's incarnation.
+                    match check_key(raw_key(&headers, &state), &d) {
+                        KeyCheck::Ok(..) => {}
+                        KeyCheck::Wrong => {
+                            return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
+                        }
+                        _ => {
+                            return err_resp(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                "bad descriptor",
+                            );
+                        }
+                    }
                     if crate::registry::media_type(&d.content_type)
                         != crate::registry::media_type(&content_type)
                         || d.ttl_secs != ttl_secs
+                        || d.ordering != ordering
+                        || (ordering.is_some() && d.segment_count != segment_count)
+                        || !fork_config_matches(&d, fork_plan.as_ref())
+                        || !initial_config_matches(&d, requested_initial_hash.as_deref())
                     {
                         return err_resp(StatusCode::CONFLICT, "config_mismatch", "conflict");
                     }
                     (false, d)
                 }
                 Err(e) => {
-                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
+            }
+        }
+        None => {
+            let mut fresh = fresh_desc(
+                &customer_id,
+                &name,
+                &key,
+                content_type.clone(),
+                ttl_secs,
+                expires_at_ms,
+                profile.clone(),
+                touch_templates.clone(),
+                ordering.clone(),
+                segment_count,
+                requested_initial_hash.clone(),
+            );
+            fresh.queue_max_deliveries =
+                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            apply_fork(&mut fresh, fork_plan.as_ref());
+            match state.registry.create(fresh).await {
+                Ok((true, d)) => (true, d),
+                Ok((false, d)) => {
+                    // Raced: treat as idempotent-config path.
+                    match check_key(raw_key(&headers, &state), &d) {
+                        KeyCheck::Ok(..) => {}
+                        KeyCheck::Wrong => {
+                            return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
+                        }
+                        _ => {
+                            return err_resp(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                "bad descriptor",
+                            );
+                        }
+                    }
+                    if crate::registry::media_type(&d.content_type)
+                        != crate::registry::media_type(&content_type)
+                        || d.ttl_secs != ttl_secs
+                        || d.ordering != ordering
+                        || (ordering.is_some() && d.segment_count != segment_count)
+                        || !fork_config_matches(&d, fork_plan.as_ref())
+                        || !initial_config_matches(&d, requested_initial_hash.as_deref())
+                    {
+                        return err_resp(StatusCode::CONFLICT, "config_mismatch", "conflict");
+                    }
+                    (false, d)
+                }
+                Err(e) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
                 }
             }
         }
@@ -828,41 +1989,40 @@ async fn create_stream(
     } else {
         desc.storage_hash()
     };
-    let epoch_bytes = desc.epoch_bytes().unwrap_or([0u8; 16]);
+    let Some(epoch_bytes) = desc.epoch_bytes() else {
+        return err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "bad descriptor",
+        );
+    };
     state.keys.put(hash, key.clone(), epoch_bytes);
     // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
     // router can compute placement without knowing the stream epoch; the
     // record keyspace keeps using storage/segment hashes.
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state.engine_for(&desc.routing_hash()).await {
         Ok(e) => e,
         Err(r) => return r,
     };
 
-    // Initial body / close-on-create ride the committer.
+    // The create-time initial append rides a reserved durable producer id on
+    // EVERY matching retry. If the first response was lost after durability,
+    // producer dedupe returns the original tail instead of appending twice;
+    // if it failed before durability, the retry completes it.
     let mut next = {
         match engine.stream_handle(hash).await {
             Ok(h) => h.state.lock().unwrap().durable.next,
-            Err(e) => {
-                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
-            }
+            Err(e) => return storage_err_resp(e),
         }
     };
     let mut closed_now = false;
-    if created && (!body.is_empty() || close) {
-        let entries: Vec<Bytes> = if body.is_empty() {
-            Vec::new()
-        } else if desc.is_json() {
-            match json_entries(&body, true) {
-                Ok(v) => v,
-                Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_json", &m),
-            }
-        } else {
-            vec![body.clone()]
-        };
+    if requested_initial_hash.is_some() {
+        let entries = initial_entries;
         let subkey = derive_subkey(&key, &epoch_bytes, "", 0);
         let bytes = entries.iter().map(|e| e.len()).sum();
         let (tx, rx) = oneshot::channel();
         let req = AppendReq {
+            customer_id: customer_id.clone(),
             enqueued_at: std::time::Instant::now(),
             hash,
             entries,
@@ -873,7 +2033,11 @@ async fn create_stream(
             seq: None,
             bytes,
             close,
-            producer: None,
+            producer: Some(crate::shard::ProducerReq {
+                id: "__streams_internal/create".to_string(),
+                epoch: 0,
+                seq: 0,
+            }),
             deferred_error: None,
             touch: None,
             resp: tx,
@@ -886,13 +2050,109 @@ async fn create_stream(
                 next = ack.next_offset;
                 closed_now = ack.closed;
             }
-            _ => return err_resp(StatusCode::REQUEST_TIMEOUT, "append_timeout", "initial body timed out"),
+            Ok(Ok(Err(AppendErr::ShardMoved))) => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_moving",
+                    "shard ownership changed; retry create",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return response;
+            }
+            Ok(Ok(Err(AppendErr::Overloaded))) => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "overloaded",
+                    "active stream capacity exhausted; retry create",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return response;
+            }
+            Ok(Ok(Err(AppendErr::Internal(message)))) => {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &message);
+            }
+            Ok(Ok(Err(_))) => {
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "initial_append_conflict",
+                    "initial create append conflicted; retry",
+                );
+            }
+            Ok(Err(_)) => {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_moving",
+                    "initial append responder closed; retry",
+                );
+            }
+            Err(_) => {
+                return err_resp(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "append_timeout",
+                    "initial body timed out; retry the same PUT",
+                );
+            }
         }
-    } else if !created && close {
-        closed_now = true; // preserved on idempotent PUT of a closed stream
     }
 
-    let status = if created { StatusCode::CREATED } else { StatusCode::OK };
+    if let Some(plan) = &fork_plan
+        && !desc.fork_reference_registered
+    {
+        match state
+            .registry
+            .add_fork_child(&customer_id, &plan.source_name, &plan.source_epoch, &name)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                if created {
+                    let _ = state
+                        .registry
+                        .mark_deleted(&customer_id, &name, &desc.stream_epoch)
+                        .await;
+                }
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_source_changed",
+                    "fork source changed or was deleted during creation",
+                );
+            }
+            Err(error) => {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "fork_reference_unavailable",
+                    &error.to_string(),
+                );
+            }
+        }
+        if let Err(error) = state
+            .registry
+            .update(&customer_id, &name, |current| {
+                if current.stream_epoch == desc.stream_epoch {
+                    current.fork_reference_registered = true;
+                }
+            })
+            .await
+        {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "fork_reference_unavailable",
+                &error.to_string(),
+            );
+        }
+    }
+
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
     let mut resp = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -907,12 +2167,58 @@ async fn create_stream(
     resp.body(Body::empty()).unwrap()
 }
 
-
-async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
-    match state.registry.update(&name, |d| d.deleted = true).await {
-        Ok(Some(_)) => StatusCode::NO_CONTENT.into_response(),
+async fn delete_stream(state: Arc<AppState>, customer_id: String, name: String) -> Response {
+    let observed = match state.registry.get(&customer_id, &name).await {
+        Ok(Some(desc)) => desc,
+        Ok(None) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(error) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &error.to_string(),
+            );
+        }
+    };
+    if !desc_alive(&observed) {
+        if observed.fork_children.is_empty()
+            && let Err(error) = state
+                .registry
+                .release_fork_chain(&customer_id, &observed)
+                .await
+        {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "fork_reference_unavailable",
+                &error.to_string(),
+            );
+        }
+        return dead_stream_response(&observed);
+    }
+    match state
+        .registry
+        .mark_deleted(&customer_id, &name, &observed.stream_epoch)
+        .await
+    {
+        Ok(Some((true, desc))) => {
+            state.touch.remove(&desc.storage_hash());
+            if desc.fork_children.is_empty()
+                && let Err(error) = state.registry.release_fork_chain(&customer_id, &desc).await
+            {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "fork_reference_unavailable",
+                    &error.to_string(),
+                );
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Some((false, desc))) => dead_stream_response(&desc),
         Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(error) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &error.to_string(),
+        ),
     }
 }
 
@@ -924,19 +2230,18 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 /// cache keys are self-authorizing.
 fn touch_authorized(headers: &HeaderMap, state: &AppState, desc: &StreamDesc) -> bool {
     if let Some(expected) = &desc.touch_token_fingerprint {
-        if let Some(raw) = headers.get("touch-token").and_then(|v| v.to_str().ok()) {
-            if let Some(bytes) = crate::crypto::unhex(raw.trim()) {
-                if let Ok(token) = <[u8; 32]>::try_from(bytes) {
-                    if &crate::crypto::touch_token_fingerprint(&token) == expected {
-                        return true;
-                    }
-                }
+        if let Some(raw) = headers.get("touch-token").and_then(|v| v.to_str().ok())
+            && let Some(bytes) = crate::crypto::unhex(raw.trim())
+            && let Ok(token) = <[u8; 32]>::try_from(bytes)
+        {
+            let actual = crate::crypto::touch_token_fingerprint(&token);
+            if bool::from(actual.as_bytes().ct_eq(expected.as_bytes())) {
+                return true;
             }
         }
-        matches!(check_key(raw_key(headers, state), desc), KeyCheck::Ok(..))
-    } else {
-        !matches!(check_key(raw_key(headers, state), desc), KeyCheck::Wrong)
+        return matches!(check_key(raw_key(headers, state), desc), KeyCheck::Ok(..));
     }
+    false
 }
 
 fn pinned_of(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
@@ -948,36 +2253,61 @@ fn pinned_of(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
 
 async fn touch_entry(
     state: Arc<AppState>,
+    customer_id: String,
     stream: String,
     route: String,
     method: Method,
     headers: HeaderMap,
     params: ReadParams,
 ) -> Response {
-    let desc = match state.registry.get(&stream).await {
+    let desc = match state.registry.get(&customer_id, &stream).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     if desc.profile.as_deref() != Some("state-protocol") {
         return err_resp(StatusCode::NOT_FOUND, "not_found", "touch is not enabled");
     }
+    // Touch journals are process-local projections of durable appends. Do
+    // not let a fenced-but-alive former owner keep serving a stale journal.
+    let _engine = match state.engine_for(&desc.routing_hash()).await {
+        Ok(engine) => engine,
+        Err(response) => return response,
+    };
 
     // GET /touch/key/{watchKeyHex}?cursor=..&sig=..[&timeout=..]
     // The collapsible wait: one key per URL, journal-global cursors, the
     // `sig` URL capability as auth (so CDN cache keys are self-authorizing).
     if let Some(key_hex) = route.strip_prefix("key/") {
         if method != Method::GET {
-            return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "GET only");
+            return err_resp(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET only",
+            );
         }
         let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
         if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_key", "watch key must be hex16");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_key",
+                "watch key must be hex16",
+            );
         }
         let sig_ok = match (&params.sig, &desc.touch_sig_key) {
             (Some(sig), Some(stored)) => crate::crypto::unhex(stored)
                 .and_then(|k| <[u8; 32]>::try_from(k).ok())
-                .map(|k| crate::crypto::wait_url_sig(&k, &key_hex) == sig.trim().to_ascii_lowercase())
+                .map(|k| {
+                    let expected = crate::crypto::wait_url_sig(&k, &key_hex);
+                    let supplied = sig.trim().to_ascii_lowercase();
+                    bool::from(expected.as_bytes().ct_eq(supplied.as_bytes()))
+                })
                 .unwrap_or(false),
             _ => false,
         };
@@ -988,7 +2318,10 @@ async fn touch_entry(
                 "a valid sig, Touch-Token, or Stream-Encryption-Key is required",
             );
         }
-        let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
+        let journal =
+            state
+                .touch
+                .journal(desc.storage_hash(), desc.routing_hash(), &pinned_of(&desc));
         let cursor = params.cursor.as_deref().unwrap_or("now");
         let timeout = params
             .timeout
@@ -1001,7 +2334,12 @@ async fn touch_entry(
 
         use crate::touch::WaitOutcome;
         let end_off_enc = |end: u64| {
-            if end == 0 { Offset::START } else { Offset(Some(end - 1)) }.encode()
+            if end == 0 {
+                Offset::START
+            } else {
+                Offset(Some(end - 1))
+            }
+            .encode()
         };
         let (body, cache) = match out {
             // Coalescing (identical in-flight URLs collapsed) delivers the
@@ -1009,14 +2347,23 @@ async fn touch_entry(
             // Measured: long TTLs let desynchronized clients walk a cached
             // hop-chain one generation at a time, so head wakes cache for
             // just 2s and everything else is no-store.
-            WaitOutcome::Touched { cursor, end_offset, proven, cacheable } => (
+            WaitOutcome::Touched {
+                cursor,
+                end_offset,
+                proven,
+                cacheable,
+            } => (
                 json!({
                     "touched": true,
                     "reason": if proven { "touched" } else { "resync" },
                     "cursor": cursor,
                     "streamEndOffset": end_off_enc(end_offset),
                 }),
-                if cacheable { "public, max-age=2" } else { "no-store" },
+                if cacheable {
+                    "public, max-age=2"
+                } else {
+                    "no-store"
+                },
             ),
             // A touch may still arrive for this (key, cursor): never cache.
             WaitOutcome::Timeout { cursor, end_offset } => (
@@ -1055,8 +2402,14 @@ async fn touch_entry(
     }
     match (method, route.as_str()) {
         (Method::GET, "meta") => {
-            let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
-            ([(header::CONTENT_TYPE, "application/json")], journal.meta().to_string())
+            let journal =
+                state
+                    .touch
+                    .journal(desc.storage_hash(), desc.routing_hash(), &pinned_of(&desc));
+            (
+                [(header::CONTENT_TYPE, "application/json")],
+                journal.meta().to_string(),
+            )
                 .into_response()
         }
         _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown touch route"),
@@ -1073,20 +2426,41 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
         .map(|t| t.timestamp_millis())
 }
 
-async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Body) -> Response {
-    let desc = match state.registry.get(&name).await {
+async fn append(
+    state: Arc<AppState>,
+    customer_id: String,
+    name: String,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let desc = match state.registry.get(&customer_id, &name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Ok(Some(d)) => return dead_stream_response(&d),
+        Ok(None) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
 
@@ -1095,9 +2469,9 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),
     };
     let close = want_close(&headers);
-    let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+    let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES).await {
         Ok(b) => b,
-        Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+        Err(response) => return response,
     };
     let close_only = close && body.is_empty();
 
@@ -1111,17 +2485,28 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         match &ct {
             None => {
                 if producer.is_some() {
-                    deferred = Some(crate::shard::DeferredErr::BadBody("missing Content-Type".into()));
+                    deferred = Some(crate::shard::DeferredErr::BadBody(
+                        "missing Content-Type".into(),
+                    ));
                 } else {
-                    return err_resp(StatusCode::BAD_REQUEST, "missing_content_type", "Content-Type required");
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "missing_content_type",
+                        "Content-Type required",
+                    );
                 }
             }
             Some(c) => {
-                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type) {
+                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type)
+                {
                     if producer.is_some() {
                         deferred = Some(crate::shard::DeferredErr::CtMismatch);
                     } else {
-                        return err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch");
+                        return err_resp(
+                            StatusCode::CONFLICT,
+                            "content_type_mismatch",
+                            "content type mismatch",
+                        );
                     }
                 }
             }
@@ -1154,6 +2539,20 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     }
 
     let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
+    if routing_key.len() > MAX_ROUTING_KEY_BYTES {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_routing_key",
+            "Stream-Key exceeds 4096 bytes",
+        );
+    }
+    // Renew only after authentication and body/config validation, but before
+    // publishing the append. A failed renewal therefore cannot turn a
+    // durable append into an ambiguous retry for clients without producers.
+    let desc = match renew_sliding_ttl(&state, &desc).await {
+        Ok(desc) => desc,
+        Err(response) => return response,
+    };
     let seg_ord: Option<u32> = if desc.is_per_key() {
         Some(desc.segment_for(&routing_key))
     } else {
@@ -1163,20 +2562,25 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         Some(o) => desc.segment_hash(o),
         None => desc.storage_hash(),
     };
-    let kv = key_version(&headers);
+    let kv = match key_version(&headers) {
+        Ok(version) => version,
+        Err(message) => return err_resp(StatusCode::BAD_REQUEST, "invalid_key_version", &message),
+    };
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(hash, key, epoch);
 
     // H1 state-protocol hook (unchanged; uses the incarnation hash).
     let touch = if desc.profile.as_deref() == Some("state-protocol") && !entries.is_empty() {
-        let journal = state.touch.journal(hash, &pinned_of(&desc));
+        let journal = state
+            .touch
+            .journal(hash, desc.routing_hash(), &pinned_of(&desc));
         let snapshot = journal.snapshot();
         let mut key_ids: Vec<u32> = Vec::new();
         for raw in &entries {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {
-                if let Some(mut ids) = crate::touch::TouchJournal::derive_key_ids(&snapshot, &v) {
-                    key_ids.append(&mut ids);
-                }
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw)
+                && let Some(mut ids) = crate::touch::TouchJournal::derive_key_ids(&snapshot, &v)
+            {
+                key_ids.append(&mut ids);
             }
         }
         key_ids.sort_unstable();
@@ -1184,7 +2588,11 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         if key_ids.is_empty() {
             None
         } else {
-            Some(crate::shard::TouchFeed { journal, key_ids, next_offset: 0 })
+            Some(crate::shard::TouchFeed {
+                journal,
+                key_ids,
+                next_offset: 0,
+            })
         }
     } else {
         None
@@ -1194,7 +2602,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let metric_bytes = bytes as u64;
     let (tx, rx) = oneshot::channel();
     let req = AppendReq {
-            enqueued_at: std::time::Instant::now(),
+        customer_id: customer_id.clone(),
+        enqueued_at: std::time::Instant::now(),
         hash,
         entries,
         routing_key,
@@ -1209,12 +2618,16 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         touch,
         resp: tx,
     };
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state.engine_for(&desc.routing_hash()).await {
         Ok(e) => e,
         Err(r) => return r,
     };
     if engine.try_enqueue(req).is_err() {
-        return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "append queue full");
+        return err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "overloaded",
+            "append queue full",
+        );
     }
     let outcome = match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
         Ok(Ok(o)) => o,
@@ -1230,14 +2643,18 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let tok = |next: u64| match seg_ord {
         Some(o) => crate::offsets::encode_ep(
             o,
-            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+            if next == 0 {
+                Offset::START
+            } else {
+                Offset(Some(next - 1))
+            },
         ),
         None => tail_token(next),
     };
     match outcome {
         Ok(ack) => {
             if !ack.duplicate {
-                state.metrics.append(&name, metric_bytes);
+                state.metrics.append(desc.owner(), &name, metric_bytes);
             }
             let status = if ack.duplicate || close_only || producer.is_none() {
                 StatusCode::NO_CONTENT
@@ -1270,7 +2687,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
                 .header(header::CONTENT_TYPE, "application/json");
             r = r.header(header::CACHE_CONTROL, "no-store");
             r.body(Body::from(
-                json!({"error": {"code": "stream_closed", "message": "stream is closed"}}).to_string(),
+                json!({"error": {"code": "stream_closed", "message": "stream is closed"}})
+                    .to_string(),
             ))
             .unwrap()
         }
@@ -1280,7 +2698,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             .header("Producer-Received-Seq", received.to_string())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}}).to_string(),
+                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}})
+                    .to_string(),
             ))
             .unwrap(),
         Err(AppendErr::ProducerStale { current_epoch }) => Response::builder()
@@ -1288,7 +2707,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             .header("Producer-Epoch", current_epoch.to_string())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}}).to_string(),
+                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}})
+                    .to_string(),
             ))
             .unwrap(),
         Err(AppendErr::ProducerEpochSeq) => err_resp(
@@ -1296,18 +2716,46 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             "producer_epoch_seq",
             "a new epoch must start at seq 0",
         ),
-        Err(AppendErr::CtMismatch) => {
-            err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch")
+        Err(AppendErr::ShardMoved) => {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shard_moving",
+                "shard ownership changed; retry",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
         }
+        Err(AppendErr::Overloaded) => {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "overloaded",
+                "active stream capacity exhausted; retry",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
+        }
+        Err(AppendErr::CtMismatch) => err_resp(
+            StatusCode::CONFLICT,
+            "content_type_mismatch",
+            "content type mismatch",
+        ),
         Err(AppendErr::BadBody(m)) => err_resp(StatusCode::BAD_REQUEST, "invalid_body", &m),
         Err(AppendErr::Internal(m)) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     }
 }
 
-
 /// A decrypted record ready for response assembly.
 struct PlainRec {
     off: u64,
+    ts_ms: i64,
+    key_version: u32,
+    routing_key: String,
     payload: Bytes,
 }
 
@@ -1319,9 +2767,9 @@ struct ReadOut {
 }
 
 /// Merged two-tier read returning plaintext records.
+#[allow(clippy::too_many_arguments)]
 async fn read_records(
     state: &AppState,
-    desc: &StreamDesc,
     key: &StreamKey,
     epoch: &[u8; 16],
     handle: &Arc<crate::shard::StreamHandle>,
@@ -1338,18 +2786,37 @@ async fn read_records(
         let st = handle.state.lock().unwrap();
         (st.durable.absorbed, st.durable.next)
     };
-    let mut out = ReadOut { recs: Vec::new(), last: None, end, completed: true };
+    let mut out = ReadOut {
+        recs: Vec::new(),
+        last: None,
+        end,
+        completed: true,
+    };
     let mut budget = max_bytes;
 
     let mut history_completed = true;
     if scan_from < absorbed && budget > 0 {
-        let hist = read_history(&state.data_store, &hash, key, scan_from, absorbed, key_filter, budget)
-            .await
-            .map_err(|e| e.to_string())?;
+        let hist = read_history(
+            &state.data_store,
+            &hash,
+            key,
+            scan_from,
+            absorbed,
+            key_filter,
+            budget,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         history_completed = hist.completed;
         for (off, rec) in hist.records {
             budget = budget.saturating_sub(rec.payload.len());
-            out.recs.push(PlainRec { off, payload: rec.payload });
+            out.recs.push(PlainRec {
+                off,
+                ts_ms: rec.ts,
+                key_version: rec.key_version,
+                routing_key: rec.routing_key,
+                payload: rec.payload,
+            });
             out.last = Some(off);
         }
     }
@@ -1378,10 +2845,21 @@ async fn read_records(
             let sk = *subkeys
                 .entry((frame.header.routing_key.clone(), frame.header.key_version))
                 .or_insert_with(|| {
-                    derive_subkey(key, epoch, &frame.header.routing_key, frame.header.key_version)
+                    derive_subkey(
+                        key,
+                        epoch,
+                        &frame.header.routing_key,
+                        frame.header.key_version,
+                    )
                 });
             let pt = decrypt_frame(&sk, &hash, &frame, &raw)?;
-            out.recs.push(PlainRec { off: frame.header.offset, payload: Bytes::from(pt) });
+            out.recs.push(PlainRec {
+                off: frame.header.offset,
+                ts_ms: frame.header.ts_ms,
+                key_version: frame.header.key_version,
+                routing_key: frame.header.routing_key,
+                payload: Bytes::from(pt),
+            });
         }
         if let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
@@ -1402,7 +2880,41 @@ fn interval_cursor(req_cursor: Option<&str>) -> String {
 }
 
 fn read_etag(desc: &StreamDesc, scan_from: u64, end: u64, closed: bool) -> String {
-    format!("\"{}-{}-{}-{}\"", &desc.stream_epoch[..8], scan_from, end, closed as u8)
+    format!(
+        "\"{}-{}-{}-{}\"",
+        &desc.stream_epoch[..8],
+        scan_from,
+        end,
+        closed as u8
+    )
+}
+
+fn encode_frame_response(
+    key: &StreamKey,
+    epoch: &[u8; 16],
+    hash: &StorageHash,
+    records: &[PlainRec],
+) -> Bytes {
+    let mut buf = BytesMut::new();
+    let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
+    for record in records {
+        let subkey = *subkeys
+            .entry((record.routing_key.clone(), record.key_version))
+            .or_insert_with(|| derive_subkey(key, epoch, &record.routing_key, record.key_version));
+        let frame = encrypt_frame(
+            &subkey,
+            hash,
+            &FrameHeader {
+                offset: record.off,
+                ts_ms: record.ts_ms,
+                key_version: record.key_version,
+                routing_key: record.routing_key.clone(),
+            },
+            &record.payload,
+        );
+        buf.extend_from_slice(&frame);
+    }
+    buf.freeze()
 }
 
 enum StartPos {
@@ -1412,15 +2924,23 @@ enum StartPos {
 
 async fn read(
     state: Arc<AppState>,
+    customer_id: String,
     name: String,
     params: ReadParams,
     headers: HeaderMap,
     head_only: bool,
 ) -> Response {
-    let desc = match state.registry.get(&name).await {
+    let mut desc = match state.registry.get(&customer_id, &name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Ok(Some(d)) => return dead_stream_response(&d),
+        Ok(None) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     // A single-segment per-key stream is the degenerate case: totally
     // ordered, epoch-0 tokens — serve it through the standard path so every
@@ -1433,13 +2953,13 @@ async fn read(
     } else {
         desc.storage_hash()
     };
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state.engine_for(&desc.routing_hash()).await {
         Ok(e) => e,
         Err(r) => return r,
     };
     let handle = match engine.stream_handle(hash).await {
         Ok(h) => h,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => return storage_err_resp(e),
     };
     let (mut end, mut closed) = {
         let st = handle.state.lock().unwrap();
@@ -1468,14 +2988,29 @@ async fn read(
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
     state.keys.put(hash, key.clone(), epoch);
+
+    // HEAD is metadata-only and explicitly does not renew a sliding TTL.
+    // Every authenticated GET, including offset=now and live handshakes, does.
+    desc = match renew_sliding_ttl(&state, &desc).await {
+        Ok(desc) => desc,
+        Err(response) => return response,
+    };
 
     let live = match params.live.as_deref() {
         None => None,
@@ -1484,7 +3019,11 @@ async fn read(
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
     };
     if live.is_some() && params.offset.is_none() {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_offset",
+            "live reads require offset",
+        );
     }
     let start = match params.offset.as_deref() {
         None => StartPos::At(0),
@@ -1504,7 +3043,11 @@ async fn read(
             // Instant tail snapshot for plain reads; long-poll from `now`
             // falls through with scan_from = current end.
             if live.is_none() {
-                let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+                let body: Body = if desc.is_json() {
+                    Body::from("[]")
+                } else {
+                    Body::empty()
+                };
                 let mut r = Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -1525,35 +3068,35 @@ async fn read(
     let is_long_poll = live == Some("long-poll");
     if is_long_poll && scan_from >= end {
         if !closed {
-        let wait = params
-            .timeout
-            .as_deref()
-            .and_then(parse_duration)
-            .unwrap_or(Duration::from_secs(3))
-            .min(MAX_LONG_POLL);
-        let deadline = tokio::time::Instant::now() + wait;
-        loop {
-            let notified = handle.notify.notified();
-            let (e2, c2) = {
-                let st = handle.state.lock().unwrap();
-                (st.durable.next, st.durable.closed)
-            };
-            end = e2;
-            closed = c2;
-            if end > scan_from || closed {
-                break;
+            let wait = params
+                .timeout
+                .as_deref()
+                .and_then(parse_duration)
+                .unwrap_or(Duration::from_secs(3))
+                .min(MAX_LONG_POLL);
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let notified = handle.notify.notified();
+                let (e2, c2) = {
+                    let st = handle.state.lock().unwrap();
+                    (st.durable.next, st.durable.closed)
+                };
+                end = e2;
+                closed = c2;
+                if end > scan_from || closed {
+                    break;
+                }
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep_until(deadline) => break,
+                }
             }
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep_until(deadline) => break,
-            }
-        }
         }
         if end <= scan_from {
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
             // a tail probe is billable work even when it returns no bytes
             // (run-1 finding: `offset=now` reads were invisible to billing).
-            state.metrics.read(&name, 0);
+            state.metrics.read(desc.owner(), &name, 0);
             let mut r = Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .header("Stream-Next-Offset", tail_token(end))
@@ -1568,26 +3111,40 @@ async fn read(
     }
 
     let frames_format = params.format.as_deref() == Some("frames");
-    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, params.key.as_deref(), MAX_READ_BYTES).await {
+    let out = match read_records(
+        &state,
+        &key,
+        &epoch,
+        &handle,
+        &engine,
+        scan_from,
+        params.key.as_deref(),
+        MAX_READ_BYTES,
+    )
+    .await
+    {
         Ok(o) => o,
         Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     };
-    let next_token = out.last.map(|o| Offset(Some(o)).encode()).unwrap_or_else(|| {
-        match params.offset.as_deref() {
-            Some(raw) if raw != "now" => Offset::parse(raw).map(|o| o.encode()).unwrap_or_else(|_| tail_token(out.end)),
+    let next_token = out
+        .last
+        .map(|o| Offset(Some(o)).encode())
+        .unwrap_or_else(|| match params.offset.as_deref() {
+            Some(raw) if raw != "now" => Offset::parse(raw)
+                .map(|o| o.encode())
+                .unwrap_or_else(|_| tail_token(out.end)),
             _ => tail_token(out.end),
-        }
-    });
+        });
     let up_to_date = out.completed;
     let etag = read_etag(&desc, scan_from, out.end, closed);
-    if let Some(inm) = hdr(&headers, "if-none-match") {
-        if inm == etag {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header("ETag", etag)
-                .body(Body::empty())
-                .unwrap();
-        }
+    if let Some(inm) = hdr(&headers, "if-none-match")
+        && inm == etag
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header("ETag", etag)
+            .body(Body::empty())
+            .unwrap();
     }
 
     let body: Bytes = if desc.is_json() && !frames_format {
@@ -1602,26 +3159,7 @@ async fn read(
         buf.extend_from_slice(b"]");
         buf.freeze()
     } else if frames_format {
-        let mut buf = BytesMut::new();
-        let mut subkeys: HashMap<String, [u8; 32]> = HashMap::new();
-        for r in &out.recs {
-            let sk = *subkeys
-                .entry(params.key.clone().unwrap_or_default())
-                .or_insert_with(|| derive_subkey(&key, &epoch, params.key.as_deref().unwrap_or(""), 0));
-            let frame = encrypt_frame(
-                &sk,
-                &hash,
-                &FrameHeader {
-                    offset: r.off,
-                    ts_ms: 0,
-                    key_version: 0,
-                    routing_key: params.key.clone().unwrap_or_default(),
-                },
-                &r.payload,
-            );
-            buf.extend_from_slice(&frame);
-        }
-        buf.freeze()
+        encode_frame_response(&key, &epoch, &hash, &out.recs)
     } else {
         let mut buf = BytesMut::new();
         for r in &out.recs {
@@ -1630,14 +3168,17 @@ async fn read(
         buf.freeze()
     };
 
-    state.metrics.read(&name, body.len() as u64);
+    state.metrics.read(desc.owner(), &name, body.len() as u64);
     let mut r = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, if frames_format {
-            "application/x-durable-stream-frames".to_string()
-        } else {
-            desc.content_type.clone()
-        })
+        .header(
+            header::CONTENT_TYPE,
+            if frames_format {
+                "application/x-durable-stream-frames".to_string()
+            } else {
+                desc.content_type.clone()
+            },
+        )
         .header("Stream-Next-Offset", next_token)
         .header("ETag", etag)
         .header("Cross-Origin-Resource-Policy", "cross-origin");
@@ -1665,8 +3206,12 @@ fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
         ev.push_str(&String::from_utf8_lossy(payload));
         ev.push_str("]\n\n");
     } else if mt.starts_with("text/") {
+        // SSE treats CR, LF, and CRLF as line endings. Normalize CRLF as one
+        // boundary so attacker-controlled payloads remain literal data lines
+        // without introducing an empty event boundary or duplicating newlines.
         let text = String::from_utf8_lossy(payload);
-        for line in text.split(['\r', '\n']) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        for line in normalized.split('\n') {
             ev.push_str("data:");
             ev.push_str(line);
             ev.push('\n');
@@ -1695,6 +3240,7 @@ fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) 
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sse_response(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -1726,15 +3272,47 @@ async fn sse_response(
                 (st.durable.next, st.durable.closed)
             };
             let mut sent_any = false;
-            if pos < end && !from_now || (from_now && !first && pos < end) {
-                match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, key_filter.as_deref(), MAX_READ_BYTES).await {
+            if (!first || !from_now) && pos < end {
+                match read_records(
+                    &state,
+                    &key,
+                    &epoch,
+                    &handle,
+                    &engine,
+                    pos,
+                    key_filter.as_deref(),
+                    MAX_READ_BYTES,
+                )
+                .await
+                {
                     Ok(out) => {
-                        for r in &out.recs {
+                        for (index, r) in out.recs.iter().enumerate() {
                             let ev = sse_data_event(&desc, &r.payload);
-                            if tx.send(Ok(Bytes::from(ev))).await.is_err() {
+                            let next = r.off + 1;
+                            let is_last = index + 1 == out.recs.len();
+                            let caught_up = is_last && out.completed && next >= end;
+                            let ctl = sse_control(
+                                next,
+                                cursor.as_deref(),
+                                caught_up,
+                                closed && caught_up,
+                            );
+                            // Keep the protocol-mandated data/control pair in
+                            // one transport chunk. Besides reducing framing
+                            // ambiguity, this prevents payload text such as
+                            // "event: control" from making a chunk-oriented
+                            // client stop before receiving the real control.
+                            if tx
+                                .send(Ok(Bytes::from(format!("{ev}{ctl}"))))
+                                .await
+                                .is_err()
+                            {
                                 return;
                             }
                             sent_any = true;
+                            if closed && caught_up {
+                                return;
+                            }
                         }
                         if let Some(last) = out.last {
                             pos = last + 1;
@@ -1747,7 +3325,7 @@ async fn sse_response(
                 }
             }
             let at_end = pos >= end;
-            if at_end || sent_any || first {
+            if !sent_any && (at_end || first) {
                 let ctl = sse_control(pos, cursor.as_deref(), at_end, closed && at_end);
                 if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
                     return;
@@ -1787,7 +3365,6 @@ async fn sse_response(
     r.body(Body::from_stream(stream)).unwrap()
 }
 
-
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
 
 async fn read_per_key(
@@ -1801,12 +3378,16 @@ async fn read_per_key(
     let seg_tok = |ord: u32, next: u64| {
         crate::offsets::encode_ep(
             ord,
-            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+            if next == 0 {
+                Offset::START
+            } else {
+                Offset(Some(next - 1))
+            },
         )
     };
     // All segments of a per-key stream live in the parent stream's shard
     // (routing unit = stream; Pravega-style cross-shard segments deferred).
-    let parent_engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let parent_engine = match state.engine_for(&desc.routing_hash()).await {
         Ok(e) => e,
         Err(r) => return r,
     };
@@ -1824,7 +3405,7 @@ async fn read_per_key(
                 let st = h.state.lock().unwrap();
                 (st.durable.next, st.durable.closed)
             }
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => return storage_err_resp(e),
         };
         let mut r = Response::builder()
             .status(StatusCode::OK)
@@ -1842,11 +3423,19 @@ async fn read_per_key(
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
 
@@ -1857,7 +3446,11 @@ async fn read_per_key(
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
     };
     if live.is_some() && params.offset.is_none() {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_offset",
+            "live reads require offset",
+        );
     }
     // Accommodation #1: whole-stream live tails have no single durable
     // cursor across concurrent segments.
@@ -1887,7 +3480,7 @@ async fn read_per_key(
         state.keys.put(hash, key.clone(), epoch);
         let handle = match engine.stream_handle(hash).await {
             Ok(h) => h,
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => return storage_err_resp(e),
         };
         let (mut end, closed) = {
             let st = handle.state.lock().unwrap();
@@ -1897,7 +3490,11 @@ async fn read_per_key(
             None => end, // now
             Some((e, p)) => {
                 if e != ord && params.offset.as_deref() != Some("-1") && !(e == 0 && p == 0) {
-                    return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", "offset segment does not own this key");
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_offset",
+                        "offset segment does not own this key",
+                    );
                 }
                 p
             }
@@ -1944,12 +3541,31 @@ async fn read_per_key(
             };
             return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
         }
-        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, Some(rk), MAX_READ_BYTES).await
+        let out = match read_records(
+            &state,
+            &key,
+            &epoch,
+            &handle,
+            &engine,
+            scan_from,
+            Some(rk),
+            MAX_READ_BYTES,
+        )
+        .await
         {
             Ok(o) => o,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
-        return per_key_body(&desc, out, ord, scan_from, closed, seg_tok, live.is_some(), &params);
+        return per_key_body(
+            &desc,
+            out,
+            ord,
+            scan_from,
+            closed,
+            seg_tok,
+            live.is_some(),
+            &params,
+        );
     }
 
     // Unkeyed: segment-sequential replay (accommodation: per-segment order).
@@ -1959,9 +3575,13 @@ async fn read_per_key(
             let (hash, engine) = seg_handle(n - 1);
             let end = match engine.stream_handle(hash).await {
                 Ok(h) => h.state.lock().unwrap().durable.next,
-                Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+                Err(e) => return storage_err_resp(e),
             };
-            let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+            let body: Body = if desc.is_json() {
+                Body::from("[]")
+            } else {
+                Body::empty()
+            };
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -1976,7 +3596,7 @@ async fn read_per_key(
     };
     let mut recs: Vec<PlainRec> = Vec::new();
     let mut budget = MAX_READ_BYTES;
-    let mut last_tok = None;
+    let mut last_tok: String;
     let mut up_to_date = false;
     let mut closed_at_end = false;
     loop {
@@ -1984,18 +3604,19 @@ async fn read_per_key(
         state.keys.put(hash, key.clone(), epoch);
         let handle = match engine.stream_handle(hash).await {
             Ok(h) => h,
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => return storage_err_resp(e),
         };
         let closed = handle.state.lock().unwrap().durable.closed;
-        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, None, budget).await {
-            Ok(o) => o,
-            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        };
+        let out =
+            match read_records(&state, &key, &epoch, &handle, &engine, pos, None, budget).await {
+                Ok(o) => o,
+                Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+            };
         for r in &out.recs {
             budget = budget.saturating_sub(r.payload.len());
         }
         let consumed = out.last.map(|o| o + 1).unwrap_or(pos);
-        last_tok = Some(seg_tok(ord, consumed));
+        last_tok = seg_tok(ord, consumed);
         recs.extend(out.recs);
         if !out.completed || budget == 0 {
             break;
@@ -2012,17 +3633,17 @@ async fn read_per_key(
     let etag = format!(
         "\"{}-pk-{}-{}\"",
         &desc.stream_epoch[..8],
-        last_tok.clone().unwrap_or_default(),
+        last_tok,
         up_to_date as u8
     );
-    if let Some(inm) = hdr(&headers, "if-none-match") {
-        if inm == etag {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header("ETag", etag)
-                .body(Body::empty())
-                .unwrap();
-        }
+    if let Some(inm) = hdr(&headers, "if-none-match")
+        && inm == etag
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header("ETag", etag)
+            .body(Body::empty())
+            .unwrap();
     }
     let body: Bytes = if desc.is_json() {
         let mut buf = BytesMut::new();
@@ -2045,7 +3666,7 @@ async fn read_per_key(
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, desc.content_type.clone())
-        .header("Stream-Next-Offset", last_tok.unwrap_or_else(|| seg_tok(0, 0)))
+        .header("Stream-Next-Offset", last_tok)
         .header("Stream-Ordering", "per-key")
         .header("ETag", etag)
         .header("Cross-Origin-Resource-Policy", "cross-origin");
@@ -2058,6 +3679,7 @@ async fn read_per_key(
     r.body(Body::from(body)).unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn per_key_body(
     desc: &StreamDesc,
     out: ReadOut,
@@ -2070,7 +3692,13 @@ fn per_key_body(
 ) -> Response {
     let consumed = out.last.map(|o| o + 1).unwrap_or(scan_from);
     let up_to_date = out.completed;
-    let etag = format!("\"{}-pk{}-{}-{}\"", &desc.stream_epoch[..8], ord, consumed, out.end);
+    let etag = format!(
+        "\"{}-pk{}-{}-{}\"",
+        &desc.stream_epoch[..8],
+        ord,
+        consumed,
+        out.end
+    );
     let body: Bytes = if desc.is_json() {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"[");
@@ -2165,56 +3793,87 @@ struct QueueReceiveBody {
 
 async fn queue_entry(
     state: Arc<AppState>,
+    customer_id: String,
     stream: String,
     route: String,
     method: Method,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let desc = match state.registry.get(&stream).await {
+    let desc = match state.registry.get(&customer_id, &stream).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     if desc.profile.as_deref() != Some("queue") {
-        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue profile not enabled");
+        return err_resp(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "queue profile not enabled",
+        );
     }
     let Some((consumer, verb)) = route.split_once('/') else {
-        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue route: {consumer}/{verb}");
+        return err_resp(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "queue route: {consumer}/{verb}",
+        );
     };
     if consumer.is_empty() || consumer.len() > 128 || consumer.contains('\u{0}') {
-        return err_resp(StatusCode::BAD_REQUEST, "invalid_consumer", "bad consumer name");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_consumer",
+            "bad consumer name",
+        );
     }
     if method != Method::POST {
-        return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST only");
+        return err_resp(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "POST only",
+        );
     }
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
     let hash = desc.storage_hash();
     state.keys.put(hash, key.clone(), epoch);
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state.engine_for(&desc.routing_hash()).await {
         Ok(e) => e,
         Err(r) => return r,
     };
     let handle = match engine.stream_handle(hash).await {
         Ok(h) => h,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => return storage_err_resp(e),
     };
     let max_deliveries = desc.queue_max_deliveries.unwrap_or(5);
     let dlq_subkey = derive_subkey(&key, &epoch, "$dlq", 0);
-    let raw = match axum::body::to_bytes(body, 1 << 20).await {
+    let raw = match body_with_quota(body, &state, &customer_id, 1 << 20).await {
         Ok(b) => b,
-        Err(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "bad body"),
+        Err(response) => return response,
     };
-    state.metrics.queue(&stream);
+    state.metrics.queue(desc.owner(), &stream);
 
     match verb {
         "receive" => {
@@ -2224,17 +3883,25 @@ async fn queue_entry(
                 match serde_json::from_slice(&raw) {
                     Ok(r) => r,
                     Err(e) => {
-                        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+                        return err_resp(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request",
+                            &e.to_string(),
+                        );
                     }
                 }
             };
             let max = req.batch_size.unwrap_or(5).clamp(1, 100);
-            let visibility = req.visibility_ms.unwrap_or(30_000).clamp(1_000, 12 * 3600 * 1000);
+            let visibility = req
+                .visibility_ms
+                .unwrap_or(30_000)
+                .clamp(1_000, 12 * 3600 * 1000);
             let wait = req.wait_ms.unwrap_or(0).min(25_000);
             let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
             loop {
                 let out = engine
                     .submit_queue(
+                        customer_id.clone(),
                         hash,
                         crate::queue::QueueOp::Receive {
                             consumer: consumer.to_string(),
@@ -2266,9 +3933,22 @@ async fn queue_entry(
                 if !leased.is_empty() {
                     let lo = leased.iter().map(|(o, _, _)| *o).min().unwrap();
                     let hi = leased.iter().map(|(o, _, _)| *o).max().unwrap();
-                    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, lo, None, MAX_READ_BYTES).await {
+                    let out = match read_records(
+                        &state,
+                        &key,
+                        &epoch,
+                        &handle,
+                        &engine,
+                        lo,
+                        None,
+                        MAX_READ_BYTES,
+                    )
+                    .await
+                    {
                         Ok(o) => o,
-                        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+                        Err(m) => {
+                            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m);
+                        }
                     };
                     let by_off: HashMap<u64, &PlainRec> =
                         out.recs.iter().map(|r| (r.off, r)).collect();
@@ -2276,8 +3956,7 @@ async fn queue_entry(
                     for (off, lease_gen, attempts) in &leased {
                         let Some(rec) = by_off.get(off) else { continue };
                         let payload: serde_json::Value = if desc.is_json() {
-                            serde_json::from_slice(&rec.payload)
-                                .unwrap_or(serde_json::Value::Null)
+                            serde_json::from_slice(&rec.payload).unwrap_or(serde_json::Value::Null)
                         } else {
                             use base64::Engine;
                             serde_json::Value::String(
@@ -2306,10 +3985,16 @@ async fn queue_entry(
         "ack" => {
             let req: QueueSettleBody = match serde_json::from_slice(&raw) {
                 Ok(r) => r,
-                Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string()),
+                Err(e) => {
+                    return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+                }
             };
             let parse = |t: &str| crate::queue::parse_token(t);
-            let acks = req.acks.iter().filter_map(|a| parse(&a.lease_token)).collect();
+            let acks = req
+                .acks
+                .iter()
+                .filter_map(|a| parse(&a.lease_token))
+                .collect();
             let retries = req
                 .retries
                 .iter()
@@ -2322,6 +4007,7 @@ async fn queue_entry(
                 .collect();
             let out = engine
                 .submit_queue(
+                    customer_id.clone(),
                     hash,
                     crate::queue::QueueOp::Settle {
                         consumer: consumer.to_string(),
@@ -2334,7 +4020,13 @@ async fn queue_entry(
                 )
                 .await;
             match out {
-                Ok(crate::queue::QueueOut::Settled { acked, retried, extended, dlq, backlog }) => (
+                Ok(crate::queue::QueueOut::Settled {
+                    acked,
+                    retried,
+                    extended,
+                    dlq,
+                    backlog,
+                }) => (
                     [
                         (header::CONTENT_TYPE, "application/json"),
                         (header::CACHE_CONTROL, "no-store"),
@@ -2361,11 +4053,11 @@ pub async fn metrics_flusher(
     metrics_key: String,
     instance: String,
     lb_url: String,
+    auth: String,
 ) {
     // Billing records go through the ROUTER like any tenant write (run-3
     // finding: local appends to a shared-namespace stream fence-fight the
     // shard's ring owner). Lossy by design: failures log and drop.
-    let auth = state.auth_token.clone().unwrap_or_default();
     let client = reqwest::Client::builder()
         .pool_idle_timeout(Duration::from_secs(4))
         .timeout(Duration::from_secs(10))
@@ -2407,7 +4099,8 @@ pub async fn metrics_flusher(
             "instance": instance,
             "seq": seq,
             "interval_s": 15,
-            "streams": drained,
+            "streams": drained.streams,
+            "dropped_series": drained.dropped_series,
         }]);
         match client
             .post(&url)
@@ -2422,5 +4115,85 @@ pub async fn metrics_flusher(
             Ok(r) => tracing::warn!("metrics append via router: {}", r.status()),
             Err(e) => tracing::warn!("metrics append via router: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_response_preserves_original_envelope_metadata() {
+        let key = StreamKey([9u8; 32]);
+        let epoch = [7u8; 16];
+        let hash = [9u8; 32];
+        let records = vec![
+            PlainRec {
+                off: 42,
+                ts_ms: 1_751_900_123_456,
+                key_version: 3,
+                routing_key: "chat/a".to_string(),
+                payload: Bytes::from_static(b"first"),
+            },
+            PlainRec {
+                off: 43,
+                ts_ms: 1_751_900_123_999,
+                key_version: 4,
+                routing_key: "chat/b".to_string(),
+                payload: Bytes::from_static(b"second"),
+            },
+        ];
+
+        let mut expected = Vec::new();
+        for record in &records {
+            let subkey = derive_subkey(&key, &epoch, &record.routing_key, record.key_version);
+            expected.extend_from_slice(&encrypt_frame(
+                &subkey,
+                &hash,
+                &FrameHeader {
+                    offset: record.off,
+                    ts_ms: record.ts_ms,
+                    key_version: record.key_version,
+                    routing_key: record.routing_key.clone(),
+                },
+                &record.payload,
+            ));
+        }
+
+        assert_eq!(
+            encode_frame_response(&key, &epoch, &hash, &records),
+            expected
+        );
+    }
+
+    #[test]
+    fn tenant_admission_is_isolated_and_releases_cardinality() {
+        let admission = TenantAdmission::new(1, 10, 10);
+        let first = admission.enter("customer-a").unwrap();
+        assert!(admission.enter("customer-a").is_none());
+        let other = admission.enter("customer-b").unwrap();
+        assert_eq!(admission.inner.lock().unwrap().customers.len(), 2);
+        assert!(admission.charge_write("customer-a", 10));
+        assert!(!admission.charge_write("customer-a", 1));
+
+        drop(first);
+        assert!(admission.enter("customer-a").is_some());
+        drop(other);
+        assert!(
+            admission
+                .inner
+                .lock()
+                .unwrap()
+                .customers
+                .values()
+                .all(|state| state.inflight == 0)
+        );
+    }
+
+    #[test]
+    fn poison_shard_backoff_is_bounded() {
+        assert_eq!(quarantine_delay(2), Duration::ZERO);
+        assert_eq!(quarantine_delay(3), Duration::from_secs(5));
+        assert_eq!(quarantine_delay(20), Duration::from_secs(300));
     }
 }

@@ -37,6 +37,7 @@ impl StreamKey {
         Ok(StreamKey(arr))
     }
 
+    #[allow(dead_code)] // used by the streams-keys binary via this shared module
     pub fn to_b64(&self) -> String {
         use base64::Engine;
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.0)
@@ -60,7 +61,8 @@ impl StreamKey {
 pub fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &key.0);
     let mut out = [0u8; 32];
-    hk.expand(b"touch-capability-v1", &mut out).expect("hkdf expand");
+    hk.expand(b"touch-capability-v1", &mut out)
+        .expect("hkdf expand");
     out
 }
 
@@ -98,7 +100,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len() / 2)
@@ -142,20 +144,8 @@ pub struct FrameHeader {
     pub routing_key: String,
 }
 
-fn header_bytes(h: &FrameHeader) -> Vec<u8> {
-    let rk = h.routing_key.as_bytes();
-    let mut buf = Vec::with_capacity(17 + rk.len());
-    buf.push(FRAME_VER);
-    buf.extend_from_slice(&h.offset.to_be_bytes());
-    buf.extend_from_slice(&h.ts_ms.to_be_bytes());
-    buf.extend_from_slice(&h.key_version.to_be_bytes());
-    buf.extend_from_slice(&(rk.len() as u16).to_be_bytes());
-    buf.extend_from_slice(rk);
-    buf
-}
-
-fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
-    let mut a = Vec::with_capacity(16 + header.len());
+fn aad(stream_hash: &[u8], header: &[u8]) -> Vec<u8> {
+    let mut a = Vec::with_capacity(stream_hash.len() + header.len());
     a.extend_from_slice(stream_hash);
     a.extend_from_slice(header);
     a
@@ -165,11 +155,18 @@ fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
 /// (subkey, header, plaintext) always yields identical bytes.
 pub fn encrypt_frame(
     subkey: &[u8; KEY_LEN],
-    stream_hash: &[u8; 16],
+    stream_hash: &[u8],
     h: &FrameHeader,
     plaintext: &[u8],
 ) -> Vec<u8> {
-    FrameCipher::new(subkey).encrypt(stream_hash, h.offset, h.ts_ms, h.key_version, &h.routing_key, plaintext)
+    FrameCipher::new(subkey).encrypt(
+        stream_hash,
+        h.offset,
+        h.ts_ms,
+        h.key_version,
+        &h.routing_key,
+        plaintext,
+    )
 }
 
 /// A reusable frame cipher: the AES key schedule is built ONCE and reused
@@ -182,14 +179,16 @@ pub struct FrameCipher {
 
 impl FrameCipher {
     pub fn new(subkey: &[u8; KEY_LEN]) -> FrameCipher {
-        FrameCipher { cipher: Aes256Gcm::new(subkey.into()) }
+        FrameCipher {
+            cipher: Aes256Gcm::new(subkey.into()),
+        }
     }
 
     /// Encrypt one record into its wire/storage frame without re-deriving
     /// the key schedule and without cloning the routing key.
     pub fn encrypt(
         &self,
-        stream_hash: &[u8; 16],
+        stream_hash: &[u8],
         offset: u64,
         ts_ms: i64,
         key_version: u32,
@@ -209,7 +208,10 @@ impl FrameCipher {
             .cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: plaintext, aad: &aad(stream_hash, &header) },
+                Payload {
+                    msg: plaintext,
+                    aad: &aad(stream_hash, &header),
+                },
             )
             .expect("aes-gcm encrypt");
         let mut frame = header;
@@ -237,10 +239,23 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     let rk_len = u16::from_be_bytes(buf[21..23].try_into().ok()?) as usize;
     let header_len = 23 + rk_len;
     let routing_key = String::from_utf8(buf.get(23..header_len)?.to_vec()).ok()?;
-    let ct_len = u32::from_be_bytes(buf.get(header_len..header_len + 4)?.try_into().ok()?) as usize;
-    let ciphertext = buf.get(header_len + 4..header_len + 4 + ct_len)?;
+    let ct_len_at = header_len.checked_add(4)?;
+    let ct_len = u32::from_be_bytes(buf.get(header_len..ct_len_at)?.try_into().ok()?) as usize;
+    let ct_end = ct_len_at.checked_add(ct_len)?;
+    // There is one canonical frame encoding. Ignoring an unauthenticated
+    // suffix would let distinct byte strings decode to the same record and
+    // would break the immutable-ciphertext/cache contract.
+    if ct_end != buf.len() {
+        return None;
+    }
+    let ciphertext = buf.get(ct_len_at..ct_end)?;
     Some(DecodedFrame {
-        header: FrameHeader { offset, ts_ms, key_version, routing_key },
+        header: FrameHeader {
+            offset,
+            ts_ms,
+            key_version,
+            routing_key,
+        },
         header_len,
         ciphertext,
     })
@@ -248,7 +263,7 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
 
 pub fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
-    stream_hash: &[u8; 16],
+    stream_hash: &[u8],
     frame: &DecodedFrame<'_>,
     raw: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -300,6 +315,13 @@ mod tests {
         // different epoch => different subkey (fail-closed on stream re-creation)
         let sub2 = derive_subkey(&key(), &[4u8; 16], "chat-42", 0);
         assert_ne!(sub, sub2);
+
+        let mut suffixed = f1.clone();
+        suffixed.push(0);
+        assert!(
+            decode_frame(&suffixed).is_none(),
+            "trailing bytes are not a canonical frame"
+        );
     }
 
     #[test]

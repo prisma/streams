@@ -46,16 +46,17 @@ pub fn watch_key(template_id: u64, args: &[String]) -> u64 {
     xxh3_64(&buf)
 }
 
+#[allow(dead_code)] // used by livebench via this shared module
 pub fn key_hex(key: u64) -> String {
     format!("{key:016x}")
 }
 
 /// Journal-level uint32 key ID for an API-level key string.
 pub fn key_id_of(key: &str) -> u32 {
-    if key.len() == 16 {
-        if let Ok(v) = u64::from_str_radix(key, 16) {
-            return v as u32;
-        }
+    if key.len() == 16
+        && let Ok(v) = u64::from_str_radix(key, 16)
+    {
+        return v as u32;
     }
     xxh32(key.as_bytes(), 0)
 }

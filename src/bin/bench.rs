@@ -97,7 +97,9 @@ fn payload(bytes: usize, entries: usize) -> (Vec<u8>, &'static str) {
         let one = format!("{{\"v\":\"{filler}\"}}");
         let body = format!(
             "[{}]",
-            std::iter::repeat_n(one, entries).collect::<Vec<_>>().join(",")
+            std::iter::repeat_n(one, entries)
+                .collect::<Vec<_>>()
+                .join(",")
         );
         (body.into_bytes(), "application/json")
     } else {
@@ -324,7 +326,11 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
             }
             let v: serde_json::Value = r.json().await?;
             let s = &v["stream"];
-            let next: i64 = s["next_offset"].as_str().unwrap_or("0").parse().unwrap_or(0);
+            let next: i64 = s["next_offset"]
+                .as_str()
+                .unwrap_or("0")
+                .parse()
+                .unwrap_or(0);
             let uploaded: i64 = s["uploaded_through"]
                 .as_str()
                 .unwrap_or("-1")

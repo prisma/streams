@@ -76,7 +76,10 @@ pub fn rss_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
         if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(pages) = statm.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok())
+            if let Some(pages) = statm
+                .split_whitespace()
+                .nth(1)
+                .and_then(|v| v.parse::<u64>().ok())
             {
                 return pages * 4096;
             }
@@ -176,11 +179,19 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             last_tick = Instant::now();
             let inst_rps = (ops - last_ops) as f64 / dt;
             last_ops = ops;
-            ewma_rps = if ewma_rps == 0.0 { inst_rps } else { ewma_rps * 0.6 + inst_rps * 0.4 };
+            ewma_rps = if ewma_rps == 0.0 {
+                inst_rps
+            } else {
+                ewma_rps * 0.6 + inst_rps * 0.4
+            };
             let cpu_now = cpu_time_secs();
             let inst_cpu = ((cpu_now - last_cpu) / dt * 100.0).max(0.0);
             last_cpu = cpu_now;
-            ewma_cpu = if ewma_cpu == 0.0 { inst_cpu } else { ewma_cpu * 0.6 + inst_cpu * 0.4 };
+            ewma_cpu = if ewma_cpu == 0.0 {
+                inst_cpu
+            } else {
+                ewma_cpu * 0.6 + inst_cpu * 0.4
+            };
 
             // 1. Heartbeat (single writer per object: plain PUT).
             let (owned, ack_p50_ms) = {
@@ -257,7 +268,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             for p in hb_paths {
                 let Ok(r) = store.get(&p).await else { continue };
                 let Ok(raw) = r.bytes().await else { continue };
-                let Ok(other) = serde_json::from_slice::<Heartbeat>(&raw) else { continue };
+                let Ok(other) = serde_json::from_slice::<Heartbeat>(&raw) else {
+                    continue;
+                };
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
                     live += 1;
@@ -322,15 +335,18 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             // the edge. Scaling at 75 % of the slot budget adds capacity
             // BEFORE the queue forms.
             let need_slots = if cfg.edge_slots > 0 {
-                (total_inflight / (cfg.target_util * cfg.edge_slots as f64).max(1.0)).ceil()
-                    as u64
+                (total_inflight / (cfg.target_util * cfg.edge_slots as f64).max(1.0)).ceil() as u64
             } else {
                 0
             };
             let breaching = max_loaded_p50 > cfg.latency_ms as f64;
             let need_latency = if breaching {
                 let since = *lat_breach_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= cfg.latency_sustain { live + 1 } else { 0 }
+                if since.elapsed() >= cfg.latency_sustain {
+                    live + 1
+                } else {
+                    0
+                }
             } else {
                 lat_breach_since = None;
                 0
@@ -340,7 +356,11 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let cpu_hot = max_loaded_cpu >= cfg.hot_cpu_pct;
             let need_hot = if cpu_hot {
                 let since = *cpu_breach_since.get_or_insert_with(Instant::now);
-                if since.elapsed() >= cfg.cpu_sustain { live + 1 } else { 0 }
+                if since.elapsed() >= cfg.cpu_sustain {
+                    live + 1
+                } else {
+                    0
+                }
             } else {
                 cpu_breach_since = None;
                 0
@@ -361,8 +381,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 cfg.max // sentinel: never below current -> shrink blocked
             } else {
                 let slots_shrink = if cfg.edge_slots > 0 {
-                    (total_inflight / (cfg.scale_in_util * cfg.edge_slots as f64).max(1.0))
-                        .ceil() as u64
+                    (total_inflight / (cfg.scale_in_util * cfg.edge_slots as f64).max(1.0)).ceil()
+                        as u64
                 } else {
                     0
                 };

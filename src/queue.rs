@@ -18,7 +18,10 @@
 //!   <hash16> 'l' <consumer> 0x00 <off BE> lease {deadline i64, count u32, gen u32}
 //!   <hash16> 'x' <consumer> 0x00 <off BE> settled-above-cursor marker
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+
+pub const RESIDENT_CONSUMER_CAPACITY: usize = 1_024;
+pub const MAX_CONSUMER_OUTSTANDING: usize = 10_000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Lease {
@@ -27,29 +30,71 @@ pub struct Lease {
     pub lease_gen: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ConsumerState {
     pub cursor: u64,
     pub leases: BTreeMap<u64, Lease>,
     pub acked: BTreeSet<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QueueState {
     pub consumers: HashMap<String, ConsumerState>,
-    pub loaded: bool,
+    pub loaded: HashSet<String>,
+    pub order: VecDeque<String>,
 }
 
-pub fn cursor_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17 + consumer.len());
+impl QueueState {
+    pub fn insert_loaded(&mut self, consumer: String, state: ConsumerState) {
+        if self.loaded.insert(consumer.clone()) {
+            self.order.push_back(consumer.clone());
+        }
+        self.consumers.insert(consumer, state);
+    }
+
+    pub fn trim_resident(&mut self) {
+        while self.consumers.len() > RESIDENT_CONSUMER_CAPACITY {
+            let Some(consumer) = self.order.pop_front() else {
+                break;
+            };
+            self.loaded.remove(&consumer);
+            self.consumers.remove(&consumer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_consumer_state_is_bounded() {
+        let mut state = QueueState::default();
+        for id in 0..=RESIDENT_CONSUMER_CAPACITY {
+            state.insert_loaded(id.to_string(), ConsumerState::default());
+        }
+        state.trim_resident();
+
+        assert_eq!(state.consumers.len(), RESIDENT_CONSUMER_CAPACITY);
+        assert!(!state.loaded.contains("0"));
+        assert!(
+            state
+                .loaded
+                .contains(&RESIDENT_CONSUMER_CAPACITY.to_string())
+        );
+    }
+}
+
+pub fn cursor_key(hash: &[u8], consumer: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(hash.len() + 1 + consumer.len());
     k.extend_from_slice(hash);
     k.push(b'c');
     k.extend_from_slice(consumer.as_bytes());
     k
 }
 
-pub fn lease_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(26 + consumer.len());
+pub fn lease_key(hash: &[u8], consumer: &str, off: u64) -> Vec<u8> {
+    let mut k = Vec::with_capacity(hash.len() + 10 + consumer.len());
     k.extend_from_slice(hash);
     k.push(b'l');
     k.extend_from_slice(consumer.as_bytes());
@@ -58,8 +103,8 @@ pub fn lease_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
     k
 }
 
-pub fn ack_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(26 + consumer.len());
+pub fn ack_key(hash: &[u8], consumer: &str, off: u64) -> Vec<u8> {
+    let mut k = Vec::with_capacity(hash.len() + 10 + consumer.len());
     k.extend_from_slice(hash);
     k.push(b'x');
     k.extend_from_slice(consumer.as_bytes());

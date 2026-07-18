@@ -14,13 +14,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use bytes::Bytes;
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 
 #[derive(Parser, Debug)]
 #[command(name = "s3lite")]
@@ -58,6 +59,23 @@ struct Stats {
     multipart: AtomicU64,
     put_bytes: AtomicU64,
     get_bytes: AtomicU64,
+    faults: AtomicU64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FaultRule {
+    /// any, get, head, list, put, delete, or multipart
+    operation: String,
+    #[serde(default)]
+    key_contains: Option<String>,
+    remaining: u64,
+    status: u16,
+    #[serde(default)]
+    delay_ms: u64,
+    /// Return the injected response only after applying the real operation,
+    /// modeling a lost provider response after commit.
+    #[serde(default)]
+    after_commit: bool,
 }
 
 struct AppState {
@@ -68,11 +86,15 @@ struct AppState {
     etag_counter: AtomicU64,
     upload_counter: AtomicU64,
     stats: Stats,
+    fault: Mutex<Option<FaultRule>>,
 }
 
 impl AppState {
     fn next_etag(&self) -> String {
-        format!("\"e{:016x}\"", self.etag_counter.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "\"e{:016x}\"",
+            self.etag_counter.fetch_add(1, Ordering::Relaxed)
+        )
     }
 }
 
@@ -87,11 +109,10 @@ async fn main() -> anyhow::Result<()> {
         etag_counter: AtomicU64::new(1),
         upload_counter: AtomicU64::new(1),
         stats: Stats::default(),
+        fault: Mutex::new(None),
     });
 
-    let app = Router::new()
-        .fallback(handle)
-        .with_state(state);
+    let app = Router::new().fallback(handle).with_state(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     eprintln!(
         "s3lite listening on {} (latency {}ms per op)",
@@ -128,12 +149,13 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         if bytes[i] == b'+' && plus_is_space {
             out.push(b' ');
@@ -154,7 +176,7 @@ async fn handle(
 ) -> Response {
     let path = uri.path().to_string();
 
-    // Stats endpoint bypasses latency injection.
+    // Test-control endpoints bypass latency and fault injection.
     if path == "/_s3lite/stats" {
         let s = &state.stats;
         let body = serde_json::json!({
@@ -166,6 +188,7 @@ async fn handle(
             "multipart": s.multipart.load(Ordering::Relaxed),
             "put_bytes": s.put_bytes.load(Ordering::Relaxed),
             "get_bytes": s.get_bytes.load(Ordering::Relaxed),
+            "faults": s.faults.load(Ordering::Relaxed),
             "objects": state.objects.lock().unwrap().len(),
         });
         return (
@@ -173,6 +196,49 @@ async fn handle(
             body.to_string(),
         )
             .into_response();
+    }
+    if path == "/_s3lite/fault" {
+        return match method {
+            Method::GET => match state.fault.lock().unwrap().clone() {
+                Some(rule) => axum::Json(rule).into_response(),
+                None => StatusCode::NO_CONTENT.into_response(),
+            },
+            Method::DELETE => {
+                *state.fault.lock().unwrap() = None;
+                StatusCode::NO_CONTENT.into_response()
+            }
+            Method::POST => {
+                let encoded = match axum::body::to_bytes(body, 64 * 1024).await {
+                    Ok(encoded) => encoded,
+                    Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+                };
+                let rule: FaultRule = match serde_json::from_slice(&encoded) {
+                    Ok(rule) => rule,
+                    Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+                };
+                let operation_ok = matches!(
+                    rule.operation.as_str(),
+                    "any" | "get" | "head" | "list" | "put" | "delete" | "multipart"
+                );
+                let status_ok = matches!(rule.status, 408 | 412 | 429 | 500 | 503);
+                let key_ok = rule
+                    .key_contains
+                    .as_ref()
+                    .is_none_or(|key| key.len() <= 256);
+                if !operation_ok
+                    || !status_ok
+                    || !key_ok
+                    || rule.remaining == 0
+                    || rule.remaining > 10_000
+                    || rule.delay_ms > 30_000
+                {
+                    return StatusCode::BAD_REQUEST.into_response();
+                }
+                *state.fault.lock().unwrap() = Some(rule);
+                StatusCode::NO_CONTENT.into_response()
+            }
+            _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+        };
     }
 
     tokio::time::sleep(state.latency).await;
@@ -189,7 +255,13 @@ async fn handle(
     }
     let full_key = format!("{bucket}/{key}");
 
-    match (method.clone(), key.is_empty()) {
+    let operation = operation_name(&method, key.is_empty(), &query);
+    let fault = take_fault(&state, operation, &full_key);
+    if let Some(rule) = fault.as_ref().filter(|rule| !rule.after_commit) {
+        return fault_response(rule).await;
+    }
+
+    let response = match (method.clone(), key.is_empty()) {
         // ---- bucket-level ----
         (Method::GET, true) => list_objects(&state, &bucket, &query),
         (Method::POST, true) if query.contains_key("delete") => {
@@ -201,7 +273,10 @@ async fn handle(
         // ---- object-level ----
         (Method::POST, false) if query.contains_key("uploads") => {
             state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let id = format!("u{:x}", state.upload_counter.fetch_add(1, Ordering::Relaxed));
+            let id = format!(
+                "u{:x}",
+                state.upload_counter.fetch_add(1, Ordering::Relaxed)
+            );
             state
                 .uploads
                 .lock()
@@ -246,6 +321,9 @@ async fn handle(
                 .remove(&format!("{full_key}:{upload_id}"));
             StatusCode::NO_CONTENT.into_response()
         }
+        (Method::PUT, false) if headers.contains_key("x-amz-copy-source") => {
+            copy_object(&state, &full_key, &headers)
+        }
         (Method::PUT, false) => put_object(&state, &full_key, &headers, body).await,
         (Method::GET, false) => get_object(&state, &full_key, &headers, false),
         (Method::HEAD, false) => get_object(&state, &full_key, &headers, true),
@@ -255,7 +333,100 @@ async fn handle(
             StatusCode::NO_CONTENT.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    };
+    if let Some(rule) = fault.as_ref().filter(|rule| rule.after_commit) {
+        return fault_response(rule).await;
     }
+    response
+}
+
+fn operation_name(
+    method: &Method,
+    bucket_level: bool,
+    query: &HashMap<String, String>,
+) -> &'static str {
+    if query.contains_key("uploadId") || query.contains_key("uploads") {
+        return "multipart";
+    }
+    match (method, bucket_level) {
+        (&Method::GET, true) => "list",
+        (&Method::GET, false) => "get",
+        (&Method::HEAD, _) => "head",
+        (&Method::PUT, _) => "put",
+        (&Method::DELETE, _) => "delete",
+        (&Method::POST, true) if query.contains_key("delete") => "delete",
+        _ => "other",
+    }
+}
+
+fn take_fault(state: &Arc<AppState>, operation: &str, key: &str) -> Option<FaultRule> {
+    let mut slot = state.fault.lock().unwrap();
+    let rule = slot.as_mut()?;
+    if (rule.operation != "any" && rule.operation != operation)
+        || rule
+            .key_contains
+            .as_ref()
+            .is_some_and(|needle| !key.contains(needle))
+    {
+        return None;
+    }
+    let selected = rule.clone();
+    rule.remaining -= 1;
+    if rule.remaining == 0 {
+        *slot = None;
+    }
+    state.stats.faults.fetch_add(1, Ordering::Relaxed);
+    Some(selected)
+}
+
+async fn fault_response(rule: &FaultRule) -> Response {
+    if rule.delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(rule.delay_ms)).await;
+    }
+    let status = StatusCode::from_u16(rule.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = s3_error(status, "InjectedFailure", "s3lite fault injection");
+    if matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        response
+            .headers_mut()
+            .insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
+    }
+    response
+}
+
+fn copy_object(state: &Arc<AppState>, destination: &str, headers: &HeaderMap) -> Response {
+    state.stats.put.fetch_add(1, Ordering::Relaxed);
+    let Some(source) = headers
+        .get("x-amz-copy-source")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| percent_decode(value.trim_start_matches('/'), false))
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let mut objects = state.objects.lock().unwrap();
+    let Some(source_object) = objects.get(&source).cloned() else {
+        return s3_error(StatusCode::NOT_FOUND, "NoSuchKey", "copy source not found");
+    };
+    let etag = state.next_etag();
+    let copied = StoredObject {
+        data: source_object.data,
+        etag: etag.clone(),
+        last_modified: chrono::Utc::now(),
+        orig_len: source_object.orig_len,
+        discarded: source_object.discarded,
+    };
+    state
+        .stats
+        .put_bytes
+        .fetch_add(copied.orig_len, Ordering::Relaxed);
+    objects.insert(destination.to_string(), copied);
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CopyObjectResult><ETag>{}</ETag></CopyObjectResult>",
+        xml_escape(&etag)
+    );
+    ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
 fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
@@ -263,12 +434,7 @@ fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{}</Code><Message>{}</Message></Error>",
         code, message
     );
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/xml")],
-        xml,
-    )
-        .into_response()
+    (status, [(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
 async fn put_object(
@@ -355,7 +521,11 @@ fn get_object(
             "body was discarded by --discard-substr",
         );
     };
-    let total = if obj.discarded { obj.orig_len } else { obj.data.len() as u64 };
+    let total = if obj.discarded {
+        obj.orig_len
+    } else {
+        obj.data.len() as u64
+    };
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
@@ -385,13 +555,19 @@ fn get_object(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(
             header::LAST_MODIFIED,
-            obj.last_modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            obj.last_modified
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string(),
         )
         .header(header::CONTENT_LENGTH, slice.len());
     if let Some(cr) = content_range {
         builder = builder.header(header::CONTENT_RANGE, cr);
     }
-    let body = if head_only { Body::empty() } else { Body::from(slice) };
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(slice)
+    };
     builder.body(body).unwrap()
 }
 
@@ -400,9 +576,7 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
         return None;
     }
     let spec = raw.strip_prefix("bytes=")?;
-    let mut it = spec.splitn(2, '-');
-    let start_s = it.next()?;
-    let end_s = it.next()?;
+    let (start_s, end_s) = spec.split_once('-')?;
     if start_s.is_empty() {
         // suffix range: bytes=-N
         let n: u64 = end_s.parse().ok()?;
@@ -424,11 +598,7 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-fn list_objects(
-    state: &Arc<AppState>,
-    bucket: &str,
-    query: &HashMap<String, String>,
-) -> Response {
+fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
     state.stats.list.fetch_add(1, Ordering::Relaxed);
     let prefix = query.get("prefix").cloned().unwrap_or_default();
     let delimiter = query.get("delimiter").cloned();
@@ -455,10 +625,10 @@ fn list_objects(
             break;
         }
         let rel = &k[bucket_prefix.len()..];
-        if let Some(tok) = &start_after {
-            if rel <= tok.as_str() {
-                continue;
-            }
+        if let Some(tok) = &start_after
+            && rel <= tok.as_str()
+        {
+            continue;
         }
         if let Some(delim) = &delimiter {
             let after_prefix = &rel[prefix.len()..];
@@ -477,7 +647,12 @@ fn list_objects(
         }
         if contents.len() + common_prefixes.len() >= max_keys {
             truncated = true;
-            next_token = Some(contents.last().map(|(k, _)| k.clone()).unwrap_or_else(|| rel.to_string()));
+            next_token = Some(
+                contents
+                    .last()
+                    .map(|(k, _)| k.clone())
+                    .unwrap_or_else(|| rel.to_string()),
+            );
             break;
         }
         contents.push((rel.to_string(), obj));
@@ -487,7 +662,10 @@ fn list_objects(
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
     xml.push_str(&format!("<Name>{}</Name>", xml_escape(bucket)));
     xml.push_str(&format!("<Prefix>{}</Prefix>", xml_escape(&prefix)));
-    xml.push_str(&format!("<KeyCount>{}</KeyCount>", contents.len() + common_prefixes.len()));
+    xml.push_str(&format!(
+        "<KeyCount>{}</KeyCount>",
+        contents.len() + common_prefixes.len()
+    ));
     xml.push_str(&format!("<MaxKeys>{max_keys}</MaxKeys>"));
     xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
     if let Some(tok) = next_token {
@@ -526,7 +704,9 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
     let mut rest = text.as_ref();
     while let Some(start) = rest.find("<Key>") {
         let after = &rest[start + 5..];
-        let Some(end) = after.find("</Key>") else { break };
+        let Some(end) = after.find("</Key>") else {
+            break;
+        };
         let key = &after[..end];
         let key = key
             .replace("&lt;", "<")
@@ -587,7 +767,11 @@ async fn complete_multipart(
     state.objects.lock().unwrap().insert(
         full_key.to_string(),
         StoredObject {
-            data: if discard { Bytes::new() } else { Bytes::from(data) },
+            data: if discard {
+                Bytes::new()
+            } else {
+                Bytes::from(data)
+            },
             etag: etag.clone(),
             last_modified: chrono::Utc::now(),
             orig_len,

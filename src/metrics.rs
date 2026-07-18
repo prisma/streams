@@ -1,7 +1,6 @@
-//! Interval metrics as an internal stream (`__metrics__`), following the old
-//! implementation's pattern: the node appends one JSON record per interval
-//! with per-stream counters — which is also the multi-tenant billing feed
-//! (stream = tenant boundary; appends/bytes in, reads/bytes out).
+//! Bounded interval counters emitted through the internal metrics stream.
+//! Customer identity is explicit: two tenants may use the same stream name
+//! without colliding in billing or noisy-neighbor telemetry.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -15,29 +14,144 @@ pub struct PerStream {
     pub queue_ops: u64,
 }
 
-#[derive(Default)]
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct MeterKey {
+    customer_id: String,
+    stream: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct MeteredStream {
+    pub customer_id: String,
+    pub stream: String,
+    #[serde(flatten)]
+    pub counters: PerStream,
+}
+
+pub struct MetricsDrain {
+    pub streams: Vec<MeteredStream>,
+    /// A non-zero value is an alarm: the process stayed memory-bounded, but
+    /// billing cardinality exceeded its configured safety envelope.
+    pub dropped_series: u64,
+}
+
+impl MetricsDrain {
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty() && self.dropped_series == 0
+    }
+}
+
+struct MetricsInner {
+    counters: HashMap<MeterKey, PerStream>,
+    dropped_series: u64,
+}
+
 pub struct Metrics {
-    counters: Mutex<HashMap<String, PerStream>>,
+    inner: Mutex<MetricsInner>,
+    capacity: usize,
+}
+
+const DEFAULT_METRICS_CAPACITY: usize = 100_000;
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_METRICS_CAPACITY)
+    }
 }
 
 impl Metrics {
-    pub fn append(&self, stream: &str, bytes: u64) {
-        let mut m = self.counters.lock().unwrap();
-        let e = m.entry(stream.to_string()).or_default();
-        e.appends += 1;
-        e.append_bytes += bytes;
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(MetricsInner {
+                counters: HashMap::new(),
+                dropped_series: 0,
+            }),
+            capacity: capacity.max(1),
+        }
     }
-    pub fn read(&self, stream: &str, bytes: u64) {
-        let mut m = self.counters.lock().unwrap();
-        let e = m.entry(stream.to_string()).or_default();
-        e.reads += 1;
-        e.read_bytes += bytes;
+
+    fn record(&self, customer_id: &str, stream: &str, apply: impl FnOnce(&mut PerStream)) {
+        let mut inner = self.inner.lock().unwrap();
+        let key = MeterKey {
+            customer_id: customer_id.to_string(),
+            stream: stream.to_string(),
+        };
+        if let Some(counters) = inner.counters.get_mut(&key) {
+            apply(counters);
+            return;
+        }
+        if inner.counters.len() >= self.capacity {
+            inner.dropped_series = inner.dropped_series.saturating_add(1);
+            return;
+        }
+        let mut counters = PerStream::default();
+        apply(&mut counters);
+        inner.counters.insert(key, counters);
     }
-    pub fn queue(&self, stream: &str) {
-        let mut m = self.counters.lock().unwrap();
-        m.entry(stream.to_string()).or_default().queue_ops += 1;
+
+    pub fn append(&self, customer_id: &str, stream: &str, bytes: u64) {
+        self.record(customer_id, stream, |counters| {
+            counters.appends = counters.appends.saturating_add(1);
+            counters.append_bytes = counters.append_bytes.saturating_add(bytes);
+        });
     }
-    pub fn drain(&self) -> HashMap<String, PerStream> {
-        std::mem::take(&mut *self.counters.lock().unwrap())
+
+    pub fn read(&self, customer_id: &str, stream: &str, bytes: u64) {
+        self.record(customer_id, stream, |counters| {
+            counters.reads = counters.reads.saturating_add(1);
+            counters.read_bytes = counters.read_bytes.saturating_add(bytes);
+        });
+    }
+
+    pub fn queue(&self, customer_id: &str, stream: &str) {
+        self.record(customer_id, stream, |counters| {
+            counters.queue_ops = counters.queue_ops.saturating_add(1);
+        });
+    }
+
+    pub fn drain(&self) -> MetricsDrain {
+        let mut inner = self.inner.lock().unwrap();
+        let counters = std::mem::take(&mut inner.counters);
+        let dropped_series = std::mem::take(&mut inner.dropped_series);
+        let streams = counters
+            .into_iter()
+            .map(|(key, counters)| MeteredStream {
+                customer_id: key.customer_id,
+                stream: key.stream,
+                counters,
+            })
+            .collect();
+        MetricsDrain {
+            streams,
+            dropped_series,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_names_do_not_collide_and_cardinality_is_bounded() {
+        let metrics = Metrics::with_capacity(2);
+        metrics.append("a", "orders", 10);
+        metrics.append("b", "orders", 20);
+        metrics.append("c", "orders", 30);
+        let drained = metrics.drain();
+        assert_eq!(drained.streams.len(), 2);
+        assert_eq!(drained.dropped_series, 1);
+        assert!(
+            drained
+                .streams
+                .iter()
+                .any(|series| series.customer_id == "a" && series.counters.append_bytes == 10)
+        );
+        assert!(
+            drained
+                .streams
+                .iter()
+                .any(|series| series.customer_id == "b" && series.counters.append_bytes == 20)
+        );
     }
 }

@@ -1,17 +1,19 @@
-mod crypto;
+mod audit;
+mod auth;
 mod fleet;
 mod history;
 mod http;
 mod metrics;
 mod offsets;
 mod queue;
-mod registry;
 mod shard;
 mod store_timing;
 mod touch;
 mod touch_keys;
 
-use std::collections::HashMap;
+use streams_slate::{crypto, registry};
+
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,12 +54,36 @@ struct Args {
     #[arg(long)]
     data_bucket: Option<String>,
 
+    /// Optional independent provider/bucket for immutable recovery snapshots.
+    #[arg(long, env = "BACKUP_S3_ENDPOINT")]
+    backup_s3_endpoint: Option<String>,
+    #[arg(long, env = "BACKUP_S3_BUCKET")]
+    backup_s3_bucket: Option<String>,
+    #[arg(long, env = "BACKUP_S3_REGION", default_value = "us-east-1")]
+    backup_s3_region: String,
+    #[arg(long, env = "BACKUP_S3_ACCESS_KEY_ID")]
+    backup_s3_access_key_id: Option<String>,
+    #[arg(long, env = "BACKUP_S3_SECRET_ACCESS_KEY")]
+    backup_s3_secret_access_key: Option<String>,
+    #[arg(long, env = "BACKUP_PATH_PREFIX")]
+    backup_path_prefix: Option<String>,
+    #[arg(long, env = "BACKUP_INTERVAL_SECS", default_value_t = 300)]
+    backup_interval_secs: u64,
+    /// Release-mode guard: fail startup unless backup is configured.
+    #[arg(long, env = "REQUIRE_BACKUP", default_value_t = false)]
+    require_backup: bool,
+
     #[arg(long, env = "SLATE_S3_REGION", default_value = "us-east-1")]
     region: String,
     #[arg(long, env = "SLATE_S3_ACCESS_KEY_ID", default_value = "test")]
     access_key_id: String,
     #[arg(long, env = "SLATE_S3_SECRET_ACCESS_KEY", default_value = "test")]
     secret_access_key: String,
+
+    /// Overall object-store request timeout. Timeout errors are retried by the
+    /// object-store client; the durable watermark cannot advance on timeout.
+    #[arg(long, env = "S3_REQUEST_TIMEOUT_MS", default_value_t = 30_000)]
+    s3_request_timeout_ms: u64,
 
     /// Initial shard count (power of two) if no topology exists yet (D3).
     #[arg(long, env = "INITIAL_SHARDS", default_value_t = 1)]
@@ -148,9 +174,36 @@ struct Args {
     #[arg(long)]
     conformance_ordering_segments: Option<u32>,
 
-    /// Require `Authorization: Bearer <token>` on all /v1/* requests.
+    /// Pilot compatibility token. Without JWKS this authenticates one legacy
+    /// tenant; with JWKS it is accepted only on operator/debug endpoints.
     #[arg(long, env = "AUTH_TOKEN")]
     auth_token: Option<String>,
+
+    /// Production authentication: asymmetric JWT verification keys. URL,
+    /// issuer, and audience must be configured together.
+    #[arg(long, env = "AUTH_JWKS_URL")]
+    auth_jwks_url: Option<String>,
+    /// Monotonic token-id denylist document:
+    /// {"version":N,"revoked_token_ids":[...]}. Required in production.
+    #[arg(long, env = "AUTH_REVOCATION_URL")]
+    auth_revocation_url: Option<String>,
+    #[arg(long, env = "AUTH_ISSUER")]
+    auth_issuer: Option<String>,
+    #[arg(long, env = "AUTH_AUDIENCE")]
+    auth_audience: Option<String>,
+    #[arg(long, env = "AUTH_JWKS_REFRESH_SECS", default_value_t = 600)]
+    auth_jwks_refresh_secs: u64,
+    #[arg(long, env = "AUTH_JWKS_MAX_STALE_SECS", default_value_t = 3600)]
+    auth_jwks_max_stale_secs: u64,
+    #[arg(long, env = "AUTH_REVOCATION_REFRESH_SECS", default_value_t = 60)]
+    auth_revocation_refresh_secs: u64,
+    #[arg(long, env = "AUTH_REVOCATION_MAX_STALE_SECS", default_value_t = 120)]
+    auth_revocation_max_stale_secs: u64,
+
+    /// Explicit development escape hatch. Production boot fails when no
+    /// authentication mode is configured.
+    #[arg(long, env = "ALLOW_INSECURE_NO_AUTH", default_value_t = false)]
+    allow_insecure_no_auth: bool,
 
     /// Enable the internal `__metrics__` stream, encrypted with this key.
     #[arg(long, env = "METRICS_KEY")]
@@ -160,6 +213,10 @@ struct Args {
     /// tenant write so the shard's ring owner serves them (no fence-fights).
     #[arg(long, env = "METRICS_LB_URL")]
     metrics_lb_url: Option<String>,
+    /// Scoped service JWT granting create/append for __metrics__. In pilot
+    /// mode AUTH_TOKEN is used when this is unset.
+    #[arg(long, env = "METRICS_AUTH_TOKEN")]
+    metrics_auth_token: Option<String>,
 
     /// Instance tag recorded in metrics records.
     #[arg(long, env = "INSTANCE_NAME", default_value = "streams")]
@@ -218,13 +275,35 @@ struct Args {
     #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 0)]
     admit_max_inflight: i64,
 
+    /// Hard per-customer concurrency share. Unlike the instance backstop,
+    /// this remains enabled by default so one tenant cannot occupy every
+    /// long-poll and write slot. 0 disables it for local benchmarking only.
+    #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_CUSTOMER", default_value_t = 64)]
+    admit_max_inflight_per_customer: usize,
+
+    /// Per-customer ingress write-byte token rate and burst. These defaults
+    /// bound noisy-neighbor memory/WAL pressure while remaining above the
+    /// documented 50 MB/s hot-stream product limit. 0 rate disables.
+    #[arg(
+        long,
+        env = "ADMIT_WRITE_BYTES_PER_SEC_PER_CUSTOMER",
+        default_value_t = 64 * 1024 * 1024
+    )]
+    admit_write_bytes_per_sec_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_WRITE_BURST_BYTES_PER_CUSTOMER",
+        default_value_t = 128 * 1024 * 1024
+    )]
+    admit_write_burst_bytes_per_customer: u64,
+
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model (platform team investigation
     /// + our 6-source confirmation, 2026-07-15): each SOURCE Compute
-    /// instance is egress-capped at ~48-50 outgoing requests; the
-    /// DESTINATION front door admits ~145-150 concurrent aggregate (the
-    /// earlier 48 calibration was the measuring instance's own egress
-    /// cap). Scale-out begins at scale_out_cpu_pct% of this. 0 disables.
+    ///   instance is egress-capped at ~48-50 outgoing requests; the
+    ///   DESTINATION front door admits ~145-150 concurrent aggregate (the
+    ///   earlier 48 calibration was the measuring instance's own egress
+    ///   cap). Scale-out begins at scale_out_cpu_pct% of this. 0 disables.
     #[arg(long, env = "SCALE_EDGE_SLOTS", default_value_t = 140)]
     scale_edge_slots: u64,
 
@@ -259,6 +338,10 @@ struct Args {
 
 impl Args {
     fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<AmazonS3> {
+        anyhow::ensure!(
+            (50..=300_000).contains(&self.s3_request_timeout_ms),
+            "S3_REQUEST_TIMEOUT_MS must be between 50 and 300000"
+        );
         let bucket = bucket.as_deref().unwrap_or(&self.bucket);
         AmazonS3Builder::new()
             .with_endpoint(&self.s3_endpoint)
@@ -275,6 +358,7 @@ impl Args {
             .with_client_options(
                 object_store::ClientOptions::new()
                     .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
+                    .with_timeout(Duration::from_millis(self.s3_request_timeout_ms))
                     .with_pool_idle_timeout(Duration::from_secs(4)),
             )
             .build()
@@ -295,9 +379,73 @@ impl Args {
     /// Fleet-coordination store (heartbeats, desired.json): shared across
     /// instances, so prefixed by --fleet-prefix, not --path-prefix.
     fn fleet_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
-        let Some(p) = &self.fleet_prefix else { return Ok(None) };
+        let Some(p) = &self.fleet_prefix else {
+            return Ok(None);
+        };
         let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?);
-        Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str()))))
+        Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(
+            s3,
+            p.as_str(),
+        ))))
+    }
+
+    fn backup_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
+        let Some(endpoint) = &self.backup_s3_endpoint else {
+            anyhow::ensure!(
+                self.backup_s3_bucket.is_none()
+                    && self.backup_s3_access_key_id.is_none()
+                    && self.backup_s3_secret_access_key.is_none()
+                    && self.backup_path_prefix.is_none(),
+                "BACKUP_S3_ENDPOINT is required when any backup setting is configured"
+            );
+            return Ok(None);
+        };
+        let bucket = self
+            .backup_s3_bucket
+            .as_deref()
+            .context("BACKUP_S3_BUCKET is required with BACKUP_S3_ENDPOINT")?;
+        let access_key = self
+            .backup_s3_access_key_id
+            .as_deref()
+            .context("BACKUP_S3_ACCESS_KEY_ID is required")?;
+        let secret_key = self
+            .backup_s3_secret_access_key
+            .as_deref()
+            .context("BACKUP_S3_SECRET_ACCESS_KEY is required")?;
+        let primary_buckets = [
+            self.ops_bucket.as_deref().unwrap_or(&self.bucket),
+            self.shard_bucket.as_deref().unwrap_or(&self.bucket),
+            self.data_bucket.as_deref().unwrap_or(&self.bucket),
+        ];
+        anyhow::ensure!(
+            endpoint.trim_end_matches('/') != self.s3_endpoint.trim_end_matches('/')
+                || !primary_buckets.contains(&bucket),
+            "backup destination must not be a primary source bucket"
+        );
+        let store = AmazonS3Builder::new()
+            .with_endpoint(endpoint)
+            .with_bucket_name(bucket)
+            .with_region(&self.backup_s3_region)
+            .with_access_key_id(access_key)
+            .with_secret_access_key(secret_key)
+            .with_allow_http(true)
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
+            .with_client_options(
+                object_store::ClientOptions::new()
+                    .with_allow_http(true)
+                    .with_timeout(Duration::from_millis(self.s3_request_timeout_ms))
+                    .with_pool_idle_timeout(Duration::from_secs(4)),
+            )
+            .build()
+            .context("build backup object store")?;
+        let store: Arc<dyn ObjectStore> = match &self.backup_path_prefix {
+            Some(prefix) => Arc::new(object_store::prefix::PrefixStore::new(
+                store,
+                prefix.as_str(),
+            )),
+            None => Arc::new(store),
+        };
+        Ok(Some(store))
     }
 }
 
@@ -318,7 +466,9 @@ fn shard_settings(args: &Args) -> Settings {
         // D23: fencing correctness comes from CAS write failures, not polls.
         manifest_poll_interval: Duration::from_millis(args.manifest_poll_ms),
         garbage_collector_options: {
-            let mut gc = Settings::default().garbage_collector_options.unwrap_or_default();
+            let mut gc = Settings::default()
+                .garbage_collector_options
+                .unwrap_or_default();
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
@@ -346,7 +496,9 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| {
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
         })
         .max(2);
     tracing::info!("tokio runtime: {workers} worker threads");
@@ -357,21 +509,181 @@ fn main() -> anyhow::Result<()> {
         .block_on(async_main())
 }
 
+fn start_topology_watcher(state: Arc<AppState>, store: Arc<dyn ObjectStore>) {
+    tokio::spawn(async move {
+        let mut last_good = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            match crate::registry::load_topology(&store).await {
+                Ok(topology) => {
+                    let current = state
+                        .topology_version
+                        .load(std::sync::atomic::Ordering::Acquire);
+                    if topology.version < current {
+                        tracing::error!(
+                            current,
+                            observed = topology.version,
+                            "topology version regressed; retaining last-known-good trie"
+                        );
+                        state
+                            .topology_ready
+                            .store(false, std::sync::atomic::Ordering::Release);
+                        continue;
+                    }
+                    if topology.version > current {
+                        let live: std::collections::HashSet<&str> =
+                            topology.shards.iter().map(String::as_str).collect();
+                        let retired: Vec<Arc<ShardEngine>> = state
+                            .shards
+                            .read()
+                            .unwrap()
+                            .iter()
+                            .filter(|(prefix, _)| !live.contains(prefix.as_str()))
+                            .map(|(_, engine)| engine.clone())
+                            .collect();
+                        *state.shard_prefixes.write().unwrap() = topology.shards.clone();
+                        state
+                            .topology_version
+                            .store(topology.version, std::sync::atomic::Ordering::Release);
+                        for engine in retired {
+                            engine.retire();
+                        }
+                        tracing::info!(
+                            version = topology.version,
+                            shards = topology.shards.len(),
+                            "installed topology"
+                        );
+                    }
+                    last_good = std::time::Instant::now();
+                    state
+                        .topology_ready
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                Err(error) => {
+                    tracing::warn!("topology refresh failed: {error}");
+                    if last_good.elapsed() > Duration::from_secs(30) {
+                        state
+                            .topology_ready
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                }
+            }
+        }
+    });
+}
+
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    let authn = match (
+        args.auth_jwks_url.clone(),
+        args.auth_revocation_url.clone(),
+        args.auth_issuer.clone(),
+        args.auth_audience.clone(),
+    ) {
+        (Some(url), Some(revocation_url), Some(issuer), Some(audience)) => {
+            crate::auth::Authenticator::jwks(crate::auth::JwksConfig {
+                url,
+                revocation_url,
+                issuer,
+                audience,
+                refresh_interval: Duration::from_secs(args.auth_jwks_refresh_secs),
+                max_stale: Duration::from_secs(args.auth_jwks_max_stale_secs),
+                revocation_refresh_interval: Duration::from_secs(args.auth_revocation_refresh_secs),
+                revocation_max_stale: Duration::from_secs(args.auth_revocation_max_stale_secs),
+            })
+            .await
+            .context("initialize JWKS authentication")?
+        }
+        (None, None, None, None) => match args.auth_token.clone() {
+            Some(token) => crate::auth::Authenticator::legacy(token),
+            None if args.allow_insecure_no_auth || args.conformance_default_key.is_some() => {
+                tracing::warn!("authentication disabled by explicit development/conformance mode");
+                crate::auth::Authenticator::Disabled
+            }
+            None => anyhow::bail!(
+                "authentication is required: configure AUTH_JWKS_URL/AUTH_REVOCATION_URL/ISSUER/AUDIENCE, \
+                 AUTH_TOKEN for the pilot, or explicitly set ALLOW_INSECURE_NO_AUTH=true"
+            ),
+        },
+        _ => anyhow::bail!(
+            "AUTH_JWKS_URL, AUTH_REVOCATION_URL, AUTH_ISSUER, and AUTH_AUDIENCE must be set together"
+        ),
+    };
+    if authn.production_ready()
+        && args.metrics_key.is_some()
+        && args.metrics_lb_url.is_some()
+        && args.metrics_auth_token.is_none()
+    {
+        anyhow::bail!("the internal metrics flusher requires METRICS_AUTH_TOKEN in JWKS mode");
+    }
 
     let ops_store = args.store_for(&args.ops_bucket)?;
     let shard_store = args.store_for(&args.shard_bucket)?;
     let data_store = args.store_for(&args.data_bucket)?;
+    let backup_store = args.backup_store()?;
+    if args.require_backup && backup_store.is_none() {
+        anyhow::bail!("REQUIRE_BACKUP=true but BACKUP_S3_ENDPOINT is not configured");
+    }
+    if backup_store.is_some() {
+        anyhow::ensure!(
+            args.backup_interval_secs >= 60,
+            "BACKUP_INTERVAL_SECS must be at least 60"
+        );
+    }
+    let backup_config = backup_store.map(|destination| {
+        // A role bucket may be shared by all three logical stores. Snapshot
+        // each physical keyspace once; the first role is the restore name.
+        let mut seen_buckets = HashSet::new();
+        let sources = [
+            (
+                "ops",
+                args.ops_bucket.as_deref().unwrap_or(&args.bucket),
+                ops_store.clone(),
+            ),
+            (
+                "shard",
+                args.shard_bucket.as_deref().unwrap_or(&args.bucket),
+                shard_store.clone(),
+            ),
+            (
+                "data",
+                args.data_bucket.as_deref().unwrap_or(&args.bucket),
+                data_store.clone(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(role, bucket, store)| {
+            seen_buckets
+                .insert(bucket.to_string())
+                .then_some(streams_slate::backup::BackupSource { role, store })
+        })
+        .collect();
+        (sources, destination)
+    });
 
     let registry = Registry::new(ops_store.clone());
     let topology = load_or_init_topology(&ops_store, args.initial_shards)
         .await
         .context("load topology")?;
-    tracing::info!("topology v{}: {} shard(s)", topology.version, topology.shards.len());
+    tracing::info!(
+        "topology v{}: {} shard(s)",
+        topology.version,
+        topology.shards.len()
+    );
+    // Do not allow readiness to be satisfied by an empty startup snapshot:
+    // initialize and validate the control plane before the first actor tick.
+    let backup = backup_config.map(|(sources, destination)| {
+        streams_slate::backup::start(
+            sources,
+            destination,
+            Duration::from_secs(args.backup_interval_secs),
+        )
+    });
 
     let keys = Arc::new(KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());
+    let audit = crate::audit::AuditLog::start(ops_store.clone(), &args.instance_name);
 
     // Shards open lazily on first routed request (COMPUTE-SPEC §5.1):
     // opening fences the previous owner, so ownership follows routing.
@@ -419,8 +731,7 @@ async fn async_main() -> anyhow::Result<()> {
                         h = h.wrapping_mul(16777619);
                     }
                     let spread = (base.as_millis() as u64 / 2).max(1);
-                    settings.flush_interval =
-                        Some(base + Duration::from_millis(h as u64 % spread));
+                    settings.flush_interval = Some(base + Duration::from_millis(h as u64 % spread));
                 }
                 let state_slot = state_slot.clone();
                 Box::pin(async move {
@@ -443,9 +754,7 @@ async fn async_main() -> anyhow::Result<()> {
                         let state_slot = state_slot.clone();
                         Arc::new(move || {
                             touch.close_shard(&prefix);
-                            if let Some(st) =
-                                state_slot.get().and_then(std::sync::Weak::upgrade)
-                            {
+                            if let Some(st) = state_slot.get().and_then(std::sync::Weak::upgrade) {
                                 st.shard_closed(&prefix);
                             }
                         }) as Arc<dyn Fn() + Send + Sync>
@@ -453,7 +762,10 @@ async fn async_main() -> anyhow::Result<()> {
                     let engine = ShardEngine::start(
                         prefix.clone(),
                         Arc::new(db),
-                        ShardConfig { max_trim_per_op: trim_per_op, ..Default::default() },
+                        ShardConfig {
+                            max_trim_per_op: trim_per_op,
+                            ..Default::default()
+                        },
                         absorb_tx,
                         Some(on_close),
                     );
@@ -477,7 +789,9 @@ async fn async_main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         registry,
-        shard_prefixes: topology.shards.clone(),
+        shard_prefixes: std::sync::RwLock::new(topology.shards.clone()),
+        topology_version: std::sync::atomic::AtomicU64::new(topology.version),
+        topology_ready: std::sync::atomic::AtomicBool::new(true),
         shards: std::sync::RwLock::new(HashMap::new()),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),
@@ -488,6 +802,13 @@ async fn async_main() -> anyhow::Result<()> {
         admit_rss_shed_mb: args.admit_rss_shed_mb,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
+        tenant_admission: crate::http::TenantAdmission::new(
+            args.admit_max_inflight_per_customer,
+            args.admit_write_bytes_per_sec_per_customer,
+            args.admit_write_burst_bytes_per_customer,
+        ),
+        audit,
+        backup,
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         data_store,
@@ -497,16 +818,23 @@ async fn async_main() -> anyhow::Result<()> {
         default_ordering: args
             .conformance_ordering_segments
             .map(|n| ("per-key".to_string(), n)),
+        authn,
         auth_token: args.auth_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    start_topology_watcher(state.clone(), ops_store.clone());
     match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
         (Some(mk), Some(lb)) => {
             let st = state.clone();
             let instance = args.instance_name.clone();
+            let metrics_auth = args
+                .metrics_auth_token
+                .clone()
+                .or_else(|| args.auth_token.clone())
+                .unwrap_or_default();
             tokio::spawn(async move {
-                crate::http::metrics_flusher(st, mk, instance, lb).await;
+                crate::http::metrics_flusher(st, mk, instance, lb, metrics_auth).await;
             });
         }
         (Some(_), None) => tracing::warn!(

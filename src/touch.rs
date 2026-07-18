@@ -27,6 +27,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::registry::StorageHash;
 use crate::touch_keys::{arg_string, key_id_of_u64, table_key, template_id, watch_key};
 
 const BUCKET_MS: u64 = 25;
@@ -34,6 +35,7 @@ const BUCKET_KEY_CAP: usize = 65_536;
 const HISTORY_BUCKETS: usize = 4_096;
 /// Global cap on retained history keys (~8 MB as sorted u32 vecs).
 const HISTORY_KEY_BUDGET: usize = 2_000_000;
+const TOUCH_REGISTRY_CAPACITY: usize = 10_000;
 pub const MAX_TEMPLATES_PER_STREAM: usize = 256;
 pub const MAX_TEMPLATES_PER_ENTITY: usize = 64;
 
@@ -44,7 +46,6 @@ struct ClosedBucket {
     generation: u64,
     keys: Vec<u32>, // sorted
     overflow: bool,
-    end_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -97,8 +98,13 @@ pub enum WaitOutcome {
         /// lagging client would walk the cached touch chain hop by hop.
         cacheable: bool,
     },
-    Timeout { cursor: String, end_offset: u64 },
-    Stale { cursor: String },
+    Timeout {
+        cursor: String,
+        end_offset: u64,
+    },
+    Stale {
+        cursor: String,
+    },
 }
 
 impl TouchJournal {
@@ -151,7 +157,7 @@ impl TouchJournal {
             loop {
                 tick.tick().await;
                 ticks += 1;
-                if flusher.flush_bucket(ticks % 40 == 0) {
+                if flusher.flush_bucket(ticks.is_multiple_of(40)) {
                     return;
                 }
             }
@@ -232,7 +238,10 @@ impl TouchJournal {
         };
         for id in candidates {
             if let Some(w) = remove_waiter(&mut inner, id) {
-                let _ = w.tx.send(WakeReason::Touched { generation, end_offset });
+                let _ = w.tx.send(WakeReason::Touched {
+                    generation,
+                    end_offset,
+                });
                 inner.wakeups += 1;
             }
         }
@@ -240,7 +249,11 @@ impl TouchJournal {
         let mut sorted: Vec<u32> = keys.into_iter().collect();
         sorted.sort_unstable();
         inner.history_keys += sorted.len();
-        inner.history.push_back(ClosedBucket { generation, keys: sorted, overflow, end_offset });
+        inner.history.push_back(ClosedBucket {
+            generation,
+            keys: sorted,
+            overflow,
+        });
         while inner.history.len() > HISTORY_BUCKETS || inner.history_keys > HISTORY_KEY_BUDGET {
             if let Some(evicted) = inner.history.pop_front() {
                 inner.history_keys -= evicted.keys.len();
@@ -284,12 +297,13 @@ impl TouchJournal {
         if let Some(tpls) = snapshot.get(entity) {
             for (tid, fields) in tpls {
                 for source in ["value", "old_value"] {
-                    let Some(obj) = record.get(source) else { continue };
+                    let Some(obj) = record.get(source) else {
+                        continue;
+                    };
                     if obj.is_null() {
                         continue;
                     }
-                    let args: Vec<String> =
-                        fields.iter().map(|f| arg_string(obj.get(f))).collect();
+                    let args: Vec<String> = fields.iter().map(|f| arg_string(obj.get(f))).collect();
                     out.push(key_id_of_u64(watch_key(*tid, &args)));
                 }
             }
@@ -310,7 +324,9 @@ impl TouchJournal {
         let from_gen = {
             let inner = self.inner.lock().unwrap();
             if inner.closed {
-                return WaitOutcome::Stale { cursor: self.cursor(inner.generation) };
+                return WaitOutcome::Stale {
+                    cursor: self.cursor(inner.generation),
+                };
             }
             if cursor == "now" {
                 inner.generation
@@ -327,13 +343,15 @@ impl TouchJournal {
                         }
                     }
                     _ => {
-                        return WaitOutcome::Stale { cursor: self.cursor(inner.generation) };
+                        return WaitOutcome::Stale {
+                            cursor: self.cursor(inner.generation),
+                        };
                     }
                 }
             }
         };
 
-        let rx = {
+        let (waiter_id, rx) = {
             let mut inner = self.inner.lock().unwrap();
             let generation = inner.generation;
             if from_gen < generation {
@@ -378,13 +396,16 @@ impl TouchJournal {
                 inner.key_index.entry(*k).or_default().push(id);
             }
             inner.waiters.insert(id, Waiter { keys: key_ids, tx });
-            rx
+            (id, rx)
         };
 
         match tokio::time::timeout(timeout, rx).await {
             // A long-poll wake is by definition at the head: immutable for
             // this (key, cursor), safe to cache for late cohort members.
-            Ok(Ok(WakeReason::Touched { generation, end_offset })) => WaitOutcome::Touched {
+            Ok(Ok(WakeReason::Touched {
+                generation,
+                end_offset,
+            })) => WaitOutcome::Touched {
                 cursor: self.cursor(generation),
                 end_offset,
                 proven: true,
@@ -392,21 +413,19 @@ impl TouchJournal {
             },
             Ok(Ok(WakeReason::Closed)) => {
                 let g = self.inner.lock().unwrap().generation;
-                WaitOutcome::Stale { cursor: self.cursor(g) }
+                WaitOutcome::Stale {
+                    cursor: self.cursor(g),
+                }
             }
             _ => {
-                let inner = self.inner.lock().unwrap();
+                let mut inner = self.inner.lock().unwrap();
+                remove_waiter(&mut inner, waiter_id);
                 WaitOutcome::Timeout {
                     cursor: self.cursor(inner.generation),
                     end_offset: inner.end_offset,
                 }
             }
         }
-    }
-
-    pub fn now_cursor(&self) -> String {
-        let g = self.inner.lock().unwrap().generation;
-        self.cursor(g)
     }
 
     pub fn meta(&self) -> serde_json::Value {
@@ -446,35 +465,144 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
     Some(w)
 }
 
-/// Per-process registry of journals for state-protocol streams.
+struct TouchEntry {
+    routing_hash: [u8; 16],
+    journal: Arc<TouchJournal>,
+}
+
 #[derive(Default)]
+struct TouchRegistryInner {
+    map: HashMap<StorageHash, TouchEntry>,
+    order: VecDeque<StorageHash>,
+}
+
+/// Per-process registry of journals for state-protocol streams. The map is
+/// keyed by the storage hash because callers address journals by stream, but
+/// fencing must use the independent routing hash that selected the shard.
 pub struct TouchRegistry {
-    map: Mutex<HashMap<[u8; 16], Arc<TouchJournal>>>,
+    inner: Mutex<TouchRegistryInner>,
+    capacity: usize,
+}
+
+impl Default for TouchRegistry {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(TouchRegistryInner::default()),
+            capacity: TOUCH_REGISTRY_CAPACITY,
+        }
+    }
 }
 
 impl TouchRegistry {
     pub fn journal(
         &self,
-        hash: [u8; 16],
+        storage_hash: StorageHash,
+        routing_hash: [u8; 16],
         pinned: &[(String, Vec<String>)],
     ) -> Arc<TouchJournal> {
-        let mut map = self.map.lock().unwrap();
-        map.entry(hash).or_insert_with(|| TouchJournal::start(pinned)).clone()
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(entry) = inner.map.get_mut(&storage_hash) {
+            entry.routing_hash = routing_hash;
+            return entry.journal.clone();
+        }
+
+        while inner.map.len() >= self.capacity.max(1) {
+            let Some(candidate) = inner.order.pop_front() else {
+                break;
+            };
+            if let Some(entry) = inner.map.remove(&candidate) {
+                entry.journal.close();
+            }
+        }
+
+        let journal = TouchJournal::start(pinned);
+        inner.map.insert(
+            storage_hash,
+            TouchEntry {
+                routing_hash,
+                journal: journal.clone(),
+            },
+        );
+        inner.order.push_back(storage_hash);
+        journal
     }
 
     /// Fence/move of a shard: close + drop every journal whose stream hash
     /// falls in the shard's bit-prefix, waking all their waiters with stale.
     pub fn close_shard(&self, prefix: &str) {
-        let mut map = self.map.lock().unwrap();
-        let closing: Vec<[u8; 16]> = map
-            .keys()
-            .filter(|h| crate::registry::shard_prefix_matches(prefix, h))
-            .copied()
+        let mut inner = self.inner.lock().unwrap();
+        let closing: Vec<StorageHash> = inner
+            .map
+            .iter()
+            .filter(|(_, entry)| crate::registry::shard_prefix_matches(prefix, &entry.routing_hash))
+            .map(|(storage_hash, _)| *storage_hash)
             .collect();
-        for h in closing {
-            if let Some(j) = map.remove(&h) {
-                j.close();
+        for storage_hash in &closing {
+            if let Some(entry) = inner.map.remove(storage_hash) {
+                entry.journal.close();
             }
         }
+        inner.order.retain(|hash| !closing.contains(hash));
+    }
+
+    pub fn remove(&self, storage_hash: &StorageHash) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(entry) = inner.map.remove(storage_hash) {
+            entry.journal.close();
+        }
+        inner.order.retain(|hash| hash != storage_hash);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shard_close_uses_routing_hash_and_wakes_waiters() {
+        let registry = TouchRegistry {
+            inner: Mutex::new(TouchRegistryInner::default()),
+            capacity: 2,
+        };
+        let storage_hash = [0xff; 32];
+        let routing_hash = [0x00; 16];
+        let journal = registry.journal(storage_hash, routing_hash, &[]);
+        let waiting = tokio::spawn({
+            let journal = journal.clone();
+            async move { journal.wait("now", vec![1], Duration::from_secs(5)).await }
+        });
+        tokio::task::yield_now().await;
+
+        registry.close_shard("0");
+
+        assert!(matches!(waiting.await.unwrap(), WaitOutcome::Stale { .. }));
+        assert!(registry.inner.lock().unwrap().map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn registry_eviction_is_bounded_and_closes_the_old_journal() {
+        let registry = TouchRegistry {
+            inner: Mutex::new(TouchRegistryInner::default()),
+            capacity: 1,
+        };
+        let first = registry.journal([1; 32], [0; 16], &[]);
+        let _second = registry.journal([2; 32], [0; 16], &[]);
+
+        assert_eq!(registry.inner.lock().unwrap().map.len(), 1);
+        assert!(matches!(
+            first.wait("now", vec![1], Duration::ZERO).await,
+            WaitOutcome::Stale { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn timed_out_waiters_are_removed_immediately() {
+        let journal = TouchJournal::start(&[]);
+        assert!(matches!(
+            journal.wait("now", vec![1], Duration::ZERO).await,
+            WaitOutcome::Timeout { .. }
+        ));
+        assert!(journal.inner.lock().unwrap().waiters.is_empty());
+        journal.close();
     }
 }

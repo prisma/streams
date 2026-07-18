@@ -1,60 +1,47 @@
 # Durable Streams conformance results
 
-Upstream suite: `@durable-streams/server-conformance-tests` (239 tests),
-installed from npm. (A vendored copy with vitest wiring lived in the
-previous TypeScript implementation — available in git history before the
-`slate` branch landed.) Run 2026-07-08 against `streams-slate` with s3lite
-(5 ms injected latency).
+Upstream suite: `@durable-streams/server-conformance-tests@0.3.6`, pinned
+together with `vitest@4.0.17` in CI. The published package currently contains
+338 tests. The release run on 2026-07-18 used s3lite with 1 ms injected
+latency and a 10 ms remotely durable WAL flush cadence.
 
 ## How to run
 
 ```bash
-# emulator + server (fresh bucket per run — the suite assumes a clean namespace)
-./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 5 &
-KEY=$(./target/release/streams-keys generate)
-./target/release/streams-slate --listen 127.0.0.1:8090 \
-  --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
-  --conformance-default-key "$KEY" &
-
-# suite: install @durable-streams/server-conformance-tests in a scratch
-# directory and run it per its README (it ships an npx CLI; point it at the
-# server with CONFORMANCE_TEST_URL=http://127.0.0.1:8090)
+cargo build --release --bin s3lite --bin streams-slate --bin streams-keys
+bash scripts/ci-conformance.sh
 ```
 
-## Changes required to run the suite (accommodations)
+The hermetic wrapper creates a fresh S3 namespace, starts and owns both
+processes, installs exact npm versions in a scratch directory, and cleans up.
+Package 0.3.6's CLI points Vitest 4 at a path under `node_modules`, which
+Vitest excludes. The wrapper copies the published bundled runner unchanged to
+the scratch root and invokes it directly. `CONFORMANCE_TEST_FILTER` can select
+a test name/regex for local diagnosis.
 
-1. **`--conformance-default-key <b64>`** — the suite cannot send custom
-   headers, and this server requires `Stream-Encryption-Key` on every
-   create/append/read. The flag supplies a key for requests that lack the
-   header. Dev/conformance only.
-2. **`--conformance-ordering-segments <N>`** (per-key runs only) — the suite
-   creates streams with plain PUTs, so this applies
-   `Stream-Ordering: per-key` + `Stream-Segments: N` to headerless creates.
-3. A **fresh bucket per run**: suite streams accumulate; reruns against a
-   used namespace hit config-mismatch 409s by design.
+## Accommodations
 
-No changes to the suite itself were needed.
+1. **`--conformance-default-key <b64>`** supplies the customer-held stream
+   key because the suite cannot add Prisma's encryption header. It is accepted
+   only in explicit development/conformance mode.
+2. The wrapper uses a **fresh bucket** because retained stream configuration
+   correctly makes incompatible reruns return 409.
+3. The local flush interval is 10 ms. Production remains 25 ms; three repeated
+   runs of the suite's five-second, 25-run sequential-offset property passed
+   at 10 ms while preserving remote-durability-before-ACK.
 
-## Results
+No test source or expectation is patched.
+
+## Result
 
 | configuration | result |
 |---|---|
-| total order (default) | **239 / 239** |
-| `ordering: per-key`, 1 segment | **239 / 239** (degenerate case: per-key with one segment is totally ordered and byte-identical to default — served through the standard path) |
-| `ordering: per-key`, 4 segments | **194 / 239** — all 45 failures are the two deviations specified in PER-KEY-ORDERING.md §4, below |
+| total order (release build) | **332 passed, 6 skipped, 0 failed (338 total)** |
 
-### The 45 expected failures at 4 segments
-
-- **Unkeyed live reads are rejected (`400 unsupported_on_per_key`)** —
-  accommodation #1: the whole-stream tail has no single durable cursor once
-  writes are concurrent across segments. This covers every SSE test, every
-  unkeyed long-poll test, and the `offset=now`+live tests (~42 tests). Keyed
-  live reads (`key=` + long-poll/SSE) work and are exercised by our own e2e.
-- **Closed state is segment-scoped in v1** (~3 tests): a close request
-  routes to its routing key's segment (unkeyed close → the empty-key
-  segment), so stream-wide `Stream-Closed` reporting on unkeyed reads of a
-  multi-segment stream is not implemented. Stream-wide close lands with the
-  split/seal machinery (a seal *is* a close).
+The six upstream skips are the package's optional subscription tests. All
+executed tests—including fork creation/reading/recursive/lifecycle/TTL,
+sliding TTL, CORS, SSE framing, producer idempotence, and fast-check property
+tests—pass. CI runs this complete suite, not a curated subset.
 
 ## What the baseline run drove into the implementation
 

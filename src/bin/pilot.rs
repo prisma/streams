@@ -9,15 +9,15 @@
 // the previous completes), so offered load self-paces to what the fleet
 // can absorb and congestion collapse is impossible by construction.
 
+use axum::Router;
 use axum::body::Body;
-use object_store::ObjectStoreExt;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use futures_util::TryStreamExt;
 use hdrhistogram::Histogram;
+use object_store::ObjectStoreExt;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,10 @@ fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
 }
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 // Matches the JS FNV-1a in the run-1 Bun LB so stream→server pinning is
@@ -207,7 +210,10 @@ async fn lb() {
         stats,
         history: Mutex::new(VecDeque::new()),
         gen_stats: Mutex::new(serde_json::json!(null)),
-        fleet: Mutex::new(FleetView { desired: 1, ..Default::default() }),
+        fleet: Mutex::new(FleetView {
+            desired: 1,
+            ..Default::default()
+        }),
         http: RotatingClient::new(),
     });
 
@@ -270,15 +276,21 @@ async fn lb() {
                     active: Vec::new(),
                     topology: prev_topo,
                 };
-                if let Ok(r) = fstore.get(&object_store::path::Path::from("fleet/desired.json")).await {
+                if let Ok(r) = fstore
+                    .get(&object_store::path::Path::from("fleet/desired.json"))
+                    .await
+                {
                     if let Ok(raw) = r.bytes().await {
                         if let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                            view.desired =
-                                (d["count"].as_u64().unwrap_or(1) as usize).clamp(1, lb.upstreams.len());
+                            view.desired = (d["count"].as_u64().unwrap_or(1) as usize)
+                                .clamp(1, lb.upstreams.len());
                         }
                     }
                 }
-                let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64;
                 let mut ages_ms: Vec<i64> = Vec::new();
                 for i in 0..lb.upstreams.len() {
                     let p = object_store::path::Path::from(format!("fleet/streams-{}.json", i + 1));
@@ -291,10 +303,22 @@ async fn lb() {
                                 age = now_ms - ts;
                                 let live = age < 10_000;
                                 entry = (
-                                    if live { h["rps"].as_f64().unwrap_or(0.0) } else { 0.0 },
-                                    if live { h["ack_p50_ms"].as_f64().unwrap_or(0.0) } else { 0.0 },
+                                    if live {
+                                        h["rps"].as_f64().unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    },
+                                    if live {
+                                        h["ack_p50_ms"].as_f64().unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    },
                                     live,
-                                    if live { h["cpu_pct"].as_f64().unwrap_or(0.0) } else { 0.0 },
+                                    if live {
+                                        h["cpu_pct"].as_f64().unwrap_or(0.0)
+                                    } else {
+                                        0.0
+                                    },
                                 );
                             }
                         }
@@ -332,7 +356,10 @@ async fn lb() {
                     }
                 }
                 if topo_age == 0 || view.topology.is_empty() {
-                    if let Ok(r) = dstore.get(&object_store::path::Path::from("topology.json")).await {
+                    if let Ok(r) = dstore
+                        .get(&object_store::path::Path::from("topology.json"))
+                        .await
+                    {
                         if let Ok(raw) = r.bytes().await {
                             if let Ok(t) = serde_json::from_slice::<serde_json::Value>(&raw) {
                                 if let Some(shards) = t["shards"].as_array() {
@@ -361,8 +388,11 @@ async fn lb() {
             let poll = client();
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                let per: Vec<u64> =
-                    lb.stats.iter().map(|s| s.window.swap(0, Ordering::Relaxed)).collect();
+                let per: Vec<u64> = lb
+                    .stats
+                    .iter()
+                    .map(|s| s.window.swap(0, Ordering::Relaxed))
+                    .collect();
                 let gv = match &gen_url {
                     Some(u) => match poll
                         .get(u)
@@ -370,7 +400,10 @@ async fn lb() {
                         .send()
                         .await
                     {
-                        Ok(r) => r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!(null)),
+                        Ok(r) => r
+                            .json::<serde_json::Value>()
+                            .await
+                            .unwrap_or(serde_json::json!(null)),
                         Err(_) => serde_json::json!(null),
                     },
                     None => serde_json::json!(null),
@@ -436,14 +469,19 @@ async fn lb() {
         .with_state(lb);
 
     let port = env("PORT").unwrap_or_else(|| "8080".into());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
     println!("pilot lb listening on :{port}");
     axum::serve(listener, app).await.unwrap();
 }
 
 async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     let path = req.uri().path().to_string();
-    let stream = match path.strip_prefix("/v1/stream/").and_then(|r| r.split(['/', '?']).next()) {
+    let stream = match path
+        .strip_prefix("/v1/stream/")
+        .and_then(|r| r.split(['/', '?']).next())
+    {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => return (StatusCode::NOT_FOUND, "lb: not a stream route").into_response(),
     };
@@ -471,7 +509,11 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         .filter(|n| *n < lb.upstreams.len())
         .unwrap_or(0);
     let s = &lb.stats[i];
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let url = format!("{}{}{}", lb.upstreams[i], path, query);
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap();
     let mut headers = HeaderMap::new();
@@ -510,7 +552,12 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
                 .filter(|n| *n < lb.upstreams.len())
             {
                 let url2 = format!("{}{}{}", lb.upstreams[target], path, query);
-                resp = http.request(method, url2).headers(headers).body(body).send().await;
+                resp = http
+                    .request(method, url2)
+                    .headers(headers)
+                    .body(body)
+                    .send()
+                    .await;
             }
         }
     }
@@ -522,7 +569,10 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
             s.window.fetch_add(1, Ordering::Relaxed);
             s.last_us.store(us, Ordering::Relaxed);
             let prev = s.ewma_us.load(Ordering::Relaxed);
-            s.ewma_us.store(if prev == 0 { us } else { (prev * 9 + us) / 10 }, Ordering::Relaxed);
+            s.ewma_us.store(
+                if prev == 0 { us } else { (prev * 9 + us) / 10 },
+                Ordering::Relaxed,
+            );
             if idle_ms > 8000 && us > 1_500_000 {
                 s.cold_starts.fetch_add(1, Ordering::Relaxed);
             }
@@ -533,8 +583,10 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
                     out = out.header(k, v);
                 }
             }
-            out.body(Body::from_stream(r.bytes_stream().map_err(std::io::Error::other)))
-                .unwrap()
+            out.body(Body::from_stream(
+                r.bytes_stream().map_err(std::io::Error::other),
+            ))
+            .unwrap()
         }
         Err(e) => {
             s.errs.fetch_add(1, Ordering::Relaxed);
@@ -574,13 +626,22 @@ async fn generator() {
     // the LB legitimately sets UPSTREAMS — the generator silently flipping
     // into direct mode from inherited env caused two broken runs.
     let upstreams: Vec<String> = match env("GEN_UPSTREAMS") {
-        Some(u) => u.split([',', ';']).filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect(),
+        Some(u) => u
+            .split([',', ';'])
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim().to_string())
+            .collect(),
         None => vec![env("LB_URL").expect("LB_URL or GEN_UPSTREAMS required")],
     };
     // Attribution-only server list (when routing via LB_URL): lets the
     // stats report a per-server split without bypassing the LB.
     let attr_upstreams: Vec<String> = env("ATTR_UPSTREAMS")
-        .map(|u| u.split([',', ';']).filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect())
+        .map(|u| {
+            u.split([',', ';'])
+                .filter(|s| !s.is_empty())
+                .map(|s| s.trim().to_string())
+                .collect()
+        })
         .unwrap_or_default();
     let n_streams: usize = env("STREAMS").and_then(|v| v.parse().ok()).unwrap_or(32);
     let conc_start: u64 = env("CONC_START").and_then(|v| v.parse().ok()).unwrap_or(8);
@@ -595,7 +656,11 @@ async fn generator() {
     let rc = RotatingClient::new();
     let http = rc.get();
     let base = |stream: &str| -> String {
-        let i = if upstreams.len() == 1 { 0 } else { pick(stream, &upstreams) };
+        let i = if upstreams.len() == 1 {
+            0
+        } else {
+            pick(stream, &upstreams)
+        };
         upstreams[i].clone()
     };
 
@@ -613,8 +678,15 @@ async fn generator() {
             eprintln!("create {name}: {e}");
         }
     }
-    println!("pilot gen: {} stream(s), conc {}→{} doubling every {}s, batch {}, {} target(s)",
-        n_streams, conc_start, conc_max, ramp_secs, batch, upstreams.len());
+    println!(
+        "pilot gen: {} stream(s), conc {}→{} doubling every {}s, batch {}, {} target(s)",
+        n_streams,
+        conc_start,
+        conc_max,
+        ramp_secs,
+        batch,
+        upstreams.len()
+    );
 
     let attr_n = attr_upstreams.len().max(1);
     let g = Arc::new(Gen {
@@ -622,7 +694,7 @@ async fn generator() {
         errs: AtomicU64::new(0),
         window: AtomicU64::new(0),
         achieved: AtomicU64::new(0),
-            throttled: AtomicU64::new(0),
+        throttled: AtomicU64::new(0),
         concurrency: AtomicU64::new(0),
         hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
         hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
@@ -638,10 +710,13 @@ async fn generator() {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                g.achieved.store(g.window.swap(0, Ordering::Relaxed), Ordering::Relaxed);
+                g.achieved
+                    .store(g.window.swap(0, Ordering::Relaxed), Ordering::Relaxed);
                 for i in 0..g.per_up_window.len() {
-                    g.per_up_rate[i]
-                        .store(g.per_up_window[i].swap(0, Ordering::Relaxed), Ordering::Relaxed);
+                    g.per_up_rate[i].store(
+                        g.per_up_window[i].swap(0, Ordering::Relaxed),
+                        Ordering::Relaxed,
+                    );
                 }
             }
         });
@@ -676,7 +751,11 @@ async fn generator() {
                         loop {
                             let n = seq.fetch_add(1, Ordering::Relaxed);
                             let name = format!("{}-{}", stream_prefix2, n as usize % n_streams);
-                            let i = if upstreams.len() == 1 { 0 } else { pick(&name, &upstreams) };
+                            let i = if upstreams.len() == 1 {
+                                0
+                            } else {
+                                pick(&name, &upstreams)
+                            };
                             let attr_i = if attr_upstreams.is_empty() {
                                 i
                             } else {
@@ -721,8 +800,7 @@ async fn generator() {
                                 // (docker staircase, 2026-07-15: 2.7M 429s,
                                 // goodput ~1/s, /health unresponsive).
                                 Ok(r)
-                                    if r.status().as_u16() == 429
-                                        || r.status().as_u16() == 503 =>
+                                    if r.status().as_u16() == 429 || r.status().as_u16() == 503 =>
                                 {
                                     g.throttled.fetch_add(1, Ordering::Relaxed);
                                     let ra_ms = r
@@ -733,8 +811,7 @@ async fn generator() {
                                         .map(|secs| secs * 1000)
                                         .unwrap_or(500);
                                     let jitter = (n % 400) as u64;
-                                    tokio::time::sleep(Duration::from_millis(ra_ms + jitter))
-                                        .await;
+                                    tokio::time::sleep(Duration::from_millis(ra_ms + jitter)).await;
                                 }
                                 Ok(r) => {
                                     g.errs.fetch_add(1, Ordering::Relaxed);
@@ -754,45 +831,52 @@ async fn generator() {
         });
     }
 
-    let app = Router::new().route(
-        "/",
-        get(|State(g): State<Arc<Gen>>| async move {
-            let (win_p50, win_p99, win_n) = {
-                let hw = g.hist_win.lock().unwrap();
-                (
-                    hw.value_at_quantile(0.5) as f64 / 1000.0,
-                    hw.value_at_quantile(0.99) as f64 / 1000.0,
-                    hw.len(),
-                )
-            };
-            let h = g.hist.lock().unwrap();
-            let per_up: Vec<u64> =
-                g.per_up_rate.iter().map(|c| c.load(Ordering::Relaxed)).collect();
-            let json = serde_json::json!({
-                "mode": "closed-loop",
-                "winP50Ms": win_p50,
-                "winP99Ms": win_p99,
-                "winSamples": win_n,
-                "concurrency": g.concurrency.load(Ordering::Relaxed),
-                "achievedPerSec": g.achieved.load(Ordering::Relaxed),
-                "perUpstreamPerSec": per_up,
-                "ok": g.ok.load(Ordering::Relaxed),
-                "errs": g.errs.load(Ordering::Relaxed),
-                "throttled": g.throttled.load(Ordering::Relaxed),
-                "meanMs": h.mean() / 1000.0,
-                "p50Ms": h.value_at_quantile(0.5) as f64 / 1000.0,
-                "p99Ms": h.value_at_quantile(0.99) as f64 / 1000.0,
-                "maxMs": h.max() as f64 / 1000.0,
-                "elapsedMin": g.start.elapsed().as_secs_f64() / 60.0,
-                "lastErr": g.last_err.lock().unwrap().clone(),
-            });
-            drop(h);
-            ([("access-control-allow-origin", "*")], axum::Json(json))
-        }),
-    ).with_state(g);
+    let app = Router::new()
+        .route(
+            "/",
+            get(|State(g): State<Arc<Gen>>| async move {
+                let (win_p50, win_p99, win_n) = {
+                    let hw = g.hist_win.lock().unwrap();
+                    (
+                        hw.value_at_quantile(0.5) as f64 / 1000.0,
+                        hw.value_at_quantile(0.99) as f64 / 1000.0,
+                        hw.len(),
+                    )
+                };
+                let h = g.hist.lock().unwrap();
+                let per_up: Vec<u64> = g
+                    .per_up_rate
+                    .iter()
+                    .map(|c| c.load(Ordering::Relaxed))
+                    .collect();
+                let json = serde_json::json!({
+                    "mode": "closed-loop",
+                    "winP50Ms": win_p50,
+                    "winP99Ms": win_p99,
+                    "winSamples": win_n,
+                    "concurrency": g.concurrency.load(Ordering::Relaxed),
+                    "achievedPerSec": g.achieved.load(Ordering::Relaxed),
+                    "perUpstreamPerSec": per_up,
+                    "ok": g.ok.load(Ordering::Relaxed),
+                    "errs": g.errs.load(Ordering::Relaxed),
+                    "throttled": g.throttled.load(Ordering::Relaxed),
+                    "meanMs": h.mean() / 1000.0,
+                    "p50Ms": h.value_at_quantile(0.5) as f64 / 1000.0,
+                    "p99Ms": h.value_at_quantile(0.99) as f64 / 1000.0,
+                    "maxMs": h.max() as f64 / 1000.0,
+                    "elapsedMin": g.start.elapsed().as_secs_f64() / 60.0,
+                    "lastErr": g.last_err.lock().unwrap().clone(),
+                });
+                drop(h);
+                ([("access-control-allow-origin", "*")], axum::Json(json))
+            }),
+        )
+        .with_state(g);
 
     let port = env("PORT").unwrap_or_else(|| "8080".into());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
     println!("pilot gen stats on :{port}");
     axum::serve(listener, app).await.unwrap();
 }
@@ -874,14 +958,22 @@ async fn bench() {
     let key = env("STREAM_KEY").expect("STREAM_KEY");
     let stream = env("BENCH_STREAM").unwrap_or_else(|| "bench-ordered".into());
     let warmup = Duration::from_secs(env("WARMUP_SECS").and_then(|v| v.parse().ok()).unwrap_or(8));
-    let measure =
-        Duration::from_secs(env("MEASURE_SECS").and_then(|v| v.parse().ok()).unwrap_or(40));
-    let max_inflight_mb: usize =
-        env("MAX_INFLIGHT_MB").and_then(|v| v.parse().ok()).unwrap_or(2);
-    let drain = Duration::from_secs(
-        env("INTER_POINT_SECS").and_then(|v| v.parse().ok()).unwrap_or(20),
+    let measure = Duration::from_secs(
+        env("MEASURE_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40),
     );
-    let fixed_size: usize = env("FIXED_SIZE").and_then(|v| v.parse().ok()).unwrap_or(256);
+    let max_inflight_mb: usize = env("MAX_INFLIGHT_MB")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let drain = Duration::from_secs(
+        env("INTER_POINT_SECS")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20),
+    );
+    let fixed_size: usize = env("FIXED_SIZE")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256);
 
     let sizes: Vec<usize> = env("SIZES")
         .unwrap_or_else(|| "64;256;1024;4096;16384;65536;262144;1048576".into())
@@ -896,10 +988,18 @@ async fn bench() {
 
     let mut plan: Vec<BenchPoint> = Vec::new();
     for s in &sizes {
-        plan.push(BenchPoint { sweep: "size", event_bytes: *s, batch: 1 });
+        plan.push(BenchPoint {
+            sweep: "size",
+            event_bytes: *s,
+            batch: 1,
+        });
     }
     for b in &batches {
-        plan.push(BenchPoint { sweep: "batch", event_bytes: fixed_size, batch: *b });
+        plan.push(BenchPoint {
+            sweep: "batch",
+            event_bytes: fixed_size,
+            batch: *b,
+        });
     }
 
     let rc = RotatingClient::new();
@@ -956,8 +1056,9 @@ async fn bench() {
 
     // Worker pool: spawn the max we could ever need; workers park when
     // their id >= current concurrency.
-    let max_workers: usize =
-        env("MAX_WORKERS").and_then(|v| v.parse().ok()).unwrap_or(1024);
+    let max_workers: usize = env("MAX_WORKERS")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024);
     for wid in 0..max_workers {
         let st = st.clone();
         let rc = rc.clone();
@@ -968,7 +1069,11 @@ async fn bench() {
         tokio::spawn(async move {
             let mut body: bytes::Bytes = bytes::Bytes::new();
             let mut my_gen = u64::MAX;
-            let mut point = BenchPoint { sweep: "size", event_bytes: 0, batch: 0 };
+            let mut point = BenchPoint {
+                sweep: "size",
+                event_bytes: 0,
+                batch: 0,
+            };
             loop {
                 let cur_gen = st.gen_id.load(Ordering::Relaxed);
                 if cur_gen != my_gen {
@@ -1091,8 +1196,10 @@ async fn bench() {
                 // and trips backpressure before steady state can form.
                 let steps = 6u32;
                 for i in 1..=steps {
-                    st.conc
-                        .store((conc as u64 * i as u64 / steps as u64).max(4), Ordering::Relaxed);
+                    st.conc.store(
+                        (conc as u64 * i as u64 / steps as u64).max(4),
+                        Ordering::Relaxed,
+                    );
                     tokio::time::sleep(warmup / steps).await;
                 }
                 // reset measurement window
@@ -1177,22 +1284,26 @@ async fn bench() {
         });
     }
 
-    let app = Router::new().route(
-        "/",
-        get(|State(st): State<Arc<BenchState>>| async move {
-            let results = st.results.lock().unwrap().clone();
-            (
-                [("access-control-allow-origin", "*")],
-                axum::Json(serde_json::json!({
-                    "done": st.done.load(Ordering::Relaxed) == 1,
-                    "points": results.len(),
-                    "results": results,
-                })),
-            )
-        }),
-    ).with_state(st);
+    let app = Router::new()
+        .route(
+            "/",
+            get(|State(st): State<Arc<BenchState>>| async move {
+                let results = st.results.lock().unwrap().clone();
+                (
+                    [("access-control-allow-origin", "*")],
+                    axum::Json(serde_json::json!({
+                        "done": st.done.load(Ordering::Relaxed) == 1,
+                        "points": results.len(),
+                        "results": results,
+                    })),
+                )
+            }),
+        )
+        .with_state(st);
     let port = env("PORT").unwrap_or_else(|| "8080".into());
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
     println!("bench results on :{port}");
     axum::serve(listener, app).await.unwrap();
 }

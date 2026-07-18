@@ -109,7 +109,11 @@ pub fn parse_ep(input: &str) -> Result<(u32, Offset), String> {
     let n = n >> 2;
     let epoch = (n >> 96) as u32;
     let raw_seq = ((n >> 32) & 0xffff_ffff_ffff_ffff) as u64;
-    let off = if raw_seq == 0 { Offset::START } else { Offset(Some(raw_seq - 1)) };
+    let off = if raw_seq == 0 {
+        Offset::START
+    } else {
+        Offset(Some(raw_seq - 1))
+    };
     Ok((epoch, off))
 }
 
@@ -125,7 +129,10 @@ mod tests {
             assert_eq!(Offset::parse(&s).unwrap(), Offset(Some(n)));
         }
         assert_eq!(Offset::parse("-1").unwrap(), Offset::START);
-        assert_eq!(Offset::parse(&Offset::START.encode()).unwrap(), Offset::START);
+        assert_eq!(
+            Offset::parse(&Offset::START.encode()).unwrap(),
+            Offset::START
+        );
         assert_eq!(Offset::START.encode(), "00000000000000000000000000");
     }
 

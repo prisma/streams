@@ -22,7 +22,10 @@ pilot).
 - **Committed-before-ack durability**: concurrent appends are bundled into
   shared WAL PUTs; the ack races nothing — if you got a 2xx, the bytes are in
   object storage.
-- **Tenant isolation by cryptography**: each stream's data is AES-GCM
+- **Tenant isolation and key custody**: customer identity is part of registry,
+  storage, routing, metrics, and admission identity. Production requests use
+  locally verified scoped JWTs with a background-refreshed revocation list.
+  Each stream's data is AES-GCM
   encrypted under a stream-specific key attached to requests
   (`Stream-Encryption-Key` header) and never stored by the service. Backups
   are ciphertext; the provider never sees plaintext.

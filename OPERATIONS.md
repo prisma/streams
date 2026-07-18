@@ -56,6 +56,21 @@ Everything at rest is ciphertext (§3.7 of SPEC.md), so **backup requires no
 tenant keys** — backups are exact object copies, useless without the
 customer-held keys.
 
+**Implementation status (`slate-codex`, 2026-07-18):** a full-copy recovery
+baseline is implemented. Every configured physical role keyspace is streamed
+from an exact LIST ETag into an immutable snapshot prefix; per-object SHA-256
+inventories and a `_complete.json` marker make partial/corrupt snapshots
+unrestorable. `REQUIRE_BACKUP=true` keeps readiness red until a snapshot has
+completed. `streams-restore` requires empty offline targets and CI exercises
+backup → dark restore → service reopen → decrypted tail equality.
+
+It does **not** yet implement checkpoint pinning, incremental copy ledgers,
+retention/backup GC, restore-to-time WAL replay, continuous scrubbing, or a
+measured provider failover. Consequently the ≤5 minute RPO and 15–30 minute
+cell RTO below remain **GA targets, not published guarantees**. Full snapshots
+also have unacceptable steady-state cost at cell scale. The remainder of §2
+is the mandatory exit design for replacing this safety baseline.
+
 ### 2.1 What is backed up
 
 | data | mechanism | cadence |
@@ -165,12 +180,14 @@ therefore two-tier and documented to customers:
 
 ### 3.4 Access audit
 
-Per-request audit records (tenant, stream, verb, bytes, token-id, result)
-are appended — through normal routed appends — to a per-cell internal
-audit stream (same engine, dogfooding), full-fidelity for control-plane
-verbs and create/delete, sampled (1 %) for data-plane reads/appends with
-per-tenant counters at full fidelity via the metrics stream. 90-day
-retention; tenant-visible export on request.
+Per-request audit records (tenant, stream, verb, token-id, result, latency)
+are written to the cell ops bucket. Create/delete records are synchronously
+persisted as immutable objects before a successful response is returned;
+sampled (1 %) data-plane reads/appends use bounded one-second NDJSON batches.
+Per-tenant counters remain full fidelity via the metrics stream. Audit-sink
+failure makes readiness fail and successful mutations return a retryable 503.
+The production retention/export actor must enforce 90-day retention and
+tenant-visible export.
 
 ---
 

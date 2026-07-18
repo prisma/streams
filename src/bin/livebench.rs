@@ -31,10 +31,10 @@ use hdrhistogram::Histogram;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-#[path = "../touch_keys.rs"]
-mod touch_keys;
 #[path = "../crypto.rs"]
 mod crypto;
+#[path = "../touch_keys.rs"]
+mod touch_keys;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "livebench")]
@@ -129,8 +129,12 @@ async fn main() -> anyhow::Result<()> {
     // Derive the touch capability token (consumers hold ONLY this — they can
     // observe invalidations but not decrypt payloads).
     let epoch_hex = {
-        let streams: serde_json::Value =
-            http.get(format!("{}/v1/streams", args.url)).send().await?.json().await?;
+        let streams: serde_json::Value = http
+            .get(format!("{}/v1/streams", args.url))
+            .send()
+            .await?
+            .json()
+            .await?;
         streams
             .as_array()
             .and_then(|a| a.iter().find(|s| s["name"] == args.stream.as_str()))
@@ -145,11 +149,16 @@ async fn main() -> anyhow::Result<()> {
     let token = crypto::touch_token(&stream_key, &epoch);
     let sig_key = crypto::wait_sig_key(&token, &epoch);
     let tpl_id = touch_keys::template_id(&args.entity, &["tenantId".to_string()]);
-    println!("pinned template {:016x} for {} ([tenantId])", tpl_id, args.entity);
+    println!(
+        "pinned template {:016x} for {} ([tenantId])",
+        tpl_id, args.entity
+    );
 
     // A wait without any credential (no sig, no token) must be rejected.
     let r = http
-        .get(format!("{base}/touch/key/0000000000000000?cursor=now&timeout=1ms"))
+        .get(format!(
+            "{base}/touch/key/0000000000000000?cursor=now&timeout=1ms"
+        ))
         .send()
         .await?;
     anyhow::ensure!(
@@ -164,7 +173,10 @@ async fn main() -> anyhow::Result<()> {
 
     let shared = Arc::new(Shared {
         tenants: (0..args.tenants)
-            .map(|_| Tenant { truth: AtomicU64::new(0), first_unobserved_ns: AtomicU64::new(0) })
+            .map(|_| Tenant {
+                truth: AtomicU64::new(0),
+                first_unobserved_ns: AtomicU64::new(0),
+            })
             .collect(),
         stop: AtomicBool::new(false),
         appends_ok: AtomicU64::new(0),
@@ -418,7 +430,10 @@ async fn main() -> anyhow::Result<()> {
         lat.max() as f64 / 1e6,
         lat.len(),
     );
-    println!("missed invalidations: {missed} {}", if missed == 0 { "✓" } else { "✗ FAIL" });
+    println!(
+        "missed invalidations: {missed} {}",
+        if missed == 0 { "✓" } else { "✗ FAIL" }
+    );
     if let Some(edge) = &args.edge_url {
         if let Ok(r) = http.get(format!("{edge}/_edge/stats")).send().await {
             if let Ok(v) = r.json::<serde_json::Value>().await {

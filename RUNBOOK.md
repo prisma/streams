@@ -20,6 +20,8 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `pilot` | swiss-army harness: `MODE=lb` routing load balancer, `MODE=gen` load generator, `MODE=bench` calibrated probes |
 | `s3lite` | local S3 emulator with configurable latency (`--latency-ms`) and conditional-PUT support — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
+| `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
+| `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
 | `bench` | single-node benchmark matrix (see [bench/run_matrix.sh](./bench/run_matrix.sh)) |
 | `livebench` | live end-to-end load harness (used for the PG-WAL invalidation stress) |
 | `verify` | conformance/verification runner |
@@ -79,6 +81,7 @@ environment on every deploy** — see the §8.3 trap.
 | `SLATE_S3_REGION` | `us-east-1` | `auto` for Tigris |
 | `SLATE_S3_ACCESS_KEY_ID` / `SLATE_S3_SECRET_ACCESS_KEY` | `test` | |
 | `PATH_PREFIX` | — | key prefix inside the bucket; independent deployments can share a bucket. **Changing it = a fresh, empty keyspace** |
+| `S3_REQUEST_TIMEOUT_MS` | 30000 | overall request deadline (50–300000 ms); timeout errors are retried, but no durable watermark/ACK advances until a request succeeds |
 
 Provider requirements (strong read-after-write, conditional PUT/If-Match,
 durability): [OPERATIONS.md §1](./OPERATIONS.md). Tigris satisfies all of
@@ -86,6 +89,25 @@ them and negotiates HTTP/1.1 (relevant to §10's latency story). The client
 keeps its connection-pool idle timeout at 4 s deliberately: the platform
 silently kills flows idle ≳5 s, and a restored scale-to-zero image must wake
 with an empty pool rather than dead sockets.
+
+**Recovery snapshot settings:**
+
+| env | default | notes |
+|---|---|---|
+| `BACKUP_S3_ENDPOINT` / `BACKUP_S3_BUCKET` | — | enables marker-last snapshots. Use a different provider/region and independent credentials; an exact primary endpoint+bucket match is rejected |
+| `BACKUP_S3_REGION` | `us-east-1` | backup-provider region |
+| `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | — | required when backup is enabled; grant create/read and mutable `latest.json`, but no overwrite of `snapshots/` |
+| `BACKUP_PATH_PREFIX` | — | recovery namespace inside the backup bucket |
+| `BACKUP_INTERVAL_SECS` | 300 | full-snapshot cadence; minimum 60 s |
+| `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness remains false until the first complete snapshot succeeds |
+
+The current actor streams exact ETag-pinned objects to immutable snapshot
+prefixes, writes a SHA-256 inventory per object, publishes `_complete.json`
+last, and updates `latest.json`. Shared physical role buckets are copied once.
+This is the exercised recovery baseline; it is not incremental PITR and does
+not yet prune snapshots. Configure a lifecycle policy over `snapshots/` and
+budget for a full ciphertext copy per interval until the incremental copy
+actor described in [OPERATIONS.md §2](./OPERATIONS.md) replaces it.
 
 ### 3.2 Engine (shard log)
 
@@ -121,9 +143,15 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 
 | env | default | notes |
 |---|---|---|
-| `AUTH_TOKEN` | — | when set, all `/v1/*` requires `Authorization: Bearer <token>`. `/health` is always open |
+| `AUTH_TOKEN` | — | pilot-only single-tenant bearer and operator token. Production uses the JWKS settings below |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | required together in production; locally verifies RS256/EdDSA JWTs with `sub` customer identity, `jti`, verbs, and stream-name prefixes |
+| `AUTH_REVOCATION_URL` | — | required with JWKS; monotonic JSON document `{"version":N,"revoked_token_ids":[...]}` polled off the request path |
+| `AUTH_JWKS_REFRESH_SECS` / `AUTH_JWKS_MAX_STALE_SECS` | 600 / 3600 | refresh/fail-closed bounds for verification keys |
+| `AUTH_REVOCATION_REFRESH_SECS` / `AUTH_REVOCATION_MAX_STALE_SECS` | 60 / 120 | refresh/fail-closed bounds for token revocation |
+| `ALLOW_INSECURE_NO_AUTH` | false | explicit local-development escape hatch; production boot otherwise fails without auth |
 | `METRICS_KEY` | — | enables the internal `__metrics__` stream (billing/usage records), encrypted with this key |
 | `METRICS_LB_URL` | — | metrics appends are routed like tenant writes (through the LB) so the shard's ring owner serves them |
+| `METRICS_AUTH_TOKEN` | — | scoped service JWT for `__metrics__`; required with JWKS mode when metrics are enabled |
 | `INSTANCE_NAME` | `streams` | instance tag in metrics + fleet heartbeats (`streams-1`…) |
 
 Stream keys: `streams-keys generate` → 32-byte base64. Clients pass it as
@@ -162,6 +190,9 @@ the reason string is logged on every change. The model is generalized in
 |---|---|---|---|
 | `ADMIT_MAX_INFLIGHT` | 0 (off) | 256 | above this many in-flight requests, `/v1/stream` gets `429 + Retry-After: 1` and a 25 ms tarpit. Direct-path instance capacity measured at ~510 concurrent; 256 is the guarded setting for router-fronted 1-CPU boxes |
 | `ADMIT_RSS_SHED_MB` | 0 (off) | 800 | writes (non-GET) get `429 + Retry-After: 2` while RSS exceeds this. Without it a 1-GB box OOM-dies at full throughput instead of shedding |
+| `ADMIT_MAX_INFLIGHT_PER_CUSTOMER` | 64 | 64 | hard per-customer share including long polls; prevents one valid tenant from occupying all ingress slots |
+| `ADMIT_WRITE_BYTES_PER_SEC_PER_CUSTOMER` | 64 MiB/s | tune by plan | streaming token-bucket rate; body chunks are charged before buffering/WAL admission |
+| `ADMIT_WRITE_BURST_BYTES_PER_CUSTOMER` | 128 MiB | tune by plan | per-customer write burst capacity |
 
 The A/B is stark (run 11): identical overload, guards off = all four
 instances dead in ~2 minutes; guards on = zero deaths, zero stalls, client
@@ -435,12 +466,55 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   `history/…` (absorbed per-stream SSTs), `registry/…` (by-name),
   `fleet/`+`routers/` under `FLEET_PREFIX`. Everything except
   topology/fleet metadata is tenant-key ciphertext.
+- **Storage format:** new topologies carry `storage_format: 2`. Shard keys
+  start with the stable 16-byte tenant/name routing hash followed by a
+  16-byte incarnation/segment identity. A missing/other format fails startup;
+  there is intentionally no silent reinterpretation of the pre-v2 pilot
+  layout. Mixed-v1/v2 rolling deploys are unsupported until the migration
+  actor lands.
 - **GC**: WAL objects reaped per §3.2 after `MIN_AGE`; history SSTs retired
   by compaction; deletion protection, soft-delete windows and GDPR erasure:
   [OPERATIONS.md §2.4](./OPERATIONS.md).
-- **Backups / PITR / restore drills**: checkpoint-pin + async copy design in
-  [OPERATIONS.md §2](./OPERATIONS.md) (RPO ≤ 5 min target). Not yet wired in
-  the pilot — treat the pilot keyspace as re-creatable.
+- **Backup / restore**: the full-copy actor is wired and gates readiness when
+  `REQUIRE_BACKUP=true`. CI performs a dark restore and reads the original
+  encrypted stream. Stop writers and restore into an empty offline target:
+
+  ```bash
+  streams-restore \
+    --backup-endpoint "$BACKUP_S3_ENDPOINT" --backup-bucket "$BACKUP_S3_BUCKET" \
+    --backup-access-key-id "$BACKUP_S3_ACCESS_KEY_ID" \
+    --backup-secret-access-key "$BACKUP_S3_SECRET_ACCESS_KEY" \
+    --target-endpoint "$RESTORE_S3_ENDPOINT" --target-bucket "$RESTORE_S3_BUCKET" \
+    --target-access-key-id "$RESTORE_S3_ACCESS_KEY_ID" \
+    --target-secret-access-key "$RESTORE_S3_SECRET_ACCESS_KEY" \
+    --confirm-offline-empty-targets
+  ```
+
+  `latest` is the default snapshot; pass `--snapshot-id ID` to pin one.
+  Use `--backup-prefix` and `--target-prefix` when the service uses prefixes,
+  and the per-role target bucket flags when role buckets are split. The tool
+  refuses non-empty targets, incomplete markers, changed inventories, ETag
+  changes, byte-count changes, or SHA-256 mismatches. Incremental checkpoint
+  pinning, PITR, retention, and scrubber drills remain GA work in
+  [OPERATIONS.md §2](./OPERATIONS.md).
+- **Controlled shard split:** today this is an offline maintenance primitive,
+  not the automatic online actor. Stop every serving writer for the cell,
+  then run:
+
+  ```bash
+  streams-shard-admin --parent root --confirm-serving-quiesced \
+    --s3-endpoint "$SLATE_S3_ENDPOINT" --bucket "$SLATE_S3_BUCKET" \
+    --region "$SLATE_S3_REGION" --path-prefix "$PATH_PREFIX"
+  ```
+
+  Use the binary bit prefix instead of `root` for a deeper split and pass
+  `--ops-bucket` / `--shard-bucket` when roles differ. It refuses a non-live
+  parent and any non-empty child path, creates exact metadata-only projection
+  clones, then changes `topology.json` with one expected-version CAS. A CAS
+  failure leaves safe orphan children and the old topology live. CI proves
+  opposite hash halves remain readable and independently writable after
+  restart. Do not use this online: the distributed intent/quiescence barrier
+  and crash-step reconciler are still a release blocker.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the

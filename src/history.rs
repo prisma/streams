@@ -9,7 +9,7 @@
 //! History record value: [ver u8=1][ts i64 LE][key_version u32 LE]
 //!                       [rk_len u16 LE][rk][payload]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,8 @@ use slatedb::{BlockTransformer, Db, DbReader, WriteBatch};
 use tokio::sync::mpsc;
 
 use crate::crypto::{StreamKey, decode_frame, decrypt_frame, derive_subkey, hex};
-use crate::shard::{AbsorbSignal, ShardEngine, now_ms, read_frames_range};
+use crate::registry::StorageHash;
+use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
@@ -32,7 +33,9 @@ pub struct AesBlockTransformer {
 
 impl AesBlockTransformer {
     pub fn new(key: &StreamKey) -> AesBlockTransformer {
-        AesBlockTransformer { cipher: Aes256Gcm::new((&key.0).into()) }
+        AesBlockTransformer {
+            cipher: Aes256Gcm::new((&key.0).into()),
+        }
     }
 }
 
@@ -44,7 +47,13 @@ impl BlockTransformer for AesBlockTransformer {
         rand::rng().fill_bytes(&mut nonce);
         let ct = self
             .cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: &data, aad: b"" })
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &data,
+                    aad: b"",
+                },
+            )
             .map_err(|_| block_err("block encrypt failed"))?;
         let mut out = Vec::with_capacity(12 + ct.len());
         out.extend_from_slice(&nonce);
@@ -116,7 +125,12 @@ pub fn decode_hist_record(v: &Bytes) -> Option<HistRecord> {
     let rk_len = u16::from_le_bytes(v[13..15].try_into().ok()?) as usize;
     let routing_key = String::from_utf8(v.get(15..15 + rk_len)?.to_vec()).ok()?;
     let payload = v.slice(15 + rk_len..);
-    Some(HistRecord { ts, key_version, routing_key, payload })
+    Some(HistRecord {
+        ts,
+        key_version,
+        routing_key,
+        payload,
+    })
 }
 
 // ---- settings (D23 maintenance profile + F2 pattern) ----
@@ -148,8 +162,9 @@ fn history_settings() -> Settings {
     // compactor (and lifts the L0 caps so flushes never block on it). Used
     // with the s3lite --discard-substr mode, where history SST bodies are
     // dropped and must never be re-read. Production keeps the compactor.
-    let compactor_off =
-        std::env::var("HISTORY_COMPACTOR").map(|v| v == "off").unwrap_or(false);
+    let compactor_off = std::env::var("HISTORY_COMPACTOR")
+        .map(|v| v == "off")
+        .unwrap_or(false);
     Settings {
         wal_enabled: false,
         flush_interval: Some(Duration::from_millis(100)),
@@ -170,7 +185,7 @@ fn history_settings() -> Settings {
     }
 }
 
-pub fn history_db_path(hash: &[u8; 16]) -> String {
+pub fn history_db_path(hash: &StorageHash) -> String {
     format!("streams/{}", hex(hash))
 }
 
@@ -180,27 +195,98 @@ pub struct KeyEntry {
     pub key: StreamKey,
     pub epoch: [u8; 16],
     pub at: Instant,
+    generation: u64,
 }
 
-#[derive(Default)]
 pub struct KeyCache {
-    map: Mutex<HashMap<[u8; 16], KeyEntry>>,
+    inner: Mutex<KeyCacheInner>,
+    ttl: Duration,
+    capacity: usize,
+}
+
+struct KeyCacheInner {
+    map: HashMap<StorageHash, KeyEntry>,
+    order: VecDeque<(StorageHash, u64)>,
+    next_generation: u64,
+}
+
+const DEFAULT_KEY_CACHE_CAPACITY: usize = 50_000;
+
+impl Drop for KeyEntry {
+    fn drop(&mut self) {
+        // Best-effort cache hygiene: an evicted key must not remain in the
+        // allocator's reusable memory. Request-local clones have their own
+        // lifetime and are intentionally unaffected.
+        self.key.0.fill(0);
+        self.epoch.fill(0);
+    }
+}
+
+impl Default for KeyCache {
+    fn default() -> Self {
+        Self::with_limits(DEFAULT_KEY_CACHE_CAPACITY, Duration::from_secs(900))
+    }
 }
 
 impl KeyCache {
-    pub fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
-        self.map
-            .lock()
-            .unwrap()
-            .insert(hash, KeyEntry { key, epoch, at: Instant::now() });
+    fn with_limits(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            inner: Mutex::new(KeyCacheInner {
+                map: HashMap::new(),
+                order: VecDeque::new(),
+                next_generation: 0,
+            }),
+            ttl,
+            capacity: capacity.max(1),
+        }
     }
 
-    pub fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
-        let map = self.map.lock().unwrap();
-        let e = map.get(hash)?;
-        if e.at.elapsed() > Duration::from_secs(900) {
+    pub fn put(&self, hash: StorageHash, key: StreamKey, epoch: [u8; 16]) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.next_generation = inner.next_generation.wrapping_add(1);
+        let generation = inner.next_generation;
+        inner.map.insert(
+            hash,
+            KeyEntry {
+                key,
+                epoch,
+                at: Instant::now(),
+                generation,
+            },
+        );
+        inner.order.push_back((hash, generation));
+        while inner.map.len() > self.capacity {
+            let Some((candidate, queued_generation)) = inner.order.pop_front() else {
+                break;
+            };
+            if inner
+                .map
+                .get(&candidate)
+                .is_some_and(|entry| entry.generation == queued_generation)
+            {
+                inner.map.remove(&candidate);
+            }
+        }
+        if inner.order.len() > self.capacity.saturating_mul(4) {
+            let live: HashMap<StorageHash, u64> = inner
+                .map
+                .iter()
+                .map(|(hash, entry)| (*hash, entry.generation))
+                .collect();
+            inner
+                .order
+                .retain(|(hash, generation)| live.get(hash) == Some(generation));
+        }
+    }
+
+    pub fn get(&self, hash: &StorageHash) -> Option<(StreamKey, [u8; 16])> {
+        let mut inner = self.inner.lock().unwrap();
+        let expired = inner.map.get(hash)?.at.elapsed() > self.ttl;
+        if expired {
+            inner.map.remove(hash);
             return None;
         }
+        let e = inner.map.get(hash)?;
         Some((e.key.clone(), e.epoch))
     }
 }
@@ -252,9 +338,14 @@ impl Absorber {
         cfg: AbsorberConfig,
         mut rx: mpsc::Receiver<AbsorbSignal>,
     ) {
-        let absorber = Absorber { data_store, shard, keys, cfg };
+        let absorber = Absorber {
+            data_store,
+            shard,
+            keys,
+            cfg,
+        };
         tokio::spawn(async move {
-            let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
+            let mut pending: HashMap<StorageHash, PendingAbsorb> = HashMap::new();
             let mut tick = tokio::time::interval(absorber.cfg.tick);
             loop {
                 tokio::select! {
@@ -267,7 +358,7 @@ impl Absorber {
                         e.bytes += sig.appended_bytes;
                     }
                     _ = tick.tick() => {
-                        let due: Vec<[u8; 16]> = pending
+                        let due: Vec<StorageHash> = pending
                             .iter()
                             .filter(|(_, p)| {
                                 p.bytes >= absorber.cfg.threshold_bytes
@@ -299,7 +390,7 @@ impl Absorber {
     }
 
     /// Returns Ok(false) if the stream key isn't available.
-    async fn absorb_one(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
+    async fn absorb_one(&self, hash: &StorageHash) -> anyhow::Result<bool> {
         let Some((key, epoch)) = self.keys.get(hash) else {
             return Ok(false);
         };
@@ -326,18 +417,16 @@ impl Absorber {
             use futures_util::StreamExt;
             let shard = self.shard.clone();
             let handle = handle.clone();
-            futures_util::stream::iter((from..upto).step_by(WINDOW as usize).map(
-                move |s| {
-                    let shard = shard.clone();
-                    let handle = handle.clone();
-                    let e = (s + WINDOW).min(upto);
-                    async move {
-                        read_frames_range(&shard, &handle, s, e, 64 * 1024 * 1024)
-                            .await
-                            .map(|r| (e, r))
-                    }
-                },
-            ))
+            futures_util::stream::iter((from..upto).step_by(WINDOW as usize).map(move |s| {
+                let shard = shard.clone();
+                let handle = handle.clone();
+                let e = (s + WINDOW).min(upto);
+                async move {
+                    read_frames_range(&shard, &handle, s, e, 64 * 1024 * 1024)
+                        .await
+                        .map(|r| (e, r))
+                }
+            }))
             .buffered(4)
         };
         use futures_util::StreamExt;
@@ -353,7 +442,12 @@ impl Absorber {
                 let sk = *subkeys
                     .entry((frame.header.routing_key.clone(), frame.header.key_version))
                     .or_insert_with(|| {
-                        derive_subkey(&key, &epoch, &frame.header.routing_key, frame.header.key_version)
+                        derive_subkey(
+                            &key,
+                            &epoch,
+                            &frame.header.routing_key,
+                            frame.header.key_version,
+                        )
                     });
                 let pt = decrypt_frame(&sk, hash, &frame, raw)
                     .map_err(|e| anyhow::anyhow!("absorb decrypt: {e}"))?;
@@ -393,13 +487,17 @@ impl Absorber {
             let mut wb = WriteBatch::new();
             let end = (i + self.cfg.batch_puts / 2).min(items.len());
             for (offset, rec) in &items[i..end] {
-                let value = encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
+                let value =
+                    encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
                 wb.put(hist_record_key(*offset), value.clone());
                 wb.put(hist_key_index_key(&rec.routing_key, *offset), value);
             }
             db.write_with_options(
                 wb,
-                &WriteOptions { await_durable: false, ..Default::default() },
+                &WriteOptions {
+                    await_durable: false,
+                    ..Default::default()
+                },
             )
             .await?;
             i = end;
@@ -433,7 +531,7 @@ pub struct HistoryReadResult {
 /// `key_filter` uses the k! index (contiguous per routing key).
 pub async fn read_history(
     data_store: &Arc<dyn ObjectStore>,
-    hash: &[u8; 16],
+    hash: &StorageHash,
     key: &StreamKey,
     from: u64,
     upto: u64,
@@ -444,11 +542,17 @@ pub async fn read_history(
         .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
         .build()
         .await?;
-    let mut out = HistoryReadResult { records: Vec::new(), last_offset: None, completed: true };
+    let mut out = HistoryReadResult {
+        records: Vec::new(),
+        last_offset: None,
+        completed: true,
+    };
     let mut total = 0usize;
     match key_filter {
         None => {
-            let mut iter = reader.scan(hist_record_key(from)..hist_record_key(upto)).await?;
+            let mut iter = reader
+                .scan(hist_record_key(from)..hist_record_key(upto))
+                .await?;
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
                 if let Some(rec) = decode_hist_record(&kv.value) {
@@ -488,6 +592,27 @@ pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbS
     mpsc::channel(65_536)
 }
 
-pub fn ts_now() -> i64 {
-    now_ms()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_cache_is_bounded() {
+        let cache = KeyCache::with_limits(2, Duration::from_secs(60));
+        cache.put([1; 32], StreamKey([1; 32]), [1; 16]);
+        cache.put([2; 32], StreamKey([2; 32]), [2; 16]);
+        cache.put([3; 32], StreamKey([3; 32]), [3; 16]);
+        assert!(cache.get(&[1; 32]).is_none());
+        assert_eq!(cache.get(&[2; 32]).unwrap().0.0, [2; 32]);
+        assert_eq!(cache.get(&[3; 32]).unwrap().0.0, [3; 32]);
+        assert_eq!(cache.inner.lock().unwrap().map.len(), 2);
+    }
+
+    #[test]
+    fn expired_keys_are_removed() {
+        let cache = KeyCache::with_limits(2, Duration::ZERO);
+        cache.put([1; 32], StreamKey([1; 32]), [1; 16]);
+        assert!(cache.get(&[1; 32]).is_none());
+        assert!(cache.inner.lock().unwrap().map.is_empty());
+    }
 }

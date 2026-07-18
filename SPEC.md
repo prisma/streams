@@ -110,11 +110,18 @@ contiguous key range — a split is a single `projection_range` per child.
 
 Shard log (one SlateDB per shard; payload bytes are ciphertext):
 ```
-<hash16> m                      stream meta (registry cache / tombstone)
-<hash16> t                      tail: next_offset, last_ts, last Stream-Seq,
-                                cumulative logical bytes, absorbed_through
-<hash16> r <offset u64 BE>      record: plaintext header + encrypted payload (§3.7)
+<route16><incarnation16> t                 tail state
+<route16><incarnation16> r <offset u64 BE> record frame (§3.7)
+<route16><incarnation16> q <producer>       producer idempotence
+<route16><incarnation16> c/l/x …            queue-profile state
 ```
+
+`route16 = hash(customer, stream name)` is stable and is exactly what
+`topology.json` matches. `incarnation16` (or a segment identity) isolates
+delete/recreate keyspaces. This two-part identity is mandatory: an earlier
+draft independently hashed the whole incarnation into the first 16 bytes,
+which made topology projection clones partition records differently from
+request routing.
 
 Per-stream history DB (block-transformer encrypted with the stream key,
 block-zstd compressed; WAL disabled — the shard log *is* its WAL):
@@ -540,7 +547,8 @@ both the s3lite emulator (25 ms) and live Tigris:
   V9 mandates; `streams-keys` CLI (D20, [keys.rs](./src/bin/keys.rs));
   ops-bucket registry with key fingerprints + wrong-key `403`
   ([registry.rs](./src/registry.rs)); dynamic hash-first shard topology (D3,
-  routing implemented; starts at N configurable shards); per-shard
+  routing, exact projection ranges, topology CAS/polling, and an offline
+  split primitive implemented; starts at N configurable shards); per-shard
   committer/acker engines ([shard.rs](./src/shard.rs)); absorber + WAL-less
   block-encrypted history tier with the `k!` routing index (§3.6,
   [history.rs](./src/history.rs)); merged two-tier reads with ciphertext
@@ -572,18 +580,18 @@ both the s3lite emulator (25 ms) and live Tigris:
   Findings: adapters must append only after the DB commit is visible; and
   coalescing — not caching — is the mechanism (long-TTL cached wakes caused
   chain-walking; head wakes now cache 2s, catch-ups jump to head, no-store).
-- **Upstream protocol conformance: 239/239** (see CONFORMANCE.md) — the
+- **Current upstream protocol conformance: 332 pass / 6 package skips / 0
+  failures (338 total)** (see CONFORMANCE.md) — the
   baseline run drove the full upstream surface into the implementation:
   producer idempotence headers, closed streams, SSE, `offset=now`,
   ETag/304, cursors, content-type config, strict validation, no
   auto-create, security headers; byte-mode reads now return decrypted
   payload bytes and ciphertext frames moved behind `format=frames`.
 - **`ordering: per-key` implemented** (PER-KEY-ORDERING.md): opt-in
-  Pravega-style segmented streams — per-routing-key total order, segments
-  placed across shards/servers (the per-stream write ceiling falls),
-  epoch-bearing offsets, keyed live reads, segment-sequential replay.
-  Conformance: 239/239 at one segment (degenerate), 194/239 at four with
-  only the two specified deviations.
+  segmented offsets, per-routing-key total order, keyed live reads, and
+  segment-sequential replay. All segments currently retain the stream's
+  stable topology prefix, so this is an ordering feature, not yet a way to
+  split one hot stream across shards.
 - **`queue` profile implemented** (PROFILES.md §7; Cloudflare-informed):
   pull consumers with leases/visibility, combined ack+retry+extend settles
   with per-message delays, permissive tokens, backlog signals, lazy expiry,
@@ -593,8 +601,9 @@ both the s3lite emulator (25 ms) and live Tigris:
   (`receive`/`msg.ack()`/`msg.retry({delayMs})`/`batch.settle()`/`consume`
   loop) — verified by [sdk/example.ts](./sdk/example.ts) end-to-end
   (mixed ack/retry, delayed redelivery, poison→DLQ at maxDeliveries).
-- **Not yet built** (fleet phase): split/merge execution (topology *routing*
-  is in), speculative tails (D11), CDN canonical chunking, detached compactor
+- **Not yet built** (fleet phase): automatic online split intent/quiescence
+  and merge (the offline projection split is exercised in CI), speculative
+  tails (D11), CDN canonical chunking, detached compactor
   service, heartbeats/ring/autoscaling (COMPUTE-SPEC), history-DB physical
   size in `_details`, `since=`.
 

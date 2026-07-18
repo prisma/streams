@@ -170,22 +170,22 @@ over segments (per `_details`, later).
 
 ## 8. Conformance
 
-The upstream Durable Streams suite assumes total order. Measured
-(CONFORMANCE.md): default streams **239/239**; per-key with one segment
-**239/239** (the degenerate case is served through the standard path and is
-byte-identical); per-key with 4 segments **194/239**, with every failure
-attributable to the two documented deviations (unkeyed live reads rejected;
-closed state segment-scoped in v1).
+The upstream Durable Streams suite assumes total order. The current pinned
+suite passes **332 executed / 6 package skips / 0 failures** in the default
+mode (338 total; CONFORMANCE.md). The earlier 239-test package was also run
+in per-key mode (239/239 at one segment, 194/239 at four), but that historical
+result is not the current release gate and must be rerun before per-key GA.
 
 ## 9. v1 implementation status
 
 Implemented: opt-in creation (`Stream-Ordering` / `Stream-Segments`,
 config-compared on idempotent PUT), static segment counts (1..=256, power
-of two), per-segment sub-streams placed by the shard topology (segments of
-one stream land on different shards/servers), epoch-bearing offset tokens,
+of two), per-segment sub-streams that currently retain the parent stream's
+stable shard prefix, epoch-bearing offset tokens,
 keyed reads/long-poll/SSE on the key's segment, segment-sequential unkeyed
 replay with cross-segment pagination, `Stream-Ordering` +
 `Stream-Segment-Count` response headers, single-segment degeneration.
-Deferred to the split/seal phase: dynamic split/merge (§5), stream-wide
+Deferred to the split/seal phase: distributing one stream's segments across
+shards, dynamic split/merge (§5), stream-wide
 close (a seal is a close), per-segment touch journals (§7), `Stream-Seq`
 scoping documentation per partition.

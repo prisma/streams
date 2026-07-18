@@ -31,6 +31,11 @@ base64 = "0.22.1"
 xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32"] }
 hmac = "0.12"
 tokio-stream = "0.1.18"
+jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
+subtle = "2"
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
 
 [[bin]]
 name = "streams-slate"
@@ -52,6 +57,10 @@ name = "streams-keys"
 path = "src/bin/keys.rs"
 
 [[bin]]
+name = "streams-shard-admin"
+path = "src/bin/shard_admin.rs"
+
+[[bin]]
 name = "livebench"
 path = "src/bin/livebench.rs"
 
@@ -66,3 +75,7 @@ path = "src/bin/pilot.rs"
 [[bin]]
 name = "cryptobench"
 path = "src/bin/cryptobench.rs"
+
+[[bin]]
+name = "streams-restore"
+path = "src/bin/restore.rs"
