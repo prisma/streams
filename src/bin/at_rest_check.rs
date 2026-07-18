@@ -30,6 +30,9 @@ const MAX_SPEC_BYTES: u64 = 1024 * 1024;
     about = "Inspect a stable object-store corpus for forbidden plaintext/key bytes"
 )]
 struct Args {
+    /// Immutable build/release identifier whose corpus is being inspected.
+    #[arg(long, env = "AT_REST_RELEASE_ID")]
+    release_id: String,
     /// Stable non-secret label included in the evidence report.
     #[arg(long, env = "AT_REST_PROVIDER_ID")]
     provider_id: String,
@@ -87,6 +90,7 @@ struct StableObject {
 #[derive(Serialize)]
 struct InspectionEvidence {
     format_version: u32,
+    release_id: String,
     provider_id: String,
     objects: usize,
     bytes: u64,
@@ -144,6 +148,7 @@ fn load_patterns(path: &PathBuf) -> anyhow::Result<Vec<ForbiddenPattern>> {
 }
 
 fn build_store(args: &Args) -> anyhow::Result<Arc<dyn ObjectStore>> {
+    anyhow::ensure!(safe_label(&args.release_id), "invalid release id");
     anyhow::ensure!(safe_label(&args.provider_id), "invalid provider id");
     let store = AmazonS3Builder::new()
         .with_endpoint(&args.endpoint)
@@ -323,6 +328,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let evidence = InspectionEvidence {
         format_version: 1,
+        release_id: args.release_id,
         provider_id: args.provider_id,
         objects: before.len(),
         bytes,

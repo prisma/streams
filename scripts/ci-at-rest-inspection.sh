@@ -119,6 +119,7 @@ pathlib.Path(path).write_text(json.dumps(spec, separators=(",", ":")) + "\n")
 PY
 
 check_args=(
+  --release-id ci-at-rest
   --endpoint "${S3_URL}" --region auto --access-key-id test
   --secret-access-key test --allow-http
   --forbidden-file "${TMP_DIR}/forbidden.json"
@@ -130,6 +131,7 @@ check_args=(
   --provider-id ci-recovery --bucket recovery --prefix at-rest-recovery \
   >"${TMP_DIR}/recovery-evidence.json"
 grep -q '"status":"pass"' "${TMP_DIR}/primary-evidence.json"
+grep -q '"release_id":"ci-at-rest"' "${TMP_DIR}/primary-evidence.json"
 grep -q '"stable_inventory_verified":true' "${TMP_DIR}/primary-evidence.json"
 grep -q '"status":"pass"' "${TMP_DIR}/recovery-evidence.json"
 grep -q '"stable_inventory_verified":true' "${TMP_DIR}/recovery-evidence.json"

@@ -66,10 +66,11 @@ export DRILL_PRIMARY_PROVIDER_PID="${PRIMARY_PID}"
 export DRILL_ALLOW_SHARED_TEST_CREDENTIALS="true"
 export DRILL_RPO_BUDGET_MS="30000"
 export DRILL_RTO_BUDGET_MS="30000"
+export DRILL_RELEASE_ID="ci-provider-failover"
 export DRILL_EVIDENCE_PATH="${TMP_DIR}/provider-failover.json"
 
 "$(dirname "$0")/provider-failover-drill.sh" | tee "${TMP_DIR}/stdout.json"
 grep -q '"status":"pass"' "${DRILL_EVIDENCE_PATH}"
+grep -q '"release_id":"ci-provider-failover"' "${DRILL_EVIDENCE_PATH}"
 grep -q '"post_failover_write_verified":true' "${DRILL_EVIDENCE_PATH}"
 echo "independent-process provider failover RPO/RTO drill passed"
-

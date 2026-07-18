@@ -66,6 +66,7 @@ stop_provider() {
 }
 
 check_args=(
+  --release-id ci-cell-iam
   --provider-id ci-scoped-iam
   --endpoint "http://127.0.0.1:${IAM_PORT}"
   --region auto --allow-http
@@ -89,6 +90,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     evidence = json.load(source)
 assert evidence["format_version"] == 1
 assert evidence["status"] == "pass"
+assert evidence["release_id"] == "ci-cell-iam"
 assert evidence["positive_checks"] == 21
 assert evidence["permission_denials"] == 42
 assert len(evidence["boundaries"]) == 6

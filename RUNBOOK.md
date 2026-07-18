@@ -964,6 +964,7 @@ not release evidence.
   export DRILL_PRIMARY_CUTOVER_HOOK=/absolute/path/to/executable-cut-hook
   export DRILL_PRIMARY_RECOVER_HOOK=/absolute/path/to/optional-recover-hook
   export DRILL_RPO_BUDGET_MS=300000 DRILL_RTO_BUDGET_MS=1800000
+  export DRILL_RELEASE_ID="$(git rev-parse HEAD)"
   export DRILL_EVIDENCE_PATH=/absolute/path/to/provider-failover.json
   scripts/provider-failover-drill.sh
   ```
@@ -973,7 +974,9 @@ not release evidence.
   by hermetic tests. The harness first runs `streams-provider-check` against
   both providers, then records conformance timings, exact recovered sequence,
   monotonic RPO/RTO, restore report, and post-activation write proof in the JSON
-  artifact. Never point the activated target at a non-empty namespace.
+  artifact. `DRILL_RELEASE_ID` is required and binds the result to the exact
+  immutable build under judgment. Never point the activated target at a
+  non-empty namespace.
 
   `scripts/ci-provider-failover.sh` runs this identical path against two
   independent `s3lite` processes and actually kills the primary. On
@@ -1104,6 +1107,7 @@ not release evidence.
 
   ```bash
   streams-cell-iam-check \
+    --release-id "$RELEASE_ID" \
     --provider-id "$PROVIDER_ACCOUNT_LABEL" \
     --endpoint "$SLATE_S3_ENDPOINT" --region "$SLATE_S3_REGION" \
     --registry-bucket "$REGISTRY_S3_BUCKET" \
@@ -1126,7 +1130,8 @@ not release evidence.
   must return an actual S3 `403 AccessDenied`; 404, timeout, 5xx, invalid
   credentials, or a silently empty LIST fail the run. It re-reads every owner
   sentinel after hostile operations and verifies cleanup before emitting a
-  secret-free `status=pass` artifact with 21 positive checks and 42 denials.
+  secret-free, release-bound `status=pass` artifact with 21 positive checks and
+  42 denials.
   The three access-key IDs must differ; `--allow-shared-test-credentials` is
   for a hermetic emulator only. If ops, shard, and data use separate buckets,
   repeat the gate for each corresponding cell-bucket pair. Preserve the JSON
@@ -1250,9 +1255,10 @@ prefix), create a mode-0600 JSON file whose entries are base64-encoded forbidden
 payload/key byte patterns, and run `streams-at-rest-check` separately against
 every primary role prefix and the recovery prefix. The checker refuses empty,
 over-bound, ETag-less, or concurrently changing corpora and prints no forbidden
-bytes. Preserve its aggregate JSON with the release evidence, then securely
-remove the specification. `scripts/ci-at-rest-inspection.sh` is the hermetic
-example and includes a deliberate-leak negative control.
+bytes. Pass `--release-id "$RELEASE_ID"` on every invocation, preserve its
+release-bound aggregate JSON with the release evidence, then securely remove
+the specification. `scripts/ci-at-rest-inspection.sh` is the hermetic example
+and includes a deliberate-leak negative control.
 
 Never flip `HISTORY_BLOCK_WRITE_FORMAT` on an existing cell ad hoc. Deploy the
 dual reader everywhere with writer 1, prove mixed-route reads and dark restore,

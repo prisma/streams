@@ -340,7 +340,8 @@ documented cell limits. A feature described only in `SPEC.md`,
 - `streams-cell-iam-check` uses independently identified registry/cell
   principals and unique disposable objects to prove own-prefix create/read/
   list/multipart/delete access plus explicit `403 AccessDenied` for seven
-  operations across all six directed trust boundaries. Its secret-free report
+  operations across all six directed trust boundaries. Its secret-free,
+  immutable-release-bound report
   records 21 positive checks and 42 denials only after owner sentinels survive
   hostile attempts and all probes are removed. CI runs it against opt-in scoped
   emulator policies and proves a deliberate cell-A→cell-B overgrant fails.

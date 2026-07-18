@@ -138,7 +138,7 @@ budgets must include both interval and point-completion tails.
   sequence, invokes a real provider-cut hook, restores `latest` into an empty
   namespace on the recovery provider, measures RPO/RTO with a monotonic clock,
   and proves a new producer can write after activation. Its JSON artifact is
-  the release evidence.
+  bound to the required immutable release ID and is the release evidence.
 - CI runs the same harness against two independent `s3lite` processes and
   kills the primary process. On 2026-07-18 this recovered sequence 1, lost the
   deliberate sequence 2, measured RPO 8.751 s and RTO 519 ms, and verified a
@@ -275,7 +275,8 @@ legacy-compatible and the write-format flip follows the read-first contract in
 `streams-at-rest-check` takes a bounded exact ETag inventory, scans every body
 with conditional reads for operator-supplied byte patterns, and repeats the
 inventory so concurrent mutation cannot yield a false pass. Forbidden bytes
-come from a private local file and never appear in its JSON evidence. CI forces
+come from a private local file and never appear in its release-bound JSON
+evidence. CI forces
 hot-shard, encrypted-history, and recovery-point material, then proves a unique
 payload sentinel, its printable root key, and the decoded 32-byte root key are
 absent from both stable primary and recovery corpora. A deliberate plaintext

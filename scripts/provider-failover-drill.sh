@@ -15,6 +15,7 @@ DRILL_RTO_BUDGET_MS="${DRILL_RTO_BUDGET_MS:-1800000}"
 DRILL_ALLOW_SHARED_TEST_CREDENTIALS="${DRILL_ALLOW_SHARED_TEST_CREDENTIALS:-false}"
 
 required=(
+  DRILL_RELEASE_ID
   PRIMARY_PROVIDER_ID PRIMARY_S3_ENDPOINT PRIMARY_S3_BUCKET PRIMARY_S3_REGION
   PRIMARY_S3_ACCESS_KEY_ID PRIMARY_S3_SECRET_ACCESS_KEY PRIMARY_PATH_PREFIX
   RECOVERY_PROVIDER_ID RECOVERY_S3_ENDPOINT RECOVERY_S3_BUCKET RECOVERY_S3_REGION
@@ -29,6 +30,10 @@ for name in "${required[@]}"; do
     exit 2
   fi
 done
+[[ "${DRILL_RELEASE_ID}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || {
+  echo "DRILL_RELEASE_ID must be a 1..64 character safe immutable identifier" >&2
+  exit 2
+}
 [[ "${DRILL_RPO_BUDGET_MS}" =~ ^[1-9][0-9]*$ ]]
 [[ "${DRILL_RTO_BUDGET_MS}" =~ ^[1-9][0-9]*$ ]]
 if [[ "${PRIMARY_PROVIDER_ID}" == "${RECOVERY_PROVIDER_ID}" ]]; then
@@ -338,7 +343,8 @@ python3 - "${TMP_DIR}/primary-provider.json" \
   "${TMP_DIR}/recovery-provider.json" "${TMP_DIR}/restore.json" \
   "${DRILL_EVIDENCE_PATH}" "${PRIMARY_PROVIDER_ID}" "${RECOVERY_PROVIDER_ID}" \
   "${failure_ms}" "${recovered_ms}" "${rpo_ms}" "${rto_ms}" \
-  "${DRILL_RPO_BUDGET_MS}" "${DRILL_RTO_BUDGET_MS}" "${recovered_seq}" <<'PY'
+  "${DRILL_RPO_BUDGET_MS}" "${DRILL_RTO_BUDGET_MS}" "${recovered_seq}" \
+  "${DRILL_RELEASE_ID}" <<'PY'
 import json
 import pathlib
 import sys
@@ -347,6 +353,7 @@ primary_path, recovery_path, restore_path, output_path = sys.argv[1:5]
 evidence = {
     "format_version": 1,
     "status": "pass",
+    "release_id": sys.argv[14],
     "primary_provider_id": sys.argv[5],
     "recovery_provider_id": sys.argv[6],
     "failure_monotonic_ms": int(sys.argv[7]),

@@ -24,6 +24,9 @@ const PROBE_BODY: &[u8] = b"prisma-streams-cell-iam-boundary-v1";
     about = "Prove registry and managed-cell S3 IAM boundaries"
 )]
 struct Args {
+    /// Immutable build/release identifier qualified by this policy probe.
+    #[arg(long, env = "CELL_IAM_RELEASE_ID")]
+    release_id: String,
     /// Stable non-secret provider/account label written to the evidence.
     #[arg(long, env = "CELL_IAM_PROVIDER_ID")]
     provider_id: String,
@@ -92,6 +95,7 @@ struct BoundaryEvidence {
 struct IamEvidence {
     format_version: u32,
     status: &'static str,
+    release_id: String,
     provider_id: String,
     run_id: String,
     checked_at_ms: i64,
@@ -127,6 +131,15 @@ fn build_store(
 }
 
 fn validate_args(args: &Args) -> anyhow::Result<(ObjPath, ObjPath, ObjPath)> {
+    anyhow::ensure!(
+        !args.release_id.is_empty()
+            && args.release_id.len() <= 64
+            && args
+                .release_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
+        "release id must be 1..64 safe label characters"
+    );
     anyhow::ensure!(
         !args.provider_id.is_empty()
             && args.provider_id.len() <= 64
@@ -510,6 +523,7 @@ async fn main() -> anyhow::Result<()> {
         Ok::<_, anyhow::Error>(IamEvidence {
             format_version: 1,
             status: "pass",
+            release_id: args.release_id.clone(),
             provider_id: args.provider_id.clone(),
             run_id,
             checked_at_ms: chrono::Utc::now().timestamp_millis(),
