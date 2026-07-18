@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Run and judge the reproducible target-hardware release soak.
 
-Secrets are accepted only through SOAK_STREAM_KEY, exactly one of
-SOAK_AUTH_TOKEN/SOAK_AUTH_TOKEN_FILE, and SOAK_OPERATOR_TOKEN. Qualifying
-production runs require the mode-0600 token file and at least one successful
-JWT rotation. The evidence artifact contains target identity, workload,
-bounded aggregate observations, and explicit pass/fail checks, never secrets.
+Every secret is read from a mode-0600 file. Qualifying production runs require
+at least one subject-pinned JWT rotation for the victim, attacker, and operator
+principals. The evidence artifact contains target identity, workload, bounded
+aggregate observations, and explicit pass/fail checks, never secrets.
 """
 
 from __future__ import annotations
@@ -80,7 +79,9 @@ def read_token_file(path: pathlib.Path, expected_subject: str | None = None) -> 
 
 
 class RotatingToken:
-    def __init__(self, path: pathlib.Path, subject: str, refresh_secs: int) -> None:
+    def __init__(
+        self, path: pathlib.Path, subject: str | None, refresh_secs: int
+    ) -> None:
         self.path = path
         self.subject = subject
         self.refresh_secs = refresh_secs
@@ -107,7 +108,7 @@ class RotatingToken:
         with self.lock:
             return {
                 "source": "file",
-                "subject_pinned": True,
+                "subject_pinned": self.subject is not None,
                 "refresh_successes": self.refresh_successes,
                 "token_changes": self.token_changes,
                 "refresh_failures": self.refresh_failures,
@@ -126,6 +127,20 @@ class RotatingToken:
                 if token != self.current:
                     self.current = token
                     self.token_changes += 1
+
+
+def read_key_file(path: pathlib.Path, label: str) -> str:
+    value = read_token_file(path)
+    if len(value) != 43:
+        raise ValueError(f"{label} is not canonical base64url")
+    try:
+        decoded = base64.urlsafe_b64decode(value + "=")
+    except ValueError as error:
+        raise ValueError(f"{label} is not canonical base64url") from error
+    canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode()
+    if len(decoded) != 32 or canonical != value:
+        raise ValueError(f"{label} is not a canonical 32-byte base64url key")
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -412,72 +427,103 @@ def parse_bench_summary(stdout: str) -> dict[str, object] | None:
 
 def main() -> int:
     args = parse_args()
-    stream_key = os.environ.get("SOAK_STREAM_KEY")
-    auth_token = os.environ.get("SOAK_AUTH_TOKEN")
+    stream_key_file = os.environ.get("SOAK_STREAM_KEY_FILE")
     auth_token_file = os.environ.get("SOAK_AUTH_TOKEN_FILE")
-    operator_token = os.environ.get("SOAK_OPERATOR_TOKEN")
-    attacker_stream_key = os.environ.get("SOAK_ATTACKER_STREAM_KEY")
+    operator_token_file = os.environ.get("SOAK_OPERATOR_TOKEN_FILE")
+    attacker_stream_key_file = os.environ.get("SOAK_ATTACKER_STREAM_KEY_FILE")
     attacker_token_file = os.environ.get("SOAK_ATTACKER_AUTH_TOKEN_FILE")
+    deprecated = [
+        name
+        for name in (
+            "SOAK_STREAM_KEY",
+            "SOAK_AUTH_TOKEN",
+            "SOAK_OPERATOR_TOKEN",
+            "SOAK_ATTACKER_STREAM_KEY",
+        )
+        if os.environ.get(name)
+    ]
+    if deprecated:
+        raise SystemExit(
+            "raw secret environment variables are forbidden; use mode-0600 files: "
+            + ", ".join(deprecated)
+        )
     missing = [
         name
         for name, value in [
-            ("SOAK_STREAM_KEY", stream_key),
-            ("SOAK_OPERATOR_TOKEN", operator_token),
+            ("SOAK_STREAM_KEY_FILE", stream_key_file),
+            ("SOAK_AUTH_TOKEN_FILE", auth_token_file),
+            ("SOAK_OPERATOR_TOKEN_FILE", operator_token_file),
         ]
         if not value
     ]
     if missing:
-        raise SystemExit(f"missing secret environment variable(s): {', '.join(missing)}")
-    if bool(auth_token) == bool(auth_token_file):
-        raise SystemExit("set exactly one of SOAK_AUTH_TOKEN or SOAK_AUTH_TOKEN_FILE")
+        raise SystemExit(f"missing secret file variable(s): {', '.join(missing)}")
     require_token_rotation = args.require_token_rotation or not args.allow_short
     require_noisy_neighbor = args.require_noisy_neighbor or not args.allow_short
-    if require_token_rotation and not auth_token_file:
+    if require_noisy_neighbor and (not attacker_stream_key_file or not attacker_token_file):
         raise SystemExit(
-            "qualifying release soak requires SOAK_AUTH_TOKEN_FILE for JWT rotation"
-        )
-    if require_noisy_neighbor and (not attacker_stream_key or not attacker_token_file):
-        raise SystemExit(
-            "noisy-neighbor soak requires SOAK_ATTACKER_STREAM_KEY and "
+            "noisy-neighbor soak requires SOAK_ATTACKER_STREAM_KEY_FILE and "
             "SOAK_ATTACKER_AUTH_TOKEN_FILE"
         )
-    if require_noisy_neighbor and not auth_token_file:
-        raise SystemExit("noisy-neighbor soak requires SOAK_AUTH_TOKEN_FILE")
+    try:
+        stream_key = read_key_file(pathlib.Path(stream_key_file), "victim stream key")
+        initial_token = read_token_file(pathlib.Path(auth_token_file))
+        operator_initial = read_token_file(pathlib.Path(operator_token_file))
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        raise SystemExit(f"cannot read required soak secret file: {error}") from error
     auth_token_subject = None
     if require_token_rotation or require_noisy_neighbor:
-        try:
-            initial_token = read_token_file(pathlib.Path(auth_token_file))
-        except (OSError, UnicodeDecodeError, ValueError) as error:
-            raise SystemExit(f"cannot read SOAK_AUTH_TOKEN_FILE: {error}") from error
         auth_token_subject = jwt_subject(initial_token)
         if auth_token_subject is None:
             raise SystemExit(
                 "rotating workload token must be a JWT with a valid tenant subject"
             )
+    operator_subject = jwt_subject(operator_initial)
+    if require_token_rotation and (
+        operator_subject is None or operator_subject == auth_token_subject
+    ):
+        raise SystemExit(
+            "rotating operator token must have a valid subject distinct from the victim"
+        )
     attacker_subject = None
+    attacker_stream_key = None
     if require_noisy_neighbor:
-        if pathlib.Path(attacker_token_file) == pathlib.Path(auth_token_file or ""):
-            raise SystemExit("victim and attacker token files must differ")
+        secret_paths = [
+            pathlib.Path(auth_token_file).resolve(),
+            pathlib.Path(operator_token_file).resolve(),
+            pathlib.Path(attacker_token_file).resolve(),
+        ]
+        if len(set(secret_paths)) != len(secret_paths):
+            raise SystemExit("victim, attacker, and operator token files must differ")
         try:
+            attacker_stream_key = read_key_file(
+                pathlib.Path(attacker_stream_key_file), "attacker stream key"
+            )
             attacker_initial = read_token_file(pathlib.Path(attacker_token_file))
         except (OSError, UnicodeDecodeError, ValueError) as error:
-            raise SystemExit(f"cannot read SOAK_ATTACKER_AUTH_TOKEN_FILE: {error}") from error
+            raise SystemExit(f"cannot read attacker secret file: {error}") from error
         attacker_subject = jwt_subject(attacker_initial)
-        if attacker_subject is None or attacker_subject == auth_token_subject:
-            raise SystemExit("victim and attacker JWT subjects must be valid and distinct")
+        if attacker_subject is None or attacker_subject in {
+            auth_token_subject,
+            operator_subject,
+        }:
+            raise SystemExit(
+                "victim, attacker, and operator JWT subjects must be valid and distinct"
+            )
+        if attacker_stream_key == stream_key:
+            raise SystemExit("victim and attacker stream keys must differ")
 
     evidence_path = pathlib.Path(args.evidence)
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     started_utc = dt.datetime.now(dt.timezone.utc)
     started = time.monotonic()
-    child_env = os.environ.copy()
-    child_env["STREAM_KEY"] = stream_key
+    child_env = {
+        name: value for name, value in os.environ.items() if not name.startswith("SOAK_")
+    }
+    child_env.pop("STREAM_KEY", None)
+    child_env["STREAM_KEY_FILE"] = stream_key_file
     child_env.pop("STREAMS_AUTH_TOKEN", None)
-    child_env.pop("STREAMS_AUTH_TOKEN_FILE", None)
-    if auth_token_file:
-        child_env["STREAMS_AUTH_TOKEN_FILE"] = auth_token_file
-    else:
-        child_env["STREAMS_AUTH_TOKEN"] = auth_token
+    child_env["STREAMS_AUTH_TOKEN_FILE"] = auth_token_file
     command = [
         args.bench_bin,
         "--url",
@@ -532,6 +578,11 @@ def main() -> int:
             args.attacker_payload_bytes,
             args.attacker_concurrency,
         )
+    operator_auth = RotatingToken(
+        pathlib.Path(operator_token_file),
+        operator_subject,
+        args.auth_token_refresh_secs,
+    )
     bench = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -540,27 +591,55 @@ def main() -> int:
         env=child_env,
     )
     samples: list[dict[str, object]] = []
-    if attacker:
-        attacker.start()
+    operator_auth.start()
     try:
-        while bench.poll() is None:
-            sampled_at = time.monotonic()
-            samples.extend(scrape_all(args.metrics_url, operator_token, sampled_at - started))
-            time.sleep(max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)))
-    finally:
         if attacker:
-            attacker.stop()
-    stdout, stderr = bench.communicate()
-    drain_until = time.monotonic() + args.drain_secs
-    while time.monotonic() < drain_until:
-        sampled_at = time.monotonic()
-        samples.extend(scrape_all(args.metrics_url, operator_token, sampled_at - started))
-        remaining = max(0.0, drain_until - time.monotonic())
-        time.sleep(min(max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)), remaining))
-    samples.extend(scrape_all(args.metrics_url, operator_token, time.monotonic() - started))
+            attacker.start()
+        try:
+            while bench.poll() is None:
+                sampled_at = time.monotonic()
+                samples.extend(
+                    scrape_all(
+                        args.metrics_url,
+                        operator_auth.token(),
+                        sampled_at - started,
+                    )
+                )
+                time.sleep(max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)))
+        finally:
+            if attacker:
+                attacker.stop()
+        stdout, stderr = bench.communicate()
+        drain_until = time.monotonic() + args.drain_secs
+        while time.monotonic() < drain_until:
+            sampled_at = time.monotonic()
+            samples.extend(
+                scrape_all(
+                    args.metrics_url,
+                    operator_auth.token(),
+                    sampled_at - started,
+                )
+            )
+            remaining = max(0.0, drain_until - time.monotonic())
+            time.sleep(
+                min(
+                    max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)),
+                    remaining,
+                )
+            )
+        samples.extend(
+            scrape_all(
+                args.metrics_url,
+                operator_auth.token(),
+                time.monotonic() - started,
+            )
+        )
+    finally:
+        operator_auth.stop()
 
     summary = parse_bench_summary(stdout)
     attacker_evidence = attacker.evidence() if attacker else {"required": False}
+    operator_auth_evidence = operator_auth.evidence()
     good = [sample for sample in samples if sample.get("metrics_ok")]
     by_target: dict[str, list[dict[str, object]]] = {}
     for sample in good:
@@ -647,6 +726,21 @@ def main() -> int:
                     and auth_evidence.get("subject_pinned") is True
                     and int(auth_evidence.get("token_changes", 0)) >= 1
                     and int(auth_evidence.get("refresh_failures", 0)) == 0
+                )
+            ),
+        ),
+        "operator_token_rotation": check(
+            operator_auth_evidence,
+            "mode-0600 file source with subject-pinned rotation"
+            if require_token_rotation
+            else "mode-0600 file source",
+            operator_auth_evidence.get("source") == "file"
+            and (
+                not require_token_rotation
+                or (
+                    operator_auth_evidence.get("subject_pinned") is True
+                    and int(operator_auth_evidence.get("token_changes", 0)) >= 1
+                    and int(operator_auth_evidence.get("refresh_failures", 0)) == 0
                 )
             ),
         ),
@@ -746,6 +840,7 @@ def main() -> int:
         "bench": summary,
         "noisy_neighbor": attacker_evidence,
         "monitor": {
+            "auth": operator_auth_evidence,
             "samples": len(samples),
             "successful_samples": len(good),
             "rss_max_bytes": max(rss, default=0),

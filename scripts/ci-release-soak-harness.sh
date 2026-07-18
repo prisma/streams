@@ -6,7 +6,6 @@ S3_PORT="${S3_PORT:-19564}"
 STREAMS_PORT="${STREAMS_PORT:-18164}"
 S3_URL="http://127.0.0.1:${S3_PORT}"
 STREAMS_URL="http://127.0.0.1:${STREAMS_PORT}"
-AUTH_TOKEN="ci-release-soak"
 PREFIX="release-soak-ci"
 ISSUER="https://issuer.invalid/release-soak"
 AUDIENCE="prisma-streams"
@@ -38,12 +37,18 @@ b64url() {
 sign_token() {
   local subject="$1"
   local token_id="$2"
+  local operator="${3:-false}"
+  local operator_claim=""
   local now expires header payload signature
+  if [[ "${operator}" == true ]]; then
+    operator_claim=',"operator":true'
+  fi
   now="$(date +%s)"
   expires=$(( now + 600 ))
   header="$(printf '%s' '{"alg":"RS256","kid":"ci-rsa","typ":"JWT"}' | b64url)"
-  payload="$(printf '{"sub":"%s","exp":%s,"iat":%s,"iss":"%s","aud":"%s","jti":"%s","stream_prefixes":[""],"verbs":["create","append","read","list"]}' \
-    "${subject}" "${expires}" "${now}" "${ISSUER}" "${AUDIENCE}" "${token_id}" | b64url)"
+  payload="$(printf '{"sub":"%s","exp":%s,"iat":%s,"iss":"%s","aud":"%s","jti":"%s"%s,"stream_prefixes":[""],"verbs":["create","append","read","list"]}' \
+    "${subject}" "${expires}" "${now}" "${ISSUER}" "${AUDIENCE}" "${token_id}" \
+    "${operator_claim}" | b64url)"
   signature="$(printf '%s.%s' "${header}" "${payload}" |
     openssl dgst -sha256 -sign "${TMP_DIR}/jwt-key.pem" | b64url)"
   printf '%s.%s.%s' "${header}" "${payload}" "${signature}"
@@ -77,6 +82,20 @@ curl --fail --silent -X PUT "${S3_URL}/auth/jwks.json" \
 curl --fail --silent -X PUT "${S3_URL}/auth/revocations.json" \
   --data-binary "@${TMP_DIR}/revocations.json" >/dev/null
 
+if "${TARGET_DIR}/streams-slate" \
+  --listen "127.0.0.1:$((STREAMS_PORT + 1))" \
+  --s3-endpoint "${S3_URL}" --bucket streams --region auto \
+  --access-key-id test --secret-access-key test --path-prefix reject-static-operator \
+  --initial-shards 1 --auth-token stale-static-operator \
+  --auth-jwks-url "${S3_URL}/auth/jwks.json" \
+  --auth-revocation-url "${S3_URL}/auth/revocations.json" \
+  --auth-issuer "${ISSUER}" --auth-audience "${AUDIENCE}" \
+  >"${TMP_DIR}/static-operator.out" 2>"${TMP_DIR}/static-operator.err"; then
+  echo "JWKS mode accepted the pilot static operator token" >&2
+  exit 1
+fi
+grep -q 'AUTH_TOKEN is pilot-only' "${TMP_DIR}/static-operator.err"
+
 victim_hash="$(customer_hash 'soak-victim')"
 attacker_hash="$(customer_hash 'soak-attacker')"
 printf '%s' '{"version":1,"max_inflight":16,"write_bytes_per_second":1048576,"write_burst_bytes":1048576,"streams_count":10}' \
@@ -94,7 +113,7 @@ curl --fail --silent -X PUT \
   --listen "127.0.0.1:${STREAMS_PORT}" \
   --s3-endpoint "${S3_URL}" --bucket streams --region auto \
   --access-key-id test --secret-access-key test --path-prefix "${PREFIX}" \
-  --initial-shards 1 --auth-token "${AUTH_TOKEN}" \
+  --initial-shards 1 \
   --auth-jwks-url "${S3_URL}/auth/jwks.json" \
   --auth-revocation-url "${S3_URL}/auth/revocations.json" \
   --auth-issuer "${ISSUER}" --auth-audience "${AUDIENCE}" \
@@ -114,23 +133,34 @@ until curl --fail --silent "${STREAMS_URL}/health/ready" >/dev/null; do
   sleep 0.1
 done
 
-export SOAK_STREAM_KEY
-SOAK_STREAM_KEY="$(${TARGET_DIR}/streams-keys generate)"
-export SOAK_ATTACKER_STREAM_KEY
-SOAK_ATTACKER_STREAM_KEY="$(${TARGET_DIR}/streams-keys generate)"
-export SOAK_OPERATOR_TOKEN="${AUTH_TOKEN}"
-unset SOAK_AUTH_TOKEN
+"${TARGET_DIR}/streams-keys" generate >"${TMP_DIR}/victim-key"
+"${TARGET_DIR}/streams-keys" generate >"${TMP_DIR}/attacker-key"
+chmod 600 "${TMP_DIR}/victim-key" "${TMP_DIR}/attacker-key"
+export SOAK_STREAM_KEY_FILE="${TMP_DIR}/victim-key"
+export SOAK_ATTACKER_STREAM_KEY_FILE="${TMP_DIR}/attacker-key"
+unset SOAK_STREAM_KEY SOAK_ATTACKER_STREAM_KEY SOAK_OPERATOR_TOKEN SOAK_AUTH_TOKEN
 TOKEN_A="$(sign_token 'soak-victim' 'soak-victim-a')"
 TOKEN_B="$(sign_token 'soak-victim' 'soak-victim-b')"
 ATTACKER_TOKEN_A="$(sign_token 'soak-attacker' 'soak-attacker-a')"
 ATTACKER_TOKEN_B="$(sign_token 'soak-attacker' 'soak-attacker-b')"
-export TOKEN_A TOKEN_B ATTACKER_TOKEN_A ATTACKER_TOKEN_B
+OPERATOR_TOKEN_A="$(sign_token 'soak-operator' 'soak-operator-a' true)"
+OPERATOR_TOKEN_B="$(sign_token 'soak-operator' 'soak-operator-b' true)"
+export TOKEN_A TOKEN_B ATTACKER_TOKEN_A ATTACKER_TOKEN_B OPERATOR_TOKEN_A OPERATOR_TOKEN_B
+[[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "${STREAMS_URL}/v1/debug/metrics" \
+  -H "authorization: Bearer ${TOKEN_A}")" == "401" ]]
+[[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "${STREAMS_URL}/v1/debug/metrics" \
+  -H "authorization: Bearer ${OPERATOR_TOKEN_A}")" == "200" ]]
 printf '%s\n' "${TOKEN_A}" >"${TMP_DIR}/workload-token"
 chmod 600 "${TMP_DIR}/workload-token"
 export SOAK_AUTH_TOKEN_FILE="${TMP_DIR}/workload-token"
 printf '%s\n' "${ATTACKER_TOKEN_A}" >"${TMP_DIR}/attacker-token"
 chmod 600 "${TMP_DIR}/attacker-token"
 export SOAK_ATTACKER_AUTH_TOKEN_FILE="${TMP_DIR}/attacker-token"
+printf '%s\n' "${OPERATOR_TOKEN_A}" >"${TMP_DIR}/operator-token"
+chmod 600 "${TMP_DIR}/operator-token"
+export SOAK_OPERATOR_TOKEN_FILE="${TMP_DIR}/operator-token"
 (
   sleep 1.5
   printf '%s\n' "${TOKEN_B}" >"${TMP_DIR}/workload-token.next"
@@ -139,6 +169,9 @@ export SOAK_ATTACKER_AUTH_TOKEN_FILE="${TMP_DIR}/attacker-token"
   printf '%s\n' "${ATTACKER_TOKEN_B}" >"${TMP_DIR}/attacker-token.next"
   chmod 600 "${TMP_DIR}/attacker-token.next"
   mv "${TMP_DIR}/attacker-token.next" "${TMP_DIR}/attacker-token"
+  printf '%s\n' "${OPERATOR_TOKEN_B}" >"${TMP_DIR}/operator-token.next"
+  chmod 600 "${TMP_DIR}/operator-token.next"
+  mv "${TMP_DIR}/operator-token.next" "${TMP_DIR}/operator-token"
 ) &
 ROTATE_PID=$!
 python3 scripts/release-soak.py \
@@ -177,15 +210,21 @@ assert evidence["noisy_neighbor"]["non_429"] == 0
 assert evidence["noisy_neighbor"]["auth"]["subject_pinned"] is True
 assert evidence["noisy_neighbor"]["auth"]["token_changes"] >= 1
 assert evidence["noisy_neighbor"]["auth"]["refresh_failures"] == 0
+assert evidence["monitor"]["auth"]["source"] == "file"
+assert evidence["monitor"]["auth"]["subject_pinned"] is True
+assert evidence["monitor"]["auth"]["token_changes"] >= 1
+assert evidence["monitor"]["auth"]["refresh_failures"] == 0
 assert all(item["passed"] for item in evidence["checks"].values())
 raw = pathlib.Path(sys.argv[1]).read_text()
-assert os.environ["SOAK_STREAM_KEY"] not in raw
-assert os.environ["SOAK_ATTACKER_STREAM_KEY"] not in raw
-assert os.environ["SOAK_OPERATOR_TOKEN"] not in raw
+assert pathlib.Path(os.environ["SOAK_STREAM_KEY_FILE"]).read_text().strip() not in raw
+assert pathlib.Path(os.environ["SOAK_ATTACKER_STREAM_KEY_FILE"]).read_text().strip() not in raw
+assert pathlib.Path(os.environ["SOAK_OPERATOR_TOKEN_FILE"]).read_text().strip() not in raw
 assert os.environ["TOKEN_A"] not in raw
 assert os.environ["TOKEN_B"] not in raw
 assert os.environ["ATTACKER_TOKEN_A"] not in raw
 assert os.environ["ATTACKER_TOKEN_B"] not in raw
+assert os.environ["OPERATOR_TOKEN_A"] not in raw
+assert os.environ["OPERATOR_TOKEN_B"] not in raw
 PY
 
 if python3 scripts/release-soak.py \
@@ -209,5 +248,18 @@ evidence = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert evidence["status"] == "fail"
 assert evidence["checks"]["throughput"]["passed"] is False
 PY
+
+if SOAK_STREAM_KEY=forbidden-raw-secret python3 scripts/release-soak.py \
+  --url "${STREAMS_URL}" --metrics-url "${STREAMS_URL}" \
+  --bench-bin "${TARGET_DIR}/bench" --evidence "${TMP_DIR}/raw-secret.json" \
+  --release-id ci-raw-secret --target-label hermetic-s3lite \
+  --instance-class local-process --storage-provider s3lite \
+  --duration-secs 1 --warmup-secs 0 --monitor-secs 1 --drain-secs 0 \
+  --concurrency 1 --streams 1 --payload-bytes 64 --allow-short \
+  >"${TMP_DIR}/raw-secret.out" 2>"${TMP_DIR}/raw-secret.err"; then
+  echo "release soak accepted a raw secret environment variable" >&2
+  exit 1
+fi
+grep -q 'raw secret environment variables are forbidden' "${TMP_DIR}/raw-secret.err"
 
 echo "target-hardware release-soak harness smoke passed"

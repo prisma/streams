@@ -60,8 +60,12 @@ struct Args {
     /// Stream encryption key (base64url, 32 bytes) sent as
     /// Stream-Encryption-Key on every request. Omit for servers that don't
     /// require it (the old TS implementation).
-    #[arg(long, env = "STREAM_KEY")]
+    #[arg(long, env = "STREAM_KEY", conflicts_with = "key_file")]
     key: Option<String>,
+    /// Mode-0600 file containing the stream encryption key. Release harnesses
+    /// use this instead of placing key material in argv or the environment.
+    #[arg(long, env = "STREAM_KEY_FILE", conflicts_with = "key")]
+    key_file: Option<PathBuf>,
     /// Bearer token for production-authenticated targets.
     #[arg(long, env = "STREAMS_AUTH_TOKEN")]
     auth_token: Option<String>,
@@ -222,6 +226,32 @@ async fn read_token_file(path: &PathBuf, expected_subject: Option<&str>) -> anyh
     Ok(token.to_string())
 }
 
+async fn read_stream_key_file(path: &PathBuf) -> anyhow::Result<String> {
+    let metadata = tokio::fs::metadata(path).await?;
+    anyhow::ensure!(metadata.is_file(), "stream key path is not a regular file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        anyhow::ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "stream key file must not be accessible by group or other"
+        );
+    }
+    anyhow::ensure!(
+        (1..=128).contains(&metadata.len()),
+        "stream key file is empty or too large"
+    );
+    let key = tokio::fs::read_to_string(path).await?;
+    let key = key.trim();
+    anyhow::ensure!(
+        key.len() == 43 && !key.chars().any(char::is_whitespace),
+        "stream key file is not canonical base64url"
+    );
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(key)?;
+    anyhow::ensure!(decoded.len() == 32, "stream key must decode to 32 bytes");
+    Ok(key.to_string())
+}
+
 fn authorized(
     mut rb: reqwest::RequestBuilder,
     key: &Option<String>,
@@ -247,7 +277,10 @@ struct Shared {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if let Some(path) = &args.key_file {
+        args.key = Some(read_stream_key_file(path).await?);
+    }
     match args.mode.as_str() {
         "append" => bench_append(args).await,
         "read" => bench_read(args).await,

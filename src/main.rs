@@ -1177,6 +1177,10 @@ async fn async_main() -> anyhow::Result<()> {
         args.cell_id.is_none() || authn.production_ready(),
         "managed CELL_ID mode requires production JWKS authentication"
     );
+    anyhow::ensure!(
+        !authn.production_ready() || args.auth_token.is_none(),
+        "AUTH_TOKEN is pilot-only and must be unset when production JWKS authentication is configured"
+    );
     if authn.production_ready()
         && args.metrics_key.is_some()
         && args.metrics_lb_url.is_some()

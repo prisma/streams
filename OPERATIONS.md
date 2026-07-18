@@ -180,6 +180,12 @@ kept deliberately verify-local so no remote call sits on the data path:
   `{customer, allowed stream-name prefixes, verbs (create/append/read/
   queue), expiry ≤ 24 h, token-id}`. Instances verify locally against the
   key service's published JWKS (cached 10 min, background-refreshed).
+- Operator credentials use the same signature, issuer, audience, ≤24-hour
+  lifetime, and token-id revocation path, with an explicit `operator: true`
+  claim. The claim defaults false when absent. Operator automation uses a
+  principal distinct from tenant/service subjects and rotates its mode-0600
+  token file before expiry. Startup rejects the pilot `AUTH_TOKEN` whenever
+  JWKS mode is configured, so it cannot remain as a static production bypass.
 - The stream encryption key remains a separate capability (crypto
   custody), carried per request as today; authn (who) and crypto access
   (can decrypt) are independent factors.

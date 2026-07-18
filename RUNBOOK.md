@@ -294,8 +294,8 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 
 | env | default | notes |
 |---|---|---|
-| `AUTH_TOKEN` | — | pilot-only single-tenant bearer and operator token. Production uses the JWKS settings below |
-| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | required together in production; locally verifies RS256/EdDSA JWTs with `sub` customer identity, `jti`, verbs, and stream-name prefixes |
+| `AUTH_TOKEN` | — | pilot-only single-tenant bearer and operator token; startup rejects it when production JWKS settings are present, preventing a stale merged env from retaining a static privileged bypass |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | required together in production; locally verifies RS256/EdDSA JWTs with `sub` customer identity, `jti`, verbs, stream-name prefixes, and an explicit default-false `operator` claim for privileged endpoints |
 | `AUTH_REVOCATION_URL` | — | required with JWKS; monotonic JSON document `{"version":N,"revoked_token_ids":[...]}` polled off the request path |
 | `AUTH_JWKS_REFRESH_SECS` / `AUTH_JWKS_MAX_STALE_SECS` | 600 / 3600 | refresh/fail-closed bounds for verification keys |
 | `AUTH_REVOCATION_REFRESH_SECS` / `AUTH_REVOCATION_MAX_STALE_SECS` | 60 / 120 | refresh/fail-closed bounds for token revocation |
@@ -756,19 +756,24 @@ same budgets. It writes one bounded JSON artifact and fails any configured
 regression budget.
 
 Production JWTs live for at most 24 hours, so a qualifying run cannot use one
-static bearer token. Put the current victim and attacker JWTs in distinct
-mode-0600 files and have the issuer atomically replace both before expiry.
-`bench` refreshes off the request path, pins every replacement to the initial
-tenant `sub`, retains the last good token on a malformed refresh, and reports
-only reload/change/failure counts. The judge requires at least one change and
-zero refresh failures for both subjects. Keys and tokens are never serialized.
+static bearer token. Put the current victim, attacker, and operator JWTs in
+three distinct mode-0600 files and have the issuer atomically replace all three
+before expiry. The operator JWT is signed by the same configured issuer and
+sets `operator: true`; missing claims default to false, so tenant JWTs do not
+gain debug/admin access. `bench` and the judge refresh off the request path,
+pin every replacement to the initial distinct `sub`, retain the last good token
+on a malformed refresh, and report only reload/change/failure counts. The judge
+requires at least one change and zero refresh failures for all three subjects.
+Victim and attacker stream keys also live in distinct mode-0600 files. Raw
+secret environment variables are rejected, and keys/tokens are never
+serialized into evidence.
 
 ```bash
-export SOAK_STREAM_KEY=...          # fresh customer key for this run
+export SOAK_STREAM_KEY_FILE=/run/secrets/soak-victim.key
 export SOAK_AUTH_TOKEN_FILE=/run/secrets/soak-victim.jwt
-export SOAK_ATTACKER_STREAM_KEY=... # different customer key
+export SOAK_ATTACKER_STREAM_KEY_FILE=/run/secrets/soak-attacker.key
 export SOAK_ATTACKER_AUTH_TOKEN_FILE=/run/secrets/soak-attacker.jwt
-export SOAK_OPERATOR_TOKEN=...      # operator-only metrics principal
+export SOAK_OPERATOR_TOKEN_FILE=/run/secrets/soak-operator.jwt
 
 scripts/release-soak.py \
   --url https://cell-router.example \
@@ -789,8 +794,8 @@ Preprovision the attacker customer's durable `write_burst_bytes` below
 `--attacker-payload-bytes` (16 KiB by default), while the victim has its normal
 production limits. The subjects and token files must differ. A qualifying run
 automatically requires noisy-neighbor pressure and rotating files even if the
-explicit flags are omitted; `SOAK_AUTH_TOKEN` remains a short-test-only fixed
-token path.
+explicit flags are omitted. Raw token/key environment variables are rejected
+even for a short run; CI uses the same mode-0600 file path as production.
 
 Tune throughput and latency budgets only from an approved baseline for the
 same instance/store class; record the chosen arguments with the artifact. The

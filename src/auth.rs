@@ -236,6 +236,11 @@ struct Claims {
     stream_prefixes: Vec<String>,
     #[serde(default)]
     verbs: Vec<String>,
+    /// Privileged operational surface only. The claim is trusted only after
+    /// the same asymmetric signature, issuer, audience, lifetime, and jti
+    /// revocation checks as every tenant JWT. Missing defaults to false.
+    #[serde(default)]
+    operator: bool,
 }
 
 #[derive(Deserialize)]
@@ -396,7 +401,7 @@ fn principal_from_claims(claims: Claims) -> Result<Principal, AuthError> {
         token_id: claims.jti,
         verbs,
         prefixes: claims.stream_prefixes,
-        operator: false,
+        operator: claims.operator,
     })
 }
 
@@ -522,6 +527,7 @@ mod tests {
             jti: "token-1".into(),
             stream_prefixes: vec!["prod/".into()],
             verbs: vec!["read".into(), "append".into()],
+            operator: false,
         }
     }
 
@@ -532,6 +538,11 @@ mod tests {
         assert!(principal.allows(Verb::Append, "prod/orders"));
         assert!(!principal.allows(Verb::Delete, "prod/orders"));
         assert!(!principal.allows(Verb::Read, "staging/orders"));
+        assert!(!principal.operator);
+
+        let mut operator = claims();
+        operator.operator = true;
+        assert!(principal_from_claims(operator).unwrap().operator);
     }
 
     #[test]
@@ -606,6 +617,18 @@ mod tests {
         .unwrap();
         let principal = auth.authenticate(&token).unwrap();
         assert_eq!(principal.customer_id, "customer-42");
+        assert!(!principal.operator);
+
+        let mut operator_claims = claims();
+        operator_claims.jti = "operator-token-1".into();
+        operator_claims.operator = true;
+        let operator_token = encode(
+            &header,
+            &operator_claims,
+            &EncodingKey::from_ed_der(private_der.as_bytes()),
+        )
+        .unwrap();
+        assert!(auth.authenticate(&operator_token).unwrap().operator);
 
         auth.state
             .write()
