@@ -151,7 +151,7 @@ pub struct SnapshotReport {
     pub coordinator_sequence: u64,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct InventoryRecord {
     role: String,
     source_path: String,
@@ -364,6 +364,11 @@ struct PinnedBackupState {
     /// history state may therefore contain harmless future rows, but always
     /// contains the durable absorbed prefix named by the shard point.
     history_manifests: HashMap<String, Option<PinnedDbManifest>>,
+    /// WALs acknowledged after the pinned manifest watermark are not covered
+    /// by SlateDB's detached checkpoint. Copy them to immutable backup content
+    /// as soon as each database cut is observed, before source WAL GC can race
+    /// the slower fleet-wide inventory walk.
+    protected_wals: Vec<ProtectedWal>,
 }
 
 struct SnapshotContext<'a> {
@@ -381,9 +386,32 @@ struct SnapshotContext<'a> {
 struct PinnedDbManifest {
     manifest_id: u64,
     allowed_manifest_ids: HashSet<u64>,
-    replay_after_wal_id: u64,
-    next_wal_sst_id: u64,
+    /// Exact WAL objects visible at the shard cut, including acknowledged
+    /// WALs whose IDs have not yet reached the remotely persisted manifest.
+    /// SlateDB replays these on normal open by listing above the replay
+    /// watermark. ETags make the extended cut immutable across the copy.
+    wal_etags: HashMap<u64, String>,
+    /// WAL IDs at or above this value were visible in object storage but had
+    /// not yet reached the pinned remote manifest. They are protected eagerly
+    /// in the recovery provider rather than relying on source WAL retention.
+    first_unmanifested_wal_id: u64,
     compactions_id: Option<u64>,
+}
+
+struct ProtectedWal {
+    source_etag: String,
+    record: InventoryRecord,
+    reused: bool,
+}
+
+#[derive(Default)]
+struct SnapshotProgress {
+    objects: u64,
+    bytes: u64,
+    copied_objects: u64,
+    copied_bytes: u64,
+    reused_objects: u64,
+    inventory_checksum: [u8; 32],
 }
 
 impl CoordinatorState {
@@ -1371,7 +1399,13 @@ async fn snapshot_once_with_pins_fenced(
     };
     let (pinned_state, leases) = match pins {
         Some(pins) => {
-            let (state, leases) = acquire_checkpoint_leases(pins, &snapshot_id).await?;
+            let (state, leases) = acquire_checkpoint_leases(
+                pins,
+                destination.clone(),
+                &snapshot_id,
+                write_format.content_epoch(coordinator_epoch),
+            )
+            .await?;
             (Some(state), leases)
         }
         None => (None, Vec::new()),
@@ -1419,21 +1453,53 @@ async fn snapshot_once_inner(
         coordinator_epoch,
         coordinator_sequence,
     } = context;
-    let mut objects = 0u64;
-    let mut bytes = 0u64;
-    let mut copied_objects = 0u64;
-    let mut copied_bytes = 0u64;
-    let mut reused_objects = 0u64;
-    let mut roles = Vec::new();
-    let mut inventory_checksum = [0u8; 32];
+    let mut progress = SnapshotProgress::default();
+    let mut roles = Vec::with_capacity(sources.len());
+    for source in sources {
+        validate_role(source.role)?;
+        roles.push(source.role.to_string());
+    }
     let content_epoch = write_format.content_epoch(coordinator_epoch);
+    let mut protected_paths = HashSet::new();
+
+    if let Some(state) = pinned_state {
+        for protected in &state.protected_wals {
+            anyhow::ensure!(
+                sources
+                    .iter()
+                    .any(|source| source.role == protected.record.role),
+                "protected WAL has no matching snapshot source role: {}",
+                protected.record.role
+            );
+            anyhow::ensure!(
+                protected_paths.insert((
+                    protected.record.role.clone(),
+                    protected.record.source_path.clone(),
+                )),
+                "duplicate protected WAL in recovery cut: {}/{}",
+                protected.record.role,
+                protected.record.source_path
+            );
+            publish_inventory_record(
+                destination.clone(),
+                snapshot_id,
+                protected.record.clone(),
+                &protected.source_etag,
+                protected.reused,
+                content_epoch,
+                coordinator_epoch,
+                coordinator_sequence,
+                fence,
+                &mut progress,
+            )
+            .await?;
+        }
+    }
 
     for source in sources {
         if let Some(fence) = fence {
             fence.check_local()?;
         }
-        validate_role(source.role)?;
-        roles.push(source.role.to_string());
         let mut listing = source.store.list(None);
         while let Some(meta) = listing.try_next().await? {
             if matches!(
@@ -1445,17 +1511,32 @@ async fn snapshot_once_inner(
             if let Some(fence) = fence {
                 fence.check_local()?;
             }
+            if protected_paths
+                .contains(&(source.role.to_string(), meta.location.as_ref().to_string()))
+            {
+                continue;
+            }
             if matches!(source.role, "shard" | "data")
                 && pinned_state
                     .is_some_and(|state| object_is_outside_recovery_point(&meta.location, state))
             {
                 continue;
             }
+            if matches!(source.role, "shard" | "data")
+                && let Some(expected_etag) =
+                    pinned_state.and_then(|state| pinned_wal_etag(&meta.location, state))
+            {
+                anyhow::ensure!(
+                    meta.e_tag.as_deref() == Some(expected_etag),
+                    "pinned WAL changed while snapshotting: {}",
+                    meta.location
+                );
+            }
             let source_etag = meta
                 .e_tag
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("object {} has no ETag", meta.location))?;
-            let record = match reusable_record(
+            let (record, reused) = match reusable_record(
                 destination.clone(),
                 source.role,
                 &meta.location,
@@ -1466,10 +1547,7 @@ async fn snapshot_once_inner(
             )
             .await?
             {
-                Some(record) => {
-                    reused_objects = reused_objects.saturating_add(1);
-                    record
-                }
+                Some(record) => (record, true),
                 None => {
                     let record = copy_incremental_object(
                         source,
@@ -1481,53 +1559,22 @@ async fn snapshot_once_inner(
                         content_epoch,
                     )
                     .await?;
-                    copied_objects = copied_objects.saturating_add(1);
-                    copied_bytes = copied_bytes.saturating_add(record.size);
-                    record
+                    (record, false)
                 }
             };
-            if let Some(fence) = fence {
-                fence.check_local()?;
-            }
-            write_source_index(
+            publish_inventory_record(
                 destination.clone(),
-                &record,
+                snapshot_id,
+                record,
                 &source_etag,
-                snapshot_id,
-                coordinator_epoch,
-                coordinator_sequence,
-            )
-            .await?;
-            touch_blob_reference(
-                destination.clone(),
-                &record,
-                snapshot_id,
+                reused,
                 content_epoch,
                 coordinator_epoch,
                 coordinator_sequence,
+                fence,
+                &mut progress,
             )
             .await?;
-            let inventory = serde_json::to_vec(&record)?;
-            anyhow::ensure!(
-                inventory.len() <= MAX_INVENTORY_BYTES,
-                "inventory record too large"
-            );
-            xor_digest(&mut inventory_checksum, Sha256::digest(&inventory).into());
-            let inventory_path = inventory_path(snapshot_id, source.role, &record.source_path);
-            destination
-                .put_opts(
-                    &inventory_path,
-                    PutPayload::from(Bytes::from(inventory)),
-                    PutOptions {
-                        mode: PutMode::Create,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            objects += 1;
-            bytes = bytes
-                .checked_add(record.size)
-                .ok_or_else(|| anyhow::anyhow!("snapshot byte count overflow"))?;
         }
     }
 
@@ -1543,13 +1590,13 @@ async fn snapshot_once_inner(
         snapshot_id: snapshot_id.to_string(),
         started_ms,
         completed_ms: now_ms(),
-        objects,
-        bytes,
+        objects: progress.objects,
+        bytes: progress.bytes,
         roles,
-        inventory_checksum: hex_encode(&inventory_checksum),
-        copied_objects,
-        copied_bytes,
-        reused_objects,
+        inventory_checksum: hex_encode(&progress.inventory_checksum),
+        copied_objects: progress.copied_objects,
+        copied_bytes: progress.copied_bytes,
+        reused_objects: progress.reused_objects,
         pinned_shards: pinned_state.map_or(0, |state| state.topology.shards.len() as u64),
         pinned_history_dbs: pinned_state.map_or(0, |state| {
             state
@@ -1588,6 +1635,74 @@ async fn snapshot_once_inner(
             .await?;
     }
     Ok(report)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_inventory_record(
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    record: InventoryRecord,
+    source_etag: &str,
+    reused: bool,
+    content_epoch: u64,
+    coordinator_epoch: u64,
+    coordinator_sequence: u64,
+    fence: Option<&PublicationFence>,
+    progress: &mut SnapshotProgress,
+) -> anyhow::Result<()> {
+    if let Some(fence) = fence {
+        fence.check_local()?;
+    }
+    write_source_index(
+        destination.clone(),
+        &record,
+        source_etag,
+        snapshot_id,
+        coordinator_epoch,
+        coordinator_sequence,
+    )
+    .await?;
+    touch_blob_reference(
+        destination.clone(),
+        &record,
+        snapshot_id,
+        content_epoch,
+        coordinator_epoch,
+        coordinator_sequence,
+    )
+    .await?;
+    let inventory = serde_json::to_vec(&record)?;
+    anyhow::ensure!(
+        inventory.len() <= MAX_INVENTORY_BYTES,
+        "inventory record too large"
+    );
+    xor_digest(
+        &mut progress.inventory_checksum,
+        Sha256::digest(&inventory).into(),
+    );
+    let inventory_path = inventory_path(snapshot_id, &record.role, &record.source_path);
+    destination
+        .put_opts(
+            &inventory_path,
+            PutPayload::from(Bytes::from(inventory)),
+            PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            },
+        )
+        .await?;
+    progress.objects = progress.objects.saturating_add(1);
+    progress.bytes = progress
+        .bytes
+        .checked_add(record.size)
+        .ok_or_else(|| anyhow::anyhow!("snapshot byte count overflow"))?;
+    if reused {
+        progress.reused_objects = progress.reused_objects.saturating_add(1);
+    } else {
+        progress.copied_objects = progress.copied_objects.saturating_add(1);
+        progress.copied_bytes = progress.copied_bytes.saturating_add(record.size);
+    }
+    Ok(())
 }
 
 async fn publish_latest(
@@ -1667,7 +1782,9 @@ async fn read_backup_topology(store: &Arc<dyn ObjectStore>) -> anyhow::Result<Ba
 
 async fn acquire_checkpoint_leases(
     pins: &BackupPins,
+    destination: Arc<dyn ObjectStore>,
     snapshot_id: &str,
+    content_epoch: u64,
 ) -> anyhow::Result<(PinnedBackupState, Vec<CheckpointLease>)> {
     let topology = read_backup_topology(&pins.topology_store).await?;
     let mut shard_leases = Vec::with_capacity(topology.shards.len());
@@ -1692,6 +1809,27 @@ async fn acquire_checkpoint_leases(
         let _ = release_checkpoint_leases(shard_leases).await;
         return Err(error);
     }
+    // Capture the shard WAL cut before pinning history. History must be at
+    // least as new as every shard-side absorbed frontier included by the cut.
+    let (shard_manifests, mut protected_wals) = match collect_pinned_manifests(
+        BackupSource {
+            role: "shard",
+            store: pins.shard_store.clone(),
+        },
+        destination.clone(),
+        snapshot_id,
+        content_epoch,
+        &shard_leases,
+        shard_absent,
+    )
+    .await
+    {
+        Ok(manifests) => manifests,
+        Err(error) => {
+            let _ = release_checkpoint_leases(shard_leases).await;
+            return Err(error);
+        }
+    };
     let (history_leases, history_absent) =
         match acquire_history_checkpoints(pins, snapshot_id).await {
             Ok(result) => result,
@@ -1700,27 +1838,27 @@ async fn acquire_checkpoint_leases(
                 return Err(error);
             }
         };
-    let shard_manifests =
-        match collect_pinned_manifests(pins.shard_store.clone(), &shard_leases, shard_absent).await
-        {
-            Ok(manifests) => manifests,
-            Err(error) => {
-                let _ = release_checkpoint_leases(shard_leases).await;
-                let _ = release_checkpoint_leases(history_leases).await;
-                return Err(error);
-            }
-        };
-    let history_manifests =
-        match collect_pinned_manifests(pins.data_store.clone(), &history_leases, history_absent)
-            .await
-        {
-            Ok(manifests) => manifests,
-            Err(error) => {
-                let _ = release_checkpoint_leases(shard_leases).await;
-                let _ = release_checkpoint_leases(history_leases).await;
-                return Err(error);
-            }
-        };
+    let (history_manifests, history_protected_wals) = match collect_pinned_manifests(
+        BackupSource {
+            role: "data",
+            store: pins.data_store.clone(),
+        },
+        destination,
+        snapshot_id,
+        content_epoch,
+        &history_leases,
+        history_absent,
+    )
+    .await
+    {
+        Ok(manifests) => manifests,
+        Err(error) => {
+            let _ = release_checkpoint_leases(shard_leases).await;
+            let _ = release_checkpoint_leases(history_leases).await;
+            return Err(error);
+        }
+    };
+    protected_wals.extend(history_protected_wals);
     let mut leases = shard_leases;
     leases.extend(history_leases);
     Ok((
@@ -1728,6 +1866,7 @@ async fn acquire_checkpoint_leases(
             topology,
             shard_manifests,
             history_manifests,
+            protected_wals,
         },
         leases,
     ))
@@ -1826,21 +1965,114 @@ async fn verify_manifest_set(
             "pinned manifest disappeared while snapshotting: {path}/{}",
             pinned.manifest_id
         );
+        for (id, expected_etag) in &pinned.wal_etags {
+            if *id >= pinned.first_unmanifested_wal_id {
+                // These WALs are already immutable in the recovery provider.
+                // They were not referenced by the detached checkpoint, so
+                // source WAL GC is allowed to remove them after protection.
+                continue;
+            }
+            let wal = ObjPath::from(format!("{path}/wal/{id:020}.sst"));
+            let meta = store.head(&wal).await?;
+            anyhow::ensure!(
+                meta.e_tag.as_deref() == Some(expected_etag),
+                "pinned WAL changed while snapshotting: {wal}"
+            );
+        }
     }
     Ok(())
 }
 
+fn wal_id_for_path(root: &str, path: &ObjPath) -> Option<u64> {
+    let suffix = path
+        .as_ref()
+        .strip_prefix(&format!("{root}/wal/"))?
+        .strip_suffix(".sst")?;
+    (suffix.len() == 20 && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| suffix.parse().ok())
+        .flatten()
+}
+
+async fn capture_pinned_wals(
+    store: &Arc<dyn ObjectStore>,
+    path: &str,
+    replay_after_wal_id: u64,
+    next_wal_sst_id: u64,
+) -> anyhow::Result<HashMap<u64, String>> {
+    let first = replay_after_wal_id
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("pinned WAL replay watermark exhausted: {path}"))?;
+    anyhow::ensure!(
+        next_wal_sst_id >= first,
+        "pinned manifest has invalid WAL watermarks: {path}"
+    );
+    let mut wal_etags = HashMap::new();
+    let prefix = ObjPath::from(format!("{path}/wal"));
+    let mut listing = store.list(Some(&prefix));
+    while let Some(meta) = listing.try_next().await? {
+        let id = wal_id_for_path(path, &meta.location).ok_or_else(|| {
+            anyhow::anyhow!(
+                "malformed object in pinned WAL namespace: {}",
+                meta.location
+            )
+        })?;
+        if id < first {
+            continue;
+        }
+        let etag = meta
+            .e_tag
+            .ok_or_else(|| anyhow::anyhow!("pinned WAL has no ETag: {}", meta.location))?;
+        anyhow::ensure!(
+            wal_etags.insert(id, etag).is_none(),
+            "duplicate pinned WAL id: {path}/{id}"
+        );
+        anyhow::ensure!(
+            wal_etags.len() <= MAX_SNAPSHOT_GENERATIONS,
+            "pinned WAL set exceeds the database safety bound: {path}"
+        );
+    }
+    if let Some(last) = wal_etags.keys().copied().max() {
+        let count = last
+            .checked_sub(first)
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| anyhow::anyhow!("pinned WAL range overflow: {path}"))?;
+        anyhow::ensure!(
+            count <= MAX_SNAPSHOT_GENERATIONS && count == wal_etags.len(),
+            "pinned WAL ids are not contiguous: {path}"
+        );
+        for id in first..=last {
+            anyhow::ensure!(
+                wal_etags.contains_key(&id),
+                "pinned WAL range has a gap: {path}/{id}"
+            );
+        }
+    }
+    for id in first..next_wal_sst_id {
+        anyhow::ensure!(
+            wal_etags.contains_key(&id),
+            "manifest-referenced WAL is missing: {path}/{id}"
+        );
+    }
+    Ok(wal_etags)
+}
+
 async fn collect_pinned_manifests(
-    store: Arc<dyn ObjectStore>,
+    source: BackupSource,
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    content_epoch: u64,
     leases: &[CheckpointLease],
     absent: Vec<String>,
-) -> anyhow::Result<HashMap<String, Option<PinnedDbManifest>>> {
+) -> anyhow::Result<(HashMap<String, Option<PinnedDbManifest>>, Vec<ProtectedWal>)> {
+    let store = source.store.clone();
     let mut pending = VecDeque::new();
     for lease in leases {
         pending.push_back((lease.path.clone(), lease.manifest_id));
     }
     let mut manifests: HashMap<String, Option<PinnedDbManifest>> =
         absent.into_iter().map(|path| (path, None)).collect();
+    let mut protected_wals = Vec::new();
     while let Some((path, manifest_id)) = pending.pop_front() {
         if let Some(existing) = manifests.get(&path) {
             anyhow::ensure!(
@@ -1861,6 +2093,55 @@ async fn collect_pinned_manifests(
             .await?
             .ok_or_else(|| anyhow::anyhow!("pinned manifest is missing: {path}/{manifest_id}"))?;
         let compactions_id = compatible_compactions_id(&admin, manifest.compactor_epoch()).await?;
+        let wal_etags = capture_pinned_wals(
+            &store,
+            &path,
+            manifest.replay_after_wal_id(),
+            manifest.next_wal_sst_id(),
+        )
+        .await?;
+        for (&id, source_etag) in wal_etags
+            .iter()
+            .filter(|(id, _)| **id >= manifest.next_wal_sst_id())
+        {
+            let source_path = ObjPath::from(format!("{path}/wal/{id:020}.sst"));
+            let meta = store.head(&source_path).await?;
+            anyhow::ensure!(
+                meta.e_tag.as_deref() == Some(source_etag),
+                "pre-manifest WAL changed before recovery protection: {source_path}"
+            );
+            let (record, reused) = match reusable_record(
+                destination.clone(),
+                source.role,
+                &source_path,
+                source_etag,
+                meta.size,
+                snapshot_id,
+                content_epoch,
+            )
+            .await?
+            {
+                Some(record) => (record, true),
+                None => (
+                    copy_incremental_object(
+                        &source,
+                        destination.clone(),
+                        snapshot_id,
+                        &source_path,
+                        source_etag,
+                        meta.size,
+                        content_epoch,
+                    )
+                    .await?,
+                    false,
+                ),
+            };
+            protected_wals.push(ProtectedWal {
+                source_etag: source_etag.clone(),
+                record,
+                reused,
+            });
+        }
         let mut allowed_manifest_ids = HashSet::from([manifest_id]);
         allowed_manifest_ids.extend(
             manifest
@@ -1904,13 +2185,13 @@ async fn collect_pinned_manifests(
             Some(PinnedDbManifest {
                 manifest_id,
                 allowed_manifest_ids,
-                replay_after_wal_id: manifest.replay_after_wal_id(),
-                next_wal_sst_id: manifest.next_wal_sst_id(),
+                wal_etags,
+                first_unmanifested_wal_id: manifest.next_wal_sst_id(),
                 compactions_id,
             }),
         );
     }
-    Ok(manifests)
+    Ok((manifests, protected_wals))
 }
 
 async fn compatible_compactions_id(admin: &Admin, epoch: u64) -> anyhow::Result<Option<u64>> {
@@ -3225,7 +3506,7 @@ fn object_is_outside_recovery_point(path: &ObjPath, state: &PinnedBackupState) -
         else {
             return true;
         };
-        return id <= expected.replay_after_wal_id || id >= expected.next_wal_sst_id;
+        return !expected.wal_etags.contains_key(&id);
     }
     if let Some((db_path, file)) = path.as_ref().rsplit_once("/compactions/")
         && let Some(expected) = pinned_db(state, db_path)
@@ -3248,6 +3529,13 @@ fn object_is_outside_recovery_point(path: &ObjPath, state: &PinnedBackupState) -
         return true;
     }
     false
+}
+
+fn pinned_wal_etag<'a>(path: &ObjPath, state: &'a PinnedBackupState) -> Option<&'a str> {
+    let (db_path, _) = path.as_ref().rsplit_once("/wal/")?;
+    let expected = pinned_db(state, db_path)?.as_ref()?;
+    let id = wal_id_for_path(db_path, path)?;
+    expected.wal_etags.get(&id).map(String::as_str)
 }
 
 fn pinned_db<'a>(state: &'a PinnedBackupState, path: &str) -> Option<&'a Option<PinnedDbManifest>> {
@@ -4127,6 +4415,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovery_point_includes_durable_wal_before_manifest_advance() {
+        let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        ops.put(
+            &ObjPath::from("topology.json"),
+            PutPayload::from_static(
+                br#"{"version":1,"storage_format":2,"shards":[""],"shard_paths":{}}"#,
+            ),
+        )
+        .await
+        .unwrap();
+        let db = slatedb::Db::builder("shards/root", shards.clone())
+            .with_settings(slatedb::config::Settings {
+                // AwaitDurable still writes a WAL, but no timer advances the
+                // remote manifest before the detached checkpoint is taken.
+                flush_interval: Some(Duration::from_millis(20)),
+                garbage_collector_options: None,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            db.put(b"pre-manifest", b"acknowledged"),
+        )
+        .await
+        .expect("durable pre-manifest write timed out")
+        .unwrap();
+        let before = AdminBuilder::new("shards/root", shards.clone())
+            .build()
+            .read_manifest(None)
+            .await
+            .unwrap()
+            .unwrap();
+        let wal_objects = shards
+            .list(Some(&ObjPath::from("shards/root/wal")))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(wal_objects.iter().any(|meta| {
+            wal_id_for_path("shards/root", &meta.location)
+                .is_some_and(|id| id >= before.next_wal_sst_id())
+        }));
+
+        let pins = BackupPins {
+            topology_store: ops.clone(),
+            shard_store: shards.clone(),
+            data_store: shards.clone(),
+            lifetime: Duration::from_secs(60),
+        };
+        let snapshot_id = "00000000000000000044-pre-manifest";
+        let (state, leases) = tokio::time::timeout(
+            Duration::from_secs(5),
+            acquire_checkpoint_leases(
+                &pins,
+                backup.clone(),
+                snapshot_id,
+                BackupWriteFormat::V2.content_epoch(0),
+            ),
+        )
+        .await
+        .expect("pre-manifest WAL protection timed out")
+        .unwrap();
+        assert!(!state.protected_wals.is_empty());
+        tokio::time::timeout(Duration::from_secs(5), db.close())
+            .await
+            .expect("source close timed out")
+            .unwrap();
+        for protected in &state.protected_wals {
+            shards
+                .delete(&ObjPath::from(protected.record.source_path.clone()))
+                .await
+                .unwrap();
+        }
+
+        let report = tokio::time::timeout(
+            Duration::from_secs(5),
+            snapshot_once_inner(
+                &[
+                    BackupSource {
+                        role: "ops",
+                        store: ops,
+                    },
+                    BackupSource {
+                        role: "shard",
+                        store: shards.clone(),
+                    },
+                ],
+                backup.clone(),
+                SnapshotContext {
+                    pins: Some(&pins),
+                    pinned_state: Some(&state),
+                    started_ms: 44,
+                    snapshot_id,
+                    fence: None,
+                    write_format: BackupWriteFormat::V2,
+                    coordinator_epoch: 0,
+                    coordinator_sequence: 0,
+                },
+            ),
+        )
+        .await
+        .expect("pre-manifest WAL inventory timed out")
+        .unwrap();
+        release_checkpoint_leases(leases).await.unwrap();
+
+        let restored_ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        restore_snapshot(
+            backup,
+            &report.snapshot_id,
+            &HashMap::from([
+                ("ops".to_string(), restored_ops),
+                ("shard".to_string(), restored_shards.clone()),
+            ]),
+        )
+        .await
+        .unwrap();
+        let restored = slatedb::Db::open("shards/root", restored_shards)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.get(b"pre-manifest").await.unwrap(),
+            Some(Bytes::from_static(b"acknowledged"))
+        );
+        restored.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn restore_selects_the_pinned_manifest_not_a_later_writer_manifest() {
         let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -4152,7 +4571,9 @@ mod tests {
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000042-pinned";
-        let (state, leases) = acquire_checkpoint_leases(&pins, snapshot_id).await.unwrap();
+        let (state, leases) = acquire_checkpoint_leases(&pins, backup.clone(), snapshot_id, 0)
+            .await
+            .unwrap();
 
         let db = slatedb::Db::open("shards/root", shards.clone())
             .await
@@ -4252,7 +4673,9 @@ mod tests {
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000043-history";
-        let (state, leases) = acquire_checkpoint_leases(&pins, snapshot_id).await.unwrap();
+        let (state, leases) = acquire_checkpoint_leases(&pins, backup.clone(), snapshot_id, 0)
+            .await
+            .unwrap();
         let history = slatedb::Db::open(history_path.as_str(), data.clone())
             .await
             .unwrap();

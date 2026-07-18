@@ -20,9 +20,9 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Green (software gate).** Strict durable customer documents cover append requests/bytes, read requests/bytes, live and total connections, queue receives, and exact live stream-name counts. Immutable stream descriptors add incarnation-scoped append request/byte buckets and bounded commit weights. Request/ingress excess is rejected before shard work; response egress is paced without breaking admitted streams. Response-body guards close the SSE lifetime escape. Fleet members enforce customer ceil-shares from fresh membership. The shard owner schedules equal tenant turns, then weighted stream turns, rotating oversized heads. Black-box CI proves every account/stream dimension, sibling isolation, disconnect release, restart-loaded policy, exact producer continuation, and measured egress pacing. Target-hardware isolation remains in the performance gate. |
 | Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split and sibling merge use renewable shard-store intents, post-durability fences, verified clones, and one-CAS topology publication, with calibrated 60%/10% hot/cold triggers. A renewable epoch-fenced aggregator turns N bounded heartbeats plus router reports into one conditionally published `fleet.json`; servers and the pilot router consume that snapshot, and desired capacity includes the 32-shards-per-instance floor. Per-stream admission plus hierarchical owner scheduling bound hot-stream share. The global cell-placement/IAM layer remains. |
-| Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup/PITR copy actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup/fleet health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Recovery points pin every initialized shard, active history DB, and external ancestor; explicitly record absent lazy DBs; expose only selected manifest closure/compactions/WAL state; reuse content-addressed blobs; prune expired points/unreferenced blobs; and continuously hash referenced recovery content using a durable provider-independent cursor. A clock-independent renewal/observation lease epoch-orders mutable backup publications; followers require observed liveness plus post-observation relative-age health. Format 3 checksum-rehomes unchanged blobs into epoch-specific paths, making a delayed old-epoch delete physically unable to damage its successor. A second durable cursor logically decodes live shard manifests/SSTs/WALs, includes pre-manifest acknowledged WALs, and checks customer-key history ciphertext against writer-verified immutable digests. Primary failure invalidates snapshot health until a full repaired sweep publishes a new point. History enumeration fails closed above the 100,000-DB cell bound. CI restores adjacent points around a durable append with older records forced through history, proves reuse, kills the actual coordinator for epoch-incremented singleton takeover, and corrupts live shard plus encrypted-history SSTs at unchanged lengths. A real independent-provider failover with measured RPO/RTO remains. |
+| Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup recovery-point actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup/fleet health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Recovery points pin every initialized shard, active history DB, and external ancestor; explicitly record absent lazy DBs; expose only selected manifest closure/compactions/WAL state; reuse content-addressed blobs; prune expired points/unreferenced blobs; and continuously hash referenced recovery content using a durable provider-independent cursor. Pre-manifest acknowledged WALs are ETag-fenced and copied immediately when each DB cut is observed, so source GC cannot overtake the later inventory walk. A clock-independent renewal/observation lease epoch-orders mutable backup publications; followers require observed liveness plus post-observation relative-age health. Format 3 checksum-rehomes unchanged blobs into epoch-specific paths, making a delayed old-epoch delete physically unable to damage its successor. A second durable cursor logically decodes live shard manifests/SSTs/WALs and checks customer-key history ciphertext against writer-verified immutable digests. Primary failure invalidates snapshot health until a full repaired sweep publishes a new point. History enumeration fails closed above the 100,000-DB cell bound. CI restores adjacent points, deletes an eagerly protected WAL from primary before inventory, proves coordinator takeover, and corrupts live shard plus encrypted-history SSTs. The generic drill checks both providers' required S3 semantics, cuts the primary, measures the exact recovered-record RPO and first-decrypted-read RTO, and proves post-activation writes. Its two-process emulator run measured 8.582 s/477 ms; a real independent-provider run remains. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
-| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, and a three-node aggregate-lease failover/corruption drill run in CI alongside the current 338-test upstream suite. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
+| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, and a two-process provider-cut drill run in CI alongside the upstream suite. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
 | Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** Pilot benchmarks are valuable but are not a repeatable release gate. |
 
 ## Non-negotiable release scenarios
@@ -84,7 +84,13 @@ documented cell limits. A feature described only in `SPEC.md`,
   filter live shards, active history DBs, and external DBs to exact
   manifest/compactions/WAL state, and treat lazy uninitialized DBs as
   explicitly absent. History is pinned after the shard cut, so it contains at
-  least the absorbed prefix the shard manifest exposes. Exact source ETags
+  least the absorbed prefix the shard manifest exposes. The cut also lists the
+  exact contiguous WAL suffix above the manifest replay watermark. WALs not yet
+  named by the pinned manifest are ETag-fenced and copied to immutable recovery
+  content immediately per DB, before history discovery or the general object
+  walk; source WAL GC is no longer part of their safety proof. A deterministic
+  test deletes this protected suffix from primary before inventory and restores
+  the acknowledged value through normal SlateDB replay. Exact source ETags
   reuse immutable SHA-256 blobs; every point still has a complete checksummed
   inventory and marker-last publication. Bounded retention deletes points
   before unreferenced blobs, and a rolling reference scrub catches missing or
@@ -128,6 +134,15 @@ documented cell limits. A feature described only in `SPEC.md`,
   encrypted-history SST bodies without changing length, observes readiness
   fail closed, repairs the bytes, and requires a new recovery point before
   readiness returns.
+- `streams-provider-check` verifies conditional create/update fencing, strong
+  immediate read/list, ranged GET, multipart assembly, server-side copy, and
+  delete visibility under a unique disposable prefix. The generic failover
+  harness requires different provider identities/endpoints/credentials, an
+  executable primary-cut hook, empty recovery targets, and monotonic RPO/RTO
+  budgets. CI runs it against two independent emulator processes, kills the
+  primary, recovers the last point-proven sequence while losing a deliberately
+  later one, measures 8.582 s RPO and 477 ms RTO, and verifies a new producer
+  write. This is not substituted for the mandatory real-provider artifact.
 - The complete current upstream suite is pinned and hermetic: 332 executed
   tests pass and the package's six optional subscription tests skip.
 - The shard keyspace now has the topology routing hash as its first 16 bytes
@@ -248,8 +263,10 @@ documented cell limits. A feature described only in `SPEC.md`,
 3. Measure RPO/RTO in a real independent-provider failover drill; the primary
    and independent recovery corpus now have bounded continuous integrity
    evidence; recovery points are epoch-isolated, lease-ordered, checkpoint-
-   pinned, and incremental, with bounded retention/GC and rolling content
-   verification.
+   pinned, incremental, and closed over eagerly protected pre-manifest WALs,
+   with bounded retention/GC and rolling content verification. The reusable
+   conformance/cut/restore/activate harness and hermetic process-cut evidence
+   are complete; production provider credentials are not configured here.
 4. Implement the multi-cell placement/control plane with per-cell IAM and
    tenant placement limits.
 5. Add dependency/license/security scanning, mixed-version canary/rollback

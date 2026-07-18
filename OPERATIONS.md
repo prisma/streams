@@ -28,7 +28,7 @@ of any provider (Tigris today; the S3 API is the portability boundary):
 | elevated PUT latency | durable watermark lags → ack latency rises → §12 latency dim scales fleet (more batching), then queue-depth 429s | slower appends, then throttled appends; zero loss |
 | regional write outage | all appends 429 within seconds (watermark stalls); reads serve from CDN/cache/disk for cached ranges | write unavailability = provider write unavailability; correctness intact |
 | regional read+write outage | full unavailability in region; cross-region cells unaffected; recovery = reopen from manifests, < 1 s/shard staggered | regional outage |
-| provider data-loss event | bounded by §2 backups: RPO = WAL-copy lag (target ≤ 5 min), restore per §2.3 | disaster-recovery event |
+| provider data-loss event | bounded by §2 recovery points: RPO = age of the newest recovered acknowledged record at failure (GA target ≤ 5 min), restore per §2.3 | disaster-recovery event |
 | provider CONTROL-PLANE event (global namespace, auth, or API outage) | affects all cells on that provider regardless of region — the true failure domain is the provider, not the region. Activation path: repoint cells at the backup provider's bucket (credentials + endpoints already provisioned for §2), restore from backup replica; RTO = restore drill numbers | disaster-recovery event |
 
 **Registry residence:** the by-name registry is a global-namespace
@@ -50,75 +50,104 @@ ownership is a manifest property, not an instance property).
 
 ---
 
-## 2. Backup, PITR, and corruption recovery
+## 2. Backup, recovery points, and corruption recovery
 
 Everything at rest is ciphertext (§3.7 of SPEC.md), so **backup requires no
 tenant keys** — backups are exact object copies, useless without the
 customer-held keys.
 
-**Implementation status (`slate-codex`, 2026-07-18):** a full-copy recovery
-baseline is implemented. Every configured physical role keyspace is streamed
-from an exact LIST ETag into an immutable snapshot prefix; per-object SHA-256
-inventories and a `_complete.json` marker make partial/corrupt snapshots
-unrestorable. `REQUIRE_BACKUP=true` keeps readiness red until a snapshot has
-completed. `streams-restore` requires empty offline targets and CI exercises
-backup → dark restore → service reopen → decrypted tail equality.
+**Implementation status (`slate-codex`, 2026-07-18):** the service publishes
+discrete, checkpoint-pinned incremental recovery points. Exact source ETags
+index immutable SHA-256 content; every point still receives a complete
+checksummed inventory before its immutable completion marker. Format 3 isolates
+content by fenced backup-coordinator epoch. Retention, restartable GC, rolling
+recovery-content scrubbing, live-primary logical scrubbing, dark restore, and
+coordinator takeover are implemented and gate readiness when
+`REQUIRE_BACKUP=true`. `streams-restore` accepts only a complete point and an
+empty offline target.
 
-It does **not** yet implement checkpoint pinning, incremental copy ledgers,
-retention/backup GC, restore-to-time WAL replay, continuous scrubbing, or a
-measured provider failover. Consequently the ≤5 minute RPO and 15–30 minute
-cell RTO below remain **GA targets, not published guarantees**. Full snapshots
-also have unacceptable steady-state cost at cell scale. The remainder of §2
-is the mandatory exit design for replacing this safety baseline.
+The service does **not** currently offer arbitrary restore-to-timestamp PITR.
+Recovery selects one completed point; the RPO is therefore the age of the
+newest acknowledged record in that point at the failure boundary. The default
+point cadence is five minutes, so a deployment cannot publish a five-minute
+RPO until measured point-completion time is budgeted below the configured
+cadence. The real-provider harness measures this exact record boundary and the
+time to the first decrypted read, but it has not yet been run with two
+independent production providers. Those RPO/RTO numbers remain a GA gate, not
+a customer guarantee.
 
 ### 2.1 What is backed up
 
-| data | mechanism | cadence |
+| data | implemented cut | cadence |
 |---|---|---|
-| shard logs (WAL + SSTs + manifests) | per-shard **checkpoint pin** (SlateDB checkpoint = immutable manifest + referenced SSTs) + async copy of newly referenced objects to the backup target | checkpoint every 5 min; copy lag target ≤ 5 min |
-| WAL objects | retained ≥ 24 h past checkpoint (GC floor) AND copied continuously | continuous |
-| history tier (absorbed per-stream SSTs) | immutable once written → copy-once on creation; per-stream manifests checkpoint-pinned on every absorber close (point-in-time = pinned manifest + its SSTs, not bucket versioning) | continuous |
-| registry + coordination prefixes | bucket versioning + hourly full snapshot (small) | hourly |
+| shard logs | expiring detached checkpoint plus exact selected manifest/checkpoint/compactions closure and every contiguous WAL above the replay watermark | one cell recovery point; default every 5 min |
+| pre-manifest acknowledged WALs | WAL IDs at or above the pinned manifest's `next_wal_sst_id` are ETag-pinned and copied to immutable recovery content immediately as each DB cut is observed, before history enumeration or the general object walk; source GC may then remove them | every point |
+| history tier | every initialized DB named by an active incarnation is checkpoint-pinned after the shard cut; lazy DBs are explicitly absent; external clone ancestors are recursively closed | every point |
+| registry, topology, fleet, audit, and integrity metadata | exact-Etag incremental object copy in the same checksummed inventory | every point |
 
-Backup GC: when compaction retires a history/shard SST past every pinned
-checkpoint that references it, the copy actor deletes the backup copy on
-the same schedule + 24 h — backup storage tracks live-referenced bytes,
-not all-bytes-ever. The scrubber (§2.3) walks the BACKUP replica's
-manifests on the same cadence as the primary.
+The final topology, every checkpoint manifest, and every checkpoint-referenced
+WAL are rechecked before publication. History is cut after shards, so it is at
+least as new as the absorbed frontier exposed by the shard cut. A missing,
+changed, malformed, non-contiguous, or over-bound WAL set aborts the point.
+Acknowledged WALs not yet named by a manifest are already immutable in the
+recovery provider before the slower fleet-wide inventory starts; they do not
+depend on the source WAL-GC grace period.
 
-Backup target: a second bucket in a different provider/region with
-independent credentials (blast-radius isolation from a compromised primary
-credential). A per-cell **copy actor** (compactor-service sibling) tracks
-`backup/<shard>.ledger.json` = replicated-through position; the ledger is
-the RPO measurement and its lag is an alarmed SLO.
+Unchanged objects reuse content-addressed blobs, while each point retains a
+full inventory. Retention uses only the recovery provider's own
+`Last-Modified` clock, preserves the newest completed point, removes point
+authority before content, and persists a restartable GC intent. Recovery and
+primary scrubbers advance bounded provider-independent cursors and fail
+readiness closed on missing or corrupt authority.
 
-### 2.2 PITR
+The target MUST be a second provider/region with independent credentials.
+Exact primary endpoint+bucket reuse is rejected, but configuration validation
+alone is not blast-radius proof; the provider failover drill below is the
+release evidence.
 
-Restore-to-T = nearest checkpoint ≤ T + WAL replay forward to T (records
-carry commit timestamps; replay stops at the first record > T). Granularity:
-per shard or per cell. **RPO:** copy-lag (≤ 5 min target; 0 for
-provider-internal incidents since primary objects remain). **RTO:** shard
-open from checkpoint ≈ seconds; a full 1,536-shard cell restore staggered
-at 64 concurrent opens ≈ 15–30 min, dominated by manifest reads.
+### 2.2 Recovery-point semantics
+
+Restore is cell-wide and point-exact: choose `latest` or an immutable snapshot
+ID, validate its completion marker, count/checksum every inventory record,
+verify every content digest, and materialize it into empty offline role
+targets. Normal SlateDB open replays the captured WALs, including the eagerly
+protected pre-manifest suffix. A later record is absent by construction.
+
+There is currently no WAL-by-WAL replication ledger and no replay-to-arbitrary
+timestamp API. Product and runbook language MUST call these *recovery points*,
+not PITR. The measured RPO is `failure boundary - acknowledgment time of the
+newest recovered record`; RTO is `failure boundary - first successful
+decrypted read from a service using only the recovery provider`. Deployment
+budgets must include both interval and point-completion tails.
 
 ### 2.3 Restore drills and scrubbing
 
-- Quarterly game-day: restore a sampled shard set into a dark cell,
-  replay, diff tails against production (offsets + GCM tags make
-  divergence detection exact). Restore paths that aren't exercised don't
-  exist.
-- **Annual full provider-failover drill:** activate §1's
-  provider-control-plane path end-to-end — repoint a dark cell at the
-  backup provider, verify conditional-write/CAS semantics there (all
-  fencing rests on them), restore, serve. The published
-  provider-failover RTO comes from THIS drill, not the restore drill.
-- Continuous **scrubber** (compactor-service sibling): walks manifests,
-  verifies every referenced object exists and its checksum matches
-  (SlateDB block checksums run always and need no tenant key; AES-GCM tag
-  verification DOES require the stream key, so it runs only in
-  operator-triggered, customer-supplied-key integrity audits).
-  Unreachable/corrupt object ⇒ page + auto-restore that object from
-  backup (it is immutable — restore is a copy).
+- Every release runs dark restore around a known durable append and proves the
+  older point excludes it while the newer point includes it. The test also
+  forces an acknowledged WAL ahead of the manifest, deletes that WAL from the
+  primary after eager protection, and reopens it from recovery content.
+- `streams-provider-check` destructively probes a unique disposable prefix for
+  conditional create/update fencing, strong immediate GET/LIST, ranges,
+  multipart upload, server-side copy, and delete visibility. Both providers
+  must pass before a failover drill.
+- `scripts/provider-failover-drill.sh` requires distinct provider identities,
+  endpoint authorities, and (outside hermetic test mode) access-key IDs. It
+  protects a known producer sequence, acknowledges one deliberately later
+  sequence, invokes a real provider-cut hook, restores `latest` into an empty
+  namespace on the recovery provider, measures RPO/RTO with a monotonic clock,
+  and proves a new producer can write after activation. Its JSON artifact is
+  the release evidence.
+- CI runs the same harness against two independent `s3lite` processes and
+  kills the primary process. On 2026-07-18 this recovered sequence 1, lost the
+  deliberate sequence 2, measured RPO 8.582 s and RTO 477 ms, and verified a
+  post-failover write. This is protocol/harness evidence, **not** independent-
+  provider evidence.
+- Recovery-content scrubbing hashes referenced immutable blobs. Primary
+  scrubbing logically decodes live shard SlateDB authority and compares
+  customer-key history ciphertext with keyed-at-write immutable digests.
+  Detection fails readiness and snapshot health; repair requires a complete
+  primary sweep and a fresh point. Automatic source repair is not implemented
+  and must not be claimed.
 
 ### 2.4 Deletion protection & GDPR
 
@@ -244,7 +273,7 @@ system of record while the export path is the incident-safe copy.
 | append durable-ack p99 | < 250 ms | 15 min sustained |
 | tail freshness (append→tail-visible) p99 | < 500 ms | 15 min |
 | absorber lag | < 256 MB/instance | 30 min |
-| backup copy lag (§2.1) | < 5 min | immediate |
+| newest protected recovery-point age (§2.1) | deployment RPO budget | immediate |
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
 

@@ -15,17 +15,18 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Lint serving and recovery binaries (warnings are errors)
-        run: cargo clippy --bin streams-slate --bin streams-restore --bin streams-shard-admin --bin s3lite -- -D warnings
+        run: cargo clippy --bin streams-slate --bin streams-restore --bin streams-provider-check --bin streams-shard-admin --bin s3lite -- -D warnings
       - name: Check
         run: cargo check --all-targets
       - name: Test
         run: cargo test --release
       - name: Smoke (restart safety and recovery against s3lite)
         run: |
-          cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-shard-admin
+          cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-provider-check --bin streams-shard-admin
           bash scripts/ci-smoke.sh
           bash scripts/ci-backup-restore.sh
           bash scripts/ci-backup-coordinator.sh
+          bash scripts/ci-provider-failover.sh
           bash scripts/ci-primary-scrub.sh
           bash scripts/ci-object-store-faults.sh
           bash scripts/ci-corruption-stale.sh

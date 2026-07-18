@@ -81,3 +81,7 @@ path = "src/bin/cryptobench.rs"
 [[bin]]
 name = "streams-restore"
 path = "src/bin/restore.rs"
+
+[[bin]]
+name = "streams-provider-check"
+path = "src/bin/provider_check.rs"

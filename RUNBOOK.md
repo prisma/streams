@@ -21,6 +21,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `s3lite` | local S3 emulator with configurable latency, conditional PUTs, ambiguous failures, stale object/LIST responses, and metadata-preserving body corruption — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
+| `streams-provider-check` | destructive unique-prefix probe for the conditional, consistency, range, multipart, copy, and delete semantics required from each recovery provider |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
 | `bench` | single-node benchmark matrix (see [bench/run_matrix.sh](./bench/run_matrix.sh)) |
 | `livebench` | live end-to-end load harness (used for the PG-WAL invalidation stress) |
@@ -113,7 +114,12 @@ never-initialized DBs as explicitly absent. The 100,000-history-DB cell bound
 is fail-closed and includes per-key segments. It recursively pins external
 clone ancestors, exposes only the selected manifest closure, compatible
 compactions record, and WAL interval, and rechecks topology plus every pin
-before publication.
+before publication. A durable WAL can precede the pinned manifest's remote
+`next_wal_sst_id`; the actor captures the complete contiguous ETag set above
+the replay watermark and immediately copies this pre-manifest suffix to
+immutable recovery content as each DB cut is observed. It does so before
+history enumeration and the general object walk, so primary WAL GC cannot
+overtake a large-cell recovery point.
 Exact source ETags feed durable per-path indexes; unchanged objects reuse
 immutable SHA-256 blobs. Each point still gets a complete checksummed inventory,
 then `_complete.json` is created last and `latest.json` advances. Retention
@@ -660,8 +666,46 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   Encrypted-history integrity baselines are create-only and must exist from the
   first history write. A pre-existing corpus needs the keyed backfill procedure
   in that migration document; there is intentionally no keyless auto-baseline.
+  Recovery is point-exact, not arbitrary restore-to-timestamp PITR. The RPO is
+  measured from the newest acknowledged record present in the restored point;
+  RTO ends at the first decrypted read from a service using only the recovery
+  provider.
+
   A measured failover against the actual independent provider remains a GA
-  release gate in [OPERATIONS.md §2](./OPERATIONS.md).
+  release gate in [OPERATIONS.md §2](./OPERATIONS.md). Provision unique empty
+  primary, recovery-corpus, and activated-target prefixes; build all release
+  binaries; then run:
+
+  ```bash
+  export PRIMARY_PROVIDER_ID=... PRIMARY_S3_ENDPOINT=... PRIMARY_S3_BUCKET=...
+  export PRIMARY_S3_REGION=... PRIMARY_S3_ACCESS_KEY_ID=... PRIMARY_S3_SECRET_ACCESS_KEY=...
+  export PRIMARY_PATH_PREFIX=...
+  export RECOVERY_PROVIDER_ID=... RECOVERY_S3_ENDPOINT=... RECOVERY_S3_BUCKET=...
+  export RECOVERY_S3_REGION=... RECOVERY_S3_ACCESS_KEY_ID=... RECOVERY_S3_SECRET_ACCESS_KEY=...
+  export RECOVERY_PATH_PREFIX=...
+  export FAILOVER_S3_ENDPOINT="$RECOVERY_S3_ENDPOINT" FAILOVER_S3_BUCKET=...
+  export FAILOVER_S3_REGION=... FAILOVER_S3_ACCESS_KEY_ID=... FAILOVER_S3_SECRET_ACCESS_KEY=...
+  export FAILOVER_PATH_PREFIX=...
+  export DRILL_PRIMARY_CUTOVER_HOOK=/absolute/path/to/executable-cut-hook
+  export DRILL_PRIMARY_RECOVER_HOOK=/absolute/path/to/optional-recover-hook
+  export DRILL_RPO_BUDGET_MS=300000 DRILL_RTO_BUDGET_MS=1800000
+  export DRILL_EVIDENCE_PATH=/absolute/path/to/provider-failover.json
+  scripts/provider-failover-drill.sh
+  ```
+
+  Provider IDs, endpoint authorities, and access-key IDs must differ. The cut
+  hook must make the primary API unavailable; a process PID is accepted only
+  by hermetic tests. The harness first runs `streams-provider-check` against
+  both providers, then records conformance timings, exact recovered sequence,
+  monotonic RPO/RTO, restore report, and post-activation write proof in the JSON
+  artifact. Never point the activated target at a non-empty namespace.
+
+  `scripts/ci-provider-failover.sh` runs this identical path against two
+  independent `s3lite` processes and actually kills the primary. On
+  2026-07-18 it recovered sequence 1, intentionally lost sequence 2, measured
+  8.582 s RPO and 477 ms RTO, and verified a post-failover write. This validates
+  the protocol and measurement harness, not independent-provider blast-radius
+  isolation.
   CI also runs two backup-enabled instances, kills the actual lease holder,
   requires the survivor to wait through the six-second monotonic unchanged-
   version window, publishes an epoch-incremented point, and rejects

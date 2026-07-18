@@ -163,9 +163,11 @@ body="$(curl --fail --silent --show-error "${STREAMS_URL}/v1/stream/recovery" \
 [[ "${body}" == '[{"restore":1},{"restore":2},{"after":3}]' ]]
 stop_streams
 
-# Corrupt one referenced content blob without changing its size. Incremental
-# indexing will still reuse it, but the independent rolling scrub must keep
-# readiness red; a later snapshot success must not erase scrub failure state.
+# Corrupt one referenced content blob without changing its size. The durable
+# cursor may first finish the suffix above its prior position (including a new
+# takeover epoch) before wrapping to this older reference, but the independent
+# rolling scrub must then keep readiness red; a later snapshot success must not
+# erase scrub failure state.
 blob_key="$(curl --fail --silent \
   "${S3_URL}/backup?list-type=2&prefix=ci-backup%2Fformats%2F3%2Fblobs%2Fepochs%2F${second_epoch_padded}%2F" |
   grep -o '<Key>[^<]*' | sed -n '1s/<Key>//p')"
@@ -190,7 +192,7 @@ STREAMS_PID=$!
 attempts=0
 until grep -q 'backup content scrub failed' "${TMP_DIR}/streams.log"; do
   attempts=$((attempts + 1))
-  if (( attempts > 150 )); then
+  if (( attempts > 400 )); then
     echo "backup scrub did not detect same-size corruption" >&2
     tail -100 "${TMP_DIR}/streams.log" >&2 || true
     exit 1
@@ -201,4 +203,4 @@ ready_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "${STREAMS_URL}/health/ready")"
 [[ "${ready_status}" == "503" ]]
 
-echo "checkpoint-pinned incremental PITR/restore smoke passed"
+echo "checkpoint-pinned incremental recovery-point/restore smoke passed"

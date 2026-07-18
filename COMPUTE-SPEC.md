@@ -510,7 +510,13 @@ initialized history DBs named by active registry incarnations, and represents
 lazy DBs as absent. History enumeration is fail-closed above 100,000 DBs per
 cell, including per-key segments. It recursively resolves external clone
 checkpoints and copies only the selected manifest closure, compatible
-compactions record, and WAL interval. A final topology and pin recheck prevents
+compactions record, and contiguous WAL interval above the replay watermark.
+Because a durable WAL can be acknowledged before its ID reaches the remote
+manifest, IDs at or above the pinned `next_wal_sst_id` are ETag-fenced and
+copied to immutable recovery content immediately when each database cut is
+observed. This eager protection happens before history enumeration and the
+general object walk, so source WAL GC cannot race a large-cell point. A final
+topology, checkpoint pin, and checkpoint-referenced WAL recheck prevents
 a split/merge, compaction, or absorber write from publishing an incoherent
 point. Exact source ETags index immutable SHA-256
 blobs, so later points copy only changed objects while retaining a complete
@@ -521,7 +527,8 @@ before its last-referenced blobs; a bounded rolling scrub hashes referenced
 blobs using a durable provider-independent cursor and feeds readiness
 independently of snapshot completion. Restore supports legacy full-copy format 1, shared
 content-addressed format 2, and epoch-isolated content-addressed format 3, but
-only into empty offline targets.
+only into empty offline targets. These are discrete cell recovery points; the
+implementation does not currently expose arbitrary restore-to-timestamp PITR.
 
 One instance per cell holds a renewable CAS backup lease in the ops store. The
 holder conditionally advances a renewal sequence every two seconds; the lease
