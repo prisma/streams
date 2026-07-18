@@ -104,12 +104,15 @@ The two CPU hogs are kept off the request path:
 
 ## 2. Coordination substrate (ops bucket)
 
-All objects JSON, all writes conditional (`If-Match` / `If-None-Match: *`).
+All objects are JSON. Mutable coordination objects use conditional writes;
+each instance is the sole plain-PUT writer of its own heartbeat.
 
 | object | writer | cadence | content |
 |---|---|---|---|
-| `fleet/<instance-id>.json` | that instance | every 2 s | heartbeat: generation, `draining` flag, load vector (§4.2), owned shards, build version |
-| `fleet/desired.json` | any instance, CAS | on change | `{count, reason, epoch, computed_at}` |
+| `fleet/<instance-id>.json` | that instance, plain PUT | every 2 s | heartbeat: `draining`, load vector (§4.2), owned/activity shards |
+| `fleet/aggregate-lease.json` | any instance, CAS | every 2 s by holder | renewable owner token, epoch, 6 s expiry |
+| `fleet.json` | aggregate lease holder, CAS | every 2 s | bounded live heartbeats, router p50, lease epoch + sequence |
+| `fleet/desired.json` | aggregate lease holder, CAS | on change | `{count, reason, epoch, computed_at}` |
 | `overrides.json` | any instance, CAS | rare | shard pins, quarantines, split/merge intents |
 | `streams/<name>.json` | provisioning path, CAS | rare | stream registry (bucket prefix, config, lifecycle) |
 
@@ -462,12 +465,19 @@ instance more shards than its memory budget holds, and sustained
 `shard_count > 32 × max` is the merge-pressure signal (§5.4) rather than
 a silent budget breach.
 
-**Heartbeat aggregation:** instances still write individual heartbeats,
-but readers consume `fleet.json`, written every 2 s by an aggregator
-(lowest live instance id CAS-claims an aggregator lease object; failover
-by lease TTL). Read amplification therefore does not scale with N²: the
-pilot's every-reader-reads-every-heartbeat pattern is only acceptable at
-N ≤ 8 and is replaced above that.
+**Heartbeat aggregation:** instances still write individual heartbeats, but
+readers consume `fleet.json`. Any process may CAS-create or take over the
+six-second renewable aggregator lease; its random process token and monotonic
+epoch fence restarts and delayed writers. The holder GETs exactly the configured
+`streams-1..N` candidates, rejects malformed/duplicated/unbounded input, reads
+the fixed `router-1..32` report set, rechecks the lease, then conditionally publishes a
+per-epoch sequence. Every other server and the pilot router performs one
+aggregate GET. Snapshot or `desired.json` corruption/staleness fails readiness
+and freezes the last installed ring; object-store fencing remains the data
+correctness authority. The desired formula now enforces
+`ceil(shard_count/32)` for both growth and shrink. CI kills the actual holder,
+proves a higher-epoch takeover and heartbeat expiry, restarts it, and exercises
+corrupt-snapshot readiness/recovery.
 
 Fleet-level totals (cells are independent; per-prefix load is constant):
 

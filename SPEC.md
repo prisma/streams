@@ -531,7 +531,7 @@ min 3 / max 64 instances.
 
 **Spec'd in the operator review, not yet implemented** (design of record in
 COMPUTE-SPEC §10–12 and OPERATIONS.md; pilot implements earlier subsets):
-cells + cells.json global layer; heartbeat aggregation (fleet.json);
+cells + cells.json global layer;
 deployment waves/canary automation; per-tenant quotas & admission token
 buckets; committer fair-share; poison-shard quarantine; backup/PITR copy
 actor + scrubber; scoped authn tokens + key-service contract; audit

@@ -616,6 +616,21 @@ async fn async_main() -> anyhow::Result<()> {
         args.auto_merge_cold_fraction_pct <= 20,
         "AUTO_MERGE_COLD_FRACTION_PCT must be between 0 and 20"
     );
+    if args.fleet_prefix.is_some() {
+        anyhow::ensure!(
+            (1..=64).contains(&args.fleet_max),
+            "FLEET_MAX must be between 1 and 64"
+        );
+        anyhow::ensure!(
+            crate::fleet::valid_instance_name(&args.instance_name),
+            "INSTANCE_NAME in fleet mode must contain only ASCII letters, digits, '-' or '_' and be at most 128 bytes"
+        );
+        anyhow::ensure!(
+            crate::fleet::fleet_ordinal(&args.instance_name)
+                .is_some_and(|ordinal| ordinal <= args.fleet_max),
+            "INSTANCE_NAME in fleet mode must be streams-N with 1 <= N <= FLEET_MAX"
+        );
+    }
 
     let authn = match (
         args.auth_jwks_url.clone(),
@@ -834,6 +849,7 @@ async fn async_main() -> anyhow::Result<()> {
         split_workers: std::sync::Mutex::new(HashSet::new()),
         split_ready: std::sync::atomic::AtomicBool::new(true),
         merge_ready: std::sync::atomic::AtomicBool::new(true),
+        fleet_ready: std::sync::atomic::AtomicBool::new(args.fleet_prefix.is_none()),
         shards: std::sync::RwLock::new(HashMap::new()),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),

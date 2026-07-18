@@ -1,11 +1,10 @@
 //! Fleet coordination (COMPUTE-SPEC §2/§4, pilot-scaled).
 //!
-//! Every instance heartbeats `fleet/<instance>.json` every 2 s with its load
-//! vector, derives the live set from heartbeat freshness (<10 s), and
-//! recomputes the desired instance count from the same inputs every other
-//! instance sees — CAS conflicts on `fleet/desired.json` are benign no-ops.
-//! The pilot load vector is a single dimension (append+read req/s); the
-//! production vector is COMPUTE-SPEC §4.2.
+//! Every instance heartbeats `fleet/<instance>.json` every 2 s. One process
+//! holds a renewable CAS lease, fans in the bounded heartbeat/router sets,
+//! conditionally publishes an epoch-fenced `fleet.json`, and is the only
+//! writer of `fleet/desired.json`. Other servers and routers consume the one
+//! aggregate, keeping cell coordination O(N) instead of O(N²).
 //!
 //! Sleep interaction: a scale-to-zero'd instance stops heartbeating and ages
 //! out of the live set within 10 s — exactly the semantics the ring wants,
@@ -15,6 +14,7 @@
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::{OnceLock, RwLock};
@@ -22,6 +22,14 @@ use std::time::{Duration, Instant};
 
 use crate::http::AppState;
 use crate::shard::now_ms;
+
+const AGGREGATION_VERSION: u32 = 1;
+const AGGREGATOR_LEASE_MS: i64 = 6_000;
+const HEARTBEAT_FRESH_MS: i64 = 10_000;
+const SNAPSHOT_FRESH_MS: i64 = 10_000;
+const MAX_FLEET_INSTANCES: usize = 64;
+const MAX_SHARDS_PER_HEARTBEAT: usize = 1_536;
+const MAX_ROUTER_REPORTS: usize = 32;
 
 static LIVE_HEARTBEATS: OnceLock<RwLock<Vec<Heartbeat>>> = OnceLock::new();
 
@@ -52,7 +60,7 @@ pub struct ShardActivity {
     pub appended_bytes: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Heartbeat {
     pub instance: String,
     pub ts_ms: i64,
@@ -103,6 +111,396 @@ pub struct Heartbeat {
     #[serde(default)]
     pub shard_activity: Vec<ShardActivity>,
     pub draining: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct AggregatorLease {
+    version: u32,
+    owner: String,
+    token: String,
+    epoch: u64,
+    lease_until_ms: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct FleetSnapshot {
+    version: u32,
+    lease_epoch: u64,
+    sequence: u64,
+    generated_at_ms: i64,
+    heartbeats: Vec<Heartbeat>,
+    edge_p50_ms: f64,
+}
+
+pub(crate) fn valid_instance_name(instance: &str) -> bool {
+    !instance.is_empty()
+        && instance.len() <= 128
+        && instance
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+pub(crate) fn fleet_ordinal(instance: &str) -> Option<u64> {
+    let ordinal = instance.strip_prefix("streams-")?.parse::<u64>().ok()?;
+    (ordinal > 0).then_some(ordinal)
+}
+
+fn valid_prefix(prefix: &str) -> bool {
+    prefix.len() <= 128 && prefix.bytes().all(|byte| byte == b'0' || byte == b'1')
+}
+
+fn heartbeat_shape_is_valid(heartbeat: &Heartbeat, expected_instance: &str) -> bool {
+    if heartbeat.instance != expected_instance
+        || !valid_instance_name(&heartbeat.instance)
+        || heartbeat.owned_shards.len() > MAX_SHARDS_PER_HEARTBEAT
+        || heartbeat.shard_activity.len() > MAX_SHARDS_PER_HEARTBEAT
+        || !heartbeat.rps.is_finite()
+        || !(0.0..=1_000_000_000.0).contains(&heartbeat.rps)
+        || !heartbeat.ack_p50_ms.is_finite()
+        || !(0.0..=3_600_000.0).contains(&heartbeat.ack_p50_ms)
+        || !heartbeat.cpu_pct.is_finite()
+        || !(0.0..=10_000.0).contains(&heartbeat.cpu_pct)
+        || !heartbeat.rss_mb.is_finite()
+        || !(0.0..=1_000_000_000.0).contains(&heartbeat.rss_mb)
+        || !(0..=1_000_000_000).contains(&heartbeat.inflight)
+        || !(0..=1_000_000_000).contains(&heartbeat.inflight_peak)
+        || !(0..=1_000_000_000).contains(&heartbeat.out_inflight)
+        || !(0..=1_000_000_000).contains(&heartbeat.out_inflight_peak)
+        || heartbeat.ts_ms <= 0
+    {
+        return false;
+    }
+    let mut owned = HashSet::with_capacity(heartbeat.owned_shards.len());
+    if heartbeat
+        .owned_shards
+        .iter()
+        .any(|shard| !valid_prefix(shard) || !owned.insert(shard.as_str()))
+    {
+        return false;
+    }
+    let mut activity = HashSet::with_capacity(heartbeat.shard_activity.len());
+    !heartbeat
+        .shard_activity
+        .iter()
+        .any(|sample| !valid_prefix(&sample.shard) || !activity.insert(sample.shard.as_str()))
+}
+
+fn heartbeat_is_valid(heartbeat: &Heartbeat, expected_instance: &str, now: i64) -> bool {
+    heartbeat_shape_is_valid(heartbeat, expected_instance)
+        && now
+            .checked_sub(heartbeat.ts_ms)
+            .is_some_and(|age| (0..HEARTBEAT_FRESH_MS).contains(&age))
+}
+
+fn lease_is_valid(lease: &AggregatorLease) -> bool {
+    lease.version == AGGREGATION_VERSION
+        && valid_instance_name(&lease.owner)
+        && lease.token.len() == 32
+        && lease.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && lease.epoch > 0
+        && lease.lease_until_ms > 0
+}
+
+fn snapshot_is_valid(snapshot: &FleetSnapshot, now: i64) -> bool {
+    if snapshot.version != AGGREGATION_VERSION
+        || snapshot.lease_epoch == 0
+        || snapshot.sequence == 0
+        || snapshot.heartbeats.is_empty()
+        || snapshot.heartbeats.len() > MAX_FLEET_INSTANCES
+        || !snapshot.edge_p50_ms.is_finite()
+        || !(0.0..=3_600_000.0).contains(&snapshot.edge_p50_ms)
+        || !now
+            .checked_sub(snapshot.generated_at_ms)
+            .is_some_and(|age| (0..SNAPSHOT_FRESH_MS).contains(&age))
+    {
+        return false;
+    }
+    let mut instances = HashSet::with_capacity(snapshot.heartbeats.len());
+    snapshot.heartbeats.iter().all(|heartbeat| {
+        instances.insert(heartbeat.instance.as_str())
+            && heartbeat_shape_is_valid(heartbeat, &heartbeat.instance)
+    })
+}
+
+fn desired_is_valid(desired: &Desired, fleet_max: u64, now: i64) -> bool {
+    desired.count > 0
+        && desired.count <= fleet_max
+        && desired.reason.len() <= 4_096
+        && !desired.reason.bytes().any(|byte| byte == 0)
+        && desired.epoch > 0
+        && desired.computed_at_ms > 0
+        && desired.computed_at_ms <= now.saturating_add(60_000)
+}
+
+fn aggregator_token() -> String {
+    let mut value = [0u8; 16];
+    use rand::RngCore;
+    rand::rng().fill_bytes(&mut value);
+    crate::crypto::hex(&value)
+}
+
+async fn claim_aggregator(
+    store: &Arc<dyn ObjectStore>,
+    owner: &str,
+    token: &str,
+) -> Result<Option<AggregatorLease>, String> {
+    let path = ObjPath::from("fleet/aggregate-lease.json");
+    for _ in 0..5 {
+        let now = now_ms();
+        match store.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let raw = result.bytes().await.map_err(|error| error.to_string())?;
+                let current: AggregatorLease = serde_json::from_slice(&raw)
+                    .map_err(|_| "malformed fleet aggregator lease".to_string())?;
+                if !lease_is_valid(&current) {
+                    return Err("malformed fleet aggregator lease".to_string());
+                }
+                if current.lease_until_ms > now.saturating_add(60_000)
+                    || (current.token == token && current.owner != owner)
+                {
+                    return Err("malformed fleet aggregator lease".to_string());
+                }
+                if current.token != token && current.lease_until_ms > now {
+                    return Ok(None);
+                }
+                let next = AggregatorLease {
+                    version: AGGREGATION_VERSION,
+                    owner: owner.to_string(),
+                    token: token.to_string(),
+                    epoch: if current.token == token {
+                        current.epoch
+                    } else {
+                        current
+                            .epoch
+                            .checked_add(1)
+                            .ok_or_else(|| "fleet aggregator epoch exhausted".to_string())?
+                    },
+                    lease_until_ms: now.saturating_add(AGGREGATOR_LEASE_MS),
+                };
+                match store
+                    .put_opts(
+                        &path,
+                        PutPayload::from(
+                            serde_json::to_vec(&next).expect("fleet aggregator lease json"),
+                        ),
+                        PutOptions::from(PutMode::Update(version)),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(Some(next)),
+                    Err(object_store::Error::Precondition { .. }) => continue,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                let lease = AggregatorLease {
+                    version: AGGREGATION_VERSION,
+                    owner: owner.to_string(),
+                    token: token.to_string(),
+                    epoch: 1,
+                    lease_until_ms: now.saturating_add(AGGREGATOR_LEASE_MS),
+                };
+                match store
+                    .put_opts(
+                        &path,
+                        PutPayload::from(
+                            serde_json::to_vec(&lease).expect("fleet aggregator lease json"),
+                        ),
+                        PutOptions::from(PutMode::Create),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(Some(lease)),
+                    Err(object_store::Error::AlreadyExists { .. }) => continue,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("fleet aggregator lease CAS retries exhausted".to_string())
+}
+
+async fn verify_aggregator(
+    store: &Arc<dyn ObjectStore>,
+    expected: &AggregatorLease,
+) -> Result<(), String> {
+    let result = store
+        .get(&ObjPath::from("fleet/aggregate-lease.json"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let raw = result.bytes().await.map_err(|error| error.to_string())?;
+    let current: AggregatorLease =
+        serde_json::from_slice(&raw).map_err(|_| "malformed fleet aggregator lease".to_string())?;
+    if !lease_is_valid(&current)
+        || current.owner != expected.owner
+        || current.token != expected.token
+        || current.epoch != expected.epoch
+        || current.lease_until_ms <= now_ms()
+        || current.lease_until_ms > now_ms().saturating_add(60_000)
+    {
+        return Err("fleet aggregator lease was lost".to_string());
+    }
+    Ok(())
+}
+
+async fn collect_heartbeats(
+    store: &Arc<dyn ObjectStore>,
+    owner: &str,
+    fleet_max: u64,
+) -> Result<Vec<Heartbeat>, String> {
+    let mut candidates: Vec<String> = (1..=fleet_max)
+        .map(|ordinal| format!("streams-{ordinal}"))
+        .collect();
+    if !candidates.iter().any(|candidate| candidate == owner) {
+        candidates.push(owner.to_string());
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > MAX_FLEET_INSTANCES {
+        return Err("fleet heartbeat candidate count exceeds cell bound".to_string());
+    }
+    let now = now_ms();
+    let mut heartbeats = Vec::new();
+    for instance in candidates {
+        let path = ObjPath::from(format!("fleet/{instance}.json"));
+        match store.get(&path).await {
+            Ok(result) => {
+                let raw = result.bytes().await.map_err(|error| error.to_string())?;
+                let heartbeat: Heartbeat = serde_json::from_slice(&raw)
+                    .map_err(|_| format!("malformed heartbeat for {instance}"))?;
+                if !heartbeat_shape_is_valid(&heartbeat, &instance) {
+                    return Err(format!("malformed heartbeat for {instance}"));
+                }
+                if heartbeat_is_valid(&heartbeat, &instance, now) && !heartbeat.draining {
+                    heartbeats.push(heartbeat);
+                }
+            }
+            Err(object_store::Error::NotFound { .. }) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(heartbeats)
+}
+
+async fn collect_edge_p50(store: &Arc<dyn ObjectStore>) -> Result<f64, String> {
+    let now = now_ms();
+    let mut edge_p50 = 0.0f64;
+    for ordinal in 1..=MAX_ROUTER_REPORTS {
+        let router = format!("router-{ordinal}");
+        let path = ObjPath::from(format!("routers/{router}.json"));
+        let result = match store.get(&path).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        let raw = result.bytes().await.map_err(|error| error.to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&raw).map_err(|_| format!("malformed router report {path}"))?;
+        if value["router"].as_str() != Some(&router) {
+            return Err(format!("malformed router report {path}"));
+        }
+        let ts_ms = value["ts_ms"]
+            .as_i64()
+            .ok_or_else(|| format!("malformed router report {path}"))?;
+        let client_p50_ms = value["client_p50_ms"]
+            .as_f64()
+            .filter(|value| value.is_finite() && (0.0..=3_600_000.0).contains(value))
+            .ok_or_else(|| format!("malformed router report {path}"))?;
+        if now
+            .checked_sub(ts_ms)
+            .is_some_and(|age| (0..HEARTBEAT_FRESH_MS).contains(&age))
+        {
+            edge_p50 = edge_p50.max(client_p50_ms);
+        }
+    }
+    Ok(edge_p50)
+}
+
+async fn publish_snapshot(
+    store: &Arc<dyn ObjectStore>,
+    lease: &AggregatorLease,
+    snapshot: &FleetSnapshot,
+) -> Result<(), String> {
+    if !snapshot_is_valid(snapshot, now_ms())
+        || snapshot.lease_epoch != lease.epoch
+        || snapshot.generated_at_ms <= 0
+    {
+        return Err("refusing malformed fleet snapshot".to_string());
+    }
+    let path = ObjPath::from("fleet.json");
+    for _ in 0..5 {
+        verify_aggregator(store, lease).await?;
+        let mode = match store.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let raw = result.bytes().await.map_err(|error| error.to_string())?;
+                let current: FleetSnapshot = serde_json::from_slice(&raw)
+                    .map_err(|_| "malformed fleet snapshot".to_string())?;
+                if current.version != AGGREGATION_VERSION
+                    || current.lease_epoch > snapshot.lease_epoch
+                    || (current.lease_epoch == snapshot.lease_epoch
+                        && current.sequence > snapshot.sequence)
+                {
+                    return Err("fleet snapshot publication was fenced".to_string());
+                }
+                if current.lease_epoch == snapshot.lease_epoch
+                    && current.sequence == snapshot.sequence
+                {
+                    return if current == *snapshot {
+                        Ok(())
+                    } else {
+                        Err("conflicting fleet snapshot sequence".to_string())
+                    };
+                }
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.to_string()),
+        };
+        match store
+            .put_opts(
+                &path,
+                PutPayload::from(serde_json::to_vec(snapshot).expect("fleet snapshot json")),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("fleet snapshot CAS retries exhausted".to_string())
+}
+
+async fn load_snapshot(store: &Arc<dyn ObjectStore>) -> Result<FleetSnapshot, String> {
+    let result = store
+        .get(&ObjPath::from("fleet.json"))
+        .await
+        .map_err(|error| error.to_string())?;
+    let raw = result.bytes().await.map_err(|error| error.to_string())?;
+    let mut snapshot: FleetSnapshot =
+        serde_json::from_slice(&raw).map_err(|_| "malformed fleet snapshot".to_string())?;
+    let now = now_ms();
+    if !snapshot_is_valid(&snapshot, now) {
+        return Err("malformed or stale fleet snapshot".to_string());
+    }
+    snapshot
+        .heartbeats
+        .retain(|heartbeat| heartbeat_is_valid(heartbeat, &heartbeat.instance, now));
+    if snapshot.heartbeats.is_empty() {
+        return Err("fleet snapshot has no fresh heartbeats".to_string());
+    }
+    Ok(snapshot)
 }
 
 /// Current RSS in bytes. Linux (musl cloud build): /proc/self/statm.
@@ -207,6 +605,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         let mut cpu_breach_since: Option<Instant> = None;
         let mut last_cpu = cpu_time_secs();
         let mut ewma_cpu = 0.0f64;
+        let aggregator_token = aggregator_token();
+        let mut aggregator_epoch = 0u64;
+        let mut snapshot_sequence = 0u64;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let ops = state.fleet_ops.load(Ordering::Relaxed);
@@ -307,77 +708,97 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 .await
             {
                 tracing::warn!("heartbeat put failed: {e}");
+                state.fleet_ready.store(false, Ordering::Release);
                 continue;
             }
 
-            // 2. Live set + fleet load.
+            // 2. Exactly one lease-fenced aggregator fans in N heartbeats and
+            // router reports, then CAS-publishes fleet.json. Everyone else
+            // consumes that one bounded snapshot: O(N), not O(N²).
+            let lease = match claim_aggregator(&store, &cfg.instance, &aggregator_token).await {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!("fleet aggregator lease failed: {error}");
+                    replace_live_heartbeats(Vec::new());
+                    state.fleet_ready.store(false, Ordering::Release);
+                    continue;
+                }
+            };
+            let (live_heartbeats, edge_p50) = if let Some(lease) = lease.as_ref() {
+                if aggregator_epoch != lease.epoch {
+                    aggregator_epoch = lease.epoch;
+                    snapshot_sequence = 0;
+                }
+                let heartbeats = match collect_heartbeats(&store, &cfg.instance, cfg.max).await {
+                    Ok(heartbeats) => heartbeats,
+                    Err(error) => {
+                        tracing::warn!("fleet heartbeat aggregation failed: {error}");
+                        replace_live_heartbeats(Vec::new());
+                        state.fleet_ready.store(false, Ordering::Release);
+                        continue;
+                    }
+                };
+                let edge_p50 = match collect_edge_p50(&store).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        tracing::warn!("router report aggregation failed: {error}");
+                        replace_live_heartbeats(Vec::new());
+                        state.fleet_ready.store(false, Ordering::Release);
+                        continue;
+                    }
+                };
+                snapshot_sequence = snapshot_sequence.saturating_add(1).max(1);
+                let snapshot = FleetSnapshot {
+                    version: AGGREGATION_VERSION,
+                    lease_epoch: lease.epoch,
+                    sequence: snapshot_sequence,
+                    generated_at_ms: now_ms(),
+                    heartbeats: heartbeats.clone(),
+                    edge_p50_ms: edge_p50,
+                };
+                if let Err(error) = publish_snapshot(&store, lease, &snapshot).await {
+                    tracing::warn!("fleet snapshot publication failed: {error}");
+                    replace_live_heartbeats(Vec::new());
+                    state.fleet_ready.store(false, Ordering::Release);
+                    continue;
+                }
+                (heartbeats, edge_p50)
+            } else {
+                match load_snapshot(&store).await {
+                    Ok(snapshot) => (snapshot.heartbeats, snapshot.edge_p50_ms),
+                    Err(error) => {
+                        tracing::warn!("fleet snapshot read failed: {error}");
+                        replace_live_heartbeats(Vec::new());
+                        state.fleet_ready.store(false, Ordering::Release);
+                        continue;
+                    }
+                }
+            };
+            replace_live_heartbeats(live_heartbeats.clone());
+
+            // 2b. Fleet load derived from the same aggregate every instance
+            // uses for placement and automatic merge activity.
             let mut total_rps = 0.0f64;
             let mut total_cores_used = 0.0f64;
             let mut total_inflight = 0.0f64;
             let mut live = 0u64;
             let mut max_loaded_p50 = 0.0f64;
             let mut max_loaded_cpu = 0.0f64;
-            let mut hb_age_ms: std::collections::HashMap<String, i64> =
-                std::collections::HashMap::new();
-            let mut live_heartbeats = Vec::new();
-            let mut listing = store.list(Some(&ObjPath::from("fleet")));
-            use futures_util::StreamExt;
-            let mut hb_paths = Vec::new();
-            while let Some(meta) = listing.next().await {
-                let Ok(meta) = meta else { continue };
-                if meta.location.as_ref().ends_with(".json")
-                    && !meta.location.as_ref().ends_with("desired.json")
-                {
-                    hb_paths.push(meta.location);
-                }
-            }
-            for p in hb_paths {
-                let Ok(r) = store.get(&p).await else { continue };
-                let Ok(raw) = r.bytes().await else { continue };
-                let Ok(other) = serde_json::from_slice::<Heartbeat>(&raw) else {
-                    continue;
-                };
+            let mut hb_age_ms: HashMap<String, i64> = HashMap::new();
+            for other in &live_heartbeats {
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
-                if now_ms() - other.ts_ms < 10_000 && !other.draining {
-                    live_heartbeats.push(other.clone());
-                    live += 1;
-                    total_rps += other.rps;
-                    total_cores_used += other.cpu_pct / 100.0;
-                    total_inflight += other.inflight.max(0) as f64;
-                    // Load-gated dims count only for instances doing real
-                    // work (≥5 rps) so idle blips and cold starts (binary
-                    // download, shard replay burn CPU) don't scale us.
-                    if other.rps >= 5.0 {
-                        if other.ack_p50_ms > max_loaded_p50 {
-                            max_loaded_p50 = other.ack_p50_ms;
-                        }
-                        if other.cpu_pct > max_loaded_cpu {
-                            max_loaded_cpu = other.cpu_pct;
-                        }
+                live += 1;
+                total_rps += other.rps;
+                total_cores_used += other.cpu_pct / 100.0;
+                total_inflight += other.inflight.max(0) as f64;
+                // Load-gated dims count only for instances doing real work
+                // so idle cold-start CPU does not scale the cell.
+                if other.rps >= 5.0 {
+                    if other.ack_p50_ms > max_loaded_p50 {
+                        max_loaded_p50 = other.ack_p50_ms;
                     }
-                }
-            }
-            replace_live_heartbeats(live_heartbeats);
-
-            // 2b. Router reports: worst client-observed p50 across fresh
-            // routers. Edge congestion is invisible to server-side acks.
-            let mut edge_p50 = 0.0f64;
-            {
-                let mut rl = store.list(Some(&ObjPath::from("routers")));
-                let mut rpaths = Vec::new();
-                while let Some(meta) = rl.next().await {
-                    let Ok(meta) = meta else { continue };
-                    rpaths.push(meta.location);
-                }
-                for p in rpaths {
-                    let Ok(r) = store.get(&p).await else { continue };
-                    let Ok(raw) = r.bytes().await else { continue };
-                    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
-                        continue;
-                    };
-                    let fresh = now_ms() - v["ts_ms"].as_i64().unwrap_or(0) < 10_000;
-                    if fresh {
-                        edge_p50 = edge_p50.max(v["client_p50_ms"].as_f64().unwrap_or(0.0));
+                    if other.cpu_pct > max_loaded_cpu {
+                        max_loaded_cpu = other.cpu_pct;
                     }
                 }
             }
@@ -433,12 +854,14 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 cpu_breach_since = None;
                 0
             };
+            let need_shards = (topology.shards.len() as u64).div_ceil(32);
             let need = need_util
                 .max(need_rps)
                 .max(need_slots)
                 .max(need_latency)
                 .max(need_hot)
                 .max(need_edge)
+                .max(need_shards)
                 .clamp(1, cfg.max);
             // Scale-in target uses the conservative divisor, and edge
             // congestion BLOCKS shrink outright: measured rps falls during
@@ -459,6 +882,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .max(slots_shrink)
                     .max(need_latency)
                     .max(need_hot)
+                    .max(need_shards)
                     .clamp(1, cfg.max)
             };
 
@@ -470,15 +894,40 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             e_tag: r.meta.e_tag.clone(),
                             version: r.meta.version.clone(),
                         };
-                        let raw = r.bytes().await.unwrap_or_default();
-                        (serde_json::from_slice(&raw).ok(), Some(v))
+                        let raw = match r.bytes().await {
+                            Ok(raw) => raw,
+                            Err(error) => {
+                                tracing::warn!("desired.json body failed: {error}");
+                                state.fleet_ready.store(false, Ordering::Release);
+                                continue;
+                            }
+                        };
+                        let desired: Desired = match serde_json::from_slice(&raw) {
+                            Ok(desired) => desired,
+                            Err(_) => {
+                                tracing::error!("malformed desired.json");
+                                state.fleet_ready.store(false, Ordering::Release);
+                                continue;
+                            }
+                        };
+                        if !desired_is_valid(&desired, cfg.max, now_ms()) {
+                            tracing::error!("malformed desired.json");
+                            state.fleet_ready.store(false, Ordering::Release);
+                            continue;
+                        }
+                        (Some(desired), Some(v))
                     }
                     Err(object_store::Error::NotFound { .. }) => (None, None),
                     Err(e) => {
                         tracing::warn!("desired.json get failed: {e}");
+                        state.fleet_ready.store(false, Ordering::Release);
                         continue;
                     }
                 };
+            if cur.is_none() && lease.is_none() {
+                state.fleet_ready.store(false, Ordering::Release);
+                continue;
+            }
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // Publish the ring's ACTIVE set for the R2 ownership check:
             // the first `desired` ordinal instances, dropping any that have
@@ -522,13 +971,30 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 (false, need)
             };
 
-            if publish {
+            if publish && let Some(aggregate_lease) = lease.as_ref() {
+                if let Err(error) = verify_aggregator(&store, aggregate_lease).await {
+                    tracing::warn!("desired-count publication fenced: {error}");
+                    state.fleet_ready.store(false, Ordering::Release);
+                    continue;
+                }
+                let next_epoch = match cur.as_ref() {
+                    Some(desired) => match desired.epoch.checked_add(1) {
+                        Some(epoch) => epoch,
+                        None => {
+                            tracing::error!("desired-count epoch exhausted");
+                            state.fleet_ready.store(false, Ordering::Release);
+                            continue;
+                        }
+                    },
+                    None => 1,
+                };
                 let next = Desired {
                     count: publish_count,
                     reason: format!(
-                        "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} ({need_rps}) live={live}",
+                        "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} ({need_rps}) shards={} live={live}",
+                        topology.shards.len(),
                     ),
-                    epoch: cur.as_ref().map(|d| d.epoch + 1).unwrap_or(1),
+                    epoch: next_epoch,
                     computed_at_ms: now_ms(),
                 };
                 let mode = match version {
@@ -555,9 +1021,148 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     // Lost the CAS: another instance published; converge next tick.
                     Err(object_store::Error::Precondition { .. })
                     | Err(object_store::Error::AlreadyExists { .. }) => {}
-                    Err(e) => tracing::warn!("desired.json cas failed: {e}"),
+                    Err(e) => {
+                        tracing::warn!("desired.json cas failed: {e}");
+                        state.fleet_ready.store(false, Ordering::Release);
+                        continue;
+                    }
                 }
             }
+            state.fleet_ready.store(true, Ordering::Release);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+
+    fn heartbeat(instance: &str) -> Heartbeat {
+        Heartbeat {
+            instance: instance.to_string(),
+            ts_ms: now_ms(),
+            rps: 1.0,
+            ack_p50_ms: 2.0,
+            cpu_pct: 3.0,
+            inflight: 1,
+            inflight_peak: 2,
+            rss_mb: 4.0,
+            wal_put_p50_ms: 5,
+            wal_put_p99_ms: 6,
+            out_inflight: 1,
+            out_inflight_peak: 2,
+            owned_shards: vec!["0".to_string()],
+            shard_activity: vec![ShardActivity {
+                shard: "0".to_string(),
+                writer_epoch: 7,
+                appended_bytes: 8,
+            }],
+            draining: false,
+        }
+    }
+
+    #[test]
+    fn heartbeat_and_snapshot_validation_is_bounded_and_strict() {
+        let now = now_ms();
+        let mut valid = heartbeat("streams-1");
+        assert!(heartbeat_is_valid(&valid, "streams-1", now));
+        valid.shard_activity.push(valid.shard_activity[0].clone());
+        assert!(!heartbeat_is_valid(&valid, "streams-1", now));
+
+        let duplicate = heartbeat("streams-1");
+        let snapshot = FleetSnapshot {
+            version: AGGREGATION_VERSION,
+            lease_epoch: 1,
+            sequence: 1,
+            generated_at_ms: now,
+            heartbeats: vec![duplicate.clone(), duplicate],
+            edge_p50_ms: 1.0,
+        };
+        assert!(!snapshot_is_valid(&snapshot, now));
+        assert!(!valid_instance_name("../streams-1"));
+        assert_eq!(fleet_ordinal("streams-64"), Some(64));
+        assert_eq!(fleet_ordinal("streams-0"), None);
+        let desired = Desired {
+            count: 2,
+            reason: "unit".to_string(),
+            epoch: 1,
+            computed_at_ms: now,
+        };
+        assert!(desired_is_valid(&desired, 4, now));
+        assert!(!desired_is_valid(
+            &Desired {
+                computed_at_ms: now + 60_001,
+                ..desired
+            },
+            4,
+            now
+        ));
+    }
+
+    #[tokio::test]
+    async fn newer_aggregator_epoch_fences_delayed_snapshot_writer() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let first = claim_aggregator(&store, "streams-1", "11111111111111111111111111111111")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            claim_aggregator(&store, "streams-2", "22222222222222222222222222222222")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let path = ObjPath::from("fleet/aggregate-lease.json");
+        let result = store.get(&path).await.unwrap();
+        let version = UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let raw = result.bytes().await.unwrap();
+        let mut expired: AggregatorLease = serde_json::from_slice(&raw).unwrap();
+        expired.lease_until_ms = 1;
+        store
+            .put_opts(
+                &path,
+                PutPayload::from(serde_json::to_vec(&expired).unwrap()),
+                PutOptions::from(PutMode::Update(version)),
+            )
+            .await
+            .unwrap();
+
+        let second = claim_aggregator(&store, "streams-2", "22222222222222222222222222222222")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.epoch, first.epoch + 1);
+
+        let newer = FleetSnapshot {
+            version: AGGREGATION_VERSION,
+            lease_epoch: second.epoch,
+            sequence: 1,
+            generated_at_ms: now_ms(),
+            heartbeats: vec![heartbeat("streams-2")],
+            edge_p50_ms: 1.0,
+        };
+        publish_snapshot(&store, &second, &newer).await.unwrap();
+
+        let delayed = FleetSnapshot {
+            version: AGGREGATION_VERSION,
+            lease_epoch: first.epoch,
+            sequence: 99,
+            generated_at_ms: now_ms(),
+            heartbeats: vec![heartbeat("streams-1")],
+            edge_p50_ms: 99.0,
+        };
+        assert!(publish_snapshot(&store, &first, &delayed).await.is_err());
+        let loaded = load_snapshot(&store).await.unwrap();
+        assert_eq!(loaded.lease_epoch, second.epoch);
+        assert_eq!(loaded.heartbeats[0].instance, "streams-2");
+
+        let mut conflict = newer.clone();
+        conflict.edge_p50_ms = 2.0;
+        assert!(publish_snapshot(&store, &second, &conflict).await.is_err());
+    }
 }

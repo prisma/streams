@@ -18,7 +18,7 @@ use axum::routing::get;
 use futures_util::TryStreamExt;
 use hdrhistogram::Histogram;
 use object_store::ObjectStoreExt;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -56,7 +56,7 @@ fn pick(stream: &str, upstreams: &[String]) -> usize {
     best
 }
 
-// ---- fleet view (COMPUTE-SPEC §2/§4): read desired.json + heartbeats ----
+// ---- fleet view (COMPUTE-SPEC §2/§4): desired.json + aggregate fleet.json ----
 
 #[derive(Clone, Default)]
 struct FleetView {
@@ -226,6 +226,13 @@ async fn lb() {
         let lb = lb.clone();
         let rstore = fleet_store(&env("FLEET_PREFIX").expect("FLEET_PREFIX"));
         let router_name = env("ROUTER_NAME").unwrap_or_else(|| "router-1".into());
+        assert!(
+            router_name
+                .strip_prefix("router-")
+                .and_then(|ordinal| ordinal.parse::<u64>().ok())
+                .is_some_and(|ordinal| (1..=32).contains(&ordinal)),
+            "ROUTER_NAME must be router-N with 1 <= N <= 32"
+        );
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -254,7 +261,8 @@ async fn lb() {
         });
     }
 
-    // Fleet poller: desired.json + heartbeats every 2 s, topology every 60 s.
+    // Fleet poller: desired.json + one aggregate fleet.json every 2 s,
+    // topology every 60 s. Servers alone fan in individual heartbeats.
     // The LB emulates the platform: it routes to only the first `desired`
     // upstreams, so the rest idle and scale to zero.
     {
@@ -291,37 +299,71 @@ async fn lb() {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as i64;
-                let mut ages_ms: Vec<i64> = Vec::new();
-                for i in 0..lb.upstreams.len() {
-                    let p = object_store::path::Path::from(format!("fleet/streams-{}.json", i + 1));
-                    let mut entry = (0.0, 0.0, false, 0.0);
-                    let mut age = i64::MAX;
-                    if let Ok(r) = fstore.get(&p).await {
-                        if let Ok(raw) = r.bytes().await {
-                            if let Ok(h) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                                let ts = h["ts_ms"].as_i64().unwrap_or(0);
-                                age = now_ms - ts;
-                                let live = age < 10_000;
-                                entry = (
-                                    if live {
-                                        h["rps"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                    if live {
-                                        h["ack_p50_ms"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                    live,
-                                    if live {
-                                        h["cpu_pct"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                );
+                let mut aggregate: HashMap<String, (i64, f64, f64, f64)> = HashMap::new();
+                if let Ok(r) = fstore
+                    .get(&object_store::path::Path::from("fleet.json"))
+                    .await
+                    && let Ok(raw) = r.bytes().await
+                    && let Ok(snapshot) = serde_json::from_slice::<serde_json::Value>(&raw)
+                {
+                    let generated = snapshot["generated_at_ms"].as_i64().unwrap_or(0);
+                    let fresh_snapshot = now_ms
+                        .checked_sub(generated)
+                        .is_some_and(|age| (0..10_000).contains(&age));
+                    if fresh_snapshot
+                        && snapshot["version"].as_u64() == Some(1)
+                        && snapshot["heartbeats"]
+                            .as_array()
+                            .is_some_and(|heartbeats| heartbeats.len() <= 64)
+                    {
+                        for heartbeat in snapshot["heartbeats"].as_array().unwrap() {
+                            let Some(instance) = heartbeat["instance"].as_str() else {
+                                aggregate.clear();
+                                break;
+                            };
+                            let Some(ts_ms) = heartbeat["ts_ms"].as_i64() else {
+                                aggregate.clear();
+                                break;
+                            };
+                            let values = (
+                                heartbeat["rps"].as_f64(),
+                                heartbeat["ack_p50_ms"].as_f64(),
+                                heartbeat["cpu_pct"].as_f64(),
+                            );
+                            let (Some(rps), Some(ack), Some(cpu)) = values else {
+                                aggregate.clear();
+                                break;
+                            };
+                            if !rps.is_finite()
+                                || !ack.is_finite()
+                                || !cpu.is_finite()
+                                || rps < 0.0
+                                || ack < 0.0
+                                || cpu < 0.0
+                                || aggregate
+                                    .insert(instance.to_string(), (ts_ms, rps, ack, cpu))
+                                    .is_some()
+                            {
+                                aggregate.clear();
+                                break;
                             }
                         }
+                    }
+                }
+                let mut ages_ms: Vec<i64> = Vec::new();
+                for i in 0..lb.upstreams.len() {
+                    let mut entry = (0.0, 0.0, false, 0.0);
+                    let mut age = i64::MAX;
+                    if let Some((ts_ms, rps, ack, cpu)) =
+                        aggregate.get(&format!("streams-{}", i + 1))
+                    {
+                        age = now_ms.saturating_sub(*ts_ms);
+                        let live = (0..10_000).contains(&age);
+                        entry = if live {
+                            (*rps, *ack, true, *cpu)
+                        } else {
+                            (0.0, 0.0, false, 0.0)
+                        };
                     }
                     ages_ms.push(age);
                     view.heartbeats.push(entry);

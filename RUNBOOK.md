@@ -156,7 +156,7 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 | `METRICS_KEY` | — | enables the internal `__metrics__` stream (billing/usage records), encrypted with this key |
 | `METRICS_LB_URL` | — | metrics appends are routed like tenant writes (through the LB) so the shard's ring owner serves them |
 | `METRICS_AUTH_TOKEN` | — | scoped service JWT for `__metrics__`; required with JWKS mode when metrics are enabled |
-| `INSTANCE_NAME` | `streams` | instance tag in metrics + fleet heartbeats (`streams-1`…) |
+| `INSTANCE_NAME` | `streams` | instance tag in standalone mode. Fleet mode requires `streams-N`, with `1 <= N <= FLEET_MAX` |
 
 Per-customer production limits are durable ops-role objects at
 `customers/<first-128-bits-of-SHA256(customer-id)>/limits.json`:
@@ -192,8 +192,8 @@ standalone.
 
 | env | default | meaning |
 |---|---|---|
-| `FLEET_PREFIX` | — | shared coordination prefix: heartbeats (`fleet/<instance>.json`, every 2 s), `fleet/desired.json`, router reports (`routers/<name>.json`) |
-| `FLEET_MAX` | 4 | hard fleet-size cap (cost ceiling) |
+| `FLEET_PREFIX` | — | shared coordination prefix: heartbeats, aggregate lease, `fleet.json`, `fleet/desired.json`, router reports |
+| `FLEET_MAX` | 4 | hard fleet-size cap (1–64); `INSTANCE_NAME` must be an ordinal within it |
 | `SCALE_OUT_CPU_PCT` | 75 | scale-out target: fleet grows when measured utilization approaches this |
 | `SCALE_IN_CPU_PCT` | 50 | shrink only if post-shrink utilization would stay below this (the 75/50 gap prevents flapping) |
 | `SCALE_CPU_SUSTAIN_SECS` | 20 | hot-instance breach must persist this long (shard handoffs spike CPU briefly) |
@@ -319,11 +319,23 @@ was death (§3.6).
   (getrusage), inflight/inflight_peak, rss_mb, wal_put_p50/p99_ms,
   out_inflight/peak, owned_shards, and a bounded writer-epoch/cumulative-byte
   tuple for every assigned shard. Staleness > 10 s = not live.
-- **Desired count**: any instance may write `fleet/desired.json`; the
-  computation is deterministic from heartbeats so writers agree.
+- **Aggregation**: one process holds `fleet/aggregate-lease.json` through a
+  random process token, monotonic epoch, conditional CAS, and six-second
+  renewable expiry. Only it reads individual heartbeats/router reports and
+  conditionally writes bounded `fleet.json`; all other servers and the pilot
+  LB read that single snapshot. Takeover increments the epoch, so a delayed
+  former holder cannot regress the view.
+- **Desired count**: only the current aggregator CAS-writes
+  `fleet/desired.json`. The formula includes the 32-shards-per-instance floor.
+- **Failure posture**: stale/corrupt `fleet.json`, lease, heartbeat, router
+  report, or `desired.json` makes `/health/ready` fail and clears merge activity
+  evidence, while requests retain the last installed ring. Repair the corrupt
+  object from a verified prior version; the lease holder then resumes at a
+  higher conditional sequence.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across
   the first `desired` instances, computed identically by servers and LBs —
-  the live set IS the assignment. No shard directory, no lease service.
+  the live set IS the assignment. There is no per-shard lease service; the
+  aggregate lease controls telemetry publication, not data correctness.
 - **Fencing**: opening a shard fences the previous owner via CAS on the
   shard manifest; a fenced owner's next write fails cleanly. Routing errors
   cost a retry, never corruption. A just-fenced shard is held off 3 s
@@ -334,7 +346,8 @@ was death (§3.6).
   (run-5 deadlock: desired=4, live=1, forever).
 - **Router reports**: each LB publishes `routers/<ROUTER_NAME>.json` with
   worst-upstream client-latency EWMA; breach adds an instance and blocks
-  scale-in (run 7: the fleet once scaled IN during client congestion,
+  scale-in. Names must be `router-N`, `1 <= N <= 32`, so the aggregator can
+  GET a fixed bounded set without LIST/tombstone accumulation (run 7: the fleet once scaled IN during client congestion,
   because delivered rps falls when clients queue).
 
 The `pilot` LB (`MODE=lb`) is itself stateless: `UPSTREAMS` (full candidate
@@ -342,7 +355,7 @@ list), `FLEET_PREFIX`/`DATA_PREFIX`, `ROUTER_NAME`, and the same S3 creds
 (`S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`,
 `S3_SECRET_ACCESS_KEY` — note: *not* the `SLATE_`-prefixed names). If the
 LB's fleet view uses a plain-http store (local testing), it needs
-`allow_http` — a silent misconfiguration here once routed a whole fleet to
+  `allow_http` — a silent misconfiguration here once routed a whole fleet to
 instance 1.
 
 ## 7. Deploying on Prisma Compute

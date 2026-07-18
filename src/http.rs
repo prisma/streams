@@ -61,6 +61,10 @@ pub struct AppState {
     pub split_workers: std::sync::Mutex<HashSet<String>>,
     pub split_ready: std::sync::atomic::AtomicBool,
     pub merge_ready: std::sync::atomic::AtomicBool,
+    /// False while a configured fleet lacks a fresh, valid aggregate view.
+    /// The last ring remains installed for fencing-safe outage behavior, but
+    /// readiness must expose the degraded control plane.
+    pub fleet_ready: std::sync::atomic::AtomicBool,
     pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
     pub opener: ShardOpener,
     /// Serializes shard opens; also carries anti-flap state.
@@ -819,6 +823,7 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
             .load(std::sync::atomic::Ordering::Acquire)
         && state.split_ready.load(std::sync::atomic::Ordering::Acquire)
         && state.merge_ready.load(std::sync::atomic::Ordering::Acquire)
+        && state.fleet_ready.load(std::sync::atomic::Ordering::Acquire)
     {
         (
             StatusCode::OK,
