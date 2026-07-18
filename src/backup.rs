@@ -160,7 +160,7 @@ impl BackupStatus {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub struct SnapshotReport {
     pub format_version: u32,
     pub snapshot_id: String,
@@ -2819,6 +2819,129 @@ pub async fn latest_snapshot_id(backup: Arc<dyn ObjectStore>) -> anyhow::Result<
     Ok(report.snapshot_id)
 }
 
+/// Validate the latest marker-last recovery point as a whole and prove that
+/// one source object is present with exactly the supplied authoritative bytes.
+/// Source cleanup uses this to make rollback-data deletion conditional on a
+/// complete target recovery point, rather than an operator assertion.
+pub async fn verify_latest_snapshot_contains_exact_object(
+    backup: Arc<dyn ObjectStore>,
+    role: &str,
+    source_path: &str,
+    expected: &[u8],
+) -> anyhow::Result<SnapshotReport> {
+    validate_role(role)?;
+    ObjPath::parse(source_path)?;
+    anyhow::ensure!(
+        !expected.is_empty() && expected.len() <= MAX_REGISTRY_RECOVERY_OBJECT_BYTES,
+        "expected recovery object is empty or too large"
+    );
+    let latest_bytes = backup
+        .get(&ObjPath::from("latest.json"))
+        .await?
+        .bytes()
+        .await?;
+    anyhow::ensure!(
+        latest_bytes.len() <= MAX_INVENTORY_BYTES,
+        "latest pointer too large"
+    );
+    let report: SnapshotReport = serde_json::from_slice(&latest_bytes)?;
+    validate_snapshot_id(&report.snapshot_id)?;
+    validate_snapshot_layout(&report)?;
+    anyhow::ensure!(
+        report.roles.iter().any(|declared| declared == role),
+        "latest recovery point omits the required role"
+    );
+    let marker_bytes = backup
+        .get(&marker_path(&report.snapshot_id))
+        .await?
+        .bytes()
+        .await?;
+    anyhow::ensure!(
+        marker_bytes.len() <= MAX_INVENTORY_BYTES,
+        "snapshot marker too large"
+    );
+    let marker: SnapshotReport = serde_json::from_slice(&marker_bytes)?;
+    anyhow::ensure!(
+        marker == report,
+        "latest pointer and complete marker disagree"
+    );
+
+    let prefix = ObjPath::from(format!("snapshots/{}/inventory", report.snapshot_id));
+    let mut listing = backup.list(Some(&prefix));
+    let mut objects = 0u64;
+    let mut bytes = 0u64;
+    let mut inventory_checksum = [0u8; 32];
+    let mut matching = None;
+    while let Some(meta) = listing.try_next().await? {
+        anyhow::ensure!(
+            meta.size <= MAX_INVENTORY_BYTES as u64,
+            "oversized inventory {}",
+            meta.location
+        );
+        let encoded = backup.get(&meta.location).await?.bytes().await?;
+        xor_digest(&mut inventory_checksum, Sha256::digest(&encoded).into());
+        let record: InventoryRecord = serde_json::from_slice(&encoded)?;
+        validate_inventory_record(&record, &report)?;
+        anyhow::ensure!(
+            inventory_path(&report.snapshot_id, &record.role, &record.source_path) == meta.location,
+            "inventory path mismatch"
+        );
+        objects = objects
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("snapshot object count overflow"))?;
+        bytes = bytes
+            .checked_add(record.size)
+            .ok_or_else(|| anyhow::anyhow!("snapshot byte count overflow"))?;
+        anyhow::ensure!(
+            objects <= report.objects && bytes <= report.bytes,
+            "snapshot inventory exceeds its declared bounds"
+        );
+        if record.role == role && record.source_path == source_path {
+            anyhow::ensure!(matching.is_none(), "duplicate required recovery object");
+            matching = Some(record);
+        }
+    }
+    anyhow::ensure!(
+        objects == report.objects
+            && bytes == report.bytes
+            && hex_encode(&inventory_checksum) == report.inventory_checksum,
+        "latest recovery point inventory is incomplete or corrupt"
+    );
+    let record = matching.ok_or_else(|| anyhow::anyhow!("required recovery object is absent"))?;
+    anyhow::ensure!(
+        record.size == expected.len() as u64
+            && record.sha256 == hex_encode(&Sha256::digest(expected)),
+        "recovery object does not match authoritative bytes"
+    );
+    let source = match &record.blob_path {
+        Some(path) => ObjPath::parse(path)?,
+        None => ObjPath::from(format!(
+            "snapshots/{}/objects/{}/{}",
+            report.snapshot_id, record.role, record.source_path
+        )),
+    };
+    let result = if report.format_version == LEGACY_SNAPSHOT_FORMAT_VERSION {
+        backup
+            .get_opts(
+                &source,
+                GetOptions {
+                    if_match: Some(record.backup_etag.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+    } else {
+        backup.get(&source).await?
+    };
+    anyhow::ensure!(
+        result.meta.size == expected.len() as u64,
+        "recovery object body size changed"
+    );
+    let body = result.bytes().await?;
+    anyhow::ensure!(body.as_ref() == expected, "recovery object body changed");
+    Ok(report)
+}
+
 /// Validate and restore a complete snapshot into empty role stores.
 ///
 /// Each object is copied through a unique temporary key, checked against the
@@ -5287,6 +5410,24 @@ mod tests {
         .unwrap();
         assert!(report.roles.contains(&"registry".to_string()));
         assert_eq!(report.pinned_history_dbs, 1);
+        let descriptor_path =
+            crate::registry::descriptor_path_for(descriptor_a.owner(), &descriptor_a.name);
+        let descriptor_bytes = registry_store
+            .get(&descriptor_path)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let verified = verify_latest_snapshot_contains_exact_object(
+            backup.clone(),
+            "registry",
+            descriptor_path.as_ref(),
+            &descriptor_bytes,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.snapshot_id, report.snapshot_id);
 
         let merged_registry: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         assert!(

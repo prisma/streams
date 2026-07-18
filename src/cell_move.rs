@@ -16,7 +16,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use object_store::path::Path as ObjPath;
-use object_store::{GetOptions, ObjectStore, ObjectStoreExt};
+use object_store::{GetOptions, ObjectStore, ObjectStoreExt, PutPayload};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use slatedb::admin::{Admin, AdminBuilder};
@@ -61,6 +61,24 @@ pub struct CellMoveReport {
     pub already_completed: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct CellMoveCleanupReport {
+    pub operation_id: String,
+    pub customer_id: String,
+    pub stream: String,
+    pub source_cell: String,
+    pub target_cell: String,
+    pub target_snapshot_id: String,
+    pub source_capable_instances: usize,
+    pub storage_hashes: usize,
+    pub shard_keys_deleted: u64,
+    pub shard_bytes_deleted: u64,
+    pub history_databases_deleted: usize,
+    pub history_objects_deleted: u64,
+    pub source_fence_retained: bool,
+    pub already_cleaned: bool,
+}
+
 #[derive(serde::Deserialize)]
 struct FleetProtocolSnapshot {
     version: u32,
@@ -75,6 +93,30 @@ struct FleetProtocolHeartbeat {
     #[serde(default)]
     cell_move_protocol: u32,
     draining: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupCleanupLease {
+    format_version: u32,
+    token: String,
+    epoch: u64,
+    renewal_sequence: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct BackupCleanupHealth {
+    format_version: u32,
+    lease_epoch: u64,
+    lease_renewal_sequence: u64,
+    sequence: u64,
+    latest_completed_ms: i64,
+    snapshot_healthy: bool,
+    scrub_healthy: bool,
+    snapshot_age_ms: u64,
+    scrub_age_ms: u64,
+    last_primary_scrub_ms: i64,
+    primary_scrub_healthy: bool,
+    primary_scrub_age_ms: u64,
 }
 
 async fn verify_move_protocol(store: &Arc<dyn ObjectStore>, cell: &str) -> anyhow::Result<usize> {
@@ -122,6 +164,95 @@ async fn verify_move_protocol(store: &Arc<dyn ObjectStore>, cell: &str) -> anyho
         );
     }
     Ok(snapshot.heartbeats.len())
+}
+
+async fn verify_target_backup_health(
+    ops: &Arc<dyn ObjectStore>,
+    report: &crate::backup::SnapshotReport,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        report.format_version == 3
+            && report.coordinator_epoch > 0
+            && report.coordinator_sequence > 0,
+        "source cleanup requires an epoch-isolated format-3 target recovery point"
+    );
+    let lease_result = ops
+        .get(&ObjPath::from("backup/coordinator-lease.json"))
+        .await
+        .context("load target backup coordinator lease")?;
+    anyhow::ensure!(
+        lease_result.meta.size <= 16 * 1024,
+        "target backup coordinator lease is too large"
+    );
+    let lease_meta = lease_result.meta.clone();
+    let lease: BackupCleanupLease = serde_json::from_slice(&lease_result.bytes().await?)
+        .context("decode target backup coordinator lease")?;
+    let health_result = ops
+        .get(&ObjPath::from("backup/health.json"))
+        .await
+        .context("load target backup health")?;
+    anyhow::ensure!(
+        health_result.meta.size <= 16 * 1024,
+        "target backup health is too large"
+    );
+    let health_meta = health_result.meta.clone();
+    let health: BackupCleanupHealth = serde_json::from_slice(&health_result.bytes().await?)
+        .context("decode target backup health")?;
+
+    let probe = ObjPath::from(format!(
+        "_cell_move_cleanup_clock/{}.json",
+        uuid::Uuid::new_v4().simple()
+    ));
+    ops.put(&probe, PutPayload::from_static(b"provider-clock"))
+        .await?;
+    let probe_meta = match ops.head(&probe).await {
+        Ok(meta) => meta,
+        Err(error) => {
+            let _ = ops.delete(&probe).await;
+            return Err(error.into());
+        }
+    };
+    ops.delete(&probe).await?;
+    let lease_age = probe_meta
+        .last_modified
+        .signed_duration_since(lease_meta.last_modified)
+        .to_std()
+        .context("target ops provider clock regressed across backup lease")?;
+    let health_age = probe_meta
+        .last_modified
+        .signed_duration_since(health_meta.last_modified)
+        .to_std()
+        .context("target ops provider clock regressed across backup health")?;
+    anyhow::ensure!(
+        lease_age <= Duration::from_secs(15) && health_age <= Duration::from_secs(15),
+        "target backup lease or health publication is stale on the provider clock"
+    );
+    anyhow::ensure!(
+        lease.format_version == 2
+            && lease.token.len() == 32
+            && lease.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && lease.epoch == report.coordinator_epoch
+            && lease.renewal_sequence > 0
+            && health.format_version == 2
+            && health.lease_epoch == lease.epoch
+            && health.lease_renewal_sequence > 0
+            && health.lease_renewal_sequence <= lease.renewal_sequence
+            && lease
+                .renewal_sequence
+                .saturating_sub(health.lease_renewal_sequence)
+                <= 8
+            && health.sequence > 0
+            && health.latest_completed_ms == report.completed_ms
+            && health.last_primary_scrub_ms > 0
+            && health.snapshot_healthy
+            && health.scrub_healthy
+            && health.primary_scrub_healthy
+            && health.snapshot_age_ms <= 5 * 60 * 1000
+            && health.scrub_age_ms <= 5 * 60 * 1000
+            && health.primary_scrub_age_ms <= 5 * 60 * 1000,
+        "target recovery point lacks fresh snapshot/recovery-scrub/primary-scrub proof"
+    );
+    Ok(())
 }
 
 #[derive(Default)]
@@ -225,6 +356,64 @@ async fn clear_hash(db: &Db, hash: &StorageHash) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn cleanup_source_hash(
+    db: &Db,
+    hash: &StorageHash,
+    operation_id: &str,
+    target_cell: &str,
+) -> anyhow::Result<ShardCopyReport> {
+    let fence_key = crate::cell_move_fence::key(hash);
+    let mut iterator = db.scan(hash_bounds(hash)).await?;
+    let mut batch = WriteBatch::new();
+    let mut pending = 0usize;
+    let mut report = ShardCopyReport::default();
+    while let Some(row) = iterator.next().await? {
+        if row.key.as_ref() == fence_key.as_slice() {
+            let fence = crate::cell_move_fence::decode(&row.value).map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                fence.operation_id == operation_id && fence.target_cell == target_cell,
+                "source stream fence belongs to another move"
+            );
+            continue;
+        }
+        report.keys = report.keys.saturating_add(1);
+        report.bytes = report
+            .bytes
+            .saturating_add(row.key.len() as u64)
+            .saturating_add(row.value.len() as u64);
+        anyhow::ensure!(
+            report.keys <= MAX_MOVE_KEYS && report.bytes <= MAX_MOVE_BYTES,
+            "source stream key range exceeds cleanup bound"
+        );
+        batch.delete(row.key);
+        pending += 1;
+        if pending == 4_096 {
+            write_batch(db, batch).await?;
+            batch = WriteBatch::new();
+            pending = 0;
+        }
+    }
+    if pending > 0 {
+        write_batch(db, batch).await?;
+    }
+
+    let mut verify = db.scan(hash_bounds(hash)).await?;
+    let row = verify
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("source stream fence disappeared during cleanup"))?;
+    anyhow::ensure!(
+        row.key.as_ref() == fence_key.as_slice() && verify.next().await?.is_none(),
+        "source stream cleanup left data outside its permanent fence"
+    );
+    let fence = crate::cell_move_fence::decode(&row.value).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        fence.operation_id == operation_id && fence.target_cell == target_cell,
+        "source stream fence changed during cleanup"
+    );
+    Ok(report)
+}
+
 async fn copy_hash(
     source: &Db,
     target: &Db,
@@ -289,7 +478,7 @@ async fn copy_hash(
     Ok(report)
 }
 
-async fn clear_database(store: Arc<dyn ObjectStore>, path: &str) -> anyhow::Result<()> {
+async fn clear_database(store: Arc<dyn ObjectStore>, path: &str) -> anyhow::Result<u64> {
     let mut deleted = 0usize;
     for namespace in ["manifest", "wal", "compacted", "compactions"] {
         let prefix = ObjPath::from(format!("{path}/{namespace}"));
@@ -303,7 +492,49 @@ async fn clear_database(store: Arc<dyn ObjectStore>, path: &str) -> anyhow::Resu
             store.delete(&meta.location).await?;
         }
     }
-    Ok(())
+    Ok(deleted as u64)
+}
+
+async fn cleanup_history_database(source: &CellStores, database_path: &str) -> anyhow::Result<u64> {
+    let admin = AdminBuilder::new(database_path.to_string(), source.data.clone()).build();
+    if let Some(manifest) = admin.read_manifest(None).await? {
+        anyhow::ensure!(
+            manifest
+                .replay_after_wal_id()
+                .checked_add(1)
+                .is_some_and(|first| first == manifest.next_wal_sst_id()),
+            "source history cleanup refuses a database with live WAL"
+        );
+        let _ = referenced_compacted_paths(database_path, &manifest)?;
+    }
+
+    let compacted_prefix = ObjPath::from(format!("{database_path}/compacted"));
+    let mut compacted = source.data.list(Some(&compacted_prefix));
+    let mut ssts = Vec::new();
+    while let Some(meta) = compacted.try_next().await? {
+        anyhow::ensure!(
+            ssts.len() < MAX_HISTORY_OBJECTS,
+            "source history cleanup exceeds object bound"
+        );
+        ssts.push(meta.location);
+    }
+    let mut deleted = clear_database(source.data.clone(), database_path).await?;
+    for sst in ssts {
+        let baseline = crate::primary_scrub::history_baseline_path(sst.as_ref());
+        match source.ops.delete(&baseline).await {
+            Ok(()) => deleted = deleted.saturating_add(1),
+            Err(object_store::Error::NotFound { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    for namespace in ["manifest", "wal", "compacted", "compactions"] {
+        let prefix = ObjPath::from(format!("{database_path}/{namespace}"));
+        anyhow::ensure!(
+            source.data.list(Some(&prefix)).try_next().await?.is_none(),
+            "source history cleanup left physical objects"
+        );
+    }
+    Ok(deleted)
 }
 
 async fn copy_object(
@@ -714,6 +945,136 @@ pub async fn move_stream(
     completion?;
     source_close?;
     Ok(report)
+}
+
+/// Reclaim the obsolete physical source copy after a bounded rollback window.
+/// This keeps the per-stream source fence permanently and records cleanup only
+/// after exact-range and history deletion are verified. A retry after any
+/// crash is idempotent.
+#[allow(clippy::too_many_arguments)]
+pub async fn cleanup_stream_source(
+    registry: &Registry,
+    customer_id: &str,
+    stream: &str,
+    source_cell: &str,
+    target_cell: &str,
+    operation_id: &str,
+    source: &CellStores,
+    target: &CellStores,
+    target_backup: Arc<dyn ObjectStore>,
+    minimum_retention: Duration,
+) -> anyhow::Result<CellMoveCleanupReport> {
+    let (descriptor, authoritative_bytes) = registry
+        .completed_cell_move_retention_proof(
+            customer_id,
+            stream,
+            source_cell,
+            target_cell,
+            operation_id,
+            minimum_retention,
+        )
+        .await
+        .context("prove completed move retention")?;
+    let hashes = storage_hashes(&descriptor)?;
+    anyhow::ensure!(
+        !hashes.is_empty(),
+        "cell move cleanup has no storage hashes"
+    );
+    if descriptor
+        .cell_move
+        .as_ref()
+        .and_then(|movement| movement.source_cleaned_ms)
+        .is_some()
+    {
+        return Ok(CellMoveCleanupReport {
+            operation_id: operation_id.to_string(),
+            customer_id: customer_id.to_string(),
+            stream: stream.to_string(),
+            source_cell: source_cell.to_string(),
+            target_cell: target_cell.to_string(),
+            target_snapshot_id: String::new(),
+            source_capable_instances: 0,
+            storage_hashes: hashes.len(),
+            shard_keys_deleted: 0,
+            shard_bytes_deleted: 0,
+            history_databases_deleted: 0,
+            history_objects_deleted: 0,
+            source_fence_retained: true,
+            already_cleaned: true,
+        });
+    }
+
+    let snapshot = crate::backup::verify_latest_snapshot_contains_exact_object(
+        target_backup,
+        "registry",
+        crate::registry::descriptor_path_for(customer_id, stream).as_ref(),
+        &authoritative_bytes,
+    )
+    .await
+    .context("prove exact authoritative descriptor in target recovery point")?;
+    verify_target_backup_health(&target.ops, &snapshot).await?;
+    let source_capable_instances = verify_move_protocol(&source.fleet, source_cell).await?;
+
+    let source_topology = crate::registry::load_topology(&source.ops).await?;
+    let source_prefix = shard_for_hash(&source_topology.shards, &descriptor.routing_hash());
+    let source_path = source_topology.db_path(&source_prefix);
+    let source_db = Db::builder(source_path, source.shard.clone())
+        .build()
+        .await
+        .context("fence source shard for retention cleanup")?;
+    let fence =
+        crate::cell_move_fence::encode(operation_id, target_cell).map_err(anyhow::Error::msg)?;
+    let mut fence_batch = WriteBatch::new();
+    for hash in &hashes {
+        fence_batch.put(crate::cell_move_fence::key(hash), fence.clone());
+    }
+    if let Err(error) = write_batch(&source_db, fence_batch).await {
+        let _ = source_db.close().await;
+        return Err(error.context("revalidate permanent source fence before cleanup"));
+    }
+
+    let mut shard_keys_deleted = 0u64;
+    let mut shard_bytes_deleted = 0u64;
+    for hash in &hashes {
+        match cleanup_source_hash(&source_db, hash, operation_id, target_cell).await {
+            Ok(deleted) => {
+                shard_keys_deleted = shard_keys_deleted.saturating_add(deleted.keys);
+                shard_bytes_deleted = shard_bytes_deleted.saturating_add(deleted.bytes);
+            }
+            Err(error) => {
+                let _ = source_db.close().await;
+                return Err(error);
+            }
+        }
+    }
+    source_db.close().await?;
+
+    let mut history_objects_deleted = 0u64;
+    for hash in &hashes {
+        history_objects_deleted = history_objects_deleted.saturating_add(
+            cleanup_history_database(source, &crate::registry::history_db_path(hash)).await?,
+        );
+    }
+    registry
+        .complete_cell_move_source_cleanup(customer_id, stream, operation_id)
+        .await
+        .context("record completed source retention cleanup")?;
+    Ok(CellMoveCleanupReport {
+        operation_id: operation_id.to_string(),
+        customer_id: customer_id.to_string(),
+        stream: stream.to_string(),
+        source_cell: source_cell.to_string(),
+        target_cell: target_cell.to_string(),
+        target_snapshot_id: snapshot.snapshot_id,
+        source_capable_instances,
+        storage_hashes: hashes.len(),
+        shard_keys_deleted,
+        shard_bytes_deleted,
+        history_databases_deleted: hashes.len(),
+        history_objects_deleted,
+        source_fence_retained: true,
+        already_cleaned: false,
+    })
 }
 
 #[cfg(test)]

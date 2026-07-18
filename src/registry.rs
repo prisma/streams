@@ -149,6 +149,11 @@ pub struct CellMove {
     pub started_ms: i64,
     #[serde(default)]
     pub completed_ms: Option<i64>,
+    /// Set only after provider-clock retention and an exact target recovery
+    /// proof allow the old physical copy to be reclaimed. The source shard
+    /// fence itself remains permanent.
+    #[serde(default)]
+    pub source_cleaned_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -831,13 +836,20 @@ fn validate_descriptor_scope(
             && movement.source_cell != movement.target_cell;
         let valid_state = match movement.state {
             CellMoveState::Preparing => {
-                descriptor.cell == movement.source_cell && movement.completed_ms.is_none()
+                descriptor.cell == movement.source_cell
+                    && movement.completed_ms.is_none()
+                    && movement.source_cleaned_ms.is_none()
             }
             CellMoveState::Completed => {
                 descriptor.cell == movement.target_cell
                     && movement
                         .completed_ms
                         .is_some_and(|completed| completed >= movement.started_ms)
+                    && movement.source_cleaned_ms.is_none_or(|cleaned| {
+                        movement
+                            .completed_ms
+                            .is_some_and(|completed| cleaned >= completed)
+                    })
             }
         };
         if movement.version != 1
@@ -1119,6 +1131,13 @@ impl Registry {
                     "stream already has a different cell move in progress",
                 ));
             }
+            if descriptor.cell_move.as_ref().is_some_and(|movement| {
+                movement.state == CellMoveState::Completed && movement.source_cleaned_ms.is_none()
+            }) {
+                return Err(registry_error(
+                    "prior cell move source retention cleanup is still pending",
+                ));
+            }
             if descriptor.deleted || descriptor.cell != expected_source_cell {
                 return Err(registry_error(
                     "stream is deleted or no longer belongs to the expected source cell",
@@ -1133,6 +1152,7 @@ impl Registry {
                 state: CellMoveState::Preparing,
                 started_ms,
                 completed_ms: None,
+                source_cleaned_ms: None,
             });
             validate_descriptor_scope(&descriptor, customer_id, name)?;
             let mut target_descriptor = descriptor.clone();
@@ -1220,6 +1240,142 @@ impl Registry {
             }
         }
         Err(registry_error("complete cell move CAS retries exhausted"))
+    }
+
+    /// Prove, entirely on the registry provider's clock, that a completed
+    /// move descriptor has remained unchanged for the required rollback
+    /// window. The returned bytes are the exact authoritative object body and
+    /// are subsequently matched against the target recovery point.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn completed_cell_move_retention_proof(
+        &self,
+        customer_id: &str,
+        name: &str,
+        source_cell: &str,
+        target_cell: &str,
+        operation_id: &str,
+        minimum_retention: Duration,
+    ) -> Result<(StreamDesc, Vec<u8>), object_store::Error> {
+        let path = desc_path(customer_id, name);
+        let result = self.store.get(&path).await?;
+        if result.meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+            return Err(registry_error("stream descriptor is too large"));
+        }
+        let descriptor_meta = result.meta.clone();
+        let raw = result.bytes().await?;
+        let descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+        validate_descriptor_scope(&descriptor, customer_id, name)?;
+        let Some(movement) = descriptor.cell_move.as_ref() else {
+            return Err(registry_error("stream has no retained cell move"));
+        };
+        if movement.state != CellMoveState::Completed
+            || movement.operation_id != operation_id
+            || movement.source_cell != source_cell
+            || movement.target_cell != target_cell
+            || descriptor.cell != target_cell
+        {
+            return Err(registry_error(
+                "stream does not match the completed cell move cleanup request",
+            ));
+        }
+        if movement.source_cleaned_ms.is_some() {
+            return Ok((descriptor, raw.to_vec()));
+        }
+        if !descriptor.fork_children.is_empty() {
+            return Err(registry_error(
+                "cell move source cleanup waits for all fork children to be released",
+            ));
+        }
+
+        let probe = ObjPath::from(format!(
+            "_cell_move_cleanup_clock/{}.json",
+            uuid::Uuid::new_v4().simple()
+        ));
+        self.store
+            .put_opts(
+                &probe,
+                PutPayload::from(operation_id.to_string()),
+                PutOptions::from(PutMode::Create),
+            )
+            .await?;
+        let probe_meta = match self.store.head(&probe).await {
+            Ok(meta) => meta,
+            Err(error) => {
+                let _ = self.store.delete(&probe).await;
+                return Err(error);
+            }
+        };
+        self.store.delete(&probe).await?;
+        let age = probe_meta
+            .last_modified
+            .signed_duration_since(descriptor_meta.last_modified)
+            .to_std()
+            .map_err(|_| registry_error("registry provider clock regressed"))?;
+        if age < minimum_retention {
+            return Err(registry_error(
+                "completed cell move has not passed its provider-clock rollback window",
+            ));
+        }
+        Ok((descriptor, raw.to_vec()))
+    }
+
+    /// Retain the move identity while recording that its old physical copy is
+    /// gone. A crash before this CAS simply makes cleanup retry its idempotent
+    /// exact-range/object deletion.
+    pub async fn complete_cell_move_source_cleanup(
+        &self,
+        customer_id: &str,
+        name: &str,
+        operation_id: &str,
+    ) -> Result<StreamDesc, object_store::Error> {
+        let path = desc_path(customer_id, name);
+        for _ in 0..10 {
+            let result = self.store.get(&path).await?;
+            let version = UpdateVersion {
+                e_tag: result.meta.e_tag.clone(),
+                version: result.meta.version.clone(),
+            };
+            if result.meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+                return Err(registry_error("stream descriptor is too large"));
+            }
+            let raw = result.bytes().await?;
+            let mut descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            let Some(movement) = descriptor.cell_move.as_mut() else {
+                return Err(registry_error("stream has no retained cell move"));
+            };
+            if movement.state != CellMoveState::Completed || movement.operation_id != operation_id {
+                return Err(registry_error(
+                    "cell move cleanup operation id does not match",
+                ));
+            }
+            if movement.source_cleaned_ms.is_some() {
+                return Ok(descriptor);
+            }
+            movement.source_cleaned_ms = Some(chrono::Utc::now().timestamp_millis());
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(
+                        serde_json::to_vec(&descriptor).expect("stream descriptor json"),
+                    ),
+                    PutOptions::from(PutMode::Update(version)),
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(customer_id, name);
+                    return Ok(descriptor);
+                }
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error(
+            "complete cell move source cleanup CAS retries exhausted",
+        ))
     }
 
     async fn ensure_cell_stream_index(
@@ -1719,6 +1875,13 @@ impl Registry {
                     .unwrap()
                     .insert(cache_key(customer_id, name), Some(current.clone()));
                 return Ok((false, current));
+            }
+            if current.cell_move.as_ref().is_some_and(|movement| {
+                movement.state == CellMoveState::Completed && movement.source_cleaned_ms.is_none()
+            }) {
+                return Err(registry_error(
+                    "cell-moved stream cannot be recreated before source cleanup",
+                ));
             }
             let body = serde_json::to_vec(&fresh).map_err(|e| object_store::Error::Generic {
                 store: "registry",
@@ -2775,6 +2938,43 @@ mod tests {
                 .await
                 .unwrap(),
             vec![history_db_path(&desc.storage_hash())]
+        );
+        assert!(
+            registry
+                .begin_cell_move("customer-a", "orders", "cell-b", "cell-a", &"cd".repeat(16),)
+                .await
+                .is_err(),
+            "a second move must not erase pending source-cleanup identity"
+        );
+        let (retained, authoritative) = registry
+            .completed_cell_move_retention_proof(
+                "customer-a",
+                "orders",
+                "cell-a",
+                "cell-b",
+                &operation,
+                Duration::ZERO,
+            )
+            .await
+            .unwrap();
+        assert_eq!(retained.cell, "cell-b");
+        assert_eq!(
+            serde_json::from_slice::<StreamDesc>(&authoritative)
+                .unwrap()
+                .cell,
+            "cell-b"
+        );
+        let cleaned = registry
+            .complete_cell_move_source_cleanup("customer-a", "orders", &operation)
+            .await
+            .unwrap();
+        assert!(
+            cleaned
+                .cell_move
+                .as_ref()
+                .unwrap()
+                .source_cleaned_ms
+                .is_some()
         );
         store
             .put(

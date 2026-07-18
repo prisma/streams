@@ -433,7 +433,14 @@ coordination state, ever.
   it, and an old aggregate writer strips it, so rolling-version skew fails
   closed. Deploys and scaling are frozen for the bounded move window, and the
   final source-fence rewrite proves the mover still owns the writer epoch. No
-  customer key crosses the cell boundary. Before the fleet
+  customer key crosses the cell boundary. A completed move blocks another move
+  and same-incarnation source recreation until explicit source cleanup. Cleanup
+  requires a provider-clock retention interval, no fork children, an exact
+  complete format-3 target recovery point, fresh green target backup/recovery/
+  primary-scrub health, and a fresh protocol-capable source fleet. It then
+  deletes only the obsolete source raw ranges, history database, and integrity
+  baselines, permanently retains the source fences, and CAS-records an
+  idempotent cleanup timestamp. Before the fleet
   reaches tens of cells,
   the migration tooling and rebalancing policy ship: a cell saturating at
   max=64 instances stops taking new-stream placement (weight→0 in

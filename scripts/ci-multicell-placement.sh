@@ -468,6 +468,42 @@ body="$(curl --fail --silent --show-error \
   -H "stream-encryption-key: ${KEY}")"
 [[ "${body}" == '[{"cell":true},{"after":"move"}]' ]] || fail "moved target restart lost data"
 
+# Reclaim only after the target has published a fresh, fully scrubbed recovery
+# point containing the exact completed descriptor. CI explicitly collapses the
+# rollback window to zero; production refuses less than one hour.
+cleanup_report="$("${TARGET_DIR}/streams-cell-move" \
+  --cleanup-source --confirm-source-cleanup \
+  --min-source-retention-secs 0 --allow-zero-retention \
+  --customer-id tenant-a --stream cell-pinned \
+  --source-cell "${move_source}" --target-cell "${move_target}" \
+  --operation-id "${move_operation}" --allow-http \
+  --registry-endpoint "${S3_URL}" --registry-bucket streams \
+  --registry-region auto --registry-access-key-id registry-control \
+  --registry-secret-access-key registry-control-secret \
+  --registry-prefix global-registry \
+  --source-endpoint "${S3_URL}" --source-bucket streams \
+  --source-region auto --source-access-key-id "${move_source}-move" \
+  --source-secret-access-key "${move_source}-move-secret" \
+  --source-prefix "cells/${move_source}" \
+  --source-fleet-prefix "cells/${move_source}/fleet-coordination" \
+  --target-endpoint "${S3_URL}" --target-bucket streams \
+  --target-region auto --target-access-key-id "${move_target}-move" \
+  --target-secret-access-key "${move_target}-move-secret" \
+  --target-prefix "cells/${move_target}" \
+  --target-fleet-prefix "cells/${move_target}/fleet-coordination" \
+  --target-backup-endpoint "${S3_URL}" --target-backup-bucket backup \
+  --target-backup-region auto --target-backup-access-key-id backup-control \
+  --target-backup-secret-access-key backup-control-secret \
+  --target-backup-prefix "recovery/${move_target}")"
+[[ "${cleanup_report}" == *'"source_fence_retained": true'* ]] || fail "source cleanup did not retain its fence"
+[[ "${cleanup_report}" == *'"history_databases_deleted": 1'* ]] || fail "source cleanup omitted encrypted history"
+descriptor="$(curl --fail --silent --show-error \
+  "${S3_URL}/streams/global-registry/registry/by-customer/${customer_hash}/by-name/${name_hash:0:2}/${name_hash}.json")"
+[[ "${descriptor}" == *'"source_cleaned_ms":'* ]] || fail "source cleanup completion was not retained"
+source_history="$(curl --fail --silent --show-error --get "${S3_URL}/streams" \
+  --data-urlencode 'list-type=2' --data-urlencode "prefix=cells/${move_source}/streams/")"
+[[ "${source_history}" != *"<Key>cells/${move_source}/streams/"* ]] || fail "source cleanup retained obsolete history"
+
 # Destroy both serving cells and the live global registry from the serving
 # path, restore the selected point into empty primary + registry targets, and
 # prove the first decrypted read. The recovery point must not need a global
@@ -510,4 +546,4 @@ body="$(curl --fail --silent --show-error \
   -H "stream-encryption-key: ${KEY}")"
 [[ "${body}" == '[{"cell":true},{"after":"move"}]' ]] || fail "managed registry recovery lost the moved stream"
 
-echo "multi-cell placement, fenced move, registry recovery, replay, and LKG drill passed"
+echo "multi-cell placement, fenced move/cleanup, registry recovery, replay, and LKG drill passed"

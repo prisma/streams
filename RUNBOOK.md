@@ -1057,11 +1057,52 @@ secret-free artifact shape. A short or local run is not release evidence.
   A crash before cutover leaves the descriptor preparing and the stream safely
   unavailable; rerun the same operation id. A crash after cutover resolves as
   already completed. Other streams sharing either physical shard can see brief
-  503s while its writer is fenced. The former cell's fenced key range/history
-  are deliberately retained for rollback. Its history DB leaves active
-  backup/scrub enumeration immediately; the raw range remains inside the
-  shared fenced shard until retention-qualified reclamation, which is still an
-  operator follow-up before high-volume rebalancing.
+  503s while its writer is fenced. The completed move blocks another move and
+  blocks recreating that source incarnation until its retained copy is cleaned.
+
+  After the rollback window, reclaim the retained source with the same
+  operation id. Production retention defaults to seven days and must be between
+  one hour and one year; age is measured from an object-store metadata probe so
+  a skewed operator clock cannot shorten it. Fork children must first be
+  released.
+
+  ```bash
+  streams-cell-move --cleanup-source --confirm-source-cleanup \
+    --min-source-retention-secs 604800 \
+    --customer-id "$CUSTOMER_ID" --stream "$STREAM" \
+    --source-cell "$SOURCE_CELL" --target-cell "$TARGET_CELL" \
+    --operation-id "$OPERATION_ID" \
+    --registry-endpoint "$REGISTRY_S3_ENDPOINT" \
+    --registry-bucket "$REGISTRY_S3_BUCKET" \
+    --registry-access-key-id "$REGISTRY_S3_ACCESS_KEY_ID" \
+    --registry-secret-access-key "$REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --registry-prefix "$REGISTRY_PATH_PREFIX" \
+    --source-endpoint "$SOURCE_S3_ENDPOINT" --source-bucket "$SOURCE_S3_BUCKET" \
+    --source-access-key-id "$SOURCE_S3_ACCESS_KEY_ID" \
+    --source-secret-access-key "$SOURCE_S3_SECRET_ACCESS_KEY" \
+    --source-prefix "cells/$SOURCE_CELL" \
+    --source-fleet-prefix "$SOURCE_FLEET_PREFIX" \
+    --target-endpoint "$TARGET_S3_ENDPOINT" --target-bucket "$TARGET_S3_BUCKET" \
+    --target-access-key-id "$TARGET_S3_ACCESS_KEY_ID" \
+    --target-secret-access-key "$TARGET_S3_SECRET_ACCESS_KEY" \
+    --target-prefix "cells/$TARGET_CELL" \
+    --target-fleet-prefix "$TARGET_FLEET_PREFIX" \
+    --target-backup-endpoint "$TARGET_BACKUP_S3_ENDPOINT" \
+    --target-backup-bucket "$TARGET_BACKUP_S3_BUCKET" \
+    --target-backup-access-key-id "$TARGET_BACKUP_S3_ACCESS_KEY_ID" \
+    --target-backup-secret-access-key "$TARGET_BACKUP_S3_SECRET_ACCESS_KEY" \
+    --target-backup-prefix "$TARGET_BACKUP_PATH_PREFIX"
+  ```
+
+  Cleanup fails closed unless the target has a complete format-3 recovery point
+  containing the exact authoritative descriptor, the target backup lease and
+  health are provider-clock fresh, and its latest snapshot, recovery scrub, and
+  primary scrub are all green. It also rechecks a fresh protocol-capable source
+  fleet before fencing the source writer. Only then does it delete the exact
+  source raw ranges, history database, and integrity baselines. It retains the
+  permanent per-stream source fences and records `source_cleaned_ms` by CAS.
+  Crashes and retries are safe: an incomplete attempt revalidates every proof
+  and resumes exact-range deletion, while a recorded cleanup is a no-op.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 
