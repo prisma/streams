@@ -158,6 +158,18 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 | `METRICS_AUTH_TOKEN` | — | scoped service JWT for `__metrics__`; required with JWKS mode when metrics are enabled |
 | `INSTANCE_NAME` | `streams` | instance tag in standalone mode. Fleet mode requires `streams-N`, with `1 <= N <= FLEET_MAX` |
 
+Admission defaults are deployment-wide fallbacks; every production customer
+can override them with the durable object below.
+
+| env | default | notes |
+|---|---|---|
+| `ADMIT_MAX_INFLIGHT_PER_CUSTOMER` / `ADMIT_MAX_LIVE_CONNECTIONS_PER_CUSTOMER` | 64 / 32 | all response bodies retain the first slot until EOF/disconnect; SSE, long-poll, and queue receive also retain the live slot |
+| `ADMIT_WRITE_BYTES_PER_SEC_PER_CUSTOMER` / `ADMIT_WRITE_BURST_BYTES_PER_CUSTOMER` | 64 MiB / 128 MiB | ingress token bucket; rate 0 disables |
+| `ADMIT_APPEND_REQUESTS_PER_SEC_PER_CUSTOMER` / `ADMIT_APPEND_REQUEST_BURST_PER_CUSTOMER` | 10000 / 10000 | append request bucket; rate 0 disables |
+| `ADMIT_READ_REQUESTS_PER_SEC_PER_CUSTOMER` / `ADMIT_READ_REQUEST_BURST_PER_CUSTOMER` | 10000 / 10000 | GET/HEAD/list request bucket; rate 0 disables |
+| `ADMIT_READ_BYTES_PER_SEC_PER_CUSTOMER` / `ADMIT_READ_BURST_BYTES_PER_CUSTOMER` | 128 MiB / 256 MiB | paces finite and SSE response frames; rate 0 disables |
+| `ADMIT_QUEUE_RECEIVES_PER_SEC_PER_CUSTOMER` / `ADMIT_QUEUE_RECEIVE_BURST_PER_CUSTOMER` | 5000 / 5000 | receive only; ack and extend do not consume it |
+
 Per-customer production limits are durable ops-role objects at
 `customers/<first-128-bits-of-SHA256(customer-id)>/limits.json`:
 
@@ -165,8 +177,17 @@ Per-customer production limits are durable ops-role objects at
 {
   "version": 1,
   "max_inflight": 64,
+  "max_live_connections": 32,
   "write_bytes_per_second": 67108864,
   "write_burst_bytes": 134217728,
+  "append_requests_per_second": 10000,
+  "append_request_burst": 10000,
+  "read_requests_per_second": 10000,
+  "read_request_burst": 10000,
+  "read_bytes_per_second": 134217728,
+  "read_burst_bytes": 268435456,
+  "queue_receives_per_second": 5000,
+  "queue_receive_burst": 5000,
   "streams_count": 10000
 }
 ```
@@ -178,6 +199,12 @@ unavailable documents return 503 rather than falling back. Count enforcement
 uses a 30-second per-customer CAS lease and recounts durable descriptors, so
 two instances cannot concurrently exceed the limit; delete/recreate capacity
 follows durable tombstones.
+
+Non-count limits are divided into ceil-shares using fresh active fleet
+membership. Consequently, very small limits can overshoot by at most one unit
+per additional active instance; 429 `limit` remains the customer value and
+`observed` is the cell estimate. Read-byte limits pace an admitted body rather
+than aborting it after headers.
 
 Stream keys: `streams-keys generate` → 32-byte base64. Clients pass it as
 `Stream-Encryption-Key` on create and on every data-path request. The
@@ -296,8 +323,9 @@ OOM-killed container under load otherwise stays down.
 "observed":n,"retry_after_ms":n}}` with standards-compliant `Retry-After: 1`
 (in-flight, tenant, or queue shed) or `2` (RSS shed), after a 25 ms tarpit for
 instance pressure. SDKs add jitter before retrying. The dimensions identify
-their units (`connections`, `streams_count`, `write_burst_bytes`,
-`queue_depth`, or `memory_bytes`).
+their units (`connections`, `live_connections`, `append_burst_requests`,
+`read_burst_requests`, `queue_receive_burst_requests`, `streams_count`,
+`write_burst_bytes`, `queue_depth`, or `memory_bytes`).
 Sustained 429s are the *designed* behavior under overload — the alternative
 was death (§3.6).
 

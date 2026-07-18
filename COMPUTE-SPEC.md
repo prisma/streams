@@ -548,23 +548,26 @@ The first line is per-tenant, enforced before work is queued.
 
 ### 12.1 Quota objects and enforcement points
 
-- Limits live in the registry: per-stream defaults on the descriptor,
-  per-customer overrides in `customers/<id>/limits.json` (cached 60 s).
-  Dimensions: `appends/s`, `append_bytes/s`, `reads/s`, `read_bytes/s`,
-  `live_connections`, `streams_count`, `queue receives/s`.
-- **Gateway admission (first hop):** token buckets per (stream) and per
-  (customer, cell), refilled from the cached limits. Over limit ⇒ 429
-  before any queue or storage work. **Distributed semantics:** buckets
-  are per-instance with share = limit ÷ |active instances| (from
-  fleet.json, refreshed 2 s) — cheap, no coordination, worst-case
-  transient overshoot ≤ one refresh interval during scale events. The
-  429 body's `limit` reports the customer-level limit; `observed` is the
-  cell-wide estimate (local rate × active count).
-- **Shard-owner backstop:** the committer's batch assembly is a weighted
-  deficit round-robin across streams (weight = stream's limit), so one
-  stream can never occupy more than its share of a shared commit group
-  even if admission lags. A stream at its ceiling gets per-stream 429,
-  not shard-wide 429.
+- Customer limits live in `customers/<id>/limits.json` and are cached for 60
+  seconds. Implemented dimensions are append requests/bytes, read requests/
+  bytes, live connections, total in-flight requests, stream count, and queue
+  receives. Per-stream descriptor limits remain a release-gate item.
+- **Gateway admission (first hop):** request-count and ingress-byte token
+  buckets reject with 429 before work is queued. Egress bytes use the same
+  customer bucket but pace response frames, including SSE, rather than
+  resetting a response after its 200 headers. The response body owns the
+  concurrency guard until EOF or disconnect, so an SSE handler cannot release
+  its slot merely by constructing the response.
+- **Distributed semantics:** each instance uses a ceil-share of the durable
+  customer limit divided by the fresh active membership in `fleet.json`. The
+  429 body's `limit` remains customer-wide and `observed` is the local value
+  multiplied by membership size. Ceil-sharing can exceed a very small global
+  limit by at most `active_instances - 1`; membership changes also have the
+  fleet refresh window. Exact stream counts use the lease below.
+- **Shard-owner backstop:** commit groups use persistent per-customer
+  round-robin look-ahead, which prevents a run of one tenant's large requests
+  hiding another tenant's small request. Weighted per-stream scheduling and
+  per-stream admission are not implemented yet.
 - **`streams_count`** is currently enforced at create by a per-customer CAS
   lease around an authoritative by-customer descriptor recount and the
   descriptor CAS. This is exact and crash-bounded (a canceled holder expires
@@ -577,7 +580,7 @@ The first line is per-tenant, enforced before work is queued.
 429 responses carry standards-compliant `Retry-After` seconds plus a body
 `retry_after_ms` mirror. SDKs add jitter before retrying. The body is
 `{"error":{"code":"throttled","scope":"stream|customer|shard|instance",
-"dimension":"connections|streams_count|write_burst_bytes|queue_depth|memory_bytes",
+"dimension":"connections|live_connections|append_burst_requests|read_burst_requests|queue_receive_burst_requests|streams_count|write_burst_bytes|queue_depth|memory_bytes",
 "limit":n,"observed":n,"retry_after_ms":n}}`. `limit` and `observed` use
 the units named by `dimension`; stream-count `observed` includes the rejected
 create. Instance- and shard-scope 429s are alarmable (they mean capacity, not

@@ -209,9 +209,27 @@ pub struct CustomerLimits {
     #[serde(default)]
     pub max_inflight: Option<usize>,
     #[serde(default)]
+    pub max_live_connections: Option<usize>,
+    #[serde(default)]
     pub write_bytes_per_second: Option<u64>,
     #[serde(default)]
     pub write_burst_bytes: Option<u64>,
+    #[serde(default)]
+    pub append_requests_per_second: Option<u64>,
+    #[serde(default)]
+    pub append_request_burst: Option<u64>,
+    #[serde(default)]
+    pub read_requests_per_second: Option<u64>,
+    #[serde(default)]
+    pub read_request_burst: Option<u64>,
+    #[serde(default)]
+    pub read_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub read_burst_bytes: Option<u64>,
+    #[serde(default)]
+    pub queue_receives_per_second: Option<u64>,
+    #[serde(default)]
+    pub queue_receive_burst: Option<u64>,
     #[serde(default)]
     pub streams_count: Option<usize>,
 }
@@ -450,11 +468,38 @@ impl Registry {
                 if limits.version != 1
                     || limits.max_inflight.is_some_and(|value| value > 1_000_000)
                     || limits
+                        .max_live_connections
+                        .is_some_and(|value| value > 1_000_000)
+                    || limits
                         .write_bytes_per_second
                         .is_some_and(|value| value > 1 << 50)
                     || limits
                         .write_burst_bytes
                         .is_some_and(|value| value == 0 || value > 1 << 50)
+                    || limits
+                        .append_requests_per_second
+                        .is_some_and(|value| value > 1_000_000_000)
+                    || limits
+                        .append_request_burst
+                        .is_some_and(|value| value == 0 || value > 1_000_000_000)
+                    || limits
+                        .read_requests_per_second
+                        .is_some_and(|value| value > 1_000_000_000)
+                    || limits
+                        .read_request_burst
+                        .is_some_and(|value| value == 0 || value > 1_000_000_000)
+                    || limits
+                        .read_bytes_per_second
+                        .is_some_and(|value| value > 1 << 50)
+                    || limits
+                        .read_burst_bytes
+                        .is_some_and(|value| value == 0 || value > 1 << 50)
+                    || limits
+                        .queue_receives_per_second
+                        .is_some_and(|value| value > 1_000_000_000)
+                    || limits
+                        .queue_receive_burst
+                        .is_some_and(|value| value == 0 || value > 1_000_000_000)
                     || limits.streams_count.is_some_and(|value| value > 10_000_000)
                 {
                     return Err(registry_error("invalid customer limits"));
@@ -1843,7 +1888,7 @@ mod tests {
             .put(
                 &customer_limits_path("customer-a"),
                 PutPayload::from_static(
-                    br#"{"version":1,"max_inflight":3,"write_bytes_per_second":100,"write_burst_bytes":200,"streams_count":2}"#,
+                    br#"{"version":1,"max_inflight":3,"max_live_connections":2,"write_bytes_per_second":100,"write_burst_bytes":200,"append_requests_per_second":10,"append_request_burst":20,"read_requests_per_second":30,"read_request_burst":40,"read_bytes_per_second":300,"read_burst_bytes":400,"queue_receives_per_second":50,"queue_receive_burst":60,"streams_count":2}"#,
                 ),
             )
             .await
@@ -1851,6 +1896,10 @@ mod tests {
         let registry = Registry::with_cache_capacity(store.clone(), 2);
         let limits = registry.customer_limits("customer-a").await.unwrap();
         assert_eq!(limits.max_inflight, Some(3));
+        assert_eq!(limits.max_live_connections, Some(2));
+        assert_eq!(limits.append_request_burst, Some(20));
+        assert_eq!(limits.read_bytes_per_second, Some(300));
+        assert_eq!(limits.queue_receive_burst, Some(60));
         assert_eq!(limits.streams_count, Some(2));
 
         let corrupt = Registry::with_cache_capacity(store.clone(), 2);
@@ -1862,6 +1911,22 @@ mod tests {
             .await
             .unwrap();
         assert!(corrupt.customer_limits("customer-b").await.is_err());
+
+        store
+            .put(
+                &customer_limits_path("customer-c"),
+                PutPayload::from_static(
+                    br#"{"version":1,"read_bytes_per_second":1,"read_burst_bytes":0}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(
+            Registry::with_cache_capacity(store, 2)
+                .customer_limits("customer-c")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

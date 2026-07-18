@@ -330,6 +330,73 @@ struct Args {
     )]
     admit_write_burst_bytes_per_customer: u64,
 
+    /// Maximum concurrent long-poll, SSE, and queue-receive connections per
+    /// customer. This is separate from the all-request in-flight ceiling.
+    #[arg(
+        long,
+        env = "ADMIT_MAX_LIVE_CONNECTIONS_PER_CUSTOMER",
+        default_value_t = 32
+    )]
+    admit_max_live_connections_per_customer: usize,
+
+    /// Per-customer append request token rate and burst. A zero rate disables
+    /// request-count admission while leaving the byte quota active.
+    #[arg(
+        long,
+        env = "ADMIT_APPEND_REQUESTS_PER_SEC_PER_CUSTOMER",
+        default_value_t = 10_000
+    )]
+    admit_append_requests_per_sec_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_APPEND_REQUEST_BURST_PER_CUSTOMER",
+        default_value_t = 10_000
+    )]
+    admit_append_request_burst_per_customer: u64,
+
+    /// Per-customer read request and egress-byte buckets. Response bytes are
+    /// paced, including SSE, so an admitted 200 response is never torn down
+    /// mid-stream merely because its next frame crosses the rate.
+    #[arg(
+        long,
+        env = "ADMIT_READ_REQUESTS_PER_SEC_PER_CUSTOMER",
+        default_value_t = 10_000
+    )]
+    admit_read_requests_per_sec_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_READ_REQUEST_BURST_PER_CUSTOMER",
+        default_value_t = 10_000
+    )]
+    admit_read_request_burst_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_READ_BYTES_PER_SEC_PER_CUSTOMER",
+        default_value_t = 128 * 1024 * 1024
+    )]
+    admit_read_bytes_per_sec_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_READ_BURST_BYTES_PER_CUSTOMER",
+        default_value_t = 256 * 1024 * 1024
+    )]
+    admit_read_burst_bytes_per_customer: u64,
+
+    /// Per-customer queue receive request bucket. Settlement calls do not
+    /// consume this dimension.
+    #[arg(
+        long,
+        env = "ADMIT_QUEUE_RECEIVES_PER_SEC_PER_CUSTOMER",
+        default_value_t = 5_000
+    )]
+    admit_queue_receives_per_sec_per_customer: u64,
+    #[arg(
+        long,
+        env = "ADMIT_QUEUE_RECEIVE_BURST_PER_CUSTOMER",
+        default_value_t = 5_000
+    )]
+    admit_queue_receive_burst_per_customer: u64,
+
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model (platform team investigation
     /// + our 6-source confirmation, 2026-07-15): each SOURCE Compute
@@ -616,6 +683,56 @@ async fn async_main() -> anyhow::Result<()> {
         args.auto_merge_cold_fraction_pct <= 20,
         "AUTO_MERGE_COLD_FRACTION_PCT must be between 0 and 20"
     );
+    anyhow::ensure!(
+        args.admit_max_inflight_per_customer <= 1_000_000
+            && args.admit_max_live_connections_per_customer <= 1_000_000,
+        "per-customer connection limits must not exceed 1000000"
+    );
+    for (name, value) in [
+        (
+            "ADMIT_WRITE_BURST_BYTES_PER_CUSTOMER",
+            args.admit_write_burst_bytes_per_customer,
+        ),
+        (
+            "ADMIT_READ_BURST_BYTES_PER_CUSTOMER",
+            args.admit_read_burst_bytes_per_customer,
+        ),
+    ] {
+        anyhow::ensure!(
+            (1..=1 << 50).contains(&value),
+            "{name} must be between 1 and 2^50"
+        );
+    }
+    anyhow::ensure!(
+        args.admit_write_bytes_per_sec_per_customer <= 1 << 50
+            && args.admit_read_bytes_per_sec_per_customer <= 1 << 50,
+        "per-customer byte rates must not exceed 2^50"
+    );
+    for (name, value) in [
+        (
+            "ADMIT_APPEND_REQUEST_BURST_PER_CUSTOMER",
+            args.admit_append_request_burst_per_customer,
+        ),
+        (
+            "ADMIT_READ_REQUEST_BURST_PER_CUSTOMER",
+            args.admit_read_request_burst_per_customer,
+        ),
+        (
+            "ADMIT_QUEUE_RECEIVE_BURST_PER_CUSTOMER",
+            args.admit_queue_receive_burst_per_customer,
+        ),
+    ] {
+        anyhow::ensure!(
+            (1..=1_000_000_000).contains(&value),
+            "{name} must be between 1 and 1000000000"
+        );
+    }
+    anyhow::ensure!(
+        args.admit_append_requests_per_sec_per_customer <= 1_000_000_000
+            && args.admit_read_requests_per_sec_per_customer <= 1_000_000_000
+            && args.admit_queue_receives_per_sec_per_customer <= 1_000_000_000,
+        "per-customer request rates must not exceed 1000000000"
+    );
     if args.fleet_prefix.is_some() {
         anyhow::ensure!(
             (1..=64).contains(&args.fleet_max),
@@ -860,11 +977,20 @@ async fn async_main() -> anyhow::Result<()> {
         admit_rss_shed_mb: args.admit_rss_shed_mb,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
-        tenant_admission: crate::http::TenantAdmission::new(
-            args.admit_max_inflight_per_customer,
-            args.admit_write_bytes_per_sec_per_customer,
-            args.admit_write_burst_bytes_per_customer,
-        ),
+        tenant_admission: crate::http::TenantAdmission::new(crate::http::TenantAdmissionConfig {
+            max_inflight: args.admit_max_inflight_per_customer,
+            max_live_connections: args.admit_max_live_connections_per_customer,
+            write_bytes_per_second: args.admit_write_bytes_per_sec_per_customer,
+            write_burst_bytes: args.admit_write_burst_bytes_per_customer,
+            append_requests_per_second: args.admit_append_requests_per_sec_per_customer,
+            append_request_burst: args.admit_append_request_burst_per_customer,
+            read_requests_per_second: args.admit_read_requests_per_sec_per_customer,
+            read_request_burst: args.admit_read_request_burst_per_customer,
+            read_bytes_per_second: args.admit_read_bytes_per_sec_per_customer,
+            read_burst_bytes: args.admit_read_burst_bytes_per_customer,
+            queue_receives_per_second: args.admit_queue_receives_per_sec_per_customer,
+            queue_receive_burst: args.admit_queue_receive_burst_per_customer,
+        }),
         audit,
         backup,
         instance_name: args.instance_name.clone(),

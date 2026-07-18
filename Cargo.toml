@@ -30,6 +30,7 @@ hkdf = "0.12"
 base64 = "0.22.1"
 xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32"] }
 hmac = "0.12"
+http-body = "1"
 tokio-stream = "0.1.18"
 jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
 subtle = "2"

@@ -3,11 +3,14 @@
 //! `format=json`, long-poll tails.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, HttpBody};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -152,11 +155,115 @@ struct TenantAdmissionInner {
 
 struct TenantAdmissionState {
     inflight: usize,
-    write_tokens: f64,
-    write_bytes_per_second: u64,
-    write_burst_bytes: u64,
-    last_refill: std::time::Instant,
+    live_connections: usize,
+    write_bytes: RateBucket,
+    append_requests: RateBucket,
+    read_requests: RateBucket,
+    read_bytes: RateBucket,
+    queue_receives: RateBucket,
     last_seen: std::time::Instant,
+}
+
+struct RateBucket {
+    tokens: f64,
+    rate: u64,
+    burst: u64,
+    reported_burst: u64,
+    observed_scale: u64,
+    last_refill: std::time::Instant,
+}
+
+impl RateBucket {
+    fn new(
+        rate: u64,
+        burst: u64,
+        reported_burst: u64,
+        observed_scale: usize,
+        now: std::time::Instant,
+    ) -> Self {
+        let burst = burst.max(1);
+        Self {
+            tokens: burst as f64,
+            rate,
+            burst,
+            reported_burst,
+            observed_scale: observed_scale as u64,
+            last_refill: now,
+        }
+    }
+
+    fn refill(&mut self, now: std::time::Instant) {
+        if now < self.last_refill {
+            return;
+        }
+        if self.rate > 0 {
+            let refill = now.duration_since(self.last_refill).as_secs_f64() * self.rate as f64;
+            self.tokens = (self.tokens + refill).min(self.burst as f64);
+        }
+        self.last_refill = now;
+    }
+
+    fn configure(
+        &mut self,
+        rate: u64,
+        burst: u64,
+        reported_burst: u64,
+        observed_scale: usize,
+        now: std::time::Instant,
+    ) {
+        let burst = burst.max(1);
+        if self.rate == rate
+            && self.burst == burst
+            && self.reported_burst == reported_burst
+            && self.observed_scale == observed_scale as u64
+        {
+            return;
+        }
+        self.refill(now);
+        self.rate = rate;
+        self.burst = burst;
+        self.reported_burst = reported_burst;
+        self.observed_scale = observed_scale as u64;
+        self.tokens = self.tokens.min(burst as f64);
+        self.last_refill = now;
+    }
+
+    fn try_charge(&mut self, amount: usize, now: std::time::Instant) -> Result<(), (u64, u64)> {
+        if self.rate == 0 || amount == 0 {
+            return Ok(());
+        }
+        self.refill(now);
+        if amount as f64 > self.tokens {
+            let consumed = self.burst as f64 - self.tokens;
+            let observed = (consumed + amount as f64).ceil().min(u64::MAX as f64) as u64;
+            return Err((
+                self.reported_burst,
+                observed.saturating_mul(self.observed_scale),
+            ));
+        }
+        self.tokens -= amount as f64;
+        Ok(())
+    }
+
+    /// Reserve bandwidth in a token bucket. Unlike request admission, egress
+    /// waits for capacity so a response that has already sent 200 is not
+    /// converted into an abrupt transport error halfway through a frame.
+    fn reserve_delay(&mut self, amount: usize, now: std::time::Instant) -> Duration {
+        if self.rate == 0 || amount == 0 {
+            return Duration::ZERO;
+        }
+        self.refill(now);
+        if amount as f64 <= self.tokens {
+            self.tokens -= amount as f64;
+            return Duration::ZERO;
+        }
+        let deficit = amount as f64 - self.tokens;
+        self.tokens = 0.0;
+        let base = self.last_refill.max(now);
+        let delay = Duration::from_secs_f64(deficit / self.rate as f64);
+        self.last_refill = base + delay;
+        self.last_refill.saturating_duration_since(now)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,23 +276,54 @@ struct ThrottleReason {
 
 pub struct TenantAdmission {
     inner: Mutex<TenantAdmissionInner>,
-    max_inflight: usize,
-    write_bytes_per_second: u64,
-    write_burst_bytes: u64,
+    defaults: TenantAdmissionConfig,
     customer_capacity: usize,
 }
 
+#[derive(Clone, Copy)]
+pub struct TenantAdmissionConfig {
+    pub max_inflight: usize,
+    pub max_live_connections: usize,
+    pub write_bytes_per_second: u64,
+    pub write_burst_bytes: u64,
+    pub append_requests_per_second: u64,
+    pub append_request_burst: u64,
+    pub read_requests_per_second: u64,
+    pub read_request_burst: u64,
+    pub read_bytes_per_second: u64,
+    pub read_burst_bytes: u64,
+    pub queue_receives_per_second: u64,
+    pub queue_receive_burst: u64,
+}
+
+#[derive(Clone, Copy)]
+enum RequestQuota {
+    Append,
+    Read,
+    QueueReceive,
+}
+
+fn quota_share(limit: u64, active_instances: usize) -> u64 {
+    if limit == 0 {
+        0
+    } else {
+        limit.div_ceil(active_instances.max(1) as u64)
+    }
+}
+
+fn concurrency_share(limit: usize, active_instances: usize) -> usize {
+    if limit == 0 {
+        0
+    } else {
+        limit.div_ceil(active_instances.max(1))
+    }
+}
+
 impl TenantAdmission {
-    pub fn new(
-        max_inflight: usize,
-        write_bytes_per_second: u64,
-        write_burst_bytes: u64,
-    ) -> Arc<Self> {
+    pub fn new(defaults: TenantAdmissionConfig) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(TenantAdmissionInner::default()),
-            max_inflight,
-            write_bytes_per_second,
-            write_burst_bytes: write_burst_bytes.max(1),
+            defaults,
             customer_capacity: 100_000,
         })
     }
@@ -194,15 +332,64 @@ impl TenantAdmission {
         self: &Arc<Self>,
         customer_id: &str,
         limits: &crate::registry::CustomerLimits,
+        is_live: bool,
+        active_instances: usize,
     ) -> Result<TenantAdmissionGuard, ThrottleReason> {
-        let max_inflight = limits.max_inflight.unwrap_or(self.max_inflight);
+        let active_instances = active_instances.max(1);
+        let max_inflight = limits.max_inflight.unwrap_or(self.defaults.max_inflight);
+        let max_live_connections = limits
+            .max_live_connections
+            .unwrap_or(self.defaults.max_live_connections);
         let write_bytes_per_second = limits
             .write_bytes_per_second
-            .unwrap_or(self.write_bytes_per_second);
+            .unwrap_or(self.defaults.write_bytes_per_second);
         let write_burst_bytes = limits
             .write_burst_bytes
-            .unwrap_or(self.write_burst_bytes)
+            .unwrap_or(self.defaults.write_burst_bytes)
             .max(1);
+        let append_requests_per_second = limits
+            .append_requests_per_second
+            .unwrap_or(self.defaults.append_requests_per_second);
+        let append_request_burst = limits
+            .append_request_burst
+            .unwrap_or(self.defaults.append_request_burst)
+            .max(1);
+        let read_requests_per_second = limits
+            .read_requests_per_second
+            .unwrap_or(self.defaults.read_requests_per_second);
+        let read_request_burst = limits
+            .read_request_burst
+            .unwrap_or(self.defaults.read_request_burst)
+            .max(1);
+        let read_bytes_per_second = limits
+            .read_bytes_per_second
+            .unwrap_or(self.defaults.read_bytes_per_second);
+        let read_burst_bytes = limits
+            .read_burst_bytes
+            .unwrap_or(self.defaults.read_burst_bytes)
+            .max(1);
+        let queue_receives_per_second = limits
+            .queue_receives_per_second
+            .unwrap_or(self.defaults.queue_receives_per_second);
+        let queue_receive_burst = limits
+            .queue_receive_burst
+            .unwrap_or(self.defaults.queue_receive_burst)
+            .max(1);
+        let local_max_inflight = concurrency_share(max_inflight, active_instances);
+        let local_max_live_connections = concurrency_share(max_live_connections, active_instances);
+        let local_write_bytes_per_second = quota_share(write_bytes_per_second, active_instances);
+        let local_write_burst_bytes = quota_share(write_burst_bytes, active_instances);
+        let local_append_requests_per_second =
+            quota_share(append_requests_per_second, active_instances);
+        let local_append_request_burst = quota_share(append_request_burst, active_instances);
+        let local_read_requests_per_second =
+            quota_share(read_requests_per_second, active_instances);
+        let local_read_request_burst = quota_share(read_request_burst, active_instances);
+        let local_read_bytes_per_second = quota_share(read_bytes_per_second, active_instances);
+        let local_read_burst_bytes = quota_share(read_burst_bytes, active_instances);
+        let local_queue_receives_per_second =
+            quota_share(queue_receives_per_second, active_instances);
+        let local_queue_receive_burst = quota_share(queue_receive_burst, active_instances);
         let mut inner = self.inner.lock().unwrap();
         if !inner.customers.contains_key(customer_id)
             && inner.customers.len() >= self.customer_capacity
@@ -229,33 +416,137 @@ impl TenantAdmission {
             .entry(customer_id.to_string())
             .or_insert_with(|| TenantAdmissionState {
                 inflight: 0,
-                write_tokens: write_burst_bytes as f64,
-                write_bytes_per_second,
-                write_burst_bytes,
-                last_refill: now,
+                live_connections: 0,
+                write_bytes: RateBucket::new(
+                    local_write_bytes_per_second,
+                    local_write_burst_bytes,
+                    write_burst_bytes,
+                    active_instances,
+                    now,
+                ),
+                append_requests: RateBucket::new(
+                    local_append_requests_per_second,
+                    local_append_request_burst,
+                    append_request_burst,
+                    active_instances,
+                    now,
+                ),
+                read_requests: RateBucket::new(
+                    local_read_requests_per_second,
+                    local_read_request_burst,
+                    read_request_burst,
+                    active_instances,
+                    now,
+                ),
+                read_bytes: RateBucket::new(
+                    local_read_bytes_per_second,
+                    local_read_burst_bytes,
+                    read_burst_bytes,
+                    active_instances,
+                    now,
+                ),
+                queue_receives: RateBucket::new(
+                    local_queue_receives_per_second,
+                    local_queue_receive_burst,
+                    queue_receive_burst,
+                    active_instances,
+                    now,
+                ),
                 last_seen: now,
             });
-        if state.write_bytes_per_second != write_bytes_per_second
-            || state.write_burst_bytes != write_burst_bytes
-        {
-            state.write_bytes_per_second = write_bytes_per_second;
-            state.write_burst_bytes = write_burst_bytes;
-            state.write_tokens = state.write_tokens.min(write_burst_bytes as f64);
-            state.last_refill = now;
-        }
-        if max_inflight > 0 && state.inflight >= max_inflight {
+        state.write_bytes.configure(
+            local_write_bytes_per_second,
+            local_write_burst_bytes,
+            write_burst_bytes,
+            active_instances,
+            now,
+        );
+        state.append_requests.configure(
+            local_append_requests_per_second,
+            local_append_request_burst,
+            append_request_burst,
+            active_instances,
+            now,
+        );
+        state.read_requests.configure(
+            local_read_requests_per_second,
+            local_read_request_burst,
+            read_request_burst,
+            active_instances,
+            now,
+        );
+        state.read_bytes.configure(
+            local_read_bytes_per_second,
+            local_read_burst_bytes,
+            read_burst_bytes,
+            active_instances,
+            now,
+        );
+        state.queue_receives.configure(
+            local_queue_receives_per_second,
+            local_queue_receive_burst,
+            queue_receive_burst,
+            active_instances,
+            now,
+        );
+        if local_max_inflight > 0 && state.inflight >= local_max_inflight {
             return Err(ThrottleReason {
                 scope: "customer",
                 dimension: "connections",
                 limit: max_inflight as u64,
-                observed: state.inflight.saturating_add(1) as u64,
+                observed: (state.inflight.saturating_add(1) as u64)
+                    .saturating_mul(active_instances as u64),
+            });
+        }
+        if is_live
+            && local_max_live_connections > 0
+            && state.live_connections >= local_max_live_connections
+        {
+            return Err(ThrottleReason {
+                scope: "customer",
+                dimension: "live_connections",
+                limit: max_live_connections as u64,
+                observed: (state.live_connections.saturating_add(1) as u64)
+                    .saturating_mul(active_instances as u64),
             });
         }
         state.inflight += 1;
+        if is_live {
+            state.live_connections += 1;
+        }
         state.last_seen = now;
         Ok(TenantAdmissionGuard {
             admission: Some(self.clone()),
             customer_id: customer_id.to_string(),
+            is_live,
+        })
+    }
+
+    fn charge_request(&self, customer_id: &str, quota: RequestQuota) -> Result<(), ThrottleReason> {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(state) = inner.customers.get_mut(customer_id) else {
+            return Err(ThrottleReason {
+                scope: "instance",
+                dimension: "customer_admission_states",
+                limit: self.customer_capacity as u64,
+                observed: self.customer_capacity.saturating_add(1) as u64,
+            });
+        };
+        let (bucket, dimension) = match quota {
+            RequestQuota::Append => (&mut state.append_requests, "append_burst_requests"),
+            RequestQuota::Read => (&mut state.read_requests, "read_burst_requests"),
+            RequestQuota::QueueReceive => {
+                (&mut state.queue_receives, "queue_receive_burst_requests")
+            }
+        };
+        let now = std::time::Instant::now();
+        let result = bucket.try_charge(1, now);
+        state.last_seen = now;
+        result.map_err(|(limit, observed)| ThrottleReason {
+            scope: "customer",
+            dimension,
+            limit,
+            observed,
         })
     }
 
@@ -273,32 +564,37 @@ impl TenantAdmission {
                 })
             };
         };
-        if state.write_bytes_per_second == 0 || bytes == 0 {
-            return Ok(());
-        }
         let now = std::time::Instant::now();
-        let refill = now.duration_since(state.last_refill).as_secs_f64()
-            * state.write_bytes_per_second as f64;
-        state.write_tokens = (state.write_tokens + refill).min(state.write_burst_bytes as f64);
-        state.last_refill = now;
         state.last_seen = now;
-        if bytes as f64 > state.write_tokens {
-            let consumed = state.write_burst_bytes as f64 - state.write_tokens;
-            return Err(ThrottleReason {
+        state
+            .write_bytes
+            .try_charge(bytes, now)
+            .map_err(|(limit, observed)| ThrottleReason {
                 scope: "customer",
                 dimension: "write_burst_bytes",
-                limit: state.write_burst_bytes,
-                observed: (consumed + bytes as f64).ceil().min(u64::MAX as f64) as u64,
-            });
-        }
-        state.write_tokens -= bytes as f64;
-        Ok(())
+                limit,
+                observed,
+            })
+    }
+
+    fn reserve_read_delay(&self, customer_id: &str, bytes: usize) -> Duration {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(state) = inner.customers.get_mut(customer_id) else {
+            // The response guard pins its state, so absence is only possible
+            // for an internal misuse. Do not turn that into unlimited egress.
+            return Duration::from_secs(1);
+        };
+        let now = std::time::Instant::now();
+        let delay = state.read_bytes.reserve_delay(bytes, now);
+        state.last_seen = now;
+        delay
     }
 }
 
 struct TenantAdmissionGuard {
     admission: Option<Arc<TenantAdmission>>,
     customer_id: String,
+    is_live: bool,
 }
 
 impl Drop for TenantAdmissionGuard {
@@ -309,9 +605,91 @@ impl Drop for TenantAdmissionGuard {
         let mut inner = admission.inner.lock().unwrap();
         if let Some(state) = inner.customers.get_mut(&self.customer_id) {
             state.inflight = state.inflight.saturating_sub(1);
+            if self.is_live {
+                state.live_connections = state.live_connections.saturating_sub(1);
+            }
             state.last_seen = std::time::Instant::now();
         }
     }
+}
+
+/// Owns a tenant admission guard until the response body is fully consumed or
+/// abandoned. Handler futures complete as soon as they construct a response,
+/// which is much earlier than an SSE or other streaming body closes.
+struct TenantAdmissionBody {
+    inner: Body,
+    guard: TenantAdmissionGuard,
+    meter_egress: bool,
+    pending_frame: Option<http_body::Frame<Bytes>>,
+    delay: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl HttpBody for TenantAdmissionBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(delay) = &mut this.delay {
+            if delay.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            this.delay = None;
+            return Poll::Ready(this.pending_frame.take().map(Ok));
+        }
+
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) if this.meter_egress => {
+                let bytes = frame.data_ref().map_or(0, Bytes::len);
+                let delay = this
+                    .guard
+                    .admission
+                    .as_ref()
+                    .map(|admission| admission.reserve_read_delay(&this.guard.customer_id, bytes))
+                    .unwrap_or_default();
+                if delay.is_zero() {
+                    Poll::Ready(Some(Ok(frame)))
+                } else {
+                    this.pending_frame = Some(frame);
+                    let mut sleep = Box::pin(tokio::time::sleep(delay));
+                    let result = sleep.as_mut().poll(cx);
+                    this.delay = Some(sleep);
+                    debug_assert!(result.is_pending());
+                    Poll::Pending
+                }
+            }
+            result => result,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+fn hold_tenant_admission(
+    response: Response,
+    guard: TenantAdmissionGuard,
+    meter_egress: bool,
+) -> Response {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(
+        parts,
+        Body::new(TenantAdmissionBody {
+            inner: body,
+            guard,
+            meter_egress,
+            pending_frame: None,
+            delay: None,
+        }),
+    )
 }
 
 async fn body_with_quota(
@@ -354,6 +732,8 @@ async fn body_with_quota(
 async fn admit_customer(
     state: &Arc<AppState>,
     customer_id: &str,
+    quota: Option<RequestQuota>,
+    is_live: bool,
 ) -> Result<(TenantAdmissionGuard, crate::registry::CustomerLimits), Response> {
     let limits = state
         .registry
@@ -373,13 +753,26 @@ async fn admit_customer(
         })?;
     let guard = state
         .tenant_admission
-        .enter(customer_id, &limits)
+        .enter(
+            customer_id,
+            &limits,
+            is_live,
+            state.ring_active.read().unwrap().len().max(1),
+        )
         .map_err(|reason| {
             state
                 .admit_shed
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             throttled_resp(reason, 1)
         })?;
+    if let Some(quota) = quota
+        && let Err(reason) = state.tenant_admission.charge_request(customer_id, quota)
+    {
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return Err(throttled_resp(reason, 1));
+    }
     Ok((guard, limits))
 }
 
@@ -977,11 +1370,18 @@ async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
     if !principal.allows_verb(Verb::List) {
         return forbidden();
     }
-    let (_tenant_guard, _) = match admit_customer(&state, &principal.customer_id).await {
+    let (tenant_guard, _) = match admit_customer(
+        &state,
+        &principal.customer_id,
+        Some(RequestQuota::Read),
+        false,
+    )
+    .await
+    {
         Ok(admission) => admission,
         Err(response) => return response,
     };
-    match state.registry.list(&principal.customer_id, 1000).await {
+    let response = match state.registry.list(&principal.customer_id, 1000).await {
         Ok(streams) => {
             let body: Vec<_> = streams
                 .iter()
@@ -1006,7 +1406,8 @@ async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
             "internal",
             &e.to_string(),
         ),
-    }
+    };
+    hold_tenant_admission(response, tenant_guard, true)
 }
 
 #[derive(Deserialize, Default)]
@@ -1046,10 +1447,26 @@ async fn stream_entry(
         Ok(principal) => principal,
         Err(response) => return response,
     };
-    let (_tenant_guard, limits) = match admit_customer(&state, &principal.customer_id).await {
-        Ok(admission) => admission,
-        Err(response) => return response,
+    let queue_receive = method == Method::POST
+        && name
+            .split_once("/queue/")
+            .is_some_and(|(_, route)| route.ends_with("/receive"));
+    let request_quota = if queue_receive {
+        Some(RequestQuota::QueueReceive)
+    } else if matches!(method, Method::GET | Method::HEAD) {
+        Some(RequestQuota::Read)
+    } else if method == Method::POST && !name.contains("/queue/") && !name.contains("/touch/") {
+        Some(RequestQuota::Append)
+    } else {
+        None
     };
+    let is_live = (method == Method::GET && params.live.is_some()) || queue_receive;
+    let meter_egress = method == Method::GET || queue_receive;
+    let (tenant_guard, limits) =
+        match admit_customer(&state, &principal.customer_id, request_quota, is_live).await {
+            Ok(admission) => admission,
+            Err(response) => return response,
+        };
     let started = std::time::Instant::now();
     let audit_customer = principal.customer_id.clone();
     let audit_token = principal.token_id.clone();
@@ -1096,7 +1513,7 @@ async fn stream_entry(
                     header::RETRY_AFTER,
                     axum::http::HeaderValue::from_static("1"),
                 );
-                return response;
+                return hold_tenant_admission(response, tenant_guard, meter_egress);
             }
         }
     } else if sample_data_plane {
@@ -1114,7 +1531,7 @@ async fn stream_entry(
             "request audit"
         );
     }
-    resp
+    hold_tenant_admission(resp, tenant_guard, meter_egress)
 }
 
 async fn stream_entry_inner(
@@ -4477,6 +4894,27 @@ pub async fn metrics_flusher(
 mod tests {
     use super::*;
 
+    fn admission_config(
+        max_inflight: usize,
+        write_bytes_per_second: u64,
+        write_burst_bytes: u64,
+    ) -> TenantAdmissionConfig {
+        TenantAdmissionConfig {
+            max_inflight,
+            max_live_connections: max_inflight,
+            write_bytes_per_second,
+            write_burst_bytes,
+            append_requests_per_second: 0,
+            append_request_burst: 1,
+            read_requests_per_second: 0,
+            read_request_burst: 1,
+            read_bytes_per_second: 0,
+            read_burst_bytes: 1,
+            queue_receives_per_second: 0,
+            queue_receive_burst: 1,
+        }
+    }
+
     #[test]
     fn frame_response_preserves_original_envelope_metadata() {
         let key = StreamKey([9u8; 32]);
@@ -4523,11 +4961,11 @@ mod tests {
 
     #[test]
     fn tenant_admission_is_isolated_and_releases_cardinality() {
-        let admission = TenantAdmission::new(1, 10, 10);
+        let admission = TenantAdmission::new(admission_config(1, 10, 10));
         let limits = crate::registry::CustomerLimits::default();
-        let first = admission.enter("customer-a", &limits).unwrap();
+        let first = admission.enter("customer-a", &limits, false, 1).unwrap();
         assert_eq!(
-            admission.enter("customer-a", &limits).err(),
+            admission.enter("customer-a", &limits, false, 1).err(),
             Some(ThrottleReason {
                 scope: "customer",
                 dimension: "connections",
@@ -4535,7 +4973,7 @@ mod tests {
                 observed: 2,
             })
         );
-        let other = admission.enter("customer-b", &limits).unwrap();
+        let other = admission.enter("customer-b", &limits, false, 1).unwrap();
         assert_eq!(admission.inner.lock().unwrap().customers.len(), 2);
         assert!(admission.charge_write("customer-a", 10).is_ok());
         assert_eq!(
@@ -4549,7 +4987,7 @@ mod tests {
         );
 
         drop(first);
-        assert!(admission.enter("customer-a", &limits).is_ok());
+        assert!(admission.enter("customer-a", &limits, false, 1).is_ok());
         drop(other);
         assert!(
             admission
@@ -4567,12 +5005,161 @@ mod tests {
             write_burst_bytes: Some(1),
             ..Default::default()
         };
-        let _guard = admission.enter("customer-unlimited", &unlimited).unwrap();
+        let _guard = admission
+            .enter("customer-unlimited", &unlimited, false, 1)
+            .unwrap();
         assert!(
             admission
                 .charge_write("customer-unlimited", usize::MAX / 2)
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn tenant_admission_lives_until_response_body_closes_or_disconnects() {
+        let admission = TenantAdmission::new(admission_config(1, 0, 1));
+        let limits = crate::registry::CustomerLimits::default();
+
+        let guard = admission.enter("customer-a", &limits, true, 1).unwrap();
+        let response = hold_tenant_admission(
+            Response::new(Body::from(Bytes::from_static(b"streaming"))),
+            guard,
+            false,
+        );
+        assert_eq!(
+            admission
+                .enter("customer-a", &limits, true, 1)
+                .err()
+                .expect("second connection must be throttled"),
+            ThrottleReason {
+                scope: "customer",
+                dimension: "connections",
+                limit: 1,
+                observed: 2,
+            }
+        );
+        assert_eq!(
+            axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"streaming")
+        );
+        let guard = admission.enter("customer-a", &limits, true, 1).unwrap();
+
+        // Dropping an unconsumed response models a client disconnect. The
+        // body-owned guard must release the slot even if it is never polled.
+        let response = hold_tenant_admission(Response::new(Body::empty()), guard, false);
+        assert!(admission.enter("customer-a", &limits, true, 1).is_err());
+        drop(response);
+        assert!(admission.enter("customer-a", &limits, true, 1).is_ok());
+    }
+
+    #[test]
+    fn tenant_request_and_live_connection_dimensions_are_independent() {
+        let mut config = admission_config(4, 0, 1);
+        config.max_live_connections = 1;
+        config.append_requests_per_second = 1;
+        config.append_request_burst = 1;
+        config.read_requests_per_second = 1;
+        config.read_request_burst = 1;
+        config.queue_receives_per_second = 1;
+        config.queue_receive_burst = 1;
+        let admission = TenantAdmission::new(config);
+        let limits = crate::registry::CustomerLimits::default();
+
+        let live = admission.enter("customer-a", &limits, true, 1).unwrap();
+        assert_eq!(
+            admission.enter("customer-a", &limits, true, 1).err(),
+            Some(ThrottleReason {
+                scope: "customer",
+                dimension: "live_connections",
+                limit: 1,
+                observed: 2,
+            })
+        );
+        // A finite request still fits under the separate all-request ceiling.
+        let finite = admission.enter("customer-a", &limits, false, 1).unwrap();
+        for (quota, dimension) in [
+            (RequestQuota::Append, "append_burst_requests"),
+            (RequestQuota::Read, "read_burst_requests"),
+            (RequestQuota::QueueReceive, "queue_receive_burst_requests"),
+        ] {
+            assert!(admission.charge_request("customer-a", quota).is_ok());
+            assert_eq!(
+                admission.charge_request("customer-a", quota).unwrap_err(),
+                ThrottleReason {
+                    scope: "customer",
+                    dimension,
+                    limit: 1,
+                    observed: 2,
+                }
+            );
+        }
+        drop((live, finite));
+        assert_eq!(
+            admission
+                .inner
+                .lock()
+                .unwrap()
+                .customers
+                .get("customer-a")
+                .unwrap()
+                .live_connections,
+            0
+        );
+    }
+
+    #[test]
+    fn tenant_limits_are_shared_across_fresh_fleet_membership() {
+        let mut config = admission_config(4, 0, 1);
+        config.append_requests_per_second = 4;
+        config.append_request_burst = 4;
+        let admission = TenantAdmission::new(config);
+        let limits = crate::registry::CustomerLimits::default();
+
+        let _first = admission.enter("customer-a", &limits, false, 2).unwrap();
+        let _second = admission.enter("customer-a", &limits, false, 2).unwrap();
+        assert_eq!(
+            admission.enter("customer-a", &limits, false, 2).err(),
+            Some(ThrottleReason {
+                scope: "customer",
+                dimension: "connections",
+                limit: 4,
+                observed: 6,
+            })
+        );
+        assert!(
+            admission
+                .charge_request("customer-a", RequestQuota::Append)
+                .is_ok()
+        );
+        assert!(
+            admission
+                .charge_request("customer-a", RequestQuota::Append)
+                .is_ok()
+        );
+        assert_eq!(
+            admission
+                .charge_request("customer-a", RequestQuota::Append)
+                .unwrap_err(),
+            ThrottleReason {
+                scope: "customer",
+                dimension: "append_burst_requests",
+                limit: 4,
+                observed: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn read_bandwidth_reservations_serialize_without_dropping_frames() {
+        let now = std::time::Instant::now();
+        let mut bucket = RateBucket::new(10, 10, 10, 1, now);
+        assert_eq!(bucket.reserve_delay(10, now), Duration::ZERO);
+        let second = bucket.reserve_delay(10, now);
+        let third = bucket.reserve_delay(10, now);
+        assert!(second >= Duration::from_millis(999));
+        assert!(third >= Duration::from_millis(1999));
     }
 
     #[tokio::test]

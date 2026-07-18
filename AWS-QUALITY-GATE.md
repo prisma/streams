@@ -18,7 +18,7 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, stale topology and manifest-discovery LIST responses, corrupt immutable SST responses, and pre/post-commit timeout/429/5xx/412 faults are automated. General measured recovery bounds remain. |
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. A real RS256/JWKS service drill proves identical-name isolation, per-tenant listing/non-disclosure, prefix/verb denial, live token revocation, and rollback-resistant revocation versions. Durable control-plane audit exists. An independent security review remains. |
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
-| Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Bounded, durable per-customer limit documents override concurrency/write-byte admission and enforce exact live stream-name counts through a cross-instance CAS lease plus authoritative recount. Every 429 carries a tested machine-readable scope, dimension, limit, observed value, and retry delay; moving shards are not mislabeled as queue pressure. Persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit/limit state is bounded. A production-JWT CI workload now proves an abusive throttled tenant cannot break another tenant's exact writes and enforces a baseline-relative local latency bound. Remaining dimensions are read rates/bytes, connection rates, queue receives, and per-stream weights; target-hardware isolation belongs to the performance gate. |
+| Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Strict durable customer documents cover append requests/bytes, read requests/bytes, live and total connections, queue receives, and exact live stream-name counts. Request/ingress excess is rejected before storage; response egress is paced without breaking admitted streams. Response-body-owned guards close the SSE lifetime escape. Fleet members enforce ceil-shares from fresh aggregate membership and report customer-wide limits. Black-box CI proves every dimension, disconnect release, restart-loaded policy, and measured egress pacing; the production-JWT noisy-neighbor latency drill still passes. Persistent per-tenant round-robin commit scheduling and bounded attacker-controlled state remain. Per-stream admission/weights and target-hardware isolation are the remaining resource gaps. |
 | Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split and sibling merge use renewable shard-store intents, post-durability fences, verified clones, and one-CAS topology publication, with calibrated 60%/10% hot/cold triggers. A renewable epoch-fenced aggregator now turns N heartbeats plus bounded router reports into one conditionally published `fleet.json`; other servers and the pilot router consume that snapshot, and desired capacity includes the 32-shards-per-instance floor. Per-stream hot-share enforcement and the global cell placement layer remain. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup/PITR copy actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup/fleet health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Immutable checksummed snapshots and an empty-target restore are exercised end to end. Injected SST corruption fails without a success or partial plaintext and recovers from the untouched source. Incremental PITR, retention, continuous scrub, provider failover, and measured RPO/RTO remain. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
@@ -171,7 +171,14 @@ documented cell limits. A feature described only in `SPEC.md`,
   observed live, and a lower revocation version cannot un-revoke a token.
 - Customer limit documents are hash-keyed, strictly validated, cached for 60
   seconds with bounded cardinality, and fail closed on corruption. They can
-  override concurrent requests and streaming write-byte buckets. Stream
+  override concurrent/live connections, append/read request buckets,
+  ingress/egress bytes, queue receives, and stream counts. Fleet members use
+  ceil-shares of the customer limit from fresh aggregate membership; response
+  bytes are paced across finite bodies and SSE. The admission guard is owned
+  by the HTTP body until EOF or disconnect, closing the handler-return escape.
+  CI exhausts each request bucket before storage, holds and releases an SSE
+  slot through a real client disconnect, restarts onto a stricter durable
+  policy, and measures a 4097-byte response paced at 1 KiB/s. Stream
   count decisions serialize across processes with a renewable CAS lease and
   count durable by-customer descriptors; CI races eight names through two
   processes against a limit of two, then proves delete/replacement capacity.
@@ -183,9 +190,9 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 ## Immediate red-gate queue
 
-1. Add the remaining account/per-stream quota dimensions and an independent
-   security review.
-2. Add per-stream hot-share enforcement and an explicit storage-format
+1. Complete an independent security/envelope review and full ciphertext-at-rest
+   inspection.
+2. Add per-stream admission/hot-share enforcement and an explicit storage-format
    migration/rollback plan.
 3. Replace full snapshots with checkpoint-pinned incremental PITR, add bounded
    retention/GC and continuous manifest/SST scrubbing, then measure RPO/RTO in

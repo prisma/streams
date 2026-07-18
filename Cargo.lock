@@ -3220,6 +3220,7 @@ dependencies = [
  "hdrhistogram",
  "hkdf",
  "hmac",
+ "http-body",
  "jsonwebtoken",
  "libc",
  "mimalloc",
