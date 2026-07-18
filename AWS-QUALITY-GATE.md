@@ -17,12 +17,12 @@ documented cell limits. A feature described only in `SPEC.md`,
 |---|---|---|
 | Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, stale topology and manifest-discovery LIST responses, corrupt immutable SST responses, and pre/post-commit timeout/429/5xx/412 faults are automated. General measured recovery bounds remain. |
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. A real RS256/JWKS service drill proves identical-name isolation, per-tenant listing/non-disclosure, prefix/verb denial, live token revocation, and rollback-resistant revocation versions. Durable control-plane audit exists. An independent security review remains. |
-| Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
+| Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Canonical frame parsing, incarnation-bound history block encryption, read-old/write-selectable migration, and bounded/zeroized root-key lifetimes are tested. An exact stable-corpus scan proves payload and printable/raw key bytes absent from primary and recovery objects and rejects a deliberate leak. Independent review and a real-corpus inspection remain. |
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Green (software gate).** Strict durable customer documents cover append requests/bytes, read requests/bytes, live and total connections, queue receives, and exact live stream-name counts. Immutable stream descriptors add incarnation-scoped append request/byte buckets and bounded commit weights. Request/ingress excess is rejected before shard work; response egress is paced without breaking admitted streams. Response-body guards close the SSE lifetime escape. Fleet members enforce customer ceil-shares from fresh membership. The shard owner schedules equal tenant turns, then weighted stream turns, rotating oversized heads. Black-box CI proves every account/stream dimension, sibling isolation, disconnect release, restart-loaded policy, exact producer continuation, and measured egress pacing. Target-hardware isolation remains in the performance gate. |
 | Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split and sibling merge use renewable shard-store intents, post-durability fences, verified clones, and one-CAS topology publication, with calibrated 60%/10% hot/cold triggers. A renewable epoch-fenced aggregator turns N bounded heartbeats plus router reports into one conditionally published `fleet.json`; servers and the pilot router consume that snapshot, and desired capacity includes the 32-shards-per-instance floor. Per-stream admission plus hierarchical owner scheduling bound hot-stream share. The global cell-placement/IAM layer remains. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup recovery-point actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup/fleet health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Recovery points pin every initialized shard, active history DB, and external ancestor; explicitly record absent lazy DBs; expose only selected manifest closure/compactions/WAL state; reuse content-addressed blobs; prune expired points/unreferenced blobs; and continuously hash referenced recovery content using a durable provider-independent cursor. Pre-manifest acknowledged WALs are ETag-fenced and copied immediately when each DB cut is observed, so source GC cannot overtake the later inventory walk. A clock-independent renewal/observation lease epoch-orders mutable backup publications; followers require observed liveness plus post-observation relative-age health. Format 3 checksum-rehomes unchanged blobs into epoch-specific paths, making a delayed old-epoch delete physically unable to damage its successor. A second durable cursor logically decodes live shard manifests/SSTs/WALs and checks customer-key history ciphertext against writer-verified immutable digests. Primary failure invalidates snapshot health until a full repaired sweep publishes a new point. History enumeration fails closed above the 100,000-DB cell bound. CI restores adjacent points, deletes an eagerly protected WAL from primary before inventory, proves coordinator takeover, and corrupts live shard plus encrypted-history SSTs. The generic drill checks both providers' required S3 semantics, cuts the primary, measures the exact recovered-record RPO and first-decrypted-read RTO, and proves post-activation writes. Its two-process emulator run measured 8.582 s/477 ms; a real independent-provider run remains. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
-| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, and a two-process provider-cut drill run in CI alongside the upstream suite. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
+| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, a two-process provider cut, and stable primary/recovery at-rest inspection run in CI alongside the upstream suite. Pinned `cargo-deny` gates advisories/yanks, licenses, wildcard/banned crates, and sources; weekly Cargo/Actions updates re-enter the same gate. Real mixed-version canary/rollback and soak automation remain. |
 | Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** Pilot benchmarks are valuable but are not a repeatable release gate. |
 
 ## Non-negotiable release scenarios
@@ -57,6 +57,21 @@ documented cell limits. A feature described only in `SPEC.md`,
 - `format=frames` preserves timestamp, routing key, and key version, restoring
   byte-identical deterministic ciphertext across the hot and history tiers.
 - Frame decoding rejects non-canonical unauthenticated suffixes.
+- `StreamKey` clones zeroize on drop, while the bounded history-key cache also
+  expires entries and clears incarnation bytes. History envelope 2 derives an
+  HKDF key from the root key plus the 32-byte tenant/name/incarnation identity
+  and authenticates that identity, preventing valid-block relocation between
+  streams that reuse a customer key. The dual reader accepts legacy blocks;
+  `HISTORY_BLOCK_WRITE_FORMAT` provides the required read-first/flip/rollback
+  sequence, with cross-incarnation and legacy-read tests. A black-box CI cell
+  writes/absorbs envelope 1, flips to envelope 2 over the same DB, rolls the
+  dual reader back to writer 1, then finalizes on writer 2 while proving the
+  mixed history remains byte-for-byte readable at every step.
+- `streams-at-rest-check` conditionally reads every object between two exact
+  bounded inventories and scans chunk boundaries without printing forbidden
+  material. CI forces hot, absorbed-history, and recovery content, proves a
+  unique payload plus printable/raw root-key bytes absent from both corpora,
+  and rejects a deliberate plaintext object.
 - A fenced shard now fails in-flight and queued work promptly and shuts down
   its committer/flush tasks instead of retaining an engine per ownership move.
 - Registry, storage, routing, listing, and metrics identities are customer
@@ -80,6 +95,14 @@ documented cell limits. A feature described only in `SPEC.md`,
   on sink failure.
 - CI now enforces formatting, warning-free service clippy, tests, all-target
   checking, and a restart/dedupe/auth smoke against the S3 emulator.
+- CI now enforces the locked dependency graph with `cargo-deny`: unknown
+  registries/Git sources, wildcard requirements, OpenSSL/native-TLS, unapproved
+  licenses, yanked crates, and non-excepted advisories fail. The first run
+  upgraded `object_store` 0.14.0→0.14.1 / `quick-xml` 0.40.1→0.41.0 to remove
+  two remotely reachable XML CPU/memory DoS advisories, pinned `crc-fast` 1.7.1
+  to remove yanked `spin` 0.10.0, and collapsed direct reqwest onto 0.13. Three
+  narrow transitive exceptions have reachability/removal rationale in
+  `SECURITY.md`; Dependabot checks Cargo and Actions weekly.
 - Recovery points hold expiring SlateDB checkpoints across topology rechecks,
   filter live shards, active history DBs, and external DBs to exact
   manifest/compactions/WAL state, and treat lazy uninitialized DBs as
@@ -256,10 +279,13 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 ## Immediate red-gate queue
 
-1. Complete an independent security/envelope review and full ciphertext-at-rest
-   inspection.
+1. Complete an independent security/envelope review and run the now-automated
+   stable-corpus ciphertext inspection against a production-shaped real corpus;
+   hermetic primary/recovery and deliberate-leak controls are complete.
 2. Exercise the documented primary-storage migration contract in a real
-   mixed-version canary before the first post-v2 live-format change.
+   mixed-binary canary before the first post-v2 live-format change. The
+   hermetic read-first/v2-flip/dual-reader-rollback state sequence is automated;
+   it does not replace a deployed old/new binary wave.
 3. Measure RPO/RTO in a real independent-provider failover drill; the primary
    and independent recovery corpus now have bounded continuous integrity
    evidence; recovery points are epoch-isolated, lease-ordered, checkpoint-
@@ -269,5 +295,6 @@ documented cell limits. A feature described only in `SPEC.md`,
    are complete; production provider credentials are not configured here.
 4. Implement the multi-cell placement/control plane with per-cell IAM and
    tenant placement limits.
-5. Add dependency/license/security scanning, mixed-version canary/rollback
-   automation, and the 24-hour target-hardware release soak.
+5. Run the real mixed-version canary/rollback and add the 24-hour target-
+   hardware release soak. Dependency/advisory/license/source scanning and the
+   hermetic history-format migration sequence are automated.

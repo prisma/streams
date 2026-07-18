@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use bytes::Bytes;
+use hkdf::Hkdf;
 use object_store::ObjectStore;
+use sha2::Sha256;
 use slatedb::config::{CompressionCodec, Settings, WriteOptions};
 use slatedb::{BlockTransformer, Db, DbReader, WriteBatch};
 use tokio::sync::mpsc;
@@ -25,16 +27,58 @@ use crate::crypto::{StreamKey, decode_frame, decrypt_frame, derive_subkey, hex};
 use crate::registry::StorageHash;
 use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
-// ---- block transformer: AES-256-GCM with a random nonce per block ----
+// ---- block transformer: incarnation-bound AES-256-GCM ----
+
+const HISTORY_BLOCK_V2_MAGIC: [u8; 16] = *b"PRISMA-HIST-V2\0\0";
+const HISTORY_BLOCK_V2_KEY_INFO: &[u8] = b"prisma-streams-history-block-v2";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryBlockWriteFormat {
+    LegacyV1,
+    BoundV2,
+}
+
+impl TryFrom<u8> for HistoryBlockWriteFormat {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::LegacyV1),
+            2 => Ok(Self::BoundV2),
+            _ => anyhow::bail!("HISTORY_BLOCK_WRITE_FORMAT must be 1 or 2"),
+        }
+    }
+}
 
 pub struct AesBlockTransformer {
+    /// Read-only compatibility for history SSTs written before the block
+    /// envelope was bound to a stream incarnation. New writes never use it.
+    legacy_cipher: Aes256Gcm,
     cipher: Aes256Gcm,
+    aad: [u8; HISTORY_BLOCK_V2_MAGIC.len() + 32],
+    write_format: HistoryBlockWriteFormat,
 }
 
 impl AesBlockTransformer {
-    pub fn new(key: &StreamKey) -> AesBlockTransformer {
+    pub fn new(
+        key: &StreamKey,
+        storage_hash: &StorageHash,
+        write_format: HistoryBlockWriteFormat,
+    ) -> AesBlockTransformer {
+        let hk = Hkdf::<Sha256>::new(Some(storage_hash), &key.0);
+        let mut derived = [0u8; crate::crypto::KEY_LEN];
+        hk.expand(HISTORY_BLOCK_V2_KEY_INFO, &mut derived)
+            .expect("history block key HKDF expand");
+        let mut aad = [0u8; HISTORY_BLOCK_V2_MAGIC.len() + 32];
+        aad[..HISTORY_BLOCK_V2_MAGIC.len()].copy_from_slice(&HISTORY_BLOCK_V2_MAGIC);
+        aad[HISTORY_BLOCK_V2_MAGIC.len()..].copy_from_slice(storage_hash);
+        let cipher = Aes256Gcm::new((&derived).into());
+        derived.fill(0);
         AesBlockTransformer {
-            cipher: Aes256Gcm::new((&key.0).into()),
+            legacy_cipher: Aes256Gcm::new((&key.0).into()),
+            cipher,
+            aad,
+            write_format,
         }
     }
 }
@@ -45,29 +89,64 @@ impl BlockTransformer for AesBlockTransformer {
         let mut nonce = [0u8; 12];
         use rand::RngCore;
         rand::rng().fill_bytes(&mut nonce);
+        if self.write_format == HistoryBlockWriteFormat::LegacyV1 {
+            let ct = self
+                .legacy_cipher
+                .encrypt(
+                    Nonce::from_slice(&nonce),
+                    Payload {
+                        msg: &data,
+                        aad: b"",
+                    },
+                )
+                .map_err(|_| block_err("legacy block encrypt failed"))?;
+            let mut out = Vec::with_capacity(12 + ct.len());
+            out.extend_from_slice(&nonce);
+            out.extend_from_slice(&ct);
+            return Ok(Bytes::from(out));
+        }
         let ct = self
             .cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
                 Payload {
                     msg: &data,
-                    aad: b"",
+                    aad: &self.aad,
                 },
             )
             .map_err(|_| block_err("block encrypt failed"))?;
-        let mut out = Vec::with_capacity(12 + ct.len());
+        let mut out = Vec::with_capacity(HISTORY_BLOCK_V2_MAGIC.len() + 12 + ct.len());
+        out.extend_from_slice(&HISTORY_BLOCK_V2_MAGIC);
         out.extend_from_slice(&nonce);
         out.extend_from_slice(&ct);
         Ok(Bytes::from(out))
     }
 
     async fn decode(&self, data: Bytes) -> Result<Bytes, slatedb::Error> {
-        if data.len() < 12 {
+        if data.starts_with(&HISTORY_BLOCK_V2_MAGIC) {
+            if data.len() < HISTORY_BLOCK_V2_MAGIC.len() + 12 + 16 {
+                return Err(block_err("versioned history block too short"));
+            }
+            let versioned = &data[HISTORY_BLOCK_V2_MAGIC.len()..];
+            let (nonce, ct) = versioned.split_at(12);
+            let pt = self
+                .cipher
+                .decrypt(
+                    Nonce::from_slice(nonce),
+                    Payload {
+                        msg: ct,
+                        aad: &self.aad,
+                    },
+                )
+                .map_err(|_| block_err("bound block decrypt failed (wrong incarnation?)"))?;
+            return Ok(Bytes::from(pt));
+        }
+        if data.len() < 12 + 16 {
             return Err(block_err("block too short"));
         }
         let (nonce, ct) = data.split_at(12);
         let pt = self
-            .cipher
+            .legacy_cipher
             .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: b"" })
             .map_err(|_| block_err("block decrypt failed (wrong stream key?)"))?;
         Ok(Bytes::from(pt))
@@ -307,6 +386,9 @@ pub struct AbsorberConfig {
     /// Maximum encrypted history SST size accepted by the writer-verified
     /// integrity ledger and the continuous cell scrubber.
     pub integrity_max_object_bytes: u64,
+    /// Read-old/write-selected block envelope. Existing cells deploy a v1
+    /// read-first wave before flipping to incarnation-bound v2.
+    pub history_block_write_format: HistoryBlockWriteFormat,
 }
 
 impl Default for AbsorberConfig {
@@ -318,6 +400,7 @@ impl Default for AbsorberConfig {
             batch_puts: 4_096,
             pass_bytes: 256 * 1024 * 1024,
             integrity_max_object_bytes: 256 * 1024 * 1024,
+            history_block_write_format: HistoryBlockWriteFormat::BoundV2,
         }
     }
 }
@@ -483,7 +566,11 @@ impl Absorber {
 
         // Open the history DB maintenance-free, bulk write, explicit flush
         // (F2), close.
-        let transformer = Arc::new(AesBlockTransformer::new(&key));
+        let transformer = Arc::new(AesBlockTransformer::new(
+            &key,
+            hash,
+            self.cfg.history_block_write_format,
+        ));
         let path = history_db_path(hash);
         let db = Db::builder(path.as_str(), self.data_store.clone())
             .with_settings(history_settings())
@@ -556,7 +643,11 @@ pub async fn read_history(
     max_bytes: usize,
 ) -> anyhow::Result<HistoryReadResult> {
     let reader = DbReader::builder(history_db_path(hash).as_str(), data_store.clone())
-        .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
+        .with_block_transformer(Arc::new(AesBlockTransformer::new(
+            key,
+            hash,
+            HistoryBlockWriteFormat::BoundV2,
+        )))
         .build()
         .await?;
     let mut out = HistoryReadResult {
@@ -612,6 +703,60 @@ pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn history_blocks_bind_new_writes_to_the_stream_incarnation() {
+        let key = StreamKey([7; 32]);
+        let left = AesBlockTransformer::new(&key, &[1; 32], HistoryBlockWriteFormat::BoundV2);
+        let right = AesBlockTransformer::new(&key, &[2; 32], HistoryBlockWriteFormat::BoundV2);
+        let encoded = left
+            .encode(Bytes::from_static(b"incarnation-bound history"))
+            .await
+            .unwrap();
+        assert!(encoded.starts_with(&HISTORY_BLOCK_V2_MAGIC));
+        assert_eq!(
+            left.decode(encoded.clone()).await.unwrap(),
+            Bytes::from_static(b"incarnation-bound history")
+        );
+        assert!(
+            right.decode(encoded).await.is_err(),
+            "a valid block must not relocate across stream incarnations"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_blocks_read_legacy_raw_key_envelopes_without_writing_them() {
+        let key = StreamKey([9; 32]);
+        let nonce = [3u8; 12];
+        let legacy_cipher = Aes256Gcm::new((&key.0).into());
+        let legacy_ct = legacy_cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: b"legacy history",
+                    aad: b"",
+                },
+            )
+            .unwrap();
+        let mut legacy = Vec::with_capacity(nonce.len() + legacy_ct.len());
+        legacy.extend_from_slice(&nonce);
+        legacy.extend_from_slice(&legacy_ct);
+
+        let transformer =
+            AesBlockTransformer::new(&key, &[4; 32], HistoryBlockWriteFormat::BoundV2);
+        assert_eq!(
+            transformer.decode(Bytes::from(legacy)).await.unwrap(),
+            Bytes::from_static(b"legacy history")
+        );
+        assert!(
+            transformer
+                .encode(Bytes::from_static(b"new history"))
+                .await
+                .unwrap()
+                .starts_with(&HISTORY_BLOCK_V2_MAGIC),
+            "the migration reader must never emit a legacy envelope"
+        );
+    }
 
     #[test]
     fn key_cache_is_bounded() {

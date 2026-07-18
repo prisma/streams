@@ -22,6 +22,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
 | `streams-provider-check` | destructive unique-prefix probe for the conditional, consistency, range, multipart, copy, and delete semantics required from each recovery provider |
+| `streams-at-rest-check` | exact-ETag stable-corpus scan for operator-supplied forbidden payload/key byte patterns; emits aggregate evidence without echoing secrets |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
 | `bench` | single-node benchmark matrix (see [bench/run_matrix.sh](./bench/run_matrix.sh)) |
 | `livebench` | live end-to-end load harness (used for the PG-WAL invalidation stress) |
@@ -194,6 +195,7 @@ after the nominal window.
 | `WAL_GC_INTERVAL_SECS` / `WAL_GC_MIN_AGE_SECS` | 30 / 60 | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. `MIN_AGE` must cover shard-move replay (<1 s; 60 s is generous) |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
+| `HISTORY_BLOCK_WRITE_FORMAT` | 2 | `1` emits legacy raw-key history blocks for the mandatory read-first wave; `2` emits HKDF/AAD incarnation-bound blocks. Readers accept both. Follow `STORAGE-MIGRATIONS.md` before changing an existing cell |
 | `ABSORB_PASS_BYTES` | 256 MiB | plaintext held in memory per pass — keep well under instance RAM; pilot used 32 MiB on 1-GB boxes |
 
 ### 3.3 Memory & runtime (1-GB instance discipline)
@@ -532,18 +534,22 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 
 ### 7.4 Deploy procedure (per release)
 
-1. Build + verify arch (§2). Upload binaries; capture presigned URLs.
-2. Roll servers one at a time from the canonical script (full env restated,
+1. Run `cargo deny check`, formatting, targeted warning-as-error clippy, the
+   full release suite, and every CI drill against the exact locked graph. The
+   three audited RustSec exceptions and removal conditions live in
+   `SECURITY.md`; no new exception is a routine dependency update.
+2. Build + verify arch (§2). Upload binaries; capture presigned URLs.
+3. Roll servers one at a time from the canonical script (full env restated,
    including the binary URL).
-3. **Health-gate each instance before the next**: poll `/health` up to
+4. **Health-gate each instance before the next**: poll `/health` up to
    ~2 min (wake + boot + shard reopen). If it 404s past that, check the
    version's *preview domain* (`cv-….prisma.build/health`) — service-domain
    404 with healthy preview = route propagation; both 404 = boot failure.
-4. Roll LBs the same way.
-5. Redeploying under live load can zombie an instance (observed ~once per
+5. Roll LBs the same way.
+6. Redeploying under live load can zombie an instance (observed ~once per
    ~20 deploys). The heal is simply another deploy. Watch the first minute
    of `/v1/debug/load` after each roll.
-6. After load tests: destroy generator versions, redeploy servers/LBs
+7. After load tests: destroy generator versions, redeploy servers/LBs
    *without* `KEEP_AWAKE` so the fleet scales to zero.
 
 ### 7.5 Platform failure modes you will meet
@@ -806,3 +812,16 @@ backups are ciphertext. Metrics stream is encrypted under `METRICS_KEY`.
 Full identity/custody/audit design: [OPERATIONS.md §3](./OPERATIONS.md).
 Never commit tokens, keys, or presigned URLs; the deploy scripts keep them
 in a local scratch directory outside the repo.
+
+For a release inspection, stop writers (or select an immutable recovered
+prefix), create a mode-0600 JSON file whose entries are base64-encoded forbidden
+payload/key byte patterns, and run `streams-at-rest-check` separately against
+every primary role prefix and the recovery prefix. The checker refuses empty,
+over-bound, ETag-less, or concurrently changing corpora and prints no forbidden
+bytes. Preserve its aggregate JSON with the release evidence, then securely
+remove the specification. `scripts/ci-at-rest-inspection.sh` is the hermetic
+example and includes a deliberate-leak negative control.
+
+Never flip `HISTORY_BLOCK_WRITE_FORMAT` on an existing cell ad hoc. Deploy the
+dual reader everywhere with writer 1, prove mixed-route reads and dark restore,
+then canary writer 2 as specified in [STORAGE-MIGRATIONS.md](./STORAGE-MIGRATIONS.md).

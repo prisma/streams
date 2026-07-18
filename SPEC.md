@@ -44,7 +44,7 @@ tails, routing-key reads) re-architected so that:
 | D4 | One **shard log** SlateDB per shard: ingest, durable+speculative tails, transient tail storage | group commit across all streams on the shard → PUT rate ∝ active shards (bounded), not active streams |
 | D5 | **Two-tier storage**: absorber drains shard log into per-stream **WAL-less SlateDBs** (history tier) | this is the no-dictionary path to ~90% compression (block zstd over plaintext inside the per-stream DB), gives exact per-stream physical size (manifest), and real byte deletion (prefix delete) |
 | D6 | **Three shared buckets** (ops, shard-logs, data; streams are prefixes), not per-stream buckets | avoids bucket-quota and provisioning friction at billions of streams; isolation moves into cryptography (D7); per-stream physical accounting comes from the per-stream DB manifest. Tigris has a global namespace with no per-prefix throughput limits, so bucket *pools* are unnecessary; splitting into pools remains a later option if provider limits ever appear |
-| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under per-routing-key subkeys** with deterministic nonces (see §3.7) | shard log stores per-record ciphertext; history tier uses SlateDB's `BlockTransformer` (encryption after compression) with the stream key; tenant deletion = crypto-erasure + async prefix delete |
+| D7 | Per-stream encryption keys attached to requests, never persisted; **payloads encrypted under domain- and incarnation-bound subkeys** (see §3.7) | shard log uses per-routing-key record ciphertext; history blocks use an HKDF key and AAD bound to the 32-byte tenant/name/incarnation storage identity after compression; tenant deletion = crypto-erasure + async prefix delete |
 | D8 | No zstd dictionaries | complexity rejected; the history tier's block compression makes them unnecessary |
 | D9 | Tigris for **everything** (WAL + SSTs); no S3 Express | benchmarked ~14–18 ms small-object ops → durable tail latency ~25–45 ms; single provider, zero egress fees on Standard |
 | D10 | Archive Instant Retrieval tiering **deferred** | designed (COMPUTE-SPEC §7) but not built now |
@@ -229,7 +229,12 @@ The envelope that makes this coherent across both tiers and the wire:
   with **zero cryptographic work on the tail path**.
 - **Tiers:** the shard log stores the wire form as-is. The history tier
   stores plaintext payloads inside block-zstd-compressed, block-transformer-
-  encrypted SSTs (stream key) — that's the ~90% compression — and origin
+  encrypted SSTs. The v2 block transformer derives a domain-separated key
+  from `(streamKey, storage identity)` and authenticates a version marker plus
+  that identity, so ciphertext cannot relocate across stream incarnations even
+  when a customer reuses a key. The dual reader retains legacy v1 compatibility
+  through the read-first migration in `STORAGE-MIGRATIONS.md`. This preserves
+  ~90% compression, and origin
   reads from history decrypt blocks and deterministically re-encrypt records
   to the identical wire form.
 - **Visibility boundary (accepted):** routing keys are *not* confidential to

@@ -16,12 +16,13 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub const FRAME_VER: u8 = 2;
 pub const KEY_LEN: usize = 32;
 pub const EPOCH_LEN: usize = 16;
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct StreamKey(pub [u8; KEY_LEN]);
 
 impl StreamKey {

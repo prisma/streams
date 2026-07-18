@@ -2,6 +2,7 @@
 name = "streams-slate"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 libc = "0.2"
@@ -12,9 +13,9 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = "0.4"
 hdrhistogram = "7"
-object_store = { version = "0.14", features = ["aws"] }
+object_store = { version = "0.14.1", features = ["aws"] }
 rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -35,6 +36,7 @@ tokio-stream = "0.1.18"
 uuid = "1"
 jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
 subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
@@ -85,3 +87,7 @@ path = "src/bin/restore.rs"
 [[bin]]
 name = "streams-provider-check"
 path = "src/bin/provider_check.rs"
+
+[[bin]]
+name = "streams-at-rest-check"
+path = "src/bin/at_rest_check.rs"

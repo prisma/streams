@@ -10,6 +10,7 @@ object the new release may publish.
 | surface | readable | writable | rollback boundary |
 |---|---:|---:|---|
 | live topology/shard/registry | 2 | 2 | pre-v2 pilot data is rejected; this service has no in-place v1 corpus |
+| history block envelope | legacy 1, bound 2 | 1 or 2 via `HISTORY_BLOCK_WRITE_FORMAT` | deploy the dual reader everywhere with writer 1 before any cell emits 2 |
 | encrypted-history integrity baseline | 1 | 1, create-only | baseline must precede readiness enforcement; never infer it without the customer key |
 | backup coordination lease / health / retention clock | lease 1 or 2 / health 2 / clock 1 | lease 2 / health 2 / clock 1 | protocol 1 is takeover input only; it is never trusted for readiness or eligible as a production rollback writer |
 | recovery point | 1, 2, 3 | 2 or 3 via `BACKUP_WRITE_FORMAT` | one binary release; format-1 and format-2 points remain restorable |
@@ -63,6 +64,43 @@ format-2 mode. Return to the new reader before restoring normal retention.
 Never roll back more than one release without first proving its read matrix
 against the corpus. Never delete format-3 objects to make a rollback appear
 successful.
+
+## Encrypted-history block envelope 1 to 2
+
+Legacy envelope 1 is `[random nonce | AES-256-GCM ciphertext]` under the raw
+customer stream key with empty AAD. It encrypts payloads but does not bind a
+valid block to a stream incarnation when a customer reuses the same key.
+Envelope 2 is `[16-byte PRISMA-HIST-V2 marker | random nonce | ciphertext]`.
+Its key is HKDF-SHA256 over the customer key with the 32-byte tenant/name/
+incarnation storage identity as salt and a fixed history-block domain; the
+marker plus that identity is authenticated as AAD. A block copied to another
+incarnation therefore fails authentication even when both streams use the same
+customer key. The 16-byte marker makes accidental legacy ambiguity a 2^-128
+event; a marked block never falls back to legacy decryption after an auth
+failure.
+
+The current reader accepts both envelopes and the writer is selected at boot:
+
+1. **Read-first wave:** deploy this binary to every instance with
+   `HISTORY_BLOCK_WRITE_FORMAT=1`. Exercise reads, absorbs, compaction,
+   primary scrubbing, recovery-point restore, and an instance rollback while
+   the corpus remains legacy-writable.
+2. **Canary flip:** set `HISTORY_BLOCK_WRITE_FORMAT=2` in one cell. Force
+   absorption and compaction, prove the mixed legacy/v2 DB reads through every
+   route, inspect primary and recovery objects for payload/key leakage, and
+   dark-restore the point. Do not run a pre-dual-reader binary after this step.
+3. **Fleet flip:** advance by the deployment waves in `COMPUTE-SPEC.md`.
+   Rollback uses the same dual-reader release with writer 1; it can read v2 but
+   emits legacy until the incident is resolved. Restoring a pre-flip point is
+   the only rollback path for a binary that cannot parse envelope 2.
+4. **Finish:** after the rollback window, make writer 2 mandatory. Normal
+   SlateDB compaction rewrites remaining legacy blocks under envelope 2; the
+   create-only integrity baseline protocol records each new ciphertext object
+   before its absorbed frontier becomes authoritative.
+
+No in-place object mutation is permitted. Envelope migration occurs only
+through normal fenced SlateDB writes/compaction and is protected by the same
+manifest CAS and recovery-point machinery as other history changes.
 
 ## Encrypted-history integrity baseline
 

@@ -52,9 +52,10 @@ ownership is a manifest property, not an instance property).
 
 ## 2. Backup, recovery points, and corruption recovery
 
-Everything at rest is ciphertext (§3.7 of SPEC.md), so **backup requires no
-tenant keys** — backups are exact object copies, useless without the
-customer-held keys.
+All tenant payloads at rest are ciphertext (§3.7 of SPEC.md); routing headers
+and bounded control/audit metadata are intentionally visible. **Backup requires
+no tenant keys** — it copies ciphertext and control objects exactly and cannot
+decrypt stream payloads without customer-held keys.
 
 **Implementation status (`slate-codex`, 2026-07-18):** the service publishes
 discrete, checkpoint-pinned incremental recovery points. Exact source ETags
@@ -217,6 +218,31 @@ Per-tenant counters remain full fidelity via the metrics stream. Audit-sink
 failure makes readiness fail and successful mutations return a retryable 503.
 The production retention/export actor must enforce 90-day retention and
 tenant-visible export.
+
+### 3.5 At-rest inspection and history-block binding
+
+`StreamKey` values and their request-local clones zeroize on drop; the bounded
+history key cache additionally expires entries and clears incarnation bytes.
+Keys are accepted only from requests/default development configuration and are
+never serialized into registry, audit, integrity, primary, or recovery
+objects.
+
+History block envelope 2 derives an HKDF key from the customer key and the
+32-byte tenant/name/incarnation storage identity, then authenticates a version
+marker plus that identity as AAD. Reusing one customer key for two streams no
+longer makes a valid encrypted block relocatable between them. The reader is
+legacy-compatible and the write-format flip follows the read-first contract in
+`STORAGE-MIGRATIONS.md`.
+
+`streams-at-rest-check` takes a bounded exact ETag inventory, scans every body
+with conditional reads for operator-supplied byte patterns, and repeats the
+inventory so concurrent mutation cannot yield a false pass. Forbidden bytes
+come from a private local file and never appear in its JSON evidence. CI forces
+hot-shard, encrypted-history, and recovery-point material, then proves a unique
+payload sentinel, its printable root key, and the decoded 32-byte root key are
+absent from both stable primary and recovery corpora. A deliberate plaintext
+object must fail the same checker. This is first-party verification; an
+independent envelope review remains mandatory before GA.
 
 ---
 

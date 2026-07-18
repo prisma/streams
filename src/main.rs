@@ -32,7 +32,9 @@ use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
 use slatedb::Db;
 use slatedb::config::Settings;
 
-use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
+use crate::history::{
+    Absorber, AbsorberConfig, HistoryBlockWriteFormat, KeyCache, absorber_channel,
+};
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
@@ -228,6 +230,12 @@ struct Args {
     absorb_bytes: u64,
     #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
     absorb_age_secs: u64,
+
+    /// History block envelope writer. Readers always accept legacy v1 and
+    /// incarnation-bound v2. Existing cells use 1 for the read-first wave,
+    /// then flip to 2 after every serving binary has the v2 reader.
+    #[arg(long, env = "HISTORY_BLOCK_WRITE_FORMAT", default_value_t = 2)]
+    history_block_write_format: u8,
 
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
@@ -743,6 +751,8 @@ fn start_topology_watcher(state: Arc<AppState>, store: Arc<dyn ObjectStore>) {
 
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let history_block_write_format =
+        HistoryBlockWriteFormat::try_from(args.history_block_write_format)?;
 
     anyhow::ensure!(
         args.auto_merge_cold_fraction_pct <= 20,
@@ -1077,6 +1087,7 @@ async fn async_main() -> anyhow::Result<()> {
                             threshold_age: Duration::from_secs(absorb_age),
                             pass_bytes: absorb_pass_bytes,
                             integrity_max_object_bytes: history_integrity_max_object_bytes,
+                            history_block_write_format,
                             ..Default::default()
                         },
                         absorb_rx,
