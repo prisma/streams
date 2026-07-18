@@ -72,6 +72,22 @@ struct Args {
     backup_path_prefix: Option<String>,
     #[arg(long, env = "BACKUP_INTERVAL_SECS", default_value_t = 300)]
     backup_interval_secs: u64,
+    /// Complete recovery points older than this are removed; unreferenced
+    /// content blobs and abandoned partial generations are reclaimed with it.
+    #[arg(long, env = "BACKUP_RETENTION_SECS", default_value_t = 7 * 24 * 60 * 60)]
+    backup_retention_secs: u64,
+    /// Expiry safety net for the SlateDB checkpoints that pin one backup's
+    /// manifest/SST set. Successful runs delete them eagerly.
+    #[arg(
+        long,
+        env = "BACKUP_CHECKPOINT_LIFETIME_SECS",
+        default_value_t = 60 * 60
+    )]
+    backup_checkpoint_lifetime_secs: u64,
+    #[arg(long, env = "BACKUP_SCRUB_INTERVAL_SECS", default_value_t = 60)]
+    backup_scrub_interval_secs: u64,
+    #[arg(long, env = "BACKUP_SCRUB_OBJECTS_PER_INTERVAL", default_value_t = 256)]
+    backup_scrub_objects_per_interval: usize,
     /// Release-mode guard: fail startup unless backup is configured.
     #[arg(long, env = "REQUIRE_BACKUP", default_value_t = false)]
     require_backup: bool,
@@ -850,21 +866,39 @@ async fn async_main() -> anyhow::Result<()> {
             args.backup_interval_secs >= 60,
             "BACKUP_INTERVAL_SECS must be at least 60"
         );
+        anyhow::ensure!(
+            args.backup_retention_secs >= args.backup_interval_secs.saturating_mul(2)
+                && args.backup_retention_secs <= 365 * 24 * 60 * 60,
+            "BACKUP_RETENTION_SECS must retain at least two intervals and at most one year"
+        );
+        anyhow::ensure!(
+            args.backup_checkpoint_lifetime_secs >= args.backup_interval_secs.saturating_mul(2)
+                && args.backup_checkpoint_lifetime_secs <= 24 * 60 * 60,
+            "BACKUP_CHECKPOINT_LIFETIME_SECS must cover two intervals and at most one day"
+        );
+        anyhow::ensure!(
+            (10..=24 * 60 * 60).contains(&args.backup_scrub_interval_secs)
+                && (1..=100_000).contains(&args.backup_scrub_objects_per_interval),
+            "backup scrub interval or batch is out of range"
+        );
     }
     let backup_config = backup_store.map(|destination| {
         // A role bucket may be shared by all three logical stores. Snapshot
         // each physical keyspace once; the first role is the restore name.
         let mut seen_buckets = HashSet::new();
+        // Prefer the shard role when physical buckets are shared so the
+        // backup actor applies exact pinned-manifest filtering to that copy.
+        // Restore still maps all logical roles sharing a bucket to one target.
         let sources = [
-            (
-                "ops",
-                args.ops_bucket.as_deref().unwrap_or(&args.bucket),
-                ops_store.clone(),
-            ),
             (
                 "shard",
                 args.shard_bucket.as_deref().unwrap_or(&args.bucket),
                 shard_store.clone(),
+            ),
+            (
+                "ops",
+                args.ops_bucket.as_deref().unwrap_or(&args.bucket),
+                ops_store.clone(),
             ),
             (
                 "data",
@@ -879,7 +913,19 @@ async fn async_main() -> anyhow::Result<()> {
                 .then_some(streams_slate::backup::BackupSource { role, store })
         })
         .collect();
-        (sources, destination)
+        streams_slate::backup::BackupConfig {
+            sources,
+            destination,
+            interval: Duration::from_secs(args.backup_interval_secs),
+            retention: Duration::from_secs(args.backup_retention_secs),
+            scrub_interval: Duration::from_secs(args.backup_scrub_interval_secs),
+            scrub_objects_per_interval: args.backup_scrub_objects_per_interval,
+            pins: Some(streams_slate::backup::BackupPins {
+                topology_store: ops_store.clone(),
+                shard_store: shard_store.clone(),
+                lifetime: Duration::from_secs(args.backup_checkpoint_lifetime_secs),
+            }),
+        }
     });
 
     let registry = Registry::new(ops_store.clone());
@@ -893,13 +939,7 @@ async fn async_main() -> anyhow::Result<()> {
     );
     // Do not allow readiness to be satisfied by an empty startup snapshot:
     // initialize and validate the control plane before the first actor tick.
-    let backup = backup_config.map(|(sources, destination)| {
-        streams_slate::backup::start(
-            sources,
-            destination,
-            Duration::from_secs(args.backup_interval_secs),
-        )
-    });
+    let backup = backup_config.map(streams_slate::backup::start);
 
     let keys = Arc::new(KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());

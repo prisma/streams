@@ -1064,8 +1064,8 @@ mod tests {
 
     #[test]
     fn heartbeat_and_snapshot_validation_is_bounded_and_strict() {
-        let now = now_ms();
         let mut valid = heartbeat("streams-1");
+        let now = now_ms();
         assert!(heartbeat_is_valid(&valid, "streams-1", now));
         valid.shard_activity.push(valid.shard_activity[0].clone());
         assert!(!heartbeat_is_valid(&valid, "streams-1", now));

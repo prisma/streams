@@ -502,6 +502,21 @@ Data-plane prefixes shard naturally (per-shard, per-stream paths).
 | object-store regional event | all cells in region degrade to 429-on-write (correct-by-construction), reads serve from CDN/cache; cross-region cells unaffected |
 | one tenant's traffic/requests | bounded by §12 quotas to its streams' shards; ≤ its ≤ 4 cells |
 
+### 10.4 Recovery points
+
+Each configured cell publishes marker-last recovery points to a different
+provider/region. The actor checkpoints initialized live shards, represents
+lazy shards as absent, recursively resolves external clone checkpoints, and
+copies only the selected manifest closure, compatible compactions record, and
+WAL interval. A final topology recheck prevents a split/merge from publishing
+a point over the wrong shard set. Exact source ETags index immutable SHA-256
+blobs, so later points copy only changed objects while retaining a complete
+checksummed inventory. Retention deletes expired point metadata before its
+last-referenced blobs; a bounded rolling scrub hashes referenced blobs using a
+durable provider-independent cursor and feeds readiness independently of
+snapshot completion. Restore supports both legacy full-copy format 1 and
+content-addressed format 2, but only into empty offline targets.
+
 ---
 
 ## 11. Deployment

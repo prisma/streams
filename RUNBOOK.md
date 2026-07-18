@@ -96,18 +96,27 @@ with an empty pool rather than dead sockets.
 |---|---|---|
 | `BACKUP_S3_ENDPOINT` / `BACKUP_S3_BUCKET` | — | enables marker-last snapshots. Use a different provider/region and independent credentials; an exact primary endpoint+bucket match is rejected |
 | `BACKUP_S3_REGION` | `us-east-1` | backup-provider region |
-| `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | — | required when backup is enabled; grant create/read and mutable `latest.json`, but no overwrite of `snapshots/` |
+| `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | — | required when backup is enabled; destination needs read/create plus overwrite for `latest.json`, source indexes, and blob references, and delete for bounded retention |
 | `BACKUP_PATH_PREFIX` | — | recovery namespace inside the backup bucket |
-| `BACKUP_INTERVAL_SECS` | 300 | full-snapshot cadence; minimum 60 s |
-| `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness remains false until the first complete snapshot succeeds |
+| `BACKUP_INTERVAL_SECS` | 300 | incremental recovery-point cadence; minimum 60 s |
+| `BACKUP_RETENTION_SECS` | 604800 | complete/partial point and unreferenced-blob retention; at least two intervals, at most one year |
+| `BACKUP_CHECKPOINT_LIFETIME_SECS` | 3600 | expiry safety net for per-shard SlateDB pins; at least two intervals, at most one day; successful copies delete eagerly |
+| `BACKUP_SCRUB_INTERVAL_SECS` / `BACKUP_SCRUB_OBJECTS_PER_INTERVAL` | 60 / 256 | continuously hash this many referenced recovery blobs; 10 s minimum, 100000 maximum batch |
+| `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires both a complete point and a healthy scrubber |
 
-The current actor streams exact ETag-pinned objects to immutable snapshot
-prefixes, writes a SHA-256 inventory per object, publishes `_complete.json`
-last, and updates `latest.json`. Shared physical role buckets are copied once.
-This is the exercised recovery baseline; it is not incremental PITR and does
-not yet prune snapshots. Configure a lifecycle policy over `snapshots/` and
-budget for a full ciphertext copy per interval until the incremental copy
-actor described in [OPERATIONS.md §2](./OPERATIONS.md) replaces it.
+The actor creates an expiring checkpoint for every initialized live shard and
+records never-initialized shards as explicitly absent. It recursively pins
+external clone ancestors, exposes only the selected manifest closure,
+compatible compactions record, and WAL interval, and rechecks topology before
+publication.
+Exact source ETags feed durable per-path indexes; unchanged objects reuse
+immutable SHA-256 blobs. Each point still gets a complete checksummed inventory,
+then `_complete.json` is created last and `latest.json` advances. Retention
+deletes expired complete/partial generations and only then reclaims blobs whose
+last referencing generation expired. The scrubber walks blob references with a
+durable provider-independent cursor, so a missing as well as corrupt recovery
+object fails readiness. Shared physical role buckets are copied once,
+preferring the shard role so manifest filtering cannot be bypassed.
 
 ### 3.2 Engine (shard log)
 
@@ -568,9 +577,11 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 - **GC**: WAL objects reaped per §3.2 after `MIN_AGE`; history SSTs retired
   by compaction; deletion protection, soft-delete windows and GDPR erasure:
   [OPERATIONS.md §2.4](./OPERATIONS.md).
-- **Backup / restore**: the full-copy actor is wired and gates readiness when
-  `REQUIRE_BACKUP=true`. CI performs a dark restore and reads the original
-  encrypted stream. Stop writers and restore into an empty offline target:
+- **Backup / restore**: checkpoint-pinned incremental recovery points gate
+  readiness when `REQUIRE_BACKUP=true`. CI creates two points around a durable
+  append, proves the second reuses blobs, restores the older point without the
+  append, and restores the newer point with it. Stop target writers and restore
+  into an empty offline target:
 
   ```bash
   streams-restore \
@@ -586,10 +597,12 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   `latest` is the default snapshot; pass `--snapshot-id ID` to pin one.
   Use `--backup-prefix` and `--target-prefix` when the service uses prefixes,
   and the per-role target bucket flags when role buckets are split. The tool
-  refuses non-empty targets, incomplete markers, changed inventories, ETag
-  changes, byte-count changes, or SHA-256 mismatches. Incremental checkpoint
-  pinning, PITR, retention, and scrubber drills remain GA work in
-  [OPERATIONS.md §2](./OPERATIONS.md).
+  refuses non-empty targets, incomplete markers, changed inventories,
+  byte-count changes, or SHA-256 mismatches. Format-1 full-copy points remain
+  restorable for rollback; format 2 resolves content-addressed blobs and allows
+  an operator to repair a blob in place only with the exact expected bytes.
+  A measured failover against the actual independent provider remains a GA
+  release gate in [OPERATIONS.md §2](./OPERATIONS.md).
 - **Online shard split:** send an operator-authenticated request to the
   current ring owner (`root` means the empty prefix):
 
