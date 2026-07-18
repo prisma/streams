@@ -54,6 +54,10 @@ pub struct BackupPins {
     pub registry_store: Arc<dyn ObjectStore>,
     pub shard_store: Arc<dyn ObjectStore>,
     pub data_store: Arc<dyn ObjectStore>,
+    /// Canonical snapshot role for the physical bucket that contains history.
+    /// This is `data` for a dedicated data bucket, or the first source role
+    /// (`shard`/`ops`) when physical role buckets are shared and de-duplicated.
+    pub history_source_role: &'static str,
     pub lifetime: Duration,
 }
 
@@ -1937,7 +1941,7 @@ async fn acquire_checkpoint_leases(
         };
     let (history_manifests, history_protected_wals) = match collect_pinned_manifests(
         BackupSource {
-            role: "data",
+            role: pins.history_source_role,
             store: pins.data_store.clone(),
         },
         destination,
@@ -4972,6 +4976,7 @@ mod tests {
                 registry_store: ops,
                 shard_store: shards.clone(),
                 data_store: shards.clone(),
+                history_source_role: "shard",
                 lifetime: Duration::from_secs(60),
             }),
         )
@@ -5042,6 +5047,7 @@ mod tests {
             registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: shards.clone(),
+            history_source_role: "shard",
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000044-pre-manifest";
@@ -5147,6 +5153,7 @@ mod tests {
             registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: shards.clone(),
+            history_source_role: "shard",
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000042-pinned";
@@ -5211,10 +5218,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_point_pins_history_after_the_absorbed_shard_cut() {
+    async fn shared_bucket_recovery_point_pins_history_under_canonical_role() {
         let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let data = shards.clone();
         let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         ops.put(
             &ObjPath::from("topology.json"),
@@ -5251,6 +5258,7 @@ mod tests {
             registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: data.clone(),
+            history_source_role: "shard",
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000043-history";
@@ -5273,10 +5281,6 @@ mod tests {
                     role: "shard",
                     store: shards,
                 },
-                BackupSource {
-                    role: "data",
-                    store: data,
-                },
             ],
             backup.clone(),
             SnapshotContext {
@@ -5297,19 +5301,17 @@ mod tests {
 
         let restored_ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let restored_shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let restored_data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         restore_snapshot(
             backup,
             &report.snapshot_id,
             &HashMap::from([
                 ("ops".to_string(), restored_ops),
-                ("shard".to_string(), restored_shards),
-                ("data".to_string(), restored_data.clone()),
+                ("shard".to_string(), restored_shards.clone()),
             ]),
         )
         .await
         .unwrap();
-        let restored = slatedb::Db::open(history_path, restored_data)
+        let restored = slatedb::Db::open(history_path, restored_shards)
             .await
             .unwrap();
         assert_eq!(
@@ -5386,6 +5388,7 @@ mod tests {
             registry_store: registry_store.clone(),
             shard_store: shards.clone(),
             data_store: data.clone(),
+            history_source_role: "data",
             lifetime: Duration::from_secs(60),
         };
         let report = snapshot_once_with_pins(
@@ -5442,6 +5445,7 @@ mod tests {
             registry_store: pins.registry_store.clone(),
             shard_store: pins.shard_store.clone(),
             data_store: pins.data_store.clone(),
+            history_source_role: pins.history_source_role,
             lifetime: pins.lifetime,
         };
         let report_b = snapshot_once_with_pins(
@@ -5608,6 +5612,7 @@ mod tests {
                 registry_store: ops,
                 shard_store: shards.clone(),
                 data_store: shards,
+                history_source_role: "shard",
                 lifetime: Duration::from_secs(60),
             }),
         )

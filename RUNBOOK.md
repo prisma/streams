@@ -192,25 +192,31 @@ deletes expired complete/partial generations and only then reclaims blobs whose
 last referencing generation expired. The scrubber walks blob references with a
 durable provider-independent cursor, so a missing as well as corrupt recovery
 object fails readiness. Shared physical role buckets are copied once,
-preferring the shard role so manifest filtering cannot be bypassed.
+preferring the shard role so manifest filtering cannot be bypassed. History
+checkpoint WALs inherit that same canonical role when their data bucket is
+shared; recovery inventory never names a logical role that was de-duplicated
+from the physical source set.
 
 The same fenced cell actor continuously validates live primary authority with
 a durable cursor. It bounds and decodes the newest manifest, every currently
 referenced shard SST block/index/statistics record, and every live WAL found
 either in the manifest interval or above its replay watermark in object
 storage. This latter union includes acknowledged WALs whose next ID has not yet
-reached a remote manifest. History blocks use customer-held keys, which the
-background actor deliberately does not retain. The keyed history-store wrapper
+reached a remote manifest. Standard SlateDB writer-fencing WALs in history DBs
+are logically decoded without a customer key; only transformed compacted
+history SSTs require a writer baseline. History blocks use customer-held keys,
+which the background actor deliberately does not retain. The keyed history-store wrapper
 therefore create-only publishes the exact transformed SST payload's SHA-256
 baseline under `integrity/history/` before the SST PUT. Only then can SlateDB
 publish a manifest that references it. The absorber logically decodes the new
 SST and monotonically marks that verification before advancing the absorbed
 frontier; a crash earlier leaves the hot range authoritative and only harmless
 baseline/SST orphans. Later keyless sweeps compare primary bytes to that
-baseline. A missing or conflicting baseline fails closed. Any primary failure clears snapshot health, and
-repair must finish a primary sweep and publish a fresh recovery point before
-readiness returns. `scripts/ci-primary-scrub.sh` corrupts same-length shard and
-encrypted-history SSTs and proves this red-to-repaired transition.
+baseline. A missing or conflicting compacted-history baseline fails closed.
+Any primary failure clears snapshot health, and repair must finish a primary
+sweep and publish a fresh recovery point before readiness returns.
+`scripts/ci-primary-scrub.sh` corrupts same-length shard and encrypted-history
+SSTs and proves this red-to-repaired transition.
 
 Every backup-enabled instance contends for `backup/coordinator-lease.json` in
 the cell's ops store. The holder CAS-increments a renewal sequence every two
@@ -847,6 +853,63 @@ judge, production JWT subject isolation, live token rotation, attacker 429s,
 metric parser, monotonic idle and loaded object-operation accounting,
 durable-offset proof, and secret-free artifact shape. A short or local run is
 not release evidence.
+
+### 9.2 Aggregate AWS release verdict
+
+Promotion requires one closed, secret-free evidence packet for the immutable
+release ID. Put `manifest.json` and its referenced JSON artifacts in an
+access-controlled, immutable release directory, then run:
+
+```bash
+scripts/judge-aws-release.py \
+  --manifest /absolute/release-evidence/manifest.json \
+  --output /absolute/release-evidence/aws-release-verdict.json
+```
+
+The format-1 manifest contains only `format_version`,
+`kind="prisma-streams-aws-release-manifest"`, `release_id`, and an `artifacts`
+object. Every artifact entry contains a normalized path relative to the
+manifest and its lowercase SHA-256. The judge requires the complete primary
+and recovery at-rest inspections, cell IAM proof, independent-provider
+failover, production 24-hour soak, and capability plus semantic evidence for
+all four mixed-version phases. Read-first, flip, and rollback must name the
+judged release and at least one distinct old release; finalization must contain
+only the judged release. Digests chain each semantic phase to its capability
+verdict and predecessor.
+
+The exact artifact keys are:
+
+```text
+at_rest_primary                 at_rest_recovery
+cell_iam                        provider_failover
+release_soak
+mixed_capability_read_first     mixed_semantic_read_first
+mixed_capability_canary_flip    mixed_semantic_canary_flip
+mixed_capability_rollback       mixed_semantic_rollback
+mixed_capability_finalize       mixed_semantic_finalize
+attestation_security_review
+attestation_mixed_version_deployment
+attestation_managed_cell_game_day
+attestation_audit_billing_independence
+attestation_notification_game_day
+```
+
+The packet also carries format-1 `prisma-streams-external-attestation`
+artifacts for `security_review`, `mixed_version_deployment`,
+`managed_cell_game_day`, `audit_billing_independence`, and
+`notification_game_day`. Each names the same release, a production evidence
+record and report digest, all mandatory checks, plus distinct `owner` and
+`independent-reviewer` approvals. Generate these records only through the
+approved evidence system; the local judge validates their shape, digests, and
+cross-release consistency but cannot authenticate a copied approver name.
+
+The judge rejects missing or unknown artifacts, absolute/traversing paths,
+symlinks, changed files, digest mismatches, cross-release evidence, incomplete
+checks, same-binary pseudo-canaries, short soaks, provider-identity drift, and
+an existing output path. A passing verdict is create-only and mode 0600.
+`scripts/ci-aws-release-gate.py` exercises the valid packet plus missing,
+tamper, release-mismatch, and same-binary negative controls. Its synthetic
+packet proves the judge; it is never production evidence.
 
 ## 10. Troubleshooting matrix
 

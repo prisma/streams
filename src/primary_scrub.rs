@@ -503,15 +503,10 @@ async fn database_work(
     }
     for id in wal_ids {
         let work = match target.verification {
-            ObjectVerification::Logical => Work::Wal {
+            ObjectVerification::Logical | ObjectVerification::WriterBaseline => Work::Wal {
                 root: target.path.clone(),
                 store: target.store.clone(),
                 id,
-            },
-            ObjectVerification::WriterBaseline => Work::HistoryObject {
-                source_path: format!("{}/wal/{id:020}.sst", target.path),
-                store: target.store.clone(),
-                logical: None,
             },
         };
         units.push(WorkUnit {
@@ -1357,6 +1352,42 @@ mod tests {
             data.get(&path).await.unwrap().bytes().await.unwrap(),
             Bytes::from_static(b"encrypted-sst")
         );
+    }
+
+    #[tokio::test]
+    async fn history_scrub_logically_verifies_fencing_wal_without_customer_key() {
+        let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db = slatedb::Db::builder("streams/history-fence", data.clone())
+            .with_settings(slatedb::config::Settings {
+                wal_enabled: false,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let target = DatabaseTarget {
+            key: "data:streams/history-fence".to_string(),
+            path: "streams/history-fence".to_string(),
+            store: data.clone(),
+            verification: ObjectVerification::WriterBaseline,
+        };
+        let unit = database_work(&target, 16 * 1024 * 1024)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|unit| matches!(unit.work, Work::Wal { .. }))
+            .expect("an open history database has a writer-fencing WAL");
+        let config = PrimaryScrubConfig {
+            cell_id: None,
+            topology_store: ops.clone(),
+            registry_store: ops,
+            shard_store: Arc::new(object_store::memory::InMemory::new()),
+            data_store: data,
+            max_object_bytes: 16 * 1024 * 1024,
+        };
+        verify_work(&unit, &config).await.unwrap();
+        db.close().await.unwrap();
     }
 
     #[tokio::test]

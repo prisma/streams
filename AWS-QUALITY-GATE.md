@@ -25,6 +25,13 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin/benchmark clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, a two-process provider cut, and stable primary/recovery at-rest inspection run in CI alongside the upstream suite. Pinned `cargo-deny` gates advisories/yanks, licenses, wildcard/banned crates, and sources; weekly Cargo/Actions updates re-enter the same gate. Immutable build/storage/ring capabilities travel in bounded heartbeats and an operator-only direct-instance view; a secret-free judge rejects incomplete aggregates, release skew outside the declared wave, legacy/unknown nodes, protocol disagreement, writer drift, and any reader that cannot consume every active writer. A second restart-safe judge chains each read-first/flip/rollback/final semantic probe to that capability verdict, exact-retries a durable producer write, and requires every ingress route to read the accumulated corpus. CI proves both judges, format absorption, rollback, crash-window recovery, and aggregate failover. The 24-hour soak judge requires rotating subject-pinned production JWTs for distinct victim/attacker tenants and has a secret-free short CI proof; an actual deployed old/new wave and the real target run remain. |
 | Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** The repeatable judge checks exact durable victim offsets, separate ACK p50/p99/p99.9 budgets, throughput/errors, readiness, RSS growth, absorber drain, L0/WAL debt, fences, RPO, and a concurrent distinct-tenant oversized-write attack whose every request must be a scoped 429. Before load, it requires a five-minute quiescent baseline on every instance and fails missing/reset monotonic process-CPU or fixed-cardinality object-store attempt counters against explicit per-instance budgets; stable distinct pseudonymous identities prevent duplicate endpoints or an LB from faking fleet coverage, while metrics/audit overhead remains in scope. Identity and counters must remain continuous through load/drain, total attempt delta is budgeted per 1,000 exact successful records, and every active-ring count must equal the direct-target count so autoscaling cannot hide an unmeasured instance. Victim, attacker, and operator JWT files rotate with three pinned distinct subjects; keys, tokens, and internal metrics URLs are absent from format-2 evidence. The hermetic harness proves the judge, but no qualifying 24-hour target-hardware artifact or real-provider cost artifact exists yet. |
 
+The final promotion decision is now executable rather than assembled from
+prose. `scripts/judge-aws-release.py` requires all machine evidence and five
+production attestations to share one immutable release ID, validates every
+artifact SHA-256 and semantic predecessor chain, and rejects missing, altered,
+cross-release, short-soak, or same-binary evidence. This closes the local
+release-packet logic; it does not turn any absent real artifact above green.
+
 ## Non-negotiable release scenarios
 
 1. Acknowledged writes survive kill -9, owner fencing, and full cell restart.
@@ -157,6 +164,14 @@ documented cell limits. A feature described only in `SPEC.md`,
   encrypted-history SST bodies without changing length, observes readiness
   fail closed, repairs the bytes, and requires a new recovery point before
   readiness returns.
+- Shared physical role buckets now give eagerly protected history WALs the
+  same canonical snapshot role used by the de-duplicated inventory source, so
+  a one-bucket deployment cannot produce an unrestorable `data` reference.
+  Primary integrity sweeps logically verify ordinary history writer-fencing
+  WALs without demanding a customer-key ciphertext baseline; transformed
+  compacted history SSTs still require the create-before-publish digest. Unit
+  regressions cover both cases, and three consecutive full process-cut drills
+  passed after the originally intermittent readiness failure was reproduced.
 - `streams-provider-check` verifies conditional create/update fencing, strong
   immediate read/list, ranged GET, multipart assembly, server-side copy, and
   delete visibility under a unique disposable prefix. The generic failover
@@ -384,6 +399,14 @@ documented cell limits. A feature described only in `SPEC.md`,
   marker into history between process/config restarts, exercises 1→2→1→2,
   and proves post-flip data is readable after rollback. A same-binary format
   sequence does not replace the real old/new deploy and dark-restore evidence.
+- `scripts/judge-aws-release.py` closes the release packet over 18 required
+  artifacts. It validates primary/recovery provider identity across at-rest
+  and failover evidence, the production soak's duration/fleet/store counters,
+  all four capability/semantic phase chains, and five independently approved
+  production attestations. Relative paths, regular-file bounds, SHA-256s, and
+  one immutable release ID are mandatory. Hermetic CI proves acceptance plus
+  missing-artifact, tamper, release-mismatch, and same-binary rejection; a
+  protected evidence store and real artifacts remain external release work.
 
 ## Immediate red-gate queue
 

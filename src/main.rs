@@ -1307,22 +1307,20 @@ async fn async_main() -> anyhow::Result<()> {
         // Prefer the shard role when physical buckets are shared so the
         // backup actor applies exact pinned-manifest filtering to that copy.
         // Restore still maps all logical roles sharing a bucket to one target.
+        let shard_bucket = args.shard_bucket.as_deref().unwrap_or(&args.bucket);
+        let ops_bucket = args.ops_bucket.as_deref().unwrap_or(&args.bucket);
+        let data_bucket = args.data_bucket.as_deref().unwrap_or(&args.bucket);
+        let history_source_role = if data_bucket == shard_bucket {
+            "shard"
+        } else if data_bucket == ops_bucket {
+            "ops"
+        } else {
+            "data"
+        };
         let sources = [
-            (
-                "shard",
-                args.shard_bucket.as_deref().unwrap_or(&args.bucket),
-                shard_store.clone(),
-            ),
-            (
-                "ops",
-                args.ops_bucket.as_deref().unwrap_or(&args.bucket),
-                ops_store.clone(),
-            ),
-            (
-                "data",
-                args.data_bucket.as_deref().unwrap_or(&args.bucket),
-                data_store.clone(),
-            ),
+            ("shard", shard_bucket, shard_store.clone()),
+            ("ops", ops_bucket, ops_store.clone()),
+            ("data", data_bucket, data_store.clone()),
         ]
         .into_iter()
         .filter_map(|(role, bucket, store)| {
@@ -1348,6 +1346,7 @@ async fn async_main() -> anyhow::Result<()> {
                 registry_store: registry_store.clone(),
                 shard_store: shard_store.clone(),
                 data_store: data_store.clone(),
+                history_source_role,
                 lifetime: Duration::from_secs(args.backup_checkpoint_lifetime_secs),
             }),
             coordinator: Some(streams_slate::backup::BackupCoordinator {
