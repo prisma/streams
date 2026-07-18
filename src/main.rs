@@ -105,6 +105,15 @@ struct Args {
     #[arg(long, env = "AUTO_SPLIT_SUSTAIN_SECS", default_value_t = 60)]
     auto_split_sustain_secs: u64,
 
+    /// Merge sibling shards after their combined write rate remains at or
+    /// below this percentage of the calibrated single-shard ceiling. The
+    /// maximum of 20 keeps at least 3x hysteresis below split's 60% trigger;
+    /// zero explicitly disables automatic merge.
+    #[arg(long, env = "AUTO_MERGE_COLD_FRACTION_PCT", default_value_t = 10)]
+    auto_merge_cold_fraction_pct: u64,
+    #[arg(long, env = "AUTO_MERGE_SUSTAIN_SECS", default_value_t = 600)]
+    auto_merge_sustain_secs: u64,
+
     /// Unreferenced `shards/splits/<operation>/` generations are retained
     /// this long before deletion. The topology and every active split intent
     /// are re-read immediately before GC. Zero is test-only.
@@ -603,6 +612,11 @@ fn start_topology_watcher(state: Arc<AppState>, store: Arc<dyn ObjectStore>) {
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    anyhow::ensure!(
+        args.auto_merge_cold_fraction_pct <= 20,
+        "AUTO_MERGE_COLD_FRACTION_PCT must be between 0 and 20"
+    );
+
     let authn = match (
         args.auth_jwks_url.clone(),
         args.auth_revocation_url.clone(),
@@ -875,6 +889,10 @@ async fn async_main() -> anyhow::Result<()> {
         crate::merge::MergeConfig {
             gc_retention: Duration::from_secs(args.split_gc_retention_secs.min(365 * 24 * 60 * 60)),
             gc_interval: Duration::from_secs(args.split_gc_interval_secs.clamp(1, 24 * 60 * 60)),
+            single_shard_write_ceiling_bytes_per_sec: args.single_shard_write_ceiling_bytes_per_sec,
+            cold_fraction_pct: args.auto_merge_cold_fraction_pct,
+            cold_sustain: Duration::from_secs(args.auto_merge_sustain_secs.max(1)),
+            fleet_mode: args.fleet_prefix.is_some(),
         },
     );
     start_topology_watcher(state.clone(), ops_store.clone());

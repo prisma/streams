@@ -531,6 +531,13 @@ fn union_flush_sentinel(prefix: &str) -> Result<Vec<u8>, String> {
 }
 
 impl ShardEngine {
+    /// Manifest writer incarnation for telemetry/control-plane sampling.
+    /// A reopen changes this value, so rate observers can distinguish a
+    /// counter reset from an actually idle shard.
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
+
     pub fn start(
         prefix: String,
         db: Arc<Db>,

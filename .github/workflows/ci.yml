@@ -33,6 +33,8 @@ jobs:
           bash scripts/ci-split-stale-owner.sh
           bash scripts/ci-split-crash-matrix.sh
           bash scripts/ci-online-shard-merge.sh
+          bash scripts/ci-auto-shard-merge.sh
+          bash scripts/ci-auto-merge-remote-owner.sh
           bash scripts/ci-merge-stale-owner.sh
           bash scripts/ci-merge-crash-matrix.sh
           bash scripts/ci-merge-takeover-gc.sh

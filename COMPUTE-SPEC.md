@@ -284,7 +284,8 @@ plus every active intent immediately before deletion and fails closed above
 100,000 listed objects per run. Published ancestor paths are never inferred
 disposable because descendant clone manifests may still reference their SSTs.
 
-Merge is the reverse and is available through the operator gate: create one
+Merge is the reverse and is available through the operator gate or automatic
+cold policy: create one
 parent-scoped renewable intent, CAS-occupy both children's per-shard intent
 paths, drain/flush each child, create a non-overlapping SlateDB manifest-union
 clone, verify it reopens, and publish `p0,p1 → p` in one topology CAS. The
@@ -296,7 +297,22 @@ projected child contains only out-of-range inherited WAL rows. Split and merge
 locks become CAS-written released tombstones instead of being deleted, which
 prevents a delayed claimant from deleting a later operation on a reused
 prefix. Merge takeover/abandoned-generation GC follows the split protocol.
-The sustained-cold automatic merge trigger remains to be implemented.
+
+Every two-second heartbeat carries `(shard, writer_epoch, appended_bytes)`
+for every shard currently assigned to its writer, including unopened shards
+as epoch/counter zero. A parent coordinator evaluates only a unique report
+younger than ten seconds from each child's current ring owner. An owner or
+writer-epoch change, counter regression, malformed/duplicate activity vector,
+future timestamp, missing report, or repeatedly observed heartbeat resets or
+pauses evaluation rather than proving coldness. Once both monotonic rates have
+a combined value ≤ `AUTO_MERGE_COLD_FRACTION_PCT` (default 10%) of
+`SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` for
+`AUTO_MERGE_SUSTAIN_SECS` (default 600), the deepest eligible sibling pair
+enters the same merge actor. Zero fraction disables automatic merge. Startup
+rejects fractions above 20%, preserving at least a 3× gap from the 60% split
+trigger (6× at the default). A new write after sampling remains correct—the
+durable child fences define the snapshot—but the hysteresis and sustain window
+avoid split/merge flapping.
 
 ---
 
@@ -364,7 +380,8 @@ Prices: Standard $0.02/GB/mo; Archive-IR $0.004/GB/mo + $0.03/GB retrieval,
 ## 9. Observability
 
 Heartbeats are the metrics bus (scrapeable via `/v1/admin/fleet` on any
-instance). Additionally: per-shard durable-watermark lag, flush PUT latency
+instance) and carry the bounded per-assigned-shard activity vector consumed by
+automatic merge. Additionally: per-shard durable-watermark lag, flush PUT latency
 histograms, replay-header rate (router staleness), fence events (should be
 ≈ shard moves; excess = flapping), archive rewrite rate (§7), CAS conflict
 rate. Control-plane actions (ring epochs, overrides, splits, desired-count

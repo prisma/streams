@@ -116,6 +116,8 @@ actor described in [OPERATIONS.md §2](./OPERATIONS.md) replaces it.
 | `INITIAL_SHARDS` | 1 | power of two; pilot fleet used 16. Set at keyspace creation; topology is stored |
 | `SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` | 0 (automatic split off) | measured sustained payload-byte ceiling for one shard on this deployment. Non-zero enables online split at 60%; do not copy a value across instance/store classes without recalibration |
 | `AUTO_SPLIT_SUSTAIN_SECS` | 60 | time above the 60% threshold before automatic split; minimum 1 s |
+| `AUTO_MERGE_COLD_FRACTION_PCT` | 10 | combined sibling write rate at/below this percentage of the calibrated ceiling is cold; 0 disables, startup rejects >20 to preserve hysteresis |
+| `AUTO_MERGE_SUSTAIN_SECS` | 600 | time both current-owner reports must remain cold before automatic merge; minimum 1 s |
 | `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25 |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
@@ -315,7 +317,8 @@ was death (§3.6).
 - **Heartbeats**: every 2 s each instance PUTs
   `<FLEET_PREFIX>/fleet/<instance>.json`: rps, ack_p50_ms, cpu_pct
   (getrusage), inflight/inflight_peak, rss_mb, wal_put_p50/p99_ms,
-  out_inflight/peak, owned_shards. Staleness > 10 s = not live.
+  out_inflight/peak, owned_shards, and a bounded writer-epoch/cumulative-byte
+  tuple for every assigned shard. Staleness > 10 s = not live.
 - **Desired count**: any instance may write `fleet/desired.json`; the
   computation is deterministic from heartbeats so writers agree.
 - **Placement**: rendezvous hash (FNV-1a over `"<shard> <instance>"`) across
@@ -575,6 +578,29 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   concurrent producers, restart and different-identity takeover, automatic
   recursive refinement, and a stale two-owner race with split role buckets.
 
+- **Online shard merge:** send an operator-authenticated request to the
+  current coordinator for the parent (`root` means children `0` and `1`):
+
+  ```bash
+  curl -X POST "$STREAMS_URL/v1/admin/shards/root/merge" \
+    -H "authorization: Bearer $OPERATOR_TOKEN"
+  ```
+
+  Both child intent paths become durable ACK fences before either source is
+  quiesced. The actor drains WAL then L0, builds and verifies a non-overlapping
+  manifest union, and publishes both children→parent in one topology CAS.
+  Leases, takeover generations, released CAS tombstones, and abandoned-target
+  GC follow the split protocol. The seven-phase merge crash matrix, a stale
+  writer drill, repeated split→merge cycles, and takeover-GC drill run in CI.
+
+  With a non-zero calibrated ceiling, the coordinator also merges the deepest
+  eligible sibling pair after its combined current-owner-reported rate remains
+  below `AUTO_MERGE_COLD_FRACTION_PCT` for `AUTO_MERGE_SUSTAIN_SECS`. It
+  requires fresh monotonic reports from both current owners; a stopped owner,
+  engine reopen, ring change, malformed vector, or unchanged heartbeat cannot
+  advance the clock. CI proves both the hot guard and this remote-owner
+  fail-closed behavior. Set the fraction to zero for an operator freeze.
+
 - **Offline shard split fallback:** stop every serving writer for the cell,
   then run:
 
@@ -591,7 +617,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   failure leaves safe orphan children and the old topology live. CI proves
   opposite hash halves remain readable and independently writable after
   restart. This tool remains useful for an offline repair, but the HTTP actor
-  is the normal online path. Merge remains release-gate work.
+  is the normal online path.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the

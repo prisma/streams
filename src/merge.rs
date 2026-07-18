@@ -7,10 +7,10 @@
 //! unacknowledged data after the merge snapshot. SlateDB then creates a
 //! manifest-union clone and one topology CAS makes the parent visible.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use object_store::path::Path as ObjPath;
@@ -33,11 +33,74 @@ const INTENT_VERSION: u32 = 1;
 const LEASE_MS: i64 = 12_000;
 const LEASE_RENEW_MS: u64 = 3_000;
 const MAX_INTENTS: usize = 768;
+const MAX_HEARTBEAT_SHARDS: usize = 1_536;
+const HEARTBEAT_FRESH_MS: i64 = 10_000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MergeConfig {
     pub gc_retention: Duration,
     pub gc_interval: Duration,
+    /// The same deployment-calibrated ceiling used by auto split. Zero
+    /// disables both automatic topology directions.
+    pub single_shard_write_ceiling_bytes_per_sec: u64,
+    /// Combined sibling rate at or below this percentage of the single-shard
+    /// ceiling is cold. Kept far below split's 60% trigger for hysteresis.
+    pub cold_fraction_pct: u64,
+    pub cold_sustain: Duration,
+    /// Distinguishes deliberate single-instance mode from a configured fleet
+    /// whose assignment is not available yet. The latter must fail closed.
+    pub fleet_mode: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActivityPoint {
+    owner: String,
+    writer_epoch: u64,
+    appended_bytes: u64,
+    observation_id: i64,
+}
+
+#[derive(Clone, Debug)]
+struct RateSample {
+    point: ActivityPoint,
+    sampled_at: Instant,
+    rate: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RateObservation {
+    /// A newer owner report was observed. None means an owner/epoch/counter
+    /// reset, so two samples are required before it can be called cold.
+    Fresh(Option<f64>),
+    /// The fleet fan-in has not advanced yet. Preserve the cold clock but do
+    /// not trigger from the same heartbeat twice.
+    Unchanged,
+    /// Current-owner evidence is absent, stale, duplicated, or malformed.
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ColdPair {
+    below_since: Option<Instant>,
+    last_zero_observation_id: Option<i64>,
+    last_one_observation_id: Option<i64>,
+}
+
+impl ColdPair {
+    fn advance(&mut self, zero_observation_id: i64, one_observation_id: i64) -> bool {
+        if self
+            .last_zero_observation_id
+            .is_some_and(|id| zero_observation_id <= id)
+            || self
+                .last_one_observation_id
+                .is_some_and(|id| one_observation_id <= id)
+        {
+            return false;
+        }
+        self.last_zero_observation_id = Some(zero_observation_id);
+        self.last_one_observation_id = Some(one_observation_id);
+        true
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1017,9 +1080,149 @@ pub async fn initialize(state: &Arc<AppState>) -> Result<(), String> {
     list_intents(&state.shard_store).await.map(|_| ())
 }
 
+fn heartbeat_activity<'a>(
+    heartbeat: &'a crate::fleet::Heartbeat,
+    shard: &str,
+) -> Option<&'a crate::fleet::ShardActivity> {
+    if heartbeat.shard_activity.len() > MAX_HEARTBEAT_SHARDS {
+        return None;
+    }
+    let mut seen = HashSet::with_capacity(heartbeat.shard_activity.len());
+    let mut found = None;
+    for activity in &heartbeat.shard_activity {
+        if activity.shard.len() > 128
+            || !activity
+                .shard
+                .bytes()
+                .all(|byte| byte == b'0' || byte == b'1')
+            || !seen.insert(activity.shard.as_str())
+        {
+            return None;
+        }
+        if activity.shard == shard {
+            found = Some(activity);
+        }
+    }
+    found
+}
+
+fn activity_point(state: &AppState, shard: &str, fleet_mode: bool) -> Option<ActivityPoint> {
+    let active = state.ring_active.read().unwrap().clone();
+    if active.is_empty() {
+        if fleet_mode {
+            return None;
+        }
+        let (writer_epoch, appended_bytes) = state
+            .shards
+            .read()
+            .unwrap()
+            .get(shard)
+            .filter(|engine| !engine.is_closed())
+            .map(|engine| {
+                (
+                    engine.writer_epoch(),
+                    engine.stats_appended_bytes.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or((0, 0));
+        return Some(ActivityPoint {
+            owner: state.instance_name.clone(),
+            writer_epoch,
+            appended_bytes,
+            observation_id: now_ms(),
+        });
+    }
+
+    let owner = active[crate::http::ring_pick(shard, &active)].clone();
+    let now = now_ms();
+    let matching: Vec<_> = crate::fleet::live_heartbeats()
+        .into_iter()
+        .filter(|heartbeat| heartbeat.instance == owner)
+        .filter(|heartbeat| {
+            now.checked_sub(heartbeat.ts_ms)
+                .is_some_and(|age| (0..HEARTBEAT_FRESH_MS).contains(&age))
+        })
+        .collect();
+    if matching.len() != 1 {
+        return None;
+    }
+    let heartbeat = &matching[0];
+    let activity = heartbeat_activity(heartbeat, shard)?;
+    Some(ActivityPoint {
+        owner,
+        writer_epoch: activity.writer_epoch,
+        appended_bytes: activity.appended_bytes,
+        observation_id: heartbeat.ts_ms,
+    })
+}
+
+fn observe_rate(
+    samples: &mut HashMap<String, RateSample>,
+    shard: &str,
+    point: ActivityPoint,
+    now: Instant,
+) -> RateObservation {
+    let Some(previous) = samples.get(shard).cloned() else {
+        samples.insert(
+            shard.to_string(),
+            RateSample {
+                point,
+                sampled_at: now,
+                rate: None,
+            },
+        );
+        return RateObservation::Fresh(None);
+    };
+    if point.observation_id <= previous.point.observation_id {
+        return RateObservation::Unchanged;
+    }
+    let same_counter = point.owner == previous.point.owner
+        && point.writer_epoch == previous.point.writer_epoch
+        && point.appended_bytes >= previous.point.appended_bytes;
+    let rate = same_counter
+        .then(|| {
+            let elapsed = now.duration_since(previous.sampled_at).as_secs_f64();
+            (elapsed > 0.0).then(|| {
+                point
+                    .appended_bytes
+                    .saturating_sub(previous.point.appended_bytes) as f64
+                    / elapsed
+            })
+        })
+        .flatten();
+    samples.insert(
+        shard.to_string(),
+        RateSample {
+            point,
+            sampled_at: now,
+            rate,
+        },
+    );
+    RateObservation::Fresh(rate)
+}
+
+fn sibling_parents(topology: &Topology) -> Vec<String> {
+    let live: HashSet<&str> = topology.shards.iter().map(String::as_str).collect();
+    let mut parents: Vec<String> = topology
+        .shards
+        .iter()
+        .filter_map(|zero| {
+            let parent = zero.strip_suffix('0')?;
+            live.contains(format!("{parent}1").as_str())
+                .then(|| parent.to_string())
+        })
+        .collect();
+    // Collapse the deepest pairs first. This avoids a shallow candidate
+    // invalidating a deeper operation selected from the same topology view.
+    parents.sort_by_key(|parent| std::cmp::Reverse(parent.len()));
+    parents
+}
+
 pub fn start(state: Arc<AppState>, config: MergeConfig) {
     tokio::spawn(async move {
-        let mut next_gc = std::time::Instant::now() + config.gc_interval;
+        let mut next_gc = Instant::now() + config.gc_interval;
+        let mut rate_samples: HashMap<String, RateSample> = HashMap::new();
+        let mut cold_pairs: HashMap<String, ColdPair> = HashMap::new();
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let intents = match list_intents(&state.shard_store).await {
@@ -1058,7 +1261,7 @@ pub fn start(state: Arc<AppState>, config: MergeConfig) {
                     }
                 }
             }
-            if std::time::Instant::now() >= next_gc {
+            if Instant::now() >= next_gc {
                 match gc_abandoned_generations(&state, config.gc_retention).await {
                     Ok(deleted) if deleted > 0 => {
                         tracing::info!(deleted, "merge generation GC completed")
@@ -1066,7 +1269,111 @@ pub fn start(state: Arc<AppState>, config: MergeConfig) {
                     Ok(_) => {}
                     Err(error) => tracing::error!("merge generation GC failed: {error}"),
                 }
-                next_gc = std::time::Instant::now() + config.gc_interval;
+                next_gc = Instant::now() + config.gc_interval;
+            }
+
+            if config.single_shard_write_ceiling_bytes_per_sec == 0 || config.cold_fraction_pct == 0
+            {
+                continue;
+            }
+            let threshold = config
+                .single_shard_write_ceiling_bytes_per_sec
+                .saturating_mul(config.cold_fraction_pct)
+                .div_ceil(100)
+                .max(1);
+            let topology = state.topology.read().unwrap().clone();
+            rate_samples.retain(|shard, _| topology.shards.contains(shard));
+            let parents = sibling_parents(&topology);
+            let eligible: HashSet<&str> = parents.iter().map(String::as_str).collect();
+            cold_pairs.retain(|parent, _| eligible.contains(parent.as_str()));
+            let now = Instant::now();
+            let blocked = state.splitting_prefixes.read().unwrap().clone();
+            let mut trigger = None;
+            for parent in parents {
+                if !is_ring_owner(&state, &parent) {
+                    cold_pairs.remove(&parent);
+                    continue;
+                }
+                let zero = format!("{parent}0");
+                let one = format!("{parent}1");
+                if blocked.contains(&zero) || blocked.contains(&one) {
+                    cold_pairs.remove(&parent);
+                    continue;
+                }
+                let zero_observation = match activity_point(&state, &zero, config.fleet_mode) {
+                    Some(point) => observe_rate(&mut rate_samples, &zero, point, now),
+                    None => {
+                        rate_samples.remove(&zero);
+                        RateObservation::Unavailable
+                    }
+                };
+                let one_observation = match activity_point(&state, &one, config.fleet_mode) {
+                    Some(point) => observe_rate(&mut rate_samples, &one, point, now),
+                    None => {
+                        rate_samples.remove(&one);
+                        RateObservation::Unavailable
+                    }
+                };
+                if zero_observation == RateObservation::Unavailable
+                    || one_observation == RateObservation::Unavailable
+                {
+                    cold_pairs.remove(&parent);
+                    continue;
+                }
+                let samples = rate_samples.get(&zero).zip(rate_samples.get(&one));
+                let Some((zero_sample, one_sample)) = samples else {
+                    cold_pairs.remove(&parent);
+                    continue;
+                };
+                let rates = zero_sample.rate.zip(one_sample.rate);
+                let Some((zero_rate, one_rate)) = rates else {
+                    cold_pairs.remove(&parent);
+                    continue;
+                };
+                let pair = cold_pairs.entry(parent.clone()).or_default();
+                // Both current owners must have advanced since the last pair
+                // evaluation. This still permits asynchronous heartbeat
+                // arrival, but one frozen owner can never advance cold time.
+                if !pair.advance(
+                    zero_sample.point.observation_id,
+                    one_sample.point.observation_id,
+                ) {
+                    continue;
+                }
+                let combined_rate = zero_rate + one_rate;
+                if combined_rate <= threshold as f64 {
+                    let since = *pair.below_since.get_or_insert(now);
+                    if now.duration_since(since) >= config.cold_sustain {
+                        trigger = Some((parent, combined_rate));
+                        break;
+                    }
+                } else {
+                    pair.below_since = None;
+                }
+            }
+            if let Some((parent, rate)) = trigger {
+                tracing::info!(
+                    shard_parent = if parent.is_empty() { "root" } else { &parent },
+                    observed_bytes_per_sec = rate,
+                    threshold_bytes_per_sec = threshold,
+                    "automatic sustained-cold sibling merge triggered"
+                );
+                let zero = format!("{parent}0");
+                let one = format!("{parent}1");
+                if let Err(error) = request(state.clone(), parent.clone()).await {
+                    if error.starts_with("merge aborted")
+                        || error.contains("live sibling")
+                        || error.contains("already running")
+                    {
+                        tracing::warn!(shard_parent = %parent, "automatic shard merge skipped: {error}");
+                    } else {
+                        tracing::error!(shard_parent = %parent, "automatic shard merge failed: {error}");
+                        state.merge_ready.store(false, Ordering::Release);
+                    }
+                }
+                cold_pairs.remove(&parent);
+                rate_samples.remove(&zero);
+                rate_samples.remove(&one);
             }
         }
     });
@@ -1131,5 +1438,111 @@ mod tests {
         assert!(referenced.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert!(referenced.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         assert!(referenced.contains("cccccccccccccccccccccccccccccccc"));
+    }
+
+    #[test]
+    fn cold_rate_requires_two_monotonic_samples_and_resets_on_reopen() {
+        let mut samples = HashMap::new();
+        let started = Instant::now();
+        let point = |writer_epoch, appended_bytes, observation_id| ActivityPoint {
+            owner: "streams-1".to_string(),
+            writer_epoch,
+            appended_bytes,
+            observation_id,
+        };
+        assert_eq!(
+            observe_rate(&mut samples, "0", point(7, 100, 1), started),
+            RateObservation::Fresh(None)
+        );
+        assert_eq!(
+            observe_rate(
+                &mut samples,
+                "0",
+                point(7, 300, 2),
+                started + Duration::from_secs(2),
+            ),
+            RateObservation::Fresh(Some(100.0))
+        );
+        assert_eq!(
+            observe_rate(
+                &mut samples,
+                "0",
+                point(7, 300, 2),
+                started + Duration::from_secs(4),
+            ),
+            RateObservation::Unchanged
+        );
+        assert_eq!(
+            observe_rate(
+                &mut samples,
+                "0",
+                point(8, 0, 3),
+                started + Duration::from_secs(4),
+            ),
+            RateObservation::Fresh(None)
+        );
+    }
+
+    #[test]
+    fn cold_pair_requires_both_owner_reports_to_advance() {
+        let mut pair = ColdPair::default();
+        assert!(pair.advance(10, 20));
+        assert!(!pair.advance(11, 20), "frozen one-owner report");
+        assert!(!pair.advance(10, 21), "frozen zero-owner report");
+        assert!(pair.advance(11, 21));
+    }
+
+    #[test]
+    fn sibling_candidates_are_unique_and_deepest_first() {
+        let topology = Topology {
+            version: 1,
+            storage_format: 2,
+            shards: vec!["00".into(), "01".into(), "10".into(), "11".into()],
+            shard_paths: Default::default(),
+        };
+        assert_eq!(sibling_parents(&topology), vec!["0", "1"]);
+
+        let root = Topology {
+            version: 2,
+            storage_format: 2,
+            shards: vec!["0".into(), "1".into()],
+            shard_paths: Default::default(),
+        };
+        assert_eq!(sibling_parents(&root), vec![String::new()]);
+    }
+
+    #[test]
+    fn malformed_or_duplicate_heartbeat_activity_fails_closed() {
+        let mut heartbeat = crate::fleet::Heartbeat {
+            instance: "streams-1".to_string(),
+            ts_ms: 1,
+            rps: 0.0,
+            ack_p50_ms: 0.0,
+            cpu_pct: 0.0,
+            inflight: 0,
+            inflight_peak: 0,
+            rss_mb: 0.0,
+            wal_put_p50_ms: 0,
+            wal_put_p99_ms: 0,
+            out_inflight: 0,
+            out_inflight_peak: 0,
+            owned_shards: vec![],
+            shard_activity: vec![crate::fleet::ShardActivity {
+                shard: "0".to_string(),
+                writer_epoch: 1,
+                appended_bytes: 2,
+            }],
+            draining: false,
+        };
+        assert_eq!(
+            heartbeat_activity(&heartbeat, "0").unwrap().appended_bytes,
+            2
+        );
+        heartbeat
+            .shard_activity
+            .push(heartbeat.shard_activity[0].clone());
+        assert!(heartbeat_activity(&heartbeat, "0").is_none());
+        heartbeat.shard_activity[1].shard = "not-binary".to_string();
+        assert!(heartbeat_activity(&heartbeat, "0").is_none());
     }
 }

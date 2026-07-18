@@ -17,10 +17,40 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload,
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::http::AppState;
 use crate::shard::now_ms;
+
+static LIVE_HEARTBEATS: OnceLock<RwLock<Vec<Heartbeat>>> = OnceLock::new();
+
+fn replace_live_heartbeats(heartbeats: Vec<Heartbeat>) {
+    *LIVE_HEARTBEATS
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .write()
+        .unwrap() = heartbeats;
+}
+
+/// Last complete, fresh heartbeat fan-in observed by this process. The merge
+/// actor consumes this in-memory snapshot rather than issuing a second N-way
+/// object-store scan every two seconds.
+pub fn live_heartbeats() -> Vec<Heartbeat> {
+    LIVE_HEARTBEATS
+        .get_or_init(|| RwLock::new(Vec::new()))
+        .read()
+        .unwrap()
+        .clone()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct ShardActivity {
+    pub shard: String,
+    /// SlateDB manifest writer epoch. Changes on every engine reopen/fence.
+    pub writer_epoch: u64,
+    /// Payload bytes committed since this writer epoch opened.
+    pub appended_bytes: u64,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Heartbeat {
@@ -67,6 +97,11 @@ pub struct Heartbeat {
     #[serde(default)]
     pub out_inflight_peak: i64,
     pub owned_shards: Vec<String>,
+    /// One entry for every topology shard assigned to this instance, whether
+    /// or not its engine is currently open. Automatic cold-merge evaluation
+    /// accepts an entry only from the shard's current ring owner.
+    #[serde(default)]
+    pub shard_activity: Vec<ShardActivity>,
     pub draining: bool,
 }
 
@@ -194,9 +229,38 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             };
 
             // 1. Heartbeat (single writer per object: plain PUT).
-            let (owned, ack_p50_ms) = {
+            let topology = state.topology.read().unwrap().clone();
+            let active = state.ring_active.read().unwrap().clone();
+            let (owned, shard_activity, ack_p50_ms) = {
                 let shards = state.shards.read().unwrap();
                 let owned: Vec<String> = shards.keys().cloned().collect();
+                // An empty ring is bootstrap uncertainty, not ownership.
+                // Publish no activity claims until desired+liveness produce
+                // an assignment; the merge actor fails closed in the gap.
+                let shard_activity = topology
+                    .shards
+                    .iter()
+                    .filter(|prefix| {
+                        !active.is_empty()
+                            && active[crate::http::ring_pick(prefix, &active)] == cfg.instance
+                    })
+                    .map(|prefix| {
+                        let (writer_epoch, appended_bytes) = shards
+                            .get(prefix)
+                            .map(|engine| {
+                                (
+                                    engine.writer_epoch(),
+                                    engine.stats_appended_bytes.load(Ordering::Relaxed),
+                                )
+                            })
+                            .unwrap_or((0, 0));
+                        ShardActivity {
+                            shard: prefix.clone(),
+                            writer_epoch,
+                            appended_bytes,
+                        }
+                    })
+                    .collect();
                 let cutoff = now_ms() - 15_000;
                 let mut waits: Vec<u32> = Vec::new();
                 for eng in shards.values() {
@@ -214,7 +278,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .get(waits.len() / 2)
                     .map(|us| *us as f64 / 1000.0)
                     .unwrap_or(0.0);
-                (owned, (p50 * 10.0).round() / 10.0)
+                (owned, shard_activity, (p50 * 10.0).round() / 10.0)
             };
             let inflight_now = state.inflight.load(Ordering::Relaxed);
             let inflight_peak = state.inflight_peak.swap(inflight_now, Ordering::Relaxed);
@@ -234,6 +298,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 out_inflight,
                 out_inflight_peak,
                 owned_shards: owned,
+                shard_activity,
                 draining: false,
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
@@ -254,6 +319,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let mut max_loaded_cpu = 0.0f64;
             let mut hb_age_ms: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
+            let mut live_heartbeats = Vec::new();
             let mut listing = store.list(Some(&ObjPath::from("fleet")));
             use futures_util::StreamExt;
             let mut hb_paths = Vec::new();
@@ -273,6 +339,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 };
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
+                    live_heartbeats.push(other.clone());
                     live += 1;
                     total_rps += other.rps;
                     total_cores_used += other.cpu_pct / 100.0;
@@ -290,6 +357,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     }
                 }
             }
+            replace_live_heartbeats(live_heartbeats);
 
             // 2b. Router reports: worst client-observed p50 across fresh
             // routers. Edge congestion is invisible to server-side acks.
