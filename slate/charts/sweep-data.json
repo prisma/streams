@@ -1,0 +1,163 @@
+{
+ "size_sweep": {
+  "note": "Run A (v11): single stream, batch=1, conc=256 closed-loop, 40s windows, in-region 1-core server, 25ms flush. regime: clean = zero errors; burst = completed with errors + multi-second p99 (L0 headroom being consumed faster than compaction drains); collapsed = sustained follow-up runs (60s windows, drained, byte-capped) measured ~0 \u2014 rate shown is burst-only.",
+  "points": [
+   {
+    "event_bytes": 64,
+    "requests_per_s": 400.4,
+    "events_per_s": 400.4,
+    "mb_per_s": 0.03,
+    "p50_ms": 650,
+    "p99_ms": 1385,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "requests_per_s": 440.4,
+    "events_per_s": 440.4,
+    "mb_per_s": 0.114,
+    "p50_ms": 600,
+    "p99_ms": 1385,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 1024,
+    "requests_per_s": 395.3,
+    "events_per_s": 395.3,
+    "mb_per_s": 0.406,
+    "p50_ms": 655,
+    "p99_ms": 1212,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 4096,
+    "requests_per_s": 421.7,
+    "events_per_s": 421.7,
+    "mb_per_s": 1.728,
+    "p50_ms": 587,
+    "p99_ms": 1288,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 16384,
+    "requests_per_s": 105.4,
+    "events_per_s": 105.4,
+    "mb_per_s": 1.727,
+    "p50_ms": 526,
+    "p99_ms": 27230,
+    "errs": 890,
+    "regime": "burst"
+   },
+   {
+    "event_bytes": 65536,
+    "requests_per_s": 188.7,
+    "events_per_s": 188.7,
+    "mb_per_s": 12.054,
+    "p50_ms": 481,
+    "p99_ms": 18924,
+    "errs": 777,
+    "regime": "burst"
+   },
+   {
+    "event_bytes": 262144,
+    "requests_per_s": 7.9,
+    "events_per_s": 7.9,
+    "mb_per_s": 0.826,
+    "p50_ms": 12345,
+    "p99_ms": 12927,
+    "errs": 2076,
+    "regime": "collapsed"
+   },
+   {
+    "event_bytes": 1048576,
+    "requests_per_s": 0.0,
+    "events_per_s": 0.0,
+    "mb_per_s": 0.0,
+    "p50_ms": null,
+    "p99_ms": null,
+    "errs": null,
+    "regime": "collapsed"
+   }
+  ],
+  "replication": "small-size plateau reproduced across 4 independent runs: 64B 400-581 req/s, 256B 197-440, 1KB 259-643, 4KB 275-422 (variance = shared object-store latency + accumulated L0 state); >=16KB collapsed to ~0 sustained in all drained 60s reruns"
+ },
+ "batch_sweep": {
+  "note": "bench6 run: single stream, 256B events, byte-capped closed-loop (in-flight <= 2MB), 45s windows + 45s drains, fresh namespace. regime: clean = zero errors; burst = completed with errors (rate rides L0 headroom); collapsed = write stall (L0-compaction-bound). Sustained payload throughput pinned at ~0.4 MB/s by the SlateDB compaction defect regardless of batch \u2014 batching converts that budget into more events and drastically fewer requests.",
+  "points": [
+   {
+    "batch": 1,
+    "requests_per_s": 841.3,
+    "events_per_s": 841.3,
+    "mb_per_s": 0.217,
+    "p50_ms": 303,
+    "p99_ms": 746,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "batch": 4,
+    "requests_per_s": 121.7,
+    "events_per_s": 486.8,
+    "mb_per_s": 0.125,
+    "p50_ms": 544,
+    "p99_ms": 1787,
+    "errs": 768,
+    "regime": "burst"
+   },
+   {
+    "batch": 16,
+    "requests_per_s": 101.2,
+    "events_per_s": 1618.9,
+    "mb_per_s": 0.416,
+    "p50_ms": 698,
+    "p99_ms": 3635,
+    "errs": 512,
+    "regime": "burst"
+   },
+   {
+    "batch": 64,
+    "requests_per_s": 23.5,
+    "events_per_s": 1501.5,
+    "mb_per_s": 0.386,
+    "p50_ms": 249,
+    "p99_ms": 6935,
+    "errs": 488,
+    "regime": "burst"
+   },
+   {
+    "batch": 256,
+    "requests_per_s": 0.0,
+    "events_per_s": 0.0,
+    "mb_per_s": 0.0,
+    "p50_ms": null,
+    "p99_ms": null,
+    "errs": 60,
+    "regime": "collapsed"
+   },
+   {
+    "batch": 1024,
+    "requests_per_s": 1.67,
+    "events_per_s": 1706.3,
+    "mb_per_s": 0.439,
+    "p50_ms": 121,
+    "p99_ms": 2094,
+    "errs": 28,
+    "regime": "burst"
+   },
+   {
+    "batch": 4096,
+    "requests_per_s": 0.0,
+    "events_per_s": 0.0,
+    "mb_per_s": 0.0,
+    "p50_ms": null,
+    "p99_ms": null,
+    "errs": 16,
+    "regime": "collapsed"
+   }
+  ]
+ }
+}

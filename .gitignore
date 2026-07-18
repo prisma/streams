@@ -18,3 +18,5 @@ durable-streams.zip
 .idea/
 .turbo/
 experiments/reports/
+slate/target/
+target/

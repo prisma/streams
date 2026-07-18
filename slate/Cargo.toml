@@ -1,0 +1,68 @@
+[package]
+name = "streams-slate"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libc = "0.2"
+mimalloc = "0.1"
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = "0.4"
+hdrhistogram = "7"
+object_store = { version = "0.14", features = ["aws"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+slatedb = { version = "0.14.1", features = ["zstd", "wal_disable"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1.89"
+futures-core = "0.3.32"
+futures-util = "0.3.32"
+aes-gcm = "0.10"
+hkdf = "0.12"
+base64 = "0.22.1"
+xxhash-rust = { version = "0.8.16", features = ["xxh3", "xxh32"] }
+hmac = "0.12"
+tokio-stream = "0.1.18"
+
+[[bin]]
+name = "streams-slate"
+path = "src/main.rs"
+
+[[bin]]
+name = "s3lite"
+path = "src/bin/s3lite.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[profile.release]
+lto = "thin"
+
+[[bin]]
+name = "streams-keys"
+path = "src/bin/keys.rs"
+
+[[bin]]
+name = "livebench"
+path = "src/bin/livebench.rs"
+
+[[bin]]
+name = "edgesim"
+path = "src/bin/edgesim.rs"
+
+[[bin]]
+name = "pilot"
+path = "src/bin/pilot.rs"
+
+[[bin]]
+name = "cryptobench"
+path = "src/bin/cryptobench.rs"

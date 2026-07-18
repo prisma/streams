@@ -1,0 +1,2426 @@
+//! HTTP surface (spec §3.4/§3.5): keyed appends, merged reads (history +
+//! shard tail), ciphertext frames by default, server-side decryption for
+//! `format=json`, long-poll tails.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get};
+use bytes::{Bytes, BytesMut};
+use object_store::ObjectStore;
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::oneshot;
+
+use crate::crypto::{
+    FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame, hex,
+    stream_hash,
+};
+use crate::history::{KeyCache, read_history};
+use crate::offsets::Offset;
+use crate::registry::{Registry, StreamDesc, shard_for_hash};
+use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
+
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
+const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_LONG_POLL: Duration = Duration::from_secs(30);
+
+/// Everything needed to open a shard log on demand. Shards are opened
+/// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
+/// previous owner, so ownership follows routing with no coordination.
+pub struct ShardOpener {
+    pub open:
+        Box<dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>> + Send + Sync>,
+}
+
+pub struct AppState {
+    pub registry: Registry,
+    pub shard_prefixes: Vec<String>,
+    pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
+    pub opener: ShardOpener,
+    /// Serializes shard opens; also carries anti-flap state.
+    pub open_lock: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// Counts /v1/stream/* requests for the fleet load vector (§4.2).
+    pub fleet_ops: std::sync::atomic::AtomicU64,
+    /// Concurrently in-flight HTTP requests (all routes) + windowed peak.
+    /// THE direct measurement of admitted concurrency: the platform edge
+    /// delivers a bounded number of concurrent requests per instance, and
+    /// that bound — not CPU — was the run-6/8 per-instance ceiling. The
+    /// fleet loop swaps the peak each heartbeat.
+    pub inflight: std::sync::atomic::AtomicI64,
+    pub inflight_peak: std::sync::atomic::AtomicI64,
+    /// §12-lite admission backstop: /v1/stream requests beyond this many
+    /// in flight are shed with 429 + Retry-After instead of queueing into
+    /// latency collapse (runs 7-9: offered load past capacity turned into
+    /// multi-second p50 and timeout churn; shedding holds goodput at
+    /// capacity with bounded latency). 0 = off. Health/debug are exempt.
+    pub admit_max_inflight: i64,
+    /// RSS shed threshold (MB): writes are 429'd while resident memory
+    /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
+    /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
+    /// backpressure. 0 = off. Sampled every 500 ms into rss_mb_cached.
+    pub admit_rss_shed_mb: u64,
+    pub rss_mb_cached: std::sync::atomic::AtomicU64,
+    /// 429s issued by the admission backstop (observability).
+    pub admit_shed: std::sync::atomic::AtomicU64,
+    /// This instance's name plus the ring's active instance set, updated by
+    /// the fleet loop from desired.json + heartbeat liveness (a selected
+    /// instance that has gone heartbeat-dark >30 s is dropped until it
+    /// revives). Used for the R2 ring-ownership check: never open a shard
+    /// the ring assigns elsewhere, even if a stale router sends it.
+    /// Empty = check disabled (fleet mode off or bootstrapping).
+    pub instance_name: String,
+    pub ring_active: std::sync::RwLock<Vec<String>>,
+    pub data_store: Arc<dyn ObjectStore>,
+    pub keys: Arc<KeyCache>,
+    pub touch: Arc<crate::touch::TouchRegistry>,
+    /// Conformance/dev accommodation: used when a request carries no
+    /// Stream-Encryption-Key header (the upstream conformance suite cannot
+    /// send custom headers). Never set in production.
+    pub default_key: Option<String>,
+    /// Conformance accommodation: apply this ordering + segment count to
+    /// streams created WITHOUT a Stream-Ordering header, so the upstream
+    /// suite (which cannot send custom headers) exercises per-key streams.
+    pub default_ordering: Option<(String, u32)>,
+    /// Bearer token required on /v1/* when set (pilot authn).
+    pub auth_token: Option<String>,
+    pub metrics: Arc<crate::metrics::Metrics>,
+}
+
+fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    match &state.auth_token {
+        None => true,
+        Some(t) => headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.strip_prefix("Bearer ").map(|x| x == t).unwrap_or(false))
+            .unwrap_or(false),
+    }
+}
+
+impl AppState {
+    /// Shard engine for `hash`, opening the shard log on first use (which
+    /// fences any previous owner). A shard that was just fenced away is
+    /// held off for 3 s (anti-flap while the router converges) → 503.
+    async fn engine_for(self: &Arc<Self>, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
+        let prefix = shard_for_hash(&self.shard_prefixes, hash);
+        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
+            return Ok(e.clone());
+        }
+        let mut lock = self.open_lock.lock().await;
+        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
+            return Ok(e.clone()); // raced: someone opened it while we waited
+        }
+        if let Some(closed_at) = lock.get(&prefix) {
+            if closed_at.elapsed() < std::time::Duration::from_secs(3) {
+                return Err(err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_moving",
+                    "shard recently fenced away; retry",
+                ));
+            }
+        }
+        // R2/R3: only the ring owner may claim a shard. A stale router can
+        // still send us one — answer 409 + Streams-Replay-To so the router
+        // corrects itself, instead of fencing the rightful owner.
+        let active = self.ring_active.read().unwrap().clone();
+        if !active.is_empty() && !self.instance_name.is_empty() {
+            let owner = active[ring_pick(&prefix, &active)].clone();
+            if owner != self.instance_name {
+                let mut r = err_resp(
+                    StatusCode::CONFLICT,
+                    "not_ring_owner",
+                    &format!("shard {prefix} belongs to {owner}"),
+                );
+                if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+                    r.headers_mut().insert("streams-replay-to", v);
+                }
+                return Err(r);
+            }
+        }
+        match (self.opener.open)(prefix.clone()).await {
+            Ok(engine) => {
+                lock.remove(&prefix);
+                self.shards.write().unwrap().insert(prefix, engine.clone());
+                Ok(engine)
+            }
+            Err(e) => Err(err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "shard_open",
+                &format!("open shard {prefix}: {e}"),
+            )),
+        }
+    }
+
+    /// Called when a shard db closes (fenced by a new owner): drop it from
+    /// the serving map and start the anti-flap holdoff.
+    pub fn shard_closed(self: &Arc<Self>, prefix: &str) {
+        self.shards.write().unwrap().remove(prefix);
+        if let Ok(mut l) = self.open_lock.try_lock() {
+            l.insert(prefix.to_string(), std::time::Instant::now());
+        } else {
+            let state = self.clone();
+            let prefix = prefix.to_string();
+            tokio::spawn(async move {
+                state.open_lock.lock().await.insert(prefix, std::time::Instant::now());
+            });
+        }
+    }
+}
+
+/// RAII in-flight counter: decrements on response AND on cancel/panic.
+struct InflightGuard(Arc<AppState>);
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+async fn track_inflight(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let cur = state.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    state.inflight_peak.fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
+    let _guard = InflightGuard(state.clone());
+    let path_is_stream = req.uri().path().starts_with("/v1/stream");
+    if state.admit_max_inflight > 0 && cur > state.admit_max_inflight && path_is_stream {
+        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
+        // non-compliant closed-loop client can generate (an instant 429
+        // invites an instant retry — measured as a CPU-starving reject
+        // storm). Compliant clients never see this path twice in a row.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [
+                ("retry-after", "1"),
+                ("content-type", "application/json"),
+            ],
+            r#"{"error":{"code":"overloaded","message":"instance at admission capacity; retry"}}"#,
+        )
+            .into_response();
+    }
+    // RSS shed: writes only — reads don't grow memtables, and rejecting
+    // them would hide the instance from its own operators.
+    if state.admit_rss_shed_mb > 0
+        && path_is_stream
+        && req.method() != axum::http::Method::GET
+        && state.rss_mb_cached.load(std::sync::atomic::Ordering::Relaxed)
+            > state.admit_rss_shed_mb
+    {
+        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [
+                ("retry-after", "2"),
+                ("content-type", "application/json"),
+            ],
+            r#"{"error":{"code":"overloaded","message":"instance memory pressure; retry"}}"#,
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Calibrated-latency endpoint for edge probes: holds the request for
+/// ?ms= milliseconds doing no engine work. Lets a probe separate an
+/// admitted-concurrency cap (rate = slots/latency) from a rate cap
+/// (rate constant regardless of latency).
+async fn debug_sleep(
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(100).min(5_000);
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    "ok".into_response()
+}
+
+/// Live resource gauge for probes: in-flight now, peak since last call,
+/// and RSS.
+async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
+    let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
+    let peak = state.inflight_peak.swap(now, std::sync::atomic::Ordering::Relaxed);
+    axum::Json(serde_json::json!({
+        "inflight_now": now,
+        "inflight_peak": peak,
+        "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
+        "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
+    }))
+    .into_response()
+}
+
+/// Object-store client latency snapshot (O14a): per (op, path-class)
+/// percentiles over ?window= seconds (default 60), the slow-op ring, and
+/// the outbound in-flight gauge. ?swap=1 resets the peak (sampler only —
+/// heartbeats read it non-destructively).
+async fn debug_store(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+    }
+    let window: u64 = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(60).clamp(1, 300);
+    let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
+    axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(|| async { "ok" }))
+        .route("/v1/streams", get(list_streams))
+        .route("/v1/debug/timings", get(debug_timings))
+        .route("/v1/debug/load", get(debug_load))
+        .route("/v1/debug/store", get(debug_store))
+        .route("/v1/debug/sleep", get(debug_sleep))
+        .route("/v1/stream/{*name}", any(stream_entry))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), track_inflight))
+        .layer(axum::middleware::map_response(|mut resp: Response| async {
+            resp.headers_mut().insert(
+                "x-content-type-options",
+                axum::http::HeaderValue::from_static("nosniff"),
+            );
+            resp
+        }))
+        .with_state(state)
+}
+
+/// Rendezvous over instance NAMES (FNV-1a, identical in the pilot LB) —
+/// both sides compute the same shard→instance assignment from the same
+/// inputs (COMPUTE-SPEC §2: "the live set is the assignment").
+pub fn ring_pick(shard: &str, instances: &[String]) -> usize {
+    let mut best = 0usize;
+    let mut best_score = 0u32;
+    for (i, name) in instances.iter().enumerate() {
+        let key = format!("{shard} {name}");
+        let mut h: u32 = 2166136261;
+        for b in key.bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(16777619);
+        }
+        if i == 0 || h > best_score {
+            best_score = h;
+            best = i;
+        }
+    }
+    best
+}
+
+fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({"error": {"code": code, "message": message}}).to_string(),
+    )
+        .into_response()
+}
+
+/// Commit-pipeline timing samples per shard: how long db.write took vs how
+/// long the group then waited for the durable watermark. Diagnostic only.
+async fn debug_timings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+    }
+    let mut shards = serde_json::Map::new();
+    let engines: Vec<(String, Arc<ShardEngine>)> = state
+        .shards
+        .read()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (prefix, eng) in &engines {
+        let samples: Vec<_> = eng
+            .timings
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .take(40)
+            .map(|g| json!({
+                "ts_ms": g.ts_ms,
+                "queue_wait_us": g.queue_wait_us,
+                "encode_us": g.encode_us,
+                "write_us": g.write_us,
+                "durable_wait_us": g.durable_wait_us,
+                "reqs": g.reqs,
+                "records": g.records,
+                "bytes": g.bytes,
+            }))
+            .collect();
+        shards.insert(prefix.clone(), json!(samples));
+    }
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::Value::Object(shards).to_string(),
+    )
+        .into_response()
+}
+
+async fn list_streams(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+    }
+    match state.registry.list(1000).await {
+        Ok(streams) => {
+            let body: Vec<_> = streams
+                .iter()
+                .map(|d| {
+                    json!({
+                        "name": d.name,
+                        "profile": "generic",
+                        "created_at_ms": d.created_ms,
+                        "stream_epoch": d.stream_epoch,
+                    })
+                })
+                .collect();
+            (
+                [(header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&body).unwrap(),
+            )
+                .into_response()
+        }
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    }
+}
+
+#[derive(Deserialize, Default)]
+pub struct ReadParams {
+    offset: Option<String>,
+    format: Option<String>,
+    live: Option<String>,
+    timeout: Option<String>,
+    key: Option<String>,
+    // touch wait params
+    cursor: Option<String>,
+    sig: Option<String>,
+}
+
+async fn stream_entry(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(params): Query<ReadParams>,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let st = state.clone();
+    let resp = stream_entry_inner(State(state), Path(name), Query(params), method, headers, body)
+        .await;
+    // Only successful work counts toward the fleet load vector — otherwise
+    // routing noise (409 replays, 404s) masquerades as demand and drives
+    // the desired count up on garbage.
+    if resp.status().is_success() {
+        st.fleet_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    resp
+}
+
+async fn stream_entry_inner(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(params): Query<ReadParams>,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+    }
+    // Queue subresources: /v1/stream/<name>/queue/{consumer}/{receive,ack,extend}
+    if let Some((stream, route)) = name.split_once("/queue/") {
+        return queue_entry(state, stream.to_string(), route.to_string(), method, headers, body)
+            .await;
+    }
+    // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
+    if let Some((stream, route)) = name.split_once("/touch/") {
+        return touch_entry(state, stream.to_string(), route.to_string(), method, headers, params)
+            .await;
+    }
+    match method {
+        Method::PUT => {
+            let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+                Ok(b) => b,
+                Err(_) => {
+                    return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
+                }
+            };
+            create_stream(state, name, headers, body).await
+        }
+        Method::POST => append(state, name, headers, body).await,
+        Method::GET => read(state, name, params, headers, false).await,
+        Method::HEAD => read(state, name, params, headers, true).await,
+        Method::DELETE => delete_stream(state, name).await,
+        _ => err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "unsupported method"),
+    }
+}
+
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if let Some(v) = s.strip_suffix("ms") {
+        return v.parse::<u64>().ok().map(Duration::from_millis);
+    }
+    if let Some(v) = s.strip_suffix('h') {
+        return v.parse::<u64>().ok().map(|n| Duration::from_secs(n * 3600));
+    }
+    if let Some(v) = s.strip_suffix('m') {
+        return v.parse::<u64>().ok().map(|n| Duration::from_secs(n * 60));
+    }
+    if let Some(v) = s.strip_suffix('s') {
+        return v.parse::<u64>().ok().map(Duration::from_secs);
+    }
+    s.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+fn parse_expiry(headers: &HeaderMap) -> Result<Option<i64>, String> {
+    let ttl = headers.get("stream-ttl").and_then(|v| v.to_str().ok());
+    let expires = headers.get("stream-expires-at").and_then(|v| v.to_str().ok());
+    match (ttl, expires) {
+        (Some(_), Some(_)) => Err("at most one of Stream-TTL and Stream-Expires-At".into()),
+        (Some(t), None) => {
+            let d = parse_duration(t).ok_or_else(|| format!("invalid Stream-TTL: {t}"))?;
+            Ok(Some(now_ms() + d.as_millis() as i64))
+        }
+        (None, Some(e)) => chrono::DateTime::parse_from_rfc3339(e)
+            .map(|ts| Some(ts.timestamp_millis()))
+            .map_err(|_| format!("invalid Stream-Expires-At: {e}")),
+        (None, None) => Ok(None),
+    }
+}
+
+/// Extract + validate the request's stream key against the descriptor.
+enum KeyCheck {
+    Ok(StreamKey, [u8; 16]),
+    Missing,
+    Wrong,
+    BadDescriptor,
+}
+
+fn raw_key<'a>(headers: &'a HeaderMap, state: &'a AppState) -> Option<&'a str> {
+    headers
+        .get("stream-encryption-key")
+        .and_then(|v| v.to_str().ok())
+        .or(state.default_key.as_deref())
+}
+
+fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
+    let Some(raw) = raw else {
+        return KeyCheck::Missing;
+    };
+    let Ok(key) = StreamKey::from_b64(raw) else {
+        return KeyCheck::Wrong;
+    };
+    let Some(epoch) = desc.epoch_bytes() else {
+        return KeyCheck::BadDescriptor;
+    };
+    if key.fingerprint(&epoch) != desc.key_fingerprint {
+        return KeyCheck::Wrong;
+    }
+    KeyCheck::Ok(key, epoch)
+}
+
+fn key_version(headers: &HeaderMap) -> u32 {
+    headers
+        .get("stream-key-version")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+fn desc_alive(desc: &StreamDesc) -> bool {
+    !desc.deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
+}
+
+fn rand_epoch() -> [u8; 16] {
+    use rand::RngCore;
+    let mut e = [0u8; 16];
+    rand::rng().fill_bytes(&mut e);
+    e
+}
+
+/// Strict TTL grammar: canonical non-negative decimal only.
+fn parse_ttl_strict(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.is_empty() || (b[0] == b'0' && b.len() > 1) || !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// Canonical non-negative integer for producer epoch/seq.
+fn parse_uint_strict(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.is_empty() || !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+fn hdr(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+}
+
+fn want_close(headers: &HeaderMap) -> bool {
+    hdr(headers, "stream-closed").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+fn tail_token(next: u64) -> String {
+    if next == 0 { Offset::START } else { Offset(Some(next - 1)) }.encode()
+}
+
+/// JSON append batching: top-level array = batch (one message per element);
+/// any other JSON value = a single message. `allow_empty_array` is true only
+/// for PUT bodies.
+fn json_entries(body: &[u8], allow_empty_array: bool) -> Result<Vec<Bytes>, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| "invalid JSON body".to_string())?;
+    match v {
+        serde_json::Value::Array(arr) => {
+            if arr.is_empty() && !allow_empty_array {
+                return Err("empty JSON array".to_string());
+            }
+            Ok(arr
+                .iter()
+                .map(|e| Bytes::from(serde_json::to_vec(e).expect("json")))
+                .collect())
+        }
+        other => Ok(vec![Bytes::from(serde_json::to_vec(&other).expect("json"))]),
+    }
+}
+
+fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {
+    let id = hdr(headers, "producer-id");
+    let epoch = hdr(headers, "producer-epoch");
+    let seq = hdr(headers, "producer-seq");
+    match (id, epoch, seq) {
+        (None, None, None) => Ok(None),
+        (Some(id), Some(e), Some(s)) => {
+            if id.is_empty() {
+                return Err("Producer-Id must not be empty".into());
+            }
+            let epoch = parse_uint_strict(&e).ok_or("invalid Producer-Epoch")?;
+            let seq = parse_uint_strict(&s).ok_or("invalid Producer-Seq")?;
+            Ok(Some(crate::shard::ProducerReq { id, epoch, seq }))
+        }
+        _ => Err("Producer-Id, Producer-Epoch and Producer-Seq must be sent together".into()),
+    }
+}
+
+fn fresh_desc(
+    state: &AppState,
+    name: &str,
+    key: &StreamKey,
+    content_type: String,
+    ttl_secs: Option<u64>,
+    expires_at_ms: Option<i64>,
+    profile: Option<String>,
+    touch_templates: Vec<crate::registry::PinnedTemplate>,
+    ordering: Option<String>,
+    segment_count: u32,
+) -> StreamDesc {
+    let _ = state;
+    let epoch = rand_epoch();
+    let (tt_fpr, sig_key) = if profile.as_deref() == Some("state-protocol") {
+        let token = crate::crypto::touch_token(key, &epoch);
+        let sk = crate::crypto::wait_sig_key(&token, &epoch);
+        (
+            Some(crate::crypto::touch_token_fingerprint(&token)),
+            Some(hex(&sk)),
+        )
+    } else {
+        (None, None)
+    };
+    StreamDesc {
+        name: name.to_string(),
+        stream_epoch: hex(&epoch),
+        key_fingerprint: key.fingerprint(&epoch),
+        created_ms: now_ms(),
+        expires_at_ms: ttl_secs
+            .map(|t| now_ms() + (t as i64) * 1000)
+            .or(expires_at_ms),
+        deleted: false,
+        profile,
+        content_type,
+        ttl_secs,
+        ordering,
+        segment_count,
+        queue_max_deliveries: None,
+        touch_token_fingerprint: tt_fpr,
+        touch_templates,
+        touch_sig_key: sig_key,
+    }
+}
+
+async fn create_stream(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(raw_key_str) = raw_key(&headers, &state) else {
+        return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+    };
+    let key = match StreamKey::from_b64(raw_key_str) {
+        Ok(k) => k,
+        Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m),
+    };
+    let content_type = hdr(&headers, "content-type")
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let ttl_hdr = hdr(&headers, "stream-ttl");
+    let exp_hdr = hdr(&headers, "stream-expires-at");
+    if ttl_hdr.is_some() && exp_hdr.is_some() {
+        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "TTL and Expires-At together");
+    }
+    let ttl_secs = match &ttl_hdr {
+        Some(t) => match parse_ttl_strict(t) {
+            Some(v) => Some(v),
+            None => return err_resp(StatusCode::BAD_REQUEST, "invalid_ttl", "invalid Stream-TTL"),
+        },
+        None => None,
+    };
+    let expires_at_ms = match &exp_hdr {
+        Some(e) => match chrono::DateTime::parse_from_rfc3339(e) {
+            Ok(ts) => Some(ts.timestamp_millis()),
+            Err(_) => {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "bad Expires-At");
+            }
+        },
+        None => None,
+    };
+    let close = want_close(&headers);
+    let profile = hdr(&headers, "stream-profile");
+    if let Some(p) = &profile {
+        if !matches!(p.as_str(), "generic" | "state-protocol" | "queue") {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_profile", "unsupported profile");
+        }
+    }
+    // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
+    // order, byte-identical semantics to before this feature existed.
+    let ordering = match hdr(&headers, "stream-ordering") {
+        None => state.default_ordering.as_ref().map(|(o, _)| o.clone()),
+        Some(v) if v.eq_ignore_ascii_case("total") => None,
+        Some(v) if v.eq_ignore_ascii_case("per-key") => Some("per-key".to_string()),
+        Some(_) => {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_ordering", "ordering must be total or per-key");
+        }
+    };
+    let segment_count: u32 = match hdr(&headers, "stream-segments") {
+        None => {
+            if ordering.is_some() {
+                state.default_ordering.as_ref().map(|(_, n)| *n).unwrap_or(2)
+            } else {
+                0
+            }
+        }
+        Some(_) if ordering.is_none() => {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "Stream-Segments requires Stream-Ordering: per-key");
+        }
+        Some(v) => match parse_ttl_strict(&v) {
+            Some(n) if (1..=256).contains(&n) && (n as u32).is_power_of_two() => n as u32,
+            _ => {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_segments", "Stream-Segments must be a power of two in 1..=256");
+            }
+        },
+    };
+    if ordering.is_some() {
+        if let Some(p) = hdr(&headers, "stream-profile") {
+            if p == "state-protocol" || p == "queue" {
+                return err_resp(StatusCode::BAD_REQUEST, "unsupported_combination", "this profile requires total ordering (v1)");
+            }
+        }
+    }
+    let mut touch_templates: Vec<crate::registry::PinnedTemplate> = Vec::new();
+    if let Some(raw) = hdr(&headers, "stream-touch-templates") {
+        if profile.as_deref() != Some("state-protocol") {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "templates need state-protocol");
+        }
+        match serde_json::from_str(&raw) {
+            Ok(list) => touch_templates = list,
+            Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string()),
+        }
+        if touch_templates.len() > crate::touch::MAX_TEMPLATES_PER_STREAM
+            || touch_templates
+                .iter()
+                .any(|t| t.entity.is_empty() || t.fields.is_empty() || t.fields.len() > 3)
+        {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", "bad template shape/caps");
+        }
+    }
+
+    // Resolve existing.
+    let existing = match state.registry.get(&name).await {
+        Ok(v) => v,
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    let (created, desc) = match existing {
+        Some(d) if desc_alive(&d) => {
+            // Idempotent PUT: config must match.
+            let same_ct =
+                crate::registry::media_type(&d.content_type) == crate::registry::media_type(&content_type)
+                    || hdr(&headers, "content-type").is_none();
+            if !same_ct
+                || d.ttl_secs != ttl_secs
+                || d.ordering != ordering
+                || (ordering.is_some() && d.segment_count != segment_count)
+            {
+                return err_resp(StatusCode::CONFLICT, "config_mismatch", "stream exists with different config");
+            }
+            match check_key(raw_key(&headers, &state), &d) {
+                KeyCheck::Ok(..) => {}
+                KeyCheck::Wrong => {
+                    return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
+                }
+                _ => {}
+            }
+            (false, d)
+        }
+        Some(_) => {
+            // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
+            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
+            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            match state.registry.recreate(&name, fresh).await {
+                Ok(d) => (true, d),
+                Err(e) => {
+                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                }
+            }
+        }
+        None => {
+            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
+            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            match state.registry.create(fresh).await {
+                Ok((true, d)) => (true, d),
+                Ok((false, d)) => {
+                    // Raced: treat as idempotent-config path.
+                    if crate::registry::media_type(&d.content_type)
+                        != crate::registry::media_type(&content_type)
+                        || d.ttl_secs != ttl_secs
+                    {
+                        return err_resp(StatusCode::CONFLICT, "config_mismatch", "conflict");
+                    }
+                    (false, d)
+                }
+                Err(e) => {
+                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                }
+            }
+        }
+    };
+
+    let hash = if desc.is_per_key() {
+        desc.segment_hash(desc.segment_for(""))
+    } else {
+        desc.storage_hash()
+    };
+    let epoch_bytes = desc.epoch_bytes().unwrap_or([0u8; 16]);
+    state.keys.put(hash, key.clone(), epoch_bytes);
+    // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
+    // router can compute placement without knowing the stream epoch; the
+    // record keyspace keeps using storage/segment hashes.
+    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+
+    // Initial body / close-on-create ride the committer.
+    let mut next = {
+        match engine.stream_handle(hash).await {
+            Ok(h) => h.state.lock().unwrap().durable.next,
+            Err(e) => {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+            }
+        }
+    };
+    let mut closed_now = false;
+    if created && (!body.is_empty() || close) {
+        let entries: Vec<Bytes> = if body.is_empty() {
+            Vec::new()
+        } else if desc.is_json() {
+            match json_entries(&body, true) {
+                Ok(v) => v,
+                Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_json", &m),
+            }
+        } else {
+            vec![body.clone()]
+        };
+        let subkey = derive_subkey(&key, &epoch_bytes, "", 0);
+        let bytes = entries.iter().map(|e| e.len()).sum();
+        let (tx, rx) = oneshot::channel();
+        let req = AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            entries,
+            routing_key: String::new(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes,
+            close,
+            producer: None,
+            deferred_error: None,
+            touch: None,
+            resp: tx,
+        };
+        if engine.try_enqueue(req).is_err() {
+            return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "queue full");
+        }
+        match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
+            Ok(Ok(Ok(ack))) => {
+                next = ack.next_offset;
+                closed_now = ack.closed;
+            }
+            _ => return err_resp(StatusCode::REQUEST_TIMEOUT, "append_timeout", "initial body timed out"),
+        }
+    } else if !created && close {
+        closed_now = true; // preserved on idempotent PUT of a closed stream
+    }
+
+    let status = if created { StatusCode::CREATED } else { StatusCode::OK };
+    let mut resp = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, desc.content_type.clone())
+        .header("Stream-Next-Offset", tail_token(next));
+    if created {
+        let host = hdr(&headers, "host").unwrap_or_else(|| "localhost".to_string());
+        resp = resp.header(header::LOCATION, format!("http://{host}/v1/stream/{name}"));
+    }
+    if closed_now {
+        resp = resp.header("Stream-Closed", "true");
+    }
+    resp.body(Body::empty()).unwrap()
+}
+
+
+async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
+    match state.registry.update(&name, |d| d.deleted = true).await {
+        Ok(Some(_)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    }
+}
+
+// ---- state-protocol touch surface (collapsible GET-per-key model) ----
+
+/// /touch/* authorization: a touch capability token (purpose-bound HKDF of
+/// the stream key — observation without decryption) OR the full stream key.
+/// The wait route additionally accepts the URL `sig` capability so that CDN
+/// cache keys are self-authorizing.
+fn touch_authorized(headers: &HeaderMap, state: &AppState, desc: &StreamDesc) -> bool {
+    if let Some(expected) = &desc.touch_token_fingerprint {
+        if let Some(raw) = headers.get("touch-token").and_then(|v| v.to_str().ok()) {
+            if let Some(bytes) = crate::crypto::unhex(raw.trim()) {
+                if let Ok(token) = <[u8; 32]>::try_from(bytes) {
+                    if &crate::crypto::touch_token_fingerprint(&token) == expected {
+                        return true;
+                    }
+                }
+            }
+        }
+        matches!(check_key(raw_key(headers, state), desc), KeyCheck::Ok(..))
+    } else {
+        !matches!(check_key(raw_key(headers, state), desc), KeyCheck::Wrong)
+    }
+}
+
+fn pinned_of(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
+    desc.touch_templates
+        .iter()
+        .map(|t| (t.entity.clone(), t.fields.clone()))
+        .collect()
+}
+
+async fn touch_entry(
+    state: Arc<AppState>,
+    stream: String,
+    route: String,
+    method: Method,
+    headers: HeaderMap,
+    params: ReadParams,
+) -> Response {
+    let desc = match state.registry.get(&stream).await {
+        Ok(Some(d)) if desc_alive(&d) => d,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    if desc.profile.as_deref() != Some("state-protocol") {
+        return err_resp(StatusCode::NOT_FOUND, "not_found", "touch is not enabled");
+    }
+
+    // GET /touch/key/{watchKeyHex}?cursor=..&sig=..[&timeout=..]
+    // The collapsible wait: one key per URL, journal-global cursors, the
+    // `sig` URL capability as auth (so CDN cache keys are self-authorizing).
+    if let Some(key_hex) = route.strip_prefix("key/") {
+        if method != Method::GET {
+            return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "GET only");
+        }
+        let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
+        if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
+            return err_resp(StatusCode::BAD_REQUEST, "invalid_key", "watch key must be hex16");
+        }
+        let sig_ok = match (&params.sig, &desc.touch_sig_key) {
+            (Some(sig), Some(stored)) => crate::crypto::unhex(stored)
+                .and_then(|k| <[u8; 32]>::try_from(k).ok())
+                .map(|k| crate::crypto::wait_url_sig(&k, &key_hex) == sig.trim().to_ascii_lowercase())
+                .unwrap_or(false),
+            _ => false,
+        };
+        if !sig_ok && !touch_authorized(&headers, &state, &desc) {
+            return err_resp(
+                StatusCode::FORBIDDEN,
+                "touch_unauthorized",
+                "a valid sig, Touch-Token, or Stream-Encryption-Key is required",
+            );
+        }
+        let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
+        let cursor = params.cursor.as_deref().unwrap_or("now");
+        let timeout = params
+            .timeout
+            .as_deref()
+            .and_then(parse_duration)
+            .unwrap_or(Duration::from_secs(25))
+            .min(Duration::from_secs(30));
+        let key_id = crate::touch_keys::key_id_of(&key_hex);
+        let out = journal.wait(cursor, vec![key_id], timeout).await;
+
+        use crate::touch::WaitOutcome;
+        let end_off_enc = |end: u64| {
+            if end == 0 { Offset::START } else { Offset(Some(end - 1)) }.encode()
+        };
+        let (body, cache) = match out {
+            // Coalescing (identical in-flight URLs collapsed) delivers the
+            // origin-load win; caching is only a short straggler window.
+            // Measured: long TTLs let desynchronized clients walk a cached
+            // hop-chain one generation at a time, so head wakes cache for
+            // just 2s and everything else is no-store.
+            WaitOutcome::Touched { cursor, end_offset, proven, cacheable } => (
+                json!({
+                    "touched": true,
+                    "reason": if proven { "touched" } else { "resync" },
+                    "cursor": cursor,
+                    "streamEndOffset": end_off_enc(end_offset),
+                }),
+                if cacheable { "public, max-age=2" } else { "no-store" },
+            ),
+            // A touch may still arrive for this (key, cursor): never cache.
+            WaitOutcome::Timeout { cursor, end_offset } => (
+                json!({
+                    "touched": false,
+                    "cursor": cursor,
+                    "streamEndOffset": end_off_enc(end_offset),
+                }),
+                "no-store",
+            ),
+            WaitOutcome::Stale { cursor } => (
+                json!({
+                    "stale": true,
+                    "cursor": cursor,
+                    "error": {"code": "stale", "message": "cursor epoch mismatch; rerun and restart from cursor"},
+                }),
+                "no-store",
+            ),
+        };
+        return (
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, cache),
+            ],
+            body.to_string(),
+        )
+            .into_response();
+    }
+
+    if !touch_authorized(&headers, &state, &desc) {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "touch_unauthorized",
+            "a valid Touch-Token or Stream-Encryption-Key is required",
+        );
+    }
+    match (method, route.as_str()) {
+        (Method::GET, "meta") => {
+            let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
+            ([(header::CONTENT_TYPE, "application/json")], journal.meta().to_string())
+                .into_response()
+        }
+        _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown touch route"),
+    }
+}
+
+fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
+    let raw = headers.get("stream-timestamp")?.to_str().ok()?;
+    if let Ok(n) = raw.parse::<i64>() {
+        return Some(n / 1_000_000); // unix nanos
+    }
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|t| t.timestamp_millis())
+}
+
+async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Body) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if desc_alive(&d) => d,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
+        KeyCheck::Ok(k, e) => (k, e),
+        KeyCheck::Missing => {
+            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        }
+        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        KeyCheck::BadDescriptor => {
+            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+        }
+    };
+
+    let producer = match parse_producer(&headers) {
+        Ok(p) => p,
+        Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),
+    };
+    let close = want_close(&headers);
+    let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+    };
+    let close_only = close && body.is_empty();
+
+    // Content-Type: required on POST with a body; must match the stream's
+    // configured media type (case-insensitive; parameters ignored). A
+    // close-only POST ignores content type entirely. With producer headers
+    // the mismatch is deferred so duplicates still return 204.
+    let ct = hdr(&headers, "content-type");
+    let mut deferred: Option<crate::shard::DeferredErr> = None;
+    if !close_only {
+        match &ct {
+            None => {
+                if producer.is_some() {
+                    deferred = Some(crate::shard::DeferredErr::BadBody("missing Content-Type".into()));
+                } else {
+                    return err_resp(StatusCode::BAD_REQUEST, "missing_content_type", "Content-Type required");
+                }
+            }
+            Some(c) => {
+                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type) {
+                    if producer.is_some() {
+                        deferred = Some(crate::shard::DeferredErr::CtMismatch);
+                    } else {
+                        return err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch");
+                    }
+                }
+            }
+        }
+    }
+
+    // Body -> entries (batching rules); errors deferred with producers.
+    let mut entries: Vec<Bytes> = Vec::new();
+    if !close_only && deferred.is_none() {
+        if body.is_empty() {
+            if producer.is_some() {
+                deferred = Some(crate::shard::DeferredErr::BadBody("empty body".into()));
+            } else {
+                return err_resp(StatusCode::BAD_REQUEST, "empty_body", "empty body");
+            }
+        } else if desc.is_json() {
+            match json_entries(&body, false) {
+                Ok(v) => entries = v,
+                Err(m) => {
+                    if producer.is_some() {
+                        deferred = Some(crate::shard::DeferredErr::BadBody(m));
+                    } else {
+                        return err_resp(StatusCode::BAD_REQUEST, "invalid_json", &m);
+                    }
+                }
+            }
+        } else {
+            entries = vec![body.clone()];
+        }
+    }
+
+    let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
+    let seg_ord: Option<u32> = if desc.is_per_key() {
+        Some(desc.segment_for(&routing_key))
+    } else {
+        None
+    };
+    let hash = match seg_ord {
+        Some(o) => desc.segment_hash(o),
+        None => desc.storage_hash(),
+    };
+    let kv = key_version(&headers);
+    let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
+    state.keys.put(hash, key, epoch);
+
+    // H1 state-protocol hook (unchanged; uses the incarnation hash).
+    let touch = if desc.profile.as_deref() == Some("state-protocol") && !entries.is_empty() {
+        let journal = state.touch.journal(hash, &pinned_of(&desc));
+        let snapshot = journal.snapshot();
+        let mut key_ids: Vec<u32> = Vec::new();
+        for raw in &entries {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {
+                if let Some(mut ids) = crate::touch::TouchJournal::derive_key_ids(&snapshot, &v) {
+                    key_ids.append(&mut ids);
+                }
+            }
+        }
+        key_ids.sort_unstable();
+        key_ids.dedup();
+        if key_ids.is_empty() {
+            None
+        } else {
+            Some(crate::shard::TouchFeed { journal, key_ids, next_offset: 0 })
+        }
+    } else {
+        None
+    };
+
+    let bytes = entries.iter().map(|e| e.len()).sum();
+    let metric_bytes = bytes as u64;
+    let (tx, rx) = oneshot::channel();
+    let req = AppendReq {
+            enqueued_at: std::time::Instant::now(),
+        hash,
+        entries,
+        routing_key,
+        key_version: kv,
+        subkey,
+        ts_hint_ms: parse_ts_hint(&headers),
+        seq: hdr(&headers, "stream-seq"),
+        bytes,
+        close,
+        producer: producer.clone(),
+        deferred_error: deferred,
+        touch,
+        resp: tx,
+    };
+    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    if engine.try_enqueue(req).is_err() {
+        return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "append queue full");
+    }
+    let outcome = match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
+        Ok(Ok(o)) => o,
+        _ => {
+            return err_resp(
+                StatusCode::REQUEST_TIMEOUT,
+                "append_timeout",
+                "append timed out; outcome unknown",
+            );
+        }
+    };
+
+    let tok = |next: u64| match seg_ord {
+        Some(o) => crate::offsets::encode_ep(
+            o,
+            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+        ),
+        None => tail_token(next),
+    };
+    match outcome {
+        Ok(ack) => {
+            if !ack.duplicate {
+                state.metrics.append(&name, metric_bytes);
+            }
+            let status = if ack.duplicate || close_only || producer.is_none() {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::OK
+            };
+            let mut r = Response::builder()
+                .status(status)
+                .header("Stream-Next-Offset", tok(ack.next_offset));
+            if let Some((pe, ps)) = ack.producer {
+                r = r
+                    .header("Producer-Epoch", pe.to_string())
+                    .header("Producer-Seq", ps.to_string());
+            }
+            if ack.closed {
+                r = r.header("Stream-Closed", "true");
+            }
+            r.body(Body::empty()).unwrap()
+        }
+        Err(AppendErr::SeqConflict { current }) => err_resp(
+            StatusCode::CONFLICT,
+            "seq_conflict",
+            &format!("Stream-Seq must exceed {}", current.unwrap_or_default()),
+        ),
+        Err(AppendErr::Closed { next_offset }) => {
+            let mut r = Response::builder()
+                .status(StatusCode::CONFLICT)
+                .header("Stream-Closed", "true")
+                .header("Stream-Next-Offset", tok(next_offset))
+                .header(header::CONTENT_TYPE, "application/json");
+            r = r.header(header::CACHE_CONTROL, "no-store");
+            r.body(Body::from(
+                json!({"error": {"code": "stream_closed", "message": "stream is closed"}}).to_string(),
+            ))
+            .unwrap()
+        }
+        Err(AppendErr::ProducerGap { expected, received }) => Response::builder()
+            .status(StatusCode::CONFLICT)
+            .header("Producer-Expected-Seq", expected.to_string())
+            .header("Producer-Received-Seq", received.to_string())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}}).to_string(),
+            ))
+            .unwrap(),
+        Err(AppendErr::ProducerStale { current_epoch }) => Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header("Producer-Epoch", current_epoch.to_string())
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}}).to_string(),
+            ))
+            .unwrap(),
+        Err(AppendErr::ProducerEpochSeq) => err_resp(
+            StatusCode::BAD_REQUEST,
+            "producer_epoch_seq",
+            "a new epoch must start at seq 0",
+        ),
+        Err(AppendErr::CtMismatch) => {
+            err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch")
+        }
+        Err(AppendErr::BadBody(m)) => err_resp(StatusCode::BAD_REQUEST, "invalid_body", &m),
+        Err(AppendErr::Internal(m)) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+    }
+}
+
+
+/// A decrypted record ready for response assembly.
+struct PlainRec {
+    off: u64,
+    payload: Bytes,
+}
+
+struct ReadOut {
+    recs: Vec<PlainRec>,
+    last: Option<u64>,
+    end: u64,
+    completed: bool,
+}
+
+/// Merged two-tier read returning plaintext records.
+async fn read_records(
+    state: &AppState,
+    desc: &StreamDesc,
+    key: &StreamKey,
+    epoch: &[u8; 16],
+    handle: &Arc<crate::shard::StreamHandle>,
+    engine: &Arc<ShardEngine>,
+    scan_from: u64,
+    key_filter: Option<&str>,
+    max_bytes: usize,
+) -> Result<ReadOut, String> {
+    // The sub-stream identity (AAD + history-DB path): for total-order
+    // streams this is the incarnation hash; for per-key streams, the
+    // segment hash. Either way it's the handle's identity.
+    let hash = handle.hash;
+    let (absorbed, end) = {
+        let st = handle.state.lock().unwrap();
+        (st.durable.absorbed, st.durable.next)
+    };
+    let mut out = ReadOut { recs: Vec::new(), last: None, end, completed: true };
+    let mut budget = max_bytes;
+
+    let mut history_completed = true;
+    if scan_from < absorbed && budget > 0 {
+        let hist = read_history(&state.data_store, &hash, key, scan_from, absorbed, key_filter, budget)
+            .await
+            .map_err(|e| e.to_string())?;
+        history_completed = hist.completed;
+        for (off, rec) in hist.records {
+            budget = budget.saturating_sub(rec.payload.len());
+            out.recs.push(PlainRec { off, payload: rec.payload });
+            out.last = Some(off);
+        }
+    }
+    let shard_from = if scan_from < absorbed {
+        if history_completed {
+            if absorbed > 0 {
+                out.last = Some(out.last.map_or(absorbed - 1, |o| o.max(absorbed - 1)));
+            }
+            absorbed
+        } else {
+            out.completed = false;
+            return Ok(out);
+        }
+    } else {
+        scan_from
+    };
+    if budget > 0 && shard_from < end {
+        let part = read_frames(engine, handle, shard_from, key_filter, budget)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
+        for raw in part.frames {
+            let Some(frame) = decode_frame(&raw) else {
+                return Err("bad frame".into());
+            };
+            let sk = *subkeys
+                .entry((frame.header.routing_key.clone(), frame.header.key_version))
+                .or_insert_with(|| {
+                    derive_subkey(key, epoch, &frame.header.routing_key, frame.header.key_version)
+                });
+            let pt = decrypt_frame(&sk, &hash, &frame, &raw)?;
+            out.recs.push(PlainRec { off: frame.header.offset, payload: Bytes::from(pt) });
+        }
+        if let Some(last) = part.last_offset {
+            out.last = Some(out.last.map_or(last, |o| o.max(last)));
+        }
+    }
+    let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
+    out.completed = consumed_next >= end;
+    Ok(out)
+}
+
+fn interval_cursor(req_cursor: Option<&str>) -> String {
+    let interval = (now_ms() as u64) / 20_000;
+    let req: Option<u64> = req_cursor.and_then(|c| c.parse().ok());
+    match req {
+        Some(r) if r >= interval => (r + 1).to_string(),
+        _ => interval.to_string(),
+    }
+}
+
+fn read_etag(desc: &StreamDesc, scan_from: u64, end: u64, closed: bool) -> String {
+    format!("\"{}-{}-{}-{}\"", &desc.stream_epoch[..8], scan_from, end, closed as u8)
+}
+
+enum StartPos {
+    At(u64),
+    Now,
+}
+
+async fn read(
+    state: Arc<AppState>,
+    name: String,
+    params: ReadParams,
+    headers: HeaderMap,
+    head_only: bool,
+) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if desc_alive(&d) => d,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    // A single-segment per-key stream is the degenerate case: totally
+    // ordered, epoch-0 tokens — serve it through the standard path so every
+    // semantic (incl. unkeyed live reads) is byte-identical.
+    if desc.is_per_key() && desc.segment_count.max(1) > 1 {
+        return read_per_key(state, desc, params, headers, head_only).await;
+    }
+    let hash = if desc.is_per_key() {
+        desc.segment_hash(0)
+    } else {
+        desc.storage_hash()
+    };
+    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let handle = match engine.stream_handle(hash).await {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    let (mut end, mut closed) = {
+        let st = handle.state.lock().unwrap();
+        (st.durable.next, st.durable.closed)
+    };
+
+    if head_only {
+        let mut r = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, desc.content_type.clone())
+            .header("Stream-Next-Offset", tail_token(end))
+            .header(header::CACHE_CONTROL, "no-store");
+        if closed {
+            r = r.header("Stream-Closed", "true");
+        }
+        if let (Some(_), Some(exp)) = (desc.ttl_secs, desc.expires_at_ms) {
+            let remaining = ((exp - now_ms()) as f64 / 1000.0).ceil() as i64;
+            if remaining > 0 {
+                r = r.header("Stream-TTL", remaining.to_string());
+            }
+        }
+        return r.body(Body::empty()).unwrap();
+    }
+
+    // Reads require the key (fingerprint auth + history decryption).
+    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
+        KeyCheck::Ok(k, e) => (k, e),
+        KeyCheck::Missing => {
+            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        }
+        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        KeyCheck::BadDescriptor => {
+            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+        }
+    };
+    state.keys.put(hash, key.clone(), epoch);
+
+    let live = match params.live.as_deref() {
+        None => None,
+        Some("long-poll") | Some("true") => Some("long-poll"),
+        Some("sse") => Some("sse"),
+        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
+    };
+    if live.is_some() && params.offset.is_none() {
+        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+    }
+    let start = match params.offset.as_deref() {
+        None => StartPos::At(0),
+        Some("now") => StartPos::Now,
+        Some(raw) => match Offset::parse(raw) {
+            Ok(o) => StartPos::At(o.scan_from()),
+            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
+        },
+    };
+
+    if live == Some("sse") {
+        return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
+    }
+
+    let scan_from = match start {
+        StartPos::Now => {
+            // Instant tail snapshot for plain reads; long-poll from `now`
+            // falls through with scan_from = current end.
+            if live.is_none() {
+                let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+                let mut r = Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, desc.content_type.clone())
+                    .header("Stream-Next-Offset", tail_token(end))
+                    .header("Stream-Up-To-Date", "true")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .header("Cross-Origin-Resource-Policy", "cross-origin");
+                if closed {
+                    r = r.header("Stream-Closed", "true");
+                }
+                return r.body(body).unwrap();
+            }
+            end
+        }
+        StartPos::At(p) => p,
+    };
+
+    let is_long_poll = live == Some("long-poll");
+    if is_long_poll && scan_from >= end {
+        if !closed {
+        let wait = params
+            .timeout
+            .as_deref()
+            .and_then(parse_duration)
+            .unwrap_or(Duration::from_secs(3))
+            .min(MAX_LONG_POLL);
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let notified = handle.notify.notified();
+            let (e2, c2) = {
+                let st = handle.state.lock().unwrap();
+                (st.durable.next, st.durable.closed)
+            };
+            end = e2;
+            closed = c2;
+            if end > scan_from || closed {
+                break;
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep_until(deadline) => break,
+            }
+        }
+        }
+        if end <= scan_from {
+            // Timeout (or closed-at-tail): 204 with resume state. Metered:
+            // a tail probe is billable work even when it returns no bytes
+            // (run-1 finding: `offset=now` reads were invisible to billing).
+            state.metrics.read(&name, 0);
+            let mut r = Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header("Stream-Next-Offset", tail_token(end))
+                .header("Stream-Up-To-Date", "true")
+                .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
+                .header(header::CACHE_CONTROL, "no-store");
+            if closed {
+                r = r.header("Stream-Closed", "true");
+            }
+            return r.body(Body::empty()).unwrap();
+        }
+    }
+
+    let frames_format = params.format.as_deref() == Some("frames");
+    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, params.key.as_deref(), MAX_READ_BYTES).await {
+        Ok(o) => o,
+        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+    };
+    let next_token = out.last.map(|o| Offset(Some(o)).encode()).unwrap_or_else(|| {
+        match params.offset.as_deref() {
+            Some(raw) if raw != "now" => Offset::parse(raw).map(|o| o.encode()).unwrap_or_else(|_| tail_token(out.end)),
+            _ => tail_token(out.end),
+        }
+    });
+    let up_to_date = out.completed;
+    let etag = read_etag(&desc, scan_from, out.end, closed);
+    if let Some(inm) = hdr(&headers, "if-none-match") {
+        if inm == etag {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header("ETag", etag)
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
+
+    let body: Bytes = if desc.is_json() && !frames_format {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(b"[");
+        for (i, r) in out.recs.iter().enumerate() {
+            if i > 0 {
+                buf.extend_from_slice(b",");
+            }
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.extend_from_slice(b"]");
+        buf.freeze()
+    } else if frames_format {
+        let mut buf = BytesMut::new();
+        let mut subkeys: HashMap<String, [u8; 32]> = HashMap::new();
+        for r in &out.recs {
+            let sk = *subkeys
+                .entry(params.key.clone().unwrap_or_default())
+                .or_insert_with(|| derive_subkey(&key, &epoch, params.key.as_deref().unwrap_or(""), 0));
+            let frame = encrypt_frame(
+                &sk,
+                &hash,
+                &FrameHeader {
+                    offset: r.off,
+                    ts_ms: 0,
+                    key_version: 0,
+                    routing_key: params.key.clone().unwrap_or_default(),
+                },
+                &r.payload,
+            );
+            buf.extend_from_slice(&frame);
+        }
+        buf.freeze()
+    } else {
+        let mut buf = BytesMut::new();
+        for r in &out.recs {
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.freeze()
+    };
+
+    state.metrics.read(&name, body.len() as u64);
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, if frames_format {
+            "application/x-durable-stream-frames".to_string()
+        } else {
+            desc.content_type.clone()
+        })
+        .header("Stream-Next-Offset", next_token)
+        .header("ETag", etag)
+        .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if up_to_date {
+        r = r.header("Stream-Up-To-Date", "true");
+        if closed {
+            r = r.header("Stream-Closed", "true");
+        }
+    }
+    if is_long_poll {
+        r = r
+            .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
+            .header(header::CACHE_CONTROL, "no-store");
+    }
+    r.body(Body::from(body)).unwrap()
+}
+
+// ---- SSE ----
+
+fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
+    let mut ev = String::from("event: data\n");
+    let mt = crate::registry::media_type(&desc.content_type);
+    if mt == "application/json" {
+        ev.push_str("data:[");
+        ev.push_str(&String::from_utf8_lossy(payload));
+        ev.push_str("]\n\n");
+    } else if mt.starts_with("text/") {
+        let text = String::from_utf8_lossy(payload);
+        for line in text.split(['\r', '\n']) {
+            ev.push_str("data:");
+            ev.push_str(line);
+            ev.push('\n');
+        }
+        ev.push('\n');
+    } else {
+        use base64::Engine;
+        ev.push_str("data:");
+        ev.push_str(&base64::engine::general_purpose::STANDARD.encode(payload));
+        ev.push_str("\n\n");
+    }
+    ev
+}
+
+fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) -> String {
+    let mut fields = vec![format!("\"streamNextOffset\":\"{}\"", tail_token(next))];
+    if !closed {
+        fields.push(format!("\"streamCursor\":\"{}\"", interval_cursor(cursor)));
+    }
+    if up_to_date {
+        fields.push("\"upToDate\":true".to_string());
+    }
+    if closed {
+        fields.push("\"streamClosed\":true".to_string());
+    }
+    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
+}
+
+async fn sse_response(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    key: StreamKey,
+    epoch: [u8; 16],
+    engine: Arc<ShardEngine>,
+    handle: Arc<crate::shard::StreamHandle>,
+    start: StartPos,
+    params: ReadParams,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+    let binary = {
+        let mt = crate::registry::media_type(&desc.content_type);
+        mt != "application/json" && !mt.starts_with("text/")
+    };
+    let cursor = params.cursor.clone();
+    let key_filter = params.key.clone();
+
+    tokio::spawn(async move {
+        let mut pos = match start {
+            StartPos::At(p) => p,
+            StartPos::Now => handle.state.lock().unwrap().durable.next,
+        };
+        let from_now = matches!(start, StartPos::Now);
+        let mut first = true;
+        loop {
+            let (end, closed) = {
+                let st = handle.state.lock().unwrap();
+                (st.durable.next, st.durable.closed)
+            };
+            let mut sent_any = false;
+            if pos < end && !from_now || (from_now && !first && pos < end) {
+                match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, key_filter.as_deref(), MAX_READ_BYTES).await {
+                    Ok(out) => {
+                        for r in &out.recs {
+                            let ev = sse_data_event(&desc, &r.payload);
+                            if tx.send(Ok(Bytes::from(ev))).await.is_err() {
+                                return;
+                            }
+                            sent_any = true;
+                        }
+                        if let Some(last) = out.last {
+                            pos = last + 1;
+                        }
+                        if !out.completed {
+                            continue; // keep draining before control
+                        }
+                    }
+                    Err(_) => return,
+                }
+            }
+            let at_end = pos >= end;
+            if at_end || sent_any || first {
+                let ctl = sse_control(pos, cursor.as_deref(), at_end, closed && at_end);
+                if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                    return;
+                }
+                if closed && at_end {
+                    return; // final control sent; close connection
+                }
+            }
+            first = false;
+            // Wait for new durable data.
+            let notified = handle.notify.notified();
+            let cur_end = handle.state.lock().unwrap().durable.next;
+            if cur_end > pos {
+                continue;
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                    // heartbeat comment keeps proxies happy
+                    if tx.send(Ok(Bytes::from(": keep-alive\n\n"))).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if binary {
+        r = r.header("Stream-SSE-Data-Encoding", "base64");
+    }
+    r.body(Body::from_stream(stream)).unwrap()
+}
+
+
+// ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
+
+async fn read_per_key(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    params: ReadParams,
+    headers: HeaderMap,
+    head_only: bool,
+) -> Response {
+    let n = desc.segment_count.max(1);
+    let seg_tok = |ord: u32, next: u64| {
+        crate::offsets::encode_ep(
+            ord,
+            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+        )
+    };
+    // All segments of a per-key stream live in the parent stream's shard
+    // (routing unit = stream; Pravega-style cross-shard segments deferred).
+    let parent_engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let seg_handle = |ord: u32| {
+        let hash = desc.segment_hash(ord);
+        (hash, parent_engine.clone())
+    };
+
+    if head_only {
+        // No single end-of-stream offset exists; report the highest-ordinal
+        // segment's tail plus the segment count (spec accommodation #2).
+        let (hash, engine) = seg_handle(n - 1);
+        let (end, closed) = match engine.stream_handle(hash).await {
+            Ok(h) => {
+                let st = h.state.lock().unwrap();
+                (st.durable.next, st.durable.closed)
+            }
+            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        };
+        let mut r = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, desc.content_type.clone())
+            .header("Stream-Next-Offset", seg_tok(n - 1, end))
+            .header("Stream-Ordering", "per-key")
+            .header("Stream-Segment-Count", n.to_string())
+            .header(header::CACHE_CONTROL, "no-store");
+        if closed {
+            r = r.header("Stream-Closed", "true");
+        }
+        return r.body(Body::empty()).unwrap();
+    }
+
+    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
+        KeyCheck::Ok(k, e) => (k, e),
+        KeyCheck::Missing => {
+            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        }
+        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        KeyCheck::BadDescriptor => {
+            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+        }
+    };
+
+    let live = match params.live.as_deref() {
+        None => None,
+        Some("long-poll") | Some("true") => Some("long-poll"),
+        Some("sse") => Some("sse"),
+        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
+    };
+    if live.is_some() && params.offset.is_none() {
+        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+    }
+    // Accommodation #1: whole-stream live tails have no single durable
+    // cursor across concurrent segments.
+    if live.is_some() && params.key.is_none() {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unsupported_on_per_key",
+            "live reads on per-key streams require key=",
+        );
+    }
+
+    // Resolve start (ordinal, position).
+    let parsed = match params.offset.as_deref() {
+        None => Some((0u32, 0u64)),
+        Some("now") => None, // handled per mode below
+        Some(raw) => match crate::offsets::parse_ep(raw) {
+            Ok((e, o)) if e < n => Some((e, o.scan_from())),
+            Ok(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", "unknown segment"),
+            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
+        },
+    };
+
+    if let Some(rk) = params.key.as_deref() {
+        // Keyed read: single-segment chain in v1.
+        let ord = desc.segment_for(rk);
+        let (hash, engine) = seg_handle(ord);
+        state.keys.put(hash, key.clone(), epoch);
+        let handle = match engine.stream_handle(hash).await {
+            Ok(h) => h,
+            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        };
+        let (mut end, closed) = {
+            let st = handle.state.lock().unwrap();
+            (st.durable.next, st.durable.closed)
+        };
+        let scan_from = match parsed {
+            None => end, // now
+            Some((e, p)) => {
+                if e != ord && params.offset.as_deref() != Some("-1") && !(e == 0 && p == 0) {
+                    return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", "offset segment does not own this key");
+                }
+                p
+            }
+        };
+        if live == Some("long-poll") && scan_from >= end {
+            if !closed {
+                let wait = params
+                    .timeout
+                    .as_deref()
+                    .and_then(parse_duration)
+                    .unwrap_or(Duration::from_secs(3))
+                    .min(MAX_LONG_POLL);
+                let deadline = tokio::time::Instant::now() + wait;
+                loop {
+                    let notified = handle.notify.notified();
+                    end = handle.state.lock().unwrap().durable.next;
+                    if end > scan_from {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep_until(deadline) => break,
+                    }
+                }
+            }
+            if end <= scan_from {
+                let mut r = Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .header("Stream-Next-Offset", seg_tok(ord, end))
+                    .header("Stream-Ordering", "per-key")
+                    .header("Stream-Up-To-Date", "true")
+                    .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
+                    .header(header::CACHE_CONTROL, "no-store");
+                if closed {
+                    r = r.header("Stream-Closed", "true");
+                }
+                return r.body(Body::empty()).unwrap();
+            }
+        }
+        if live == Some("sse") {
+            let start = match parsed {
+                None => StartPos::Now,
+                Some((_, p)) => StartPos::At(p),
+            };
+            return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
+        }
+        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, Some(rk), MAX_READ_BYTES).await
+        {
+            Ok(o) => o,
+            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+        };
+        return per_key_body(&desc, out, ord, scan_from, closed, seg_tok, live.is_some(), &params);
+    }
+
+    // Unkeyed: segment-sequential replay (accommodation: per-segment order).
+    let (mut ord, mut pos) = match parsed {
+        None => {
+            // offset=now: tail of the highest ordinal (HEAD semantics).
+            let (hash, engine) = seg_handle(n - 1);
+            let end = match engine.stream_handle(hash).await {
+                Ok(h) => h.state.lock().unwrap().durable.next,
+                Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            };
+            let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, desc.content_type.clone())
+                .header("Stream-Next-Offset", seg_tok(n - 1, end))
+                .header("Stream-Ordering", "per-key")
+                .header("Stream-Up-To-Date", "true")
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(body)
+                .unwrap();
+        }
+        Some(v) => v,
+    };
+    let mut recs: Vec<PlainRec> = Vec::new();
+    let mut budget = MAX_READ_BYTES;
+    let mut last_tok = None;
+    let mut up_to_date = false;
+    let mut closed_at_end = false;
+    loop {
+        let (hash, engine) = seg_handle(ord);
+        state.keys.put(hash, key.clone(), epoch);
+        let handle = match engine.stream_handle(hash).await {
+            Ok(h) => h,
+            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        };
+        let closed = handle.state.lock().unwrap().durable.closed;
+        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, None, budget).await {
+            Ok(o) => o,
+            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+        };
+        for r in &out.recs {
+            budget = budget.saturating_sub(r.payload.len());
+        }
+        let consumed = out.last.map(|o| o + 1).unwrap_or(pos);
+        last_tok = Some(seg_tok(ord, consumed));
+        recs.extend(out.recs);
+        if !out.completed || budget == 0 {
+            break;
+        }
+        if ord + 1 < n {
+            ord += 1;
+            pos = 0;
+            continue;
+        }
+        up_to_date = true;
+        closed_at_end = closed;
+        break;
+    }
+    let etag = format!(
+        "\"{}-pk-{}-{}\"",
+        &desc.stream_epoch[..8],
+        last_tok.clone().unwrap_or_default(),
+        up_to_date as u8
+    );
+    if let Some(inm) = hdr(&headers, "if-none-match") {
+        if inm == etag {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header("ETag", etag)
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
+    let body: Bytes = if desc.is_json() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(b"[");
+        for (i, r) in recs.iter().enumerate() {
+            if i > 0 {
+                buf.extend_from_slice(b",");
+            }
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.extend_from_slice(b"]");
+        buf.freeze()
+    } else {
+        let mut buf = BytesMut::new();
+        for r in &recs {
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.freeze()
+    };
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, desc.content_type.clone())
+        .header("Stream-Next-Offset", last_tok.unwrap_or_else(|| seg_tok(0, 0)))
+        .header("Stream-Ordering", "per-key")
+        .header("ETag", etag)
+        .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if up_to_date {
+        r = r.header("Stream-Up-To-Date", "true");
+        if closed_at_end {
+            r = r.header("Stream-Closed", "true");
+        }
+    }
+    r.body(Body::from(body)).unwrap()
+}
+
+fn per_key_body(
+    desc: &StreamDesc,
+    out: ReadOut,
+    ord: u32,
+    scan_from: u64,
+    closed: bool,
+    seg_tok: impl Fn(u32, u64) -> String,
+    is_live: bool,
+    params: &ReadParams,
+) -> Response {
+    let consumed = out.last.map(|o| o + 1).unwrap_or(scan_from);
+    let up_to_date = out.completed;
+    let etag = format!("\"{}-pk{}-{}-{}\"", &desc.stream_epoch[..8], ord, consumed, out.end);
+    let body: Bytes = if desc.is_json() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(b"[");
+        for (i, r) in out.recs.iter().enumerate() {
+            if i > 0 {
+                buf.extend_from_slice(b",");
+            }
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.extend_from_slice(b"]");
+        buf.freeze()
+    } else {
+        let mut buf = BytesMut::new();
+        for r in &out.recs {
+            buf.extend_from_slice(&r.payload);
+        }
+        buf.freeze()
+    };
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, desc.content_type.clone())
+        .header("Stream-Next-Offset", seg_tok(ord, consumed))
+        .header("Stream-Ordering", "per-key")
+        .header("ETag", etag)
+        .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if up_to_date {
+        r = r.header("Stream-Up-To-Date", "true");
+        if closed {
+            r = r.header("Stream-Closed", "true");
+        }
+    }
+    if is_live {
+        r = r
+            .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
+            .header(header::CACHE_CONTROL, "no-store");
+    }
+    r.body(Body::from(body)).unwrap()
+}
+
+// ---- queue profile surface (PROFILES.md §7; CF-informed) ----
+
+#[derive(Deserialize, Default)]
+struct QueueSettleBody {
+    #[serde(default)]
+    acks: Vec<QueueTokenRef>,
+    #[serde(default)]
+    retries: Vec<QueueRetryRef>,
+    #[serde(default)]
+    extends: Vec<QueueExtendRef>,
+}
+
+#[derive(Deserialize)]
+struct QueueTokenRef {
+    #[serde(rename = "leaseToken")]
+    lease_token: String,
+}
+
+#[derive(Deserialize)]
+struct QueueRetryRef {
+    #[serde(rename = "leaseToken")]
+    lease_token: String,
+    #[serde(default)]
+    #[serde(rename = "delayMs")]
+    delay_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct QueueExtendRef {
+    #[serde(rename = "leaseToken")]
+    lease_token: String,
+    #[serde(default = "default_visibility")]
+    #[serde(rename = "visibilityMs")]
+    visibility_ms: u64,
+}
+
+fn default_visibility() -> u64 {
+    30_000
+}
+
+#[derive(Deserialize, Default)]
+struct QueueReceiveBody {
+    #[serde(default)]
+    #[serde(rename = "batchSize")]
+    batch_size: Option<usize>,
+    #[serde(default)]
+    #[serde(rename = "visibilityMs")]
+    visibility_ms: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "waitMs")]
+    wait_ms: Option<u64>,
+}
+
+async fn queue_entry(
+    state: Arc<AppState>,
+    stream: String,
+    route: String,
+    method: Method,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let desc = match state.registry.get(&stream).await {
+        Ok(Some(d)) if desc_alive(&d) => d,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    if desc.profile.as_deref() != Some("queue") {
+        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue profile not enabled");
+    }
+    let Some((consumer, verb)) = route.split_once('/') else {
+        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue route: {consumer}/{verb}");
+    };
+    if consumer.is_empty() || consumer.len() > 128 || consumer.contains('\u{0}') {
+        return err_resp(StatusCode::BAD_REQUEST, "invalid_consumer", "bad consumer name");
+    }
+    if method != Method::POST {
+        return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST only");
+    }
+    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
+        KeyCheck::Ok(k, e) => (k, e),
+        KeyCheck::Missing => {
+            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        }
+        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        KeyCheck::BadDescriptor => {
+            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+        }
+    };
+    let hash = desc.storage_hash();
+    state.keys.put(hash, key.clone(), epoch);
+    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let handle = match engine.stream_handle(hash).await {
+        Ok(h) => h,
+        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+    };
+    let max_deliveries = desc.queue_max_deliveries.unwrap_or(5);
+    let dlq_subkey = derive_subkey(&key, &epoch, "$dlq", 0);
+    let raw = match axum::body::to_bytes(body, 1 << 20).await {
+        Ok(b) => b,
+        Err(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "bad body"),
+    };
+    state.metrics.queue(&stream);
+
+    match verb {
+        "receive" => {
+            let req: QueueReceiveBody = if raw.is_empty() {
+                QueueReceiveBody::default()
+            } else {
+                match serde_json::from_slice(&raw) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+                    }
+                }
+            };
+            let max = req.batch_size.unwrap_or(5).clamp(1, 100);
+            let visibility = req.visibility_ms.unwrap_or(30_000).clamp(1_000, 12 * 3600 * 1000);
+            let wait = req.wait_ms.unwrap_or(0).min(25_000);
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
+            loop {
+                let out = engine
+                    .submit_queue(
+                        hash,
+                        crate::queue::QueueOp::Receive {
+                            consumer: consumer.to_string(),
+                            max,
+                            visibility_ms: visibility,
+                            max_deliveries,
+                            dlq_subkey,
+                        },
+                    )
+                    .await;
+                let (leased, backlog) = match out {
+                    Ok(crate::queue::QueueOut::Received { leased, backlog }) => (leased, backlog),
+                    Ok(_) => unreachable!(),
+                    Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+                };
+                if leased.is_empty() && tokio::time::Instant::now() < deadline {
+                    // Long-poll for new messages, then try leasing again.
+                    let notified = handle.notify.notified();
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep_until(deadline) => {}
+                    }
+                    if tokio::time::Instant::now() < deadline {
+                        continue;
+                    }
+                }
+                // Fetch + decrypt payloads for the leased offsets.
+                let mut messages = Vec::with_capacity(leased.len());
+                if !leased.is_empty() {
+                    let lo = leased.iter().map(|(o, _, _)| *o).min().unwrap();
+                    let hi = leased.iter().map(|(o, _, _)| *o).max().unwrap();
+                    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, lo, None, MAX_READ_BYTES).await {
+                        Ok(o) => o,
+                        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+                    };
+                    let by_off: HashMap<u64, &PlainRec> =
+                        out.recs.iter().map(|r| (r.off, r)).collect();
+                    let _ = hi;
+                    for (off, lease_gen, attempts) in &leased {
+                        let Some(rec) = by_off.get(off) else { continue };
+                        let payload: serde_json::Value = if desc.is_json() {
+                            serde_json::from_slice(&rec.payload)
+                                .unwrap_or(serde_json::Value::Null)
+                        } else {
+                            use base64::Engine;
+                            serde_json::Value::String(
+                                base64::engine::general_purpose::STANDARD.encode(&rec.payload),
+                            )
+                        };
+                        messages.push(json!({
+                            "id": Offset(Some(*off)).encode(),
+                            "offset": off,
+                            "attempts": attempts,
+                            "leaseToken": format!("{off}:{lease_gen}"),
+                            "body": payload,
+                        }));
+                    }
+                }
+                return (
+                    [
+                        (header::CONTENT_TYPE, "application/json"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    json!({"messages": messages, "backlog": backlog}).to_string(),
+                )
+                    .into_response();
+            }
+        }
+        "ack" => {
+            let req: QueueSettleBody = match serde_json::from_slice(&raw) {
+                Ok(r) => r,
+                Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string()),
+            };
+            let parse = |t: &str| crate::queue::parse_token(t);
+            let acks = req.acks.iter().filter_map(|a| parse(&a.lease_token)).collect();
+            let retries = req
+                .retries
+                .iter()
+                .filter_map(|r| parse(&r.lease_token).map(|(o, g)| (o, g, r.delay_ms)))
+                .collect();
+            let extends = req
+                .extends
+                .iter()
+                .filter_map(|r| parse(&r.lease_token).map(|(o, g)| (o, g, r.visibility_ms)))
+                .collect();
+            let out = engine
+                .submit_queue(
+                    hash,
+                    crate::queue::QueueOp::Settle {
+                        consumer: consumer.to_string(),
+                        acks,
+                        retries,
+                        extends,
+                        max_deliveries,
+                        dlq_subkey,
+                    },
+                )
+                .await;
+            match out {
+                Ok(crate::queue::QueueOut::Settled { acked, retried, extended, dlq, backlog }) => (
+                    [
+                        (header::CONTENT_TYPE, "application/json"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    json!({
+                        "acked": acked, "retried": retried, "extended": extended,
+                        "dlq": dlq, "backlog": backlog,
+                    })
+                    .to_string(),
+                )
+                    .into_response(),
+                Ok(_) => unreachable!(),
+                Err(m) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+            }
+        }
+        _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown queue verb"),
+    }
+}
+
+// ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
+
+pub async fn metrics_flusher(
+    state: Arc<AppState>,
+    metrics_key: String,
+    instance: String,
+    lb_url: String,
+) {
+    // Billing records go through the ROUTER like any tenant write (run-3
+    // finding: local appends to a shared-namespace stream fence-fight the
+    // shard's ring owner). Lossy by design: failures log and drop.
+    let auth = state.auth_token.clone().unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("metrics http client");
+    let url = format!("{}/v1/stream/__metrics__", lb_url.trim_end_matches('/'));
+    let mut created = false;
+    let mut seq = 0u64;
+    let mut tick = tokio::time::interval(Duration::from_secs(15));
+    loop {
+        tick.tick().await;
+        let drained = state.metrics.drain();
+        if drained.is_empty() {
+            continue;
+        }
+        if !created {
+            match client
+                .put(&url)
+                .header("authorization", format!("Bearer {auth}"))
+                .header("stream-encryption-key", &metrics_key)
+                .header("content-type", "application/json")
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => created = true,
+                Ok(r) => {
+                    tracing::warn!("metrics stream create via router: {}", r.status());
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("metrics stream create via router: {e}");
+                    continue;
+                }
+            }
+        }
+        seq += 1;
+        let record = json!([{
+            "ts_ms": now_ms(),
+            "instance": instance,
+            "seq": seq,
+            "interval_s": 15,
+            "streams": drained,
+        }]);
+        match client
+            .post(&url)
+            .header("authorization", format!("Bearer {auth}"))
+            .header("stream-encryption-key", &metrics_key)
+            .header("content-type", "application/json")
+            .json(&record)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => tracing::warn!("metrics append via router: {}", r.status()),
+            Err(e) => tracing::warn!("metrics append via router: {e}"),
+        }
+    }
+}

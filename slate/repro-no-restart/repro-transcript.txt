@@ -1,0 +1,122 @@
+== 1. deploy
+service=cps_lnj6dr37yqzehqfsdaxzc3at
+cps_lnj6dr37yqzehqfsdaxzc3at url=https://lnj6dr37yqzehqfsdaxzc3at.sin.prisma.build
+== 2. verify healthy
+ok pid=396 uptime_s=6.5
+== 3. trigger a hard process exit
+exiting with code 1 in 100ms
+
+== 4. observed behavior
+-- version status (expect: still 'running'):
+== 4. observed behavior (crash was ~3 min ago)
+-- version status:
+----------------------------  -------  --------------------------------  ------------------------
+cpv_d4tjtcln5r9wclgleav4bn7p  running  cv-404469d94591.sin.prisma.build  2026-07-15T10:39:35.349Z
+-- service responses (60s window):
+t+10s  HTTP 200  ok pid=396 uptime_s=0.0
+t+20s  HTTP 200  ok pid=396 uptime_s=10.3
+t+30s  HTTP 200  ok pid=396 uptime_s=20.5
+== 5. recovery requires a fresh deploy
+1
+post-redeploy /health: ok pid=397 uptime_s=11.7
+
+== 6. OOM leg: trigger allocate-until-killed
+allocating until OOM kill
+-- version status after OOM:
+cpv_gp5t7xvlbxm9x4fglakds6h1  running  cv-8cd91b817efb.sin.prisma.build  2026-07-15T10:42:19.151Z
+cpv_d4tjtcln5r9wclgleav4bn7p  stopped  cv-404469d94591.sin.prisma.build  2026-07-15T10:39:35.349Z
+-- service responses over 2 min (expect: no self-heal this time):
+t+20s  HTTP 200  ok pid=397 uptime_s=0.0
+t+40s  HTTP 200  ok pid=397 uptime_s=20.2
+t+60s  HTTP 200  ok pid=397 uptime_s=40.5
+t+80s  HTTP 200  ok pid=397 uptime_s=60.8
+t+100s  HTTP 200  ok pid=397 uptime_s=81.0
+t+120s  HTTP 200  ok pid=397 uptime_s=101.2
+
+== 7. wedge leg: stop serving without exiting
+1
+ok pid=396 uptime_s=11.7
+closing listener in 100ms; process stays alive
+-- responses over 2.5 min (a supervisor with HTTP health checks would restart here):
+t+30s  HTTP 200  ok pid=397 uptime_s=0.0
+t+60s  HTTP 200  ok pid=397 uptime_s=30.2
+t+90s  HTTP 200  ok pid=397 uptime_s=60.5
+t+120s  HTTP 200  ok pid=397 uptime_s=90.8
+t+150s  HTTP 200  ok pid=397 uptime_s=122.0
+
+== 8. keep-awake + OOM leg (the production signature)
+1
+ok pid=397 uptime_s=13.0
+allocating until OOM kill
+-- version status:
+cpv_x6jaija2aqxv9qvk9fm6j2mj  running  cv-0777f85956cb.sin.prisma.build  2026-07-15T10:50:20.063Z
+cpv_kd3t94mu6hw76pnd6fk02e7e  stopped  cv-d52279139735.sin.prisma.build  2026-07-15T10:46:37.265Z
+-- responses over 3 min:
+t+30s  HTTP 200  ok pid=397 uptime_s=0.0
+t+60s  HTTP 200  ok pid=397 uptime_s=30.2
+t+90s  HTTP 200  ok pid=397 uptime_s=60.4
+t+120s  HTTP 200  ok pid=397 uptime_s=90.6
+t+150s  HTTP 200  ok pid=397 uptime_s=120.7
+t+180s  HTTP 200  ok pid=397 uptime_s=151.0
+
+== 9. death under CONTINUOUS traffic (production signature)
+-- starting 10 req/s background load...
+-- trigger OOM while hot:
+allocating until OOM kill
+-- responses over 4 min WITH traffic continuing:
+t+30s  HTTP 200  ok pid=397 uptime_s=28.7
+t+60s  HTTP 200  ok pid=397 uptime_s=58.8
+t+90s  HTTP 200  ok pid=397 uptime_s=89.0
+t+120s  HTTP 200  ok pid=397 uptime_s=119.2
+t+150s  HTTP 200  ok pid=397 uptime_s=149.4
+t+180s  HTTP 200  ok pid=397 uptime_s=179.5
+t+210s  HTTP 200  ok pid=397 uptime_s=209.7
+t+240s  HTTP 200  ok pid=397 uptime_s=239.9
+
+== 10. wrapper+child topology, OOM in the child (production topology)
+1
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport"
+	      content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+	<meta http-equiv="X-UA-Compatible" content="ie=edge">
+	<title>Service not found</title>
+</head>
+<body>
+There is no service on this URL.
+</body>
+</html>
+
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport"
+	      content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+	<meta http-equiv="X-UA-Compatible" content="ie=edge">
+	<title>Service not found</title>
+</head>
+<body>
+There is no service on this URL.
+</body>
+</html>
+-- responses over 3 min with traffic continuing:
+t+30s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+t+60s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+t+90s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+t+120s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+t+150s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+t+180s  HTTP 404  <!doctype html><html lang="en"><head>	<meta charset="UTF-8">	<meta
+
+== 11. deterministic crash-loop leg (CRASHLOOP=1)
+0
+-- version status vs reality:
+cpv_uhxhgmr9q2j1gdjd8bp1oe6y  running  cv-e7135f46a4eb.sin.prisma.build  2026-07-15T10:59:38.452Z
+t+20s  HTTP 404  <!doctype html><html lang="en"><head>	<met
+t+40s  HTTP 404  <!doctype html><html lang="en"><head>	<met
+t+60s  HTTP 404  <!doctype html><html lang="en"><head>	<met
+== 12. heal by redeploying without CRASHLOOP
+1
+post-heal: ok pid=396 uptime_s=15.0

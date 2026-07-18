@@ -1,0 +1,177 @@
+{
+ "size_sweep": {
+  "note": "post-fix engine sweep 2026-07-14: 1-core server, 25 ms-latency object store, 40 s closed-loop windows, absorber+trim active, 32 MB max in-flight",
+  "points": [
+   {
+    "event_bytes": 64,
+    "batch": 1,
+    "requests_per_s": 12923,
+    "events_per_s": 12923,
+    "mb_per_s": 0.853,
+    "p50_ms": 58.8,
+    "p99_ms": 85,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 1,
+    "requests_per_s": 12817.7,
+    "events_per_s": 12817.7,
+    "mb_per_s": 3.307,
+    "p50_ms": 59.1,
+    "p99_ms": 108,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 1024,
+    "batch": 1,
+    "requests_per_s": 12356.9,
+    "events_per_s": 12356.9,
+    "mb_per_s": 12.678,
+    "p50_ms": 60.2,
+    "p99_ms": 111,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 4096,
+    "batch": 1,
+    "requests_per_s": 11657.4,
+    "events_per_s": 11657.4,
+    "mb_per_s": 47.772,
+    "p50_ms": 63.8,
+    "p99_ms": 121,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 16384,
+    "batch": 1,
+    "requests_per_s": 2074.3,
+    "events_per_s": 2074.3,
+    "mb_per_s": 33.989,
+    "p50_ms": 87.4,
+    "p99_ms": 8233,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 65536,
+    "batch": 1,
+    "requests_per_s": 549.6,
+    "events_per_s": 549.6,
+    "mb_per_s": 36.02,
+    "p50_ms": 156.2,
+    "p99_ms": 9667,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 262144,
+    "batch": 1,
+    "requests_per_s": 165.5,
+    "events_per_s": 165.5,
+    "mb_per_s": 43.375,
+    "p50_ms": 153.2,
+    "p99_ms": 8200,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 1048576,
+    "batch": 1,
+    "requests_per_s": 31.5,
+    "events_per_s": 31.5,
+    "mb_per_s": 33.048,
+    "p50_ms": 112.1,
+    "p99_ms": 9331,
+    "errs": 0,
+    "regime": "clean"
+   }
+  ]
+ },
+ "batch_sweep": {
+  "note": "same run, 256 B events; batch ≥ 256 points re-measured with 35 s drains and 48 MB max in-flight (the shorter-drain first pass collapsed on carried L0 debt, not intrinsically)",
+  "points": [
+   {
+    "event_bytes": 256,
+    "batch": 1,
+    "requests_per_s": 12698.3,
+    "events_per_s": 12698.3,
+    "mb_per_s": 3.276,
+    "p50_ms": 59.4,
+    "p99_ms": 110,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 4,
+    "requests_per_s": 11933.9,
+    "events_per_s": 47735.7,
+    "mb_per_s": 12.28,
+    "p50_ms": 63.3,
+    "p99_ms": 99,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 16,
+    "requests_per_s": 8493.2,
+    "events_per_s": 135891.8,
+    "mb_per_s": 34.933,
+    "p50_ms": 85.2,
+    "p99_ms": 234,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 64,
+    "requests_per_s": 1798.8,
+    "events_per_s": 115126,
+    "mb_per_s": 29.589,
+    "p50_ms": 169,
+    "p99_ms": 8643,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 256,
+    "requests_per_s": 624.2,
+    "events_per_s": 159787,
+    "mb_per_s": 41.07,
+    "p50_ms": 476,
+    "p99_ms": 0,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 1024,
+    "requests_per_s": 169.4,
+    "events_per_s": 173453,
+    "mb_per_s": 44.58,
+    "p50_ms": 509,
+    "p99_ms": 0,
+    "errs": 0,
+    "regime": "clean"
+   },
+   {
+    "event_bytes": 256,
+    "batch": 4096,
+    "requests_per_s": 42.8,
+    "events_per_s": 175359,
+    "mb_per_s": 45.07,
+    "p50_ms": 536,
+    "p99_ms": 0,
+    "errs": 26,
+    "regime": "burst"
+   }
+  ]
+ }
+}

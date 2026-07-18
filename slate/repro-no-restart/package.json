@@ -1,0 +1,2 @@
+{ "name": "repro-no-restart", "main": "index.ts",
+  "dependencies": { "@prisma/compute": "latest" } }
