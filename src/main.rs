@@ -103,6 +103,14 @@ struct Args {
     #[arg(long, env = "AUTO_SPLIT_SUSTAIN_SECS", default_value_t = 60)]
     auto_split_sustain_secs: u64,
 
+    /// Unreferenced `shards/splits/<operation>/` generations are retained
+    /// this long before deletion. The topology and every active split intent
+    /// are re-read immediately before GC. Zero is test-only.
+    #[arg(long, env = "SPLIT_GC_RETENTION_SECS", default_value_t = 86_400)]
+    split_gc_retention_secs: u64,
+    #[arg(long, env = "SPLIT_GC_INTERVAL_SECS", default_value_t = 300)]
+    split_gc_interval_secs: u64,
+
     /// Shard-log WAL flush interval (D22, amended). 5 ms minted WAL SSTs
     /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
     /// degraded the per-DB durable watermark to ~0.3–1 s (EXPERIMENT-PILOT
@@ -851,6 +859,8 @@ async fn async_main() -> anyhow::Result<()> {
         crate::split::AutoSplitConfig {
             single_shard_write_ceiling_bytes_per_sec: args.single_shard_write_ceiling_bytes_per_sec,
             sustain: Duration::from_secs(args.auto_split_sustain_secs.max(1)),
+            gc_retention: Duration::from_secs(args.split_gc_retention_secs.min(365 * 24 * 60 * 60)),
+            gc_interval: Duration::from_secs(args.split_gc_interval_secs.clamp(1, 24 * 60 * 60)),
         },
     );
     start_topology_watcher(state.clone(), ops_store.clone());

@@ -11,6 +11,7 @@ TMP_DIR="$(mktemp -d)"
 S3_PID=""
 STREAMS_PID=""
 PREFIX=""
+SERVICE_INSTANCE="split-matrix"
 
 cleanup() {
   if [[ -n "${STREAMS_PID}" ]]; then
@@ -44,13 +45,13 @@ start_streams() {
   if [[ -n "${phase}" ]]; then
     STREAMS_TEST_SPLIT_CRASH_AFTER="${phase}" \
       "${TARGET_DIR}/streams-slate" \
-      --listen "127.0.0.1:${STREAMS_PORT}" --instance-name split-matrix \
+      --listen "127.0.0.1:${STREAMS_PORT}" --instance-name "${SERVICE_INSTANCE}" \
       --s3-endpoint "${S3_URL}" --bucket streams --region auto \
       --access-key-id test --secret-access-key test --path-prefix "${PREFIX}" \
       --initial-shards 1 --auth-token "${AUTH_TOKEN}" >"${log}" 2>&1 &
   else
     "${TARGET_DIR}/streams-slate" \
-      --listen "127.0.0.1:${STREAMS_PORT}" --instance-name split-matrix \
+      --listen "127.0.0.1:${STREAMS_PORT}" --instance-name "${SERVICE_INSTANCE}" \
       --s3-endpoint "${S3_URL}" --bucket streams --region auto \
       --access-key-id test --secret-access-key test --path-prefix "${PREFIX}" \
       --initial-shards 1 --auth-token "${AUTH_TOKEN}" >"${log}" 2>&1 &
@@ -89,6 +90,7 @@ phases=(
 
 for phase in "${phases[@]}"; do
   PREFIX="ci-split-crash-${phase}"
+  SERVICE_INSTANCE="split-matrix"
   crash_log="${TMP_DIR}/${phase}-crash.log"
   recovery_log="${TMP_DIR}/${phase}-recovery.log"
   start_streams "${phase}" "${crash_log}"
@@ -126,7 +128,13 @@ for phase in "${phases[@]}"; do
   grep -q "phase=\"${phase}\"" "${crash_log}"
 
   # Same-instance restart can renew the existing lease immediately; the
-  # separate-identity takeover/rotation path has its own 16-second drill.
+  # separate-identity mid-clone takeover/rotation path has its own 16-second
+  # drill. For the post-publish phase, deliberately change identity: recovery
+  # must retain the already-published generation instead of marking it as an
+  # abandoned clone after the lease expires.
+  if [[ "${phase}" == "topology_published" ]]; then
+    SERVICE_INSTANCE="split-matrix-takeover"
+  fi
   start_streams "" "${recovery_log}"
   attempts=0
   while true; do
@@ -137,7 +145,7 @@ for phase in "${phases[@]}"; do
     fi
     [[ "${status}" == "503" ]]
     attempts=$((attempts + 1))
-    if (( attempts > 240 )); then
+    if (( attempts > 340 )); then
       tail -150 "${recovery_log}" >&2 || true
       exit 1
     fi
@@ -150,6 +158,9 @@ for phase in "${phases[@]}"; do
   intent_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
     "${S3_URL}/streams/${PREFIX}/split-intents/root.json")"
   [[ "${intent_status}" == "404" ]]
+  candidates="$(curl --fail --silent \
+    "${S3_URL}/streams?list-type=2&prefix=${PREFIX}%2Fsplit-gc-candidates%2F")"
+  [[ "${candidates}" != *'<Key>'* ]]
 
   curl --fail --silent -X POST "${STREAMS_URL}/v1/stream/data" \
     "${auth[@]}" -H 'content-type: text/plain' \

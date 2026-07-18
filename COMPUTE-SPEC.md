@@ -277,8 +277,13 @@ fencing); the retired parent's SSTs stay referenced by the children until
 compaction ages them out. Before releasing a parent ACK, every owner checks
 the shard-store intent after remote durability; this is the safety fence for
 a stale ring owner. Intents use renewable 12 s leases and new clone paths on
-cross-process takeover. Merge is the reverse via manifest-union and is not
-yet implemented.
+cross-process takeover. The intent atomically records each superseded,
+never-published operation and materializes a durable GC-candidate marker.
+Candidates are retained for 24 hours; the five-minute GC re-reads topology
+plus every active intent immediately before deletion and fails closed above
+100,000 listed objects per run. Published ancestor paths are never inferred
+disposable because descendant clone manifests may still reference their SSTs.
+Merge is the reverse via manifest-union and is not yet implemented.
 
 ---
 

@@ -558,6 +558,17 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   `STREAMS_TEST_SPLIT_CRASH_AFTER` environment variable is a CI-only test hook
   and must never be present in a production manifest.
 
+  Takeover atomically records superseded, never-published clone operations in
+  the intent and materializes durable GC-candidate markers. Candidates are
+  collected every
+  `SPLIT_GC_INTERVAL_SECS` (default 300) only after
+  `SPLIT_GC_RETENTION_SECS` (default 86400). The scanner protects every
+  operation referenced by current topology or any active intent, re-reads
+  both immediately before deletion, and fails closed if one run sees more
+  than 100,000 split objects. It never infers that a published ancestor is
+  disposable because clone manifests can retain its SSTs. Zero retention is
+  reserved for CI.
+
   Set `SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` to the calibrated ceiling to
   enable the same actor automatically after 60% is sustained for
   `AUTO_SPLIT_SUSTAIN_SECS`. Zero is the explicit disable override. CI covers
@@ -580,8 +591,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   failure leaves safe orphan children and the old topology live. CI proves
   opposite hash halves remain readable and independently writable after
   restart. This tool remains useful for an offline repair, but the HTTP actor
-  is the normal online path. Merge and abandoned split-generation GC remain
-  release-gate work.
+  is the normal online path. Merge remains release-gate work.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the

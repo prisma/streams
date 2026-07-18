@@ -44,7 +44,8 @@ start_streams() {
     --s3-endpoint "${S3_URL}" --bucket streams --region auto \
     --access-key-id test --secret-access-key test \
     --path-prefix "${PREFIX}" --initial-shards 1 --auth-token "${AUTH_TOKEN}" \
-    --instance-name "${SERVICE_INSTANCE}" \
+    --instance-name "${SERVICE_INSTANCE}" --split-gc-retention-secs 0 \
+    --split-gc-interval-secs 1 \
     >"${TMP_DIR}/streams.log" 2>&1 &
   STREAMS_PID=$!
   wait_ready
@@ -130,7 +131,7 @@ right="$(curl --fail --silent --show-error "${STREAMS_URL}/v1/stream/a" "${auth[
 # quiesced, cloned, and published; acknowledged data must remain exact.
 curl --fail --silent --show-error -X POST "${S3_URL}/_s3lite/fault" \
   -H 'content-type: application/json' \
-  -d '{"operation":"put","key_contains":"shards/splits/","remaining":1,"status":500,"delay_ms":500}' \
+  -d '{"operation":"put","key_contains":"shards/splits/","remaining":1,"status":500,"delay_ms":500,"after_commit":true}' \
   >/dev/null
 curl --silent --show-error -X POST \
   "${STREAMS_URL}/v1/admin/shards/0/split" \
@@ -144,6 +145,22 @@ until curl --fail --silent \
   attempts=$((attempts + 1))
   if (( attempts > 200 )); then
     echo "split intent did not become visible" >&2
+    return 1
+  fi
+  sleep 0.01
+done
+intent_json="$(curl --fail --silent \
+  "${S3_URL}/streams/${PREFIX}/split-intents/0.json")"
+old_operation="$(printf '%s' "${intent_json}" | sed -n \
+  's/.*"operation_id":"\([0-9a-f]\{32\}\)".*/\1/p')"
+[[ "${#old_operation}" == "32" ]]
+attempts=0
+until curl --fail --silent \
+  "${S3_URL}/streams?list-type=2&prefix=${PREFIX}%2Fshards%2Fsplits%2F${old_operation}%2F" |
+  grep -q '<Key>'; do
+  attempts=$((attempts + 1))
+  if (( attempts > 200 )); then
+    echo "abandoned split generation never received an object" >&2
     return 1
   fi
   sleep 0.01
@@ -180,5 +197,25 @@ left="$(cat "${TMP_DIR}/after-crash-body")"
 right="$(curl --fail --silent --show-error "${STREAMS_URL}/v1/stream/a" "${auth[@]}")"
 [[ "${left}" == "${expected_left}" ]]
 [[ "${right}" == "${expected_right}" ]]
+
+# Once takeover rotates the intent, the old partial generation is neither in
+# topology nor any active intent. Zero retention is a test override; the
+# production default waits 24 hours. The live sibling generation must remain.
+attempts=0
+while curl --fail --silent \
+  "${S3_URL}/streams?list-type=2&prefix=${PREFIX}%2Fshards%2Fsplits%2F${old_operation}%2F" |
+  grep -q '<Key>'; do
+  attempts=$((attempts + 1))
+  if (( attempts > 200 )); then
+    echo "abandoned split generation was not garbage-collected" >&2
+    return 1
+  fi
+  sleep 0.05
+done
+candidate_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "${S3_URL}/streams/${PREFIX}/split-gc-candidates/${old_operation}.json")"
+[[ "${candidate_status}" == "404" ]]
+[[ "$(curl --fail --silent --show-error \
+  "${STREAMS_URL}/v1/stream/a" "${auth[@]}")" == "${expected_right}" ]]
 
 echo "online shard split with concurrent durable producers passed"

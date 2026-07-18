@@ -45,6 +45,8 @@ fn test_crash_after(phase: &str) {
 pub struct AutoSplitConfig {
     pub single_shard_write_ceiling_bytes_per_sec: u64,
     pub sustain: Duration,
+    pub gc_retention: Duration,
+    pub gc_interval: Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -65,6 +67,21 @@ struct SplitIntent {
     created_ms: i64,
     lease_owner: String,
     lease_until_ms: i64,
+    #[serde(default)]
+    abandoned_generations: Vec<AbandonedGeneration>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AbandonedGeneration {
+    operation_id: String,
+    abandoned_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GcCandidate {
+    version: u32,
+    operation_id: String,
+    abandoned_ms: i64,
 }
 
 fn intent_path(parent: &str) -> ObjPath {
@@ -103,6 +120,15 @@ fn validate_intent(intent: &SplitIntent) -> Result<(), String> {
             .parent_path
             .split('/')
             .any(|component| component == "..")
+        || intent.abandoned_generations.len() > 64
+        || intent.abandoned_generations.iter().any(|generation| {
+            generation.operation_id.len() != 32
+                || !generation
+                    .operation_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || generation.abandoned_ms <= 0
+        })
     {
         return Err("malformed split intent".to_string());
     }
@@ -154,6 +180,7 @@ async fn create_intent(state: &AppState, parent: &str) -> Result<SplitIntent, St
         created_ms: now_ms(),
         lease_owner: state.instance_name.clone(),
         lease_until_ms: now_ms() + LEASE_MS,
+        abandoned_generations: Vec::new(),
     };
     validate_intent(&intent)?;
     let result = state
@@ -183,14 +210,26 @@ async fn claim_intent(state: &AppState, parent: &str) -> Result<Option<SplitInte
             if intent.lease_until_ms > now_ms() {
                 return Ok(None);
             }
-            // Never reuse an abandoned attempt's paths: the old process or
-            // an object-store request may still be completing writes after
-            // lease expiry. Unreachable generations can be garbage-collected
-            // later; topology will publish exactly one verified generation.
-            let (operation_id, zero_path, one_path) = new_operation(parent);
-            intent.operation_id = operation_id;
-            intent.zero_path = zero_path;
-            intent.one_path = one_path;
+            let topology = load_topology(&state.ops_store)
+                .await
+                .map_err(|error| error.to_string())?;
+            if topology.shards.iter().any(|prefix| prefix == parent) {
+                // Never reuse an abandoned attempt's paths: the old process
+                // or an object-store request may still be completing writes
+                // after lease expiry. If topology already published this
+                // operation, retain it and let reconcile remove the intent.
+                if intent.abandoned_generations.len() >= 64 {
+                    return Err("split takeover generation bound exceeded".to_string());
+                }
+                intent.abandoned_generations.push(AbandonedGeneration {
+                    operation_id: intent.operation_id.clone(),
+                    abandoned_ms: now_ms(),
+                });
+                let (operation_id, zero_path, one_path) = new_operation(parent);
+                intent.operation_id = operation_id;
+                intent.zero_path = zero_path;
+                intent.one_path = one_path;
+            }
         }
         intent.lease_owner = state.instance_name.clone();
         intent.lease_until_ms = now_ms() + LEASE_MS;
@@ -206,12 +245,42 @@ async fn claim_intent(state: &AppState, parent: &str) -> Result<Option<SplitInte
             )
             .await;
         match result {
-            Ok(_) => return Ok(Some(intent)),
+            Ok(_) => {
+                persist_gc_candidates(state, &intent).await?;
+                return Ok(Some(intent));
+            }
             Err(object_store::Error::Precondition { .. }) => continue,
             Err(error) => return Err(error.to_string()),
         }
     }
     Err("split intent lease CAS retries exhausted".to_string())
+}
+
+fn gc_candidate_path(operation_id: &str) -> ObjPath {
+    ObjPath::from(format!("split-gc-candidates/{operation_id}.json"))
+}
+
+async fn persist_gc_candidates(state: &AppState, intent: &SplitIntent) -> Result<(), String> {
+    for abandoned in &intent.abandoned_generations {
+        let candidate = GcCandidate {
+            version: 1,
+            operation_id: abandoned.operation_id.to_ascii_lowercase(),
+            abandoned_ms: abandoned.abandoned_ms,
+        };
+        match state
+            .shard_store
+            .put_opts(
+                &gc_candidate_path(&candidate.operation_id),
+                PutPayload::from(serde_json::to_vec(&candidate).expect("GC candidate json")),
+                PutOptions::from(PutMode::Create),
+            )
+            .await
+        {
+            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
 }
 
 async fn renew_intent(state: &AppState, parent: &str, operation_id: &str) -> Result<(), String> {
@@ -578,6 +647,128 @@ async fn list_intents(store: &Arc<dyn ObjectStore>) -> Result<Vec<SplitIntent>, 
     Ok(intents)
 }
 
+fn split_operation(path: &str) -> Option<&str> {
+    let operation = path.strip_prefix("shards/splits/")?.split('/').next()?;
+    (operation.len() == 32 && operation.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(operation)
+}
+
+fn referenced_split_operations(
+    topology: &Topology,
+    intents: &[SplitIntent],
+) -> std::collections::HashSet<String> {
+    let mut referenced = std::collections::HashSet::new();
+    let paths = topology
+        .shard_paths
+        .values()
+        .map(String::as_str)
+        .chain(intents.iter().flat_map(|intent| {
+            [
+                intent.parent_path.as_str(),
+                intent.zero_path.as_str(),
+                intent.one_path.as_str(),
+            ]
+        }));
+    for path in paths {
+        if let Some(operation) = split_operation(path) {
+            referenced.insert(operation.to_ascii_lowercase());
+        }
+    }
+    referenced.extend(intents.iter().flat_map(|intent| {
+        intent
+            .abandoned_generations
+            .iter()
+            .map(|generation| generation.operation_id.to_ascii_lowercase())
+    }));
+    referenced
+}
+
+async fn gc_abandoned_generations(state: &AppState, retention: Duration) -> Result<usize, String> {
+    const MAX_OBJECTS_PER_RUN: usize = 100_000;
+    let topology = load_topology(&state.ops_store)
+        .await
+        .map_err(|error| error.to_string())?;
+    let intents = list_intents(&state.shard_store).await?;
+    let referenced = referenced_split_operations(&topology, &intents);
+    let cutoff_ms =
+        now_ms().saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
+    let mut candidates = Vec::new();
+    let mut candidate_list = state
+        .shard_store
+        .list(Some(&ObjPath::from("split-gc-candidates")));
+    while let Some(item) = candidate_list.next().await {
+        let meta = item.map_err(|error| error.to_string())?;
+        if candidates.len() >= MAX_OBJECTS_PER_RUN {
+            return Err("split GC candidate bound exceeded".to_string());
+        }
+        let result = state
+            .shard_store
+            .get(&meta.location)
+            .await
+            .map_err(|error| error.to_string())?;
+        let raw = result.bytes().await.map_err(|error| error.to_string())?;
+        let candidate: GcCandidate =
+            serde_json::from_slice(&raw).map_err(|_| "malformed split GC candidate".to_string())?;
+        if candidate.version != 1
+            || candidate.operation_id.len() != 32
+            || !candidate
+                .operation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || candidate.abandoned_ms <= 0
+            || meta.location != gc_candidate_path(&candidate.operation_id)
+        {
+            return Err("malformed split GC candidate".to_string());
+        }
+        candidates.push((candidate, meta.location));
+    }
+
+    let mut listed = 0usize;
+    let mut deleted = 0usize;
+    for (candidate, marker_path) in candidates {
+        let operation = candidate.operation_id.to_ascii_lowercase();
+        if candidate.abandoned_ms > cutoff_ms || referenced.contains(&operation) {
+            continue;
+        }
+        // Close the scan/delete race with a fresh reference snapshot. The
+        // actor publishes topology before deleting its intent, so a live or
+        // publishable generation is always present in at least one set.
+        let topology = load_topology(&state.ops_store)
+            .await
+            .map_err(|error| error.to_string())?;
+        let intents = list_intents(&state.shard_store).await?;
+        if referenced_split_operations(&topology, &intents).contains(&operation) {
+            continue;
+        }
+        let mut objects = Vec::new();
+        let mut list = state
+            .shard_store
+            .list(Some(&ObjPath::from(format!("shards/splits/{operation}"))));
+        while let Some(item) = list.next().await {
+            listed = listed.saturating_add(1);
+            if listed > MAX_OBJECTS_PER_RUN {
+                return Err("split generation GC object bound exceeded".to_string());
+            }
+            objects.push(item.map_err(|error| error.to_string())?.location);
+        }
+        for object in objects {
+            state
+                .shard_store
+                .delete(&object)
+                .await
+                .map_err(|error| error.to_string())?;
+            deleted = deleted.saturating_add(1);
+        }
+        state
+            .shard_store
+            .delete(&marker_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        tracing::info!(operation, "deleted abandoned split generation");
+    }
+    Ok(deleted)
+}
+
 pub async fn initialize(state: &Arc<AppState>) -> Result<(), String> {
     let intents = list_intents(&state.shard_store).await?;
     let mut splitting = state.splitting_prefixes.write().unwrap();
@@ -589,6 +780,7 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
     tokio::spawn(async move {
         let mut hot_samples: std::collections::HashMap<String, HotSample> =
             std::collections::HashMap::new();
+        let mut next_gc = Instant::now() + auto.gc_interval;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let intents = match list_intents(&state.shard_store).await {
@@ -635,6 +827,17 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
                         state.split_ready.store(false, Ordering::Release);
                     }
                 }
+            }
+
+            if Instant::now() >= next_gc {
+                match gc_abandoned_generations(&state, auto.gc_retention).await {
+                    Ok(deleted) if deleted > 0 => {
+                        tracing::info!(deleted, "split generation GC completed");
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::error!("split generation GC failed: {error}"),
+                }
+                next_gc = Instant::now() + auto.gc_interval;
             }
 
             let ceiling = auto.single_shard_write_ceiling_bytes_per_sec;
@@ -713,6 +916,48 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_generation_references_cover_topology_and_every_intent_path() {
+        let topology = Topology {
+            version: 1,
+            storage_format: 2,
+            shards: vec!["0".to_string(), "1".to_string()],
+            shard_paths: [(
+                "0".to_string(),
+                "shards/splits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/0".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let intent = SplitIntent {
+            version: INTENT_VERSION,
+            operation_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            parent: "1".to_string(),
+            parent_path: "shards/splits/cccccccccccccccccccccccccccccccc/1".to_string(),
+            zero_path: "shards/splits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/10".to_string(),
+            one_path: "shards/splits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/11".to_string(),
+            created_ms: 1,
+            lease_owner: "owner".to_string(),
+            lease_until_ms: 2,
+            abandoned_generations: vec![AbandonedGeneration {
+                operation_id: "dddddddddddddddddddddddddddddddd".to_string(),
+                abandoned_ms: 1,
+            }],
+        };
+        let referenced = referenced_split_operations(&topology, &[intent]);
+        assert_eq!(referenced.len(), 4);
+        assert!(referenced.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(referenced.contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+        assert!(referenced.contains("cccccccccccccccccccccccccccccccc"));
+        assert!(referenced.contains("dddddddddddddddddddddddddddddddd"));
+        assert!(split_operation("shards/splits/not-hex/0").is_none());
+    }
 }
 
 pub async fn request(state: Arc<AppState>, parent: String) -> Result<Topology, String> {
