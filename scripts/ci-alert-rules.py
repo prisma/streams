@@ -30,6 +30,8 @@ allowed_metrics = {
     "streams_http_requests_total",
     "streams_process_resident_memory_bytes",
     "streams_shard_durable_wait_p99_seconds",
+    "streams_shard_l0_ssts",
+    "streams_shard_unflushed_wal_ssts",
     "streams_tail_freshness_seconds_bucket",
     "streams_wal_put_latency_seconds",
 }
@@ -73,10 +75,12 @@ required = {
     "StreamsBillingExportMissing",
     "StreamsBillingExportUnhealthy",
     "StreamsBillingSeriesDropped",
+    "StreamsCompactionDebtHigh",
     "StreamsDurableAckLatency",
     "StreamsFenceFlapping",
     "StreamsRecoveryPointTooOld",
     "StreamsTailFreshness",
+    "StreamsWalReplayDebtHigh",
 }
 missing = required - names
 if missing:

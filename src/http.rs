@@ -1592,6 +1592,10 @@ fn render_operational_metrics(state: &AppState) -> String {
     out.push_str("# TYPE streams_shard_durable_wait_p99_seconds gauge\n");
     out.push_str("# HELP streams_shard_appended_records_total Records committed by the current shard writer.\n");
     out.push_str("# TYPE streams_shard_appended_records_total counter\n");
+    out.push_str("# HELP streams_shard_l0_ssts Immutable L0 tables awaiting or participating in compaction.\n");
+    out.push_str("# TYPE streams_shard_l0_ssts gauge\n");
+    out.push_str("# HELP streams_shard_unflushed_wal_ssts Manifest-known WAL tables not yet covered by the replay watermark.\n");
+    out.push_str("# TYPE streams_shard_unflushed_wal_ssts gauge\n");
     let cutoff = now_ms().saturating_sub(15_000);
     for (prefix, engine) in engines {
         let shard = if prefix.is_empty() {
@@ -1623,6 +1627,23 @@ fn render_operational_metrics(state: &AppState) -> String {
             engine
                 .stats_appended
                 .load(std::sync::atomic::Ordering::Relaxed)
+        ));
+        let manifest = engine.db.status().current_manifest;
+        let l0_ssts = manifest.l0().len()
+            + manifest
+                .segments()
+                .iter()
+                .map(|segment| segment.l0().len())
+                .sum::<usize>();
+        let first_unflushed_wal = manifest.replay_after_wal_id().saturating_add(1);
+        let unflushed_wal_ssts = manifest
+            .next_wal_sst_id()
+            .saturating_sub(first_unflushed_wal);
+        out.push_str(&format!(
+            "streams_shard_l0_ssts{{shard=\"{shard}\"}} {l0_ssts}\n"
+        ));
+        out.push_str(&format!(
+            "streams_shard_unflushed_wal_ssts{{shard=\"{shard}\"}} {unflushed_wal_ssts}\n"
         ));
     }
     out.push_str("# EOF\n");

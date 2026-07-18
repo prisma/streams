@@ -21,9 +21,9 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Green (software gate).** Strict durable customer documents cover append requests/bytes, read requests/bytes, live and total connections, queue receives, and exact live stream-name counts. Immutable stream descriptors add incarnation-scoped append request/byte buckets and bounded commit weights. Request/ingress excess is rejected before shard work; response egress is paced without breaking admitted streams. Response-body guards close the SSE lifetime escape. Fleet members enforce customer ceil-shares from fresh membership. The shard owner schedules equal tenant turns, then weighted stream turns, rotating oversized heads. Black-box CI proves every account/stream dimension, sibling isolation, disconnect release, restart-loaded policy, exact producer continuation, and measured egress pacing. Target-hardware isolation remains in the performance gate. |
 | Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split and sibling merge use renewable shard-store intents, post-durability fences, verified clones, and one-CAS topology publication, with calibrated 60%/10% hot/cold triggers. A renewable epoch-fenced aggregator turns N bounded heartbeats plus router reports into one conditionally published `fleet.json`; servers and the pilot router consume that snapshot, and desired capacity includes the 32-shards-per-instance floor. Per-stream admission plus hierarchical owner scheduling bound hot-stream share. The global cell-placement/IAM layer remains. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup recovery-point actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/absorber/backup/fleet health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Recovery points pin every initialized shard, active history DB, and external ancestor; explicitly record absent lazy DBs; expose only selected manifest closure/compactions/WAL state; reuse content-addressed blobs; prune expired points/unreferenced blobs; and continuously hash referenced recovery content using a durable provider-independent cursor. Pre-manifest acknowledged WALs are ETag-fenced and copied immediately when each DB cut is observed, so source GC cannot overtake the later inventory walk. A clock-independent renewal/observation lease epoch-orders mutable backup publications; followers require observed liveness plus post-observation relative-age health. Format 3 checksum-rehomes unchanged blobs into epoch-specific paths, making a delayed old-epoch delete physically unable to damage its successor. A second durable cursor logically decodes live shard manifests/SSTs/WALs and checks customer-key history ciphertext against writer-verified immutable digests. Primary failure invalidates snapshot health until a full repaired sweep publishes a new point. History enumeration fails closed above the 100,000-DB cell bound. CI restores adjacent points, deletes an eagerly protected WAL from primary before inventory, proves coordinator takeover, and corrupts live shard plus encrypted-history SSTs. The generic drill checks both providers' required S3 semantics, cuts the primary, measures the exact recovered-record RPO and first-decrypted-read RTO, and proves post-activation writes. Its latest two-process emulator run measured 8.751 s/519 ms; a real independent-provider run remains. |
-| Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Exact bounded per-tenant/stream RED and usage intervals are retry-stably appended to an encrypted service stream; exporter health and cardinality loss alarm without recursively metering that exact principal. Control audit is synchronously immutable on primary plus an independently credentialed mirror; sampled batches retry one stable object; conditionally persisted cursors reconcile the full corpus before readiness; and provider-clock retention deletes primary only after byte verification. An operator-authenticated OpenMetrics endpoint exports fixed-label HTTP RED, active-tail freshness, exact absorber backlog, conservative protected-point age, fencing, component/backup health, WAL/memory, and bounded per-open-shard signals. Eighteen checked alerts carry severity, blast radius, and runbook; CI validates their schema and drills the new SLO signals, stale topology, audit-provider loss, and retry-stable billing recovery without tenant labels. Real independent accounts/consumer reconciliation and a real notification-path game day remain. |
-| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, a two-process provider cut, and stable primary/recovery at-rest inspection run in CI alongside the upstream suite. Pinned `cargo-deny` gates advisories/yanks, licenses, wildcard/banned crates, and sources; weekly Cargo/Actions updates re-enter the same gate. Real mixed-version canary/rollback and soak automation remain. |
-| Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** Pilot benchmarks are valuable but are not a repeatable release gate. |
+| Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Exact bounded per-tenant/stream RED and usage intervals are retry-stably appended to an encrypted service stream; exporter health and cardinality loss alarm without recursively metering that exact principal. Control audit is synchronously immutable on primary plus an independently credentialed mirror; sampled batches retry one stable object; conditionally persisted cursors reconcile the full corpus before readiness; and provider-clock retention deletes primary only after byte verification. An operator-authenticated OpenMetrics endpoint exports fixed-label HTTP RED, active-tail freshness, exact absorber backlog, conservative protected-point age, fencing, component/backup health, WAL/memory, L0 compaction debt, unflushed-WAL recovery debt, and bounded per-open-shard signals. Twenty checked alerts carry severity, blast radius, and runbook; CI validates their schema and drills the SLO signals, stale topology, audit-provider loss, and retry-stable billing recovery without tenant labels. Real independent accounts/consumer reconciliation and a real notification-path game day remain. |
+| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin/benchmark clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, split/merge recovery matrices, automatic elasticity drills, a three-node aggregate-lease failover/corruption drill, a two-process provider cut, and stable primary/recovery at-rest inspection run in CI alongside the upstream suite. Pinned `cargo-deny` gates advisories/yanks, licenses, wildcard/banned crates, and sources; weekly Cargo/Actions updates re-enter the same gate. A checked 24-hour soak judge has an authenticated, secret-free short CI proof; the real target run and mixed-version canary/rollback remain. |
+| Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** The repeatable judge now records exact durable offsets, ACK p50/p99/p99.9, throughput/errors, readiness, RSS growth, absorber drain, L0/WAL debt, fences, and RPO against explicit budgets. No qualifying 24-hour target-hardware artifact, target noisy-neighbor run, or idle-cost evidence exists yet. |
 
 ## Non-negotiable release scenarios
 
@@ -273,11 +273,13 @@ documented cell limits. A feature described only in `SPEC.md`,
   each readiness component, configured recovery-point/scrub health, audit
   drops, overload shedding, resident memory, WAL PUT p50/p99, outbound store
   concurrency, and the bounded open-shard set's durable-wait p99 and append
-  counters. It never emits customer or stream names. Eighteen checked JSON/YAML-
+  counters plus L0 and unflushed-WAL debt. It never emits customer or stream
+  names. Twenty checked JSON/YAML-
   compatible Prometheus alerts cover telemetry loss, component/backup failure,
   missing audit/billing dependencies, audit/billing loss, fast/slow append
   error-budget burn, durable/WAL latency, active-tail freshness, absorber
-  backlog, protected-point age, fence flapping, memory, and shedding, each with
+  backlog, protected-point age, fence flapping, compaction/recovery debt,
+  memory, and shedding, each with
   severity, cell blast radius, and runbook. Black-box game days require
   operator auth, live append/shard/tail/absorber samples, a finite protected-
   point age, an observed reconfiguration fence, last-known-good service with a
@@ -307,6 +309,13 @@ documented cell limits. A feature described only in `SPEC.md`,
   the current byte budget. CI proves request/byte stream 429s, sibling
   isolation, immutable idempotent config, invalid-limit rejection, restart
   persistence, and exact producer continuation.
+- The release-soak judge refuses sub-24-hour evidence unless explicitly in
+  short test mode. It drives an authenticated workload, reconciles every
+  stream's durable offset, scrapes every named instance, and checks ACK
+  p50/p99/p99.9, errors/throughput, readiness, RSS growth, absorber drain,
+  L0/WAL debt, fences, and RPO before writing a secret-free JSON verdict. CI
+  proves the harness in short mode; no target-hardware release artifact has
+  been produced.
 
 ## Immediate red-gate queue
 
@@ -326,14 +335,15 @@ documented cell limits. A feature described only in `SPEC.md`,
    are complete; production provider credentials are not configured here.
 4. Implement the multi-cell placement/control plane with per-cell IAM and
    tenant placement limits.
-5. Run the real mixed-version canary/rollback and add the 24-hour target-
-   hardware release soak. Dependency/advisory/license/source scanning and the
+5. Run the real mixed-version canary/rollback and execute the checked 24-hour
+   target-hardware release soak. The soak judge and its short authenticated CI
+   proof now exist; dependency/advisory/license/source scanning and the
    hermetic history-format migration sequence are automated.
 6. Provision the implemented audit mirror and billing exporter in genuinely
    independent accounts, validate a complete legacy
    audit backfill plus provider lifecycle/object-lock policy, and reconcile a
    real downstream billing consumer. Then exercise the deployed collector,
    alert evaluator, notification route, inhibition, and ownership labels in a
-   real on-call game day. The bounded scrape, 18-rule catalog with all published
+   real on-call game day. The bounded scrape, 20-rule catalog with all published
    SLO signals, audit-provider cut, retry-stable billing drill, and stale-
    topology drill are complete.

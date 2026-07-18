@@ -607,8 +607,9 @@ to OTel at the platform boundary if that is the platform-native transport.
 Load [ops/prometheus-alerts.json](./ops/prometheus-alerts.json) as a Prometheus-
 compatible JSON/YAML rule file. Every alert has a hold time, page/ticket
 severity, cell blast radius, and checked-in runbook target. CI validates the
-bounded 18-rule schema, including missing/unhealthy audit and billing sinks,
-active-tail freshness, absorber backlog, protected-point age, and fence rate.
+bounded 20-rule schema, including missing/unhealthy audit and billing sinks,
+active-tail freshness, absorber backlog, protected-point age, fence rate, L0
+compaction debt, and unflushed-WAL recovery debt.
 `scripts/ci-operability-game-day.sh` proves the scrape requires operator
 authorization, records live RED/shard/tail/absorber signals, leaks no
 tenant-controlled label, replays a stale topology, observes readiness 503 and
@@ -641,6 +642,8 @@ radius, collector, and notification path still require deployed evidence.
 | admit_shed rate | 0 outside overload | growing while clients report errors = check client Retry-After handling |
 | tail freshness p99 | < 500 ms | sustained breach = live delivery path or scheduler delay |
 | absorber pending bytes | < 256 MiB | sustained breach = history-store/provider or actor throughput |
+| L0 SSTs per shard | ≤ 24 | sustained excess = compaction cannot track ingest |
+| unflushed WAL SSTs per shard | ≤ 1024 | sustained excess = recovery/object-count debt |
 | protected recovery-point age | ≤ configured RPO budget | breach = snapshot/coordinator/provider failure |
 | fence events | ≈ shard-move rate | excess = routing flap |
 
@@ -666,6 +669,43 @@ Sizing: `instances = clamp(max(need_util, need_slots, need_latency, …),
 `need_slots = ceil(Σ inflight / (0.75 × SCALE_EDGE_SLOTS))` — the fleet
 computes this itself; your job is choosing `FLEET_MAX` (cost ceiling) and
 keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
+
+### 9.1 Target-hardware release soak
+
+Every release candidate must run the checked soak judge for at least 24 hours
+against the real load-balanced Compute cell and scrape every instance directly.
+The judge records exact durable stream-offset reconciliation, request rate and
+errors, p50/p99/p99.9 ACK latency, readiness/component failures, RSS maximum
+and quartile growth, absorber maximum/drain, L0 and unflushed-WAL debt, fencing,
+and protected-point RPO. It writes one bounded JSON artifact and fails any
+configured regression budget. Credentials are accepted only through the three
+secret environment variables and are never serialized.
+
+```bash
+export SOAK_STREAM_KEY=...          # fresh customer key for this run
+export SOAK_AUTH_TOKEN=...          # scoped workload principal
+export SOAK_OPERATOR_TOKEN=...      # operator-only metrics principal
+
+scripts/release-soak.py \
+  --url https://cell-router.example \
+  --metrics-url https://streams-1.internal \
+  --metrics-url https://streams-2.internal \
+  --bench-bin target/release/bench \
+  --evidence /absolute/release-evidence/soak.json \
+  --release-id "$(git rev-parse HEAD)" \
+  --target-label compute-production-shape \
+  --instance-class 1cpu-1gb \
+  --storage-provider tigris-independent-recovery \
+  --require-backup \
+  --min-req-per-sec 1000
+```
+
+Tune throughput and latency budgets only from an approved baseline for the
+same instance/store class; record the chosen arguments with the artifact. The
+script refuses a run shorter than 24 hours unless `--allow-short` is explicit.
+That escape is used only by `scripts/ci-release-soak-harness.sh` to test the
+judge, authenticated benchmark, metric parser, durable-offset proof, and
+secret-free artifact shape. A short or local run is not release evidence.
 
 ## 10. Troubleshooting matrix
 

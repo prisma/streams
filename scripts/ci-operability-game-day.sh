@@ -102,6 +102,9 @@ grep -q 'streams_component_ready{component="absorber"} 1' \
   "${TMP_DIR}/healthy.metrics"
 grep -q 'streams_shard_appended_records_total{shard="root"} 1' \
   "${TMP_DIR}/healthy.metrics"
+grep -q 'streams_shard_l0_ssts{shard="root"}' "${TMP_DIR}/healthy.metrics"
+grep -q 'streams_shard_unflushed_wal_ssts{shard="root"}' \
+  "${TMP_DIR}/healthy.metrics"
 grep -q '^streams_backup_recovery_point_age_seconds +Inf$' \
   "${TMP_DIR}/healthy.metrics"
 grep -q '^streams_backup_rpo_budget_seconds 0$' "${TMP_DIR}/healthy.metrics"

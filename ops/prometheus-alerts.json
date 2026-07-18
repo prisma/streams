@@ -158,6 +158,28 @@
           }
         },
         {
+          "alert": "StreamsCompactionDebtHigh",
+          "expr": "max by(cell, instance, shard) (streams_shard_l0_ssts) > 24",
+          "for": "30m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Shard L0 table debt exceeds the calibrated compaction envelope",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }} shard={{ $labels.shard }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        },
+        {
+          "alert": "StreamsWalReplayDebtHigh",
+          "expr": "max by(cell, instance, shard) (streams_shard_unflushed_wal_ssts) > 1024",
+          "for": "15m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Shard WAL replay debt exceeds the bounded recovery envelope",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }} shard={{ $labels.shard }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        },
+        {
           "alert": "StreamsRecoveryPointTooOld",
           "expr": "streams_backup_recovery_point_age_seconds > on(job, instance) streams_backup_rpo_budget_seconds and on(job, instance) streams_backup_configured == 1",
           "for": "0m",

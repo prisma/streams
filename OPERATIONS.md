@@ -333,14 +333,22 @@ custody.
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
 
-The 18-rule checked alert catalog implements scrape loss, component/backup
+The 20-rule checked alert catalog implements scrape loss, component/backup
 health, missing audit mirror, audit drops, missing/unhealthy billing export,
 billing-series drops, append error-budget burn, durable/WAL latency, active-
 tail freshness, exact plaintext absorber backlog, conservative newest-
-protected-point age, fencing rate, memory, and overload shedding. The bounded
-absorber queue fails the shard and process unready instead of silently dropping
-maintenance work; its frontier advances only after remote durability. A real
-collector/evaluator/notification game day remains a deployment gate.
+protected-point age, fencing rate, L0 compaction debt, unflushed-WAL recovery
+debt, memory, and overload shedding. The bounded absorber queue fails the shard
+and process unready instead of silently dropping maintenance work; its frontier
+advances only after remote durability. A real collector/evaluator/notification
+game day remains a deployment gate.
+
+The target-hardware release gate is `scripts/release-soak.py` (invocation and
+credential contract in [RUNBOOK §9.1](./RUNBOOK.md#91-target-hardware-release-soak)).
+It requires a 24-hour run by default, scrapes every supplied instance, verifies
+the exact durable next offset of every generated stream, and emits one
+machine-readable budget verdict. CI exercises only its explicit short mode;
+no short/local artifact satisfies the performance release gate.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are

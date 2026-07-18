@@ -16,6 +16,10 @@ use clap::Parser;
 use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
 
+#[path = "../offsets.rs"]
+#[allow(dead_code)]
+mod offsets;
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "bench")]
 struct Args {
@@ -47,16 +51,30 @@ struct Args {
     /// Label included in the JSON summary.
     #[arg(long, default_value = "")]
     label: String,
+    /// After append load, HEAD every stream and require its durable next
+    /// offset to equal the exact number of successful entries generated.
+    #[arg(long, default_value_t = false)]
+    verify_offsets: bool,
     /// Stream encryption key (base64url, 32 bytes) sent as
     /// Stream-Encryption-Key on every request. Omit for servers that don't
     /// require it (the old TS implementation).
     #[arg(long, env = "STREAM_KEY")]
     key: Option<String>,
+    /// Bearer token for production-authenticated targets.
+    #[arg(long, env = "STREAMS_AUTH_TOKEN")]
+    auth_token: Option<String>,
 }
 
-fn keyed(mut rb: reqwest::RequestBuilder, key: &Option<String>) -> reqwest::RequestBuilder {
+fn authorized(
+    mut rb: reqwest::RequestBuilder,
+    key: &Option<String>,
+    auth_token: &Option<String>,
+) -> reqwest::RequestBuilder {
     if let Some(k) = key {
         rb = rb.header("stream-encryption-key", k.as_str());
+    }
+    if let Some(token) = auth_token {
+        rb = rb.bearer_auth(token);
     }
     rb
 }
@@ -67,6 +85,7 @@ struct Shared {
     errors: AtomicU64,
     entries_ok: AtomicU64,
     bytes_ok: AtomicU64,
+    per_stream_entries_ok: Vec<AtomicU64>,
 }
 
 #[tokio::main]
@@ -115,6 +134,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
         errors: AtomicU64::new(0),
         entries_ok: AtomicU64::new(0),
         bytes_ok: AtomicU64::new(0),
+        per_stream_entries_ok: (0..args.streams).map(|_| AtomicU64::new(0)).collect(),
     });
     let (body, content_type) = payload(args.payload_bytes, args.entries);
     let body = Arc::new(body);
@@ -122,9 +142,10 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
     // Pre-create the target streams (the old server 404s appends to
     // non-existent streams).
     for s in 0..args.streams {
-        let r = keyed(
+        let r = authorized(
             client.put(format!("{}/v1/stream/{}-{}", args.url, args.prefix, s)),
             &args.key,
+            &args.auth_token,
         )
         .send()
         .await?;
@@ -150,10 +171,12 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
             args.prefix,
             w % args.streams
         );
+        let stream_index = w % args.streams;
         let entries = args.entries as u64;
         let bytes = args.payload_bytes as u64 * entries;
         let content_type = content_type.to_string();
         let key = args.key.clone();
+        let auth_token = args.auth_token.clone();
         handles.push(tokio::spawn(async move {
             loop {
                 let now = Instant::now();
@@ -161,7 +184,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
                     break;
                 }
                 let t0 = Instant::now();
-                let res = keyed(client.post(&url), &key)
+                let res = authorized(client.post(&url), &key, &auth_token)
                     .header("content-type", content_type.as_str())
                     .body(body.as_ref().clone())
                     .send()
@@ -175,6 +198,8 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
                             shared.ok.fetch_add(1, Ordering::Relaxed);
                             shared.entries_ok.fetch_add(entries, Ordering::Relaxed);
                             shared.bytes_ok.fetch_add(bytes, Ordering::Relaxed);
+                            shared.per_stream_entries_ok[stream_index]
+                                .fetch_add(entries, Ordering::Relaxed);
                             shared
                                 .hist
                                 .lock()
@@ -206,6 +231,29 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
     let ok = shared.ok.load(Ordering::Relaxed);
     let errors = shared.errors.load(Ordering::Relaxed);
     let entries_ok = shared.entries_ok.load(Ordering::Relaxed);
+    let mut offset_mismatches = Vec::new();
+    if args.verify_offsets {
+        for stream_index in 0..args.streams {
+            let url = format!("{}/v1/stream/{}-{}", args.url, args.prefix, stream_index);
+            let response = authorized(client.head(url), &args.key, &args.auth_token)
+                .send()
+                .await?;
+            let observed = response
+                .headers()
+                .get("stream-next-offset")
+                .and_then(|header| header.to_str().ok())
+                .and_then(|token| offsets::Offset::parse(token).ok())
+                .map(offsets::Offset::scan_from);
+            let expected = shared.per_stream_entries_ok[stream_index].load(Ordering::Relaxed);
+            if observed != Some(expected) {
+                offset_mismatches.push(serde_json::json!({
+                    "stream": stream_index,
+                    "expected_next": expected,
+                    "observed_next": observed,
+                }));
+            }
+        }
+    }
     let secs = args.duration_secs as f64;
     let summary = serde_json::json!({
         "label": args.label,
@@ -220,6 +268,12 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
         "req_per_sec": ok as f64 / secs,
         "entries_per_sec": entries_ok as f64 / secs,
         "mb_per_sec": shared.bytes_ok.load(Ordering::Relaxed) as f64 / secs / 1e6,
+        "offset_verification": {
+            "enabled": args.verify_offsets,
+            "passed": !args.verify_offsets || offset_mismatches.is_empty(),
+            "streams_verified": if args.verify_offsets { args.streams } else { 0 },
+            "mismatches": offset_mismatches,
+        },
         "latency_ms": {
             "p50": hist.value_at_quantile(0.50) as f64 / 1000.0,
             "p90": hist.value_at_quantile(0.90) as f64 / 1000.0,
@@ -234,6 +288,10 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
     } else {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     }
+    anyhow::ensure!(
+        !args.verify_offsets || offset_mismatches.is_empty(),
+        "durable stream offsets did not match successful entries"
+    );
     Ok(())
 }
 
@@ -247,14 +305,19 @@ async fn bench_read(args: Args) -> anyhow::Result<()> {
         let client = client.clone();
         let url = format!("{}/v1/stream/{}-{}", args.url, args.prefix, s);
         let key = args.key.clone();
+        let auth_token = args.auth_token.clone();
         handles.push(tokio::spawn(async move {
             let mut offset = "-1".to_string();
             let mut bytes = 0u64;
             let mut reqs = 0u64;
             loop {
-                let res = keyed(client.get(format!("{url}?offset={offset}")), &key)
-                    .send()
-                    .await;
+                let res = authorized(
+                    client.get(format!("{url}?offset={offset}")),
+                    &key,
+                    &auth_token,
+                )
+                .send()
+                .await;
                 let Ok(r) = res else { break };
                 if !r.status().is_success() {
                     break;
@@ -300,13 +363,15 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
     let client = make_client(4);
     let stream = format!("{}-dur-{}", args.prefix, std::process::id());
     let url = format!("{}/v1/stream/{}", args.url, stream);
-    let r = keyed(client.put(&url), &args.key).send().await?;
+    let r = authorized(client.put(&url), &args.key, &args.auth_token)
+        .send()
+        .await?;
     anyhow::ensure!(r.status().is_success(), "create failed: {}", r.status());
     let mut lags_ms: Vec<f64> = Vec::new();
     let iterations = 10usize;
     for _ in 0..iterations {
         let t0 = Instant::now();
-        let res = keyed(client.post(&url), &args.key)
+        let res = authorized(client.post(&url), &args.key, &args.auth_token)
             .header("content-type", "application/octet-stream")
             .body(vec![b'x'; args.payload_bytes])
             .send()
@@ -320,7 +385,9 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
         let mut lag = 0.0f64;
         let ack_at = Instant::now();
         loop {
-            let r = client.get(&details_url).send().await?;
+            let r = authorized(client.get(&details_url), &None, &args.auth_token)
+                .send()
+                .await?;
             if r.status() == reqwest::StatusCode::NOT_FOUND {
                 break; // new server: durable at ACK
             }
