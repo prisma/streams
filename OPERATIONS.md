@@ -141,7 +141,7 @@ budgets must include both interval and point-completion tails.
   the release evidence.
 - CI runs the same harness against two independent `s3lite` processes and
   kills the primary process. On 2026-07-18 this recovered sequence 1, lost the
-  deliberate sequence 2, measured RPO 8.582 s and RTO 477 ms, and verified a
+  deliberate sequence 2, measured RPO 8.751 s and RTO 519 ms, and verified a
   post-failover write. This is protocol/harness evidence, **not** independent-
   provider evidence.
 - Recovery-content scrubbing hashes referenced immutable blobs. Primary
@@ -333,12 +333,14 @@ custody.
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
 
-The 14-rule checked alert catalog currently implements scrape loss,
-component/backup health, missing audit mirror, audit drops, missing/unhealthy
-billing export, billing-series drops, append error-budget burn, durable/WAL
-latency, memory, and overload shedding. Tail-freshness, absorber-lag, exact
-newest-protected-point age, and fence-rate series/alerts are still a GA gap;
-backup readiness is not a substitute for an RPO-age alarm.
+The 18-rule checked alert catalog implements scrape loss, component/backup
+health, missing audit mirror, audit drops, missing/unhealthy billing export,
+billing-series drops, append error-budget burn, durable/WAL latency, active-
+tail freshness, exact plaintext absorber backlog, conservative newest-
+protected-point age, fencing rate, memory, and overload shedding. The bounded
+absorber queue fails the shard and process unready instead of silently dropping
+maintenance work; its frontier advances only after remote durability. A real
+collector/evaluator/notification game day remains a deployment gate.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are

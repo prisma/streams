@@ -75,6 +75,9 @@ struct Args {
     backup_path_prefix: Option<String>,
     #[arg(long, env = "BACKUP_INTERVAL_SECS", default_value_t = 300)]
     backup_interval_secs: u64,
+    /// Maximum acceptable age of the newest fully protected recovery point.
+    #[arg(long, env = "BACKUP_RPO_BUDGET_SECS", default_value_t = 300)]
+    backup_rpo_budget_secs: u64,
     /// Complete recovery points older than this are removed; unreferenced
     /// content blobs and abandoned partial generations are reclaimed with it.
     #[arg(long, env = "BACKUP_RETENTION_SECS", default_value_t = 7 * 24 * 60 * 60)]
@@ -1065,6 +1068,11 @@ async fn async_main() -> anyhow::Result<()> {
             "BACKUP_INTERVAL_SECS must be at least 60"
         );
         anyhow::ensure!(
+            (60..=24 * 60 * 60).contains(&args.backup_rpo_budget_secs)
+                && args.backup_interval_secs <= args.backup_rpo_budget_secs,
+            "BACKUP_RPO_BUDGET_SECS must cover the snapshot interval and be at most one day"
+        );
+        anyhow::ensure!(
             args.backup_retention_secs >= args.backup_interval_secs.saturating_mul(2)
                 && args.backup_retention_secs <= 365 * 24 * 60 * 60,
             "BACKUP_RETENTION_SECS must retain at least two intervals and at most one year"
@@ -1124,6 +1132,7 @@ async fn async_main() -> anyhow::Result<()> {
             sources,
             destination,
             interval: Duration::from_secs(args.backup_interval_secs),
+            rpo_budget: Duration::from_secs(args.backup_rpo_budget_secs),
             retention: Duration::from_secs(args.backup_retention_secs),
             scrub_interval: Duration::from_secs(args.backup_scrub_interval_secs),
             scrub_objects_per_interval: args.backup_scrub_objects_per_interval,
@@ -1179,12 +1188,14 @@ async fn async_main() -> anyhow::Result<()> {
     // AppState::shard_closed through this weak back-reference.
     let state_slot: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>> =
         Arc::new(std::sync::OnceLock::new());
+    let telemetry = Arc::new(crate::telemetry::Telemetry::default());
     let opener = {
         let shard_store = shard_store.clone();
         let data_store = data_store.clone();
         let ops_store = ops_store.clone();
         let keys = keys.clone();
         let touch = touch.clone();
+        let telemetry = telemetry.clone();
         let settings = shard_settings(&args);
         // §1.1: one block cache for the whole process, not one per DB
         // (SlateDB default: 512 MB PER DB — a 16-shard 1 GB instance dies
@@ -1210,6 +1221,7 @@ async fn async_main() -> anyhow::Result<()> {
                 let ops_store = ops_store.clone();
                 let keys = keys.clone();
                 let touch = touch.clone();
+                let telemetry = telemetry.clone();
                 let mut settings = settings.clone();
                 // O14a: desynchronize WAL flush ticks across shards. 16
                 // shards flushing on the same phase PUT in synchronized
@@ -1253,6 +1265,7 @@ async fn async_main() -> anyhow::Result<()> {
                             ..Default::default()
                         },
                         absorb_tx,
+                        telemetry.clone(),
                         Some(on_close),
                         Some(shard_store.clone()),
                     );
@@ -1261,6 +1274,7 @@ async fn async_main() -> anyhow::Result<()> {
                         ops_store,
                         engine.clone(),
                         keys,
+                        telemetry,
                         AbsorberConfig {
                             threshold_bytes: absorb_bytes,
                             threshold_age: Duration::from_secs(absorb_age),
@@ -1338,7 +1352,7 @@ async fn async_main() -> anyhow::Result<()> {
             .metrics_customer_id
             .clone()
             .map(|customer| (customer, "__metrics__".to_string())),
-        telemetry: Arc::new(crate::telemetry::Telemetry::default()),
+        telemetry,
     });
     let _ = state_slot.set(Arc::downgrade(&state));
     crate::split::initialize(&state)

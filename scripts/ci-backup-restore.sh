@@ -95,6 +95,11 @@ first_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${first_repo
 grep -Eq '"pinned_history_dbs":[1-9][0-9]*' <<<"${first_report}"
 grep -Eq '"coordinator_epoch":[1-9][0-9]*' <<<"${first_report}"
 grep -q '"format_version":3' <<<"${first_report}"
+curl --fail --silent --show-error "${STREAMS_URL}/v1/debug/metrics" \
+  "${auth[@]}" >"${TMP_DIR}/backup.metrics"
+awk '$1 == "streams_backup_recovery_point_age_seconds" && $2 != "+Inf" && $2 <= 300 { found=1 } END { exit !found }' \
+  "${TMP_DIR}/backup.metrics"
+grep -q '^streams_backup_rpo_budget_seconds 300$' "${TMP_DIR}/backup.metrics"
 
 # Advance the primary after the first complete recovery point, then restart the
 # backup actor. The second immediate snapshot must re-home immutable blobs into

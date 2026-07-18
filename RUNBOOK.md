@@ -101,6 +101,7 @@ with an empty pool rather than dead sockets.
 | `BACKUP_S3_ACCESS_KEY_ID` / `BACKUP_S3_SECRET_ACCESS_KEY` | — | required when backup is enabled; destination needs read/create plus overwrite for `latest.json`, source indexes, and blob references, and delete for bounded retention |
 | `BACKUP_PATH_PREFIX` | — | recovery namespace inside the backup bucket |
 | `BACKUP_INTERVAL_SECS` | 300 | incremental recovery-point cadence; minimum 60 s |
+| `BACKUP_RPO_BUDGET_SECS` | 300 | maximum age of the newest fully protected point; 60 s–1 day and never lower than the snapshot interval |
 | `BACKUP_RETENTION_SECS` | 604800 | complete/partial point and unreferenced-blob retention; at least two intervals, at most one year |
 | `BACKUP_CHECKPOINT_LIFETIME_SECS` | 3600 | expiry safety net for per-shard SlateDB pins; at least two intervals, at most one day; successful copies delete eagerly |
 | `BACKUP_SCRUB_INTERVAL_SECS` / `BACKUP_SCRUB_OBJECTS_PER_INTERVAL` | 60 / 256 | continuously hash this many referenced recovery blobs; 10 s minimum, 100000 maximum batch |
@@ -606,13 +607,16 @@ to OTel at the platform boundary if that is the platform-native transport.
 Load [ops/prometheus-alerts.json](./ops/prometheus-alerts.json) as a Prometheus-
 compatible JSON/YAML rule file. Every alert has a hold time, page/ticket
 severity, cell blast radius, and checked-in runbook target. CI validates the
-bounded 14-rule schema, including missing/unhealthy audit and billing sinks,
-and runs `scripts/ci-operability-game-day.sh`: it proves the
-scrape requires operator authorization, records live RED/shard signals, leaks
-no tenant-controlled label, replays a stale topology, observes readiness 503
-and `component="topology"} 0`, then restores the current topology and requires
-recovery. A release environment must additionally prove its real collector,
-rule evaluator, notification route, inhibition, and ownership labels.
+bounded 18-rule schema, including missing/unhealthy audit and billing sinks,
+active-tail freshness, absorber backlog, protected-point age, and fence rate.
+`scripts/ci-operability-game-day.sh` proves the scrape requires operator
+authorization, records live RED/shard/tail/absorber signals, leaks no
+tenant-controlled label, replays a stale topology, observes readiness 503 and
+`component="topology"} 0`, then restores the current topology and requires
+recovery. Backup and stale-owner drills separately prove a finite protected-
+point age and an observed reconfiguration fence. A release environment must
+additionally prove its real collector, rule evaluator, notification route,
+inhibition, and ownership labels.
 
 `scripts/ci-audit-mirror.sh` cuts an independent audit provider and proves
 control-plane fail-closed behavior, retry-stable sampled batches, and recovery.
@@ -635,6 +639,9 @@ radius, collector, and notification path still require deployed evidence.
 | timer_thread max | < 10 ms | higher = host contention |
 | steal_pct | ~0 | > 3 % sustained = platform conversation |
 | admit_shed rate | 0 outside overload | growing while clients report errors = check client Retry-After handling |
+| tail freshness p99 | < 500 ms | sustained breach = live delivery path or scheduler delay |
+| absorber pending bytes | < 256 MiB | sustained breach = history-store/provider or actor throughput |
+| protected recovery-point age | ≤ configured RPO budget | breach = snapshot/coordinator/provider failure |
 | fence events | ≈ shard-move rate | excess = routing flap |
 
 SLO targets (append availability 99.95 %, durable-ack p99 < 250 ms, tail
@@ -764,7 +771,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   `scripts/ci-provider-failover.sh` runs this identical path against two
   independent `s3lite` processes and actually kills the primary. On
   2026-07-18 it recovered sequence 1, intentionally lost sequence 2, measured
-  8.582 s RPO and 477 ms RTO, and verified a post-failover write. This validates
+  8.751 s RPO and 519 ms RTO, and verified a post-failover write. This validates
   the protocol and measurement harness, not independent-provider blast-radius
   isolation.
   CI also runs two backup-enabled instances, kills the actual lease holder,

@@ -65,11 +65,31 @@ auth=(-H "authorization: Bearer ${AUTH_TOKEN}")
 stream=(-H "stream-encryption-key: ${KEY}" -H 'content-type: application/json')
 curl --fail --silent --show-error -X PUT "${STREAMS_URL}/v1/stream/orders" \
   "${auth[@]}" "${stream[@]}" -d '[]' >/dev/null
+curl --fail --silent --show-error \
+  "${STREAMS_URL}/v1/stream/orders?offset=now&live=long-poll&timeout=5s" \
+  "${auth[@]}" -H "stream-encryption-key: ${KEY}" \
+  >"${TMP_DIR}/tail.json" &
+TAIL_PID=$!
+sleep 0.2
 curl --fail --silent --show-error -X POST "${STREAMS_URL}/v1/stream/orders" \
   "${auth[@]}" "${stream[@]}" -d '{"event":1}' >/dev/null
+wait "${TAIL_PID}"
+grep -q '"event":1' "${TMP_DIR}/tail.json"
 
-curl --fail --silent --show-error -D "${TMP_DIR}/metrics.headers" \
-  "${STREAMS_URL}/v1/debug/metrics" "${auth[@]}" >"${TMP_DIR}/healthy.metrics"
+attempts=0
+until curl --fail --silent --show-error -D "${TMP_DIR}/metrics.headers" \
+    "${STREAMS_URL}/v1/debug/metrics" "${auth[@]}" >"${TMP_DIR}/healthy.metrics" \
+    && awk '$1 == "streams_tail_freshness_seconds_count" && $2 > 0 { found=1 } END { exit !found }' \
+      "${TMP_DIR}/healthy.metrics" \
+    && awk '$1 == "streams_absorber_pending_bytes" && $2 > 0 { found=1 } END { exit !found }' \
+      "${TMP_DIR}/healthy.metrics"; do
+  attempts=$((attempts + 1))
+  if (( attempts > 100 )); then
+    tail -150 "${TMP_DIR}/streams.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+done
 grep -qi '^content-type: application/openmetrics-text; version=1.0.0' \
   "${TMP_DIR}/metrics.headers"
 grep -q 'streams_http_requests_total{operation="append",status_class="2xx"} 1' \
@@ -78,7 +98,14 @@ grep -q 'streams_http_request_duration_seconds_count{operation="append"} 1' \
   "${TMP_DIR}/healthy.metrics"
 grep -q 'streams_component_ready{component="topology"} 1' \
   "${TMP_DIR}/healthy.metrics"
+grep -q 'streams_component_ready{component="absorber"} 1' \
+  "${TMP_DIR}/healthy.metrics"
 grep -q 'streams_shard_appended_records_total{shard="root"} 1' \
+  "${TMP_DIR}/healthy.metrics"
+grep -q '^streams_backup_recovery_point_age_seconds +Inf$' \
+  "${TMP_DIR}/healthy.metrics"
+grep -q '^streams_backup_rpo_budget_seconds 0$' "${TMP_DIR}/healthy.metrics"
+grep -q '^streams_fence_events_total{kind="writer"} 0$' \
   "${TMP_DIR}/healthy.metrics"
 grep -q '^# EOF$' "${TMP_DIR}/healthy.metrics"
 if grep -q 'orders' "${TMP_DIR}/healthy.metrics"; then

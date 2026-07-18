@@ -136,6 +136,50 @@
           }
         },
         {
+          "alert": "StreamsTailFreshness",
+          "expr": "histogram_quantile(0.99, sum by(cell, le) (rate(streams_tail_freshness_seconds_bucket[5m]))) > 0.5",
+          "for": "15m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Active-tail append-to-response freshness p99 exceeds 500 ms",
+            "blast_radius": "cell={{ $labels.cell }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsAbsorberLagHigh",
+          "expr": "streams_absorber_pending_bytes > 268435456",
+          "for": "30m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "History absorber payload backlog exceeds 256 MiB",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsRecoveryPointTooOld",
+          "expr": "streams_backup_recovery_point_age_seconds > on(job, instance) streams_backup_rpo_budget_seconds and on(job, instance) streams_backup_configured == 1",
+          "for": "0m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Newest fully protected recovery point exceeds its RPO budget",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#111-backup-restore-and-provider-failover"
+          }
+        },
+        {
+          "alert": "StreamsFenceFlapping",
+          "expr": "sum by(cell) (increase(streams_fence_events_total[15m])) > 10",
+          "for": "0m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Shard fencing exceeds the bounded deployment/reconfiguration envelope",
+            "blast_radius": "cell={{ $labels.cell }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        },
+        {
           "alert": "StreamsResidentMemoryHigh",
           "expr": "streams_process_resident_memory_bytes > 734003200",
           "for": "10m",

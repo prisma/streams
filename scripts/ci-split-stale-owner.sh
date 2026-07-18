@@ -108,5 +108,9 @@ fi
 actual="$(curl --fail --silent --show-error "${URL_A}/v1/stream/race" "${auth[@]}")"
 [[ "${actual}" == "${expected}" ]]
 grep -q 'withholding durable acknowledgements behind reconfiguration fence' "${TMP_DIR}/b.log"
+curl --fail --silent --show-error "${URL_B}/v1/debug/metrics" \
+  -H "authorization: Bearer ${AUTH_TOKEN}" >"${TMP_DIR}/b.metrics"
+awk '$1 == "streams_fence_events_total{kind=\"reconfiguration\"}" && $2 > 0 { found=1 } END { exit !found }' \
+  "${TMP_DIR}/b.metrics"
 
 echo "stale-owner split acknowledgement fence passed"

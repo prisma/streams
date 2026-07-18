@@ -98,6 +98,7 @@ pub struct BackupConfig {
     pub sources: Vec<BackupSource>,
     pub destination: Arc<dyn ObjectStore>,
     pub interval: Duration,
+    pub rpo_budget: Duration,
     pub retention: Duration,
     pub scrub_interval: Duration,
     pub scrub_objects_per_interval: usize,
@@ -113,6 +114,8 @@ pub struct BackupStatus {
     snapshot_healthy: AtomicBool,
     scrub_healthy: AtomicBool,
     primary_scrub_healthy: AtomicBool,
+    latest_protected_at: Mutex<Option<Instant>>,
+    rpo_budget: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +138,22 @@ impl BackupStatus {
             recovery_scrub: self.scrub_healthy.load(Ordering::Acquire),
             primary_scrub: self.primary_scrub_healthy.load(Ordering::Acquire),
         }
+    }
+
+    pub fn recovery_point_age(&self) -> Option<Duration> {
+        self.latest_protected_at
+            .lock()
+            .unwrap()
+            .map(|at| at.elapsed())
+    }
+
+    pub fn rpo_budget(&self) -> Duration {
+        self.rpo_budget
+    }
+
+    fn set_recovery_point_age(&self, age: Option<Duration>) {
+        *self.latest_protected_at.lock().unwrap() =
+            age.and_then(|age| Instant::now().checked_sub(age));
     }
 }
 
@@ -992,16 +1011,16 @@ async fn load_coordinator_health(
     let report_budget = scrub_budget.max(primary_scrub_budget).max(duration_ms_u64(
         COORDINATOR_LEASE_DURATION.saturating_mul(2),
     ));
-    health.snapshot_healthy &= health
+    health.snapshot_age_ms = health
         .snapshot_age_ms
-        .saturating_add(publication_age_upper_ms)
-        <= snapshot_budget;
-    health.scrub_healthy &=
-        health.scrub_age_ms.saturating_add(publication_age_upper_ms) <= scrub_budget;
-    health.primary_scrub_healthy &= health
+        .saturating_add(publication_age_upper_ms);
+    health.scrub_age_ms = health.scrub_age_ms.saturating_add(publication_age_upper_ms);
+    health.primary_scrub_age_ms = health
         .primary_scrub_age_ms
-        .saturating_add(publication_age_upper_ms)
-        <= primary_scrub_budget;
+        .saturating_add(publication_age_upper_ms);
+    health.snapshot_healthy &= health.snapshot_age_ms <= snapshot_budget;
+    health.scrub_healthy &= health.scrub_age_ms <= scrub_budget;
+    health.primary_scrub_healthy &= health.primary_scrub_age_ms <= primary_scrub_budget;
     anyhow::ensure!(
         publication_age_upper_ms <= report_budget,
         "backup coordinator health is stale"
@@ -1024,6 +1043,8 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
         snapshot_healthy: AtomicBool::new(false),
         scrub_healthy: AtomicBool::new(false),
         primary_scrub_healthy: AtomicBool::new(config.pins.is_none()),
+        latest_protected_at: Mutex::new(None),
+        rpo_budget: config.rpo_budget,
     });
     let coordinator = config.coordinator.clone().map(start_coordinator);
     let actor_status = status.clone();
@@ -1060,11 +1081,17 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         last_primary_scrub_ms = 0;
                         last_scrub_at = None;
                         last_primary_scrub_at = None;
+                        actor_status.set_recovery_point_age(None);
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                     }
                     snapshot_sequence = snapshot_sequence.saturating_add(1).max(1);
+                    // The oldest cut in this recovery point can be as old as
+                    // the snapshot operation itself. Start its monotonic age
+                    // before pinning/copying so a slow provider cannot make a
+                    // newly published point look artificially fresh.
+                    let snapshot_started_at = Instant::now();
                     let result = snapshot_once_with_pins_fenced(
                         &config.sources,
                         config.destination.clone(),
@@ -1091,9 +1118,13 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                         .store(primary_healthy, Ordering::Release);
                                     if primary_healthy {
                                         latest_completed_ms = report.completed_ms;
-                                        latest_completed_at = Some(Instant::now());
+                                        latest_completed_at = Some(snapshot_started_at);
+                                        actor_status.set_recovery_point_age(Some(
+                                            snapshot_started_at.elapsed(),
+                                        ));
                                     } else {
                                         latest_completed_at = None;
+                                        actor_status.set_recovery_point_age(None);
                                     }
                                     tracing::info!(
                                         snapshot = %report.snapshot_id,
@@ -1111,6 +1142,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 Err(error) => {
                                     actor_status.snapshot_healthy.store(false, Ordering::Release);
                                     latest_completed_at = None;
+                                    actor_status.set_recovery_point_age(None);
                                     tracing::error!("backup retention failed: {error:#}");
                                 }
                             }
@@ -1118,6 +1150,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         Err(error) => {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
                             latest_completed_at = None;
+                            actor_status.set_recovery_point_age(None);
                             tracing::error!("backup snapshot failed: {error:#}");
                         }
                     }
@@ -1161,6 +1194,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         last_primary_scrub_ms = 0;
                         latest_completed_at = None;
                         last_primary_scrub_at = None;
+                        actor_status.set_recovery_point_age(None);
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
@@ -1222,6 +1256,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         last_primary_scrub_ms = 0;
                         latest_completed_at = None;
                         last_scrub_at = None;
+                        actor_status.set_recovery_point_age(None);
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
@@ -1280,6 +1315,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
                             latest_completed_ms = 0;
                             latest_completed_at = None;
+                            actor_status.set_recovery_point_age(None);
                             last_primary_scrub_at = None;
                             tracing::error!("primary SlateDB integrity scrub failed: {error:#}");
                         }
@@ -1330,11 +1366,17 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 actor_status.snapshot_healthy.store(health.snapshot_healthy, Ordering::Release);
                                 actor_status.scrub_healthy.store(health.scrub_healthy, Ordering::Release);
                                 actor_status.primary_scrub_healthy.store(health.primary_scrub_healthy, Ordering::Release);
+                                actor_status.set_recovery_point_age(
+                                    health.snapshot_healthy.then(|| {
+                                        Duration::from_millis(health.snapshot_age_ms)
+                                    }),
+                                );
                             }
                             Err(error) => {
                                 actor_status.snapshot_healthy.store(false, Ordering::Release);
                                 actor_status.scrub_healthy.store(false, Ordering::Release);
                                 actor_status.primary_scrub_healthy.store(false, Ordering::Release);
+                                actor_status.set_recovery_point_age(None);
                                 tracing::warn!("backup coordinator health unavailable: {error:#}");
                             }
                         }

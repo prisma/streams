@@ -137,6 +137,29 @@ pub struct StreamHandle {
     pub hash: StorageHash,
     pub state: Mutex<StreamState>,
     pub notify: Notify,
+    visibility: Mutex<TailVisibility>,
+}
+
+struct TailVisibility {
+    next: u64,
+    committed_at: Option<std::time::Instant>,
+}
+
+impl StreamHandle {
+    fn mark_visible(&self, next: u64) {
+        let mut visibility = self.visibility.lock().unwrap();
+        if next > visibility.next {
+            visibility.next = next;
+            visibility.committed_at = Some(std::time::Instant::now());
+        }
+    }
+
+    pub fn tail_freshness(&self, delivered_next: u64) -> Option<std::time::Duration> {
+        let visibility = self.visibility.lock().unwrap();
+        (delivered_next >= visibility.next)
+            .then(|| visibility.committed_at.map(|at| at.elapsed()))
+            .flatten()
+    }
 }
 
 struct StreamCache {
@@ -290,6 +313,7 @@ pub enum CommitOp {
     Absorbed {
         hash: StorageHash,
         upto: u64,
+        resp: oneshot::Sender<Result<(), String>>,
     },
     /// Ordered after every operation admitted before a split quiescence gate.
     /// It never enters a WriteBatch; the committer resolves it only after its
@@ -542,6 +566,7 @@ struct InFlightGroup {
         oneshot::Sender<Result<crate::queue::QueueOut, String>>,
         crate::queue::QueueOut,
     )>,
+    absorbed_acks: Vec<oneshot::Sender<Result<(), String>>>,
     tails: Vec<(Arc<StreamHandle>, TailFields)>,
     signals: Vec<AbsorbSignal>,
     touches: Vec<TouchFeed>,
@@ -558,12 +583,14 @@ pub struct ShardEngine {
     shutdown: Notify,
     closed: AtomicBool,
     accepting: AtomicBool,
+    fence_recorded: AtomicBool,
     admission_gate: Mutex<()>,
     quiesce_gate: tokio::sync::Mutex<()>,
     writer_epoch: u64,
     last_owner_proof: Mutex<std::time::Instant>,
     owner_proof_lock: tokio::sync::Mutex<()>,
     absorb_tx: mpsc::Sender<AbsorbSignal>,
+    telemetry: Arc<crate::telemetry::Telemetry>,
     /// Strong reconfiguration fence checked after remote durability but before ACKs.
     /// Without this, a stale ring owner can acknowledge a parent write after
     /// another process cloned it into children.
@@ -626,6 +653,7 @@ impl ShardEngine {
         db: Arc<Db>,
         cfg: ShardConfig,
         absorb_tx: mpsc::Sender<AbsorbSignal>,
+        telemetry: Arc<crate::telemetry::Telemetry>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
         reconfiguration_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
     ) -> Arc<ShardEngine> {
@@ -642,12 +670,14 @@ impl ShardEngine {
             shutdown: Notify::new(),
             closed: AtomicBool::new(false),
             accepting: AtomicBool::new(true),
+            fence_recorded: AtomicBool::new(false),
             admission_gate: Mutex::new(()),
             quiesce_gate: tokio::sync::Mutex::new(()),
             writer_epoch,
             last_owner_proof: Mutex::new(std::time::Instant::now()),
             owner_proof_lock: tokio::sync::Mutex::new(()),
             absorb_tx,
+            telemetry,
             reconfiguration_fence_store,
             on_close,
             stats_appended: AtomicU64::new(0),
@@ -729,6 +759,7 @@ impl ShardEngine {
         self.db.refresh_manifest().await?;
         let observed = self.db.status().current_manifest.writer_epoch();
         if observed != self.writer_epoch {
+            self.record_fence_once(crate::telemetry::FenceKind::Writer);
             self.mark_moved();
             return Err(slatedb::Error::closed(
                 format!(
@@ -740,6 +771,12 @@ impl ShardEngine {
         }
         *self.last_owner_proof.lock().unwrap() = std::time::Instant::now();
         Ok(())
+    }
+
+    fn record_fence_once(&self, kind: crate::telemetry::FenceKind) {
+        if !self.fence_recorded.swap(true, Ordering::AcqRel) {
+            self.telemetry.record_fence(kind);
+        }
     }
 
     fn mark_moved(&self) {
@@ -756,6 +793,9 @@ impl ShardEngine {
                 let _ = resp.send(Err(AppendErr::ShardMoved));
             }
             for (resp, _) in group.queue_acks {
+                let _ = resp.send(Err("shard moved".to_string()));
+            }
+            for resp in group.absorbed_acks {
                 let _ = resp.send(Err("shard moved".to_string()));
             }
         }
@@ -796,13 +836,24 @@ impl ShardEngine {
         }
     }
 
-    pub async fn submit_absorbed(&self, hash: StorageHash, upto: u64) {
+    pub async fn submit_absorbed(&self, hash: StorageHash, upto: u64) -> bool {
+        let (resp, ack) = oneshot::channel();
         let gate = self.admission_gate.lock().unwrap();
         if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
-            return;
+            return false;
         }
-        let _ = self.tx.try_send(CommitOp::Absorbed { hash, upto });
+        let queued = self
+            .tx
+            .try_send(CommitOp::Absorbed { hash, upto, resp })
+            .is_ok();
         drop(gate);
+        if !queued {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(30), ack).await,
+            Ok(Ok(Ok(())))
+        )
     }
 
     pub async fn submit_queue(
@@ -917,6 +968,7 @@ impl ShardEngine {
             Some(raw) => decode_tail(&raw).unwrap_or_default(),
             None => TailFields::default(),
         };
+        let visible_next = tail.next;
         let handle = Arc::new(StreamHandle {
             hash,
             state: Mutex::new(StreamState {
@@ -927,6 +979,10 @@ impl ShardEngine {
                 queue: crate::queue::QueueState::default(),
             }),
             notify: Notify::new(),
+            visibility: Mutex::new(TailVisibility {
+                next: visible_next,
+                committed_at: None,
+            }),
         });
         self.streams.lock().unwrap().insert(hash, handle)
     }
@@ -1063,6 +1119,7 @@ impl ShardEngine {
             oneshot::Sender<Result<crate::queue::QueueOut, String>>,
             crate::queue::QueueOut,
         )> = Vec::new();
+        let mut absorbed_pending: Vec<oneshot::Sender<Result<(), String>>> = Vec::new();
         let mut extra_writes = false;
 
         for op in ops {
@@ -1092,13 +1149,22 @@ impl ShardEngine {
                         );
                     }
                     Err(e) => {
-                        if let CommitOp::Append(r) = op {
-                            let error = if e.kind() == slatedb::ErrorKind::Unavailable {
-                                AppendErr::Overloaded
-                            } else {
-                                AppendErr::Internal(e.to_string())
-                            };
-                            let _ = r.resp.send(Err(error));
+                        match op {
+                            CommitOp::Append(r) => {
+                                let error = if e.kind() == slatedb::ErrorKind::Unavailable {
+                                    AppendErr::Overloaded
+                                } else {
+                                    AppendErr::Internal(e.to_string())
+                                };
+                                let _ = r.resp.send(Err(error));
+                            }
+                            CommitOp::Absorbed { resp, .. } => {
+                                let _ = resp.send(Err(e.to_string()));
+                            }
+                            CommitOp::Queue { resp, .. } => {
+                                let _ = resp.send(Err(e.to_string()));
+                            }
+                            CommitOp::Barrier { .. } => unreachable!(),
                         }
                         continue;
                     }
@@ -1276,7 +1342,7 @@ impl ShardEngine {
                         },
                     ));
                 }
-                CommitOp::Absorbed { upto, .. } => {
+                CommitOp::Absorbed { upto, resp, .. } => {
                     let prev_absorbed = local.fields.absorbed;
                     if upto > prev_absorbed {
                         local.fields.absorbed = upto.min(local.fields.next);
@@ -1288,6 +1354,7 @@ impl ShardEngine {
                         wb.delete(record_key(&hash, off));
                     }
                     local.fields.trimmed = trim_to;
+                    absorbed_pending.push(resp);
                 }
                 CommitOp::Queue { op, resp, .. } => {
                     use crate::queue::*;
@@ -1585,7 +1652,8 @@ impl ShardEngine {
                 });
             }
         }
-        if pending.is_empty() && !changed && queue_pending.is_empty() {
+        if pending.is_empty() && !changed && queue_pending.is_empty() && absorbed_pending.is_empty()
+        {
             return;
         }
         if !changed && records == 0 && touches.is_empty() && !extra_writes {
@@ -1596,6 +1664,9 @@ impl ShardEngine {
             }
             for (resp, out) in queue_pending {
                 let _ = resp.send(Ok(out));
+            }
+            for resp in absorbed_pending {
+                let _ = resp.send(Ok(()));
             }
             return;
         }
@@ -1622,6 +1693,9 @@ impl ShardEngine {
                         let _ = resp.send(Err(AppendErr::ShardMoved));
                     }
                     for (resp, _) in queue_pending {
+                        let _ = resp.send(Err("shard moved".to_string()));
+                    }
+                    for resp in absorbed_pending {
                         let _ = resp.send(Err("shard moved".to_string()));
                     }
                     return;
@@ -1652,6 +1726,7 @@ impl ShardEngine {
                     bytes: group_bytes,
                     acks: pending,
                     queue_acks: queue_pending,
+                    absorbed_acks: absorbed_pending,
                     tails,
                     signals,
                     touches,
@@ -1664,6 +1739,9 @@ impl ShardEngine {
                     let _ = resp.send(Err(AppendErr::Internal(msg.clone())));
                 }
                 for (resp, _) in queue_pending {
+                    let _ = resp.send(Err(msg.clone()));
+                }
+                for resp in absorbed_pending {
                     let _ = resp.send(Err(msg.clone()));
                 }
             }
@@ -1687,6 +1765,7 @@ impl ShardEngine {
                             tracing::info!(shard = %self.prefix, "shard db closed cleanly")
                         }
                         CloseReason::Fenced => {
+                            self.record_fence_once(crate::telemetry::FenceKind::Writer);
                             tracing::warn!(shard = %self.prefix, "shard writer was fenced")
                         }
                         _ => tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}"),
@@ -1710,6 +1789,7 @@ impl ShardEngine {
                     }
                 };
                 if fenced {
+                    self.record_fence_once(crate::telemetry::FenceKind::Reconfiguration);
                     tracing::warn!(
                         shard = %self.prefix,
                         groups = ready.len(),
@@ -1720,6 +1800,9 @@ impl ShardEngine {
                             let _ = resp.send(Err(AppendErr::ShardMoved));
                         }
                         for (resp, _) in group.queue_acks {
+                            let _ = resp.send(Err("shard moved".to_string()));
+                        }
+                        for resp in group.absorbed_acks {
                             let _ = resp.send(Err("shard moved".to_string()));
                         }
                     }
@@ -1749,7 +1832,14 @@ impl ShardEngine {
                 }
                 for (handle, fields) in &group.tails {
                     handle.state.lock().unwrap().durable = fields.clone();
+                    handle.mark_visible(fields.next);
                     handle.notify.notify_waiters();
+                }
+                // Feed invalidation journals before releasing request ACKs.
+                // Once an ACK is observable, a dependent state-protocol
+                // request must be able to find this durable append.
+                for t in group.touches {
+                    t.journal.ingest(&t.key_ids, t.next_offset);
                 }
                 for (resp, ack) in group.acks {
                     let _ = resp.send(Ok(ack));
@@ -1757,13 +1847,32 @@ impl ShardEngine {
                 for (resp, out) in group.queue_acks {
                     let _ = resp.send(Ok(out));
                 }
-                for s in group.signals {
-                    let _ = self.absorb_tx.try_send(s);
+                for resp in group.absorbed_acks {
+                    let _ = resp.send(Ok(()));
                 }
-                // H2: feed touch journals only after the data is durable and
-                // reader-visible, so an invalidation always finds fresh data.
-                for t in group.touches {
-                    t.journal.ingest(&t.key_ids, t.next_offset);
+                for s in group.signals {
+                    // History maintenance is bounded and fail-closed. Do not
+                    // await capacity here: the absorber can itself be waiting
+                    // for this durability acknowledger, so waiting would form
+                    // a saturation deadlock. A full or closed actor makes the
+                    // shard/process unready instead of silently losing work.
+                    self.telemetry.add_absorber_pending_bytes(s.appended_bytes);
+                    if let Err(error) = self.absorb_tx.try_send(s) {
+                        let (reason, signal) = match error {
+                            mpsc::error::TrySendError::Full(signal) => ("full", signal),
+                            mpsc::error::TrySendError::Closed(signal) => ("closed", signal),
+                        };
+                        self.telemetry
+                            .remove_absorber_pending_bytes(signal.appended_bytes);
+                        self.telemetry.mark_absorber_unhealthy();
+                        tracing::error!(
+                            shard = %self.prefix,
+                            reason,
+                            "history absorber unavailable; failing shard closed"
+                        );
+                        self.mark_moved();
+                        return;
+                    }
                 }
             }
             if self.in_flight.lock().unwrap().is_empty() {
@@ -1789,7 +1898,9 @@ fn fail_commit_op(op: CommitOp) {
         CommitOp::Queue { resp, .. } => {
             let _ = resp.send(Err("shard moved".to_string()));
         }
-        CommitOp::Absorbed { .. } => {}
+        CommitOp::Absorbed { resp, .. } => {
+            let _ = resp.send(Err("shard moved".to_string()));
+        }
         CommitOp::Barrier { resp } => {
             let _ = resp.send(Err("shard moved".to_string()));
         }
@@ -1945,6 +2056,10 @@ mod tests {
                 queue: crate::queue::QueueState::default(),
             }),
             notify: Notify::new(),
+            visibility: Mutex::new(TailVisibility {
+                next: 0,
+                committed_at: None,
+            }),
         })
     }
 
@@ -2095,6 +2210,7 @@ mod tests {
             db1,
             ShardConfig::default(),
             absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
             None,
             None,
         );
@@ -2129,6 +2245,7 @@ mod tests {
             db,
             ShardConfig::default(),
             absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
             None,
             None,
         );
@@ -2183,6 +2300,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn absorbed_frontier_is_acknowledged_only_after_remote_durability() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(Db::builder("absorbed-ack", store).build().await.unwrap());
+        let (absorb_tx, _absorb_rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
+            None,
+            None,
+        );
+        let hash = [8u8; 32];
+        let (resp, ack) = oneshot::channel();
+        let CommitOp::Append(req) = append_op("customer", 1) else {
+            unreachable!()
+        };
+        assert!(engine.try_enqueue(AppendReq { hash, resp, ..req }).is_ok());
+        assert_eq!(ack.await.unwrap().unwrap().next_offset, 1);
+        let handle = engine.stream_handle(hash).await.unwrap();
+        assert!(handle.tail_freshness(1).is_some());
+
+        assert!(engine.submit_absorbed(hash, 1).await);
+        assert_eq!(handle.state.lock().unwrap().durable.absorbed, 1);
+    }
+
+    #[tokio::test]
+    async fn absorber_queue_saturation_fails_closed_without_deadlocking_acker() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("absorber-saturation", store)
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (absorb_tx, _absorb_rx) = mpsc::channel(1);
+        let telemetry = Arc::new(crate::telemetry::Telemetry::default());
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            telemetry.clone(),
+            None,
+            None,
+        );
+        for (index, hash) in [[9u8; 32], [10u8; 32]].into_iter().enumerate() {
+            let (resp, ack) = oneshot::channel();
+            let CommitOp::Append(req) = append_op("customer", 1) else {
+                unreachable!()
+            };
+            assert!(engine.try_enqueue(AppendReq { hash, resp, ..req }).is_ok());
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), ack)
+                    .await
+                    .expect("durability acknowledger deadlocked")
+                    .unwrap()
+                    .unwrap()
+                    .next_offset,
+                1,
+                "append {index}"
+            );
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while telemetry.absorber_healthy() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("absorber saturation did not fail readiness");
+        assert!(engine.is_closed());
+    }
+
+    #[tokio::test]
     async fn durable_group_is_not_acknowledged_after_split_intent() {
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
@@ -2205,6 +2399,7 @@ mod tests {
             db,
             ShardConfig::default(),
             absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
             None,
             Some(store),
         );

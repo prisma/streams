@@ -1404,6 +1404,12 @@ fn render_operational_metrics(state: &AppState) -> String {
     metric_bool(
         &mut out,
         "streams_component_ready",
+        "{component=\"absorber\"}",
+        state.telemetry.absorber_healthy(),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
         "{component=\"topology\"}",
         state
             .topology_ready
@@ -1457,6 +1463,28 @@ fn render_operational_metrics(state: &AppState) -> String {
             ready,
         );
     }
+    out.push_str("# HELP streams_backup_recovery_point_age_seconds Conservative monotonic age of the newest fully protected recovery point.\n");
+    out.push_str("# TYPE streams_backup_recovery_point_age_seconds gauge\n");
+    match state
+        .backup
+        .as_ref()
+        .and_then(|status| status.recovery_point_age())
+    {
+        Some(age) => out.push_str(&format!(
+            "streams_backup_recovery_point_age_seconds {:.3}\n",
+            age.as_secs_f64()
+        )),
+        None => out.push_str("streams_backup_recovery_point_age_seconds +Inf\n"),
+    }
+    out.push_str("# HELP streams_backup_rpo_budget_seconds Configured maximum protected recovery-point age.\n");
+    out.push_str("# TYPE streams_backup_rpo_budget_seconds gauge\n");
+    out.push_str(&format!(
+        "streams_backup_rpo_budget_seconds {}\n",
+        state
+            .backup
+            .as_ref()
+            .map_or(0, |status| status.rpo_budget().as_secs())
+    ));
 
     out.push_str(
         "# HELP streams_audit_dropped_total Sampled audit records dropped at the bounded queue.\n",
@@ -1728,6 +1756,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
     if state.authn.ready()
         && state.audit.ready()
+        && state.telemetry.absorber_healthy()
         && state.backup.as_ref().is_none_or(|backup| backup.ready())
         && state
             .topology_ready
@@ -4543,6 +4572,13 @@ async fn read(
         buf.freeze()
     };
 
+    if is_long_poll
+        && up_to_date
+        && let Some(delivered_next) = out.last.map(|offset| offset.saturating_add(1))
+        && let Some(freshness) = handle.tail_freshness(delivered_next)
+    {
+        state.telemetry.record_tail_freshness(freshness);
+    }
     if state.should_meter(desc.owner(), &name) {
         state.metrics.read(desc.owner(), &name, body.len() as u64);
     }
@@ -4685,6 +4721,9 @@ async fn sse_response(
                                 .is_err()
                             {
                                 return;
+                            }
+                            if caught_up && let Some(freshness) = handle.tail_freshness(next) {
+                                state.telemetry.record_tail_freshness(freshness);
                             }
                             sent_any = true;
                             if closed && caught_up {

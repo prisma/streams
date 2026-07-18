@@ -6,7 +6,7 @@
 //! putting arbitrary tenant names into a scrape target would make a hostile
 //! tenant a monitoring-cardinality attack.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode, Uri};
@@ -14,6 +14,27 @@ use axum::http::{Method, StatusCode, Uri};
 const OPERATIONS: usize = 5;
 const STATUS_CLASSES: usize = 5;
 const LATENCY_BUCKETS_MS: [u64; 11] = [5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000];
+const TAIL_FRESHNESS_BUCKETS_MS: [u64; 9] = [10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000];
+const FENCE_KINDS: usize = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FenceKind {
+    Writer,
+    Reconfiguration,
+}
+
+impl FenceKind {
+    fn index(self) -> usize {
+        match self {
+            Self::Writer => 0,
+            Self::Reconfiguration => 1,
+        }
+    }
+
+    fn labels() -> [&'static str; FENCE_KINDS] {
+        ["writer", "reconfiguration"]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Operation {
@@ -113,12 +134,22 @@ impl OperationMetrics {
 
 pub struct Telemetry {
     operations: [OperationMetrics; OPERATIONS],
+    tail_freshness_buckets: [AtomicU64; TAIL_FRESHNESS_BUCKETS_MS.len() + 1],
+    tail_freshness_duration_us: AtomicU64,
+    absorber_pending_bytes: AtomicU64,
+    absorber_healthy: AtomicBool,
+    fence_events: [AtomicU64; FENCE_KINDS],
 }
 
 impl Default for Telemetry {
     fn default() -> Self {
         Self {
             operations: std::array::from_fn(|_| OperationMetrics::new()),
+            tail_freshness_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            tail_freshness_duration_us: AtomicU64::new(0),
+            absorber_pending_bytes: AtomicU64::new(0),
+            absorber_healthy: AtomicBool::new(true),
+            fence_events: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 }
@@ -153,6 +184,47 @@ impl Telemetry {
             elapsed.as_micros().min(u64::MAX as u128) as u64,
             Ordering::Relaxed,
         );
+    }
+
+    pub fn record_tail_freshness(&self, elapsed: Duration) {
+        let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        let bucket = TAIL_FRESHNESS_BUCKETS_MS
+            .iter()
+            .position(|limit| millis <= *limit)
+            .unwrap_or(TAIL_FRESHNESS_BUCKETS_MS.len());
+        self.tail_freshness_buckets[bucket].fetch_add(1, Ordering::Relaxed);
+        self.tail_freshness_duration_us.fetch_add(
+            elapsed.as_micros().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn add_absorber_pending_bytes(&self, bytes: u64) {
+        let _ = self.absorber_pending_bytes.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_add(bytes)),
+        );
+    }
+
+    pub fn remove_absorber_pending_bytes(&self, bytes: u64) {
+        let _ = self.absorber_pending_bytes.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(bytes)),
+        );
+    }
+
+    pub fn absorber_healthy(&self) -> bool {
+        self.absorber_healthy.load(Ordering::Acquire)
+    }
+
+    pub fn mark_absorber_unhealthy(&self) {
+        self.absorber_healthy.store(false, Ordering::Release);
+    }
+
+    pub fn record_fence(&self, kind: FenceKind) {
+        self.fence_events[kind.index()].fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn render_openmetrics(&self, out: &mut String) {
@@ -205,6 +277,45 @@ impl Telemetry {
                 cumulative
             ));
         }
+        out.push_str("# HELP streams_tail_freshness_seconds Durable append visibility to an active tail response.\n");
+        out.push_str("# TYPE streams_tail_freshness_seconds histogram\n");
+        let mut cumulative = 0u64;
+        for (index, limit_ms) in TAIL_FRESHNESS_BUCKETS_MS.iter().enumerate() {
+            cumulative = cumulative
+                .saturating_add(self.tail_freshness_buckets[index].load(Ordering::Relaxed));
+            out.push_str(&format!(
+                "streams_tail_freshness_seconds_bucket{{le=\"{}\"}} {}\n",
+                *limit_ms as f64 / 1_000.0,
+                cumulative
+            ));
+        }
+        cumulative = cumulative.saturating_add(
+            self.tail_freshness_buckets[TAIL_FRESHNESS_BUCKETS_MS.len()].load(Ordering::Relaxed),
+        );
+        out.push_str(&format!(
+            "streams_tail_freshness_seconds_bucket{{le=\"+Inf\"}} {cumulative}\n"
+        ));
+        out.push_str(&format!(
+            "streams_tail_freshness_seconds_sum {:.6}\n",
+            self.tail_freshness_duration_us.load(Ordering::Relaxed) as f64 / 1_000_000.0
+        ));
+        out.push_str(&format!(
+            "streams_tail_freshness_seconds_count {cumulative}\n"
+        ));
+        out.push_str("# HELP streams_absorber_pending_bytes Plaintext payload bytes awaiting durable history absorption.\n");
+        out.push_str("# TYPE streams_absorber_pending_bytes gauge\n");
+        out.push_str(&format!(
+            "streams_absorber_pending_bytes {}\n",
+            self.absorber_pending_bytes.load(Ordering::Relaxed)
+        ));
+        out.push_str("# HELP streams_fence_events_total Shard ownership or reconfiguration fences observed by this process.\n");
+        out.push_str("# TYPE streams_fence_events_total counter\n");
+        for (index, kind) in FenceKind::labels().iter().enumerate() {
+            out.push_str(&format!(
+                "streams_fence_events_total{{kind=\"{kind}\"}} {}\n",
+                self.fence_events[index].load(Ordering::Relaxed)
+            ));
+        }
     }
 }
 
@@ -248,5 +359,17 @@ mod tests {
             rendered
                 .contains("streams_http_request_duration_seconds_count{operation=\"append\"} 2")
         );
+        telemetry.record_tail_freshness(Duration::from_millis(60));
+        telemetry.add_absorber_pending_bytes(10);
+        telemetry.remove_absorber_pending_bytes(3);
+        telemetry.record_fence(FenceKind::Writer);
+        assert!(telemetry.absorber_healthy());
+        telemetry.mark_absorber_unhealthy();
+        assert!(!telemetry.absorber_healthy());
+        let mut rendered = String::new();
+        telemetry.render_openmetrics(&mut rendered);
+        assert!(rendered.contains("streams_tail_freshness_seconds_count 1"));
+        assert!(rendered.contains("streams_absorber_pending_bytes 7"));
+        assert!(rendered.contains("streams_fence_events_total{kind=\"writer\"} 1"));
     }
 }

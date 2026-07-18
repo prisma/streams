@@ -408,6 +408,25 @@ impl Default for AbsorberConfig {
 struct PendingAbsorb {
     bytes: u64,
     since: Instant,
+    force: bool,
+}
+
+struct AbsorbOutcome {
+    complete: bool,
+    absorbed_bytes: u64,
+}
+
+struct AbsorberTaskHealth {
+    telemetry: Arc<crate::telemetry::Telemetry>,
+    clean_exit: bool,
+}
+
+impl Drop for AbsorberTaskHealth {
+    fn drop(&mut self) {
+        if !self.clean_exit {
+            self.telemetry.mark_absorber_unhealthy();
+        }
+    }
 }
 
 pub struct Absorber {
@@ -415,6 +434,7 @@ pub struct Absorber {
     integrity_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
     keys: Arc<KeyCache>,
+    telemetry: Arc<crate::telemetry::Telemetry>,
     cfg: AbsorberConfig,
 }
 
@@ -424,6 +444,7 @@ impl Absorber {
         integrity_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
         keys: Arc<KeyCache>,
+        telemetry: Arc<crate::telemetry::Telemetry>,
         cfg: AbsorberConfig,
         mut rx: mpsc::Receiver<AbsorbSignal>,
     ) {
@@ -432,39 +453,66 @@ impl Absorber {
             integrity_store,
             shard,
             keys,
+            telemetry,
             cfg,
         };
         tokio::spawn(async move {
+            // A panic or cancellation must not leave a process reporting
+            // green while its durable history-maintenance actor is gone.
+            let mut task_health = AbsorberTaskHealth {
+                telemetry: absorber.telemetry.clone(),
+                clean_exit: false,
+            };
             let mut pending: HashMap<StorageHash, PendingAbsorb> = HashMap::new();
             let mut tick = tokio::time::interval(absorber.cfg.tick);
             loop {
                 tokio::select! {
                     sig = rx.recv() => {
-                        let Some(sig) = sig else { return };
+                        let Some(sig) = sig else {
+                            let remaining = pending
+                                .values()
+                                .fold(0u64, |total, item| total.saturating_add(item.bytes));
+                            absorber.telemetry.remove_absorber_pending_bytes(remaining);
+                            task_health.clean_exit = true;
+                            return;
+                        };
                         let e = pending.entry(sig.hash).or_insert(PendingAbsorb {
                             bytes: 0,
                             since: Instant::now(),
+                            force: false,
                         });
-                        e.bytes += sig.appended_bytes;
+                        e.bytes = e.bytes.saturating_add(sig.appended_bytes);
                     }
                     _ = tick.tick() => {
                         let due: Vec<StorageHash> = pending
                             .iter()
                             .filter(|(_, p)| {
-                                p.bytes >= absorber.cfg.threshold_bytes
+                                p.force
+                                    || p.bytes >= absorber.cfg.threshold_bytes
                                     || p.since.elapsed() >= absorber.cfg.threshold_age
                             })
                             .map(|(h, _)| *h)
                             .collect();
                         for hash in due {
                             match absorber.absorb_one(&hash).await {
-                                Ok(absorbed) => {
-                                    if absorbed {
-                                        pending.remove(&hash);
+                                Ok(Some(outcome)) => {
+                                    if let Some(item) = pending.get_mut(&hash) {
+                                        let removed = item.bytes.min(outcome.absorbed_bytes);
+                                        item.bytes -= removed;
+                                        absorber.telemetry.remove_absorber_pending_bytes(removed);
+                                        item.force = !outcome.complete;
                                     }
-                                    // key missing: keep pending; retried when
-                                    // the next keyed request arrives.
+                                    if outcome.complete
+                                        && let Some(item) = pending.remove(&hash)
+                                    {
+                                        absorber
+                                            .telemetry
+                                            .remove_absorber_pending_bytes(item.bytes);
+                                    }
                                 }
+                                Ok(None) => {}
+                                // key missing: keep pending; retried when the
+                                // next keyed request arrives or age stays due.
                                 Err(e) => {
                                     tracing::warn!(
                                         "absorb failed for {}: {e}",
@@ -479,10 +527,10 @@ impl Absorber {
         });
     }
 
-    /// Returns Ok(false) if the stream key isn't available.
-    async fn absorb_one(&self, hash: &StorageHash) -> anyhow::Result<bool> {
+    /// Returns Ok(None) if the stream key isn't available.
+    async fn absorb_one(&self, hash: &StorageHash) -> anyhow::Result<Option<AbsorbOutcome>> {
         let Some((key, epoch)) = self.keys.get(hash) else {
-            return Ok(false);
+            return Ok(None);
         };
         let handle = self.shard.stream_handle(*hash).await?;
         let (from, upto) = {
@@ -490,7 +538,10 @@ impl Absorber {
             (st.durable.absorbed, st.durable.next)
         };
         if from >= upto {
-            return Ok(true);
+            return Ok(Some(AbsorbOutcome {
+                complete: true,
+                absorbed_bytes: 0,
+            }));
         }
 
         // Read + decrypt the un-absorbed durable range from the shard log.
@@ -560,9 +611,12 @@ impl Absorber {
         }
         drop(window_reads);
         if items.is_empty() {
-            return Ok(true);
+            anyhow::bail!("durable unabsorbed range returned no records");
         }
         let absorbed_upto = items.last().map(|(o, _)| o + 1).unwrap_or(upto);
+        let absorbed_bytes = items.iter().fold(0u64, |total, (_, record)| {
+            total.saturating_add(record.payload.len() as u64)
+        });
 
         // Open the history DB maintenance-free, bulk write, explicit flush
         // (F2), close.
@@ -610,14 +664,17 @@ impl Absorber {
         .await?;
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
-        self.shard.submit_absorbed(*hash, absorbed_upto).await;
+        let submitted = self.shard.submit_absorbed(*hash, absorbed_upto).await;
         tracing::info!(
             "absorbed {} records into {} (upto {})",
             items.len(),
             path,
             absorbed_upto
         );
-        Ok(true)
+        Ok(Some(AbsorbOutcome {
+            complete: submitted && absorbed_upto >= upto,
+            absorbed_bytes: if submitted { absorbed_bytes } else { 0 },
+        }))
     }
 }
 

@@ -17,15 +17,20 @@ allowed_metrics = {
     "streams_admission_shed_total",
     "streams_audit_dropped_total",
     "streams_audit_mirror_configured",
+    "streams_absorber_pending_bytes",
     "streams_backup_component_ready",
     "streams_backup_configured",
+    "streams_backup_recovery_point_age_seconds",
+    "streams_backup_rpo_budget_seconds",
     "streams_billing_dropped_series_total",
     "streams_billing_export_configured",
     "streams_billing_export_healthy",
     "streams_component_ready",
+    "streams_fence_events_total",
     "streams_http_requests_total",
     "streams_process_resident_memory_bytes",
     "streams_shard_durable_wait_p99_seconds",
+    "streams_tail_freshness_seconds_bucket",
     "streams_wal_put_latency_seconds",
 }
 names = set()
@@ -64,10 +69,14 @@ required = {
     "StreamsAuditDropped",
     "StreamsAuditMirrorMissing",
     "StreamsAppendAvailabilityFastBurn",
+    "StreamsAbsorberLagHigh",
     "StreamsBillingExportMissing",
     "StreamsBillingExportUnhealthy",
     "StreamsBillingSeriesDropped",
     "StreamsDurableAckLatency",
+    "StreamsFenceFlapping",
+    "StreamsRecoveryPointTooOld",
+    "StreamsTailFreshness",
 }
 missing = required - names
 if missing:
