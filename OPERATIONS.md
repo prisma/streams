@@ -231,11 +231,13 @@ are written to the cell ops bucket and an independently credentialed audit
 provider. Create/delete and privileged state-changing admin records are
 synchronously persisted as identical immutable objects on both sides before a
 successful response is returned. Every authenticated operator debug read is
-recorded (no sampling) through bounded one-second NDJSON batches, so a metrics
-scrape does not create an object; sampled (1 % by default) tenant data-plane
-reads/appends share that batching path. A full-fidelity operator read fails 503
-if its event cannot enter the bounded queue. Per-tenant counters remain full
-fidelity via the metrics stream. Queue loss, write failure, corrupt/missing
+recorded (no sampling) through a distinct bounded NDJSON queue. It flushes at
+256 events or after 60 seconds by default, so four ordinary 15-second metrics
+scrapes share one object; sampled (1 % by default) tenant data-plane
+reads/appends retain their one-second queue. The two writers have independent
+readiness, and a full-fidelity operator read fails 503 if its event cannot enter
+the bounded queue. Per-tenant counters remain full fidelity via the metrics
+stream. Queue loss, write failure, corrupt/missing
 mirror content, or maintenance failure makes readiness fail, and an unaudited
 successful control mutation is returned as retryable 503 instead.
 
@@ -246,7 +248,7 @@ injection. Audit JSON sets `format_version: 1`; consumers must treat historical
 records without that field as legacy format 0. SDK errors surface the response
 ID directly for support and incident correlation.
 
-Every boot reconciles both primary prefixes through conditionally persisted
+Every boot reconciles all three primary prefixes through conditionally persisted
 bounded cursors before readiness can pass. A primary object is pruned only
 after an If-Match stable read and exact mirror comparison; each retention
 cutoff is derived from that provider's own object metadata. The default is 30

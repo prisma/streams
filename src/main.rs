@@ -137,6 +137,10 @@ struct Args {
     require_audit_mirror: bool,
     #[arg(long, env = "AUDIT_SAMPLE_DENOMINATOR", default_value_t = 100)]
     audit_sample_denominator: u32,
+    /// Full-fidelity read-only operator events share an immutable object for
+    /// this long unless 256 events fill it first.
+    #[arg(long, env = "AUDIT_OPERATOR_BATCH_INTERVAL_SECS", default_value_t = 60)]
+    audit_operator_batch_interval_secs: u64,
     #[arg(
         long,
         env = "AUDIT_PRIMARY_RETENTION_SECS",
@@ -1234,6 +1238,10 @@ async fn async_main() -> anyhow::Result<()> {
         "AUDIT_SAMPLE_DENOMINATOR must be between 1 and 1000000"
     );
     anyhow::ensure!(
+        (1..=300).contains(&args.audit_operator_batch_interval_secs),
+        "AUDIT_OPERATOR_BATCH_INTERVAL_SECS must be between 1 and 300"
+    );
+    anyhow::ensure!(
         (24 * 60 * 60..=365 * 24 * 60 * 60).contains(&args.audit_primary_retention_secs),
         "AUDIT_PRIMARY_RETENTION_SECS must be between one day and one year"
     );
@@ -1387,6 +1395,7 @@ async fn async_main() -> anyhow::Result<()> {
         crate::audit::AuditConfig {
             mirror: audit_mirror,
             sample_denominator: args.audit_sample_denominator,
+            operator_batch_interval: Duration::from_secs(args.audit_operator_batch_interval_secs),
             primary_retention: Duration::from_secs(args.audit_primary_retention_secs),
             mirror_retention: Duration::from_secs(args.audit_mirror_retention_secs),
             maintenance_interval: Duration::from_secs(args.audit_maintenance_interval_secs),

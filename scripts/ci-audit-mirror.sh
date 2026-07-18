@@ -171,7 +171,8 @@ MIRROR_PID=$!
   --audit-mirror-s3-region auto --audit-mirror-s3-access-key-id mirror-test \
   --audit-mirror-s3-secret-access-key mirror-test --audit-mirror-s3-allow-http \
   --audit-mirror-path-prefix audit-secondary --require-audit-mirror \
-  --audit-sample-denominator 1 >"${TMP_DIR}/streams.log" 2>&1 &
+  --audit-sample-denominator 1 --audit-operator-batch-interval-secs 1 \
+  >"${TMP_DIR}/streams.log" 2>&1 &
 STREAMS_PID=$!
 wait_ready
 

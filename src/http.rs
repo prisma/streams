@@ -1518,7 +1518,7 @@ async fn audit_operator_request(
     let audit_result = if durable {
         state.audit.record_durable(&event).await
     } else {
-        state.audit.record_batched(event)
+        state.audit.record_operator_read(event)
     };
     if let Err(error) = audit_result {
         tracing::error!(

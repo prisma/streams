@@ -2,9 +2,10 @@
 //!
 //! Control mutations are written synchronously as immutable objects so a
 //! successful control-plane response is never emitted without its audit
-//! record. Sampled data-plane records and full-fidelity read-only operator
-//! records use a bounded channel and one-second NDJSON batches to avoid turning
-//! high request rates (including metrics scrapes) into object explosions.
+//! record. Sampled data-plane records use one-second NDJSON batches;
+//! full-fidelity read-only operator records use a separate, longer bounded
+//! window that also flushes at capacity, so normal metrics scraping does not
+//! become one object per request.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -71,6 +72,7 @@ struct PendingBatch {
 pub struct AuditConfig {
     pub mirror: Option<Arc<dyn ObjectStore>>,
     pub sample_denominator: u32,
+    pub operator_batch_interval: Duration,
     pub primary_retention: Duration,
     pub mirror_retention: Duration,
     pub maintenance_interval: Duration,
@@ -83,6 +85,7 @@ impl Default for AuditConfig {
         Self {
             mirror: None,
             sample_denominator: 100,
+            operator_batch_interval: Duration::from_secs(60),
             primary_retention: Duration::from_secs(30 * 24 * 60 * 60),
             mirror_retention: Duration::from_secs(365 * 24 * 60 * 60),
             maintenance_interval: Duration::from_secs(300),
@@ -114,9 +117,11 @@ pub struct AuditLog {
     mirror: Option<Arc<dyn ObjectStore>>,
     instance_hash: String,
     tx: mpsc::Sender<AuditEvent>,
+    operator_tx: mpsc::Sender<AuditEvent>,
     sequence: AtomicU64,
     control_healthy: AtomicBool,
     batch_healthy: AtomicBool,
+    operator_batch_healthy: AtomicBool,
     maintenance_healthy: AtomicBool,
     dropped: AtomicU64,
     sample_denominator: u32,
@@ -129,25 +134,42 @@ impl AuditLog {
         config: AuditConfig,
     ) -> Arc<Self> {
         assert!((1..=1_000_000).contains(&config.sample_denominator));
+        assert!(!config.operator_batch_interval.is_zero());
         assert!(!config.primary_retention.is_zero());
         assert!(config.mirror_retention >= config.primary_retention);
         assert!(!config.maintenance_interval.is_zero());
         assert!(config.maintenance_objects_per_interval > 0);
         assert!(config.maintenance_max_object_bytes > 0);
         let (tx, rx) = mpsc::channel(QUEUE_CAPACITY);
+        let (operator_tx, operator_rx) = mpsc::channel(QUEUE_CAPACITY);
         let log = Arc::new(Self {
             store,
             mirror: config.mirror.clone(),
             instance_hash: crate::crypto::hex(&crate::crypto::stream_hash(instance)),
             tx,
+            operator_tx,
             sequence: AtomicU64::new(0),
             control_healthy: AtomicBool::new(true),
             batch_healthy: AtomicBool::new(true),
+            operator_batch_healthy: AtomicBool::new(true),
             maintenance_healthy: AtomicBool::new(config.mirror.is_none()),
             dropped: AtomicU64::new(0),
             sample_denominator: config.sample_denominator,
         });
-        tokio::spawn(Self::batch_loop(log.clone(), rx));
+        tokio::spawn(Self::batch_loop(
+            log.clone(),
+            rx,
+            "batches",
+            Duration::from_secs(1),
+            false,
+        ));
+        tokio::spawn(Self::batch_loop(
+            log.clone(),
+            operator_rx,
+            "operator-batches",
+            config.operator_batch_interval,
+            true,
+        ));
         tokio::spawn(Self::maintenance_loop(log.clone(), config));
         log
     }
@@ -155,6 +177,7 @@ impl AuditLog {
     pub fn ready(&self) -> bool {
         self.control_healthy.load(Ordering::Acquire)
             && self.batch_healthy.load(Ordering::Acquire)
+            && self.operator_batch_healthy.load(Ordering::Acquire)
             && self.maintenance_healthy.load(Ordering::Acquire)
     }
 
@@ -170,22 +193,28 @@ impl AuditLog {
         rand::random_ratio(1, self.sample_denominator)
     }
 
-    /// Queue an event for the one-second immutable batch writer.
-    ///
-    /// Callers that require full-fidelity audit (read-only operator routes)
-    /// must observe the result and fail the request if admission is rejected.
-    /// Sampled data-plane callers deliberately ignore it after readiness and
-    /// the loss counter have been updated.
-    pub fn record_batched(&self, event: AuditEvent) -> anyhow::Result<()> {
-        self.tx.try_send(event).map_err(|error| {
+    fn enqueue_batched(
+        &self,
+        tx: &mpsc::Sender<AuditEvent>,
+        healthy: &AtomicBool,
+        event: AuditEvent,
+    ) -> anyhow::Result<()> {
+        tx.try_send(event).map_err(|error| {
             self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.batch_healthy.store(false, Ordering::Release);
+            healthy.store(false, Ordering::Release);
             anyhow::anyhow!("audit batch queue rejected event: {error}")
         })
     }
 
     pub fn record_sampled(&self, event: AuditEvent) {
-        let _ = self.record_batched(event);
+        let _ = self.enqueue_batched(&self.tx, &self.batch_healthy, event);
+    }
+
+    /// Queue an unsampled read-only operator event. The longer window reduces
+    /// normal metrics-scrape object cost; a full 256-event batch flushes
+    /// immediately. Rejection is visible to the caller and fails readiness.
+    pub fn record_operator_read(&self, event: AuditEvent) -> anyhow::Result<()> {
+        self.enqueue_batched(&self.operator_tx, &self.operator_batch_healthy, event)
     }
 
     pub async fn record_durable(&self, event: &AuditEvent) -> anyhow::Result<()> {
@@ -214,85 +243,95 @@ impl AuditLog {
         result
     }
 
-    async fn batch_loop(log: Arc<Self>, mut rx: mpsc::Receiver<AuditEvent>) {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        let mut batch: Option<PendingBatch> = None;
-        let mut disconnected = false;
+    async fn batch_loop(
+        log: Arc<Self>,
+        mut rx: mpsc::Receiver<AuditEvent>,
+        prefix: &'static str,
+        window: Duration,
+        operator: bool,
+    ) {
         loop {
-            interval.tick().await;
-            if batch.is_none() {
-                let mut events = Vec::with_capacity(BATCH_CAPACITY);
-                while events.len() < BATCH_CAPACITY {
-                    match rx.try_recv() {
-                        Ok(event) => events.push(event),
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
+            let Some(first) = rx.recv().await else {
+                return;
+            };
+            let mut events = Vec::with_capacity(BATCH_CAPACITY);
+            events.push(first);
+            let deadline = tokio::time::sleep(window);
+            tokio::pin!(deadline);
+            let mut disconnected = false;
+            while events.len() < BATCH_CAPACITY {
+                tokio::select! {
+                    received = rx.recv() => match received {
+                        Some(event) => events.push(event),
+                        None => {
                             disconnected = true;
                             break;
                         }
-                    }
-                }
-                if events.is_empty() {
-                    if disconnected {
-                        return;
-                    }
-                    continue;
-                }
-                let mut body = Vec::new();
-                for event in &events {
-                    serde_json::to_writer(&mut body, event).expect("serialize audit event");
-                    body.push(b'\n');
-                }
-                let sequence = log.sequence.fetch_add(1, Ordering::Relaxed);
-                let timestamp_ms = now_ms().max(0);
-                batch = Some(PendingBatch {
-                    path: ObjPath::from(format!(
-                        "audit/batches/{}/{:020}-{:020}-{:032x}.ndjson",
-                        log.instance_hash,
-                        timestamp_ms,
-                        sequence,
-                        rand::random::<u128>()
-                    )),
-                    body: Bytes::from(body),
-                    primary_done: false,
-                    mirror_done: log.mirror.is_none(),
-                });
-            }
-
-            let pending = batch.as_mut().expect("batch initialized");
-            if !pending.primary_done {
-                match put_immutable(&log.store, &pending.path, pending.body.clone()).await {
-                    Ok(()) => pending.primary_done = true,
-                    Err(error) => {
-                        log.batch_healthy.store(false, Ordering::Release);
-                        tracing::error!(path = %pending.path, "primary audit batch write failed: {error}");
-                    }
+                    },
+                    () = &mut deadline => break,
                 }
             }
-            if !pending.mirror_done
-                && let Some(mirror) = &log.mirror
-            {
-                match put_immutable(mirror, &pending.path, pending.body.clone()).await {
-                    Ok(()) => pending.mirror_done = true,
-                    Err(error) => {
-                        log.batch_healthy.store(false, Ordering::Release);
-                        tracing::error!(path = %pending.path, "mirror audit batch write failed: {error}");
+            let mut body = Vec::new();
+            for event in &events {
+                serde_json::to_writer(&mut body, event).expect("serialize audit event");
+                body.push(b'\n');
+            }
+            let sequence = log.sequence.fetch_add(1, Ordering::Relaxed);
+            let timestamp_ms = now_ms().max(0);
+            let mut pending = PendingBatch {
+                path: ObjPath::from(format!(
+                    "audit/{}/{}/{:020}-{:020}-{:032x}.ndjson",
+                    prefix,
+                    log.instance_hash,
+                    timestamp_ms,
+                    sequence,
+                    rand::random::<u128>()
+                )),
+                body: Bytes::from(body),
+                primary_done: false,
+                mirror_done: log.mirror.is_none(),
+            };
+            loop {
+                let healthy = if operator {
+                    &log.operator_batch_healthy
+                } else {
+                    &log.batch_healthy
+                };
+                if !pending.primary_done {
+                    match put_immutable(&log.store, &pending.path, pending.body.clone()).await {
+                        Ok(()) => pending.primary_done = true,
+                        Err(error) => {
+                            healthy.store(false, Ordering::Release);
+                            tracing::error!(path = %pending.path, "primary audit batch write failed: {error}");
+                        }
                     }
                 }
-            }
-            if pending.primary_done && pending.mirror_done {
-                log.batch_healthy.store(true, Ordering::Release);
-                batch = None;
-                if disconnected {
-                    return;
+                if !pending.mirror_done
+                    && let Some(mirror) = &log.mirror
+                {
+                    match put_immutable(mirror, &pending.path, pending.body.clone()).await {
+                        Ok(()) => pending.mirror_done = true,
+                        Err(error) => {
+                            healthy.store(false, Ordering::Release);
+                            tracing::error!(path = %pending.path, "mirror audit batch write failed: {error}");
+                        }
+                    }
                 }
+                if pending.primary_done && pending.mirror_done {
+                    healthy.store(true, Ordering::Release);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            if disconnected {
+                return;
             }
         }
     }
 
     async fn maintenance_loop(log: Arc<Self>, config: AuditConfig) {
         let mut interval = tokio::time::interval(config.maintenance_interval);
-        let mut primary_reconciled = [config.mirror.is_none(); 2];
+        let mut primary_reconciled = [config.mirror.is_none(); 3];
         loop {
             interval.tick().await;
             let result = maintain_once(&log, &config, &mut primary_reconciled).await;
@@ -564,13 +603,16 @@ async fn prune_mirror_prefix(
 async fn maintain_once(
     log: &AuditLog,
     config: &AuditConfig,
-    primary_reconciled: &mut [bool; 2],
+    primary_reconciled: &mut [bool; 3],
 ) -> anyhow::Result<()> {
     let primary_now = provider_now(&log.store, &log.instance_hash, "primary").await?;
     let primary_cutoff = primary_now
         - chrono::Duration::from_std(config.primary_retention)
             .map_err(|_| anyhow::anyhow!("primary audit retention is out of range"))?;
-    for (index, kind) in ["control", "batches"].into_iter().enumerate() {
+    for (index, kind) in ["control", "batches", "operator-batches"]
+        .into_iter()
+        .enumerate()
+    {
         let prefix = ObjPath::from(format!("audit/{kind}/{}/", log.instance_hash));
         if maintain_primary_prefix(log, &prefix, kind, primary_cutoff, config).await? {
             primary_reconciled[index] = true;
@@ -581,7 +623,7 @@ async fn maintain_once(
         let mirror_cutoff = mirror_now
             - chrono::Duration::from_std(config.mirror_retention)
                 .map_err(|_| anyhow::anyhow!("mirror audit retention is out of range"))?;
-        for kind in ["control", "batches"] {
+        for kind in ["control", "batches", "operator-batches"] {
             let prefix = ObjPath::from(format!("audit/{kind}/{}/", log.instance_hash));
             prune_mirror_prefix(
                 log,
@@ -692,16 +734,84 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn operator_reads_share_a_window_and_flush_immediately_at_capacity() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let audit = AuditLog::start_with_config(
+            store.clone(),
+            "windowed-instance",
+            AuditConfig {
+                operator_batch_interval: Duration::from_millis(500),
+                maintenance_interval: Duration::from_secs(3_600),
+                ..AuditConfig::default()
+            },
+        );
+        audit.record_operator_read(event()).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut second = event();
+        second.request_id = "00000000000000000000000000000002".into();
+        audit.record_operator_read(second).unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let objects: Vec<_> = store
+            .list(Some(&ObjPath::from("audit/operator-batches")))
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(objects.len(), 1);
+        let body = store
+            .get(&objects[0].location)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(body.iter().filter(|byte| **byte == b'\n').count(), 2);
+
+        let capacity_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let capacity_audit = AuditLog::start_with_config(
+            capacity_store.clone(),
+            "capacity-instance",
+            AuditConfig {
+                operator_batch_interval: Duration::from_secs(3_600),
+                maintenance_interval: Duration::from_secs(3_600),
+                ..AuditConfig::default()
+            },
+        );
+        for sequence in 0..BATCH_CAPACITY {
+            let mut item = event();
+            item.request_id = format!("{sequence:032x}");
+            capacity_audit.record_operator_read(item).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let objects: Vec<_> = capacity_store
+                    .list(Some(&ObjPath::from("audit/operator-batches")))
+                    .try_collect()
+                    .await
+                    .unwrap();
+                if objects.len() == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("capacity batch did not flush immediately");
+    }
+
     fn maintenance_log(primary: Arc<dyn ObjectStore>, mirror: Arc<dyn ObjectStore>) -> AuditLog {
         let (tx, _rx) = mpsc::channel(1);
+        let (operator_tx, _operator_rx) = mpsc::channel(1);
         AuditLog {
             store: primary,
             mirror: Some(mirror),
             instance_hash: "instance-hash".to_string(),
             tx,
+            operator_tx,
             sequence: AtomicU64::new(0),
             control_healthy: AtomicBool::new(true),
             batch_healthy: AtomicBool::new(true),
+            operator_batch_healthy: AtomicBool::new(true),
             maintenance_healthy: AtomicBool::new(true),
             dropped: AtomicU64::new(0),
             sample_denominator: 100,
@@ -712,21 +822,24 @@ mod tests {
     fn batched_queue_rejection_is_visible_and_fails_readiness() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let (tx, _rx) = mpsc::channel(1);
+        let (operator_tx, _operator_rx) = mpsc::channel(1);
         let audit = AuditLog {
             store,
             mirror: None,
             instance_hash: "instance-hash".to_string(),
             tx,
+            operator_tx,
             sequence: AtomicU64::new(0),
             control_healthy: AtomicBool::new(true),
             batch_healthy: AtomicBool::new(true),
+            operator_batch_healthy: AtomicBool::new(true),
             maintenance_healthy: AtomicBool::new(true),
             dropped: AtomicU64::new(0),
             sample_denominator: 100,
         };
 
-        audit.record_batched(event()).unwrap();
-        assert!(audit.record_batched(event()).is_err());
+        audit.record_operator_read(event()).unwrap();
+        assert!(audit.record_operator_read(event()).is_err());
         assert_eq!(audit.dropped(), 1);
         assert!(!audit.ready());
     }

@@ -145,17 +145,19 @@ with an empty pool rather than dead sockets.
 | `AUDIT_MIRROR_S3_ALLOW_HTTP` | false | test-only HTTP escape hatch; leave false in production |
 | `REQUIRE_AUDIT_MIRROR` | false | production release guard; fail startup unless the independent mirror is configured |
 | `AUDIT_SAMPLE_DENOMINATOR` | 100 | sample one in N authenticated data-plane requests; 1–1,000,000 |
+| `AUDIT_OPERATOR_BATCH_INTERVAL_SECS` | 60 | unsampled read-only operator batch window (1–300 s); 256 events flush immediately, keeping ordinary 15 s scrapes to one object/minute/instance |
 | `AUDIT_PRIMARY_RETENTION_SECS` / `AUDIT_MIRROR_RETENTION_SECS` | 30 d / 365 d | provider-clock retention; mirror retention must cover primary retention and may be at most seven years |
 | `AUDIT_MAINTENANCE_INTERVAL_SECS` / `AUDIT_MAINTENANCE_OBJECTS_PER_INTERVAL` | 300 / 1000 | durable-cursor reconciliation and pruning cadence/bound |
 | `AUDIT_MAINTENANCE_MAX_OBJECT_BYTES` | 8 MiB | fail-closed stable-read bound for one control or NDJSON audit object |
 
 Control and state-changing operator operations succeed only after identical
 immutable writes to primary and mirror. Authenticated read-only operator access
-is unsampled and uses the bounded one-second batch path; queue rejection turns
-the response into retryable 503. Sampled tenant events share those batches,
-which retain one path and body while retrying either failed side. On every
+is unsampled and uses its own 60-second-or-256-event bounded batch path; queue
+rejection turns the response into retryable 503. Sampled tenant events use a
+separate one-second path. Both retain one path and body while retrying either
+failed side, and have independent readiness. On every
 process start, readiness remains red until durable cursors have
-traversed both primary audit prefixes and byte-verified or repaired every
+traversed all three primary audit prefixes and byte-verified or repaired every
 mirror object. Primary deletion occurs only after that exact mirror check;
 retention age and “now” both come from each provider's object metadata, not a
 host clock. Cursor updates use conditional writes, so overlapping generations
