@@ -18,7 +18,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 |---|---|
 | `streams-slate` | the server: HTTP surface, shard engine, history tier, fleet member |
 | `pilot` | swiss-army harness: `MODE=lb` routing load balancer, `MODE=gen` load generator, `MODE=bench` calibrated probes |
-| `s3lite` | local S3 emulator with configurable latency (`--latency-ms`) and conditional-PUT support — the dev/CI store |
+| `s3lite` | local S3 emulator with configurable latency, conditional PUTs, ambiguous failures, stale-version responses, and metadata-preserving body corruption — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |

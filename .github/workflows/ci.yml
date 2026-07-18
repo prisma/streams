@@ -26,6 +26,7 @@ jobs:
           bash scripts/ci-smoke.sh
           bash scripts/ci-backup-restore.sh
           bash scripts/ci-object-store-faults.sh
+          bash scripts/ci-corruption-stale.sh
           bash scripts/ci-shard-split.sh
           bash scripts/ci-online-shard-split.sh
           bash scripts/ci-auto-shard-split.sh

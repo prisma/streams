@@ -76,12 +76,20 @@ struct FaultRule {
     /// modeling a lost provider response after commit.
     #[serde(default)]
     after_commit: bool,
+    /// GET only: return stored bytes with one bit flipped while preserving
+    /// ETag and length. The authoritative object is not modified.
+    #[serde(default)]
+    corrupt_body: bool,
+    /// GET only: return the immediately preceding version (body + ETag).
+    #[serde(default)]
+    stale_body: bool,
 }
 
 struct AppState {
     latency: Duration,
     discard_substr: Option<String>,
     objects: Mutex<BTreeMap<String, StoredObject>>,
+    previous_objects: Mutex<HashMap<String, StoredObject>>,
     uploads: Mutex<HashMap<String, BTreeMap<u32, Bytes>>>,
     etag_counter: AtomicU64,
     upload_counter: AtomicU64,
@@ -105,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         latency: Duration::from_millis(args.latency_ms),
         discard_substr: args.discard_substr.clone(),
         objects: Mutex::new(BTreeMap::new()),
+        previous_objects: Mutex::new(HashMap::new()),
         uploads: Mutex::new(HashMap::new()),
         etag_counter: AtomicU64::new(1),
         upload_counter: AtomicU64::new(1),
@@ -220,7 +229,15 @@ async fn handle(
                     rule.operation.as_str(),
                     "any" | "get" | "head" | "list" | "put" | "delete" | "multipart"
                 );
-                let status_ok = matches!(rule.status, 408 | 412 | 429 | 500 | 503);
+                let body_fault = rule.corrupt_body || rule.stale_body;
+                let status_ok = if body_fault {
+                    rule.status == 200
+                        && rule.operation == "get"
+                        && !rule.after_commit
+                        && rule.corrupt_body != rule.stale_body
+                } else {
+                    matches!(rule.status, 408 | 412 | 429 | 500 | 503)
+                };
                 let key_ok = rule
                     .key_contains
                     .as_ref()
@@ -257,8 +274,18 @@ async fn handle(
 
     let operation = operation_name(&method, key.is_empty(), &query);
     let fault = take_fault(&state, operation, &full_key);
-    if let Some(rule) = fault.as_ref().filter(|rule| !rule.after_commit) {
+    if let Some(rule) = fault
+        .as_ref()
+        .filter(|rule| !rule.after_commit && !rule.corrupt_body && !rule.stale_body)
+    {
         return fault_response(rule).await;
+    }
+    if let Some(rule) = fault
+        .as_ref()
+        .filter(|rule| rule.corrupt_body || rule.stale_body)
+        && rule.delay_ms > 0
+    {
+        tokio::time::sleep(Duration::from_millis(rule.delay_ms)).await;
     }
 
     let response = match (method.clone(), key.is_empty()) {
@@ -325,11 +352,19 @@ async fn handle(
             copy_object(&state, &full_key, &headers)
         }
         (Method::PUT, false) => put_object(&state, &full_key, &headers, body).await,
-        (Method::GET, false) => get_object(&state, &full_key, &headers, false),
-        (Method::HEAD, false) => get_object(&state, &full_key, &headers, true),
+        (Method::GET, false) => get_object(
+            &state,
+            &full_key,
+            &headers,
+            false,
+            fault.as_ref().is_some_and(|rule| rule.corrupt_body),
+            fault.as_ref().is_some_and(|rule| rule.stale_body),
+        ),
+        (Method::HEAD, false) => get_object(&state, &full_key, &headers, true, false, false),
         (Method::DELETE, false) => {
             state.stats.delete.fetch_add(1, Ordering::Relaxed);
             state.objects.lock().unwrap().remove(&full_key);
+            state.previous_objects.lock().unwrap().remove(&full_key);
             StatusCode::NO_CONTENT.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
@@ -421,7 +456,13 @@ fn copy_object(state: &Arc<AppState>, destination: &str, headers: &HeaderMap) ->
         .stats
         .put_bytes
         .fetch_add(copied.orig_len, Ordering::Relaxed);
-    objects.insert(destination.to_string(), copied);
+    if let Some(previous) = objects.insert(destination.to_string(), copied) {
+        state
+            .previous_objects
+            .lock()
+            .unwrap()
+            .insert(destination.to_string(), previous);
+    }
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CopyObjectResult><ETag>{}</ETag></CopyObjectResult>",
         xml_escape(&etag)
@@ -486,16 +527,20 @@ async fn put_object(
         .as_deref()
         .map(|sub| full_key.contains(sub) && full_key.ends_with(".sst"))
         .unwrap_or(false);
-    objects.insert(
-        full_key.to_string(),
-        StoredObject {
-            data: if discard { Bytes::new() } else { data },
-            etag: etag.clone(),
-            last_modified: chrono::Utc::now(),
-            orig_len,
-            discarded: discard,
-        },
-    );
+    let replacement = StoredObject {
+        data: if discard { Bytes::new() } else { data },
+        etag: etag.clone(),
+        last_modified: chrono::Utc::now(),
+        orig_len,
+        discarded: discard,
+    };
+    if let Some(previous) = objects.insert(full_key.to_string(), replacement) {
+        state
+            .previous_objects
+            .lock()
+            .unwrap()
+            .insert(full_key.to_string(), previous);
+    }
     ([(header::ETAG, etag)], "").into_response()
 }
 
@@ -504,14 +549,25 @@ fn get_object(
     full_key: &str,
     headers: &HeaderMap,
     head_only: bool,
+    corrupt_body: bool,
+    stale_body: bool,
 ) -> Response {
     if head_only {
         state.stats.head.fetch_add(1, Ordering::Relaxed);
     } else {
         state.stats.get.fetch_add(1, Ordering::Relaxed);
     }
-    let objects = state.objects.lock().unwrap();
-    let Some(obj) = objects.get(full_key) else {
+    let object = if stale_body {
+        state
+            .previous_objects
+            .lock()
+            .unwrap()
+            .get(full_key)
+            .cloned()
+    } else {
+        state.objects.lock().unwrap().get(full_key).cloned()
+    };
+    let Some(obj) = object else {
         return s3_error(StatusCode::NOT_FOUND, "NoSuchKey", "key not found");
     };
     if obj.discarded && !head_only {
@@ -531,7 +587,7 @@ fn get_object(
         .and_then(|v| v.to_str().ok())
         .and_then(|r| parse_range(r, total));
 
-    let (status, slice, content_range) = match range {
+    let (status, mut slice, content_range) = match range {
         Some((start, end)) => {
             let s = obj.data.slice(start as usize..(end + 1) as usize);
             (
@@ -542,6 +598,12 @@ fn get_object(
         }
         None => (StatusCode::OK, obj.data.clone(), None),
     };
+    if corrupt_body && !slice.is_empty() {
+        let mut corrupted = slice.to_vec();
+        let middle = corrupted.len() / 2;
+        corrupted[middle] ^= 1;
+        slice = Bytes::from(corrupted);
+    }
     if !head_only {
         state
             .stats
@@ -714,11 +776,9 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
             .replace("&quot;", "\"")
             .replace("&apos;", "'")
             .replace("&amp;", "&");
-        state
-            .objects
-            .lock()
-            .unwrap()
-            .remove(&format!("{bucket}/{key}"));
+        let full_key = format!("{bucket}/{key}");
+        state.objects.lock().unwrap().remove(&full_key);
+        state.previous_objects.lock().unwrap().remove(&full_key);
         deleted.push(key.to_string());
         rest = &after[end + 6..];
     }
@@ -764,20 +824,29 @@ async fn complete_multipart(
         .as_deref()
         .map(|sub| full_key.contains(sub) && full_key.ends_with(".sst"))
         .unwrap_or(false);
-    state.objects.lock().unwrap().insert(
-        full_key.to_string(),
-        StoredObject {
-            data: if discard {
-                Bytes::new()
-            } else {
-                Bytes::from(data)
-            },
-            etag: etag.clone(),
-            last_modified: chrono::Utc::now(),
-            orig_len,
-            discarded: discard,
+    let replacement = StoredObject {
+        data: if discard {
+            Bytes::new()
+        } else {
+            Bytes::from(data)
         },
-    );
+        etag: etag.clone(),
+        last_modified: chrono::Utc::now(),
+        orig_len,
+        discarded: discard,
+    };
+    if let Some(previous) = state
+        .objects
+        .lock()
+        .unwrap()
+        .insert(full_key.to_string(), replacement)
+    {
+        state
+            .previous_objects
+            .lock()
+            .unwrap()
+            .insert(full_key.to_string(), previous);
+    }
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUploadResult><Location>http://s3lite/{}/{}</Location><Bucket>{}</Bucket><Key>{}</Key><ETag>{}</ETag></CompleteMultipartUploadResult>",
         xml_escape(bucket),
