@@ -38,6 +38,7 @@ const MAX_FORK_MATERIALIZE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ROUTING_KEY_BYTES: usize = 4 * 1024;
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_LONG_POLL: Duration = Duration::from_secs(30);
+const OPERATOR_APPROVAL_HEADER: &str = "x-prisma-operator-approval";
 
 /// Everything needed to open a shard log on demand. Shards are opened
 /// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
@@ -1305,6 +1306,98 @@ fn operator_unauthorized() -> Response {
     )
 }
 
+fn operator_approval_required() -> Response {
+    err_resp(
+        StatusCode::FORBIDDEN,
+        "operator_approval_required",
+        "production admin operations require a distinct second operator approval",
+    )
+}
+
+struct OperatorApprovalRejection {
+    response: Response,
+    /// Present only when the second JWT passed signature, issuer, audience,
+    /// lifetime, and revocation validation. It is safe to include in the
+    /// denied-attempt audit even when it lacked operator authority or reused
+    /// the primary person's identity.
+    principal: Option<Principal>,
+}
+
+#[allow(clippy::result_large_err)]
+fn authenticate_operator_approval(
+    state: &AppState,
+    headers: &HeaderMap,
+    primary: &Principal,
+) -> Result<Option<Principal>, OperatorApprovalRejection> {
+    if !state.authn.production_ready() {
+        return Ok(None);
+    }
+    let Some(authorization) = headers
+        .get(OPERATOR_APPROVAL_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(OperatorApprovalRejection {
+            response: operator_approval_required(),
+            principal: None,
+        });
+    };
+    let approval = match state.authn.authenticate(Some(authorization)) {
+        Ok(principal) => principal,
+        Err(AuthError::Unavailable) => {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "auth_unavailable",
+                "authentication keys unavailable",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("5"),
+            );
+            return Err(OperatorApprovalRejection {
+                response,
+                principal: None,
+            });
+        }
+        Err(AuthError::Missing | AuthError::Invalid) => {
+            return Err(OperatorApprovalRejection {
+                response: operator_approval_required(),
+                principal: None,
+            });
+        }
+    };
+    if !approval.operator
+        || approval.customer_id == primary.customer_id
+        || approval.token_id == primary.token_id
+    {
+        return Err(OperatorApprovalRejection {
+            response: operator_approval_required(),
+            principal: Some(approval),
+        });
+    }
+    Ok(Some(approval))
+}
+
+fn operator_audit_event(
+    principal: &Principal,
+    approval: Option<&Principal>,
+    path: &str,
+    method: &Method,
+    status: StatusCode,
+    duration: Duration,
+) -> crate::audit::AuditEvent {
+    crate::audit::AuditEvent {
+        timestamp_ms: now_ms(),
+        customer_id: principal.customer_id.clone(),
+        token_id: principal.token_id.clone(),
+        approval_customer_id: approval.map(|principal| principal.customer_id.clone()),
+        approval_token_id: approval.map(|principal| principal.token_id.clone()),
+        stream: path.to_string(),
+        method: method.to_string(),
+        status: status.as_u16(),
+        duration_us: duration.as_micros().min(u64::MAX as u128) as u64,
+    }
+}
+
 fn audit_unavailable() -> Response {
     let mut response = err_resp(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1336,16 +1429,54 @@ async fn audit_operator_request(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let durable = path.starts_with("/v1/admin/");
-    let response = next.run(req).await;
-    let event = crate::audit::AuditEvent {
-        timestamp_ms: now_ms(),
-        customer_id: principal.customer_id.clone(),
-        token_id: principal.token_id.clone(),
-        stream: path.clone(),
-        method: method.to_string(),
-        status: response.status().as_u16(),
-        duration_us: started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+    let approval = if durable {
+        match authenticate_operator_approval(&state, req.headers(), &principal) {
+            Ok(approval) => approval,
+            Err(rejection) => {
+                let event = operator_audit_event(
+                    &principal,
+                    rejection.principal.as_ref(),
+                    &path,
+                    &method,
+                    rejection.response.status(),
+                    started.elapsed(),
+                );
+                if let Err(error) = state.audit.record_durable(&event).await {
+                    tracing::error!(
+                        customer_id = %principal.customer_id,
+                        token_id = %principal.token_id,
+                        resource = %path,
+                        method = %method,
+                        "denied admin request audit failed: {error}"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "streams_audit",
+                        customer_id = %principal.customer_id,
+                        token_id = %principal.token_id,
+                        approval_customer_id = rejection.principal.as_ref().map(|principal| principal.customer_id.as_str()),
+                        approval_token_id = rejection.principal.as_ref().map(|principal| principal.token_id.as_str()),
+                        resource = %path,
+                        method = %method,
+                        status = rejection.response.status().as_u16(),
+                        "denied admin request audit"
+                    );
+                }
+                return rejection.response;
+            }
+        }
+    } else {
+        None
     };
+    let response = next.run(req).await;
+    let event = operator_audit_event(
+        &principal,
+        approval.as_ref(),
+        &path,
+        &method,
+        response.status(),
+        started.elapsed(),
+    );
     let audit_result = if durable {
         state.audit.record_durable(&event).await
     } else {
@@ -1355,6 +1486,8 @@ async fn audit_operator_request(
         tracing::error!(
             customer_id = %principal.customer_id,
             token_id = %principal.token_id,
+            approval_customer_id = approval.as_ref().map(|principal| principal.customer_id.as_str()),
+            approval_token_id = approval.as_ref().map(|principal| principal.token_id.as_str()),
             resource = %path,
             method = %method,
             durable,
@@ -1368,6 +1501,8 @@ async fn audit_operator_request(
             target: "streams_audit",
             customer_id = %principal.customer_id,
             token_id = %principal.token_id,
+            approval_customer_id = approval.as_ref().map(|principal| principal.customer_id.as_str()),
+            approval_token_id = approval.as_ref().map(|principal| principal.token_id.as_str()),
             resource = %path,
             method = %method,
             status = response.status().as_u16(),
@@ -2266,6 +2401,8 @@ async fn stream_entry(
         timestamp_ms: now_ms(),
         customer_id: audit_customer.clone(),
         token_id: audit_token.clone(),
+        approval_customer_id: None,
+        approval_token_id: None,
         stream: audit_name.clone(),
         method: audit_method.to_string(),
         status: resp.status().as_u16(),

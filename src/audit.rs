@@ -97,6 +97,10 @@ pub struct AuditEvent {
     pub timestamp_ms: i64,
     pub customer_id: String,
     pub token_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_customer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_token_id: Option<String>,
     pub stream: String,
     pub method: String,
     pub status: u16,
@@ -602,6 +606,8 @@ mod tests {
             timestamp_ms: 1,
             customer_id: "customer".into(),
             token_id: "token".into(),
+            approval_customer_id: None,
+            approval_token_id: None,
             stream: "stream".into(),
             method: "PUT".into(),
             status: 201,

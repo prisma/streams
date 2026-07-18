@@ -473,8 +473,10 @@ Cell boundaries are credential boundaries, or they are nothing:
   deleter, soft-delete window per OPERATIONS §2.4), scrubber role
   (read-only). Registry writes (stream create/delete) are a separate
   provisioning principal.
-- **Break-glass:** cross-cell/administrative access exists only via a
-  two-person, time-boxed elevation with audit (OPERATIONS §3.4).
+- **Break-glass:** production administrative mutations require two locally
+  verified operator JWTs with distinct subjects/token IDs, each bounded to 15
+  minutes; both identities and the result are durably audited. Cross-cell CLI
+  roles retain the same two-person issuance policy (OPERATIONS §3.4).
 - **Bucket regionality:** buckets are per-region; a cell lives entirely
   in its region's buckets (ops, data, and its backup target in the
   OTHER provider/region). cells.json states the mapping. "Cross-region

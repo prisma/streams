@@ -180,12 +180,20 @@ kept deliberately verify-local so no remote call sits on the data path:
   `{customer, allowed stream-name prefixes, verbs (create/append/read/
   queue), expiry ≤ 24 h, token-id}`. Instances verify locally against the
   key service's published JWKS (cached 10 min, background-refreshed).
-- Operator credentials use the same signature, issuer, audience, ≤24-hour
-  lifetime, and token-id revocation path, with an explicit `operator: true`
-  claim. The claim defaults false when absent. Operator automation uses a
-  principal distinct from tenant/service subjects and rotates its mode-0600
-  token file before expiry. Startup rejects the pilot `AUTH_TOKEN` whenever
-  JWKS mode is configured, so it cannot remain as a static production bypass.
+- Operator credentials use the same signature, issuer, audience, and token-id
+  revocation path, with an explicit `operator: true` claim and a stricter
+  15-minute maximum lifetime. The claim defaults false when absent. Read-only
+  automation uses a principal distinct from tenant/service subjects and rotates
+  its mode-0600 token file before expiry. In production, every state-changing
+  admin request additionally carries a second operator JWT in
+  `X-Prisma-Operator-Approval`; it must have a distinct subject and token ID.
+  Both identities enter the immutable result audit. A valid primary operator's
+  denied admin attempts are also immutable records; a second identity is
+  included only after its JWT independently passes cryptographic and revocation
+  validation. Startup rejects the pilot `AUTH_TOKEN` whenever JWKS mode is
+  configured, so it cannot remain as a static production bypass. Legacy/pilot
+  mode is explicitly exempt from the two-person header and is not a production
+  configuration.
 - The stream encryption key remains a separate capability (crypto
   custody), carried per request as today; authn (who) and crypto access
   (can decrypt) are independent factors.
@@ -217,7 +225,8 @@ therefore two-tier and documented to customers:
 
 ### 3.4 Access audit
 
-Per-request audit records (principal, resource, verb, token-id, result, latency)
+Per-request audit records (principal, optional second approver, resource, verb,
+token-id, result, latency)
 are written to the cell ops bucket and an independently credentialed audit
 provider. Create/delete and privileged state-changing admin records are
 synchronously persisted as identical immutable objects on both sides before a

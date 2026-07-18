@@ -298,7 +298,7 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 | env | default | notes |
 |---|---|---|
 | `AUTH_TOKEN` | — | pilot-only single-tenant bearer and operator token; startup rejects it when production JWKS settings are present, preventing a stale merged env from retaining a static privileged bypass |
-| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | required together in production; locally verifies RS256/EdDSA JWTs with `sub` customer identity, `jti`, verbs, stream-name prefixes, and an explicit default-false `operator` claim for privileged endpoints |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` / `AUTH_AUDIENCE` | — | required together in production; locally verifies RS256/EdDSA JWTs with `sub` customer identity, `jti`, verbs, stream-name prefixes, and an explicit default-false `operator` claim; operator JWTs have a 15-minute maximum, and admin mutations require a second distinct signed operator in `X-Prisma-Operator-Approval` |
 | `AUTH_REVOCATION_URL` | — | required with JWKS; monotonic JSON document `{"version":N,"revoked_token_ids":[...]}` polled off the request path |
 | `AUTH_JWKS_REFRESH_SECS` / `AUTH_JWKS_MAX_STALE_SECS` | 600 / 3600 | refresh/fail-closed bounds for verification keys |
 | `AUTH_REVOCATION_REFRESH_SECS` / `AUTH_REVOCATION_MAX_STALE_SECS` | 60 / 120 | refresh/fail-closed bounds for token revocation |
@@ -485,6 +485,8 @@ OOM-killed container under load otherwise stays down.
 | `GET /v1/debug/store?window=60&swap=1` | operator bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
 | `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape; no tenant-controlled labels |
 | `GET /v1/debug/sleep?ms=N` | operator bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
+| `POST /v1/admin/shards/{parent}/split` | operator bearer + distinct operator approval | online fenced split; production requires `X-Prisma-Operator-Approval: Bearer …` |
+| `POST /v1/admin/shards/{parent}/merge` | operator bearer + distinct operator approval | online fenced sibling merge; production requires `X-Prisma-Operator-Approval: Bearer …` |
 
 **429 semantics**: every body uses
 `{"error":{"code":"throttled","scope":…,"dimension":…,"limit":n,
@@ -760,8 +762,9 @@ body; every attack must remain a scoped 429 while the victim meets all of the
 same budgets. It writes one bounded JSON artifact and fails any configured
 regression budget.
 
-Production JWTs live for at most 24 hours, so a qualifying run cannot use one
-static bearer token. Put the current victim, attacker, and operator JWTs in
+Production tenant JWTs live for at most 24 hours and operator JWTs for at most
+15 minutes, so a qualifying run cannot use one static bearer token. Put the
+current victim, attacker, and read-only operator JWTs in
 three distinct mode-0600 files and have the issuer atomically replace all three
 before expiry. The operator JWT is signed by the same configured issuer and
 sets `operator: true`; missing claims default to false, so tenant JWTs do not
@@ -954,7 +957,8 @@ local run is not release evidence.
 
   ```bash
   curl -X POST "$STREAMS_URL/v1/admin/shards/root/split" \
-    -H "authorization: Bearer $OPERATOR_TOKEN"
+    -H "authorization: Bearer $OPERATOR_TOKEN" \
+    -H "x-prisma-operator-approval: Bearer $APPROVER_TOKEN"
   ```
 
   The actor creates a conditional intent in the shard store, returns 503 for
@@ -995,7 +999,8 @@ local run is not release evidence.
 
   ```bash
   curl -X POST "$STREAMS_URL/v1/admin/shards/root/merge" \
-    -H "authorization: Bearer $OPERATOR_TOKEN"
+    -H "authorization: Bearer $OPERATOR_TOKEN" \
+    -H "x-prisma-operator-approval: Bearer $APPROVER_TOKEN"
   ```
 
   Both child intent paths become durable ACK fences before either source is

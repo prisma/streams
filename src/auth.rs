@@ -22,6 +22,7 @@ const MAX_JWKS_BYTES: usize = 1024 * 1024;
 const MAX_REVOCATION_BYTES: usize = 1024 * 1024;
 const MAX_REVOKED_TOKEN_IDS: usize = 100_000;
 const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
+const MAX_OPERATOR_TOKEN_LIFETIME_SECS: u64 = 15 * 60;
 const CLOCK_SKEW_SECS: u64 = 30;
 const MAX_PREFIXES: usize = 32;
 const MAX_PREFIX_BYTES: usize = 512;
@@ -370,6 +371,7 @@ fn principal_from_claims(claims: Claims) -> Result<Principal, AuthError> {
     if claims.iat > now.saturating_add(CLOCK_SKEW_SECS)
         || claims.exp <= claims.iat
         || claims.exp - claims.iat > MAX_TOKEN_LIFETIME_SECS
+        || (claims.operator && claims.exp - claims.iat > MAX_OPERATOR_TOKEN_LIFETIME_SECS)
         || !valid_customer_id(&claims.sub)
         || claims.jti.is_empty()
         || claims.jti.len() > 256
@@ -537,6 +539,14 @@ mod tests {
         let mut operator = claims();
         operator.operator = true;
         assert!(principal_from_claims(operator).unwrap().operator);
+
+        let mut long_operator = claims();
+        long_operator.operator = true;
+        long_operator.exp = long_operator.iat + MAX_OPERATOR_TOKEN_LIFETIME_SECS + 1;
+        assert_eq!(
+            principal_from_claims(long_operator).unwrap_err(),
+            AuthError::Invalid
+        );
     }
 
     #[test]
