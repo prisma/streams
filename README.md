@@ -1,463 +1,136 @@
 # Prisma Streams
 
-Prisma Streams is a Bun + TypeScript implementation of the Durable Streams HTTP
-protocol.
+A multi-tenant **Durable Streams** service in Rust, built on
+[SlateDB](https://slatedb.io) — an object-store-native LSM — so that **the
+object store is the only stateful tier**. Appends are acknowledged only after
+their bytes are durable in object storage; servers are stateless and hold only
+caches and in-flight buffers; every stream is encrypted with a per-stream key
+the service never persists.
 
-It provides:
+This is the second-generation implementation. It replaces the original
+Bun/TypeScript + SQLite version (available in git history before the `slate`
+branch landed) with an architecture designed for horizontal scale on
+[Prisma Compute](https://prisma.io) with S3-compatible storage (Tigris in the
+pilot).
 
-- a full server mode with SQLite WAL storage, segmenting, upload, and index
-  maintenance
-- a trusted local mode for Prisma development workflows
-- a stream profile model that cleanly separates durable storage semantics from
-  payload structure
+## What it does
 
-The canonical documentation index is [docs/index.md](./docs/index.md). The
-dedicated stream profile reference is
-[docs/stream-profiles.md](./docs/stream-profiles.md).
+- **Durable Streams HTTP protocol**: append-only streams, opaque 26-char
+  Crockford base32 offsets, byte/JSON appends, long-poll and SSE tails,
+  routing-key reads, and profile semantics (`queue`, `state`) on top
+  ([PROFILES.md](./PROFILES.md), [PER-KEY-ORDERING.md](./PER-KEY-ORDERING.md)).
+- **Committed-before-ack durability**: concurrent appends are bundled into
+  shared WAL PUTs; the ack races nothing — if you got a 2xx, the bytes are in
+  object storage.
+- **Tenant isolation by cryptography**: each stream's data is AES-GCM
+  encrypted under a stream-specific key attached to requests
+  (`Stream-Encryption-Key` header) and never stored by the service. Backups
+  are ciphertext; the provider never sees plaintext.
+- **Coordination-free horizontal scale**: shard placement is derived from
+  fleet heartbeats via rendezvous hashing; correctness never depends on
+  routing being right — object-store CAS fencing makes a stale owner's writes
+  fail, not corrupt.
+- **Self-scaling fleet**: instances publish a load vector (CPU, in-flight,
+  ack latency, memory, router-observed client latency) and compute their own
+  desired fleet size; scale-to-zero friendly
+  ([AUTOSCALING-DESIGN.md](./AUTOSCALING-DESIGN.md) generalizes the model).
 
-## Example Implementations
+## Measured (pilot, Singapore, 1-CPU/1-GB instances on Tigris)
 
-- [prisma/open-chat](https://github.com/prisma/open-chat) is a local-first,
-  multi-model AI chat application that uses Prisma Streams as the durable
-  system of record for chat message events. It demonstrates append-before-render
-  streaming, resumable reads after refresh or reconnect, per-user streams with
-  routing keys per chat, and deployment of a Streams service alongside a real
-  app.
-- [oss.chat/tour](https://oss.chat/tour) is the guided tour for Open Chat. It
-  walks through the system from prompt to durable stream and is the quickest
-  way to see how the implementation fits together before reading the code.
+| metric | value |
+|---|---|
+| fleet of 4 sustained | ~1,250 req/s avg, peaks 2,700+ req/s |
+| durable-ack p50 under load | 50–65 ms (25–50 ms WAL flush + Tigris PUT) |
+| single instance, direct path | ~1,180 req/s max observed |
+| 2 h soak | flat p50 402–410 ms client latency at saturation, zero deaths |
+| chaos (kill N−2 under load) | survivors absorb, zero data loss |
 
-## Deploy To Prisma Compute
+Full history: [BENCHMARKS.md](./BENCHMARKS.md) (vs the previous
+implementation), [EXPERIMENT-PILOT.md](./EXPERIMENT-PILOT.md) (14 fleet runs,
+every failure and fix), [REPORT.md](./REPORT.md) (executive summary).
 
-Deploy Compute services from the published `@prisma/streams-server` npm package
-rather than from a checkout of this repository. Create a small Compute app with
-the package dependency and an entrypoint that selects the auth mode before
-loading the package Compute entrypoint:
-
-```json
-{
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@prisma/streams-server": "<pin-the-version>"
-  }
-}
-```
-
-```ts
-// compute-entry.ts
-process.argv.push("--auth-strategy", "api-key");
-await import("@prisma/streams-server/compute");
-```
-
-Deploy that app with the Compute CLI:
+## Quick start (local, no cloud)
 
 ```bash
-PRISMA_API_TOKEN=... \
-  bunx @prisma/compute-cli compute deploy \
-    --service your-service-id \
-    --path . \
-    --entrypoint compute-entry.ts
+cargo build --release
+
+# 1. Local S3 emulator with realistic latency
+./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 5 &
+
+# 2. The server
+./target/release/streams-slate \
+  --listen 127.0.0.1:8090 \
+  --s3-endpoint http://127.0.0.1:9500 --bucket streams --region auto \
+  --access-key-id test --secret-access-key test \
+  --path-prefix dev --initial-shards 4 --auth-token devtoken &
+
+# 3. A stream key (32 bytes, base64 — the service never stores it)
+KEY=$(./target/release/streams-keys generate)
+
+# 4. Create, append, read (content-type on create selects the JSON profile)
+curl -X PUT  http://127.0.0.1:8090/v1/stream/hello \
+  -H "authorization: Bearer devtoken" -H "Stream-Encryption-Key: $KEY" \
+  -H 'content-type: application/json' -d '{}'
+curl -X POST http://127.0.0.1:8090/v1/stream/hello \
+  -H "authorization: Bearer devtoken" -H "Stream-Encryption-Key: $KEY" \
+  -H 'content-type: application/json' -d '{"events":[{"data":{"n":1}}]}'
+curl http://127.0.0.1:8090/v1/stream/hello \
+  -H "authorization: Bearer devtoken" -H "Stream-Encryption-Key: $KEY"
 ```
 
-Set these service environment variables:
-
-- `DS_HOST=0.0.0.0`
-- `DS_ROOT=/mnt/app/prisma-streams`
-- `DS_MEMORY_LIMIT_MB=1024`
-- `API_KEY=replace-with-at-least-10-characters`
-- `DURABLE_STREAMS_R2_BUCKET`
-- `DURABLE_STREAMS_R2_ACCOUNT_ID`
-- `DURABLE_STREAMS_R2_ACCESS_KEY_ID`
-- `DURABLE_STREAMS_R2_SECRET_ACCESS_KEY`
-
-The package Compute entrypoint injects `--object-store r2`, and injects
-`--auto-tune` when `DS_MEMORY_LIMIT_MB` is set. It does not inject auth; keep
-the explicit `--auth-strategy api-key` in your app entrypoint and send requests
-with `Authorization: Bearer $API_KEY`.
-
-## Core Model
-
-The system now has three separate concepts:
-
-- a **stream** is the durable append-only storage object with Durable Streams
-  semantics
-- a **profile** defines the semantic contract of that stream
-- a **schema** defines payload structure
-
-Short rule:
-
-- profile = semantics
-- schema = structure
-
-More concretely:
-
-- the **stream** owns ordered append/read behavior, offsets, and durable
-  storage
-- the **profile** owns semantic behavior, profile-specific endpoints, and
-  profile-specific runtime configuration
-- the **schema** owns JSON validation, version boundaries, lenses, and
-  routing-key extraction
-
-Profiles sit on top of the durable stream engine. They do not replace streams.
-
-Built-in profiles are implemented under `src/profiles/`. The core engine
-resolves a profile definition and dispatches through its hooks instead of
-branching on profile kinds in request or background processing paths.
-
-Profile-specific behavior must live in a dedicated profile module such as
-`src/profiles/stateProtocol.ts`. The supported extension model is:
-
-- implement the profile in its own file or subdirectory under `src/profiles/`
-- register it once in `src/profiles/index.ts`
-- let core paths call profile hooks instead of adding `if (profile.kind ===
-  "...")` checks
-
-## Profile Defaults
-
-Every stream has a profile.
-
-- if you declare a profile, that is the stream's profile
-- if you create a stream without declaring a profile, the server treats it as a
-  `generic` stream
-
-This means old or unconfigured streams still have a clear meaning: they are
-plain `generic` durable streams.
-
-## Built-In Profiles
-
-Current built-ins:
-
-- `evlog`
-- `generic`
-- `metrics`
-- `otel-traces`
-- `state-protocol`
-
-Planned next built-ins:
-
-- `queue`
-
-### `evlog`
-
-`evlog` is the built-in profile for request-centric wide-event logging.
-
-It means:
-
-- the stream content type must be `application/json`
-- JSON appends are normalized into a canonical evlog envelope
-- sensitive context keys are redacted before durable append
-- installing the profile also installs the canonical evlog schema registry and
-  default search fields
-- the default routing key is `requestId`, with `traceId` fallback
-
-V1 evlog uses the normal stream append and read APIs. It does not add a local
-SQLite observability index, and it does not require a separate manual
-`/_schema` call for the default search-ready setup.
-
-### `generic`
-
-`generic` means:
-
-- plain ordered append-only storage
-- optional user-managed schema validation
-- optional schema-managed routing-key extraction
-- no profile-owned payload envelope
-- no profile-specific endpoints
-
-`generic` is intentionally narrow. It is the baseline durable stream and the
-automatic default when no other profile is declared.
-
-### `state-protocol`
-
-`state-protocol` is the built-in profile for JSON streams that carry State
-Protocol change records and expose the live `/touch/*` API surface.
-
-It means:
-
-- the stream content type must be `application/json`
-- the payload semantics are State Protocol records
-- touch configuration belongs to the profile
-- `/touch/*` exists only when `touch.enabled=true`
-
-Schemas remain optional on `state-protocol` streams. If present, they validate
-the JSON payload shape, but they do not own live/touch behavior.
-
-State Protocol is a profile, not a schema feature, because it defines stream
-semantics and profile-owned endpoints, not just JSON shape.
-
-### `metrics`
-
-`metrics` is the built-in profile for canonical metric interval streams.
-
-It means:
-
-- the stream content type must be `application/json`
-- JSON appends are normalized into the canonical metrics interval envelope
-- installing the profile also installs the canonical metrics schema/search and
-  default rollups
-- the canonical routing key is `seriesKey`
-- metrics streams use the `.mblk` metrics-block family in addition to `.agg`
-
-The internal `__stream_metrics__` stream is created with this profile
-automatically.
-
-### `otel-traces`
-
-`otel-traces` is the built-in profile for OpenTelemetry trace spans.
-
-It means:
-
-- the stream content type must be `application/json`
-- JSON appends are normalized into the canonical span envelope
-- OTLP trace exports are accepted through `POST /v1/traces` and
-  `POST /v1/stream/{name}/_otlp/v1/traces`
-- installing the profile also installs the canonical trace schema/search and
-  default rollups
-- the canonical routing key is `traceId`
-
-See [docs/profile-otel-traces.md](./docs/profile-otel-traces.md) for the
-profile and OTLP receiver contract, and
-[docs/request-observability.md](./docs/request-observability.md) for
-cross-stream lookup over `evlog` events and `otel-traces` spans.
-
-## Profile Versus Schema
-
-What belongs in a profile:
-
-- semantic meaning of records
-- profile-specific runtime config
-- profile-specific endpoints
-- profile-owned indexes or projections
-- future canonical envelopes for specialized stream types
-
-What belongs in a schema:
-
-- JSON validation
-- version boundaries
-- lens-based read promotion
-- routing-key extraction rules
-- schema-owned `search` field declarations used by `GET ...?filter=...` and
-  `POST .../_search`
-
-What does **not** belong in `/_schema`:
-
-- profile selection
-- touch configuration
-- State Protocol runtime behavior
-- evlog envelope normalization or redaction
-
-The supported model is strict: `/_profile` manages profile semantics,
-`/_schema` manages schema evolution.
-
-Indexed JSON streams can also use the main read path with `filter=...`.
-Filters are limited to schema `search.fields`, use the internal exact family
-and bundled `.cix` companion sections to prune sealed history where possible,
-and still scan the local unsealed tail for correctness. If an exact field
-definition changes on an existing stream, the old exact state is treated as
-stale and the read path falls back cleanly until async rebuild catches up. One
-filtered response stops after 100 MB of examined payload bytes and reports that
-cap in response headers.
-
-JSON streams with `search` configured also support `_search`:
-
-- `POST /v1/stream/{name}/_search`
-- `GET /v1/stream/{name}/_search?q=...`
-
-The current `_search` surface supports fielded exact keyword queries, keyword
-prefix, typed equality/range, `has:field`, bare terms over
-`search.defaultFields`, and quoted phrase queries on text fields with
-`positions=true`.
-
-Schema-owned rollups are also available through:
-
-- `POST /v1/stream/{name}/_aggregate`
-
-Rollups are configured under `search.rollups`, stored as object-store-native
-bundled companion sections, and used for aligned time windows with raw source
-scans for partial edges and uncovered ranges.
-
-## Management And Introspection API
-
-For stream management UIs, the current per-stream inspection surface is:
-
-- `GET /v1/streams`
-  Summary list view with name, offsets, expiry, and profile kind.
-- `GET /v1/stream/{name}/_profile`
-  Full typed profile resource.
-- `GET /v1/stream/{name}/_schema`
-  Full schema registry, including profile-owned canonical registries such as
-  the auto-installed evlog schema.
-- `GET /v1/stream/{name}/_index_status`
-  Current manifest, segment, and async index/search-family status for that
-  stream.
-- `GET /v1/stream/{name}/_details`
-  Combined stream summary, including `stream.total_size_bytes`, full profile
-  resource, full schema registry, nested index status, storage accounting, and
-  node-local object-store request counters in one response. This endpoint also
-  supports conditional long-polling with
-  `If-None-Match`, `live=long-poll`, and `timeout=...`, and only wakes when
-  the stream head or descriptor-visible metadata changes.
-
-`/_details.stream` is the full per-stream summary shape. In practice that means
-it includes the stream head and lifecycle fields a UI usually needs for an
-active stream page, including:
-
-- `created_at`
-- `expires_at`
-- `epoch`
-- `next_offset`
-- `sealed_through`
-- `uploaded_through`
-- `total_size_bytes`
-
-For a storage/cost popover, `/_details` also includes:
-
-- `storage.object_storage`
-  Uploaded bytes and object counts split into segments, indexes, and
-  manifest/schema metadata.
-- `storage.local_storage`
-  Current local retained bytes split into WAL, pending sealed segments, caches,
-  and shared SQLite footprint.
-- `storage.companion_families`
-  Bundled companion bytes split into `col`, `fts`, `agg`, and `mblk`.
-- `object_store_requests`
-  Node-local per-stream object-store request counters, split into puts and
-  reads, plus a per-artifact breakdown.
-
-That means a GUI can create streams, inspect the active profile and schema,
-show current indexing progress, and edit profile/schema configuration through
-the normal API surface. A charting UI can additionally use `/_aggregate` for
-time-window summaries driven by schema `search.rollups`.
-
-For an active stream page, the recommended pattern is:
-
-- fetch `GET /v1/stream/{name}/_details`
-- keep the returned `ETag`
-- reissue `GET /v1/stream/{name}/_details?live=long-poll&timeout=30s` with
-  `If-None-Match: <etag>`
-
-The server returns:
-
-- `200` with a new body and new `ETag` when events or descriptor metadata have
-  changed
-- `304` when the timeout expires without a visible change
-
-## Profile API
-
-Profiles are managed through a dedicated subresource:
-
-- `GET /v1/stream/{name}/_profile`
-- `POST /v1/stream/{name}/_profile`
-
-Example default response:
-
-```json
-{
-  "apiVersion": "durable.streams/profile/v1",
-  "profile": { "kind": "generic" }
-}
+A TypeScript client SDK lives in [sdk/](./sdk/).
+
+## Operating it
+
+**[RUNBOOK.md](./RUNBOOK.md)** is the operator manual — building (including
+the mandatory x86_64-musl cross-compile for Prisma Compute), the complete
+configuration reference, fleet mode and autoscaling, admission control, the
+debug endpoints, deployment procedure with every platform trap we hit,
+monitoring baselines, capacity numbers, and a symptom→cause→fix
+troubleshooting matrix.
+
+[OPERATIONS.md](./OPERATIONS.md) covers the durability/security posture:
+what we require of the object-store provider, backup/PITR, tenant identity
+and key custody, SLOs.
+
+## Documentation map
+
+| document | what it answers |
+|---|---|
+| [SPEC.md](./SPEC.md) | the spec of record: architecture, decision log, guarantees |
+| [RUNBOOK.md](./RUNBOOK.md) | how to build, run, deploy, scale, monitor, debug |
+| [COMPUTE-SPEC.md](./COMPUTE-SPEC.md) | routing, fleet lifecycle, load vector, cells |
+| [DESIGN.md](./DESIGN.md) | original single-DB rewrite design + ingest mechanics |
+| [OPERATIONS.md](./OPERATIONS.md) | provider requirements, backup/PITR, identity, SLOs |
+| [PROFILES.md](./PROFILES.md) | stream profiles (queue, state) semantics |
+| [PER-KEY-ORDERING.md](./PER-KEY-ORDERING.md) | ordering model and guarantees |
+| [CONFORMANCE.md](./CONFORMANCE.md) | protocol conformance: how to run the suite |
+| [VERIFICATION.md](./VERIFICATION.md) | verification items and their status |
+| [BENCHMARKS.md](./BENCHMARKS.md) | measured results vs the previous implementation |
+| [EXPERIMENT-PILOT.md](./EXPERIMENT-PILOT.md) | the production-pilot lab notebook (runs 1–14) |
+| [AUTOSCALING-DESIGN.md](./AUTOSCALING-DESIGN.md) | scaling-groups proposal for Prisma Compute |
+| [PLATFORM-EDGE-REPORT.md](./PLATFORM-EDGE-REPORT.md) | the platform edge investigation (with the Compute team) |
+| [REPORT.md](./REPORT.md) | executive summary + addenda |
+| [repro-no-restart/](./repro-no-restart/) | platform crash-loop repro package |
+
+## Repository layout
+
+```
+src/            server crate (streams-slate) + bins
+  main.rs       config, store construction, runtime, startup
+  shard.rs      shard engine: commit pipeline, group PUTs, watermarks
+  history.rs    history tier + absorber
+  crypto.rs     stream-key envelope (AES-GCM)
+  fleet.rs      heartbeats, load vector, desired-count computation
+  http.rs       HTTP surface + admission control + debug endpoints
+  store_timing.rs  per-op object-store latency + runtime sentinels
+  bin/          pilot (LB/generator/bench), s3lite, streams-keys, bench, …
+sdk/            TypeScript client SDK
+bench/          benchmark matrix scripts
+charts/         chart generators + pilot result data
+repro-no-restart/  minimal reproduction for the platform crash-loop issue
 ```
 
-Explicit `generic` declaration:
+## License
 
-```json
-{
-  "apiVersion": "durable.streams/profile/v1",
-  "profile": { "kind": "generic" }
-}
-```
-
-State Protocol profile with touch enabled:
-
-```json
-{
-  "apiVersion": "durable.streams/profile/v1",
-  "profile": {
-    "kind": "state-protocol",
-    "touch": {
-      "enabled": true,
-      "onMissingBefore": "coarse"
-    }
-  }
-}
-```
-
-Evlog profile with redaction:
-
-```json
-{
-  "apiVersion": "durable.streams/profile/v1",
-  "profile": {
-    "kind": "evlog",
-    "redactKeys": ["sessiontoken"]
-  }
-}
-```
-
-To switch a stream back to the baseline behavior, set `profile` to
-`{ "kind": "generic" }`.
-
-## Storage Model
-
-The stored profile is kept in stream metadata.
-
-- `streams.profile` stores the profile kind
-- `stream_profiles.profile_json` stores non-generic profile configuration
-- `NULL` profile metadata means there is no explicit stored entry and the
-  stream is treated as `generic`
-
-This keeps storage simple while still letting runtime code assume a profile
-always exists.
-
-## Current Durability Model
-
-In full mode today:
-
-- append ACK means the write is durable in local SQLite
-- object-store durability happens only after segment upload and manifest
-  publication
-
-`--bootstrap-from-r2` rebuilds published stream history and metadata from
-manifest, segment, and schema objects in object storage. It does
-not restore transient local SQLite state such as the unuploaded WAL tail,
-producer dedupe state, or runtime live/template state.
-
-A stream becomes recoverable from object storage after its first manifest is
-published.
-
-## Possible Future Durability Modes
-
-Not implemented today:
-
-- an object-store-acked mode that would batch writes and ACK only after
-  persistence to R2
-- a cluster quorum mode that would ACK only after a durability quorum accepts
-  the write
-
-## Current Supported Paths
-
-The supported behavior is:
-
-- use `/_profile` to choose a built-in profile, including `generic`, `evlog`,
-  `metrics`, `otel-traces`, and `state-protocol`
-- use `/_schema` only for schema validation, routing-key config, and schema
-  evolution
-- use `/touch/*` only on `state-protocol` streams with touch enabled
-- use normal JSON appends on `evlog` streams to store canonical evlog events
-- use OTLP trace endpoints only on `otel-traces` streams, or on `/v1/traces`
-  when `DS_OTLP_TRACES_STREAM` is configured
-
-Legacy compatibility branches are intentionally not part of the supported
-surface.
-
-## Start Here
-
-- [docs/index.md](./docs/index.md) for the documentation map
-- [docs/overview.md](./docs/overview.md) for product and package overview
-- [docs/stream-profiles.md](./docs/stream-profiles.md) for the full stream /
-  profile / schema reference
-- [docs/durable-streams-spec.md](./docs/durable-streams-spec.md) for the HTTP
-  protocol contract
-- [docs/live.md](./docs/live.md) for the State Protocol live/touch model
-- [docs/schemas.md](./docs/schemas.md) for schema registry and lens behavior
+Apache-2.0 (see [LICENSE](./LICENSE)).
