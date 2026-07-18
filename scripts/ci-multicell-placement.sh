@@ -102,6 +102,11 @@ start_cell() {
     --auth-issuer "${ISSUER}" --auth-audience "${AUDIENCE}" \
     --auth-jwks-refresh-secs 1 --auth-jwks-max-stale-secs 10 \
     --auth-revocation-refresh-secs 1 --auth-revocation-max-stale-secs 10 \
+    --backup-s3-endpoint "${S3_URL}" --backup-s3-bucket backup \
+    --backup-s3-region auto --backup-s3-access-key-id backup-control \
+    --backup-s3-secret-access-key backup-control-secret \
+    --backup-path-prefix "recovery/${cell}" --backup-interval-secs 60 \
+    --backup-scrub-interval-secs 10 --require-backup \
     >"${log}" 2>&1 &
   printf '%s' "$!"
 }
@@ -126,6 +131,68 @@ other_cell() {
   esac
 }
 
+latest_snapshot() {
+  curl --fail --silent --show-error \
+    "${S3_URL}/backup/recovery/$1/latest.json" |
+    sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p'
+}
+
+restart_selected_cell() {
+  local cell="$1"
+  local prior="$2"
+  local port log new_pid attempts snapshot
+  case "${cell}" in
+    c-a)
+      kill "${PID_A}" 2>/dev/null || true
+      wait "${PID_A}" 2>/dev/null || true
+      PID_A=""
+      port="${PORT_A}"
+      log="${TMP_DIR}/cell-a.log"
+      ;;
+    c-b)
+      kill "${PID_B}" 2>/dev/null || true
+      wait "${PID_B}" 2>/dev/null || true
+      PID_B=""
+      port="${PORT_B}"
+      log="${TMP_DIR}/cell-b.log"
+      ;;
+  esac
+  new_pid="$(start_cell "${cell}" "${port}" "${log}")"
+  if [[ "${cell}" == "c-a" ]]; then PID_A="${new_pid}"; else PID_B="${new_pid}"; fi
+  wait_ready "$(url_for_cell "${cell}")" "${log}"
+  attempts=0
+  snapshot="$(latest_snapshot "${cell}")"
+  while [[ -z "${snapshot}" || "${snapshot}" == "${prior}" ]]; do
+    attempts=$((attempts + 1))
+    (( attempts <= 200 )) || fail "replacement cell did not publish a new recovery point"
+    sleep 0.1
+    snapshot="$(latest_snapshot "${cell}")"
+  done
+}
+
+start_recovered_cell() {
+  local cell="$1"
+  local port="$2"
+  local log="$3"
+  RUST_LOG=info "${TARGET_DIR}/streams-slate" \
+    --listen "127.0.0.1:${port}" --instance-name "${cell}-recovered" \
+    --s3-endpoint "${S3_URL}" --bucket restored-primary --region auto \
+    --access-key-id "${cell}-restored" --secret-access-key "${cell}-restored-secret" \
+    --path-prefix "cells/${cell}" --cell-id "${cell}" \
+    --registry-s3-endpoint "${S3_URL}" --registry-s3-bucket restored-registry \
+    --registry-s3-region auto --registry-s3-access-key-id registry-restored \
+    --registry-s3-secret-access-key registry-restored-secret \
+    --registry-s3-allow-http --registry-path-prefix global-registry \
+    --cell-directory-refresh-secs 5 --initial-shards 1 \
+    --auth-jwks-url "${S3_URL}/auth/jwks.json" \
+    --auth-revocation-url "${S3_URL}/auth/revocations.json" \
+    --auth-issuer "${ISSUER}" --auth-audience "${AUDIENCE}" \
+    --auth-jwks-refresh-secs 1 --auth-jwks-max-stale-secs 10 \
+    --auth-revocation-refresh-secs 1 --auth-revocation-max-stale-secs 10 \
+    >"${log}" 2>&1 &
+  printf '%s' "$!"
+}
+
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
   -out "${TMP_DIR}/jwt-key.pem" >/dev/null 2>&1
 modulus_hex="$(openssl rsa -in "${TMP_DIR}/jwt-key.pem" -modulus -noout |
@@ -148,6 +215,7 @@ until curl --silent --fail -I "${S3_URL}/streams" >/dev/null; do
   sleep 0.05
 done
 curl --fail --silent --show-error -X PUT "${S3_URL}/auth" >/dev/null
+curl --fail --silent --show-error -X PUT "${S3_URL}/backup" >/dev/null
 curl --fail --silent --show-error -X PUT "${S3_URL}/auth/jwks.json" \
   --data-binary "@${TMP_DIR}/jwks.json" >/dev/null
 curl --fail --silent --show-error -X PUT "${S3_URL}/auth/revocations.json" \
@@ -226,6 +294,15 @@ body="$(curl --fail --silent --show-error \
   -H "stream-encryption-key: ${KEY}")"
 [[ "${body}" == '[{"cell":true}]' ]] || fail "owning cell returned the wrong body"
 
+# Force coordinator takeover so a fresh point necessarily captures the stream
+# and its exact cell-local registry closure after the create.
+initial_snapshot="$(latest_snapshot "${selected}")"
+restart_selected_cell "${selected}" "${initial_snapshot}"
+body="$(curl --fail --silent --show-error \
+  "${selected_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}")"
+[[ "${body}" == '[{"cell":true}]' ]] || fail "replacement owner lost the pinned stream"
+
 # A second stream for the customer cannot escape its durable <=4-cell
 # affinity even if its independent rendezvous score would differ.
 status="$(curl --silent --show-error -D "${TMP_DIR}/second.headers" \
@@ -275,4 +352,46 @@ put_directory "${directory_v2}"
 wait_ready "${URL_A}" "${TMP_DIR}/cell-a.log"
 wait_ready "${URL_B}" "${TMP_DIR}/cell-b.log"
 
-echo "multi-cell descriptor pinning, bounded affinity, replay, and LKG drill passed"
+# Destroy both serving cells and the live global registry from the serving
+# path, restore the selected point into empty primary + registry targets, and
+# prove the first decrypted read. The recovery point must not need a global
+# descriptor scan or another cell's data.
+kill "${PID_A}" "${PID_B}" 2>/dev/null || true
+wait "${PID_A}" 2>/dev/null || true
+wait "${PID_B}" 2>/dev/null || true
+PID_A=""
+PID_B=""
+curl --fail --silent --show-error -X PUT "${S3_URL}/restored-primary" >/dev/null
+curl --fail --silent --show-error -X PUT "${S3_URL}/restored-registry" >/dev/null
+"${TARGET_DIR}/streams-registry-restore" \
+  --snapshot-id latest --backup-endpoint "${S3_URL}" --backup-bucket backup \
+  --backup-region auto --backup-access-key-id backup-control \
+  --backup-secret-access-key backup-control-secret \
+  --backup-prefix "recovery/${selected}" \
+  --target-endpoint "${S3_URL}" --target-bucket restored-registry \
+  --target-region auto --target-access-key-id registry-restored \
+  --target-secret-access-key registry-restored-secret \
+  --target-prefix global-registry --allow-http \
+  --confirm-registry-offline >"${TMP_DIR}/registry-restore.json"
+"${TARGET_DIR}/streams-restore" \
+  --snapshot-id latest --backup-endpoint "${S3_URL}" --backup-bucket backup \
+  --backup-region auto --backup-access-key-id backup-control \
+  --backup-secret-access-key backup-control-secret \
+  --backup-prefix "recovery/${selected}" \
+  --target-endpoint "${S3_URL}" --target-bucket restored-primary \
+  --target-region auto --target-access-key-id restored-data \
+  --target-secret-access-key restored-data-secret \
+  --target-prefix "cells/${selected}" \
+  --skip-registry \
+  --confirm-offline-empty-targets >"${TMP_DIR}/restore.json"
+recovered_log="${TMP_DIR}/cell-recovered.log"
+recovered_pid="$(start_recovered_cell "${selected}" "${PORT_A}" "${recovered_log}")"
+PID_A="${recovered_pid}"
+selected_url="${URL_A}"
+wait_ready "${selected_url}" "${recovered_log}"
+body="$(curl --fail --silent --show-error \
+  "${selected_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}")"
+[[ "${body}" == '[{"cell":true}]' ]] || fail "managed registry recovery lost the stream"
+
+echo "multi-cell placement, registry recovery, replay, and LKG drill passed"

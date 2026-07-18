@@ -29,6 +29,7 @@ const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INVENTORY_BYTES: usize = 16 * 1024;
 const MAX_TOPOLOGY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REGISTRY_RECOVERY_OBJECT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PINNED_SHARDS: usize = 16_384;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
@@ -400,10 +401,10 @@ struct PinnedBackupState {
     /// history state may therefore contain harmless future rows, but always
     /// contains the durable absorbed prefix named by the shard point.
     history_manifests: HashMap<String, Option<PinnedDbManifest>>,
-    /// WALs acknowledged after the pinned manifest watermark are not covered
-    /// by SlateDB's detached checkpoint. Copy them to immutable backup content
-    /// as soon as each database cut is observed, before source WAL GC can race
-    /// the slower fleet-wide inventory walk.
+    /// Objects that must be copied eagerly: WALs acknowledged after the pinned
+    /// manifest watermark, plus the exact bounded registry closure for a
+    /// managed cell. They are protected before slower inventory traversal can
+    /// race source WAL GC or mutable descriptor state.
     protected_wals: Vec<ProtectedWal>,
 }
 
@@ -1520,6 +1521,14 @@ async fn snapshot_once_inner(
         validate_role(source.role)?;
         roles.push(source.role.to_string());
     }
+    if pinned_state.is_some_and(|state| {
+        state
+            .protected_wals
+            .iter()
+            .any(|protected| protected.record.role == "registry")
+    }) {
+        roles.push("registry".to_string());
+    }
     let content_epoch = write_format.content_epoch(coordinator_epoch);
     let mut protected_paths = HashSet::new();
 
@@ -1528,7 +1537,9 @@ async fn snapshot_once_inner(
             anyhow::ensure!(
                 sources
                     .iter()
-                    .any(|source| source.role == protected.record.role),
+                    .any(|source| source.role == protected.record.role)
+                    || (protected.record.role == "registry"
+                        && pins.is_some_and(|pins| pins.cell_id.is_some())),
                 "protected WAL has no matching snapshot source role: {}",
                 protected.record.role
             );
@@ -1891,8 +1902,33 @@ async fn acquire_checkpoint_leases(
             return Err(error);
         }
     };
+    let (history_paths, registry_objects) = if let Some(cell_id) = pins.cell_id.as_deref() {
+        match protect_cell_registry(
+            pins,
+            cell_id,
+            destination.clone(),
+            snapshot_id,
+            content_epoch,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = release_checkpoint_leases(shard_leases).await;
+                return Err(error);
+            }
+        }
+    } else {
+        match crate::registry::active_history_db_paths(&pins.registry_store).await {
+            Ok(paths) => (paths, Vec::new()),
+            Err(error) => {
+                let _ = release_checkpoint_leases(shard_leases).await;
+                return Err(error);
+            }
+        }
+    };
     let (history_leases, history_absent) =
-        match acquire_history_checkpoints(pins, snapshot_id).await {
+        match acquire_history_checkpoints(pins, snapshot_id, history_paths).await {
             Ok(result) => result,
             Err(error) => {
                 let _ = release_checkpoint_leases(shard_leases).await;
@@ -1919,6 +1955,7 @@ async fn acquire_checkpoint_leases(
             return Err(error);
         }
     };
+    protected_wals.extend(registry_objects);
     protected_wals.extend(history_protected_wals);
     let mut leases = shard_leases;
     leases.extend(history_leases);
@@ -1961,15 +1998,165 @@ async fn acquire_db_checkpoint(
     Ok(())
 }
 
+async fn protect_source_object(
+    source: &BackupSource,
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    content_epoch: u64,
+    meta: &object_store::ObjectMeta,
+) -> anyhow::Result<ProtectedWal> {
+    let source_etag = meta
+        .e_tag
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("object {} has no ETag", meta.location))?;
+    let (record, reused) = match reusable_record(
+        destination.clone(),
+        source.role,
+        &meta.location,
+        &source_etag,
+        meta.size,
+        snapshot_id,
+        content_epoch,
+    )
+    .await?
+    {
+        Some(record) => (record, true),
+        None => (
+            copy_incremental_object(
+                source,
+                destination,
+                snapshot_id,
+                &meta.location,
+                &source_etag,
+                meta.size,
+                content_epoch,
+            )
+            .await?,
+            false,
+        ),
+    };
+    Ok(ProtectedWal {
+        source_etag,
+        record,
+        reused,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn protect_unique_source_object(
+    source: &BackupSource,
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    content_epoch: u64,
+    protected_etags: &mut HashMap<String, String>,
+    meta: object_store::ObjectMeta,
+) -> anyhow::Result<Option<ProtectedWal>> {
+    let path = meta.location.to_string();
+    let etag = meta
+        .e_tag
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("object {path} has no ETag"))?;
+    if let Some(existing) = protected_etags.get(&path) {
+        anyhow::ensure!(
+            existing == &etag,
+            "registry object changed during recovery cut: {path}"
+        );
+        return Ok(None);
+    }
+    let object =
+        protect_source_object(source, destination, snapshot_id, content_epoch, &meta).await?;
+    protected_etags.insert(path, etag);
+    Ok(Some(object))
+}
+
+async fn protect_cell_registry(
+    pins: &BackupPins,
+    cell_id: &str,
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    content_epoch: u64,
+) -> anyhow::Result<(Vec<String>, Vec<ProtectedWal>)> {
+    let directory_result = pins
+        .registry_store
+        .get(&ObjPath::from(crate::cells::CELLS_PATH))
+        .await?;
+    let directory_meta = directory_result.meta.clone();
+    let directory_raw = directory_result.bytes().await?;
+    let directory =
+        crate::cells::CellDirectory::decode(&directory_raw).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        directory.get(cell_id).is_some(),
+        "recovery cell is absent from cells.json"
+    );
+
+    let source = BackupSource {
+        role: "registry",
+        store: pins.registry_store.clone(),
+    };
+    let mut protected = Vec::new();
+    let mut protected_etags = HashMap::<String, String>::new();
+    let mut history_paths = HashSet::new();
+
+    if let Some(object) = protect_unique_source_object(
+        &source,
+        destination.clone(),
+        snapshot_id,
+        content_epoch,
+        &mut protected_etags,
+        directory_meta,
+    )
+    .await?
+    {
+        protected.push(object);
+    }
+
+    let prefix = crate::registry::cell_stream_index_prefix(cell_id);
+    let mut listing = pins.registry_store.list(Some(&prefix));
+    let mut marker_count = 0usize;
+    while let Some(marker_meta) = listing.try_next().await? {
+        marker_count += 1;
+        anyhow::ensure!(
+            marker_count <= crate::registry::MAX_ACTIVE_HISTORY_DBS,
+            "stream index count exceeds the recovery cell bound"
+        );
+        let Some(entry) =
+            crate::registry::cell_recovery_entry(&pins.registry_store, cell_id, &marker_meta)
+                .await?
+        else {
+            continue;
+        };
+        for meta in entry.registry_objects {
+            if let Some(object) = protect_unique_source_object(
+                &source,
+                destination.clone(),
+                snapshot_id,
+                content_epoch,
+                &mut protected_etags,
+                meta,
+            )
+            .await?
+            {
+                protected.push(object);
+            }
+        }
+        for path in entry.history_db_paths {
+            history_paths.insert(path);
+            anyhow::ensure!(
+                history_paths.len() <= crate::registry::MAX_ACTIVE_HISTORY_DBS,
+                "active history database count exceeds the recovery cell bound"
+            );
+        }
+    }
+    let mut history_paths: Vec<_> = history_paths.into_iter().collect();
+    history_paths.sort();
+    Ok((history_paths, protected))
+}
+
 async fn acquire_history_checkpoints(
     pins: &BackupPins,
     snapshot_id: &str,
+    paths: Vec<String>,
 ) -> anyhow::Result<(Vec<CheckpointLease>, Vec<String>)> {
-    let paths = crate::registry::active_history_db_paths_for_cell(
-        &pins.registry_store,
-        pins.cell_id.as_deref(),
-    )
-    .await?;
     let mut leases = Vec::new();
     let mut absent = Vec::new();
     for path in paths {
@@ -2643,6 +2830,28 @@ pub async fn restore_snapshot(
     snapshot_id: &str,
     targets: &HashMap<String, Arc<dyn ObjectStore>>,
 ) -> anyhow::Result<u64> {
+    restore_snapshot_filtered(backup, snapshot_id, targets, None).await
+}
+
+/// Restore only the named roles while still validating the complete immutable
+/// snapshot inventory. Used by managed-cell recovery to restore cell-local
+/// data separately from the mergeable global registry closure.
+pub async fn restore_snapshot_roles(
+    backup: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    targets: &HashMap<String, Arc<dyn ObjectStore>>,
+    roles: &HashSet<String>,
+) -> anyhow::Result<u64> {
+    anyhow::ensure!(!roles.is_empty(), "restore role selection is empty");
+    restore_snapshot_filtered(backup, snapshot_id, targets, Some(roles)).await
+}
+
+async fn restore_snapshot_filtered(
+    backup: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    targets: &HashMap<String, Arc<dyn ObjectStore>>,
+    roles: Option<&HashSet<String>>,
+) -> anyhow::Result<u64> {
     validate_snapshot_id(snapshot_id)?;
     let marker = marker_path(snapshot_id);
     let marker_bytes = backup.get(&marker).await?.bytes().await?;
@@ -2662,10 +2871,23 @@ pub async fn restore_snapshot(
         "snapshot marker id mismatch"
     );
     validate_snapshot_layout(&report)?;
+    if let Some(selected) = roles {
+        for role in selected {
+            validate_role(role)?;
+            anyhow::ensure!(
+                report.roles.contains(role),
+                "snapshot does not declare selected restore role {role}"
+            );
+        }
+    }
 
     // Restore is deliberately fail-closed rather than merging a snapshot with
     // live state. Do all emptiness checks before writing any role.
-    for role in &report.roles {
+    for role in report
+        .roles
+        .iter()
+        .filter(|role| roles.is_none_or(|selected| selected.contains(*role)))
+    {
         let target = targets
             .get(role)
             .ok_or_else(|| anyhow::anyhow!("no restore target for role {role}"))?;
@@ -2678,6 +2900,7 @@ pub async fn restore_snapshot(
     let prefix = ObjPath::from(format!("snapshots/{snapshot_id}/inventory"));
     let mut listing = backup.list(Some(&prefix));
     let mut objects = 0u64;
+    let mut selected_objects = 0u64;
     let mut bytes = 0u64;
     let mut inventory_checksum = [0u8; 32];
     while let Some(meta) = listing.try_next().await? {
@@ -2701,6 +2924,9 @@ pub async fn restore_snapshot(
             "inventory path mismatch"
         );
         objects += 1;
+        if roles.is_none_or(|selected| selected.contains(&record.role)) {
+            selected_objects += 1;
+        }
         bytes = bytes
             .checked_add(record.size)
             .ok_or_else(|| anyhow::anyhow!("snapshot byte count overflow"))?;
@@ -2735,6 +2961,9 @@ pub async fn restore_snapshot(
             inventory_path(snapshot_id, &record.role, &record.source_path) == meta.location,
             "inventory path mismatch"
         );
+        if roles.is_some_and(|selected| !selected.contains(&record.role)) {
+            continue;
+        }
         let target = targets
             .get(&record.role)
             .ok_or_else(|| anyhow::anyhow!("no restore target for role {}", record.role))?;
@@ -2785,8 +3014,159 @@ pub async fn restore_snapshot(
         cleanup?;
         restored += 1;
     }
-    anyhow::ensure!(restored == objects, "snapshot changed during restore");
+    anyhow::ensure!(
+        restored == selected_objects,
+        "snapshot changed during restore"
+    );
     Ok(restored)
+}
+
+fn valid_registry_recovery_path(path: &str) -> bool {
+    path == crate::cells::CELLS_PATH
+        || path.starts_with("registry/by-cell/")
+        || path.starts_with("registry/by-customer/")
+        || (path.starts_with("customers/") && path.ends_with("/cell-affinity.json"))
+}
+
+/// Merge one managed cell's registry recovery closure into an offline global
+/// registry target. Objects are create-only in practice: an existing key is
+/// accepted only when its exact SHA-256 and size match. This makes N cell
+/// points restartably unionable without allowing one stale point to overwrite
+/// another cell's authority.
+pub async fn merge_registry_snapshot(
+    backup: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    target: Arc<dyn ObjectStore>,
+) -> anyhow::Result<u64> {
+    validate_snapshot_id(snapshot_id)?;
+    let marker_bytes = backup.get(&marker_path(snapshot_id)).await?.bytes().await?;
+    let report: SnapshotReport = serde_json::from_slice(&marker_bytes)?;
+    anyhow::ensure!(
+        matches!(
+            report.format_version,
+            LEGACY_SNAPSHOT_FORMAT_VERSION
+                | CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION
+                | SNAPSHOT_FORMAT_VERSION
+        ) && report.snapshot_id == snapshot_id
+            && report.roles.contains(&"registry".to_string()),
+        "snapshot does not declare a managed registry recovery role"
+    );
+    validate_snapshot_layout(&report)?;
+
+    let prefix = ObjPath::from(format!("snapshots/{snapshot_id}/inventory"));
+    let mut listing = backup.list(Some(&prefix));
+    let mut objects = 0u64;
+    let mut bytes = 0u64;
+    let mut registry_objects = 0u64;
+    let mut inventory_checksum = [0u8; 32];
+    while let Some(meta) = listing.try_next().await? {
+        anyhow::ensure!(
+            meta.size <= MAX_INVENTORY_BYTES as u64,
+            "oversized inventory {}",
+            meta.location
+        );
+        let encoded = backup.get(&meta.location).await?.bytes().await?;
+        xor_digest(&mut inventory_checksum, Sha256::digest(&encoded).into());
+        let record: InventoryRecord = serde_json::from_slice(&encoded)?;
+        validate_inventory_record(&record, &report)?;
+        anyhow::ensure!(
+            inventory_path(snapshot_id, &record.role, &record.source_path) == meta.location,
+            "inventory path mismatch"
+        );
+        objects += 1;
+        bytes = bytes
+            .checked_add(record.size)
+            .ok_or_else(|| anyhow::anyhow!("snapshot byte count overflow"))?;
+        if record.role == "registry" {
+            registry_objects += 1;
+            anyhow::ensure!(
+                record.size <= MAX_REGISTRY_RECOVERY_OBJECT_BYTES as u64
+                    && valid_registry_recovery_path(&record.source_path),
+                "invalid managed registry recovery object"
+            );
+        }
+    }
+    anyhow::ensure!(
+        objects == report.objects
+            && bytes == report.bytes
+            && hex_encode(&inventory_checksum) == report.inventory_checksum
+            && registry_objects > 0,
+        "snapshot inventory failed registry recovery validation"
+    );
+
+    let mut listing = backup.list(Some(&prefix));
+    let mut merged = 0u64;
+    while let Some(meta) = listing.try_next().await? {
+        let encoded = backup.get(&meta.location).await?.bytes().await?;
+        let record: InventoryRecord = serde_json::from_slice(&encoded)?;
+        if record.role != "registry" {
+            continue;
+        }
+        validate_inventory_record(&record, &report)?;
+        let source = match &record.blob_path {
+            Some(path) => ObjPath::parse(path)?,
+            None => ObjPath::from(format!(
+                "snapshots/{snapshot_id}/objects/{}/{}",
+                record.role, record.source_path
+            )),
+        };
+        let get = if report.format_version == LEGACY_SNAPSHOT_FORMAT_VERSION {
+            backup
+                .get_opts(
+                    &source,
+                    GetOptions {
+                        if_match: Some(record.backup_etag.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        } else {
+            backup.get(&source).await?
+        };
+        let temp = ObjPath::from(format!(
+            "_registry_merge_tmp/{snapshot_id}/{}",
+            hex_encode(&Sha256::digest(record.source_path.as_bytes()))
+        ));
+        let (copied, digest, _) = copy_stream(get.into_stream(), target.clone(), &temp).await?;
+        if copied != record.size || hex_encode(&digest) != record.sha256 {
+            let _ = target.delete(&temp).await;
+            anyhow::bail!(
+                "registry backup object failed integrity check: {}",
+                record.source_path
+            );
+        }
+        let final_path = ObjPath::from(record.source_path.as_str());
+        match target.get(&final_path).await {
+            Ok(existing) => {
+                anyhow::ensure!(
+                    existing.meta.size <= MAX_REGISTRY_RECOVERY_OBJECT_BYTES as u64,
+                    "existing registry recovery object is too large"
+                );
+                let existing = existing.bytes().await?;
+                let exact = existing.len() as u64 == record.size
+                    && hex_encode(&Sha256::digest(&existing)) == record.sha256;
+                target.delete(&temp).await?;
+                anyhow::ensure!(
+                    exact,
+                    "registry recovery conflict at {}",
+                    record.source_path
+                );
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                let promoted = target.copy(&temp, &final_path).await;
+                let cleanup = target.delete(&temp).await;
+                promoted?;
+                cleanup?;
+            }
+            Err(error) => {
+                let _ = target.delete(&temp).await;
+                return Err(error.into());
+            }
+        }
+        merged += 1;
+    }
+    anyhow::ensure!(merged == registry_objects, "snapshot changed during merge");
+    Ok(merged)
 }
 
 async fn copy_stream(
@@ -4810,6 +5190,224 @@ mod tests {
         );
         assert_eq!(restored.get(b"after").await.unwrap(), None);
         restored.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn managed_cell_recovery_point_restores_only_its_registry_closure() {
+        let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let registry_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        ops.put(
+            &ObjPath::from("topology.json"),
+            PutPayload::from_static(
+                br#"{"version":1,"storage_format":2,"shards":[""],"shard_paths":{}}"#,
+            ),
+        )
+        .await
+        .unwrap();
+        registry_store
+            .put(
+                &ObjPath::from(crate::cells::CELLS_PATH),
+                PutPayload::from_static(
+                    br#"{"version":1,"generation":1,"cells":[{"cell_id":"cell-a","region":"test-a","ops_prefix":"cells/cell-a","weight":1,"state":"active"},{"cell_id":"cell-b","region":"test-b","ops_prefix":"cells/cell-b","weight":1,"state":"active"}]}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        let registry = crate::registry::Registry::new(registry_store.clone());
+        let descriptor_a: crate::registry::StreamDesc = serde_json::from_value(serde_json::json!({
+            "customer_id": "customer-a",
+            "cell": "cell-a",
+            "name": "history-a",
+            "stream_epoch": "00000000000000000000000000000011",
+            "key_fingerprint": "test-a",
+            "created_ms": 1
+        }))
+        .unwrap();
+        let descriptor_b: crate::registry::StreamDesc = serde_json::from_value(serde_json::json!({
+            "customer_id": "customer-b",
+            "cell": "cell-b",
+            "name": "history-b",
+            "stream_epoch": "00000000000000000000000000000012",
+            "key_fingerprint": "test-b",
+            "created_ms": 1
+        }))
+        .unwrap();
+        registry
+            .get_or_create_customer_cell_affinity("customer-a", "cell-a")
+            .await
+            .unwrap();
+        registry
+            .get_or_create_customer_cell_affinity("customer-b", "cell-b")
+            .await
+            .unwrap();
+        assert!(registry.create(descriptor_a.clone()).await.unwrap().0);
+        assert!(registry.create(descriptor_b).await.unwrap().0);
+        let history_path = recovery_history_db_path(&descriptor_a.storage_hash());
+        let history = slatedb::Db::open(history_path.as_str(), data.clone())
+            .await
+            .unwrap();
+        history.put(b"before", b"included").await.unwrap();
+        history.close().await.unwrap();
+
+        let pins = BackupPins {
+            cell_id: Some("cell-a".to_string()),
+            topology_store: ops.clone(),
+            registry_store: registry_store.clone(),
+            shard_store: shards.clone(),
+            data_store: data.clone(),
+            lifetime: Duration::from_secs(60),
+        };
+        let report = snapshot_once_with_pins(
+            &[
+                BackupSource {
+                    role: "ops",
+                    store: ops,
+                },
+                BackupSource {
+                    role: "shard",
+                    store: shards,
+                },
+                BackupSource {
+                    role: "data",
+                    store: data,
+                },
+            ],
+            backup.clone(),
+            Some(&pins),
+        )
+        .await
+        .unwrap();
+        assert!(report.roles.contains(&"registry".to_string()));
+        assert_eq!(report.pinned_history_dbs, 1);
+
+        let merged_registry: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        assert!(
+            merge_registry_snapshot(backup.clone(), &report.snapshot_id, merged_registry.clone(),)
+                .await
+                .unwrap()
+                > 0
+        );
+        let pins_b = BackupPins {
+            cell_id: Some("cell-b".to_string()),
+            topology_store: pins.topology_store.clone(),
+            registry_store: pins.registry_store.clone(),
+            shard_store: pins.shard_store.clone(),
+            data_store: pins.data_store.clone(),
+            lifetime: pins.lifetime,
+        };
+        let report_b = snapshot_once_with_pins(
+            &[
+                BackupSource {
+                    role: "ops",
+                    store: pins.topology_store.clone(),
+                },
+                BackupSource {
+                    role: "shard",
+                    store: pins.shard_store.clone(),
+                },
+                BackupSource {
+                    role: "data",
+                    store: pins.data_store.clone(),
+                },
+            ],
+            backup.clone(),
+            Some(&pins_b),
+        )
+        .await
+        .unwrap();
+        merge_registry_snapshot(
+            backup.clone(),
+            &report_b.snapshot_id,
+            merged_registry.clone(),
+        )
+        .await
+        .unwrap();
+        let merged = crate::registry::Registry::new(merged_registry);
+        assert!(
+            merged
+                .get("customer-a", "history-a")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            merged
+                .get("customer-b", "history-b")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let conflict_registry: Arc<dyn ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        merge_registry_snapshot(
+            backup.clone(),
+            &report.snapshot_id,
+            conflict_registry.clone(),
+        )
+        .await
+        .unwrap();
+        conflict_registry
+            .put(
+                &crate::registry::descriptor_path_for("customer-a", "history-a"),
+                PutPayload::from_static(b"conflict"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            merge_registry_snapshot(backup.clone(), &report.snapshot_id, conflict_registry,)
+                .await
+                .is_err()
+        );
+
+        let restored_ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_registry: Arc<dyn ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        restore_snapshot(
+            backup,
+            &report.snapshot_id,
+            &HashMap::from([
+                ("ops".to_string(), restored_ops),
+                ("shard".to_string(), restored_shards),
+                ("data".to_string(), restored_data.clone()),
+                ("registry".to_string(), restored_registry.clone()),
+            ]),
+        )
+        .await
+        .unwrap();
+        let restored = crate::registry::Registry::new(restored_registry.clone());
+        assert!(
+            restored
+                .get("customer-a", "history-a")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            restored
+                .get("customer-b", "history-b")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            crate::registry::active_history_db_paths_for_cell(&restored_registry, Some("cell-a"))
+                .await
+                .unwrap(),
+            vec![history_path.clone()]
+        );
+        let restored_history = slatedb::Db::open(history_path, restored_data)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored_history.get(b"before").await.unwrap(),
+            Some(Bytes::from_static(b"included"))
+        );
+        restored_history.close().await.unwrap();
     }
 
     #[tokio::test]

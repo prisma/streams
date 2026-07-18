@@ -519,7 +519,12 @@ Each configured cell publishes marker-last recovery points to a different
 provider/region. The actor checkpoints initialized live shards, then all
 initialized history DBs named by active registry incarnations, and represents
 lazy DBs as absent. History enumeration is fail-closed above 100,000 DBs per
-cell, including per-key segments. It recursively resolves external clone
+cell, including per-key segments. The point also eagerly protects an exact
+`registry` role: `cells.json` plus each authoritative cell marker, descriptor,
+and customer affinity, copied before its history checkpoint. Recovery therefore
+never walks or copies another cell's registry population. Multiple cell points
+merge restartably into an offline global registry only when duplicate object
+bytes agree exactly; conflicts fail closed. It recursively resolves external clone
 checkpoints and copies only the selected manifest closure, compatible
 compactions record, and contiguous WAL interval above the replay watermark.
 Because a durable WAL can be acknowledged before its ID reaches the remote

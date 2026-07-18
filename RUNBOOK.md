@@ -21,6 +21,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `s3lite` | local S3 emulator with configurable latency, conditional PUTs, ambiguous failures, stale object/LIST responses, and metadata-preserving body corruption — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
+| `streams-registry-restore` | restartably merges one cell point's exact registry closure into an offline global registry target; conflicting bytes fail closed |
 | `streams-provider-check` | destructive unique-prefix probe for conditional, consistency, ordered/exclusive cursor listing, range, multipart, copy, and delete semantics required from each recovery/audit provider |
 | `streams-at-rest-check` | exact-ETag stable-corpus scan for operator-supplied forbidden payload/key byte patterns; emits aggregate evidence without echoing secrets |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
@@ -168,6 +169,13 @@ the replay watermark and immediately copies this pre-manifest suffix to
 immutable recovery content as each DB cut is observed. It does so before
 history enumeration and the general object walk, so primary WAL GC cannot
 overtake a large-cell recovery point.
+In managed mode the same point declares a separate `registry` role. Before
+descriptor publication the service already created an immutable per-cell
+marker. The backup actor lists only that cell prefix, validates each marker
+against the authoritative descriptor and durable affinity, and eagerly copies
+those exact ETag-fenced objects plus `cells.json` before pinning their history
+DBs. Missing/losing markers are safe orphans; conflicting affinity, identity,
+or placement fails the point. This is O(streams in cell), not O(global streams).
 Exact source ETags feed durable per-path indexes; unchanged objects reuse
 immutable SHA-256 blobs. Each point still gets a complete checksummed inventory,
 then `_complete.json` is created last and `latest.json` advances. Retention
@@ -813,6 +821,32 @@ secret-free artifact shape. A short or local run is not release evidence.
   measured from the newest acknowledged record present in the restored point;
   RTO ends at the first decrypted read from a service using only the recovery
   provider.
+
+  A managed multi-cell disaster is restored as an offline union. For every
+  selected cell point, first merge its registry closure into one common target:
+
+  ```bash
+  streams-registry-restore --snapshot-id latest \
+    --backup-endpoint "$BACKUP_S3_ENDPOINT" --backup-bucket "$BACKUP_S3_BUCKET" \
+    --backup-access-key-id "$BACKUP_S3_ACCESS_KEY_ID" \
+    --backup-secret-access-key "$BACKUP_S3_SECRET_ACCESS_KEY" \
+    --backup-prefix "$CELL_BACKUP_PREFIX" \
+    --target-endpoint "$RESTORE_REGISTRY_S3_ENDPOINT" \
+    --target-bucket "$RESTORE_REGISTRY_S3_BUCKET" \
+    --target-access-key-id "$RESTORE_REGISTRY_S3_ACCESS_KEY_ID" \
+    --target-secret-access-key "$RESTORE_REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --target-prefix "$RESTORE_REGISTRY_PATH_PREFIX" \
+    --confirm-registry-offline
+  ```
+
+  Repeating a cell is idempotent. Existing bytes must match size and SHA-256;
+  differing descriptors, affinities, indices, or directory bytes stop the
+  merge instead of choosing a winner. Restore each cell's data point to its own
+  empty target with `streams-restore --skip-registry`, then start no cell until
+  all intended closures are merged and an operator has verified `cells.json`.
+  `--allow-http` exists only for the local drill. The CI two-cell drill destroys
+  serving, restores separate primary/registry targets, and proves the first
+  decrypted read using only the recovery point.
 
   A measured failover against the actual independent provider remains a GA
   release gate in [OPERATIONS.md §2](./OPERATIONS.md). Provision unique empty

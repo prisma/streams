@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::{
+    ObjectMeta, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{hex, stream_hash};
@@ -150,6 +152,11 @@ struct CellStreamIndex {
     customer_id: String,
     name: String,
     cell: String,
+}
+
+pub struct CellRecoveryEntry {
+    pub registry_objects: Vec<ObjectMeta>,
+    pub history_db_paths: Vec<String>,
 }
 
 fn default_content_type() -> String {
@@ -591,10 +598,110 @@ fn desc_path(customer_id: &str, name: &str) -> ObjPath {
     }
 }
 
-fn cell_stream_index_prefix(cell_id: &str) -> ObjPath {
+pub fn cell_stream_index_prefix(cell_id: &str) -> ObjPath {
     // Include the next fixed component so an S3 byte-prefix list for `c-a`
     // can never include sibling `c-aa`.
     ObjPath::from(format!("registry/by-cell/{cell_id}/by-customer"))
+}
+
+/// Resolve one immutable cell marker into its authoritative recovery closure.
+/// Missing descriptors and markers superseded by another cell are safe
+/// orphans. Every returned object was fetched and identity-validated.
+pub async fn cell_recovery_entry(
+    store: &Arc<dyn ObjectStore>,
+    cell_id: &str,
+    marker_meta: &ObjectMeta,
+) -> anyhow::Result<Option<CellRecoveryEntry>> {
+    anyhow::ensure!(
+        crate::cells::valid_cell_id(cell_id),
+        "invalid recovery cell id"
+    );
+    anyhow::ensure!(
+        marker_meta.location.as_ref().ends_with(".json") && marker_meta.size <= 16 * 1024,
+        "cell stream index is invalid for recovery"
+    );
+    let marker_result = store.get(&marker_meta.location).await?;
+    anyhow::ensure!(
+        marker_result.meta.size <= 16 * 1024,
+        "cell stream index is too large for recovery"
+    );
+    let marker_object = marker_result.meta.clone();
+    let marker_raw = marker_result.bytes().await?;
+    let index: CellStreamIndex = serde_json::from_slice(&marker_raw)?;
+    anyhow::ensure!(
+        index.version == 1
+            && index.cell == cell_id
+            && !index.customer_id.is_empty()
+            && index.customer_id != "__legacy__"
+            && index.customer_id.len() <= 1_024
+            && !index.name.is_empty()
+            && index.name.len() <= 1_024
+            && cell_stream_index_path(&index.customer_id, &index.name, &index.cell)
+                == marker_meta.location,
+        "cell stream index identity is invalid for recovery"
+    );
+    let descriptor_path = descriptor_path_for(&index.customer_id, &index.name);
+    let descriptor_result = match store.get(&descriptor_path).await {
+        Ok(result) => result,
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(
+        descriptor_result.meta.size <= MAX_DESCRIPTOR_BYTES as u64,
+        "registry descriptor is too large for recovery"
+    );
+    let descriptor_object = descriptor_result.meta.clone();
+    let descriptor_raw = descriptor_result.bytes().await?;
+    let descriptor: StreamDesc = serde_json::from_slice(&descriptor_raw)?;
+    validate_descriptor_scope(&descriptor, &index.customer_id, &index.name)?;
+    if descriptor.cell != cell_id {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        descriptor.epoch_bytes().is_some(),
+        "registry descriptor epoch is invalid for recovery"
+    );
+    let affinity_path = customer_cell_affinity_path(&index.customer_id);
+    let affinity_result = store.get(&affinity_path).await?;
+    anyhow::ensure!(
+        affinity_result.meta.size <= 16 * 1024,
+        "customer cell affinity is too large for recovery"
+    );
+    let affinity_object = affinity_result.meta.clone();
+    let affinity_raw = affinity_result.bytes().await?;
+    let affinity: CustomerCellAffinity = serde_json::from_slice(&affinity_raw)?;
+    validate_customer_cell_affinity(&affinity)?;
+    anyhow::ensure!(
+        affinity.cells.iter().any(|cell| cell == cell_id),
+        "customer affinity omits its authoritative stream cell"
+    );
+
+    let mut history_db_paths = Vec::new();
+    if descriptor.is_per_key() {
+        anyhow::ensure!(
+            (1..=256).contains(&descriptor.segment_count)
+                && descriptor.segment_count.is_power_of_two(),
+            "registry descriptor has invalid history segments"
+        );
+        if !descriptor.deleted {
+            history_db_paths.extend(
+                (0..descriptor.segment_count)
+                    .map(|ordinal| history_db_path(&descriptor.segment_hash(ordinal))),
+            );
+        }
+    } else {
+        anyhow::ensure!(
+            descriptor.ordering.is_none() && descriptor.segment_count == 0,
+            "registry descriptor has unsupported history ordering"
+        );
+        if !descriptor.deleted {
+            history_db_paths.push(history_db_path(&descriptor.storage_hash()));
+        }
+    }
+    Ok(Some(CellRecoveryEntry {
+        registry_objects: vec![marker_object, descriptor_object, affinity_object],
+        history_db_paths,
+    }))
 }
 
 fn cell_stream_index_path(customer_id: &str, name: &str, cell_id: &str) -> ObjPath {

@@ -95,3 +95,7 @@ path = "src/bin/at_rest_check.rs"
 [[bin]]
 name = "streams-cell-admin"
 path = "src/bin/cell_admin.rs"
+
+[[bin]]
+name = "streams-registry-restore"
+path = "src/bin/registry_restore.rs"

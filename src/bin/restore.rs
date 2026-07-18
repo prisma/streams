@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,10 +48,30 @@ struct Args {
     #[arg(long, env = "RESTORE_PATH_PREFIX")]
     target_prefix: Option<String>,
 
+    /// Managed-cell global registry restore target. These six settings are
+    /// optional for legacy points and required together for points declaring
+    /// the `registry` role.
+    #[arg(long, env = "RESTORE_REGISTRY_S3_ENDPOINT")]
+    target_registry_endpoint: Option<String>,
+    #[arg(long, env = "RESTORE_REGISTRY_S3_BUCKET")]
+    target_registry_bucket: Option<String>,
+    #[arg(long, env = "RESTORE_REGISTRY_S3_REGION")]
+    target_registry_region: Option<String>,
+    #[arg(long, env = "RESTORE_REGISTRY_S3_ACCESS_KEY_ID")]
+    target_registry_access_key_id: Option<String>,
+    #[arg(long, env = "RESTORE_REGISTRY_S3_SECRET_ACCESS_KEY")]
+    target_registry_secret_access_key: Option<String>,
+    #[arg(long, env = "RESTORE_REGISTRY_PATH_PREFIX")]
+    target_registry_prefix: Option<String>,
+
     /// Required acknowledgement: targets are offline and disposable if this
     /// command fails. Restore itself independently verifies that each is empty.
     #[arg(long, default_value_t = false)]
     confirm_offline_empty_targets: bool,
+    /// Managed-cell workflow: restore only cell-local ops/shard/data. Merge
+    /// the registry role from every selected cell with streams-registry-restore.
+    #[arg(long, default_value_t = false)]
+    skip_registry: bool,
 }
 
 fn s3_store(
@@ -140,13 +160,60 @@ async fn main() -> anyhow::Result<()> {
         };
         targets.insert(role.to_string(), store);
     }
+    match (
+        args.target_registry_endpoint.as_deref(),
+        args.target_registry_bucket.as_deref(),
+        args.target_registry_region.as_deref(),
+        args.target_registry_access_key_id.as_deref(),
+        args.target_registry_secret_access_key.as_deref(),
+        args.target_registry_prefix.as_deref(),
+    ) {
+        (
+            Some(endpoint),
+            Some(bucket),
+            Some(region),
+            Some(access_key),
+            Some(secret_key),
+            Some(prefix),
+        ) => {
+            anyhow::ensure!(
+                !prefix.is_empty() && !prefix.starts_with("cells/"),
+                "registry restore prefix must be non-empty and outside cells/"
+            );
+            targets.insert(
+                "registry".to_string(),
+                s3_store(
+                    endpoint,
+                    bucket,
+                    region,
+                    access_key,
+                    secret_key,
+                    Some(prefix),
+                )?,
+            );
+        }
+        (None, None, None, None, None, None) => {}
+        _ => anyhow::bail!(
+            "all RESTORE_REGISTRY endpoint/bucket/region/credentials/prefix settings are required together"
+        ),
+    }
 
     let snapshot_id = if args.snapshot_id == "latest" {
         streams_slate::backup::latest_snapshot_id(backup.clone()).await?
     } else {
         args.snapshot_id
     };
-    let restored = streams_slate::backup::restore_snapshot(backup, &snapshot_id, &targets).await?;
+    let restored = if args.skip_registry {
+        streams_slate::backup::restore_snapshot_roles(
+            backup,
+            &snapshot_id,
+            &targets,
+            &HashSet::from(["ops".to_string(), "shard".to_string(), "data".to_string()]),
+        )
+        .await?
+    } else {
+        streams_slate::backup::restore_snapshot(backup, &snapshot_id, &targets).await?
+    };
     println!(
         "{}",
         serde_json::json!({"snapshot_id": snapshot_id, "restored_objects": restored})
