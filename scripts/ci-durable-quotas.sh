@@ -96,14 +96,34 @@ for seq in $(seq 0 7); do
 done
 for pid in "${pids[@]}"; do wait "${pid}"; done
 
+# End the deliberately unfenced two-owner phase before inspecting its durable
+# result. Either process may correctly discover that the other fenced its
+# cached shard engine; a clean single owner makes the assertions independent
+# of that race's final winner.
+kill "${PID_A}" "${PID_B}"
+wait "${PID_A}" 2>/dev/null || true
+wait "${PID_B}" 2>/dev/null || true
+PID_A=""
+PID_B=""
+start_service "${PORT_A}" quota-steady "${TMP_DIR}/steady.log"
+PID_A="${SERVICE_PID}"
+wait_ready "${URL_A}" "${TMP_DIR}/steady.log"
+
 list="$(curl --fail --silent "${URL_A}/v1/streams" \
   -H "authorization: Bearer ${AUTH_TOKEN}")"
 live_count="$(printf '%s' "${list}" | grep -o '"name"' | wc -l | tr -d ' ')"
 [[ "${live_count}" == "2" ]]
 
-status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+status="$(curl --silent --dump-header "${TMP_DIR}/overflow.headers" \
+  --output "${TMP_DIR}/overflow.body" --write-out '%{http_code}' \
   -X PUT "${URL_A}/v1/stream/overflow" "${auth[@]}")"
 [[ "${status}" == "429" ]]
+grep -Eiq '^retry-after: 1\r?$' "${TMP_DIR}/overflow.headers"
+grep -q '"code":"throttled"' "${TMP_DIR}/overflow.body"
+grep -q '"scope":"customer"' "${TMP_DIR}/overflow.body"
+grep -q '"dimension":"streams_count"' "${TMP_DIR}/overflow.body"
+grep -q '"limit":2' "${TMP_DIR}/overflow.body"
+grep -q '"observed":3' "${TMP_DIR}/overflow.body"
 
 # A durable tombstone drops out of the authoritative recount, so a new name
 # can claim the released slot without editing a best-effort memory counter.
@@ -122,19 +142,23 @@ live_count="$(printf '%s' "${list}" | grep -o '"name"' | wc -l | tr -d ' ')"
 curl --fail --silent -X POST "${URL_A}/v1/stream/replacement" "${auth[@]}" \
   -H 'content-type: application/octet-stream' -H 'producer-id: quota-writer' \
   -H 'producer-epoch: 0' -H 'producer-seq: 0' -d 'four' >/dev/null
-status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+status="$(curl --silent --dump-header "${TMP_DIR}/write-rate.headers" \
+  --output "${TMP_DIR}/write-rate.body" --write-out '%{http_code}' \
   -X POST "${URL_A}/v1/stream/replacement" "${auth[@]}" \
   -H 'content-type: application/octet-stream' -H 'producer-id: quota-writer' \
   -H 'producer-epoch: 0' -H 'producer-seq: 1' -d 'x')"
 [[ "${status}" == "429" ]]
+grep -Eiq '^retry-after: 1\r?$' "${TMP_DIR}/write-rate.headers"
+grep -q '"code":"throttled"' "${TMP_DIR}/write-rate.body"
+grep -q '"scope":"customer"' "${TMP_DIR}/write-rate.body"
+grep -q '"dimension":"write_burst_bytes"' "${TMP_DIR}/write-rate.body"
+grep -q '"limit":4' "${TMP_DIR}/write-rate.body"
 
 # A malformed durable limit document fails closed after a clean restart;
 # requests do not silently fall back to permissive process defaults.
-kill "${PID_A}" "${PID_B}"
+kill "${PID_A}"
 wait "${PID_A}" 2>/dev/null || true
-wait "${PID_B}" 2>/dev/null || true
 PID_A=""
-PID_B=""
 printf '%s' 'not-json' >"${TMP_DIR}/limits.json"
 curl --fail --silent -X PUT "${limits_url}" \
   --data-binary "@${TMP_DIR}/limits.json" >/dev/null

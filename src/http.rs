@@ -27,7 +27,7 @@ use crate::crypto::{
 use crate::history::{KeyCache, read_history};
 use crate::offsets::Offset;
 use crate::registry::{Registry, StorageHash, StreamDesc, Topology, shard_for_hash};
-use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
+use crate::shard::{AppendErr, AppendReq, EnqueueError, ShardEngine, now_ms, read_frames};
 
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
@@ -154,6 +154,14 @@ struct TenantAdmissionState {
     last_seen: std::time::Instant,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ThrottleReason {
+    scope: &'static str,
+    dimension: &'static str,
+    limit: u64,
+    observed: u64,
+}
+
 pub struct TenantAdmission {
     inner: Mutex<TenantAdmissionInner>,
     max_inflight: usize,
@@ -181,7 +189,7 @@ impl TenantAdmission {
         self: &Arc<Self>,
         customer_id: &str,
         limits: &crate::registry::CustomerLimits,
-    ) -> Option<TenantAdmissionGuard> {
+    ) -> Result<TenantAdmissionGuard, ThrottleReason> {
         let max_inflight = limits.max_inflight.unwrap_or(self.max_inflight);
         let write_bytes_per_second = limits
             .write_bytes_per_second
@@ -194,12 +202,20 @@ impl TenantAdmission {
         if !inner.customers.contains_key(customer_id)
             && inner.customers.len() >= self.customer_capacity
         {
-            let evict = inner
+            let Some(evict) = inner
                 .customers
                 .iter()
                 .filter(|(_, state)| state.inflight == 0)
                 .min_by_key(|(_, state)| state.last_seen)
-                .map(|(customer, _)| customer.clone())?;
+                .map(|(customer, _)| customer.clone())
+            else {
+                return Err(ThrottleReason {
+                    scope: "instance",
+                    dimension: "customer_admission_states",
+                    limit: self.customer_capacity as u64,
+                    observed: self.customer_capacity.saturating_add(1) as u64,
+                });
+            };
             inner.customers.remove(&evict);
         }
         let now = std::time::Instant::now();
@@ -223,23 +239,37 @@ impl TenantAdmission {
             state.last_refill = now;
         }
         if max_inflight > 0 && state.inflight >= max_inflight {
-            return None;
+            return Err(ThrottleReason {
+                scope: "customer",
+                dimension: "connections",
+                limit: max_inflight as u64,
+                observed: state.inflight.saturating_add(1) as u64,
+            });
         }
         state.inflight += 1;
         state.last_seen = now;
-        Some(TenantAdmissionGuard {
+        Ok(TenantAdmissionGuard {
             admission: Some(self.clone()),
             customer_id: customer_id.to_string(),
         })
     }
 
-    fn charge_write(&self, customer_id: &str, bytes: usize) -> bool {
+    fn charge_write(&self, customer_id: &str, bytes: usize) -> Result<(), ThrottleReason> {
         let mut inner = self.inner.lock().unwrap();
         let Some(state) = inner.customers.get_mut(customer_id) else {
-            return bytes == 0;
+            return if bytes == 0 {
+                Ok(())
+            } else {
+                Err(ThrottleReason {
+                    scope: "instance",
+                    dimension: "customer_admission_states",
+                    limit: self.customer_capacity as u64,
+                    observed: self.customer_capacity.saturating_add(1) as u64,
+                })
+            };
         };
         if state.write_bytes_per_second == 0 || bytes == 0 {
-            return true;
+            return Ok(());
         }
         let now = std::time::Instant::now();
         let refill = now.duration_since(state.last_refill).as_secs_f64()
@@ -248,10 +278,16 @@ impl TenantAdmission {
         state.last_refill = now;
         state.last_seen = now;
         if bytes as f64 > state.write_tokens {
-            return false;
+            let consumed = state.write_burst_bytes as f64 - state.write_tokens;
+            return Err(ThrottleReason {
+                scope: "customer",
+                dimension: "write_burst_bytes",
+                limit: state.write_burst_bytes,
+                observed: (consumed + bytes as f64).ceil().min(u64::MAX as f64) as u64,
+            });
         }
         state.write_tokens -= bytes as f64;
-        true
+        Ok(())
     }
 }
 
@@ -296,23 +332,14 @@ async fn body_with_quota(
                 "body too large",
             ));
         }
-        if !state
+        if let Err(reason) = state
             .tenant_admission
             .charge_write(customer_id, chunk.len())
         {
             state
                 .admit_shed
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut response = err_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                "tenant_write_rate",
-                "customer write-byte rate exceeded; retry",
-            );
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                axum::http::HeaderValue::from_static("1"),
-            );
-            return Err(response);
+            return Err(throttled_resp(reason, 1));
         }
         buffered.extend_from_slice(&chunk);
     }
@@ -342,20 +369,11 @@ async fn admit_customer(
     let guard = state
         .tenant_admission
         .enter(customer_id, &limits)
-        .ok_or_else(|| {
+        .map_err(|reason| {
             state
                 .admit_shed
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut response = err_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                "tenant_overloaded",
-                "customer has reached its concurrent request limit; retry",
-            );
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                axum::http::HeaderValue::from_static("1"),
-            );
-            response
+            throttled_resp(reason, 1)
         })?;
     Ok((guard, limits))
 }
@@ -576,12 +594,15 @@ async fn track_inflight(
         // invites an instant retry — measured as a CPU-starving reject
         // storm). Compliant clients never see this path twice in a row.
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [("retry-after", "1"), ("content-type", "application/json")],
-            r#"{"error":{"code":"overloaded","message":"instance at admission capacity; retry"}}"#,
-        )
-            .into_response();
+        return throttled_resp(
+            ThrottleReason {
+                scope: "instance",
+                dimension: "connections",
+                limit: state.admit_max_inflight as u64,
+                observed: u64::try_from(cur).unwrap_or(u64::MAX),
+            },
+            1,
+        );
     }
     // RSS shed: writes only — reads don't grow memtables, and rejecting
     // them would hide the instance from its own operators.
@@ -597,12 +618,18 @@ async fn track_inflight(
             .admit_shed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [("retry-after", "2"), ("content-type", "application/json")],
-            r#"{"error":{"code":"overloaded","message":"instance memory pressure; retry"}}"#,
-        )
-            .into_response();
+        return throttled_resp(
+            ThrottleReason {
+                scope: "instance",
+                dimension: "memory_bytes",
+                limit: state.admit_rss_shed_mb.saturating_mul(1024 * 1024),
+                observed: state
+                    .rss_mb_cached
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .saturating_mul(1024 * 1024),
+            },
+            2,
+        );
     }
     next.run(req).await
 }
@@ -797,6 +824,32 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
         json!({"error": {"code": code, "message": message}}).to_string(),
     )
         .into_response()
+}
+
+fn throttled_resp(reason: ThrottleReason, retry_after_seconds: u64) -> Response {
+    let retry_after_seconds = retry_after_seconds.max(1);
+    let mut response = (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::CONTENT_TYPE, "application/json")],
+        json!({
+            "error": {
+                "code": "throttled",
+                "scope": reason.scope,
+                "dimension": reason.dimension,
+                "limit": reason.limit,
+                "observed": reason.observed,
+                "retry_after_ms": retry_after_seconds.saturating_mul(1_000),
+            }
+        })
+        .to_string(),
+    )
+        .into_response();
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        axum::http::HeaderValue::from_str(&retry_after_seconds.to_string())
+            .expect("positive integer is a valid Retry-After value"),
+    );
+    response
 }
 
 fn storage_err_resp(error: slatedb::Error) -> Response {
@@ -1983,16 +2036,15 @@ async fn create_stream_with_quota(
             }
         };
         if observed >= limit {
-            let mut response = err_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                "streams_count_quota",
-                "customer stream-count quota exceeded",
+            return throttled_resp(
+                ThrottleReason {
+                    scope: "customer",
+                    dimension: "streams_count",
+                    limit: limit as u64,
+                    observed: observed.saturating_add(1) as u64,
+                },
+                1,
             );
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                axum::http::HeaderValue::from_static("1"),
-            );
-            return response;
         }
         let Some(lease) = quota_lease else {
             return err_resp(
@@ -2260,8 +2312,30 @@ async fn create_stream_with_quota(
             touch: None,
             resp: tx,
         };
-        if engine.try_enqueue(req).is_err() {
-            return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "queue full");
+        if let Err(error) = engine.try_enqueue(req) {
+            return match error {
+                EnqueueError::Full => throttled_resp(
+                    ThrottleReason {
+                        scope: "shard",
+                        dimension: "queue_depth",
+                        limit: engine.queue_limit() as u64,
+                        observed: engine.queue_limit().saturating_add(1) as u64,
+                    },
+                    1,
+                ),
+                EnqueueError::ShardMoved => {
+                    let mut response = err_resp(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "shard_moving",
+                        "shard ownership changed; retry create",
+                    );
+                    response.headers_mut().insert(
+                        header::RETRY_AFTER,
+                        axum::http::HeaderValue::from_static("1"),
+                    );
+                    response
+                }
+            };
         }
         match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
             Ok(Ok(Ok(ack))) => {
@@ -2840,12 +2914,30 @@ async fn append(
         Ok(e) => e,
         Err(r) => return r,
     };
-    if engine.try_enqueue(req).is_err() {
-        return err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "overloaded",
-            "append queue full",
-        );
+    if let Err(error) = engine.try_enqueue(req) {
+        return match error {
+            EnqueueError::Full => throttled_resp(
+                ThrottleReason {
+                    scope: "shard",
+                    dimension: "queue_depth",
+                    limit: engine.queue_limit() as u64,
+                    observed: engine.queue_limit().saturating_add(1) as u64,
+                },
+                1,
+            ),
+            EnqueueError::ShardMoved => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "shard_moving",
+                    "shard ownership changed; retry",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                response
+            }
+        };
     }
     let outcome = match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
         Ok(Ok(o)) => o,
@@ -4389,14 +4481,30 @@ mod tests {
         let admission = TenantAdmission::new(1, 10, 10);
         let limits = crate::registry::CustomerLimits::default();
         let first = admission.enter("customer-a", &limits).unwrap();
-        assert!(admission.enter("customer-a", &limits).is_none());
+        assert_eq!(
+            admission.enter("customer-a", &limits).err(),
+            Some(ThrottleReason {
+                scope: "customer",
+                dimension: "connections",
+                limit: 1,
+                observed: 2,
+            })
+        );
         let other = admission.enter("customer-b", &limits).unwrap();
         assert_eq!(admission.inner.lock().unwrap().customers.len(), 2);
-        assert!(admission.charge_write("customer-a", 10));
-        assert!(!admission.charge_write("customer-a", 1));
+        assert!(admission.charge_write("customer-a", 10).is_ok());
+        assert_eq!(
+            admission.charge_write("customer-a", 1).unwrap_err(),
+            ThrottleReason {
+                scope: "customer",
+                dimension: "write_burst_bytes",
+                limit: 10,
+                observed: 11,
+            }
+        );
 
         drop(first);
-        assert!(admission.enter("customer-a", &limits).is_some());
+        assert!(admission.enter("customer-a", &limits).is_ok());
         drop(other);
         assert!(
             admission
@@ -4415,7 +4523,40 @@ mod tests {
             ..Default::default()
         };
         let _guard = admission.enter("customer-unlimited", &unlimited).unwrap();
-        assert!(admission.charge_write("customer-unlimited", usize::MAX / 2));
+        assert!(
+            admission
+                .charge_write("customer-unlimited", usize::MAX / 2)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn throttled_response_has_stable_machine_readable_contract() {
+        let response = throttled_resp(
+            ThrottleReason {
+                scope: "customer",
+                dimension: "streams_count",
+                limit: 2,
+                observed: 3,
+            },
+            1,
+        );
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            json!({"error": {
+                "code": "throttled",
+                "scope": "customer",
+                "dimension": "streams_count",
+                "limit": 2,
+                "observed": 3,
+                "retry_after_ms": 1000,
+            }})
+        );
     }
 
     #[test]

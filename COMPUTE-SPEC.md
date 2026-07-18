@@ -529,11 +529,14 @@ The first line is per-tenant, enforced before work is queued.
 
 ### 12.2 The 429 contract
 
-429 responses carry `Retry-After` (milliseconds, jittered) and
+429 responses carry standards-compliant `Retry-After` seconds plus a body
+`retry_after_ms` mirror. SDKs add jitter before retrying. The body is
 `{"error":{"code":"throttled","scope":"stream|customer|shard|instance",
-"dimension":"appends_per_sec|append_bytes_per_sec|connections|queue_depth",
-"limit":n,"observed":n}}`. SDKs back off per `Retry-After`. Instance- and
-shard-scope 429s are alarmable (they mean capacity, not tenant behavior).
+"dimension":"connections|streams_count|write_burst_bytes|queue_depth|memory_bytes",
+"limit":n,"observed":n,"retry_after_ms":n}}`. `limit` and `observed` use
+the units named by `dimension`; stream-count `observed` includes the rejected
+create. Instance- and shard-scope 429s are alarmable (they mean capacity, not
+tenant behavior).
 
 ### 12.3 Hot streams, hot shards
 

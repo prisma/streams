@@ -282,8 +282,13 @@ OOM-killed container under load otherwise stays down.
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
 | `GET /v1/debug/sleep?ms=N` | none | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
 
-**429 semantics**: body `{"error":{"code":"overloaded"…}}` with
-`Retry-After: 1` (in-flight shed) or `2` (RSS shed), after a 25 ms tarpit.
+**429 semantics**: every body uses
+`{"error":{"code":"throttled","scope":…,"dimension":…,"limit":n,
+"observed":n,"retry_after_ms":n}}` with standards-compliant `Retry-After: 1`
+(in-flight, tenant, or queue shed) or `2` (RSS shed), after a 25 ms tarpit for
+instance pressure. SDKs add jitter before retrying. The dimensions identify
+their units (`connections`, `streams_count`, `write_burst_bytes`,
+`queue_depth`, or `memory_bytes`).
 Sustained 429s are the *designed* behavior under overload — the alternative
 was death (§3.6).
 

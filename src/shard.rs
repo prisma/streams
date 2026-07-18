@@ -497,6 +497,12 @@ pub struct ShardEngine {
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnqueueError {
+    Full,
+    ShardMoved,
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -573,19 +579,22 @@ impl ShardEngine {
         engine
     }
 
-    #[allow(clippy::result_large_err)]
-    pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
+    pub fn try_enqueue(&self, req: AppendReq) -> Result<(), EnqueueError> {
         let _gate = self.admission_gate.lock().unwrap();
         if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
-            return Err(req);
+            return Err(EnqueueError::ShardMoved);
         }
         self.tx
             .try_send(CommitOp::Append(req))
             .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(CommitOp::Append(r)) => r,
-                mpsc::error::TrySendError::Closed(CommitOp::Append(r)) => r,
+                mpsc::error::TrySendError::Full(CommitOp::Append(_)) => EnqueueError::Full,
+                mpsc::error::TrySendError::Closed(CommitOp::Append(_)) => EnqueueError::ShardMoved,
                 _ => unreachable!(),
             })
+    }
+
+    pub fn queue_limit(&self) -> usize {
+        self.tx.max_capacity()
     }
 
     /// L8 stale-owner read guard. A recent remotely durable commit proves
@@ -1966,7 +1975,7 @@ mod tests {
         let CommitOp::Append(after) = append_op("customer-b", 1) else {
             unreachable!()
         };
-        assert!(engine.try_enqueue(after).is_err());
+        assert_eq!(engine.try_enqueue(after), Err(EnqueueError::ShardMoved));
         assert_eq!(ack.await.unwrap().unwrap().next_offset, 1);
         quiescing.await.unwrap().unwrap();
 
