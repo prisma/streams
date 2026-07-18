@@ -221,6 +221,13 @@ The A/B is stark (run 11): identical overload, guards off = all four
 instances dead in ~2 minutes; guards on = zero deaths, zero stalls, client
 p90 5.4× better at 2× the offered load.
 
+`scripts/ci-noisy-neighbor.sh` is the release-sized isolation check: eight
+continuous throttled request streams for one real JWT principal run while
+a second principal performs durable producer writes. It requires exact victim
+data and bounds victim p99 to 10× its same-run baseline + 250 ms (hard cap
+2 s). This catches functional isolation regressions; target-hardware capacity
+and tail-latency budgets remain a separate performance/soak gate.
+
 **Client contract**: clients MUST honor `Retry-After` with jitter. A client
 that retries 429s instantly creates a reject storm that starves the
 instance's own health checks (measured: 2.7 M rejects, goodput ~1/s). The
