@@ -156,6 +156,27 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 | `METRICS_AUTH_TOKEN` | — | scoped service JWT for `__metrics__`; required with JWKS mode when metrics are enabled |
 | `INSTANCE_NAME` | `streams` | instance tag in metrics + fleet heartbeats (`streams-1`…) |
 
+Per-customer production limits are durable ops-role objects at
+`customers/<first-128-bits-of-SHA256(customer-id)>/limits.json`:
+
+```json
+{
+  "version": 1,
+  "max_inflight": 64,
+  "write_bytes_per_second": 67108864,
+  "write_burst_bytes": 134217728,
+  "streams_count": 10000
+}
+```
+
+Fields are optional overrides of the deployment defaults; an explicit zero
+disables that rate/concurrency limit, while `streams_count: 0` forbids new
+names. Documents are strictly validated and cached for 60 seconds. Corrupt or
+unavailable documents return 503 rather than falling back. Count enforcement
+uses a 30-second per-customer CAS lease and recounts durable descriptors, so
+two instances cannot concurrently exceed the limit; delete/recreate capacity
+follows durable tombstones.
+
 Stream keys: `streams-keys generate` → 32-byte base64. Clients pass it as
 `Stream-Encryption-Key` on create and on every data-path request. The
 service holds it in memory for the request only. Losing the key = losing the

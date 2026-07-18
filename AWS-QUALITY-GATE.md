@@ -18,7 +18,7 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, stale topology responses, corrupt immutable SST responses, and pre/post-commit timeout/429/5xx/412 faults are automated. Stale manifest/list injection and general measured recovery bounds remain. |
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. A real RS256/JWKS service drill proves identical-name isolation, per-tenant listing/non-disclosure, prefix/verb denial, live token revocation, and rollback-resistant revocation versions. Durable control-plane audit exists. An independent security review remains. |
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
-| Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Per-customer concurrency and streaming write-byte buckets isolate noisy tenants; persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit state is bounded. Durable account quotas and a measured noisy-neighbor gate remain. |
+| Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Bounded, durable per-customer limit documents override concurrency/write-byte admission and enforce exact live stream-name counts through a cross-instance CAS lease plus authoritative recount. Persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit/limit state is bounded. Remaining dimensions (read rates/bytes, connections, queue receives, per-stream weights), the complete structured 429 contract, and a measured noisy-neighbor gate remain. |
 | Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split has a CAS-created shard-store intent, closed admission, remote-durability barrier, exact projection clones, generation-specific paths, one-CAS topology publish, renewable ownership, crash reconciliation, and a calibrated sustained-byte trigger. Concurrent producers, hard restart under a new identity, automatic refinement, separate role buckets, and a deliberately stale second owner are exercised. Merge, abandoned-generation GC, per-stream hot-share policy, and the global cell placement layer remain. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup/PITR copy actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Immutable checksummed snapshots and an empty-target restore are exercised end to end. Injected SST corruption fails without a success or partial plaintext and recovers from the untouched source. Incremental PITR, retention, continuous scrub, provider failover, and measured RPO/RTO remain. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
@@ -121,11 +121,18 @@ documented cell limits. A feature described only in `SPEC.md`,
   names retain separate keys and bytes, unique names are absent from the
   other tenant's reads/list, restricted verbs/prefixes fail, revocation is
   observed live, and a lower revocation version cannot un-revoke a token.
+- Customer limit documents are hash-keyed, strictly validated, cached for 60
+  seconds with bounded cardinality, and fail closed on corruption. They can
+  override concurrent requests and streaming write-byte buckets. Stream
+  count decisions serialize across processes with a renewable CAS lease and
+  count durable by-customer descriptors; CI races eight names through two
+  processes against a limit of two, then proves delete/replacement capacity.
 
 ## Immediate red-gate queue
 
-1. Add stale manifest/list injection, durable account/stream quotas, an
-   independent security review, and a measured noisy-neighbor workload.
+1. Add stale manifest/list injection, the remaining account/per-stream quota
+   dimensions and structured 429 fields, an independent security review, and
+   a measured noisy-neighbor workload.
 2. Add crash injection at every split phase, abandoned-generation retention/
    GC, sibling merge, per-stream hot-share enforcement, and an explicit
    storage-format migration/rollback plan.

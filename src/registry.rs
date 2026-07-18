@@ -197,9 +197,101 @@ pub struct Registry {
     store: Arc<dyn ObjectStore>,
     cache: Mutex<RegistryCache>,
     cache_ttl: Duration,
+    limits_cache: Mutex<LimitsCache>,
+    limits_cache_ttl: Duration,
 }
 
 const DEFAULT_CACHE_CAPACITY: usize = 10_000;
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct CustomerLimits {
+    pub version: u64,
+    #[serde(default)]
+    pub max_inflight: Option<usize>,
+    #[serde(default)]
+    pub write_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub write_burst_bytes: Option<u64>,
+    #[serde(default)]
+    pub streams_count: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamQuotaLease {
+    customer_id: String,
+    owner: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct StreamQuotaLeaseDocument {
+    version: u64,
+    owner: String,
+    lease_until_ms: i64,
+}
+
+struct CachedLimits {
+    value: CustomerLimits,
+    inserted_at: Instant,
+    generation: u64,
+}
+
+struct LimitsCache {
+    entries: HashMap<String, CachedLimits>,
+    order: VecDeque<(String, u64)>,
+    next_generation: u64,
+    capacity: usize,
+}
+
+impl LimitsCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            next_generation: 0,
+            capacity: capacity.max(1),
+        }
+    }
+
+    fn get(&self, customer_id: &str, ttl: Duration) -> Option<CustomerLimits> {
+        self.entries
+            .get(customer_id)
+            .filter(|entry| entry.inserted_at.elapsed() < ttl)
+            .map(|entry| entry.value.clone())
+    }
+
+    fn insert(&mut self, customer_id: String, value: CustomerLimits) {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        let generation = self.next_generation;
+        self.entries.insert(
+            customer_id.clone(),
+            CachedLimits {
+                value,
+                inserted_at: Instant::now(),
+                generation,
+            },
+        );
+        self.order.push_back((customer_id, generation));
+        while self.entries.len() > self.capacity {
+            let Some((candidate, queued_generation)) = self.order.pop_front() else {
+                break;
+            };
+            if self
+                .entries
+                .get(&candidate)
+                .is_some_and(|entry| entry.generation == queued_generation)
+            {
+                self.entries.remove(&candidate);
+            }
+        }
+        if self.order.len() > self.capacity.saturating_mul(4) {
+            self.order.retain(|(customer, generation)| {
+                self.entries
+                    .get(customer)
+                    .is_some_and(|entry| entry.generation == *generation)
+            });
+        }
+    }
+}
 
 struct CachedDesc {
     value: Option<StreamDesc>,
@@ -297,6 +389,20 @@ fn cache_key(customer_id: &str, name: &str) -> String {
     format!("{customer_id}\u{0}{name}")
 }
 
+fn customer_limits_path(customer_id: &str) -> ObjPath {
+    ObjPath::from(format!(
+        "customers/{}/limits.json",
+        hex(&stream_hash(customer_id))
+    ))
+}
+
+fn stream_quota_lease_path(customer_id: &str) -> ObjPath {
+    ObjPath::from(format!(
+        "customers/{}/stream-quota-lease.json",
+        hex(&stream_hash(customer_id))
+    ))
+}
+
 fn validate_descriptor_scope(
     descriptor: &StreamDesc,
     customer_id: &str,
@@ -320,7 +426,214 @@ impl Registry {
             store,
             cache: Mutex::new(RegistryCache::new(cache_capacity)),
             cache_ttl: Duration::from_secs(5),
+            limits_cache: Mutex::new(LimitsCache::new(cache_capacity)),
+            limits_cache_ttl: Duration::from_secs(60),
         }
+    }
+
+    pub async fn customer_limits(
+        &self,
+        customer_id: &str,
+    ) -> Result<CustomerLimits, object_store::Error> {
+        if let Some(limits) = self
+            .limits_cache
+            .lock()
+            .unwrap()
+            .get(customer_id, self.limits_cache_ttl)
+        {
+            return Ok(limits);
+        }
+        let limits = match self.store.get(&customer_limits_path(customer_id)).await {
+            Ok(result) => {
+                let raw = result.bytes().await?;
+                let limits = parse_json::<CustomerLimits>(&raw, "customer limits")?;
+                if limits.version != 1
+                    || limits.max_inflight.is_some_and(|value| value > 1_000_000)
+                    || limits
+                        .write_bytes_per_second
+                        .is_some_and(|value| value > 1 << 50)
+                    || limits
+                        .write_burst_bytes
+                        .is_some_and(|value| value == 0 || value > 1 << 50)
+                    || limits.streams_count.is_some_and(|value| value > 10_000_000)
+                {
+                    return Err(registry_error("invalid customer limits"));
+                }
+                limits
+            }
+            Err(object_store::Error::NotFound { .. }) => CustomerLimits {
+                version: 1,
+                ..CustomerLimits::default()
+            },
+            Err(error) => return Err(error),
+        };
+        self.limits_cache
+            .lock()
+            .unwrap()
+            .insert(customer_id.to_string(), limits.clone());
+        Ok(limits)
+    }
+
+    /// Serialize the count-and-create decision for one customer. The lease is
+    /// deliberately short-lived and reverified immediately before a
+    /// descriptor CAS; a canceled request can reduce create availability for
+    /// at most 30 seconds but cannot permanently strand the account.
+    pub async fn acquire_stream_quota_lease(
+        &self,
+        customer_id: &str,
+    ) -> Result<StreamQuotaLease, object_store::Error> {
+        const LEASE_MS: i64 = 30_000;
+        let mut random = [0u8; 16];
+        use rand::RngCore;
+        rand::rng().fill_bytes(&mut random);
+        let owner = hex(&random);
+        let path = stream_quota_lease_path(customer_id);
+        for _ in 0..120 {
+            let now = chrono::Utc::now().timestamp_millis();
+            let desired = StreamQuotaLeaseDocument {
+                version: 1,
+                owner: owner.clone(),
+                lease_until_ms: now.saturating_add(LEASE_MS),
+            };
+            let body = PutPayload::from(serde_json::to_vec(&desired).expect("quota lease json"));
+            match self.store.get(&path).await {
+                Ok(result) => {
+                    let etag = result.meta.e_tag.clone();
+                    let raw = result.bytes().await?;
+                    let current =
+                        parse_json::<StreamQuotaLeaseDocument>(&raw, "stream quota lease")?;
+                    if current.version != 1
+                        || current.owner.len() > 64
+                        || current.lease_until_ms > now.saturating_add(300_000)
+                    {
+                        return Err(registry_error("invalid stream quota lease"));
+                    }
+                    if !current.owner.is_empty() && current.lease_until_ms > now {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    match self
+                        .store
+                        .put_opts(
+                            &path,
+                            body,
+                            PutOptions::from(PutMode::Update(UpdateVersion {
+                                e_tag: etag,
+                                version: None,
+                            })),
+                        )
+                        .await
+                    {
+                        Ok(_) => {
+                            return Ok(StreamQuotaLease {
+                                customer_id: customer_id.to_string(),
+                                owner,
+                            });
+                        }
+                        Err(object_store::Error::Precondition { .. }) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(object_store::Error::NotFound { .. }) => {
+                    match self
+                        .store
+                        .put_opts(&path, body, PutOptions::from(PutMode::Create))
+                        .await
+                    {
+                        Ok(_) => {
+                            return Ok(StreamQuotaLease {
+                                customer_id: customer_id.to_string(),
+                                owner,
+                            });
+                        }
+                        Err(object_store::Error::AlreadyExists { .. }) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("stream quota lease is busy"))
+    }
+
+    pub async fn verify_stream_quota_lease(
+        &self,
+        lease: &StreamQuotaLease,
+    ) -> Result<(), object_store::Error> {
+        const LEASE_MS: i64 = 30_000;
+        let path = stream_quota_lease_path(&lease.customer_id);
+        for _ in 0..5 {
+            let result = self.store.get(&path).await?;
+            let etag = result.meta.e_tag.clone();
+            let raw = result.bytes().await?;
+            let mut current = parse_json::<StreamQuotaLeaseDocument>(&raw, "stream quota lease")?;
+            let now = chrono::Utc::now().timestamp_millis();
+            if current.version != 1 || current.owner != lease.owner || current.lease_until_ms <= now
+            {
+                return Err(registry_error("stream quota lease was lost"));
+            }
+            current.lease_until_ms = now.saturating_add(LEASE_MS);
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(
+                        serde_json::to_vec(&current).expect("stream quota lease json"),
+                    ),
+                    PutOptions::from(PutMode::Update(UpdateVersion {
+                        e_tag: etag,
+                        version: None,
+                    })),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("stream quota lease verification raced"))
+    }
+
+    pub async fn release_stream_quota_lease(
+        &self,
+        lease: &StreamQuotaLease,
+    ) -> Result<(), object_store::Error> {
+        let path = stream_quota_lease_path(&lease.customer_id);
+        for _ in 0..5 {
+            let result = match self.store.get(&path).await {
+                Ok(result) => result,
+                Err(object_store::Error::NotFound { .. }) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            let etag = result.meta.e_tag.clone();
+            let raw = result.bytes().await?;
+            let mut current = parse_json::<StreamQuotaLeaseDocument>(&raw, "stream quota lease")?;
+            if current.owner != lease.owner {
+                return Ok(());
+            }
+            current.owner.clear();
+            current.lease_until_ms = 0;
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(
+                        serde_json::to_vec(&current).expect("stream quota lease json"),
+                    ),
+                    PutOptions::from(PutMode::Update(UpdateVersion {
+                        e_tag: etag,
+                        version: None,
+                    })),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     pub async fn get(
@@ -800,18 +1113,16 @@ impl Registry {
             if out.len() >= limit {
                 break;
             }
-            if let Ok(r) = self.store.get(&meta.location).await
-                && let Ok(raw) = r.bytes().await
-            {
-                let d = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
-                if d.owner() != customer_id {
-                    return Err(registry_error(
-                        "stream descriptor owner does not match listing prefix",
-                    ));
-                }
-                if !d.deleted {
-                    out.push(d);
-                }
+            let result = self.store.get(&meta.location).await?;
+            let raw = result.bytes().await?;
+            let d = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            if d.owner() != customer_id {
+                return Err(registry_error(
+                    "stream descriptor owner does not match listing prefix",
+                ));
+            }
+            if !d.deleted {
+                out.push(d);
             }
         }
         Ok(out)
@@ -1436,5 +1747,51 @@ mod tests {
                 .is_err()
         );
         assert_eq!(load_topology(&store).await.unwrap().shards, vec!["0", "1"]);
+    }
+
+    #[tokio::test]
+    async fn customer_limits_are_durable_bounded_and_fail_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(
+                &customer_limits_path("customer-a"),
+                PutPayload::from_static(
+                    br#"{"version":1,"max_inflight":3,"write_bytes_per_second":100,"write_burst_bytes":200,"streams_count":2}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        let registry = Registry::with_cache_capacity(store.clone(), 2);
+        let limits = registry.customer_limits("customer-a").await.unwrap();
+        assert_eq!(limits.max_inflight, Some(3));
+        assert_eq!(limits.streams_count, Some(2));
+
+        let corrupt = Registry::with_cache_capacity(store.clone(), 2);
+        store
+            .put(
+                &customer_limits_path("customer-b"),
+                PutPayload::from_static(b"not-json"),
+            )
+            .await
+            .unwrap();
+        assert!(corrupt.customer_limits("customer-b").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn stream_quota_lease_is_owned_verified_and_reusable() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let registry = Registry::new(store);
+        let first = registry
+            .acquire_stream_quota_lease("customer-a")
+            .await
+            .unwrap();
+        registry.verify_stream_quota_lease(&first).await.unwrap();
+        registry.release_stream_quota_lease(&first).await.unwrap();
+        let second = registry
+            .acquire_stream_quota_lease("customer-a")
+            .await
+            .unwrap();
+        assert_ne!(first.owner, second.owner);
+        registry.verify_stream_quota_lease(&second).await.unwrap();
     }
 }

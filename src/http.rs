@@ -148,6 +148,8 @@ struct TenantAdmissionInner {
 struct TenantAdmissionState {
     inflight: usize,
     write_tokens: f64,
+    write_bytes_per_second: u64,
+    write_burst_bytes: u64,
     last_refill: std::time::Instant,
     last_seen: std::time::Instant,
 }
@@ -175,13 +177,19 @@ impl TenantAdmission {
         })
     }
 
-    fn enter(self: &Arc<Self>, customer_id: &str) -> Option<TenantAdmissionGuard> {
-        if self.max_inflight == 0 && self.write_bytes_per_second == 0 {
-            return Some(TenantAdmissionGuard {
-                admission: None,
-                customer_id: String::new(),
-            });
-        }
+    fn enter(
+        self: &Arc<Self>,
+        customer_id: &str,
+        limits: &crate::registry::CustomerLimits,
+    ) -> Option<TenantAdmissionGuard> {
+        let max_inflight = limits.max_inflight.unwrap_or(self.max_inflight);
+        let write_bytes_per_second = limits
+            .write_bytes_per_second
+            .unwrap_or(self.write_bytes_per_second);
+        let write_burst_bytes = limits
+            .write_burst_bytes
+            .unwrap_or(self.write_burst_bytes)
+            .max(1);
         let mut inner = self.inner.lock().unwrap();
         if !inner.customers.contains_key(customer_id)
             && inner.customers.len() >= self.customer_capacity
@@ -200,11 +208,21 @@ impl TenantAdmission {
             .entry(customer_id.to_string())
             .or_insert_with(|| TenantAdmissionState {
                 inflight: 0,
-                write_tokens: self.write_burst_bytes as f64,
+                write_tokens: write_burst_bytes as f64,
+                write_bytes_per_second,
+                write_burst_bytes,
                 last_refill: now,
                 last_seen: now,
             });
-        if self.max_inflight > 0 && state.inflight >= self.max_inflight {
+        if state.write_bytes_per_second != write_bytes_per_second
+            || state.write_burst_bytes != write_burst_bytes
+        {
+            state.write_bytes_per_second = write_bytes_per_second;
+            state.write_burst_bytes = write_burst_bytes;
+            state.write_tokens = state.write_tokens.min(write_burst_bytes as f64);
+            state.last_refill = now;
+        }
+        if max_inflight > 0 && state.inflight >= max_inflight {
             return None;
         }
         state.inflight += 1;
@@ -216,17 +234,17 @@ impl TenantAdmission {
     }
 
     fn charge_write(&self, customer_id: &str, bytes: usize) -> bool {
-        if self.write_bytes_per_second == 0 || bytes == 0 {
-            return true;
-        }
         let mut inner = self.inner.lock().unwrap();
         let Some(state) = inner.customers.get_mut(customer_id) else {
-            return false;
+            return bytes == 0;
         };
+        if state.write_bytes_per_second == 0 || bytes == 0 {
+            return true;
+        }
         let now = std::time::Instant::now();
         let refill = now.duration_since(state.last_refill).as_secs_f64()
-            * self.write_bytes_per_second as f64;
-        state.write_tokens = (state.write_tokens + refill).min(self.write_burst_bytes as f64);
+            * state.write_bytes_per_second as f64;
+        state.write_tokens = (state.write_tokens + refill).min(state.write_burst_bytes as f64);
         state.last_refill = now;
         state.last_seen = now;
         if bytes as f64 > state.write_tokens {
@@ -301,26 +319,45 @@ async fn body_with_quota(
     Ok(buffered.freeze())
 }
 
-#[allow(clippy::result_large_err)]
-fn admit_customer(
+async fn admit_customer(
     state: &Arc<AppState>,
     customer_id: &str,
-) -> Result<TenantAdmissionGuard, Response> {
-    state.tenant_admission.enter(customer_id).ok_or_else(|| {
-        state
-            .admit_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut response = err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "tenant_overloaded",
-            "customer has reached its concurrent request limit; retry",
-        );
-        response.headers_mut().insert(
-            header::RETRY_AFTER,
-            axum::http::HeaderValue::from_static("1"),
-        );
-        response
-    })
+) -> Result<(TenantAdmissionGuard, crate::registry::CustomerLimits), Response> {
+    let limits = state
+        .registry
+        .customer_limits(customer_id)
+        .await
+        .map_err(|error| {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "limits_unavailable",
+                &format!("customer limits unavailable: {error}"),
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
+        })?;
+    let guard = state
+        .tenant_admission
+        .enter(customer_id, &limits)
+        .ok_or_else(|| {
+            state
+                .admit_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut response = err_resp(
+                StatusCode::TOO_MANY_REQUESTS,
+                "tenant_overloaded",
+                "customer has reached its concurrent request limit; retry",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
+        })?;
+    Ok((guard, limits))
 }
 
 fn authorization(headers: &HeaderMap) -> Option<&str> {
@@ -842,8 +879,8 @@ async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
     if !principal.allows_verb(Verb::List) {
         return forbidden();
     }
-    let _tenant_guard = match admit_customer(&state, &principal.customer_id) {
-        Ok(guard) => guard,
+    let (_tenant_guard, _) = match admit_customer(&state, &principal.customer_id).await {
+        Ok(admission) => admission,
         Err(response) => return response,
     };
     match state.registry.list(&principal.customer_id, 1000).await {
@@ -911,8 +948,8 @@ async fn stream_entry(
         Ok(principal) => principal,
         Err(response) => return response,
     };
-    let _tenant_guard = match admit_customer(&state, &principal.customer_id) {
-        Ok(guard) => guard,
+    let (_tenant_guard, limits) = match admit_customer(&state, &principal.customer_id).await {
+        Ok(admission) => admission,
         Err(response) => return response,
     };
     let started = std::time::Instant::now();
@@ -927,7 +964,7 @@ async fn stream_entry(
         method,
         headers,
         body,
-        principal,
+        (principal, limits),
     )
     .await;
     // Only successful work counts toward the fleet load vector — otherwise
@@ -989,8 +1026,9 @@ async fn stream_entry_inner(
     method: Method,
     headers: HeaderMap,
     body: Body,
-    principal: Principal,
+    authz: (Principal, crate::registry::CustomerLimits),
 ) -> Response {
+    let (principal, limits) = authz;
     let customer_id = principal.customer_id.clone();
     // Queue subresources: /v1/stream/<name>/queue/{consumer}/{receive,ack,extend}
     if let Some((stream, route)) = name.split_once("/queue/") {
@@ -1046,7 +1084,7 @@ async fn stream_entry_inner(
                 Ok(b) => b,
                 Err(response) => return response,
             };
-            create_stream(state, customer_id, name, headers, body).await
+            create_stream(state, customer_id, name, headers, body, limits).await
         }
         Method::POST => append(state, customer_id, name, headers, body).await,
         Method::GET => read(state, customer_id, name, params, headers, false).await,
@@ -1646,6 +1684,57 @@ async fn create_stream(
     name: String,
     headers: HeaderMap,
     body: Bytes,
+    limits: crate::registry::CustomerLimits,
+) -> Response {
+    let lease = if limits.streams_count.is_some() {
+        match state
+            .registry
+            .acquire_stream_quota_lease(&customer_id)
+            .await
+        {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "quota_unavailable",
+                    &format!("stream quota unavailable: {error}"),
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                return response;
+            }
+        }
+    } else {
+        None
+    };
+    let response = create_stream_with_quota(
+        state.clone(),
+        customer_id,
+        name,
+        headers,
+        body,
+        limits,
+        lease.as_ref(),
+    )
+    .await;
+    if let Some(lease) = &lease
+        && let Err(error) = state.registry.release_stream_quota_lease(lease).await
+    {
+        tracing::error!("stream quota lease release failed: {error}");
+    }
+    response
+}
+
+async fn create_stream_with_quota(
+    state: Arc<AppState>,
+    customer_id: String,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+    limits: crate::registry::CustomerLimits,
+    quota_lease: Option<&crate::registry::StreamQuotaLease>,
 ) -> Response {
     let Some(raw_key_str) = raw_key(&headers, &state) else {
         return err_resp(
@@ -1871,6 +1960,55 @@ async fn create_stream(
             );
         }
     };
+    let consumes_stream_slot = existing
+        .as_ref()
+        .is_none_or(|descriptor| descriptor.deleted);
+    if consumes_stream_slot && let Some(limit) = limits.streams_count {
+        let observed = if limit == 0 {
+            0
+        } else {
+            match state
+                .registry
+                .list(&customer_id, limit.saturating_add(1))
+                .await
+            {
+                Ok(streams) => streams.len(),
+                Err(error) => {
+                    return err_resp(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "quota_unavailable",
+                        &format!("stream count unavailable: {error}"),
+                    );
+                }
+            }
+        };
+        if observed >= limit {
+            let mut response = err_resp(
+                StatusCode::TOO_MANY_REQUESTS,
+                "streams_count_quota",
+                "customer stream-count quota exceeded",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            return response;
+        }
+        let Some(lease) = quota_lease else {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "quota_unavailable",
+                "stream quota lease missing",
+            );
+        };
+        if let Err(error) = state.registry.verify_stream_quota_lease(lease).await {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "quota_unavailable",
+                &format!("stream quota lease lost: {error}"),
+            );
+        }
+    }
     let (created, desc) = match existing {
         Some(d) if desc_alive(&d) => {
             // Idempotent PUT: config must match.
@@ -1944,6 +2082,16 @@ async fn create_stream(
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
             apply_fork(&mut fresh, fork_plan.as_ref());
+            if consumes_stream_slot
+                && let Some(lease) = quota_lease
+                && let Err(error) = state.registry.verify_stream_quota_lease(lease).await
+            {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "quota_unavailable",
+                    &format!("stream quota lease lost: {error}"),
+                );
+            }
             match state
                 .registry
                 .recreate(&customer_id, &name, &dead.stream_epoch, fresh)
@@ -2005,6 +2153,15 @@ async fn create_stream(
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
             apply_fork(&mut fresh, fork_plan.as_ref());
+            if let Some(lease) = quota_lease
+                && let Err(error) = state.registry.verify_stream_quota_lease(lease).await
+            {
+                return err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "quota_unavailable",
+                    &format!("stream quota lease lost: {error}"),
+                );
+            }
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -4230,15 +4387,16 @@ mod tests {
     #[test]
     fn tenant_admission_is_isolated_and_releases_cardinality() {
         let admission = TenantAdmission::new(1, 10, 10);
-        let first = admission.enter("customer-a").unwrap();
-        assert!(admission.enter("customer-a").is_none());
-        let other = admission.enter("customer-b").unwrap();
+        let limits = crate::registry::CustomerLimits::default();
+        let first = admission.enter("customer-a", &limits).unwrap();
+        assert!(admission.enter("customer-a", &limits).is_none());
+        let other = admission.enter("customer-b", &limits).unwrap();
         assert_eq!(admission.inner.lock().unwrap().customers.len(), 2);
         assert!(admission.charge_write("customer-a", 10));
         assert!(!admission.charge_write("customer-a", 1));
 
         drop(first);
-        assert!(admission.enter("customer-a").is_some());
+        assert!(admission.enter("customer-a", &limits).is_some());
         drop(other);
         assert!(
             admission
@@ -4249,6 +4407,15 @@ mod tests {
                 .values()
                 .all(|state| state.inflight == 0)
         );
+
+        let unlimited = crate::registry::CustomerLimits {
+            max_inflight: Some(0),
+            write_bytes_per_second: Some(0),
+            write_burst_bytes: Some(1),
+            ..Default::default()
+        };
+        let _guard = admission.enter("customer-unlimited", &unlimited).unwrap();
+        assert!(admission.charge_write("customer-unlimited", usize::MAX / 2));
     }
 
     #[test]

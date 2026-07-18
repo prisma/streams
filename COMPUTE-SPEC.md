@@ -520,9 +520,12 @@ The first line is per-tenant, enforced before work is queued.
   stream can never occupy more than its share of a shared commit group
   even if admission lags. A stream at its ceiling gets per-stream 429,
   not shard-wide 429.
-- **`streams_count`** enforced at create against the by-customer registry
-  markers (D21) via CAS'd per-customer counter leases (batch-reserved in
-  blocks of 100 so creates don't serialize on one object).
+- **`streams_count`** is currently enforced at create by a per-customer CAS
+  lease around an authoritative by-customer descriptor recount and the
+  descriptor CAS. This is exact and crash-bounded (a canceled holder expires
+  within 30 s), but serializes creates for one account. Block-reserved exact
+  counters remain a throughput optimization once measured create traffic
+  justifies their extra recovery protocol.
 
 ### 12.2 The 429 contract
 
