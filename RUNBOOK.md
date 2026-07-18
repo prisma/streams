@@ -105,10 +105,12 @@ with an empty pool rather than dead sockets.
 | `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires both a complete point and a healthy scrubber |
 
 The actor creates an expiring checkpoint for every initialized live shard and
-records never-initialized shards as explicitly absent. It recursively pins
-external clone ancestors, exposes only the selected manifest closure,
-compatible compactions record, and WAL interval, and rechecks topology before
-publication.
+every initialized active stream-history DB after the shard cut; it records
+never-initialized DBs as explicitly absent. The 100,000-history-DB cell bound
+is fail-closed and includes per-key segments. It recursively pins external
+clone ancestors, exposes only the selected manifest closure, compatible
+compactions record, and WAL interval, and rechecks topology plus every pin
+before publication.
 Exact source ETags feed durable per-path indexes; unchanged objects reuse
 immutable SHA-256 blobs. Each point still gets a complete checksummed inventory,
 then `_complete.json` is created last and `latest.json` advances. Retention

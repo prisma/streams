@@ -28,6 +28,8 @@ const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INVENTORY_BYTES: usize = 16 * 1024;
 const MAX_TOPOLOGY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PINNED_SHARDS: usize = 16_384;
+const MAX_PINNED_HISTORY_DBS: usize = 100_000;
+const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
 const MAX_SCRUB_STATE_BYTES: usize = 4 * 1024;
@@ -42,6 +44,7 @@ pub struct BackupSource {
 pub struct BackupPins {
     pub topology_store: Arc<dyn ObjectStore>,
     pub shard_store: Arc<dyn ObjectStore>,
+    pub data_store: Arc<dyn ObjectStore>,
     pub lifetime: Duration,
 }
 
@@ -86,6 +89,8 @@ pub struct SnapshotReport {
     pub reused_objects: u64,
     #[serde(default)]
     pub pinned_shards: u64,
+    #[serde(default)]
+    pub pinned_history_dbs: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -188,7 +193,11 @@ struct PinnedBackupState {
     /// but are intentionally absent from this recovery point.
     /// `None` means this live shard had never been initialized at the recovery
     /// point. Any objects that appear under that DB path later are excluded.
-    manifests: HashMap<String, Option<PinnedDbManifest>>,
+    shard_manifests: HashMap<String, Option<PinnedDbManifest>>,
+    /// Every initialized history DB is pinned after its shard checkpoint. The
+    /// history state may therefore contain harmless future rows, but always
+    /// contains the durable absorbed prefix named by the shard point.
+    history_manifests: HashMap<String, Option<PinnedDbManifest>>,
 }
 
 #[derive(Clone)]
@@ -233,6 +242,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                         copied_bytes = report.copied_bytes,
                                         reused_objects = report.reused_objects,
                                         pinned_shards = report.pinned_shards,
+                                        pinned_history_dbs = report.pinned_history_dbs,
                                         pruned,
                                         "incremental backup snapshot complete"
                                     );
@@ -334,10 +344,9 @@ async fn snapshot_once_inner(
         roles.push(source.role.to_string());
         let mut listing = source.store.list(None);
         while let Some(meta) = listing.try_next().await? {
-            if source.role == "shard"
-                && pinned_state.is_some_and(|state| {
-                    object_is_outside_recovery_point(&meta.location, &state.manifests)
-                })
+            if matches!(source.role, "shard" | "data")
+                && pinned_state
+                    .is_some_and(|state| object_is_outside_recovery_point(&meta.location, state))
             {
                 continue;
             }
@@ -416,6 +425,13 @@ async fn snapshot_once_inner(
         copied_bytes,
         reused_objects,
         pinned_shards: pinned_state.map_or(0, |state| state.topology.shards.len() as u64),
+        pinned_history_dbs: pinned_state.map_or(0, |state| {
+            state
+                .history_manifests
+                .values()
+                .filter(|manifest| manifest.is_some())
+                .count() as u64
+        }),
     };
     let marker = marker_path(snapshot_id);
     destination
@@ -459,52 +475,190 @@ async fn acquire_checkpoint_leases(
     snapshot_id: &str,
 ) -> anyhow::Result<(PinnedBackupState, Vec<CheckpointLease>)> {
     let topology = read_backup_topology(&pins.topology_store).await?;
-    let mut leases = Vec::with_capacity(topology.shards.len());
-    let mut absent = Vec::new();
+    let mut shard_leases = Vec::with_capacity(topology.shards.len());
+    let mut shard_absent = Vec::new();
     for prefix in &topology.shards {
         let path = topology.db_path(prefix);
-        let admin = AdminBuilder::new(path.clone(), pins.shard_store.clone()).build();
-        if admin.read_manifest(None).await?.is_none() {
-            absent.push(path);
-            continue;
-        }
-        let options = CheckpointOptions {
-            lifetime: Some(pins.lifetime.max(Duration::from_secs(60))),
-            name: Some(format!("streams-backup-{snapshot_id}")),
-            ..Default::default()
-        };
-        match admin.create_detached_checkpoint(&options).await {
-            Ok(checkpoint) => leases.push(CheckpointLease {
-                admin,
-                id: checkpoint.id,
-                path,
-                manifest_id: checkpoint.manifest_id,
-            }),
-            Err(error) => {
-                let _ = release_checkpoint_leases(leases).await;
-                return Err(error.into());
-            }
+        if let Err(error) = acquire_db_checkpoint(
+            pins.shard_store.clone(),
+            path,
+            pins.lifetime,
+            snapshot_id,
+            &mut shard_leases,
+            &mut shard_absent,
+        )
+        .await
+        {
+            let _ = release_checkpoint_leases(shard_leases).await;
+            return Err(error);
         }
     }
     if let Err(error) = verify_pinned_topology(pins, &topology).await {
-        let _ = release_checkpoint_leases(leases).await;
+        let _ = release_checkpoint_leases(shard_leases).await;
         return Err(error);
     }
-    let manifests = match collect_pinned_manifests(pins.shard_store.clone(), &leases, absent).await
-    {
-        Ok(manifests) => manifests,
-        Err(error) => {
-            let _ = release_checkpoint_leases(leases).await;
-            return Err(error);
-        }
-    };
+    let (history_leases, history_absent) =
+        match acquire_history_checkpoints(pins, snapshot_id).await {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = release_checkpoint_leases(shard_leases).await;
+                return Err(error);
+            }
+        };
+    let shard_manifests =
+        match collect_pinned_manifests(pins.shard_store.clone(), &shard_leases, shard_absent).await
+        {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                let _ = release_checkpoint_leases(shard_leases).await;
+                let _ = release_checkpoint_leases(history_leases).await;
+                return Err(error);
+            }
+        };
+    let history_manifests =
+        match collect_pinned_manifests(pins.data_store.clone(), &history_leases, history_absent)
+            .await
+        {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                let _ = release_checkpoint_leases(shard_leases).await;
+                let _ = release_checkpoint_leases(history_leases).await;
+                return Err(error);
+            }
+        };
+    let mut leases = shard_leases;
+    leases.extend(history_leases);
     Ok((
         PinnedBackupState {
             topology,
-            manifests,
+            shard_manifests,
+            history_manifests,
         },
         leases,
     ))
+}
+
+async fn acquire_db_checkpoint(
+    store: Arc<dyn ObjectStore>,
+    path: String,
+    lifetime: Duration,
+    snapshot_id: &str,
+    leases: &mut Vec<CheckpointLease>,
+    absent: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let admin = AdminBuilder::new(path.clone(), store).build();
+    if admin.read_manifest(None).await?.is_none() {
+        absent.push(path);
+        return Ok(());
+    }
+    let options = CheckpointOptions {
+        lifetime: Some(lifetime.max(Duration::from_secs(60))),
+        name: Some(format!("streams-backup-{snapshot_id}")),
+        ..Default::default()
+    };
+    let checkpoint = admin.create_detached_checkpoint(&options).await?;
+    leases.push(CheckpointLease {
+        admin,
+        id: checkpoint.id,
+        path,
+        manifest_id: checkpoint.manifest_id,
+    });
+    Ok(())
+}
+
+async fn acquire_history_checkpoints(
+    pins: &BackupPins,
+    snapshot_id: &str,
+) -> anyhow::Result<(Vec<CheckpointLease>, Vec<String>)> {
+    let mut paths = HashSet::new();
+    let mut listing = pins.topology_store.list(Some(&ObjPath::from("registry")));
+    while let Some(meta) = listing.try_next().await? {
+        if !meta.location.as_ref().ends_with(".json")
+            || !meta.location.as_ref().contains("/by-name/")
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            meta.size <= MAX_DESCRIPTOR_BYTES as u64,
+            "registry descriptor is too large for recovery"
+        );
+        let encoded = pins
+            .topology_store
+            .get(&meta.location)
+            .await?
+            .bytes()
+            .await?;
+        let descriptor: crate::registry::StreamDesc = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(
+            crate::registry::descriptor_path_for(descriptor.owner(), &descriptor.name)
+                == meta.location,
+            "registry descriptor identity does not match its recovery path"
+        );
+        validate_recovery_descriptor(&descriptor)?;
+        if descriptor.deleted {
+            continue;
+        }
+        if descriptor.is_per_key() {
+            for ordinal in 0..descriptor.segment_count {
+                paths.insert(recovery_history_db_path(&descriptor.segment_hash(ordinal)));
+            }
+        } else {
+            paths.insert(recovery_history_db_path(&descriptor.storage_hash()));
+        }
+        anyhow::ensure!(
+            paths.len() <= MAX_PINNED_HISTORY_DBS,
+            "active history database count exceeds the recovery cell bound"
+        );
+    }
+
+    let mut paths: Vec<_> = paths.into_iter().collect();
+    paths.sort();
+    let mut leases = Vec::new();
+    let mut absent = Vec::new();
+    for path in paths {
+        if let Err(error) = acquire_db_checkpoint(
+            pins.data_store.clone(),
+            path,
+            pins.lifetime,
+            snapshot_id,
+            &mut leases,
+            &mut absent,
+        )
+        .await
+        {
+            let _ = release_checkpoint_leases(leases).await;
+            return Err(error);
+        }
+    }
+    Ok((leases, absent))
+}
+
+fn validate_recovery_descriptor(descriptor: &crate::registry::StreamDesc) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !descriptor.owner().is_empty()
+            && descriptor.owner().len() <= 1_024
+            && !descriptor.name.is_empty()
+            && descriptor.name.len() <= 1_024
+            && descriptor.epoch_bytes().is_some(),
+        "registry descriptor identity is invalid for recovery"
+    );
+    if descriptor.is_per_key() {
+        anyhow::ensure!(
+            (1..=256).contains(&descriptor.segment_count)
+                && descriptor.segment_count.is_power_of_two(),
+            "registry descriptor has invalid history segments"
+        );
+    } else {
+        anyhow::ensure!(
+            descriptor.ordering.is_none() && descriptor.segment_count == 0,
+            "registry descriptor has unsupported history ordering"
+        );
+    }
+    Ok(())
+}
+
+fn recovery_history_db_path(hash: &crate::registry::StorageHash) -> String {
+    format!("streams/{}", crate::crypto::hex(hash))
 }
 
 async fn verify_pinned_topology(
@@ -521,12 +675,20 @@ async fn verify_pinned_topology(
 
 async fn verify_pinned_state(pins: &BackupPins, state: &PinnedBackupState) -> anyhow::Result<()> {
     verify_pinned_topology(pins, &state.topology).await?;
-    for (path, pinned) in &state.manifests {
+    verify_manifest_set(&pins.shard_store, &state.shard_manifests).await?;
+    verify_manifest_set(&pins.data_store, &state.history_manifests).await
+}
+
+async fn verify_manifest_set(
+    store: &Arc<dyn ObjectStore>,
+    manifests: &HashMap<String, Option<PinnedDbManifest>>,
+) -> anyhow::Result<()> {
+    for (path, pinned) in manifests {
         let Some(pinned) = pinned else {
             continue;
         };
         anyhow::ensure!(
-            AdminBuilder::new(path.clone(), pins.shard_store.clone())
+            AdminBuilder::new(path.clone(), store.clone())
                 .build()
                 .read_manifest(Some(pinned.manifest_id))
                 .await?
@@ -1336,12 +1498,9 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
-fn object_is_outside_recovery_point(
-    path: &ObjPath,
-    pinned: &HashMap<String, Option<PinnedDbManifest>>,
-) -> bool {
+fn object_is_outside_recovery_point(path: &ObjPath, state: &PinnedBackupState) -> bool {
     if let Some((db_path, file)) = path.as_ref().rsplit_once("/manifest/")
-        && let Some(expected) = pinned.get(db_path)
+        && let Some(expected) = pinned_db(state, db_path)
     {
         let Some(expected) = expected else {
             return true;
@@ -1358,7 +1517,7 @@ fn object_is_outside_recovery_point(
         return !expected.allowed_manifest_ids.contains(&id);
     }
     if let Some((db_path, file)) = path.as_ref().rsplit_once("/wal/")
-        && let Some(expected) = pinned.get(db_path)
+        && let Some(expected) = pinned_db(state, db_path)
     {
         let Some(expected) = expected else {
             return true;
@@ -1373,7 +1532,7 @@ fn object_is_outside_recovery_point(
         return id <= expected.replay_after_wal_id || id >= expected.next_wal_sst_id;
     }
     if let Some((db_path, file)) = path.as_ref().rsplit_once("/compactions/")
-        && let Some(expected) = pinned.get(db_path)
+        && let Some(expected) = pinned_db(state, db_path)
     {
         let Some(expected) = expected else {
             return true;
@@ -1388,11 +1547,18 @@ fn object_is_outside_recovery_point(
         return Some(id) != expected.compactions_id;
     }
     if let Some((db_path, _)) = path.as_ref().rsplit_once("/compacted/")
-        && pinned.get(db_path).is_some_and(Option::is_none)
+        && pinned_db(state, db_path).is_some_and(Option::is_none)
     {
         return true;
     }
     false
+}
+
+fn pinned_db<'a>(state: &'a PinnedBackupState, path: &str) -> Option<&'a Option<PinnedDbManifest>> {
+    state
+        .shard_manifests
+        .get(path)
+        .or_else(|| state.history_manifests.get(path))
 }
 
 fn generation_from_path(path: &ObjPath, root: &str) -> Option<String> {
@@ -1695,6 +1861,7 @@ mod tests {
             Some(&BackupPins {
                 topology_store: ops,
                 shard_store: shards.clone(),
+                data_store: shards.clone(),
                 lifetime: Duration::from_secs(60),
             }),
         )
@@ -1734,6 +1901,7 @@ mod tests {
         let pins = BackupPins {
             topology_store: ops.clone(),
             shard_store: shards.clone(),
+            data_store: shards.clone(),
             lifetime: Duration::from_secs(60),
         };
         let snapshot_id = "00000000000000000042-pinned";
@@ -1779,6 +1947,106 @@ mod tests {
         .await
         .unwrap();
         let restored = slatedb::Db::open("shards/root", restored_shards)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.get(b"before").await.unwrap(),
+            Some(Bytes::from_static(b"included"))
+        );
+        assert_eq!(restored.get(b"after").await.unwrap(), None);
+        restored.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_point_pins_history_after_the_absorbed_shard_cut() {
+        let ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        ops.put(
+            &ObjPath::from("topology.json"),
+            PutPayload::from_static(
+                br#"{"version":1,"storage_format":2,"shards":[""],"shard_paths":{}}"#,
+            ),
+        )
+        .await
+        .unwrap();
+        let descriptor: crate::registry::StreamDesc = serde_json::from_value(serde_json::json!({
+            "customer_id": "customer-a",
+            "name": "history",
+            "stream_epoch": "00000000000000000000000000000001",
+            "key_fingerprint": "test",
+            "created_ms": 1
+        }))
+        .unwrap();
+        ops.put(
+            &crate::registry::descriptor_path_for(descriptor.owner(), &descriptor.name),
+            PutPayload::from(Bytes::from(serde_json::to_vec(&descriptor).unwrap())),
+        )
+        .await
+        .unwrap();
+        let history_path = recovery_history_db_path(&descriptor.storage_hash());
+        let history = slatedb::Db::open(history_path.as_str(), data.clone())
+            .await
+            .unwrap();
+        history.put(b"before", b"included").await.unwrap();
+        history.close().await.unwrap();
+
+        let pins = BackupPins {
+            topology_store: ops.clone(),
+            shard_store: shards.clone(),
+            data_store: data.clone(),
+            lifetime: Duration::from_secs(60),
+        };
+        let snapshot_id = "00000000000000000043-history";
+        let (state, leases) = acquire_checkpoint_leases(&pins, snapshot_id).await.unwrap();
+        let history = slatedb::Db::open(history_path.as_str(), data.clone())
+            .await
+            .unwrap();
+        history.put(b"after", b"excluded").await.unwrap();
+        history.close().await.unwrap();
+
+        let report = snapshot_once_inner(
+            &[
+                BackupSource {
+                    role: "ops",
+                    store: ops,
+                },
+                BackupSource {
+                    role: "shard",
+                    store: shards,
+                },
+                BackupSource {
+                    role: "data",
+                    store: data,
+                },
+            ],
+            backup.clone(),
+            Some(&pins),
+            Some(&state),
+            43,
+            snapshot_id,
+        )
+        .await
+        .unwrap();
+        release_checkpoint_leases(leases).await.unwrap();
+        assert_eq!(report.pinned_history_dbs, 1);
+
+        let restored_ops: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_shards: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let restored_data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        restore_snapshot(
+            backup,
+            &report.snapshot_id,
+            &HashMap::from([
+                ("ops".to_string(), restored_ops),
+                ("shard".to_string(), restored_shards),
+                ("data".to_string(), restored_data.clone()),
+            ]),
+        )
+        .await
+        .unwrap();
+        let restored = slatedb::Db::open(history_path, restored_data)
             .await
             .unwrap();
         assert_eq!(
@@ -1837,7 +2105,8 @@ mod tests {
             backup.clone(),
             Some(&BackupPins {
                 topology_store: ops,
-                shard_store: shards,
+                shard_store: shards.clone(),
+                data_store: shards,
                 lifetime: Duration::from_secs(60),
             }),
         )
@@ -1903,6 +2172,7 @@ mod tests {
             copied_bytes: 0,
             reused_objects: 0,
             pinned_shards: 0,
+            pinned_history_dbs: 0,
         };
         backup
             .put(

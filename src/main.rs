@@ -923,6 +923,7 @@ async fn async_main() -> anyhow::Result<()> {
             pins: Some(streams_slate::backup::BackupPins {
                 topology_store: ops_store.clone(),
                 shard_store: shard_store.clone(),
+                data_store: data_store.clone(),
                 lifetime: Duration::from_secs(args.backup_checkpoint_lifetime_secs),
             }),
         }

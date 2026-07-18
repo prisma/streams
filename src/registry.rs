@@ -418,6 +418,12 @@ fn desc_path(customer_id: &str, name: &str) -> ObjPath {
     }
 }
 
+/// Canonical descriptor location used by recovery enumeration to reject a
+/// malformed body whose claimed tenant/name does not match its durable key.
+pub(crate) fn descriptor_path_for(customer_id: &str, name: &str) -> ObjPath {
+    desc_path(customer_id, name)
+}
+
 fn cache_key(customer_id: &str, name: &str) -> String {
     format!("{customer_id}\u{0}{name}")
 }

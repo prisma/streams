@@ -47,7 +47,7 @@ start_streams() {
   local bucket="$1"
   local prefix="$2"
   shift 2
-  "${TARGET_DIR}/streams-slate" \
+  RUST_LOG=info "${TARGET_DIR}/streams-slate" \
     --listen "127.0.0.1:${STREAMS_PORT}" \
     --s3-endpoint "${S3_URL}" --bucket "${bucket}" --region auto \
     --access-key-id test --secret-access-key test \
@@ -67,10 +67,22 @@ auth=(-H "authorization: Bearer ${AUTH_TOKEN}")
 # Seed a primary keyspace without backup, then stop all writers. Restart with
 # backup required: readiness cannot turn green until the marker-last snapshot
 # that includes the durable stream has completed.
-start_streams primary ci-primary
+start_streams primary ci-primary --absorb-bytes 1 --absorb-age-secs 1
 curl --fail --silent --show-error -X PUT "${STREAMS_URL}/v1/stream/recovery" \
   "${auth[@]}" -H "stream-encryption-key: ${KEY}" \
   -H "content-type: application/json" -d '[{"restore":1},{"restore":2}]' >/dev/null
+attempts=0
+until grep -q 'absorbed .* records into streams/' "${TMP_DIR}/streams.log"; do
+  attempts=$((attempts + 1))
+  if (( attempts > 300 )); then
+    echo "history absorber did not create the recovery data tier" >&2
+    tail -100 "${TMP_DIR}/streams.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+done
+# Let the shard-side absorbed frontier pass through the durable committer.
+sleep 0.5
 stop_streams
 
 start_streams primary ci-primary \
@@ -80,6 +92,7 @@ start_streams primary ci-primary \
 first_report="$(curl --fail --silent "${S3_URL}/backup/ci-backup/latest.json")"
 first_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${first_report}")"
 [[ -n "${first_snapshot}" ]]
+grep -Eq '"pinned_history_dbs":[1-9][0-9]*' <<<"${first_report}"
 
 # Advance the primary after the first complete recovery point, then restart the
 # backup actor. The second immediate snapshot must reuse immutable blobs while
@@ -145,7 +158,7 @@ blob_size="$(curl --fail --silent --head "${S3_URL}/backup/${blob_key}" |
 head -c "${blob_size}" /dev/zero | tr '\0' X |
   curl --fail --silent -X PUT --data-binary @- "${S3_URL}/backup/${blob_key}" >/dev/null
 
-"${TARGET_DIR}/streams-slate" \
+RUST_LOG=info "${TARGET_DIR}/streams-slate" \
   --listen "127.0.0.1:${STREAMS_PORT}" \
   --s3-endpoint "${S3_URL}" --bucket primary --region auto \
   --access-key-id test --secret-access-key test \

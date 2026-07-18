@@ -505,11 +505,14 @@ Data-plane prefixes shard naturally (per-shard, per-stream paths).
 ### 10.4 Recovery points
 
 Each configured cell publishes marker-last recovery points to a different
-provider/region. The actor checkpoints initialized live shards, represents
-lazy shards as absent, recursively resolves external clone checkpoints, and
-copies only the selected manifest closure, compatible compactions record, and
-WAL interval. A final topology recheck prevents a split/merge from publishing
-a point over the wrong shard set. Exact source ETags index immutable SHA-256
+provider/region. The actor checkpoints initialized live shards, then all
+initialized history DBs named by active registry incarnations, and represents
+lazy DBs as absent. History enumeration is fail-closed above 100,000 DBs per
+cell, including per-key segments. It recursively resolves external clone
+checkpoints and copies only the selected manifest closure, compatible
+compactions record, and WAL interval. A final topology and pin recheck prevents
+a split/merge, compaction, or absorber write from publishing an incoherent
+point. Exact source ETags index immutable SHA-256
 blobs, so later points copy only changed objects while retaining a complete
 checksummed inventory. Retention deletes expired point metadata before its
 last-referenced blobs; a bounded rolling scrub hashes referenced blobs using a
