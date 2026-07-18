@@ -397,6 +397,38 @@ struct Args {
     )]
     admit_queue_receive_burst_per_customer: u64,
 
+    /// Default provisioned append request/byte limits for one stream. Create
+    /// headers can persist lower or higher values within the validated caps.
+    #[arg(
+        long,
+        env = "ADMIT_APPEND_REQUESTS_PER_SEC_PER_STREAM",
+        default_value_t = 5_000
+    )]
+    admit_append_requests_per_sec_per_stream: u64,
+    #[arg(
+        long,
+        env = "ADMIT_APPEND_REQUEST_BURST_PER_STREAM",
+        default_value_t = 5_000
+    )]
+    admit_append_request_burst_per_stream: u64,
+    #[arg(
+        long,
+        env = "ADMIT_WRITE_BYTES_PER_SEC_PER_STREAM",
+        default_value_t = 50 * 1024 * 1024
+    )]
+    admit_write_bytes_per_sec_per_stream: u64,
+    #[arg(
+        long,
+        env = "ADMIT_WRITE_BURST_BYTES_PER_STREAM",
+        default_value_t = 100 * 1024 * 1024
+    )]
+    admit_write_burst_bytes_per_stream: u64,
+
+    /// Default relative commit share among streams belonging to one customer.
+    /// The outer tenant round-robin remains equal regardless of this value.
+    #[arg(long, env = "STREAM_COMMIT_WEIGHT", default_value_t = 1)]
+    stream_commit_weight: u16,
+
     /// Measured per-instance ingress-concurrency capacity through the
     /// platform front door. Two-layer model (platform team investigation
     /// + our 6-source confirmation, 2026-07-15): each SOURCE Compute
@@ -733,6 +765,20 @@ async fn async_main() -> anyhow::Result<()> {
             && args.admit_queue_receives_per_sec_per_customer <= 1_000_000_000,
         "per-customer request rates must not exceed 1000000000"
     );
+    anyhow::ensure!(
+        args.admit_append_requests_per_sec_per_stream <= 1_000_000_000
+            && (1..=1_000_000_000).contains(&args.admit_append_request_burst_per_stream),
+        "per-stream append request rate/burst are out of range"
+    );
+    anyhow::ensure!(
+        args.admit_write_bytes_per_sec_per_stream <= 1 << 50
+            && (1..=1 << 50).contains(&args.admit_write_burst_bytes_per_stream),
+        "per-stream write byte rate/burst are out of range"
+    );
+    anyhow::ensure!(
+        (1..=100).contains(&args.stream_commit_weight),
+        "STREAM_COMMIT_WEIGHT must be between 1 and 100"
+    );
     if args.fleet_prefix.is_some() {
         anyhow::ensure!(
             (1..=64).contains(&args.fleet_max),
@@ -990,6 +1036,13 @@ async fn async_main() -> anyhow::Result<()> {
             read_burst_bytes: args.admit_read_burst_bytes_per_customer,
             queue_receives_per_second: args.admit_queue_receives_per_sec_per_customer,
             queue_receive_burst: args.admit_queue_receive_burst_per_customer,
+        }),
+        stream_admission: crate::http::StreamAdmission::new(crate::http::StreamAdmissionConfig {
+            append_requests_per_second: args.admit_append_requests_per_sec_per_stream,
+            append_request_burst: args.admit_append_request_burst_per_stream,
+            write_bytes_per_second: args.admit_write_bytes_per_sec_per_stream,
+            write_burst_bytes: args.admit_write_burst_bytes_per_stream,
+            commit_weight: args.stream_commit_weight,
         }),
         audit,
         backup,

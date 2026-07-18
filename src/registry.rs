@@ -57,6 +57,21 @@ pub struct StreamDesc {
     /// routing-key view (default 5).
     #[serde(default)]
     pub queue_max_deliveries: Option<u32>,
+    /// Provisioned stream-level append request and byte limits. `None` exists
+    /// only for descriptors created before stream admission was introduced;
+    /// those resolve through the deployment defaults.
+    #[serde(default)]
+    pub append_requests_per_second: Option<u64>,
+    #[serde(default)]
+    pub append_request_burst: Option<u64>,
+    #[serde(default)]
+    pub write_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub write_burst_bytes: Option<u64>,
+    /// Relative service share among this customer's streams at the shard
+    /// committer. Tenant scheduling remains the outer fairness boundary.
+    #[serde(default)]
+    pub commit_weight: Option<u16>,
     /// Fingerprint of the touch capability token (state-protocol streams):
     /// authorizes /touch/* without granting payload decryption.
     #[serde(default)]
@@ -429,6 +444,26 @@ fn validate_descriptor_scope(
     if descriptor.owner() != customer_id || descriptor.name != name {
         return Err(registry_error(
             "stream descriptor identity does not match its registry path",
+        ));
+    }
+    if descriptor
+        .append_requests_per_second
+        .is_some_and(|value| value > 1_000_000_000)
+        || descriptor
+            .append_request_burst
+            .is_some_and(|value| value == 0 || value > 1_000_000_000)
+        || descriptor
+            .write_bytes_per_second
+            .is_some_and(|value| value > 1 << 50)
+        || descriptor
+            .write_burst_bytes
+            .is_some_and(|value| value == 0 || value > 1 << 50)
+        || descriptor
+            .commit_weight
+            .is_some_and(|value| !(1..=100).contains(&value))
+    {
+        return Err(registry_error(
+            "stream descriptor has invalid admission limits",
         ));
     }
     Ok(())
@@ -1562,6 +1597,11 @@ mod tests {
             ordering: None,
             segment_count: 0,
             queue_max_deliveries: None,
+            append_requests_per_second: None,
+            append_request_burst: None,
+            write_bytes_per_second: None,
+            write_burst_bytes: None,
+            commit_weight: None,
             touch_token_fingerprint: None,
             touch_templates: Vec::new(),
             touch_sig_key: None,

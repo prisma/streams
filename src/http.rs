@@ -99,6 +99,10 @@ pub struct AppState {
     /// lifetime, preventing one valid tenant from consuming every ingress
     /// slot or all shard-queue capacity on an instance.
     pub tenant_admission: Arc<TenantAdmission>,
+    /// Per-stream provisioned append admission. This is a separate bounded
+    /// state table so a tenant under its account quota cannot overrun one hot
+    /// ordered stream or monopolize its shard.
+    pub stream_admission: Arc<StreamAdmission>,
     pub audit: Arc<crate::audit::AuditLog>,
     pub backup: Option<Arc<streams_slate::backup::BackupStatus>>,
     /// This instance's name plus the ring's active instance set, updated by
@@ -264,6 +268,11 @@ impl RateBucket {
         self.last_refill = base + delay;
         self.last_refill.saturating_duration_since(now)
     }
+
+    fn is_full(&mut self, now: std::time::Instant) -> bool {
+        self.refill(now);
+        self.rate == 0 || self.tokens + f64::EPSILON >= self.burst as f64
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -294,6 +303,229 @@ pub struct TenantAdmissionConfig {
     pub read_burst_bytes: u64,
     pub queue_receives_per_second: u64,
     pub queue_receive_burst: u64,
+}
+
+#[derive(Clone, Copy)]
+pub struct StreamAdmissionConfig {
+    pub append_requests_per_second: u64,
+    pub append_request_burst: u64,
+    pub write_bytes_per_second: u64,
+    pub write_burst_bytes: u64,
+    pub commit_weight: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ResolvedStreamLimits {
+    append_requests_per_second: u64,
+    append_request_burst: u64,
+    write_bytes_per_second: u64,
+    write_burst_bytes: u64,
+    commit_weight: u16,
+}
+
+struct StreamAdmissionState {
+    append_requests: RateBucket,
+    write_bytes: RateBucket,
+    last_seen: std::time::Instant,
+}
+
+#[derive(Default)]
+struct StreamAdmissionInner {
+    streams: HashMap<crate::registry::StorageHash, StreamAdmissionState>,
+}
+
+pub struct StreamAdmission {
+    inner: Mutex<StreamAdmissionInner>,
+    defaults: StreamAdmissionConfig,
+    capacity: usize,
+}
+
+impl StreamAdmission {
+    pub fn new(defaults: StreamAdmissionConfig) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Mutex::new(StreamAdmissionInner::default()),
+            defaults,
+            capacity: 100_000,
+        })
+    }
+
+    fn resolve(&self, descriptor: &StreamDesc) -> ResolvedStreamLimits {
+        ResolvedStreamLimits {
+            append_requests_per_second: descriptor
+                .append_requests_per_second
+                .unwrap_or(self.defaults.append_requests_per_second),
+            append_request_burst: descriptor
+                .append_request_burst
+                .unwrap_or(self.defaults.append_request_burst)
+                .max(1),
+            write_bytes_per_second: descriptor
+                .write_bytes_per_second
+                .unwrap_or(self.defaults.write_bytes_per_second),
+            write_burst_bytes: descriptor
+                .write_burst_bytes
+                .unwrap_or(self.defaults.write_burst_bytes)
+                .max(1),
+            commit_weight: descriptor
+                .commit_weight
+                .unwrap_or(self.defaults.commit_weight)
+                .clamp(1, 100),
+        }
+    }
+
+    fn requested_limits(&self, headers: &HeaderMap) -> Result<ResolvedStreamLimits, &'static str> {
+        fn value(
+            headers: &HeaderMap,
+            name: &'static str,
+            default: u64,
+            max: u64,
+            zero_allowed: bool,
+        ) -> Result<u64, &'static str> {
+            let Some(raw) = hdr(headers, name) else {
+                return Ok(default);
+            };
+            let parsed = raw
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value <= max && (zero_allowed || *value > 0));
+            parsed.ok_or(name)
+        }
+
+        let commit_weight = value(
+            headers,
+            "stream-commit-weight",
+            self.defaults.commit_weight as u64,
+            100,
+            false,
+        )? as u16;
+        Ok(ResolvedStreamLimits {
+            append_requests_per_second: value(
+                headers,
+                "stream-append-requests-per-second",
+                self.defaults.append_requests_per_second,
+                1_000_000_000,
+                true,
+            )?,
+            append_request_burst: value(
+                headers,
+                "stream-append-request-burst",
+                self.defaults.append_request_burst,
+                1_000_000_000,
+                false,
+            )?,
+            write_bytes_per_second: value(
+                headers,
+                "stream-write-bytes-per-second",
+                self.defaults.write_bytes_per_second,
+                1 << 50,
+                true,
+            )?,
+            write_burst_bytes: value(
+                headers,
+                "stream-write-burst-bytes",
+                self.defaults.write_burst_bytes,
+                1 << 50,
+                false,
+            )?,
+            commit_weight,
+        })
+    }
+
+    fn state_key(descriptor: &StreamDesc) -> crate::registry::StorageHash {
+        descriptor.storage_hash()
+    }
+
+    fn charge(
+        &self,
+        descriptor: &StreamDesc,
+        requests: usize,
+        bytes: usize,
+    ) -> Result<(), ThrottleReason> {
+        let limits = self.resolve(descriptor);
+        let key = Self::state_key(descriptor);
+        let now = std::time::Instant::now();
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.streams.contains_key(&key) && inner.streams.len() >= self.capacity {
+            let evict = inner
+                .streams
+                .iter_mut()
+                .filter_map(|(key, state)| {
+                    (state.append_requests.is_full(now) && state.write_bytes.is_full(now))
+                        .then_some((*key, state.last_seen))
+                })
+                .min_by_key(|(_, last_seen)| *last_seen)
+                .map(|(key, _)| key);
+            let Some(evict) = evict else {
+                return Err(ThrottleReason {
+                    scope: "instance",
+                    dimension: "stream_admission_states",
+                    limit: self.capacity as u64,
+                    observed: self.capacity.saturating_add(1) as u64,
+                });
+            };
+            inner.streams.remove(&evict);
+        }
+        let state = inner
+            .streams
+            .entry(key)
+            .or_insert_with(|| StreamAdmissionState {
+                append_requests: RateBucket::new(
+                    limits.append_requests_per_second,
+                    limits.append_request_burst,
+                    limits.append_request_burst,
+                    1,
+                    now,
+                ),
+                write_bytes: RateBucket::new(
+                    limits.write_bytes_per_second,
+                    limits.write_burst_bytes,
+                    limits.write_burst_bytes,
+                    1,
+                    now,
+                ),
+                last_seen: now,
+            });
+        state.append_requests.configure(
+            limits.append_requests_per_second,
+            limits.append_request_burst,
+            limits.append_request_burst,
+            1,
+            now,
+        );
+        state.write_bytes.configure(
+            limits.write_bytes_per_second,
+            limits.write_burst_bytes,
+            limits.write_burst_bytes,
+            1,
+            now,
+        );
+        state.last_seen = now;
+        state
+            .append_requests
+            .try_charge(requests, now)
+            .map_err(|(limit, observed)| ThrottleReason {
+                scope: "stream",
+                dimension: "append_burst_requests",
+                limit,
+                observed,
+            })?;
+        state
+            .write_bytes
+            .try_charge(bytes, now)
+            .map_err(|(limit, observed)| ThrottleReason {
+                scope: "stream",
+                dimension: "write_burst_bytes",
+                limit,
+                observed,
+            })
+    }
+
+    fn charge_request(&self, descriptor: &StreamDesc) -> Result<(), ThrottleReason> {
+        self.charge(descriptor, 1, 0)
+    }
+
+    fn charge_write(&self, descriptor: &StreamDesc, bytes: usize) -> Result<(), ThrottleReason> {
+        self.charge(descriptor, 0, bytes)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -697,10 +929,11 @@ async fn body_with_quota(
     state: &Arc<AppState>,
     customer_id: &str,
     limit: usize,
+    stream: Option<&StreamDesc>,
 ) -> Result<Bytes, Response> {
-    let mut stream = body.into_data_stream();
+    let mut body_stream = body.into_data_stream();
     let mut buffered = BytesMut::new();
-    while let Some(chunk) = stream.next().await {
+    while let Some(chunk) = body_stream.next().await {
         let chunk = chunk.map_err(|_| {
             err_resp(
                 StatusCode::BAD_REQUEST,
@@ -718,6 +951,14 @@ async fn body_with_quota(
         if let Err(reason) = state
             .tenant_admission
             .charge_write(customer_id, chunk.len())
+        {
+            state
+                .admit_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Err(throttled_resp(reason, 1));
+        }
+        if let Some(stream) = stream
+            && let Err(reason) = state.stream_admission.charge_write(stream, chunk.len())
         {
             state
                 .admit_shed
@@ -1595,7 +1836,8 @@ async fn stream_entry_inner(
     }
     match method {
         Method::PUT => {
-            let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES).await {
+            let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES, None).await
+            {
                 Ok(b) => b,
                 Err(response) => return response,
             };
@@ -1846,6 +2088,14 @@ fn initial_config_matches(existing: &StreamDesc, requested: Option<&str>) -> boo
     }
 }
 
+fn stream_config_matches(
+    admission: &StreamAdmission,
+    existing: &StreamDesc,
+    requested: ResolvedStreamLimits,
+) -> bool {
+    admission.resolve(existing) == requested
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fresh_desc(
     customer_id: &str,
@@ -1859,6 +2109,7 @@ fn fresh_desc(
     ordering: Option<String>,
     segment_count: u32,
     initial_request_hash: Option<String>,
+    stream_limits: ResolvedStreamLimits,
 ) -> StreamDesc {
     let epoch = rand_epoch();
     let (tt_fpr, sig_key) = if profile.as_deref() == Some("state-protocol") {
@@ -1887,6 +2138,11 @@ fn fresh_desc(
         ordering,
         segment_count,
         queue_max_deliveries: None,
+        append_requests_per_second: Some(stream_limits.append_requests_per_second),
+        append_request_burst: Some(stream_limits.append_request_burst),
+        write_bytes_per_second: Some(stream_limits.write_bytes_per_second),
+        write_burst_bytes: Some(stream_limits.write_burst_bytes),
+        commit_weight: Some(stream_limits.commit_weight),
         touch_token_fingerprint: tt_fpr,
         touch_templates,
         touch_sig_key: sig_key,
@@ -2300,6 +2556,16 @@ async fn create_stream_with_quota(
             "unsupported profile",
         );
     }
+    let stream_limits = match state.stream_admission.requested_limits(&headers) {
+        Ok(limits) => limits,
+        Err(name) => {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_stream_limit",
+                &format!("invalid {name}"),
+            );
+        }
+    };
     // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
     // order, byte-identical semantics to before this feature existed.
     let ordering = match hdr(&headers, "stream-ordering") {
@@ -2533,6 +2799,7 @@ async fn create_stream_with_quota(
                 || d.ttl_secs != ttl_secs
                 || d.ordering != ordering
                 || (ordering.is_some() && d.segment_count != segment_count)
+                || !stream_config_matches(&state.stream_admission, &d, stream_limits)
                 || !fork_config_matches(&d, fork_plan.as_ref())
                 || !initial_config_matches(&d, requested_initial_hash.as_deref())
             {
@@ -2592,6 +2859,7 @@ async fn create_stream_with_quota(
                 ordering.clone(),
                 segment_count,
                 requested_initial_hash.clone(),
+                stream_limits,
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
@@ -2634,6 +2902,7 @@ async fn create_stream_with_quota(
                         || d.ttl_secs != ttl_secs
                         || d.ordering != ordering
                         || (ordering.is_some() && d.segment_count != segment_count)
+                        || !stream_config_matches(&state.stream_admission, &d, stream_limits)
                         || !fork_config_matches(&d, fork_plan.as_ref())
                         || !initial_config_matches(&d, requested_initial_hash.as_deref())
                     {
@@ -2663,6 +2932,7 @@ async fn create_stream_with_quota(
                 ordering.clone(),
                 segment_count,
                 requested_initial_hash.clone(),
+                stream_limits,
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
@@ -2698,6 +2968,7 @@ async fn create_stream_with_quota(
                         || d.ttl_secs != ttl_secs
                         || d.ordering != ordering
                         || (ordering.is_some() && d.segment_count != segment_count)
+                        || !stream_config_matches(&state.stream_admission, &d, stream_limits)
                         || !fork_config_matches(&d, fork_plan.as_ref())
                         || !initial_config_matches(&d, requested_initial_hash.as_deref())
                     {
@@ -2752,11 +3023,24 @@ async fn create_stream_with_quota(
         let entries = initial_entries;
         let subkey = derive_subkey(&key, &epoch_bytes, "", 0);
         let bytes = entries.iter().map(|e| e.len()).sum();
+        if let Err(reason) = state.stream_admission.charge_request(&desc) {
+            state
+                .admit_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return throttled_resp(reason, 1);
+        }
+        if let Err(reason) = state.stream_admission.charge_write(&desc, bytes) {
+            state
+                .admit_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return throttled_resp(reason, 1);
+        }
         let (tx, rx) = oneshot::channel();
         let req = AppendReq {
             customer_id: customer_id.clone(),
             enqueued_at: std::time::Instant::now(),
             hash,
+            fair_weight: desc.commit_weight.unwrap_or(1).clamp(1, 100),
             entries,
             routing_key: String::new(),
             key_version: 0,
@@ -3223,7 +3507,14 @@ async fn append(
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),
     };
     let close = want_close(&headers);
-    let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES).await {
+    if let Err(reason) = state.stream_admission.charge_request(&desc) {
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return throttled_resp(reason, 1);
+    }
+    let body = match body_with_quota(body, &state, &customer_id, MAX_BODY_BYTES, Some(&desc)).await
+    {
         Ok(b) => b,
         Err(response) => return response,
     };
@@ -3359,6 +3650,7 @@ async fn append(
         customer_id: customer_id.clone(),
         enqueued_at: std::time::Instant::now(),
         hash,
+        fair_weight: desc.commit_weight.unwrap_or(1).clamp(1, 100),
         entries,
         routing_key,
         key_version: kv,
@@ -4641,7 +4933,7 @@ async fn queue_entry(
     };
     let max_deliveries = desc.queue_max_deliveries.unwrap_or(5);
     let dlq_subkey = derive_subkey(&key, &epoch, "$dlq", 0);
-    let raw = match body_with_quota(body, &state, &customer_id, 1 << 20).await {
+    let raw = match body_with_quota(body, &state, &customer_id, 1 << 20, None).await {
         Ok(b) => b,
         Err(response) => return response,
     };
@@ -4675,6 +4967,7 @@ async fn queue_entry(
                     .submit_queue(
                         customer_id.clone(),
                         hash,
+                        desc.commit_weight.unwrap_or(1).clamp(1, 100),
                         crate::queue::QueueOp::Receive {
                             consumer: consumer.to_string(),
                             max,
@@ -4781,6 +5074,7 @@ async fn queue_entry(
                 .submit_queue(
                     customer_id.clone(),
                     hash,
+                    desc.commit_weight.unwrap_or(1).clamp(1, 100),
                     crate::queue::QueueOp::Settle {
                         consumer: consumer.to_string(),
                         acks,
@@ -4913,6 +5207,33 @@ mod tests {
             queue_receives_per_second: 0,
             queue_receive_burst: 1,
         }
+    }
+
+    fn stream_admission_config() -> StreamAdmissionConfig {
+        StreamAdmissionConfig {
+            append_requests_per_second: 1,
+            append_request_burst: 1,
+            write_bytes_per_second: 1,
+            write_burst_bytes: 4,
+            commit_weight: 1,
+        }
+    }
+
+    fn admission_descriptor(name: &str, limits: ResolvedStreamLimits) -> StreamDesc {
+        fresh_desc(
+            "customer-a",
+            name,
+            &StreamKey([7; 32]),
+            "application/octet-stream".to_string(),
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            0,
+            None,
+            limits,
+        )
     }
 
     #[test]
@@ -5160,6 +5481,68 @@ mod tests {
         let third = bucket.reserve_delay(10, now);
         assert!(second >= Duration::from_millis(999));
         assert!(third >= Duration::from_millis(1999));
+    }
+
+    #[test]
+    fn stream_admission_is_incarnation_scoped_and_strictly_parsed() {
+        let admission = StreamAdmission::new(stream_admission_config());
+        let limits = ResolvedStreamLimits {
+            append_requests_per_second: 1,
+            append_request_burst: 1,
+            write_bytes_per_second: 1,
+            write_burst_bytes: 4,
+            commit_weight: 3,
+        };
+        let first = admission_descriptor("first", limits);
+        let second = admission_descriptor("second", limits);
+
+        assert!(admission.charge_request(&first).is_ok());
+        assert_eq!(
+            admission.charge_request(&first).unwrap_err(),
+            ThrottleReason {
+                scope: "stream",
+                dimension: "append_burst_requests",
+                limit: 1,
+                observed: 2,
+            }
+        );
+        assert!(admission.charge_request(&second).is_ok());
+        assert!(admission.charge_write(&second, 4).is_ok());
+        assert_eq!(
+            admission.charge_write(&second, 1).unwrap_err(),
+            ThrottleReason {
+                scope: "stream",
+                dimension: "write_burst_bytes",
+                limit: 4,
+                observed: 5,
+            }
+        );
+
+        let valid = HeaderMap::from_iter([
+            (
+                axum::http::HeaderName::from_static("stream-append-request-burst"),
+                axum::http::HeaderValue::from_static("9"),
+            ),
+            (
+                axum::http::HeaderName::from_static("stream-commit-weight"),
+                axum::http::HeaderValue::from_static("7"),
+            ),
+        ]);
+        let parsed = admission.requested_limits(&valid).unwrap();
+        assert_eq!(parsed.append_request_burst, 9);
+        assert_eq!(parsed.commit_weight, 7);
+        for (name, value) in [
+            ("stream-append-request-burst", "0"),
+            ("stream-write-burst-bytes", "0"),
+            ("stream-commit-weight", "101"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+            assert!(admission.requested_limits(&headers).is_err());
+        }
     }
 
     #[tokio::test]

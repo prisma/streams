@@ -43,5 +43,6 @@ jobs:
           bash scripts/ci-jwt-multitenant.sh
           bash scripts/ci-durable-quotas.sh
           bash scripts/ci-tenant-admission.sh
+          bash scripts/ci-stream-fairness.sh
           bash scripts/ci-noisy-neighbor.sh
           bash scripts/ci-conformance.sh

@@ -551,7 +551,8 @@ The first line is per-tenant, enforced before work is queued.
 - Customer limits live in `customers/<id>/limits.json` and are cached for 60
   seconds. Implemented dimensions are append requests/bytes, read requests/
   bytes, live connections, total in-flight requests, stream count, and queue
-  receives. Per-stream descriptor limits remain a release-gate item.
+  receives. Immutable descriptors persist per-stream append request/byte
+  limits and a bounded `commit_weight` (1..=100).
 - **Gateway admission (first hop):** request-count and ingress-byte token
   buckets reject with 429 before work is queued. Egress bytes use the same
   customer bucket but pace response frames, including SSE, rather than
@@ -564,10 +565,12 @@ The first line is per-tenant, enforced before work is queued.
   multiplied by membership size. Ceil-sharing can exceed a very small global
   limit by at most `active_instances - 1`; membership changes also have the
   fleet refresh window. Exact stream counts use the lease below.
-- **Shard-owner backstop:** commit groups use persistent per-customer
-  round-robin look-ahead, which prevents a run of one tenant's large requests
-  hiding another tenant's small request. Weighted per-stream scheduling and
-  per-stream admission are not implemented yet.
+- **Shard-owner backstop:** commit groups use a hierarchical scheduler. The
+  outer persistent round-robin gives each active tenant one turn; within that
+  turn, streams use bounded weighted round-robin from their immutable
+  `commit_weight`. Byte-budget look-ahead rotates an oversized stream head, so
+  it cannot hide a smaller sibling or another tenant. Gateway per-stream token
+  buckets are incarnation-scoped and safely evict only fully refilled state.
 - **`streams_count`** is currently enforced at create by a per-customer CAS
   lease around an authoritative by-customer descriptor recount and the
   descriptor CAS. This is exact and crash-bounded (a canceled holder expires

@@ -231,6 +231,8 @@ pub enum DeferredErr {
 pub struct AppendReq {
     pub customer_id: String,
     pub hash: StorageHash,
+    /// Relative service share among this customer's streams (1..=100).
+    pub fair_weight: u16,
     pub enqueued_at: std::time::Instant,
     /// Plaintext entries; encrypted in the committer with nonce = offset.
     pub entries: Vec<Bytes>,
@@ -278,6 +280,7 @@ pub enum CommitOp {
     Queue {
         customer_id: String,
         hash: StorageHash,
+        fair_weight: u16,
         op: crate::queue::QueueOp,
         resp: oneshot::Sender<Result<crate::queue::QueueOut, String>>,
     },
@@ -308,9 +311,21 @@ enum FairKey {
 /// a request larger than the remaining budget waits for the next group.
 #[derive(Default)]
 struct FairCommitQueue {
-    queues: HashMap<FairKey, VecDeque<CommitOp>>,
+    queues: HashMap<FairKey, TenantFairQueue>,
     active: VecDeque<FairKey>,
     len: usize,
+}
+
+struct StreamFairQueue {
+    ops: VecDeque<CommitOp>,
+    weight: u16,
+    credits: u16,
+}
+
+#[derive(Default)]
+struct TenantFairQueue {
+    streams: HashMap<StorageHash, StreamFairQueue>,
+    active: VecDeque<StorageHash>,
 }
 
 impl FairCommitQueue {
@@ -319,6 +334,22 @@ impl FairCommitQueue {
             CommitOp::Append(request) => FairKey::Tenant(request.customer_id.clone()),
             CommitOp::Queue { customer_id, .. } => FairKey::Tenant(customer_id.clone()),
             CommitOp::Absorbed { .. } | CommitOp::Barrier { .. } => FairKey::Internal,
+        }
+    }
+
+    fn stream_key(op: &CommitOp) -> StorageHash {
+        match op {
+            CommitOp::Append(request) => request.hash,
+            CommitOp::Queue { hash, .. } | CommitOp::Absorbed { hash, .. } => *hash,
+            CommitOp::Barrier { .. } => [0; 32],
+        }
+    }
+
+    fn weight(op: &CommitOp) -> u16 {
+        match op {
+            CommitOp::Append(request) => request.fair_weight.clamp(1, 100),
+            CommitOp::Queue { fair_weight, .. } => (*fair_weight).clamp(1, 100),
+            CommitOp::Absorbed { .. } | CommitOp::Barrier { .. } => 1,
         }
     }
 
@@ -331,11 +362,30 @@ impl FairCommitQueue {
 
     fn push(&mut self, op: CommitOp) {
         let key = Self::key(&op);
-        let queue = self.queues.entry(key.clone()).or_default();
-        if queue.is_empty() {
+        let stream_key = Self::stream_key(&op);
+        let weight = Self::weight(&op);
+        let tenant_is_new = !self.queues.contains_key(&key);
+        let tenant = self.queues.entry(key.clone()).or_default();
+        let stream_is_new = !tenant.streams.contains_key(&stream_key);
+        let stream = tenant
+            .streams
+            .entry(stream_key)
+            .or_insert_with(|| StreamFairQueue {
+                ops: VecDeque::new(),
+                weight,
+                credits: 0,
+            });
+        // Descriptor configuration is immutable for one incarnation. Using
+        // max is fail-safe for a queue operation racing the first append of a
+        // weighted queue-profile stream.
+        stream.weight = stream.weight.max(weight);
+        stream.ops.push_back(op);
+        if stream_is_new {
+            tenant.active.push_back(stream_key);
+        }
+        if tenant_is_new {
             self.active.push_back(key);
         }
-        queue.push_back(op);
         self.len += 1;
     }
 
@@ -347,24 +397,55 @@ impl FairCommitQueue {
             let Some(key) = self.active.pop_front() else {
                 break;
             };
-            let op_bytes = self
-                .queues
-                .get(&key)
-                .and_then(VecDeque::front)
-                .map(Self::bytes)
-                .unwrap_or(0);
+            let (stream_key, op_bytes) = {
+                let tenant = self.queues.get_mut(&key).expect("active tenant queue");
+                let stream_key = tenant.active.pop_front().expect("active stream queue");
+                let stream = tenant
+                    .streams
+                    .get_mut(&stream_key)
+                    .expect("active stream state");
+                if stream.credits == 0 {
+                    stream.credits = stream.weight;
+                }
+                let op_bytes = stream.ops.front().map(Self::bytes).unwrap_or(0);
+                (stream_key, op_bytes)
+            };
             if !out.is_empty() && bytes.saturating_add(op_bytes) > max_bytes {
+                let tenant = self.queues.get_mut(&key).expect("active tenant queue");
+                let stream = tenant
+                    .streams
+                    .get_mut(&stream_key)
+                    .expect("active stream state");
+                // A large head must not burn all weighted credits while it is
+                // waiting for the next byte budget.
+                stream.credits = 0;
+                tenant.active.push_back(stream_key);
                 self.active.push_back(key);
                 skipped += 1;
-                if skipped >= self.active.len() {
+                if skipped >= self.len {
                     break;
                 }
                 continue;
             }
             skipped = 0;
-            let queue = self.queues.get_mut(&key).expect("active fair queue");
-            let op = queue.pop_front().expect("non-empty fair queue");
-            if queue.is_empty() {
+            let (op, tenant_empty) = {
+                let tenant = self.queues.get_mut(&key).expect("active tenant queue");
+                let stream = tenant
+                    .streams
+                    .get_mut(&stream_key)
+                    .expect("active stream state");
+                let op = stream.ops.pop_front().expect("non-empty fair stream");
+                stream.credits = stream.credits.saturating_sub(1);
+                if stream.ops.is_empty() {
+                    tenant.streams.remove(&stream_key);
+                } else if stream.credits > 0 {
+                    tenant.active.push_front(stream_key);
+                } else {
+                    tenant.active.push_back(stream_key);
+                }
+                (op, tenant.active.is_empty())
+            };
+            if tenant_empty {
                 self.queues.remove(&key);
             } else {
                 self.active.push_back(key);
@@ -377,9 +458,11 @@ impl FairCommitQueue {
     }
 
     fn fail_all(&mut self) {
-        for queue in self.queues.values_mut() {
-            while let Some(op) = queue.pop_front() {
-                fail_commit_op(op);
+        for tenant in self.queues.values_mut() {
+            for stream in tenant.streams.values_mut() {
+                while let Some(op) = stream.ops.pop_front() {
+                    fail_commit_op(op);
+                }
             }
         }
         self.queues.clear();
@@ -726,6 +809,7 @@ impl ShardEngine {
         &self,
         customer_id: String,
         hash: StorageHash,
+        fair_weight: u16,
         op: crate::queue::QueueOp,
     ) -> Result<crate::queue::QueueOut, String> {
         let gate = self.admission_gate.lock().unwrap();
@@ -737,6 +821,7 @@ impl ShardEngine {
             .try_send(CommitOp::Queue {
                 customer_id,
                 hash,
+                fair_weight,
                 op,
                 resp: tx,
             })
@@ -1863,11 +1948,12 @@ mod tests {
         })
     }
 
-    fn append_op(customer_id: &str, bytes: usize) -> CommitOp {
+    fn append_op_on(customer_id: &str, stream: u8, bytes: usize, fair_weight: u16) -> CommitOp {
         let (resp, _rx) = oneshot::channel();
         CommitOp::Append(AppendReq {
             customer_id: customer_id.to_string(),
-            hash: [bytes as u8; 32],
+            hash: [stream; 32],
+            fair_weight,
             enqueued_at: std::time::Instant::now(),
             entries: vec![Bytes::from(vec![0; bytes])],
             routing_key: String::new(),
@@ -1884,10 +1970,21 @@ mod tests {
         })
     }
 
+    fn append_op(customer_id: &str, bytes: usize) -> CommitOp {
+        append_op_on(customer_id, bytes as u8, bytes, 1)
+    }
+
     fn customer(op: &CommitOp) -> &str {
         match op {
             CommitOp::Append(request) => &request.customer_id,
             _ => "internal",
+        }
+    }
+
+    fn stream(op: &CommitOp) -> u8 {
+        match op {
+            CommitOp::Append(request) => request.hash[0],
+            _ => 0,
         }
     }
 
@@ -1914,6 +2011,19 @@ mod tests {
         assert_eq!(
             batch.iter().map(customer).collect::<Vec<_>>(),
             vec!["a", "b", "a", "a"]
+        );
+
+        // The outer tenant remains one turn per round, while streams inside a
+        // tenant use their bounded provisioned weights.
+        let mut fair = FairCommitQueue::default();
+        for _ in 0..3 {
+            fair.push(append_op_on("a", 1, 1, 2));
+            fair.push(append_op_on("a", 2, 1, 1));
+        }
+        let batch = fair.pop_batch(6, 100);
+        assert_eq!(
+            batch.iter().map(stream).collect::<Vec<_>>(),
+            vec![1, 1, 2, 1, 2, 2]
         );
     }
 
@@ -2029,6 +2139,7 @@ mod tests {
                 .try_enqueue(AppendReq {
                     customer_id: "customer-a".into(),
                     hash,
+                    fair_weight: 1,
                     enqueued_at: std::time::Instant::now(),
                     entries: vec![Bytes::from_static(b"before-barrier")],
                     routing_key: String::new(),

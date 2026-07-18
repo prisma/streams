@@ -169,6 +169,9 @@ can override them with the durable object below.
 | `ADMIT_READ_REQUESTS_PER_SEC_PER_CUSTOMER` / `ADMIT_READ_REQUEST_BURST_PER_CUSTOMER` | 10000 / 10000 | GET/HEAD/list request bucket; rate 0 disables |
 | `ADMIT_READ_BYTES_PER_SEC_PER_CUSTOMER` / `ADMIT_READ_BURST_BYTES_PER_CUSTOMER` | 128 MiB / 256 MiB | paces finite and SSE response frames; rate 0 disables |
 | `ADMIT_QUEUE_RECEIVES_PER_SEC_PER_CUSTOMER` / `ADMIT_QUEUE_RECEIVE_BURST_PER_CUSTOMER` | 5000 / 5000 | receive only; ack and extend do not consume it |
+| `ADMIT_APPEND_REQUESTS_PER_SEC_PER_STREAM` / `ADMIT_APPEND_REQUEST_BURST_PER_STREAM` | 5000 / 5000 | descriptor fallback for legacy streams and creates without provisioning headers |
+| `ADMIT_WRITE_BYTES_PER_SEC_PER_STREAM` / `ADMIT_WRITE_BURST_BYTES_PER_STREAM` | 50 MiB / 100 MiB | per-incarnation ingress bucket; rate 0 disables |
+| `STREAM_COMMIT_WEIGHT` | 1 | descriptor fallback; relative 1..=100 share among one customer's streams, below the equal outer tenant scheduler |
 
 Per-customer production limits are durable ops-role objects at
 `customers/<first-128-bits-of-SHA256(customer-id)>/limits.json`:
@@ -205,6 +208,15 @@ membership. Consequently, very small limits can overshoot by at most one unit
 per additional active instance; 429 `limit` remains the customer value and
 `observed` is the cell estimate. Read-byte limits pace an admitted body rather
 than aborting it after headers.
+
+Create-time stream provisioning uses
+`Stream-Append-Requests-Per-Second`, `Stream-Append-Request-Burst`,
+`Stream-Write-Bytes-Per-Second`, `Stream-Write-Burst-Bytes`, and
+`Stream-Commit-Weight`. Values are persisted in the descriptor and are part of
+idempotent PUT configuration matching; changing one requires a new stream
+incarnation. Request and byte excess return a stream-scoped 429 before shard
+enqueue. The committer schedules tenants equally, then honors the bounded
+weight among that tenant's streams.
 
 Stream keys: `streams-keys generate` → 32-byte base64. Clients pass it as
 `Stream-Encryption-Key` on create and on every data-path request. The
