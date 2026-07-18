@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
 """Run and judge the reproducible target-hardware release soak.
 
-Secrets are accepted only through SOAK_STREAM_KEY, SOAK_AUTH_TOKEN, and
-SOAK_OPERATOR_TOKEN. The evidence artifact contains target identity, workload,
+Secrets are accepted only through SOAK_STREAM_KEY, exactly one of
+SOAK_AUTH_TOKEN/SOAK_AUTH_TOKEN_FILE, and SOAK_OPERATOR_TOKEN. Qualifying
+production runs require the mode-0600 token file and at least one successful
+JWT rotation. The evidence artifact contains target identity, workload,
 bounded aggregate observations, and explicit pass/fail checks, never secrets.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import datetime as dt
 import json
 import math
 import os
 import pathlib
+import stat
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -39,6 +44,88 @@ def nonnegative_float(value: str) -> float:
     if parsed < 0 or not math.isfinite(parsed):
         raise argparse.ArgumentTypeError("must be a finite non-negative number")
     return parsed
+
+
+def jwt_subject(token: str) -> str | None:
+    parts = token.split(".")
+    if len(parts) != 3 or len(parts[1]) > 16 * 1024:
+        return None
+    try:
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        value = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    subject = value.get("sub") if isinstance(value, dict) else None
+    if not isinstance(subject, str) or not 1 <= len(subject) <= 128:
+        return None
+    if any(not (character.isascii() and (character.isalnum() or character in "-_.")) for character in subject):
+        return None
+    return subject
+
+
+def read_token_file(path: pathlib.Path, expected_subject: str | None = None) -> str:
+    metadata = path.stat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("token path is not a regular file")
+    if metadata.st_mode & 0o077:
+        raise ValueError("token file is accessible by group or other")
+    if metadata.st_size <= 0 or metadata.st_size > 16 * 1024:
+        raise ValueError("token file is empty or too large")
+    token = path.read_text().strip()
+    if not token or len(token) > 16 * 1024 or any(character.isspace() for character in token):
+        raise ValueError("token file is empty, oversized, or contains whitespace")
+    if expected_subject is not None and jwt_subject(token) != expected_subject:
+        raise ValueError("token JWT subject changed")
+    return token
+
+
+class RotatingToken:
+    def __init__(self, path: pathlib.Path, subject: str, refresh_secs: int) -> None:
+        self.path = path
+        self.subject = subject
+        self.refresh_secs = refresh_secs
+        self.current = read_token_file(path, subject)
+        self.refresh_successes = 0
+        self.token_changes = 0
+        self.refresh_failures = 0
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._refresh_loop, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.thread.join(timeout=self.refresh_secs + 2)
+
+    def token(self) -> str:
+        with self.lock:
+            return self.current
+
+    def evidence(self) -> dict[str, object]:
+        with self.lock:
+            return {
+                "source": "file",
+                "subject_pinned": True,
+                "refresh_successes": self.refresh_successes,
+                "token_changes": self.token_changes,
+                "refresh_failures": self.refresh_failures,
+            }
+
+    def _refresh_loop(self) -> None:
+        while not self.stop_event.wait(self.refresh_secs):
+            try:
+                token = read_token_file(self.path, self.subject)
+            except (OSError, UnicodeDecodeError, ValueError):
+                with self.lock:
+                    self.refresh_failures += 1
+                continue
+            with self.lock:
+                self.refresh_successes += 1
+                if token != self.current:
+                    self.current = token
+                    self.token_changes += 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +153,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--entries", type=positive_int, default=1)
     parser.add_argument("--prefix", default=f"release-soak-{int(time.time())}")
     parser.add_argument("--allow-short", action="store_true")
+    parser.add_argument("--require-token-rotation", action="store_true")
+    parser.add_argument(
+        "--auth-token-refresh-secs", type=positive_int, default=30
+    )
+    parser.add_argument("--require-noisy-neighbor", action="store_true")
+    parser.add_argument("--attacker-stream")
+    parser.add_argument("--attacker-concurrency", type=positive_int, default=8)
+    parser.add_argument("--attacker-payload-bytes", type=positive_int, default=16 * 1024)
+    parser.add_argument("--min-attacker-attempts", type=positive_int, default=1000)
+    parser.add_argument(
+        "--max-attacker-non-429-rate", type=nonnegative_float, default=0.0
+    )
     parser.add_argument("--require-backup", action="store_true")
     parser.add_argument("--min-req-per-sec", type=nonnegative_float, default=1.0)
     parser.add_argument("--max-error-rate", type=nonnegative_float, default=0.0005)
@@ -93,6 +192,16 @@ def parse_args() -> argparse.Namespace:
         parser.error("provide between 1 and 64 unique metrics URLs")
     if args.duration_secs < MIN_RELEASE_SOAK_SECS and not args.allow_short:
         parser.error("release soak must run for at least 24 hours (or use --allow-short for CI)")
+    if args.auth_token_refresh_secs > 3600:
+        parser.error("auth token refresh interval must be at most 3600 seconds")
+    if args.attacker_concurrency > 64:
+        parser.error("attacker concurrency must be at most 64")
+    if args.attacker_payload_bytes > 16 * 1024 * 1024:
+        parser.error("attacker payload must be at most 16 MiB")
+    if args.max_attacker_non_429_rate > 1:
+        parser.error("attacker non-429 rate must be between zero and one")
+    if args.attacker_stream is not None and not 1 <= len(args.attacker_stream) <= 512:
+        parser.error("attacker stream must be 1..=512 characters")
     return args
 
 
@@ -106,6 +215,95 @@ def request(url: str, token: str | None = None) -> tuple[int, str]:
         return error.code, error.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         return 0, str(error)
+
+
+def mutate_request(
+    method: str,
+    url: str,
+    token: str,
+    stream_key: str,
+    body: bytes,
+) -> int:
+    request_object = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "authorization": f"Bearer {token}",
+            "stream-encryption-key": stream_key,
+            "content-type": "application/octet-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_object, timeout=5) as response:
+            response.read()
+            return response.status
+    except urllib.error.HTTPError as error:
+        error.read()
+        return error.code
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return 0
+
+
+class Attacker:
+    def __init__(
+        self,
+        url: str,
+        stream_key: str,
+        token: RotatingToken,
+        payload_bytes: int,
+        concurrency: int,
+    ) -> None:
+        self.url = url
+        self.stream_key = stream_key
+        self.token_source = token
+        self.payload = b"a" * payload_bytes
+        self.concurrency = concurrency
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.statuses: dict[int, int] = {}
+        self.threads: list[threading.Thread] = []
+
+    def start(self) -> None:
+        self.token_source.start()
+        self.threads = [
+            threading.Thread(target=self._worker, daemon=True)
+            for _ in range(self.concurrency)
+        ]
+        for thread in self.threads:
+            thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        for thread in self.threads:
+            thread.join(timeout=7)
+        self.token_source.stop()
+
+    def evidence(self) -> dict[str, object]:
+        with self.lock:
+            statuses = dict(sorted(self.statuses.items()))
+        attempts = sum(statuses.values())
+        throttled = statuses.get(429, 0)
+        return {
+            "attempts": attempts,
+            "throttled_429": throttled,
+            "non_429": attempts - throttled,
+            "non_429_rate": (attempts - throttled) / attempts if attempts else 1.0,
+            "status_counts": {str(status): count for status, count in statuses.items()},
+            "auth": self.token_source.evidence(),
+        }
+
+    def _worker(self) -> None:
+        while not self.stop_event.is_set():
+            status = mutate_request(
+                "POST",
+                self.url,
+                self.token_source.token(),
+                self.stream_key,
+                self.payload,
+            )
+            with self.lock:
+                self.statuses[status] = self.statuses.get(status, 0) + 1
 
 
 def parse_openmetrics(body: str) -> dict[str, float]:
@@ -216,18 +414,57 @@ def main() -> int:
     args = parse_args()
     stream_key = os.environ.get("SOAK_STREAM_KEY")
     auth_token = os.environ.get("SOAK_AUTH_TOKEN")
+    auth_token_file = os.environ.get("SOAK_AUTH_TOKEN_FILE")
     operator_token = os.environ.get("SOAK_OPERATOR_TOKEN")
+    attacker_stream_key = os.environ.get("SOAK_ATTACKER_STREAM_KEY")
+    attacker_token_file = os.environ.get("SOAK_ATTACKER_AUTH_TOKEN_FILE")
     missing = [
         name
         for name, value in [
             ("SOAK_STREAM_KEY", stream_key),
-            ("SOAK_AUTH_TOKEN", auth_token),
             ("SOAK_OPERATOR_TOKEN", operator_token),
         ]
         if not value
     ]
     if missing:
         raise SystemExit(f"missing secret environment variable(s): {', '.join(missing)}")
+    if bool(auth_token) == bool(auth_token_file):
+        raise SystemExit("set exactly one of SOAK_AUTH_TOKEN or SOAK_AUTH_TOKEN_FILE")
+    require_token_rotation = args.require_token_rotation or not args.allow_short
+    require_noisy_neighbor = args.require_noisy_neighbor or not args.allow_short
+    if require_token_rotation and not auth_token_file:
+        raise SystemExit(
+            "qualifying release soak requires SOAK_AUTH_TOKEN_FILE for JWT rotation"
+        )
+    if require_noisy_neighbor and (not attacker_stream_key or not attacker_token_file):
+        raise SystemExit(
+            "noisy-neighbor soak requires SOAK_ATTACKER_STREAM_KEY and "
+            "SOAK_ATTACKER_AUTH_TOKEN_FILE"
+        )
+    if require_noisy_neighbor and not auth_token_file:
+        raise SystemExit("noisy-neighbor soak requires SOAK_AUTH_TOKEN_FILE")
+    auth_token_subject = None
+    if require_token_rotation or require_noisy_neighbor:
+        try:
+            initial_token = read_token_file(pathlib.Path(auth_token_file))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise SystemExit(f"cannot read SOAK_AUTH_TOKEN_FILE: {error}") from error
+        auth_token_subject = jwt_subject(initial_token)
+        if auth_token_subject is None:
+            raise SystemExit(
+                "rotating workload token must be a JWT with a valid tenant subject"
+            )
+    attacker_subject = None
+    if require_noisy_neighbor:
+        if pathlib.Path(attacker_token_file) == pathlib.Path(auth_token_file or ""):
+            raise SystemExit("victim and attacker token files must differ")
+        try:
+            attacker_initial = read_token_file(pathlib.Path(attacker_token_file))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise SystemExit(f"cannot read SOAK_ATTACKER_AUTH_TOKEN_FILE: {error}") from error
+        attacker_subject = jwt_subject(attacker_initial)
+        if attacker_subject is None or attacker_subject == auth_token_subject:
+            raise SystemExit("victim and attacker JWT subjects must be valid and distinct")
 
     evidence_path = pathlib.Path(args.evidence)
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,7 +472,12 @@ def main() -> int:
     started = time.monotonic()
     child_env = os.environ.copy()
     child_env["STREAM_KEY"] = stream_key
-    child_env["STREAMS_AUTH_TOKEN"] = auth_token
+    child_env.pop("STREAMS_AUTH_TOKEN", None)
+    child_env.pop("STREAMS_AUTH_TOKEN_FILE", None)
+    if auth_token_file:
+        child_env["STREAMS_AUTH_TOKEN_FILE"] = auth_token_file
+    else:
+        child_env["STREAMS_AUTH_TOKEN"] = auth_token
     command = [
         args.bench_bin,
         "--url",
@@ -260,7 +502,36 @@ def main() -> int:
         args.release_id,
         "--json",
         "--verify-offsets",
+        "--auth-token-refresh-secs",
+        str(args.auth_token_refresh_secs),
     ]
+    if auth_token_subject:
+        command.extend(["--auth-token-subject", auth_token_subject])
+    attacker = None
+    attacker_stream = args.attacker_stream or f"{args.prefix}-attacker"
+    if require_noisy_neighbor:
+        attacker_token = RotatingToken(
+            pathlib.Path(attacker_token_file),
+            attacker_subject,
+            args.auth_token_refresh_secs,
+        )
+        attacker_url = f"{args.url.rstrip('/')}/v1/stream/{attacker_stream}"
+        create_status = mutate_request(
+            "PUT",
+            attacker_url,
+            attacker_token.token(),
+            attacker_stream_key,
+            b"",
+        )
+        if create_status not in (200, 201, 204):
+            raise SystemExit(f"attacker stream create failed with status {create_status}")
+        attacker = Attacker(
+            attacker_url,
+            attacker_stream_key,
+            attacker_token,
+            args.attacker_payload_bytes,
+            args.attacker_concurrency,
+        )
     bench = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -269,10 +540,16 @@ def main() -> int:
         env=child_env,
     )
     samples: list[dict[str, object]] = []
-    while bench.poll() is None:
-        sampled_at = time.monotonic()
-        samples.extend(scrape_all(args.metrics_url, operator_token, sampled_at - started))
-        time.sleep(max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)))
+    if attacker:
+        attacker.start()
+    try:
+        while bench.poll() is None:
+            sampled_at = time.monotonic()
+            samples.extend(scrape_all(args.metrics_url, operator_token, sampled_at - started))
+            time.sleep(max(0.0, args.monitor_secs - (time.monotonic() - sampled_at)))
+    finally:
+        if attacker:
+            attacker.stop()
     stdout, stderr = bench.communicate()
     drain_until = time.monotonic() + args.drain_secs
     while time.monotonic() < drain_until:
@@ -283,6 +560,7 @@ def main() -> int:
     samples.extend(scrape_all(args.metrics_url, operator_token, time.monotonic() - started))
 
     summary = parse_bench_summary(stdout)
+    attacker_evidence = attacker.evidence() if attacker else {"required": False}
     good = [sample for sample in samples if sample.get("metrics_ok")]
     by_target: dict[str, list[dict[str, object]]] = {}
     for sample in good:
@@ -321,6 +599,7 @@ def main() -> int:
     p999_observed = finite_or_none(p999)
     rps = float(summary.get("req_per_sec", 0.0)) if summary else 0.0
     offset_verification = summary.get("offset_verification", {}) if summary else {}
+    auth_evidence = summary.get("auth", {}) if summary else {}
     offsets_verified = bool(
         isinstance(offset_verification, dict)
         and offset_verification.get("enabled")
@@ -354,6 +633,48 @@ def main() -> int:
             offset_verification,
             "every stream next offset equals successful generated entries",
             offsets_verified,
+        ),
+        "auth_token_rotation": check(
+            auth_evidence,
+            "file source, at least one token change, and zero refresh failures"
+            if require_token_rotation
+            else "rotation not required for this short run",
+            isinstance(auth_evidence, dict)
+            and (
+                not require_token_rotation
+                or (
+                    auth_evidence.get("source") == "file"
+                    and auth_evidence.get("subject_pinned") is True
+                    and int(auth_evidence.get("token_changes", 0)) >= 1
+                    and int(auth_evidence.get("refresh_failures", 0)) == 0
+                )
+            ),
+        ),
+        "noisy_neighbor_isolation": check(
+            attacker_evidence,
+            {
+                "required": require_noisy_neighbor,
+                "min_attempts": args.min_attacker_attempts,
+                "max_non_429_rate": args.max_attacker_non_429_rate,
+                "distinct_subjects": True,
+                "rotated_subject_pinned_auth": require_token_rotation,
+            },
+            (not require_noisy_neighbor)
+            or (
+                int(attacker_evidence.get("attempts", 0))
+                >= args.min_attacker_attempts
+                and float(attacker_evidence.get("non_429_rate", 1.0))
+                <= args.max_attacker_non_429_rate
+                and isinstance(attacker_evidence.get("auth"), dict)
+                and attacker_evidence["auth"].get("subject_pinned") is True
+                and (
+                    not require_token_rotation
+                    or (
+                        int(attacker_evidence["auth"].get("token_changes", 0)) >= 1
+                        and int(attacker_evidence["auth"].get("refresh_failures", 0)) == 0
+                    )
+                )
+            ),
         ),
         "append_error_rate": check(error_rate, args.max_error_rate, error_rate <= args.max_error_rate),
         "throughput": check(rps, args.min_req_per_sec, rps >= args.min_req_per_sec),
@@ -412,8 +733,18 @@ def main() -> int:
             "entries": args.entries,
             "prefix": args.prefix,
             "short_run": args.duration_secs < MIN_RELEASE_SOAK_SECS,
+            "token_rotation_required": require_token_rotation,
+            "noisy_neighbor_required": require_noisy_neighbor,
+            "attacker_stream": attacker_stream if require_noisy_neighbor else None,
+            "attacker_concurrency": args.attacker_concurrency
+            if require_noisy_neighbor
+            else 0,
+            "attacker_payload_bytes": args.attacker_payload_bytes
+            if require_noisy_neighbor
+            else 0,
         },
         "bench": summary,
+        "noisy_neighbor": attacker_evidence,
         "monitor": {
             "samples": len(samples),
             "successful_samples": len(good),

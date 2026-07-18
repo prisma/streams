@@ -725,13 +725,25 @@ against the real load-balanced Compute cell and scrape every instance directly.
 The judge records exact durable stream-offset reconciliation, request rate and
 errors, p50/p99/p99.9 ACK latency, readiness/component failures, RSS maximum
 and quartile growth, absorber maximum/drain, L0 and unflushed-WAL debt, fencing,
-and protected-point RPO. It writes one bounded JSON artifact and fails any
-configured regression budget. Credentials are accepted only through the three
-secret environment variables and are never serialized.
+and protected-point RPO. At the same time, a distinct JWT subject continuously
+sends oversized appends under a durable burst limit smaller than the attack
+body; every attack must remain a scoped 429 while the victim meets all of the
+same budgets. It writes one bounded JSON artifact and fails any configured
+regression budget.
+
+Production JWTs live for at most 24 hours, so a qualifying run cannot use one
+static bearer token. Put the current victim and attacker JWTs in distinct
+mode-0600 files and have the issuer atomically replace both before expiry.
+`bench` refreshes off the request path, pins every replacement to the initial
+tenant `sub`, retains the last good token on a malformed refresh, and reports
+only reload/change/failure counts. The judge requires at least one change and
+zero refresh failures for both subjects. Keys and tokens are never serialized.
 
 ```bash
 export SOAK_STREAM_KEY=...          # fresh customer key for this run
-export SOAK_AUTH_TOKEN=...          # scoped workload principal
+export SOAK_AUTH_TOKEN_FILE=/run/secrets/soak-victim.jwt
+export SOAK_ATTACKER_STREAM_KEY=... # different customer key
+export SOAK_ATTACKER_AUTH_TOKEN_FILE=/run/secrets/soak-attacker.jwt
 export SOAK_OPERATOR_TOKEN=...      # operator-only metrics principal
 
 scripts/release-soak.py \
@@ -744,16 +756,25 @@ scripts/release-soak.py \
   --target-label compute-production-shape \
   --instance-class 1cpu-1gb \
   --storage-provider tigris-independent-recovery \
+  --require-noisy-neighbor \
   --require-backup \
   --min-req-per-sec 1000
 ```
+
+Preprovision the attacker customer's durable `write_burst_bytes` below
+`--attacker-payload-bytes` (16 KiB by default), while the victim has its normal
+production limits. The subjects and token files must differ. A qualifying run
+automatically requires noisy-neighbor pressure and rotating files even if the
+explicit flags are omitted; `SOAK_AUTH_TOKEN` remains a short-test-only fixed
+token path.
 
 Tune throughput and latency budgets only from an approved baseline for the
 same instance/store class; record the chosen arguments with the artifact. The
 script refuses a run shorter than 24 hours unless `--allow-short` is explicit.
 That escape is used only by `scripts/ci-release-soak-harness.sh` to test the
-judge, authenticated benchmark, metric parser, durable-offset proof, and
-secret-free artifact shape. A short or local run is not release evidence.
+judge, production JWT subject isolation, live token rotation, attacker 429s,
+metric parser, durable-offset proof, and secret-free artifact shape. A short or
+local run is not release evidence.
 
 ## 10. Troubleshooting matrix
 

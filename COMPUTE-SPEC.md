@@ -624,6 +624,12 @@ all changes ship read-compatible first.
   CAS-conflict rate, absorber lag, RSS. Breach ⇒ automatic halt +
   rollback of that wave (previous binary redeploy; instances drain per
   §5.2, shards fence back).
+- **Release soak:** the 24-hour one-cell wave is judged with distinct victim
+  and attacker JWT subjects. Both mode-0600 token files must rotate while
+  retaining their subject; every oversized attacker append must be a scoped
+  429 while victim offsets, ACK percentiles, readiness, RSS, absorber/L0/WAL
+  debt, fencing, and protected-point RPO remain within budget. A single-tenant
+  or fixed-token run is not release evidence.
 - **Schema evolution (N/N-1 contract):** every coordination object
   (heartbeat, fleet.json, desired, topology, overrides, cells.json)
   carries `v`. Readers MUST ignore unknown fields and accept `v` and

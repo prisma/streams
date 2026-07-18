@@ -11,7 +11,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use std::{path::PathBuf, sync::RwLock};
 
+use base64::Engine;
 use clap::Parser;
 use hdrhistogram::Histogram;
 use tokio::sync::Mutex;
@@ -63,17 +65,172 @@ struct Args {
     /// Bearer token for production-authenticated targets.
     #[arg(long, env = "STREAMS_AUTH_TOKEN")]
     auth_token: Option<String>,
+    /// Mode-0600 file containing the current bearer token. The file is
+    /// re-read off the request path so a >=24-hour production soak can rotate
+    /// short-lived JWTs. Replace it atomically; malformed reads retain the
+    /// last good token and increment the reported failure counter.
+    #[arg(long, env = "STREAMS_AUTH_TOKEN_FILE", conflicts_with = "auth_token")]
+    auth_token_file: Option<PathBuf>,
+    #[arg(long, default_value_t = 30)]
+    auth_token_refresh_secs: u64,
+    /// Expected JWT `sub` for both the initial and every refreshed token.
+    /// The evidence records only whether subject pinning was enabled.
+    #[arg(long, env = "STREAMS_AUTH_TOKEN_SUBJECT")]
+    auth_token_subject: Option<String>,
+}
+
+#[derive(Clone)]
+struct AuthToken {
+    current: Arc<RwLock<Option<String>>>,
+    source: &'static str,
+    refresh_successes: Arc<AtomicU64>,
+    token_changes: Arc<AtomicU64>,
+    refresh_failures: Arc<AtomicU64>,
+    subject_pinned: bool,
+}
+
+impl AuthToken {
+    async fn new(args: &Args) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            (1..=3600).contains(&args.auth_token_refresh_secs),
+            "auth token refresh interval must be 1..=3600 seconds"
+        );
+        let refresh_successes = Arc::new(AtomicU64::new(0));
+        let token_changes = Arc::new(AtomicU64::new(0));
+        let refresh_failures = Arc::new(AtomicU64::new(0));
+        let (initial, source) = match &args.auth_token_file {
+            Some(path) => (
+                Some(read_token_file(path, args.auth_token_subject.as_deref()).await?),
+                "file",
+            ),
+            None => {
+                if let (Some(token), Some(subject)) = (
+                    args.auth_token.as_deref(),
+                    args.auth_token_subject.as_deref(),
+                ) {
+                    anyhow::ensure!(
+                        jwt_subject(token).as_deref() == Some(subject),
+                        "fixed auth JWT does not match the expected subject"
+                    );
+                }
+                (args.auth_token.clone(), "fixed")
+            }
+        };
+        let auth = Self {
+            current: Arc::new(RwLock::new(initial)),
+            source,
+            refresh_successes,
+            token_changes,
+            refresh_failures,
+            subject_pinned: args.auth_token_subject.is_some(),
+        };
+        if let Some(path) = args.auth_token_file.clone() {
+            let refresh = Duration::from_secs(args.auth_token_refresh_secs);
+            let current = auth.current.clone();
+            let successes = auth.refresh_successes.clone();
+            let changes = auth.token_changes.clone();
+            let failures = auth.refresh_failures.clone();
+            let expected_subject = args.auth_token_subject.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(refresh).await;
+                    match read_token_file(&path, expected_subject.as_deref()).await {
+                        Ok(next) => {
+                            successes.fetch_add(1, Ordering::Relaxed);
+                            let mut slot = current.write().unwrap();
+                            if slot.as_ref() != Some(&next) {
+                                *slot = Some(next);
+                                changes.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        Err(_) => {
+                            failures.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+        }
+        Ok(auth)
+    }
+
+    fn current(&self) -> Option<String> {
+        self.current.read().unwrap().clone()
+    }
+
+    fn evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "source": self.source,
+            "refresh_successes": self.refresh_successes.load(Ordering::Relaxed),
+            "token_changes": self.token_changes.load(Ordering::Relaxed),
+            "refresh_failures": self.refresh_failures.load(Ordering::Relaxed),
+            "subject_pinned": self.subject_pinned,
+        })
+    }
+}
+
+fn jwt_subject(token: &str) -> Option<String> {
+    let mut segments = token.split('.');
+    let _header = segments.next()?;
+    let payload = segments.next()?;
+    let _signature = segments.next()?;
+    if segments.next().is_some() || payload.len() > 16 * 1024 {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    if decoded.len() > 16 * 1024 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let subject = value.get("sub")?.as_str()?;
+    if subject.is_empty()
+        || subject.len() > 128
+        || !subject
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return None;
+    }
+    Some(subject.to_string())
+}
+
+async fn read_token_file(path: &PathBuf, expected_subject: Option<&str>) -> anyhow::Result<String> {
+    let metadata = tokio::fs::metadata(path).await?;
+    anyhow::ensure!(metadata.is_file(), "auth token path is not a regular file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        anyhow::ensure!(
+            metadata.permissions().mode() & 0o077 == 0,
+            "auth token file must not be accessible by group or other"
+        );
+    }
+    anyhow::ensure!(metadata.len() <= 16 * 1024, "auth token file is too large");
+    let token = tokio::fs::read_to_string(path).await?;
+    let token = token.trim();
+    anyhow::ensure!(
+        !token.is_empty() && token.len() <= 16 * 1024 && !token.chars().any(char::is_whitespace),
+        "auth token file is empty, oversized, or contains whitespace"
+    );
+    if let Some(expected) = expected_subject {
+        anyhow::ensure!(
+            jwt_subject(token).as_deref() == Some(expected),
+            "auth token JWT does not match the expected subject"
+        );
+    }
+    Ok(token.to_string())
 }
 
 fn authorized(
     mut rb: reqwest::RequestBuilder,
     key: &Option<String>,
-    auth_token: &Option<String>,
+    auth_token: &AuthToken,
 ) -> reqwest::RequestBuilder {
     if let Some(k) = key {
         rb = rb.header("stream-encryption-key", k.as_str());
     }
-    if let Some(token) = auth_token {
+    if let Some(token) = auth_token.current() {
         rb = rb.bearer_auth(token);
     }
     rb
@@ -128,6 +285,7 @@ fn payload(bytes: usize, entries: usize) -> (Vec<u8>, &'static str) {
 
 async fn bench_append(args: Args) -> anyhow::Result<()> {
     let client = make_client(args.concurrency);
+    let auth_token = AuthToken::new(&args).await?;
     let shared = Arc::new(Shared {
         hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
         ok: AtomicU64::new(0),
@@ -145,7 +303,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
         let r = authorized(
             client.put(format!("{}/v1/stream/{}-{}", args.url, args.prefix, s)),
             &args.key,
-            &args.auth_token,
+            &auth_token,
         )
         .send()
         .await?;
@@ -176,7 +334,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
         let bytes = args.payload_bytes as u64 * entries;
         let content_type = content_type.to_string();
         let key = args.key.clone();
-        let auth_token = args.auth_token.clone();
+        let auth_token = auth_token.clone();
         handles.push(tokio::spawn(async move {
             loop {
                 let now = Instant::now();
@@ -194,12 +352,15 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
                 match res {
                     Ok(r) if r.status().is_success() => {
                         let _ = r.bytes().await;
+                        // Offset reconciliation covers the full process run,
+                        // including warmup. Latency/throughput counters remain
+                        // measurement-window only.
+                        shared.per_stream_entries_ok[stream_index]
+                            .fetch_add(entries, Ordering::Relaxed);
                         if in_window {
                             shared.ok.fetch_add(1, Ordering::Relaxed);
                             shared.entries_ok.fetch_add(entries, Ordering::Relaxed);
                             shared.bytes_ok.fetch_add(bytes, Ordering::Relaxed);
-                            shared.per_stream_entries_ok[stream_index]
-                                .fetch_add(entries, Ordering::Relaxed);
                             shared
                                 .hist
                                 .lock()
@@ -235,7 +396,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
     if args.verify_offsets {
         for stream_index in 0..args.streams {
             let url = format!("{}/v1/stream/{}-{}", args.url, args.prefix, stream_index);
-            let response = authorized(client.head(url), &args.key, &args.auth_token)
+            let response = authorized(client.head(url), &args.key, &auth_token)
                 .send()
                 .await?;
             let observed = response
@@ -274,6 +435,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
             "streams_verified": if args.verify_offsets { args.streams } else { 0 },
             "mismatches": offset_mismatches,
         },
+        "auth": auth_token.evidence(),
         "latency_ms": {
             "p50": hist.value_at_quantile(0.50) as f64 / 1000.0,
             "p90": hist.value_at_quantile(0.90) as f64 / 1000.0,
@@ -297,6 +459,7 @@ async fn bench_append(args: Args) -> anyhow::Result<()> {
 
 async fn bench_read(args: Args) -> anyhow::Result<()> {
     let client = make_client(args.concurrency);
+    let auth_token = AuthToken::new(&args).await?;
     let t0 = Instant::now();
     let mut total_bytes = 0u64;
     let mut total_reqs = 0u64;
@@ -305,7 +468,7 @@ async fn bench_read(args: Args) -> anyhow::Result<()> {
         let client = client.clone();
         let url = format!("{}/v1/stream/{}-{}", args.url, args.prefix, s);
         let key = args.key.clone();
-        let auth_token = args.auth_token.clone();
+        let auth_token = auth_token.clone();
         handles.push(tokio::spawn(async move {
             let mut offset = "-1".to_string();
             let mut bytes = 0u64;
@@ -353,6 +516,7 @@ async fn bench_read(args: Args) -> anyhow::Result<()> {
         "total_mb": total_bytes as f64 / 1e6,
         "secs": secs,
         "mb_per_sec": total_bytes as f64 / secs / 1e6,
+        "auth": auth_token.evidence(),
     });
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
@@ -361,9 +525,10 @@ async fn bench_read(args: Args) -> anyhow::Result<()> {
 /// Measures the gap between append ACK and object-store durability.
 async fn bench_durability(args: Args) -> anyhow::Result<()> {
     let client = make_client(4);
+    let auth_token = AuthToken::new(&args).await?;
     let stream = format!("{}-dur-{}", args.prefix, std::process::id());
     let url = format!("{}/v1/stream/{}", args.url, stream);
-    let r = authorized(client.put(&url), &args.key, &args.auth_token)
+    let r = authorized(client.put(&url), &args.key, &auth_token)
         .send()
         .await?;
     anyhow::ensure!(r.status().is_success(), "create failed: {}", r.status());
@@ -371,7 +536,7 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
     let iterations = 10usize;
     for _ in 0..iterations {
         let t0 = Instant::now();
-        let res = authorized(client.post(&url), &args.key, &args.auth_token)
+        let res = authorized(client.post(&url), &args.key, &auth_token)
             .header("content-type", "application/octet-stream")
             .body(vec![b'x'; args.payload_bytes])
             .send()
@@ -385,7 +550,7 @@ async fn bench_durability(args: Args) -> anyhow::Result<()> {
         let mut lag = 0.0f64;
         let ack_at = Instant::now();
         loop {
-            let r = authorized(client.get(&details_url), &None, &args.auth_token)
+            let r = authorized(client.get(&details_url), &None, &auth_token)
                 .send()
                 .await?;
             if r.status() == reqwest::StatusCode::NOT_FOUND {
