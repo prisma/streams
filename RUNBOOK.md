@@ -389,15 +389,17 @@ OOM-killed container under load otherwise stays down.
 
 | endpoint | auth | purpose |
 |---|---|---|
-| `GET /health` | none | liveness (`ok`). Health checks and wake pings use this |
+| `GET /health` / `GET /health/ready` | none | readiness; 503 names a degraded serving state only through the operator metrics below |
+| `GET /health/live` | none | process liveness (`ok`); wake/restart probes use this, never readiness |
 | `GET /v1/streams` | bearer | list streams |
 | `PUT /v1/stream/{name}` | bearer + `Stream-Encryption-Key` | create (400 `missing_key` without the key header) |
 | `POST /v1/stream/{name}` | bearer + key | append (`{"events":[…]}`); 204 on durable commit |
 | `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
 | `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
-| `GET /v1/debug/load` | none | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
+| `GET /v1/debug/load` | operator bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
-| `GET /v1/debug/sleep?ms=N` | none | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
+| `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape; no tenant-controlled labels |
+| `GET /v1/debug/sleep?ms=N` | operator bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
 
 **429 semantics**: every body uses
 `{"error":{"code":"throttled","scope":…,"dimension":…,"limit":n,
@@ -564,8 +566,22 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 ## 8. Monitoring
 
 **Primary feeds**: fleet heartbeats (object store), LB `/stats` (per-upstream
-rps/ackMs/live/cpu + desired), `/v1/debug/*` per instance. OTel export is
-spec'd in [OPERATIONS.md §5](./OPERATIONS.md).
+rps/ackMs/live/cpu + desired), and an operator-authenticated scrape of
+`/v1/debug/metrics` per instance. The scrape contains fixed operation/status/
+component labels plus the bounded set of open binary shard prefixes; customer
+and stream names never become monitoring labels. Configure the collector with
+trusted `region`, `cell`, and `instance` target labels and convert OpenMetrics
+to OTel at the platform boundary if that is the platform-native transport.
+
+Load [ops/prometheus-alerts.json](./ops/prometheus-alerts.json) as a Prometheus-
+compatible JSON/YAML rule file. Every alert has a hold time, page/ticket
+severity, cell blast radius, and checked-in runbook target. CI validates the
+bounded schema and runs `scripts/ci-operability-game-day.sh`: it proves the
+scrape requires operator authorization, records live RED/shard signals, leaks
+no tenant-controlled label, replays a stale topology, observes readiness 503
+and `component="topology"} 0`, then restores the current topology and requires
+recovery. A release environment must additionally prove its real collector,
+rule evaluator, notification route, inhibition, and ownership labels.
 
 **Healthy baselines** (pilot, 4×1-CPU fleet, 16 shards, conc 128×4 offered):
 

@@ -1,0 +1,119 @@
+{
+  "groups": [
+    {
+      "name": "prisma-streams-managed-service",
+      "rules": [
+        {
+          "alert": "StreamsTelemetryMissing",
+          "expr": "absent(streams_component_ready{component=\"topology\"})",
+          "for": "2m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Prisma Streams telemetry target is missing",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsComponentUnready",
+          "expr": "streams_component_ready == 0",
+          "for": "2m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "A Prisma Streams serving dependency is unready",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }} component={{ $labels.component }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        },
+        {
+          "alert": "StreamsBackupUnhealthy",
+          "expr": "streams_backup_component_ready == 0 and on(job, instance) streams_backup_configured == 1",
+          "for": "1m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Recovery-point or integrity-scrub health is false",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }} component={{ $labels.component }}",
+            "runbook": "RUNBOOK.md#111-backup-restore-and-provider-failover"
+          }
+        },
+        {
+          "alert": "StreamsAuditDropped",
+          "expr": "increase(streams_audit_dropped_total[5m]) > 0",
+          "for": "0m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "The bounded audit queue dropped records",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsAppendAvailabilityFastBurn",
+          "expr": "sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class=\"5xx\"}[5m])) / clamp_min(sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class!=\"429\"}[5m])), 0.001) > 0.0072",
+          "for": "5m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Append availability is burning the monthly error budget quickly",
+            "blast_radius": "cell={{ $labels.cell }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsAppendAvailabilitySlowBurn",
+          "expr": "sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class=\"5xx\"}[1h])) / clamp_min(sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class!=\"429\"}[1h])), 0.001) > 0.003",
+          "for": "1h",
+          "labels": { "severity": "ticket" },
+          "annotations": {
+            "summary": "Append availability is consuming the monthly error budget",
+            "blast_radius": "cell={{ $labels.cell }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsDurableAckLatency",
+          "expr": "streams_shard_durable_wait_p99_seconds > 0.25",
+          "for": "15m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Shard remote-durability wait p99 exceeds 250 ms",
+            "blast_radius": "cell={{ $labels.cell }} shard={{ $labels.shard }}",
+            "runbook": "RUNBOOK.md#5-provider-vs-platform-egress-diagnosis"
+          }
+        },
+        {
+          "alert": "StreamsWalProviderTailLatency",
+          "expr": "streams_wal_put_latency_seconds{quantile=\"0.99\"} > 0.3",
+          "for": "15m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "WAL PUT p99 exceeds the provider investigation threshold",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#5-provider-vs-platform-egress-diagnosis"
+          }
+        },
+        {
+          "alert": "StreamsResidentMemoryHigh",
+          "expr": "streams_process_resident_memory_bytes > 734003200",
+          "for": "10m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Resident memory exceeds the 700 MiB investigation threshold",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        },
+        {
+          "alert": "StreamsAdmissionShedding",
+          "expr": "rate(streams_admission_shed_total[5m]) > 0",
+          "for": "5m",
+          "labels": { "severity": "ticket" },
+          "annotations": {
+            "summary": "Instance overload admission is shedding requests",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#10-troubleshooting-matrix"
+          }
+        }
+      ]
+    }
+  ]
+}

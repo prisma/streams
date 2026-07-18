@@ -132,6 +132,8 @@ pub struct AppState {
     /// internal metrics client. Tenant JWTs never grant operator access.
     pub auth_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Fixed-label RED metrics for the external monitoring scrape path.
+    pub telemetry: Arc<crate::telemetry::Telemetry>,
 }
 
 #[derive(Default)]
@@ -1273,6 +1275,20 @@ async fn track_inflight(
     next.run(req).await
 }
 
+async fn record_http_telemetry(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let operation = crate::telemetry::Telemetry::classify(req.method(), req.uri());
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    state
+        .telemetry
+        .record(operation, response.status(), started.elapsed());
+    response
+}
+
 /// Calibrated-latency endpoint for edge probes: holds the request for
 /// ?ms= milliseconds doing no engine work. Lets a probe separate an
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
@@ -1345,6 +1361,211 @@ async fn debug_store(
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
+}
+
+fn metric_bool(out: &mut String, name: &str, labels: &str, value: bool) {
+    out.push_str(name);
+    out.push_str(labels);
+    out.push(' ');
+    out.push_str(if value { "1\n" } else { "0\n" });
+}
+
+fn render_operational_metrics(state: &AppState) -> String {
+    let mut out = String::with_capacity(32 * 1024);
+    state.telemetry.render_openmetrics(&mut out);
+
+    out.push_str(
+        "# HELP streams_component_ready Whether a serving dependency is currently healthy.\n",
+    );
+    out.push_str("# TYPE streams_component_ready gauge\n");
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"auth\"}",
+        state.authn.ready(),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"audit\"}",
+        state.audit.ready(),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"topology\"}",
+        state
+            .topology_ready
+            .load(std::sync::atomic::Ordering::Acquire),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"split\"}",
+        state.split_ready.load(std::sync::atomic::Ordering::Acquire),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"merge\"}",
+        state.merge_ready.load(std::sync::atomic::Ordering::Acquire),
+    );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"fleet\"}",
+        state.fleet_ready.load(std::sync::atomic::Ordering::Acquire),
+    );
+
+    out.push_str("# HELP streams_backup_configured Whether independent recovery is configured.\n");
+    out.push_str("# TYPE streams_backup_configured gauge\n");
+    metric_bool(
+        &mut out,
+        "streams_backup_configured",
+        "",
+        state.backup.is_some(),
+    );
+    out.push_str("# HELP streams_backup_component_ready Recovery point and scrub health.\n");
+    out.push_str("# TYPE streams_backup_component_ready gauge\n");
+    let backup = state.backup.as_ref().map(|status| status.health());
+    for (component, ready) in [
+        ("snapshot", backup.is_none_or(|health| health.snapshot)),
+        (
+            "recovery_scrub",
+            backup.is_none_or(|health| health.recovery_scrub),
+        ),
+        (
+            "primary_scrub",
+            backup.is_none_or(|health| health.primary_scrub),
+        ),
+    ] {
+        metric_bool(
+            &mut out,
+            "streams_backup_component_ready",
+            &format!("{{component=\"{component}\"}}"),
+            ready,
+        );
+    }
+
+    out.push_str(
+        "# HELP streams_audit_dropped_total Sampled audit records dropped at the bounded queue.\n",
+    );
+    out.push_str("# TYPE streams_audit_dropped_total counter\n");
+    out.push_str(&format!(
+        "streams_audit_dropped_total {}\n",
+        state.audit.dropped()
+    ));
+    out.push_str("# HELP streams_admission_shed_total Instance-level overload responses.\n");
+    out.push_str("# TYPE streams_admission_shed_total counter\n");
+    out.push_str(&format!(
+        "streams_admission_shed_total {}\n",
+        state.admit_shed.load(std::sync::atomic::Ordering::Relaxed)
+    ));
+    out.push_str("# HELP streams_inflight_requests Currently executing HTTP requests.\n");
+    out.push_str("# TYPE streams_inflight_requests gauge\n");
+    out.push_str(&format!(
+        "streams_inflight_requests {}\n",
+        state.inflight.load(std::sync::atomic::Ordering::Relaxed)
+    ));
+    out.push_str(
+        "# HELP streams_process_resident_memory_bytes Resident memory observed by the process.\n",
+    );
+    out.push_str("# TYPE streams_process_resident_memory_bytes gauge\n");
+    out.push_str(&format!(
+        "streams_process_resident_memory_bytes {}\n",
+        crate::fleet::rss_bytes()
+    ));
+
+    let (wal_p50_ms, wal_p99_ms, store_inflight, store_inflight_peak) =
+        crate::store_timing::heartbeat_summary();
+    out.push_str(
+        "# HELP streams_wal_put_latency_seconds Recent object-store WAL PUT latency quantiles.\n",
+    );
+    out.push_str("# TYPE streams_wal_put_latency_seconds gauge\n");
+    out.push_str(&format!(
+        "streams_wal_put_latency_seconds{{quantile=\"0.50\"}} {:.6}\n",
+        wal_p50_ms as f64 / 1_000.0
+    ));
+    out.push_str(&format!(
+        "streams_wal_put_latency_seconds{{quantile=\"0.99\"}} {:.6}\n",
+        wal_p99_ms as f64 / 1_000.0
+    ));
+    out.push_str("# HELP streams_object_store_inflight Outbound object-store operations.\n");
+    out.push_str("# TYPE streams_object_store_inflight gauge\n");
+    out.push_str(&format!(
+        "streams_object_store_inflight{{kind=\"current\"}} {store_inflight}\n"
+    ));
+    out.push_str(&format!(
+        "streams_object_store_inflight{{kind=\"peak\"}} {store_inflight_peak}\n"
+    ));
+
+    out.push_str("# HELP streams_open_shards Shard engines currently resident in this process.\n");
+    out.push_str("# TYPE streams_open_shards gauge\n");
+    let engines: Vec<(String, Arc<ShardEngine>)> = state
+        .shards
+        .read()
+        .unwrap()
+        .iter()
+        .map(|(prefix, engine)| (prefix.clone(), engine.clone()))
+        .collect();
+    out.push_str(&format!("streams_open_shards {}\n", engines.len()));
+    out.push_str("# HELP streams_shard_durable_wait_p99_seconds Recent per-shard remote durability wait p99.\n");
+    out.push_str("# TYPE streams_shard_durable_wait_p99_seconds gauge\n");
+    out.push_str("# HELP streams_shard_appended_records_total Records committed by the current shard writer.\n");
+    out.push_str("# TYPE streams_shard_appended_records_total counter\n");
+    let cutoff = now_ms().saturating_sub(15_000);
+    for (prefix, engine) in engines {
+        let shard = if prefix.is_empty() {
+            "root"
+        } else {
+            prefix.as_str()
+        };
+        let mut waits: Vec<u32> = engine
+            .timings
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|sample| sample.ts_ms >= cutoff)
+            .map(|sample| sample.durable_wait_us)
+            .collect();
+        waits.sort_unstable();
+        let p99_us = if waits.is_empty() {
+            0
+        } else {
+            let index = (waits.len() * 99).div_ceil(100).saturating_sub(1);
+            waits[index]
+        };
+        out.push_str(&format!(
+            "streams_shard_durable_wait_p99_seconds{{shard=\"{shard}\"}} {:.6}\n",
+            p99_us as f64 / 1_000_000.0
+        ));
+        out.push_str(&format!(
+            "streams_shard_appended_records_total{{shard=\"{shard}\"}} {}\n",
+            engine
+                .stats_appended
+                .load(std::sync::atomic::Ordering::Relaxed)
+        ));
+    }
+    out.push_str("# EOF\n");
+    out
+}
+
+async fn debug_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+        )
+        .body(Body::from(render_operational_metrics(&state)))
+        .unwrap()
 }
 
 async fn admin_split_shard(
@@ -1430,6 +1651,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
+        .route("/v1/debug/metrics", get(debug_metrics))
         .route("/v1/debug/sleep", get(debug_sleep))
         .route("/v1/admin/shards/{parent}/split", post(admin_split_shard))
         .route("/v1/admin/shards/{parent}/merge", post(admin_merge_shards))
@@ -1437,6 +1659,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             track_inflight,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            record_http_telemetry,
         ))
         .layer(axum::middleware::map_response(|mut resp: Response| async {
             resp.headers_mut().insert(

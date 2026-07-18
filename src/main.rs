@@ -11,6 +11,7 @@ mod reconfiguration;
 mod shard;
 mod split;
 mod store_timing;
+mod telemetry;
 mod touch;
 mod touch_keys;
 
@@ -1155,6 +1156,7 @@ async fn async_main() -> anyhow::Result<()> {
         authn,
         auth_token: args.auth_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
+        telemetry: Arc::new(crate::telemetry::Telemetry::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
     crate::split::initialize(&state)

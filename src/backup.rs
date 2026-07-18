@@ -115,11 +115,26 @@ pub struct BackupStatus {
     primary_scrub_healthy: AtomicBool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackupHealth {
+    pub snapshot: bool,
+    pub recovery_scrub: bool,
+    pub primary_scrub: bool,
+}
+
 impl BackupStatus {
     pub fn ready(&self) -> bool {
         self.snapshot_healthy.load(Ordering::Acquire)
             && self.scrub_healthy.load(Ordering::Acquire)
             && self.primary_scrub_healthy.load(Ordering::Acquire)
+    }
+
+    pub fn health(&self) -> BackupHealth {
+        BackupHealth {
+            snapshot: self.snapshot_healthy.load(Ordering::Acquire),
+            recovery_scrub: self.scrub_healthy.load(Ordering::Acquire),
+            primary_scrub: self.primary_scrub_healthy.load(Ordering::Acquire),
+        }
     }
 }
 

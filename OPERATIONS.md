@@ -283,13 +283,19 @@ no state is lost because tails are offset-addressed.
 
 ## 5. Telemetry, SLOs, alarms, runbooks
 
-Heartbeats remain the *scaling* feed; operator telemetry is exported
-(OTel) from every instance to the platform's metrics pipeline — dashboards
-and alarms do not depend on the service's own storage being healthy.
-Control-plane audit events and billing counters DUAL-WRITE through the
-OTel path as well: an unhealthy cell cannot be relied on to log its own
-incident or usage, so the in-cell audit/metrics streams are the queryable
-system of record while the export path is the incident-safe copy.
+Heartbeats remain the *scaling* feed. Every instance now exposes a bounded,
+operator-authenticated OpenMetrics surface at `/v1/debug/metrics`; the platform
+collector attaches trusted region/cell/instance labels and may translate it to
+OTel. Thus dashboards and metric alarms do not depend on the service's own
+storage. `ops/prometheus-alerts.json` is the checked, actionable rule catalog;
+CI exercises a stale-topology page signal and recovery.
+
+Customer/stream billing counters and audit records still live in the cell's
+encrypted metrics stream and immutable audit prefixes. Their independent
+incident-safe export and bounded audit retention are **not implemented yet**;
+an unhealthy or lost primary provider therefore remains a logging/usage
+evidence risk even though metric pages continue through the scrape path. This
+is a GA gate, not an implied property of the OpenMetrics work.
 
 **Service SLOs (per cell):**
 
@@ -302,6 +308,12 @@ system of record while the export path is the incident-safe copy.
 | newest protected recovery-point age (§2.1) | deployment RPO budget | immediate |
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
+
+The checked alert catalog currently implements scrape loss, component/backup
+health, audit drops, append error-budget burn, durable/WAL latency, memory, and
+overload shedding. Tail-freshness, absorber-lag, exact newest-protected-point
+age, and fence-rate series/alerts are still a GA gap; backup readiness is not a
+substitute for an RPO-age alarm.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are
