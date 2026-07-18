@@ -30,6 +30,7 @@ jobs:
         run: |
           cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-provider-check --bin streams-at-rest-check --bin streams-shard-admin --bin bench
           bash scripts/ci-smoke.sh
+          bash scripts/ci-absorber-recovery.sh
           bash scripts/ci-backup-restore.sh
           bash scripts/ci-backup-coordinator.sh
           bash scripts/ci-provider-failover.sh

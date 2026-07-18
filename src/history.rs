@@ -9,7 +9,7 @@
 //! History record value: [ver u8=1][ts i64 LE][key_version u32 LE]
 //!                       [rk_len u16 LE][rk][payload]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -409,6 +409,7 @@ struct PendingAbsorb {
     bytes: u64,
     since: Instant,
     force: bool,
+    retry_after: Instant,
 }
 
 struct AbsorbOutcome {
@@ -438,6 +439,11 @@ pub struct Absorber {
     cfg: AbsorberConfig,
 }
 
+pub struct AbsorberStartup {
+    pub receiver: mpsc::Receiver<AbsorbSignal>,
+    pub recovered: Vec<AbsorbSignal>,
+}
+
 impl Absorber {
     pub fn start(
         data_store: Arc<dyn ObjectStore>,
@@ -446,8 +452,12 @@ impl Absorber {
         keys: Arc<KeyCache>,
         telemetry: Arc<crate::telemetry::Telemetry>,
         cfg: AbsorberConfig,
-        mut rx: mpsc::Receiver<AbsorbSignal>,
+        startup: AbsorberStartup,
     ) {
+        let AbsorberStartup {
+            mut receiver,
+            recovered,
+        } = startup;
         let absorber = Absorber {
             data_store,
             integrity_store,
@@ -457,6 +467,8 @@ impl Absorber {
             cfg,
         };
         tokio::spawn(async move {
+            use futures_util::StreamExt;
+
             // A panic or cancellation must not leave a process reporting
             // green while its durable history-maintenance actor is gone.
             let mut task_health = AbsorberTaskHealth {
@@ -464,10 +476,53 @@ impl Absorber {
                 clean_exit: false,
             };
             let mut pending: HashMap<StorageHash, PendingAbsorb> = HashMap::new();
+            for sig in recovered {
+                let entry = pending.entry(sig.hash).or_insert(PendingAbsorb {
+                    bytes: 0,
+                    since: Instant::now(),
+                    force: true,
+                    retry_after: Instant::now(),
+                });
+                entry.bytes = entry.bytes.saturating_add(sig.appended_bytes);
+                entry.force = true;
+                absorber
+                    .telemetry
+                    .add_absorber_pending_bytes(sig.appended_bytes);
+            }
             let mut tick = tokio::time::interval(absorber.cfg.tick);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let absorber = Arc::new(absorber);
+            let mut in_flight = HashSet::new();
+            let mut work = futures_util::stream::FuturesUnordered::new();
             loop {
+                // `pass_bytes` is the documented resident-memory bound, so
+                // keep one pass in flight while independently draining the
+                // notification receiver.
+                const MAX_IN_FLIGHT: usize = 1;
+                while work.len() < MAX_IN_FLIGHT {
+                    let now = Instant::now();
+                    let Some((hash, scheduled_bytes)) = pending
+                        .iter()
+                        .find(|(hash, item)| {
+                            !in_flight.contains(*hash)
+                                && item.retry_after <= now
+                                && (item.force
+                                    || item.bytes >= absorber.cfg.threshold_bytes
+                                    || item.since.elapsed() >= absorber.cfg.threshold_age)
+                        })
+                        .map(|(hash, item)| (*hash, item.bytes))
+                    else {
+                        break;
+                    };
+                    pending.get_mut(&hash).unwrap().retry_after = now + absorber.cfg.tick;
+                    in_flight.insert(hash);
+                    let worker = absorber.clone();
+                    work.push(
+                        async move { (hash, scheduled_bytes, worker.absorb_one(&hash).await) },
+                    );
+                }
                 tokio::select! {
-                    sig = rx.recv() => {
+                    sig = receiver.recv() => {
                         let Some(sig) = sig else {
                             let remaining = pending
                                 .values()
@@ -480,45 +535,46 @@ impl Absorber {
                             bytes: 0,
                             since: Instant::now(),
                             force: false,
+                            retry_after: Instant::now(),
                         });
                         e.bytes = e.bytes.saturating_add(sig.appended_bytes);
+                        // A keyed append is also the event that may make a
+                        // previously unavailable stream key usable again.
+                        e.retry_after = Instant::now();
                     }
-                    _ = tick.tick() => {
-                        let due: Vec<StorageHash> = pending
-                            .iter()
-                            .filter(|(_, p)| {
-                                p.force
-                                    || p.bytes >= absorber.cfg.threshold_bytes
-                                    || p.since.elapsed() >= absorber.cfg.threshold_age
-                            })
-                            .map(|(h, _)| *h)
-                            .collect();
-                        for hash in due {
-                            match absorber.absorb_one(&hash).await {
-                                Ok(Some(outcome)) => {
-                                    if let Some(item) = pending.get_mut(&hash) {
-                                        let removed = item.bytes.min(outcome.absorbed_bytes);
-                                        item.bytes -= removed;
-                                        absorber.telemetry.remove_absorber_pending_bytes(removed);
-                                        item.force = !outcome.complete;
+                    _ = tick.tick() => {}
+                    Some((hash, scheduled_bytes, result)) = work.next(), if !work.is_empty() => {
+                        in_flight.remove(&hash);
+                        match result {
+                            Ok(Some(outcome)) => {
+                                if let Some(item) = pending.get_mut(&hash) {
+                                    let before = item.bytes;
+                                    if outcome.complete {
+                                        // Everything visible when this pass was scheduled is
+                                        // represented remotely. Preserve only bytes appended
+                                        // while the pass was in flight.
+                                        item.bytes = item.bytes.saturating_sub(scheduled_bytes);
+                                    } else {
+                                        item.bytes = item.bytes.saturating_sub(outcome.absorbed_bytes);
                                     }
-                                    if outcome.complete
-                                        && let Some(item) = pending.remove(&hash)
-                                    {
-                                        absorber
-                                            .telemetry
-                                            .remove_absorber_pending_bytes(item.bytes);
-                                    }
+                                    absorber
+                                        .telemetry
+                                        .remove_absorber_pending_bytes(before - item.bytes);
+                                    item.force = !outcome.complete || item.bytes > 0;
+                                    item.retry_after = Instant::now();
                                 }
-                                Ok(None) => {}
-                                // key missing: keep pending; retried when the
-                                // next keyed request arrives or age stays due.
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "absorb failed for {}: {e}",
-                                        hex(&hash)
-                                    );
+                                if pending.get(&hash).is_some_and(|item| item.bytes == 0) {
+                                    pending.remove(&hash);
                                 }
+                            }
+                            Ok(None) => {}
+                            // key missing: keep pending; retried when the
+                            // next keyed request arrives or age stays due.
+                            Err(e) => {
+                                tracing::warn!(
+                                    "absorb failed for {}: {e}",
+                                    hex(&hash)
+                                );
                             }
                         }
                     }
@@ -538,8 +594,9 @@ impl Absorber {
             (st.durable.absorbed, st.durable.next)
         };
         if from >= upto {
+            let submitted = self.shard.submit_absorbed(*hash, upto, 0).await;
             return Ok(Some(AbsorbOutcome {
-                complete: true,
+                complete: submitted,
                 absorbed_bytes: 0,
             }));
         }
@@ -664,7 +721,10 @@ impl Absorber {
         .await?;
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
-        let submitted = self.shard.submit_absorbed(*hash, absorbed_upto).await;
+        let submitted = self
+            .shard
+            .submit_absorbed(*hash, absorbed_upto, absorbed_bytes)
+            .await;
         tracing::info!(
             "absorbed {} records into {} (upto {})",
             items.len(),

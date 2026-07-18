@@ -34,7 +34,7 @@ use slatedb::Db;
 use slatedb::config::Settings;
 
 use crate::history::{
-    Absorber, AbsorberConfig, HistoryBlockWriteFormat, KeyCache, absorber_channel,
+    Absorber, AbsorberConfig, AbsorberStartup, HistoryBlockWriteFormat, KeyCache, absorber_channel,
 };
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
@@ -1245,6 +1245,11 @@ async fn async_main() -> anyhow::Result<()> {
                         .build()
                         .await
                         .with_context(|| format!("open shard log {path}"))?;
+                    let recovered_absorptions = ShardEngine::recover_pending_absorptions(&db)
+                        .await
+                        .with_context(|| {
+                            format!("recover pending history absorption for {path}")
+                        })?;
                     let (absorb_tx, absorb_rx) = absorber_channel();
                     let on_close = {
                         let touch = touch.clone();
@@ -1283,7 +1288,10 @@ async fn async_main() -> anyhow::Result<()> {
                             history_block_write_format,
                             ..Default::default()
                         },
-                        absorb_rx,
+                        AbsorberStartup {
+                            receiver: absorb_rx,
+                            recovered: recovered_absorptions,
+                        },
                     );
                     Ok(engine)
                 })

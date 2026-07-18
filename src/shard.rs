@@ -38,6 +38,32 @@ pub fn record_key(hash: &StorageHash, offset: u64) -> Vec<u8> {
     k
 }
 
+/// Durable plaintext-byte debt for the history absorber. `a` sorts before
+/// every other per-stream kind, allowing recovery to inspect one key per
+/// storage hash and seek past arbitrarily large record ranges.
+pub fn absorb_pending_key(hash: &StorageHash) -> Vec<u8> {
+    let mut k = Vec::with_capacity(33);
+    k.extend_from_slice(hash);
+    k.push(b'a');
+    k
+}
+
+fn decode_absorb_pending(value: &[u8]) -> Option<u64> {
+    let encoded: [u8; 8] = value.try_into().ok()?;
+    Some(u64::from_le_bytes(encoded))
+}
+
+fn storage_hash_successor(mut hash: StorageHash) -> Option<StorageHash> {
+    for byte in hash.iter_mut().rev() {
+        if *byte != u8::MAX {
+            *byte += 1;
+            return Some(hash);
+        }
+        *byte = 0;
+    }
+    None
+}
+
 /// Tail value v3:
 /// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq]
 fn encode_tail(t: &TailFields) -> Vec<u8> {
@@ -110,6 +136,10 @@ pub struct TailFields {
 pub struct StreamState {
     pub durable: TailFields,
     pub applied: TailFields,
+    /// Plaintext bytes whose record range is not yet durably represented by
+    /// the history tier. Persisted separately under `absorb_pending_key`.
+    pub durable_absorb_pending_bytes: u64,
+    pub applied_absorb_pending_bytes: u64,
     /// Producer idempotence state: id -> (epoch, highest seq). Loaded from
     /// the durable `q` keys on first use, applied by the committer.
     pub producers: HashMap<String, (u64, u64)>,
@@ -313,6 +343,7 @@ pub enum CommitOp {
     Absorbed {
         hash: StorageHash,
         upto: u64,
+        absorbed_bytes: u64,
         resp: oneshot::Sender<Result<(), String>>,
     },
     /// Ordered after every operation admitted before a split quiescence gate.
@@ -567,7 +598,7 @@ struct InFlightGroup {
         crate::queue::QueueOut,
     )>,
     absorbed_acks: Vec<oneshot::Sender<Result<(), String>>>,
-    tails: Vec<(Arc<StreamHandle>, TailFields)>,
+    tails: Vec<(Arc<StreamHandle>, TailFields, u64)>,
     signals: Vec<AbsorbSignal>,
     touches: Vec<TouchFeed>,
 }
@@ -641,6 +672,68 @@ fn union_flush_sentinel(prefix: &str) -> Result<Vec<u8>, String> {
 }
 
 impl ShardEngine {
+    /// Enumerate durable history debt before the shard starts accepting new
+    /// writes. The seek skips every remaining key for a storage hash, so the
+    /// cost is proportional to streams rather than retained records.
+    ///
+    /// Older shard logs have no `a` marker. Their cumulative logical byte
+    /// count is a conservative recovery estimate; the first successful pass
+    /// reconciles it to the exact absorbed frontier.
+    pub async fn recover_pending_absorptions(db: &Db) -> Result<Vec<AbsorbSignal>, slatedb::Error> {
+        const MAX_RECOVERED_STREAMS: usize = 100_000;
+
+        let mut iter = db.scan(..).await?;
+        let mut recovered = Vec::new();
+        while let Some(kv) = iter.next().await? {
+            // Projection flush sentinels and future shard metadata are not
+            // application keys. Every current stream key starts with the
+            // complete 32-byte storage hash.
+            if kv.key.len() < 32 {
+                continue;
+            }
+            let hash: StorageHash = kv.key[..32]
+                .try_into()
+                .expect("length checked storage hash");
+            let marker = if kv.key.len() == 33 && kv.key[32] == b'a' {
+                Some(decode_absorb_pending(&kv.value).ok_or_else(|| {
+                    slatedb::Error::data("corrupt absorber pending-byte marker".to_string())
+                })?)
+            } else {
+                None
+            };
+            let tail = match db.get(tail_key(&hash)).await? {
+                Some(raw) => Some(decode_tail(&raw).ok_or_else(|| {
+                    slatedb::Error::data("corrupt stream tail during absorber recovery".to_string())
+                })?),
+                None => None,
+            };
+            let pending_bytes = match (marker, tail) {
+                (Some(bytes), Some(tail)) if bytes > 0 || tail.absorbed < tail.next => bytes.max(1),
+                // A marker left behind after the frontier advanced must be
+                // scheduled too: the idempotent absorbed op deletes it.
+                (Some(bytes), None) if bytes > 0 => bytes,
+                (None, Some(tail)) if tail.absorbed < tail.next => tail.logical.max(1),
+                _ => 0,
+            };
+            if pending_bytes > 0 {
+                if recovered.len() == MAX_RECOVERED_STREAMS {
+                    return Err(slatedb::Error::data(format!(
+                        "absorber recovery exceeds bounded scheduler capacity ({MAX_RECOVERED_STREAMS} streams)"
+                    )));
+                }
+                recovered.push(AbsorbSignal {
+                    hash,
+                    appended_bytes: pending_bytes,
+                });
+            }
+            let Some(next_hash) = storage_hash_successor(hash) else {
+                break;
+            };
+            iter.seek(next_hash).await?;
+        }
+        Ok(recovered)
+    }
+
     /// Manifest writer incarnation for telemetry/control-plane sampling.
     /// A reopen changes this value, so rate observers can distinguish a
     /// counter reset from an actually idle shard.
@@ -836,7 +929,7 @@ impl ShardEngine {
         }
     }
 
-    pub async fn submit_absorbed(&self, hash: StorageHash, upto: u64) -> bool {
+    pub async fn submit_absorbed(&self, hash: StorageHash, upto: u64, absorbed_bytes: u64) -> bool {
         let (resp, ack) = oneshot::channel();
         let gate = self.admission_gate.lock().unwrap();
         if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
@@ -844,7 +937,12 @@ impl ShardEngine {
         }
         let queued = self
             .tx
-            .try_send(CommitOp::Absorbed { hash, upto, resp })
+            .try_send(CommitOp::Absorbed {
+                hash,
+                upto,
+                absorbed_bytes,
+                resp,
+            })
             .is_ok();
         drop(gate);
         if !queued {
@@ -968,12 +1066,20 @@ impl ShardEngine {
             Some(raw) => decode_tail(&raw).unwrap_or_default(),
             None => TailFields::default(),
         };
+        let absorb_pending_bytes = match self.db.get(absorb_pending_key(&hash)).await? {
+            Some(raw) => decode_absorb_pending(&raw).ok_or_else(|| {
+                slatedb::Error::data("corrupt absorber pending-byte marker".to_string())
+            })?,
+            None => 0,
+        };
         let visible_next = tail.next;
         let handle = Arc::new(StreamHandle {
             hash,
             state: Mutex::new(StreamState {
                 durable: tail.clone(),
                 applied: tail,
+                durable_absorb_pending_bytes: absorb_pending_bytes,
+                applied_absorb_pending_bytes: absorb_pending_bytes,
                 producers: HashMap::new(),
                 producer_order: VecDeque::new(),
                 queue: crate::queue::QueueState::default(),
@@ -1104,6 +1210,8 @@ impl ShardEngine {
             handle: Arc<StreamHandle>,
             fields: TailFields,
             base: TailFields,
+            absorb_pending_bytes: u64,
+            base_absorb_pending_bytes: u64,
             producers: HashMap<String, (u64, u64)>,
             queue: Option<crate::queue::QueueState>,
             appended_bytes: u64,
@@ -1135,13 +1243,18 @@ impl ShardEngine {
             if !locals.contains_key(&hash) {
                 match self.stream_handle(hash).await {
                     Ok(handle) => {
-                        let applied = handle.state.lock().unwrap().applied.clone();
+                        let (applied, absorb_pending_bytes) = {
+                            let state = handle.state.lock().unwrap();
+                            (state.applied.clone(), state.applied_absorb_pending_bytes)
+                        };
                         locals.insert(
                             hash,
                             Local {
                                 handle,
                                 fields: applied.clone(),
                                 base: applied,
+                                absorb_pending_bytes,
+                                base_absorb_pending_bytes: absorb_pending_bytes,
                                 producers: HashMap::new(),
                                 queue: None,
                                 appended_bytes: 0,
@@ -1321,6 +1434,9 @@ impl ShardEngine {
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
+                        local.absorb_pending_bytes = local
+                            .absorb_pending_bytes
+                            .saturating_add(payload.len() as u64);
                     }
                     records += req.entries.len() as u64;
                     local.fields.next = start + req.entries.len() as u64;
@@ -1342,10 +1458,21 @@ impl ShardEngine {
                         },
                     ));
                 }
-                CommitOp::Absorbed { upto, resp, .. } => {
+                CommitOp::Absorbed {
+                    upto,
+                    absorbed_bytes,
+                    resp,
+                    ..
+                } => {
                     let prev_absorbed = local.fields.absorbed;
                     if upto > prev_absorbed {
                         local.fields.absorbed = upto.min(local.fields.next);
+                        local.absorb_pending_bytes =
+                            local.absorb_pending_bytes.saturating_sub(absorbed_bytes);
+                    } else if local.fields.absorbed >= local.fields.next {
+                        // Reconcile a marker left by an older binary or an
+                        // ACK whose response was lost after remote durability.
+                        local.absorb_pending_bytes = 0;
                     }
                     // Deferred trim: delete only up to the *previous* absorbed
                     // boundary, bounded per op.
@@ -1606,6 +1733,7 @@ impl ShardEngine {
                     // Append DLQ reference records under routing key "$dlq".
                     for (orig, attempts) in dlq_refs {
                         let payload = format!("{{\"offset\":{orig},\"attempts\":{attempts}}}");
+                        let payload_bytes = payload.len() as u64;
                         let offset = local.fields.next;
                         let frame = encrypt_frame(
                             &dlq_subkey,
@@ -1620,7 +1748,10 @@ impl ShardEngine {
                         );
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.next += 1;
-                        local.fields.logical += payload.len() as u64;
+                        local.fields.logical += payload_bytes;
+                        local.appended_bytes = local.appended_bytes.saturating_add(payload_bytes);
+                        local.absorb_pending_bytes =
+                            local.absorb_pending_bytes.saturating_add(payload_bytes);
                         records += 1;
                     }
                     queue_pending.push((resp, out));
@@ -1644,7 +1775,18 @@ impl ShardEngine {
                 wb.put(tail_key(hash), encode_tail(f));
                 changed = true;
             }
-            tails.push((local.handle.clone(), f.clone()));
+            if local.absorb_pending_bytes != local.base_absorb_pending_bytes {
+                if local.absorb_pending_bytes == 0 {
+                    wb.delete(absorb_pending_key(hash));
+                } else {
+                    wb.put(
+                        absorb_pending_key(hash),
+                        local.absorb_pending_bytes.to_le_bytes(),
+                    );
+                }
+                changed = true;
+            }
+            tails.push((local.handle.clone(), f.clone(), local.absorb_pending_bytes));
             if local.appended_bytes > 0 {
                 signals.push(AbsorbSignal {
                     hash: *hash,
@@ -1703,6 +1845,7 @@ impl ShardEngine {
                 for local in locals.values() {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();
+                    st.applied_absorb_pending_bytes = local.absorb_pending_bytes;
                     for (id, v) in &local.producers {
                         st.cache_producer(id.clone(), *v);
                     }
@@ -1830,8 +1973,11 @@ impl ShardEngine {
                         t.pop_front();
                     }
                 }
-                for (handle, fields) in &group.tails {
-                    handle.state.lock().unwrap().durable = fields.clone();
+                for (handle, fields, absorb_pending_bytes) in &group.tails {
+                    let mut state = handle.state.lock().unwrap();
+                    state.durable = fields.clone();
+                    state.durable_absorb_pending_bytes = *absorb_pending_bytes;
+                    drop(state);
                     handle.mark_visible(fields.next);
                     handle.notify.notify_waiters();
                 }
@@ -2051,6 +2197,8 @@ mod tests {
             state: Mutex::new(StreamState {
                 durable: TailFields::default(),
                 applied: TailFields::default(),
+                durable_absorb_pending_bytes: 0,
+                applied_absorb_pending_bytes: 0,
                 producers: HashMap::new(),
                 producer_order: VecDeque::new(),
                 queue: crate::queue::QueueState::default(),
@@ -2324,8 +2472,123 @@ mod tests {
         let handle = engine.stream_handle(hash).await.unwrap();
         assert!(handle.tail_freshness(1).is_some());
 
-        assert!(engine.submit_absorbed(hash, 1).await);
+        let recovered = ShardEngine::recover_pending_absorptions(&engine.db)
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].hash, hash);
+        assert_eq!(recovered[0].appended_bytes, 1);
+
+        assert!(engine.submit_absorbed(hash, 1, 1).await);
         assert_eq!(handle.state.lock().unwrap().durable.absorbed, 1);
+        assert!(
+            ShardEngine::recover_pending_absorptions(&engine.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn absorber_debt_recovery_tracks_partial_progress_exactly() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("absorber-debt-partial", store)
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (absorb_tx, _absorb_rx) = mpsc::channel(8);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
+            None,
+            None,
+        );
+        let hash = [7u8; 32];
+        for bytes in [3, 5] {
+            let (resp, ack) = oneshot::channel();
+            let CommitOp::Append(req) = append_op("customer", bytes) else {
+                unreachable!()
+            };
+            assert!(engine.try_enqueue(AppendReq { hash, resp, ..req }).is_ok());
+            ack.await.unwrap().unwrap();
+        }
+
+        let recovered = ShardEngine::recover_pending_absorptions(&engine.db)
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].appended_bytes, 8);
+
+        assert!(engine.submit_absorbed(hash, 1, 3).await);
+        let recovered = ShardEngine::recover_pending_absorptions(&engine.db)
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].appended_bytes, 5);
+
+        assert!(engine.submit_absorbed(hash, 2, 5).await);
+        assert!(
+            ShardEngine::recover_pending_absorptions(&engine.db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn absorber_recovery_migrates_unmarked_legacy_tail_conservatively() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Db::builder("absorber-debt-legacy", store)
+            .build()
+            .await
+            .unwrap();
+        let hash = [6u8; 32];
+        db.put(
+            tail_key(&hash),
+            encode_tail(&TailFields {
+                next: 2,
+                logical: 11,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let recovered = ShardEngine::recover_pending_absorptions(&db).await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].hash, hash);
+        assert_eq!(recovered[0].appended_bytes, 11);
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn absorber_recovery_fails_closed_on_corrupt_marker() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Db::builder("absorber-debt-corrupt", store)
+            .build()
+            .await
+            .unwrap();
+        db.put(absorb_pending_key(&[5u8; 32]), b"short")
+            .await
+            .unwrap();
+
+        let error = ShardEngine::recover_pending_absorptions(&db)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("corrupt absorber pending-byte marker")
+        );
+        db.close().await.unwrap();
     }
 
     #[tokio::test]

@@ -340,8 +340,13 @@ tail freshness, exact plaintext absorber backlog, conservative newest-
 protected-point age, fencing rate, L0 compaction debt, unflushed-WAL recovery
 debt, memory, and overload shedding. The bounded absorber queue fails the shard
 and process unready instead of silently dropping maintenance work; its frontier
-advances only after remote durability. A real collector/evaluator/notification
-game day remains a deployment gate.
+advances only after remote durability. Exact plaintext debt is written in the
+same shard batch as each new record and decremented in the remotely durable
+frontier batch. Shard replacement reconstructs the bounded work set before
+admission, including conservative migration of pre-marker tails. A replacement
+never persists customer keys: recovered work stays visible until the next
+key-bearing read or write and then drains without requiring an append. A real
+collector/evaluator/notification game day remains a deployment gate.
 
 The target-hardware release gate is `scripts/release-soak.py` (invocation and
 credential contract in [RUNBOOK §9.1](./RUNBOOK.md#91-target-hardware-release-soak)).

@@ -226,6 +226,22 @@ after the nominal window.
 | `HISTORY_BLOCK_WRITE_FORMAT` | 2 | `1` emits legacy raw-key history blocks for the mandatory read-first wave; `2` emits HKDF/AAD incarnation-bound blocks. Readers accept both. Follow `STORAGE-MIGRATIONS.md` before changing an existing cell |
 | `ABSORB_PASS_BYTES` | 256 MiB | plaintext held in memory per pass — keep well under instance RAM; pilot used 32 MiB on 1-GB boxes |
 
+Every record-producing commit (including queue DLQ references) atomically
+updates a per-stream `a` debt marker with the exact plaintext bytes not yet in
+the history tier. Before a reopened shard accepts traffic it seeks once per
+storage hash, reconstructs at most 100,000 pending streams, and forces those
+passes without waiting for a future append. Because customer keys are never
+persisted, a brand-new process keeps recovered work pending until an
+authenticated read or write supplies the key; the forced item then retries
+without requiring an append. Logs written by an older binary without markers
+use the cumulative logical-byte counter conservatively. A
+corrupt marker or an over-cap recovery set fails shard open; partial passes
+decrement the marker exactly, and only the remotely durable absorbed-frontier
+commit clears it. The marker begins with the routing/storage hash, so ordinary
+split projection and merge union carry the scheduler state with the records.
+The absorber keeps one memory-bounded pass in flight while continuing to drain
+its bounded notification receiver.
+
 ### 3.3 Memory & runtime (1-GB instance discipline)
 
 | env | default | guidance |
