@@ -304,6 +304,9 @@ pub struct AbsorberConfig {
     /// 1 GB instance). The boundary advances per pass, so a capped pass
     /// just means more passes.
     pub pass_bytes: u64,
+    /// Maximum encrypted history SST size accepted by the writer-verified
+    /// integrity ledger and the continuous cell scrubber.
+    pub integrity_max_object_bytes: u64,
 }
 
 impl Default for AbsorberConfig {
@@ -314,6 +317,7 @@ impl Default for AbsorberConfig {
             tick: Duration::from_secs(5),
             batch_puts: 4_096,
             pass_bytes: 256 * 1024 * 1024,
+            integrity_max_object_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -325,6 +329,7 @@ struct PendingAbsorb {
 
 pub struct Absorber {
     data_store: Arc<dyn ObjectStore>,
+    integrity_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
     keys: Arc<KeyCache>,
     cfg: AbsorberConfig,
@@ -333,6 +338,7 @@ pub struct Absorber {
 impl Absorber {
     pub fn start(
         data_store: Arc<dyn ObjectStore>,
+        integrity_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
         keys: Arc<KeyCache>,
         cfg: AbsorberConfig,
@@ -340,6 +346,7 @@ impl Absorber {
     ) {
         let absorber = Absorber {
             data_store,
+            integrity_store,
             shard,
             keys,
             cfg,
@@ -476,10 +483,12 @@ impl Absorber {
 
         // Open the history DB maintenance-free, bulk write, explicit flush
         // (F2), close.
-        let db = Db::builder(history_db_path(hash).as_str(), self.data_store.clone())
+        let transformer = Arc::new(AesBlockTransformer::new(&key));
+        let path = history_db_path(hash);
+        let db = Db::builder(path.as_str(), self.data_store.clone())
             .with_settings(history_settings())
             .with_db_cache(history_cache())
-            .with_block_transformer(Arc::new(AesBlockTransformer::new(&key)))
+            .with_block_transformer(transformer.clone())
             .build()
             .await?;
         let mut i = 0;
@@ -504,13 +513,21 @@ impl Absorber {
         }
         db.flush().await?; // wal off => memtable -> L0 (durable)
         db.close().await?;
+        streams_slate::primary_scrub::record_history_baselines(
+            self.integrity_store.clone(),
+            self.data_store.clone(),
+            &path,
+            self.cfg.integrity_max_object_bytes,
+            transformer,
+        )
+        .await?;
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
         self.shard.submit_absorbed(*hash, absorbed_upto).await;
         tracing::info!(
             "absorbed {} records into {} (upto {})",
             items.len(),
-            history_db_path(hash),
+            path,
             absorbed_upto
         );
         Ok(true)

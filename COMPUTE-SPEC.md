@@ -537,6 +537,17 @@ Format 3 uses a top-level namespace that format-2 binaries do not scan, and a
 write-format switch implements the read-first/flip/one-version-rollback
 contract in [STORAGE-MIGRATIONS.md](./STORAGE-MIGRATIONS.md).
 
+The coordinator also owns a bounded live-primary integrity sweep. It decodes
+the latest manifest and every referenced shard SST/WAL through SlateDB's
+checksummed reader, unioning the manifest WAL range with listed WAL IDs above
+the replay watermark so newly acknowledged WALs are not skipped. Customer-key
+encrypted history SSTs are logically verified by the absorber at creation;
+the absorber then creates an immutable ciphertext SHA-256 baseline in ops, and
+the keyless background sweep compares against that baseline. Readiness stays
+red until a complete cursor sweep after startup/takeover. A detected primary
+failure invalidates snapshot health, so repair requires a completed sweep and
+a fresh marker-last recovery point before the cell can become ready again.
+
 ---
 
 ## 11. Deployment

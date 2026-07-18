@@ -88,6 +88,19 @@ struct Args {
     backup_scrub_interval_secs: u64,
     #[arg(long, env = "BACKUP_SCRUB_OBJECTS_PER_INTERVAL", default_value_t = 256)]
     backup_scrub_objects_per_interval: usize,
+    /// Continuously parse live manifests and decode every referenced SlateDB
+    /// SST/WAL through its checksummed reader. This is separate from recovery
+    /// corpus scrubbing and shares the cell's fenced backup coordinator.
+    #[arg(long, env = "PRIMARY_SCRUB_INTERVAL_SECS", default_value_t = 60)]
+    primary_scrub_interval_secs: u64,
+    #[arg(long, env = "PRIMARY_SCRUB_OBJECTS_PER_INTERVAL", default_value_t = 16)]
+    primary_scrub_objects_per_interval: usize,
+    #[arg(
+        long,
+        env = "PRIMARY_SCRUB_MAX_OBJECT_BYTES",
+        default_value_t = 256 * 1024 * 1024
+    )]
+    primary_scrub_max_object_bytes: u64,
     /// Recovery-corpus write format. Use 2 for the read-first migration wave;
     /// flip to 3 only after every backup/restore binary reads format 3.
     #[arg(long, env = "BACKUP_WRITE_FORMAT", default_value_t = 3)]
@@ -889,6 +902,13 @@ async fn async_main() -> anyhow::Result<()> {
                 && (1..=100_000).contains(&args.backup_scrub_objects_per_interval),
             "backup scrub interval or batch is out of range"
         );
+        anyhow::ensure!(
+            (10..=24 * 60 * 60).contains(&args.primary_scrub_interval_secs)
+                && (1..=100_000).contains(&args.primary_scrub_objects_per_interval)
+                && (1024 * 1024..=1024 * 1024 * 1024)
+                    .contains(&args.primary_scrub_max_object_bytes),
+            "primary scrub interval, batch, or object bound is out of range"
+        );
     }
     let backup_write_format =
         streams_slate::backup::BackupWriteFormat::try_from(args.backup_write_format)?;
@@ -930,6 +950,9 @@ async fn async_main() -> anyhow::Result<()> {
             retention: Duration::from_secs(args.backup_retention_secs),
             scrub_interval: Duration::from_secs(args.backup_scrub_interval_secs),
             scrub_objects_per_interval: args.backup_scrub_objects_per_interval,
+            primary_scrub_interval: Duration::from_secs(args.primary_scrub_interval_secs),
+            primary_scrub_objects_per_interval: args.primary_scrub_objects_per_interval,
+            primary_scrub_max_object_bytes: args.primary_scrub_max_object_bytes,
             pins: Some(streams_slate::backup::BackupPins {
                 topology_store: ops_store.clone(),
                 shard_store: shard_store.clone(),
@@ -970,6 +993,7 @@ async fn async_main() -> anyhow::Result<()> {
     let opener = {
         let shard_store = shard_store.clone();
         let data_store = data_store.clone();
+        let ops_store = ops_store.clone();
         let keys = keys.clone();
         let touch = touch.clone();
         let settings = shard_settings(&args);
@@ -986,6 +1010,7 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_bytes = args.absorb_bytes;
         let absorb_age = args.absorb_age_secs;
         let absorb_pass_bytes = args.absorb_pass_bytes;
+        let history_integrity_max_object_bytes = args.primary_scrub_max_object_bytes;
         let trim_per_op = args.trim_per_op;
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
@@ -993,6 +1018,7 @@ async fn async_main() -> anyhow::Result<()> {
                 let shard_store = shard_store.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
+                let ops_store = ops_store.clone();
                 let keys = keys.clone();
                 let touch = touch.clone();
                 let mut settings = settings.clone();
@@ -1043,12 +1069,14 @@ async fn async_main() -> anyhow::Result<()> {
                     );
                     Absorber::start(
                         data_store,
+                        ops_store,
                         engine.clone(),
                         keys,
                         AbsorberConfig {
                             threshold_bytes: absorb_bytes,
                             threshold_age: Duration::from_secs(absorb_age),
                             pass_bytes: absorb_pass_bytes,
+                            integrity_max_object_bytes: history_integrity_max_object_bytes,
                             ..Default::default()
                         },
                         absorb_rx,

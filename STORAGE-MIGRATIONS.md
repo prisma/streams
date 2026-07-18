@@ -10,6 +10,7 @@ object the new release may publish.
 | surface | readable | writable | rollback boundary |
 |---|---:|---:|---|
 | live topology/shard/registry | 2 | 2 | pre-v2 pilot data is rejected; this service has no in-place v1 corpus |
+| encrypted-history integrity baseline | 1 | 1, create-only | baseline must precede readiness enforcement; never infer it without the customer key |
 | recovery point | 1, 2, 3 | 2 or 3 via `BACKUP_WRITE_FORMAT` | one binary release; format-1 and format-2 points remain restorable |
 
 Recovery format 1 stores snapshot-local objects. Format 2 stores shared
@@ -49,6 +50,28 @@ format-2 mode. Return to the new reader before restoring normal retention.
 Never roll back more than one release without first proving its read matrix
 against the corpus. Never delete format-3 objects to make a rollback appear
 successful.
+
+## Encrypted-history integrity baseline
+
+History SlateDB blocks are encrypted with the customer-supplied stream key;
+the service intentionally does not persist that key. On every absorb, the
+writer still has the key, so it logically decodes each newly referenced SST,
+downloads its exact ciphertext, and conditionally creates a version-1 digest
+record under `integrity/history/` before advancing the absorbed boundary. The
+background cell scrubber can then detect missing or same-length corrupt
+ciphertext without key custody. SST paths and their baseline records are
+immutable; a conflicting create is corruption, not an update.
+
+This is a fail-closed rollout boundary. A cell with history SSTs created by a
+binary that predates the ledger will remain unready because a keyless process
+cannot safely decide that the bytes it first observes are good. Before enabling
+the primary-scrub readiness gate on such a cell, run a keyed maintenance pass
+for every active stream: open with the customer-provided key, decode all
+referenced blocks, create the baseline records, complete a full primary sweep,
+and publish/dark-restore a new recovery point. There is no automatic or
+recovery-index-based bootstrap because either would re-baseline latent
+corruption. A clean cell needs no migration—the first absorb creates the
+ledger before its history becomes authoritative.
 
 ## Future live-format changes
 

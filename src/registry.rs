@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::crypto::{hex, stream_hash};
 
 pub const MAX_FORK_CHILDREN: usize = 10_000;
+pub const MAX_ACTIVE_HISTORY_DBS: usize = 100_000;
+const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FORK_CHAIN_DEPTH: usize = 1_024;
 /// Physical shard-log identity. The stable routing hash is first so a
 /// topology prefix is also an exact SlateDB projection range; the second
@@ -190,6 +192,74 @@ impl StreamDesc {
         let top = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
         top >> (32 - n.trailing_zeros())
     }
+}
+
+pub fn history_db_path(hash: &StorageHash) -> String {
+    format!("streams/{}", hex(hash))
+}
+
+/// Enumerate the exact active history databases named by durable registry
+/// descriptors. Backup and primary integrity actors share this fail-closed
+/// implementation so they cannot silently protect different data sets.
+pub async fn active_history_db_paths(store: &Arc<dyn ObjectStore>) -> anyhow::Result<Vec<String>> {
+    use futures_util::TryStreamExt;
+
+    let mut paths = std::collections::HashSet::new();
+    let mut listing = store.list(Some(&ObjPath::from("registry")));
+    while let Some(meta) = listing.try_next().await? {
+        if !meta.location.as_ref().ends_with(".json")
+            || !meta.location.as_ref().contains("/by-name/")
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            meta.size <= MAX_DESCRIPTOR_BYTES as u64,
+            "registry descriptor is too large for recovery"
+        );
+        let encoded = store.get(&meta.location).await?.bytes().await?;
+        let descriptor: StreamDesc = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(
+            descriptor_path_for(descriptor.owner(), &descriptor.name) == meta.location,
+            "registry descriptor identity does not match its recovery path"
+        );
+        anyhow::ensure!(
+            !descriptor.owner().is_empty()
+                && descriptor.owner().len() <= 1_024
+                && !descriptor.name.is_empty()
+                && descriptor.name.len() <= 1_024
+                && descriptor.epoch_bytes().is_some(),
+            "registry descriptor identity is invalid for recovery"
+        );
+        if descriptor.is_per_key() {
+            anyhow::ensure!(
+                (1..=256).contains(&descriptor.segment_count)
+                    && descriptor.segment_count.is_power_of_two(),
+                "registry descriptor has invalid history segments"
+            );
+        } else {
+            anyhow::ensure!(
+                descriptor.ordering.is_none() && descriptor.segment_count == 0,
+                "registry descriptor has unsupported history ordering"
+            );
+        }
+        if descriptor.deleted {
+            continue;
+        }
+        if descriptor.is_per_key() {
+            for ordinal in 0..descriptor.segment_count {
+                paths.insert(history_db_path(&descriptor.segment_hash(ordinal)));
+            }
+        } else {
+            paths.insert(history_db_path(&descriptor.storage_hash()));
+        }
+        anyhow::ensure!(
+            paths.len() <= MAX_ACTIVE_HISTORY_DBS,
+            "active history database count exceeds the recovery cell bound"
+        );
+    }
+    let mut paths: Vec<_> = paths.into_iter().collect();
+    paths.sort();
+    Ok(paths)
 }
 
 fn composite_storage_hash(routing: [u8; 16], incarnation: [u8; 16]) -> StorageHash {

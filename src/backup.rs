@@ -30,8 +30,6 @@ const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INVENTORY_BYTES: usize = 16 * 1024;
 const MAX_TOPOLOGY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PINNED_SHARDS: usize = 16_384;
-const MAX_PINNED_HISTORY_DBS: usize = 100_000;
-const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
 const GC_INTENT_FORMAT_VERSION: u32 = 1;
@@ -102,6 +100,9 @@ pub struct BackupConfig {
     pub retention: Duration,
     pub scrub_interval: Duration,
     pub scrub_objects_per_interval: usize,
+    pub primary_scrub_interval: Duration,
+    pub primary_scrub_objects_per_interval: usize,
+    pub primary_scrub_max_object_bytes: u64,
     pub pins: Option<BackupPins>,
     pub coordinator: Option<BackupCoordinator>,
     pub write_format: BackupWriteFormat,
@@ -110,11 +111,14 @@ pub struct BackupConfig {
 pub struct BackupStatus {
     snapshot_healthy: AtomicBool,
     scrub_healthy: AtomicBool,
+    primary_scrub_healthy: AtomicBool,
 }
 
 impl BackupStatus {
     pub fn ready(&self) -> bool {
-        self.snapshot_healthy.load(Ordering::Acquire) && self.scrub_healthy.load(Ordering::Acquire)
+        self.snapshot_healthy.load(Ordering::Acquire)
+            && self.scrub_healthy.load(Ordering::Acquire)
+            && self.primary_scrub_healthy.load(Ordering::Acquire)
     }
 }
 
@@ -229,6 +233,10 @@ struct CoordinatorHealth {
     last_scrub_ms: i64,
     snapshot_healthy: bool,
     scrub_healthy: bool,
+    #[serde(default)]
+    last_primary_scrub_ms: i64,
+    #[serde(default)]
+    primary_scrub_healthy: bool,
 }
 
 struct CoordinatorState {
@@ -351,6 +359,18 @@ impl PublicationFence {
             "backup coordinator lease was lost"
         );
         Ok(())
+    }
+
+    fn next_mutation_order(&self) -> anyhow::Result<(u64, u64)> {
+        self.check_local()?;
+        let previous = self
+            .state
+            .mutation_sequence
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| anyhow::anyhow!("backup mutation sequence exhausted"))?;
+        Ok((self.epoch, previous + 1))
     }
 
     async fn verify_remote(&self) -> anyhow::Result<()> {
@@ -581,7 +601,9 @@ async fn publish_coordinator_health(
                             && current.latest_completed_ms == health.latest_completed_ms
                             && current.last_scrub_ms == health.last_scrub_ms
                             && current.snapshot_healthy == health.snapshot_healthy
-                            && current.scrub_healthy == health.scrub_healthy,
+                            && current.scrub_healthy == health.scrub_healthy
+                            && current.last_primary_scrub_ms == health.last_primary_scrub_ms
+                            && current.primary_scrub_healthy == health.primary_scrub_healthy,
                         "conflicting backup coordinator health sequence"
                     );
                     return Ok(());
@@ -616,6 +638,7 @@ async fn load_coordinator_health(
     coordinator: &CoordinatorState,
     snapshot_interval: Duration,
     scrub_interval: Duration,
+    primary_scrub_interval: Duration,
 ) -> anyhow::Result<CoordinatorHealth> {
     let lease_bytes = coordinator
         .config
@@ -658,13 +681,20 @@ async fn load_coordinator_health(
     );
     let snapshot_budget = duration_ms(snapshot_interval.saturating_mul(2)).saturating_add(60_000);
     let scrub_budget = duration_ms(scrub_interval.saturating_mul(3)).saturating_add(10_000);
-    let report_budget = scrub_budget.max(COORDINATOR_LEASE_MS.saturating_mul(2));
+    let primary_scrub_budget =
+        duration_ms(primary_scrub_interval.saturating_mul(3)).saturating_add(10_000);
+    let report_budget = scrub_budget
+        .max(primary_scrub_budget)
+        .max(COORDINATOR_LEASE_MS.saturating_mul(2));
     health.snapshot_healthy &= now
         .checked_sub(health.latest_completed_ms)
         .is_some_and(|age| (0..=snapshot_budget).contains(&age));
     health.scrub_healthy &= now
         .checked_sub(health.last_scrub_ms)
         .is_some_and(|age| (0..=scrub_budget).contains(&age));
+    health.primary_scrub_healthy &= now
+        .checked_sub(health.last_primary_scrub_ms)
+        .is_some_and(|age| (0..=primary_scrub_budget).contains(&age));
     anyhow::ensure!(
         now.checked_sub(health.generated_ms)
             .is_some_and(|age| (0..=report_budget).contains(&age)),
@@ -683,6 +713,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
     let status = Arc::new(BackupStatus {
         snapshot_healthy: AtomicBool::new(false),
         scrub_healthy: AtomicBool::new(false),
+        primary_scrub_healthy: AtomicBool::new(config.pins.is_none()),
     });
     let coordinator = config.coordinator.clone().map(start_coordinator);
     let actor_status = status.clone();
@@ -690,12 +721,15 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
         let mut snapshot_tick = tokio::time::interval(config.interval.max(Duration::from_secs(60)));
         let mut scrub_tick =
             tokio::time::interval(config.scrub_interval.max(Duration::from_secs(10)));
+        let mut primary_scrub_tick =
+            tokio::time::interval(config.primary_scrub_interval.max(Duration::from_secs(10)));
         let mut coordinator_tick = tokio::time::interval(Duration::from_secs(1));
         let mut active_epoch = 0u64;
         let mut snapshot_sequence = 0u64;
         let mut health_sequence = 0u64;
         let mut latest_completed_ms = 0i64;
         let mut last_scrub_ms = 0i64;
+        let mut last_primary_scrub_ms = 0i64;
         let mut was_leader = coordinator.is_none();
         loop {
             tokio::select! {
@@ -710,6 +744,10 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         health_sequence = 0;
                         latest_completed_ms = 0;
                         last_scrub_ms = 0;
+                        last_primary_scrub_ms = 0;
+                        actor_status.snapshot_healthy.store(false, Ordering::Release);
+                        actor_status.scrub_healthy.store(false, Ordering::Release);
+                        actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                     }
                     snapshot_sequence = snapshot_sequence.saturating_add(1).max(1);
                     let result = snapshot_once_with_pins_fenced(
@@ -730,8 +768,15 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 config.write_format == BackupWriteFormat::V3,
                             ).await {
                                 Ok(pruned) => {
-                                    actor_status.snapshot_healthy.store(true, Ordering::Release);
-                                    latest_completed_ms = report.completed_ms;
+                                    let primary_healthy = actor_status
+                                        .primary_scrub_healthy
+                                        .load(Ordering::Acquire);
+                                    actor_status
+                                        .snapshot_healthy
+                                        .store(primary_healthy, Ordering::Release);
+                                    if primary_healthy {
+                                        latest_completed_ms = report.completed_ms;
+                                    }
                                     tracing::info!(
                                         snapshot = %report.snapshot_id,
                                         objects = report.objects,
@@ -767,10 +812,13 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             last_scrub_ms,
                             snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
                             scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            last_primary_scrub_ms,
+                            primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
                         };
                         if let Err(error) = publish_coordinator_health(fence, &health).await {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
                             actor_status.scrub_healthy.store(false, Ordering::Release);
+                            actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                             tracing::error!("backup coordinator health publication failed: {error:#}");
                         }
                     }
@@ -779,6 +827,18 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                     let Some(fence) = leadership_fence(coordinator.as_ref()) else {
                         continue;
                     };
+                    let epoch = fence.as_ref().map_or(0, |fence| fence.epoch);
+                    if epoch != active_epoch {
+                        active_epoch = epoch;
+                        snapshot_sequence = 0;
+                        health_sequence = 0;
+                        latest_completed_ms = 0;
+                        last_scrub_ms = 0;
+                        last_primary_scrub_ms = 0;
+                        actor_status.snapshot_healthy.store(false, Ordering::Release);
+                        actor_status.scrub_healthy.store(false, Ordering::Release);
+                        actor_status.primary_scrub_healthy.store(false, Ordering::Release);
+                    }
                     match scrub_blob_batch(
                         config.destination.clone(),
                         config.scrub_objects_per_interval.max(1),
@@ -795,12 +855,6 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         }
                     }
                     if let Some(fence) = fence.as_ref() {
-                        if fence.epoch != active_epoch {
-                            active_epoch = fence.epoch;
-                            snapshot_sequence = 0;
-                            health_sequence = 0;
-                            latest_completed_ms = 0;
-                        }
                         health_sequence = health_sequence.saturating_add(1).max(1);
                         let health = CoordinatorHealth {
                             format_version: COORDINATOR_FORMAT_VERSION,
@@ -811,10 +865,106 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             last_scrub_ms,
                             snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
                             scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            last_primary_scrub_ms,
+                            primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
                         };
                         if let Err(error) = publish_coordinator_health(fence, &health).await {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
                             actor_status.scrub_healthy.store(false, Ordering::Release);
+                            actor_status.primary_scrub_healthy.store(false, Ordering::Release);
+                            tracing::error!("backup coordinator health publication failed: {error:#}");
+                        }
+                    }
+                }
+                _ = primary_scrub_tick.tick() => {
+                    let Some(fence) = leadership_fence(coordinator.as_ref()) else {
+                        continue;
+                    };
+                    let epoch = fence.as_ref().map_or(0, |fence| fence.epoch);
+                    if epoch != active_epoch {
+                        active_epoch = epoch;
+                        snapshot_sequence = 0;
+                        health_sequence = 0;
+                        latest_completed_ms = 0;
+                        last_scrub_ms = 0;
+                        last_primary_scrub_ms = 0;
+                        actor_status.snapshot_healthy.store(false, Ordering::Release);
+                        actor_status.scrub_healthy.store(false, Ordering::Release);
+                        actor_status.primary_scrub_healthy.store(false, Ordering::Release);
+                    }
+                    let result = match config.pins.as_ref() {
+                        Some(pins) => {
+                            let order = match fence.as_ref() {
+                                Some(fence) => fence.next_mutation_order(),
+                                None => Ok((0, 0)),
+                            };
+                            match order {
+                                Ok((coordinator_epoch, coordinator_sequence)) => {
+                                    crate::primary_scrub::scrub_batch(
+                                        &crate::primary_scrub::PrimaryScrubConfig {
+                                            topology_store: pins.topology_store.clone(),
+                                            shard_store: pins.shard_store.clone(),
+                                            data_store: pins.data_store.clone(),
+                                            max_object_bytes: config.primary_scrub_max_object_bytes,
+                                        },
+                                        config.primary_scrub_objects_per_interval.max(1),
+                                        coordinator_epoch,
+                                        coordinator_sequence,
+                                    ).await
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        None => Ok(crate::primary_scrub::PrimaryScrubReport {
+                            checked: 0,
+                            completed_sweep: true,
+                        }),
+                    };
+                    match result {
+                        Ok(report) => {
+                            let was_healthy = actor_status
+                                .primary_scrub_healthy
+                                .load(Ordering::Acquire);
+                            if report.completed_sweep {
+                                actor_status
+                                    .primary_scrub_healthy
+                                    .store(true, Ordering::Release);
+                                if !was_healthy {
+                                    snapshot_tick.reset_immediately();
+                                }
+                            }
+                            last_primary_scrub_ms = now_ms();
+                            tracing::info!(
+                                checked = report.checked,
+                                completed_sweep = report.completed_sweep,
+                                "primary SlateDB integrity scrub batch complete"
+                            );
+                        }
+                        Err(error) => {
+                            actor_status.primary_scrub_healthy.store(false, Ordering::Release);
+                            actor_status.snapshot_healthy.store(false, Ordering::Release);
+                            latest_completed_ms = 0;
+                            tracing::error!("primary SlateDB integrity scrub failed: {error:#}");
+                        }
+                    }
+                    if let Some(fence) = fence.as_ref() {
+                        health_sequence = health_sequence.saturating_add(1).max(1);
+                        let health = CoordinatorHealth {
+                            format_version: COORDINATOR_FORMAT_VERSION,
+                            lease_epoch: fence.epoch,
+                            sequence: health_sequence,
+                            generated_ms: now_ms(),
+                            latest_completed_ms,
+                            last_scrub_ms,
+                            snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
+                            scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            last_primary_scrub_ms,
+                            primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
+                        };
+                        if let Err(error) = publish_coordinator_health(fence, &health).await {
+                            actor_status.snapshot_healthy.store(false, Ordering::Release);
+                            actor_status.scrub_healthy.store(false, Ordering::Release);
+                            actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                             tracing::error!("backup coordinator health publication failed: {error:#}");
                         }
                     }
@@ -827,19 +977,23 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                     if is_leader && !was_leader {
                         snapshot_tick.reset_immediately();
                         scrub_tick.reset_immediately();
+                        primary_scrub_tick.reset_immediately();
                     } else if !is_leader {
                         match load_coordinator_health(
                             coordinator.as_ref().expect("coordinator exists"),
                             config.interval,
                             config.scrub_interval,
+                            config.primary_scrub_interval,
                         ).await {
                             Ok(health) => {
                                 actor_status.snapshot_healthy.store(health.snapshot_healthy, Ordering::Release);
                                 actor_status.scrub_healthy.store(health.scrub_healthy, Ordering::Release);
+                                actor_status.primary_scrub_healthy.store(health.primary_scrub_healthy, Ordering::Release);
                             }
                             Err(error) => {
                                 actor_status.snapshot_healthy.store(false, Ordering::Release);
                                 actor_status.scrub_healthy.store(false, Ordering::Release);
+                                actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                                 tracing::warn!("backup coordinator health unavailable: {error:#}");
                             }
                         }
@@ -1313,49 +1467,7 @@ async fn acquire_history_checkpoints(
     pins: &BackupPins,
     snapshot_id: &str,
 ) -> anyhow::Result<(Vec<CheckpointLease>, Vec<String>)> {
-    let mut paths = HashSet::new();
-    let mut listing = pins.topology_store.list(Some(&ObjPath::from("registry")));
-    while let Some(meta) = listing.try_next().await? {
-        if !meta.location.as_ref().ends_with(".json")
-            || !meta.location.as_ref().contains("/by-name/")
-        {
-            continue;
-        }
-        anyhow::ensure!(
-            meta.size <= MAX_DESCRIPTOR_BYTES as u64,
-            "registry descriptor is too large for recovery"
-        );
-        let encoded = pins
-            .topology_store
-            .get(&meta.location)
-            .await?
-            .bytes()
-            .await?;
-        let descriptor: crate::registry::StreamDesc = serde_json::from_slice(&encoded)?;
-        anyhow::ensure!(
-            crate::registry::descriptor_path_for(descriptor.owner(), &descriptor.name)
-                == meta.location,
-            "registry descriptor identity does not match its recovery path"
-        );
-        validate_recovery_descriptor(&descriptor)?;
-        if descriptor.deleted {
-            continue;
-        }
-        if descriptor.is_per_key() {
-            for ordinal in 0..descriptor.segment_count {
-                paths.insert(recovery_history_db_path(&descriptor.segment_hash(ordinal)));
-            }
-        } else {
-            paths.insert(recovery_history_db_path(&descriptor.storage_hash()));
-        }
-        anyhow::ensure!(
-            paths.len() <= MAX_PINNED_HISTORY_DBS,
-            "active history database count exceeds the recovery cell bound"
-        );
-    }
-
-    let mut paths: Vec<_> = paths.into_iter().collect();
-    paths.sort();
+    let paths = crate::registry::active_history_db_paths(&pins.topology_store).await?;
     let mut leases = Vec::new();
     let mut absent = Vec::new();
     for path in paths {
@@ -1376,32 +1488,9 @@ async fn acquire_history_checkpoints(
     Ok((leases, absent))
 }
 
-fn validate_recovery_descriptor(descriptor: &crate::registry::StreamDesc) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !descriptor.owner().is_empty()
-            && descriptor.owner().len() <= 1_024
-            && !descriptor.name.is_empty()
-            && descriptor.name.len() <= 1_024
-            && descriptor.epoch_bytes().is_some(),
-        "registry descriptor identity is invalid for recovery"
-    );
-    if descriptor.is_per_key() {
-        anyhow::ensure!(
-            (1..=256).contains(&descriptor.segment_count)
-                && descriptor.segment_count.is_power_of_two(),
-            "registry descriptor has invalid history segments"
-        );
-    } else {
-        anyhow::ensure!(
-            descriptor.ordering.is_none() && descriptor.segment_count == 0,
-            "registry descriptor has unsupported history ordering"
-        );
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn recovery_history_db_path(hash: &crate::registry::StorageHash) -> String {
-    format!("streams/{}", crate::crypto::hex(hash))
+    crate::registry::history_db_path(hash)
 }
 
 async fn verify_pinned_topology(
@@ -2494,16 +2583,7 @@ async fn write_scrub_cursor(
     fence: Option<&PublicationFence>,
 ) -> anyhow::Result<()> {
     let (coordinator_epoch, coordinator_sequence) = match fence {
-        Some(fence) => {
-            let previous = fence
-                .state
-                .mutation_sequence
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                    value.checked_add(1)
-                })
-                .map_err(|_| anyhow::anyhow!("backup mutation sequence exhausted"))?;
-            (fence.epoch, previous + 1)
-        }
+        Some(fence) => fence.next_mutation_order()?,
         None => (0, 0),
     };
     let state = ScrubState {
@@ -2835,6 +2915,10 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+pub(crate) fn wall_time_ms() -> i64 {
+    now_ms()
 }
 
 #[cfg(test)]
@@ -3443,15 +3527,23 @@ mod tests {
             last_scrub_ms: now,
             snapshot_healthy: true,
             scrub_healthy: true,
+            last_primary_scrub_ms: now,
+            primary_scrub_healthy: true,
         };
         publish_coordinator_health(&second_fence, &health)
             .await
             .unwrap();
-        let observed =
-            load_coordinator_health(&second, Duration::from_secs(60), Duration::from_secs(10))
-                .await
-                .unwrap();
-        assert!(observed.snapshot_healthy && observed.scrub_healthy);
+        let observed = load_coordinator_health(
+            &second,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        assert!(
+            observed.snapshot_healthy && observed.scrub_healthy && observed.primary_scrub_healthy
+        );
         assert!(
             publish_coordinator_health(
                 &first_fence,

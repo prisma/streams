@@ -102,8 +102,10 @@ with an empty pool rather than dead sockets.
 | `BACKUP_RETENTION_SECS` | 604800 | complete/partial point and unreferenced-blob retention; at least two intervals, at most one year |
 | `BACKUP_CHECKPOINT_LIFETIME_SECS` | 3600 | expiry safety net for per-shard SlateDB pins; at least two intervals, at most one day; successful copies delete eagerly |
 | `BACKUP_SCRUB_INTERVAL_SECS` / `BACKUP_SCRUB_OBJECTS_PER_INTERVAL` | 60 / 256 | continuously hash this many referenced recovery blobs; 10 s minimum, 100000 maximum batch |
+| `PRIMARY_SCRUB_INTERVAL_SECS` / `PRIMARY_SCRUB_OBJECTS_PER_INTERVAL` | 60 / 16 | bounded live-primary sweep cadence/batch; readiness stays red until a complete sweep after startup or coordinator takeover |
+| `PRIMARY_SCRUB_MAX_OBJECT_BYTES` | 268435456 | fail-closed per-manifest/SST/WAL read bound; 1 MiB to 1 GiB |
 | `BACKUP_WRITE_FORMAT` | 3 | recovery-corpus writer; use 2 for the read-first/rollback wave and 3 after every backup and restore binary is format-3 capable |
-| `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires both a complete point and a healthy scrubber |
+| `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires a complete post-primary-sweep point plus healthy recovery and primary scrubbers |
 
 The actor creates an expiring checkpoint for every initialized live shard and
 every initialized active stream-history DB after the shard cut; it records
@@ -120,6 +122,21 @@ last referencing generation expired. The scrubber walks blob references with a
 durable provider-independent cursor, so a missing as well as corrupt recovery
 object fails readiness. Shared physical role buckets are copied once,
 preferring the shard role so manifest filtering cannot be bypassed.
+
+The same fenced cell actor continuously validates live primary authority with
+a durable cursor. It bounds and decodes the newest manifest, every currently
+referenced shard SST block/index/statistics record, and every live WAL found
+either in the manifest interval or above its replay watermark in object
+storage. This latter union includes acknowledged WALs whose next ID has not yet
+reached a remote manifest. History blocks use customer-held keys, which the
+background actor deliberately does not retain. The absorber therefore
+logically decodes each newly written history SST while it has the request key,
+then creates an immutable whole-ciphertext SHA-256 baseline under
+`integrity/history/`; later sweeps compare primary bytes to that baseline. A
+missing baseline fails closed. Any primary failure clears snapshot health, and
+repair must finish a primary sweep and publish a fresh recovery point before
+readiness returns. `scripts/ci-primary-scrub.sh` corrupts same-length shard and
+encrypted-history SSTs and proves this red-to-repaired transition.
 
 Every backup-enabled instance contends for `backup/coordinator-lease.json` in
 the cell's ops store. Only the holder of the renewable six-second CAS lease may
@@ -626,6 +643,9 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   formats allow an operator to repair a blob in place only with the exact
   expected bytes. Follow [STORAGE-MIGRATIONS.md](./STORAGE-MIGRATIONS.md) for
   the read-first format-2 to format-3 flip and one-version rollback.
+  Encrypted-history integrity baselines are create-only and must exist from the
+  first history write. A pre-existing corpus needs the keyed backfill procedure
+  in that migration document; there is intentionally no keyless auto-baseline.
   A measured failover against the actual independent provider remains a GA
   release gate in [OPERATIONS.md §2](./OPERATIONS.md).
   CI also runs two backup-enabled instances, kills the actual six-second lease
