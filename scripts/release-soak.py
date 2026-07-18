@@ -17,6 +17,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import stat
 import statistics
 import subprocess
@@ -27,8 +28,9 @@ import urllib.error
 import urllib.request
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MIN_RELEASE_SOAK_SECS = 24 * 60 * 60
+MIN_IDLE_BASELINE_SECS = 5 * 60
 
 
 def positive_int(value: str) -> int:
@@ -162,6 +164,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-secs", type=int, default=60)
     parser.add_argument("--monitor-secs", type=positive_int, default=30)
     parser.add_argument("--drain-secs", type=int, default=300)
+    parser.add_argument("--idle-secs", type=positive_int, default=MIN_IDLE_BASELINE_SECS)
     parser.add_argument("--concurrency", type=positive_int, default=64)
     parser.add_argument("--streams", type=positive_int, default=16)
     parser.add_argument("--payload-bytes", type=positive_int, default=256)
@@ -198,6 +201,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-l0-ssts", type=positive_int, default=24)
     parser.add_argument("--max-unflushed-wal-ssts", type=positive_int, default=1024)
     parser.add_argument("--max-fence-events", type=int, default=0)
+    parser.add_argument(
+        "--max-idle-cpu-core-fraction", type=nonnegative_float, default=0.10
+    )
+    parser.add_argument(
+        "--max-idle-object-store-ops-per-sec", type=nonnegative_float, default=10.0
+    )
     args = parser.parse_args()
     if args.warmup_secs < 0 or args.drain_secs < 0:
         parser.error("warmup and drain durations must be non-negative")
@@ -207,6 +216,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("provide between 1 and 64 unique metrics URLs")
     if args.duration_secs < MIN_RELEASE_SOAK_SECS and not args.allow_short:
         parser.error("release soak must run for at least 24 hours (or use --allow-short for CI)")
+    if args.idle_secs < MIN_IDLE_BASELINE_SECS and not args.allow_short:
+        parser.error("idle baseline must run for at least five minutes (or use --allow-short for CI)")
     if args.auth_token_refresh_secs > 3600:
         parser.error("auth token refresh interval must be at most 3600 seconds")
     if args.attacker_concurrency > 64:
@@ -345,6 +356,31 @@ def values(metrics: dict[str, float], name: str) -> list[float]:
     ]
 
 
+def metric_label(metrics: dict[str, float], name: str, label: str) -> str | None:
+    pattern = re.compile(
+        rf'(?:^|,){re.escape(label)}="([0-9a-f]{{32}})"(?:,|\}})'
+    )
+    found: set[str] = set()
+    for key in metrics:
+        if not key.startswith(name + "{"):
+            continue
+        match = pattern.search(key[len(name) + 1 :])
+        if match:
+            found.add(match.group(1))
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def labeled_values(
+    metrics: dict[str, float], name: str, label: str, accepted: set[str]
+) -> list[float]:
+    needles = {f'{label}="{value}"' for value in accepted}
+    return [
+        value
+        for key, value in metrics.items()
+        if key.startswith(name + "{") and any(needle in key for needle in needles)
+    ]
+
+
 def finite_or_none(value: float | None) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
@@ -367,13 +403,29 @@ def scrape(base: str, operator_token: str, elapsed: float) -> dict[str, object]:
         iter(values(metrics, "streams_backup_recovery_point_age_seconds")), None
     )
     backup_budget = next(iter(values(metrics, "streams_backup_rpo_budget_seconds")), 0.0)
+    cpu_seconds = next(iter(values(metrics, "streams_process_cpu_seconds_total")), None)
+    object_operations = values(metrics, "streams_object_store_operations_total")
+    data_plane_requests = labeled_values(
+        metrics,
+        "streams_http_requests_total",
+        "operation",
+        {"append", "read", "control", "queue"},
+    )
     return {
         "elapsed_secs": round(elapsed, 3),
         "target": base,
         "ready": ready_status == 200,
         "metrics_ok": True,
+        "instance_hash": metric_label(metrics, "streams_instance_info", "instance_hash"),
         "components_ready": bool(components) and all(value == 1 for value in components),
         "rss_bytes": max(values(metrics, "streams_process_resident_memory_bytes"), default=0),
+        "cpu_seconds_total": finite_or_none(cpu_seconds),
+        "object_store_operations_total": sum(object_operations)
+        if object_operations
+        else None,
+        "data_plane_requests_total": sum(data_plane_requests)
+        if data_plane_requests
+        else None,
         "absorber_pending_bytes": max(
             values(metrics, "streams_absorber_pending_bytes"), default=0
         ),
@@ -406,6 +458,51 @@ def quartile_growth(samples: list[float]) -> float:
         return 0.0
     width = max(1, len(samples) // 4)
     return max(0.0, statistics.median(samples[-width:]) - statistics.median(samples[:width]))
+
+
+def counter_rate(
+    samples: list[dict[str, object]], field: str
+) -> tuple[float | None, float | None, bool]:
+    usable = [sample for sample in samples if sample.get(field) is not None]
+    if len(usable) < 2 or len(usable) != len(samples):
+        return None, None, False
+    observed = [float(sample[field]) for sample in usable]
+    if any(not math.isfinite(value) for value in observed) or any(
+        current < previous for previous, current in zip(observed, observed[1:])
+    ):
+        return None, None, False
+    first = usable[0]
+    last = usable[-1]
+    elapsed = float(last["elapsed_secs"]) - float(first["elapsed_secs"])
+    delta = observed[-1] - observed[0]
+    if elapsed <= 0:
+        return None, None, False
+    return delta / elapsed, delta, True
+
+
+def monitor_phase(
+    duration_secs: int,
+    interval_secs: int,
+    targets: list[str],
+    operator_token: RotatingToken,
+    run_started: float,
+) -> list[dict[str, object]]:
+    phase_started = time.monotonic()
+    samples: list[dict[str, object]] = []
+    while True:
+        sampled_at = time.monotonic()
+        samples.extend(
+            scrape_all(targets, operator_token.token(), sampled_at - run_started)
+        )
+        remaining = duration_secs - (time.monotonic() - phase_started)
+        if remaining <= 0:
+            return samples
+        time.sleep(
+            min(
+                max(0.0, interval_secs - (time.monotonic() - sampled_at)),
+                remaining,
+            )
+        )
 
 
 def check(observed: object, budget: object, passed: bool) -> dict[str, object]:
@@ -562,15 +659,6 @@ def main() -> int:
             args.auth_token_refresh_secs,
         )
         attacker_url = f"{args.url.rstrip('/')}/v1/stream/{attacker_stream}"
-        create_status = mutate_request(
-            "PUT",
-            attacker_url,
-            attacker_token.token(),
-            attacker_stream_key,
-            b"",
-        )
-        if create_status not in (200, 201, 204):
-            raise SystemExit(f"attacker stream create failed with status {create_status}")
         attacker = Attacker(
             attacker_url,
             attacker_stream_key,
@@ -583,18 +671,41 @@ def main() -> int:
         operator_subject,
         args.auth_token_refresh_secs,
     )
-    bench = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=child_env,
-    )
+    bench: subprocess.Popen[str]
+    idle_samples: list[dict[str, object]] = []
     samples: list[dict[str, object]] = []
     operator_auth.start()
     try:
+        # Establish a quiescent baseline before creating the attacker stream or
+        # starting either workload. Metrics/audit overhead is intentionally
+        # included because a production service pays it while otherwise idle.
+        idle_samples = monitor_phase(
+            args.idle_secs,
+            args.monitor_secs,
+            args.metrics_url,
+            operator_auth,
+            started,
+        )
         if attacker:
+            create_status = mutate_request(
+                "PUT",
+                attacker.url,
+                attacker.token_source.token(),
+                attacker.stream_key,
+                b"",
+            )
+            if create_status not in (200, 201, 204):
+                raise SystemExit(
+                    f"attacker stream create failed with status {create_status}"
+                )
             attacker.start()
+        bench = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=child_env,
+        )
         try:
             while bench.poll() is None:
                 sampled_at = time.monotonic()
@@ -640,6 +751,74 @@ def main() -> int:
     summary = parse_bench_summary(stdout)
     attacker_evidence = attacker.evidence() if attacker else {"required": False}
     operator_auth_evidence = operator_auth.evidence()
+    idle_good = [sample for sample in idle_samples if sample.get("metrics_ok")]
+    idle_rates: list[dict[str, object]] = []
+    for target_index, target in enumerate(args.metrics_url):
+        target_samples = [
+            sample for sample in idle_good if str(sample["target"]) == target
+        ]
+        cpu_rate, cpu_delta, cpu_valid = counter_rate(
+            target_samples, "cpu_seconds_total"
+        )
+        object_rate, object_delta, object_valid = counter_rate(
+            target_samples, "object_store_operations_total"
+        )
+        data_rate, data_delta, data_valid = counter_rate(
+            target_samples, "data_plane_requests_total"
+        )
+        instance_hashes = {
+            str(sample["instance_hash"])
+            for sample in target_samples
+            if sample.get("instance_hash") is not None
+        }
+        identity_stable = (
+            len(instance_hashes) == 1
+            and all(sample.get("instance_hash") is not None for sample in target_samples)
+        )
+        idle_rates.append(
+            {
+                "target_index": target_index,
+                "instance_hash": next(iter(instance_hashes))
+                if identity_stable
+                else None,
+                "samples": len(target_samples),
+                "cpu_core_fraction": cpu_rate,
+                "cpu_seconds_delta": cpu_delta,
+                "object_store_ops_per_sec": object_rate,
+                "object_store_operations_delta": object_delta,
+                "data_plane_requests_per_sec": data_rate,
+                "data_plane_requests_delta": data_delta,
+                "identity_stable": identity_stable,
+                "counters_monotonic": cpu_valid and object_valid and data_valid,
+            }
+        )
+    instance_hashes = [rate["instance_hash"] for rate in idle_rates]
+    idle_instances_distinct = (
+        all(instance_hash is not None for instance_hash in instance_hashes)
+        and len(set(instance_hashes)) == len(instance_hashes)
+    )
+    idle_counters_valid = bool(idle_rates) and all(
+        bool(rate["counters_monotonic"]) for rate in idle_rates
+    ) and idle_instances_distinct
+    idle_quiescent = idle_counters_valid and all(
+        float(rate["data_plane_requests_delta"]) == 0 for rate in idle_rates
+    )
+    idle_cpu_max = max(
+        (
+            float(rate["cpu_core_fraction"])
+            for rate in idle_rates
+            if rate["cpu_core_fraction"] is not None
+        ),
+        default=math.inf,
+    )
+    idle_object_ops_max = max(
+        (
+            float(rate["object_store_ops_per_sec"])
+            for rate in idle_rates
+            if rate["object_store_ops_per_sec"] is not None
+        ),
+        default=math.inf,
+    )
     good = [sample for sample in samples if sample.get("metrics_ok")]
     by_target: dict[str, list[dict[str, object]]] = {}
     for sample in good:
@@ -689,6 +868,10 @@ def main() -> int:
         math.floor((args.duration_secs + args.warmup_secs) / args.monitor_secs)
         * len(args.metrics_url),
     )
+    expected_idle_samples = (
+        max(2, math.ceil(args.idle_secs / args.monitor_secs) + 1)
+        * len(args.metrics_url)
+    )
     rpo_samples = [
         (
             sample.get("backup_recovery_point_age_secs"),
@@ -702,6 +885,54 @@ def main() -> int:
         for age, budget in rpo_samples
     )
     checks = {
+        "idle_duration": check(
+            args.idle_secs,
+            f">={MIN_IDLE_BASELINE_SECS}",
+            args.idle_secs >= MIN_IDLE_BASELINE_SECS or args.allow_short,
+        ),
+        "idle_monitor_coverage": check(
+            len(idle_good), expected_idle_samples, len(idle_good) >= expected_idle_samples
+        ),
+        "idle_readiness": check(
+            sum(not bool(sample.get("ready")) for sample in idle_samples),
+            0,
+            bool(idle_samples)
+            and all(bool(sample.get("ready")) for sample in idle_samples),
+        ),
+        "idle_component_health": check(
+            sum(not bool(sample.get("components_ready")) for sample in idle_good),
+            0,
+            bool(idle_good)
+            and all(bool(sample.get("components_ready")) for sample in idle_good),
+        ),
+        "idle_counters": check(
+            idle_rates,
+            "stable distinct instance identities and monotonic CPU/object-store counters",
+            idle_counters_valid,
+        ),
+        "idle_quiescent": check(
+            [
+                {
+                    "target_index": rate["target_index"],
+                    "data_plane_requests_delta": rate["data_plane_requests_delta"],
+                }
+                for rate in idle_rates
+            ],
+            "zero append/read/control/queue requests during the baseline",
+            idle_quiescent,
+        ),
+        "idle_cpu_core_fraction": check(
+            finite_or_none(idle_cpu_max),
+            args.max_idle_cpu_core_fraction,
+            idle_counters_valid
+            and idle_cpu_max <= args.max_idle_cpu_core_fraction,
+        ),
+        "idle_object_store_ops_per_sec": check(
+            finite_or_none(idle_object_ops_max),
+            args.max_idle_object_store_ops_per_sec,
+            idle_counters_valid
+            and idle_object_ops_max <= args.max_idle_object_store_ops_per_sec,
+        ),
         "release_duration": check(
             args.duration_secs,
             f">={MIN_RELEASE_SOAK_SECS}",
@@ -818,6 +1049,7 @@ def main() -> int:
         "ended_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "elapsed_secs": round(time.monotonic() - started, 3),
         "workload": {
+            "idle_secs": args.idle_secs,
             "duration_secs": args.duration_secs,
             "warmup_secs": args.warmup_secs,
             "drain_secs": args.drain_secs,
@@ -841,6 +1073,13 @@ def main() -> int:
         "noisy_neighbor": attacker_evidence,
         "monitor": {
             "auth": operator_auth_evidence,
+            "idle_samples": len(idle_samples),
+            "idle_successful_samples": len(idle_good),
+            "idle_rates": idle_rates,
+            "idle_cpu_core_fraction_max": finite_or_none(idle_cpu_max),
+            "idle_object_store_ops_per_sec_max": finite_or_none(
+                idle_object_ops_max
+            ),
             "samples": len(samples),
             "successful_samples": len(good),
             "rss_max_bytes": max(rss, default=0),

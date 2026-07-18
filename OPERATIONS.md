@@ -378,8 +378,17 @@ The target-hardware release gate is `scripts/release-soak.py` (invocation and
 credential contract in [RUNBOOK §9.1](./RUNBOOK.md#91-target-hardware-release-soak)).
 It requires a 24-hour run by default, scrapes every supplied instance, verifies
 the exact durable next offset of every generated stream, and emits one
-machine-readable budget verdict. CI exercises only its explicit short mode;
-no short/local artifact satisfies the performance release gate.
+machine-readable budget verdict. Before creating either workload it also holds
+the target quiescent for at least five minutes and derives per-instance CPU-core
+fraction and finished object-store operation attempts/second from monotonic exported
+counters. Missing counters, counter resets, incomplete scrapes, or a budget
+breach fail the run. Each metrics target must also report one stable,
+pseudonymous instance hash and all hashes must be distinct, preventing an LB or
+duplicate URL from passing as fleet coverage. Any append, read, control, or
+queue request observed during the baseline also fails it. Metrics scraping and
+its audit cost are deliberately inside that baseline. CI exercises only its
+explicit short mode; no short/local artifact satisfies the performance release
+gate.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are

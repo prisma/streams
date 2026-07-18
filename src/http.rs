@@ -1646,6 +1646,12 @@ fn metric_bool(out: &mut String, name: &str, labels: &str, value: bool) {
 
 fn render_operational_metrics(state: &AppState) -> String {
     let mut out = String::with_capacity(32 * 1024);
+    let instance_hash = crate::crypto::hex(&crate::crypto::stream_hash(&state.instance_name));
+    out.push_str("# HELP streams_instance_info Pseudonymous stable instance identity.\n");
+    out.push_str("# TYPE streams_instance_info gauge\n");
+    out.push_str(&format!(
+        "streams_instance_info{{instance_hash=\"{instance_hash}\"}} 1\n"
+    ));
     state.telemetry.render_openmetrics(&mut out);
 
     out.push_str(
@@ -1823,6 +1829,12 @@ fn render_operational_metrics(state: &AppState) -> String {
         "streams_process_resident_memory_bytes {}\n",
         crate::fleet::rss_bytes()
     ));
+    out.push_str("# HELP streams_process_cpu_seconds_total Process user and system CPU time.\n");
+    out.push_str("# TYPE streams_process_cpu_seconds_total counter\n");
+    out.push_str(&format!(
+        "streams_process_cpu_seconds_total {:.6}\n",
+        crate::fleet::cpu_time_secs()
+    ));
 
     let (wal_p50_ms, wal_p99_ms, store_inflight, store_inflight_peak) =
         crate::store_timing::heartbeat_summary();
@@ -1846,6 +1858,15 @@ fn render_operational_metrics(state: &AppState) -> String {
     out.push_str(&format!(
         "streams_object_store_inflight{{kind=\"peak\"}} {store_inflight_peak}\n"
     ));
+    out.push_str(
+        "# HELP streams_object_store_operations_total Finished outbound object-store operation attempts.\n",
+    );
+    out.push_str("# TYPE streams_object_store_operations_total counter\n");
+    for (operation, class, total) in crate::store_timing::operation_totals() {
+        out.push_str(&format!(
+            "streams_object_store_operations_total{{operation=\"{operation}\",class=\"{class}\"}} {total}\n"
+        ));
+    }
 
     out.push_str("# HELP streams_open_shards Shard engines currently resident in this process.\n");
     out.push_str("# TYPE streams_open_shards gauge\n");

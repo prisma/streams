@@ -704,7 +704,7 @@ pub fn rss_bytes() -> u64 {
 
 /// Process CPU time (user+sys) in seconds via getrusage — portable across
 /// the macOS dev box and the musl cloud build.
-fn cpu_time_secs() -> f64 {
+pub fn cpu_time_secs() -> f64 {
     unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut ru) != 0 {

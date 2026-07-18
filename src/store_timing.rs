@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 use std::ops::Range;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -58,6 +58,11 @@ pub struct StoreStats {
     /// High-water mark; swapped down only by the /v1/debug/store sampler so
     /// heartbeats (which only load it) can't race the window.
     pub inflight_peak: AtomicI64,
+    /// Monotonic, fixed-cardinality count of finished outbound attempts,
+    /// including operations abandoned when their future/stream is dropped.
+    /// This remains independent from the bounded latency ring so long-running
+    /// idle-cost and provider-request measurements cannot lose old samples.
+    completed: [AtomicU64; OPS.len() * CLASSES.len()],
 }
 
 /// Optional instance-wide cap on concurrent object-store ops
@@ -99,6 +104,7 @@ pub fn stats() -> &'static StoreStats {
         slow: Mutex::new(VecDeque::with_capacity(SLOW_CAP)),
         inflight: AtomicI64::new(0),
         inflight_peak: AtomicI64::new(0),
+        completed: [const { AtomicU64::new(0) }; OPS.len() * CLASSES.len()],
     })
 }
 
@@ -245,6 +251,7 @@ fn record(op: u8, class: u8, start: Instant, path: &str, ok: bool) {
     let dur_us = start.elapsed().as_micros().min(u32::MAX as u128) as u32;
     let ts_ms = now_ms();
     let s = stats();
+    s.completed[op as usize * CLASSES.len() + class as usize].fetch_add(1, Ordering::Relaxed);
     {
         let mut ring = s.ring.lock().unwrap();
         if ring.len() >= RING_CAP {
@@ -283,6 +290,23 @@ fn record(op: u8, class: u8, start: Instant, path: &str, ok: bool) {
             path: tail,
         });
     }
+}
+
+/// Monotonic finished-attempt totals for the fixed (operation, path-class)
+/// matrix. Callers may safely derive rates from successive observations.
+pub fn operation_totals() -> Vec<(&'static str, &'static str, u64)> {
+    let s = stats();
+    let mut totals = Vec::with_capacity(OPS.len() * CLASSES.len());
+    for (op_index, op) in OPS.iter().enumerate() {
+        for (class_index, class) in CLASSES.iter().enumerate() {
+            totals.push((
+                *op,
+                *class,
+                s.completed[op_index * CLASSES.len() + class_index].load(Ordering::Relaxed),
+            ));
+        }
+    }
+    totals
 }
 
 /// RAII: outbound-op guard — gauge up on create, down on drop, and records

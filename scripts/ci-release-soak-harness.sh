@@ -238,7 +238,9 @@ printf '%s\n' "${OPERATOR_TOKEN_A}" >"${TMP_DIR}/operator-token"
 chmod 600 "${TMP_DIR}/operator-token"
 export SOAK_OPERATOR_TOKEN_FILE="${TMP_DIR}/operator-token"
 (
-  sleep 1.5
+  # The judge establishes a two-second idle baseline before either workload;
+  # rotate once load is active so all three readers observe a live change.
+  sleep 3.5
   printf '%s\n' "${TOKEN_B}" >"${TMP_DIR}/workload-token.next"
   chmod 600 "${TMP_DIR}/workload-token.next"
   mv "${TMP_DIR}/workload-token.next" "${TMP_DIR}/workload-token"
@@ -250,18 +252,23 @@ export SOAK_OPERATOR_TOKEN_FILE="${TMP_DIR}/operator-token"
   mv "${TMP_DIR}/operator-token.next" "${TMP_DIR}/operator-token"
 ) &
 ROTATE_PID=$!
-python3 scripts/release-soak.py \
+if ! python3 scripts/release-soak.py \
   --url "${STREAMS_URL}" --metrics-url "${STREAMS_URL}" \
-  --metrics-url "http://localhost:${STREAMS_PORT}" \
   --bench-bin "${TARGET_DIR}/bench" --evidence "${TMP_DIR}/evidence.json" \
   --release-id ci-short --target-label hermetic-s3lite \
   --instance-class local-process --storage-provider s3lite \
-  --duration-secs 3 --warmup-secs 1 --monitor-secs 1 --drain-secs 8 \
+  --idle-secs 2 --duration-secs 3 --warmup-secs 1 --monitor-secs 1 --drain-secs 8 \
   --concurrency 4 --streams 2 --payload-bytes 128 --allow-short \
   --require-token-rotation --auth-token-refresh-secs 1 \
   --require-noisy-neighbor --min-attacker-attempts 10 \
+  --max-idle-cpu-core-fraction 2 \
+  --max-idle-object-store-ops-per-sec 10000 \
   --max-p99-ms 2000 --max-p999-ms 5000 \
-  >"${TMP_DIR}/soak.stdout"
+  >"${TMP_DIR}/soak.stdout"; then
+  [[ ! -f "${TMP_DIR}/evidence.json" ]] || cat "${TMP_DIR}/evidence.json" >&2
+  cat "${TMP_DIR}/soak.stdout" >&2
+  exit 1
+fi
 
 python3 - "${TMP_DIR}/evidence.json" <<'PY'
 import json
@@ -270,12 +277,21 @@ import pathlib
 import sys
 
 evidence = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert evidence["format_version"] == 1
+assert evidence["format_version"] == 2
 assert evidence["status"] == "pass"
 assert evidence["workload"]["short_run"] is True
 assert evidence["workload"]["token_rotation_required"] is True
 assert evidence["workload"]["noisy_neighbor_required"] is True
-assert evidence["target"]["metrics_targets"] == 2
+assert evidence["target"]["metrics_targets"] == 1
+assert evidence["workload"]["idle_secs"] == 2
+assert evidence["monitor"]["idle_samples"] >= 3
+assert len(evidence["monitor"]["idle_rates"]) == 1
+assert evidence["monitor"]["idle_rates"][0]["identity_stable"] is True
+assert all(rate["counters_monotonic"] for rate in evidence["monitor"]["idle_rates"])
+assert evidence["monitor"]["idle_rates"][0]["data_plane_requests_delta"] == 0
+assert evidence["checks"]["idle_quiescent"]["passed"] is True
+assert evidence["checks"]["idle_cpu_core_fraction"]["passed"] is True
+assert evidence["checks"]["idle_object_store_ops_per_sec"]["passed"] is True
 assert evidence["monitor"]["samples"] >= 6
 assert evidence["bench"]["auth"]["source"] == "file"
 assert evidence["bench"]["auth"]["subject_pinned"] is True
@@ -307,11 +323,13 @@ PY
 
 if python3 scripts/release-soak.py \
   --url "${STREAMS_URL}" --metrics-url "${STREAMS_URL}" \
+  --metrics-url "http://localhost:${STREAMS_PORT}" \
   --bench-bin "${TARGET_DIR}/bench" --evidence "${TMP_DIR}/rejected.json" \
   --release-id ci-rejected-budget --target-label hermetic-s3lite \
   --instance-class local-process --storage-provider s3lite \
-  --duration-secs 1 --warmup-secs 0 --monitor-secs 1 --drain-secs 0 \
+  --idle-secs 1 --duration-secs 1 --warmup-secs 0 --monitor-secs 1 --drain-secs 0 \
   --concurrency 1 --streams 1 --payload-bytes 64 --allow-short \
+  --max-idle-cpu-core-fraction 2 --max-idle-object-store-ops-per-sec 10000 \
   --min-req-per-sec 1000000000000 --max-p99-ms 5000 --max-p999-ms 5000 \
   >"${TMP_DIR}/rejected.stdout"; then
   echo "release soak accepted an impossible throughput budget" >&2
@@ -325,6 +343,9 @@ import sys
 evidence = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert evidence["status"] == "fail"
 assert evidence["checks"]["throughput"]["passed"] is False
+assert evidence["checks"]["idle_counters"]["passed"] is False
+assert all(rate["identity_stable"] for rate in evidence["monitor"]["idle_rates"])
+assert len({rate["instance_hash"] for rate in evidence["monitor"]["idle_rates"]}) == 1
 PY
 
 if SOAK_STREAM_KEY=forbidden-raw-secret python3 scripts/release-soak.py \

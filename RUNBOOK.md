@@ -485,7 +485,7 @@ OOM-killed container under load otherwise stays down.
 | `GET /v1/debug/load` | operator bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/capabilities` | operator bearer | immutable release ID plus live/history/recovery reader and writer ranges for this instance, and the same bounded declaration for every member in its fresh aggregate; contains no tenant or shard identifiers |
 | `GET /v1/debug/store?window=60&swap=1` | operator bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
-| `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape; no tenant-controlled labels |
+| `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape plus monotonic process CPU and fixed 7-operation × 5-path-class object-store counters; no tenant-controlled labels |
 | `GET /v1/debug/sleep?ms=N` | operator bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
 | `POST /v1/admin/shards/{parent}/split` | operator bearer + distinct operator approval | online fenced split; production requires `X-Prisma-Operator-Approval: Bearer …` |
 | `POST /v1/admin/shards/{parent}/merge` | operator bearer + distinct operator approval | online fenced sibling merge; production requires `X-Prisma-Operator-Approval: Bearer …` |
@@ -802,6 +802,8 @@ scripts/release-soak.py \
   --storage-provider tigris-independent-recovery \
   --require-noisy-neighbor \
   --require-backup \
+  --max-idle-cpu-core-fraction 0.10 \
+  --max-idle-object-store-ops-per-sec 10 \
   --min-req-per-sec 1000
 ```
 
@@ -813,12 +815,21 @@ explicit flags are omitted. Raw token/key environment variables are rejected
 even for a short run; CI uses the same mode-0600 file path as production.
 
 Tune throughput and latency budgets only from an approved baseline for the
-same instance/store class; record the chosen arguments with the artifact. The
-script refuses a run shorter than 24 hours unless `--allow-short` is explicit.
+same instance/store class; do the same for the idle CPU and provider-request
+budgets, and record the chosen arguments with the artifact. Evidence format 2
+contains a per-instance-index idle rate and the maximum used for each verdict,
+without serializing internal metrics URLs. Every supplied endpoint must retain
+one stable pseudonymous instance hash, distinct from every other endpoint; do
+not point this argument at a load balancer. The idle phase runs before stream
+creation and lasts at least five minutes, requires zero observed
+append/read/control/queue requests, fails on an identity/process/counter reset,
+and includes the cost of authenticated metrics scraping and audit persistence.
+The script refuses a run shorter than 24 hours or an idle baseline shorter than
+five minutes unless `--allow-short` is explicit.
 That escape is used only by `scripts/ci-release-soak-harness.sh` to test the
 judge, production JWT subject isolation, live token rotation, attacker 429s,
-metric parser, durable-offset proof, and secret-free artifact shape. A short or
-local run is not release evidence.
+metric parser, monotonic idle CPU/object-operation rates, durable-offset proof,
+and secret-free artifact shape. A short or local run is not release evidence.
 
 ## 10. Troubleshooting matrix
 
