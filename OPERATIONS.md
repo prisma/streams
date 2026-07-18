@@ -128,8 +128,9 @@ budgets must include both interval and point-completion tails.
   forces an acknowledged WAL ahead of the manifest, deletes that WAL from the
   primary after eager protection, and reopens it from recovery content.
 - `streams-provider-check` destructively probes a unique disposable prefix for
-  conditional create/update fencing, strong immediate GET/LIST, ranges,
-  multipart upload, server-side copy, and delete visibility. Both providers
+  conditional create/update fencing, strong immediate GET/LIST, strictly
+  ordered exclusive-offset listing, ranges, multipart upload, server-side copy,
+  and delete visibility. Both providers
   must pass before a failover drill.
 - `scripts/provider-failover-drill.sh` requires distinct provider identities,
   endpoint authorities, and (outside hermetic test mode) access-key IDs. It
@@ -211,13 +212,24 @@ therefore two-tier and documented to customers:
 ### 3.4 Access audit
 
 Per-request audit records (tenant, stream, verb, token-id, result, latency)
-are written to the cell ops bucket. Create/delete records are synchronously
-persisted as immutable objects before a successful response is returned;
-sampled (1 %) data-plane reads/appends use bounded one-second NDJSON batches.
-Per-tenant counters remain full fidelity via the metrics stream. Audit-sink
-failure makes readiness fail and successful mutations return a retryable 503.
-The production retention/export actor must enforce 90-day retention and
-tenant-visible export.
+are written to the cell ops bucket and an independently credentialed audit
+provider. Create/delete records are synchronously persisted as identical
+immutable objects on both sides before a successful response is returned;
+sampled (1 % by default) data-plane reads/appends use bounded one-second NDJSON
+batches that retain one object identity while either side retries. Per-tenant
+counters remain full fidelity via the metrics stream. Queue loss, write
+failure, corrupt/missing mirror content, or maintenance failure makes readiness
+fail, and an unaudited successful control mutation is returned as retryable
+503 instead.
+
+Every boot reconciles both primary prefixes through conditionally persisted
+bounded cursors before readiness can pass. A primary object is pruned only
+after an If-Match stable read and exact mirror comparison; each retention
+cutoff is derived from that provider's own object metadata. The default is 30
+days primary and 365 days mirror, with a deployment-selectable one-day-to-
+seven-year envelope. Provider-native encryption/object lock, independent IAM,
+the tenant-visible export surface, and a real-account retention inspection are
+deployment obligations and remain GA evidence gates.
 
 ### 3.5 At-rest inspection and history-block binding
 
@@ -290,12 +302,24 @@ OTel. Thus dashboards and metric alarms do not depend on the service's own
 storage. `ops/prometheus-alerts.json` is the checked, actionable rule catalog;
 CI exercises a stale-topology page signal and recovery.
 
-Customer/stream billing counters and audit records still live in the cell's
-encrypted metrics stream and immutable audit prefixes. Their independent
-incident-safe export and bounded audit retention are **not implemented yet**;
-an unhealthy or lost primary provider therefore remains a logging/usage
-evidence risk even though metric pages continue through the scrape path. This
-is a GA gate, not an implied property of the OpenMetrics work.
+Customer/stream billing intervals are appended through the normal router to a
+dedicated encrypted stream under a scoped service principal. Each interval
+contains exact request count, client-error, throttle, server-error, duration,
+and fixed-bucket duration totals. On failure the already serialized interval
+and producer id/epoch/sequence remain pending until acknowledged; the exact
+configured principal/stream tuple is excluded from metering to prevent a
+feedback loop without granting other tenants a name-based exemption. Export
+configuration, health, retries, and bounded-series drops are part of the
+operator scrape and checked alerts. Billing failure deliberately does not evict
+an otherwise healthy serving cell; it retains the pending interval and pages
+operators. Audit records use the independent dual-write and retention path in
+§3.4.
+
+Hermetic provider-cut and retry-stability drills cover both paths. A real
+independent audit account, a billing warehouse/consumer with reconciliation,
+provider lifecycle evidence, and end-to-end incident notification are still
+deployment gates; the local drills do not establish their blast radius or
+custody.
 
 **Service SLOs (per cell):**
 
@@ -309,11 +333,12 @@ is a GA gate, not an implied property of the OpenMetrics work.
 | fence events | ≈ shard-move rate | excess = flapping page |
 | scrub failures | 0 | immediate page |
 
-The checked alert catalog currently implements scrape loss, component/backup
-health, audit drops, append error-budget burn, durable/WAL latency, memory, and
-overload shedding. Tail-freshness, absorber-lag, exact newest-protected-point
-age, and fence-rate series/alerts are still a GA gap; backup readiness is not a
-substitute for an RPO-age alarm.
+The 14-rule checked alert catalog currently implements scrape loss,
+component/backup health, missing audit mirror, audit drops, missing/unhealthy
+billing export, billing-series drops, append error-budget burn, durable/WAL
+latency, memory, and overload shedding. Tail-freshness, absorber-lag, exact
+newest-protected-point age, and fence-rate series/alerts are still a GA gap;
+backup readiness is not a substitute for an RPO-age alarm.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are

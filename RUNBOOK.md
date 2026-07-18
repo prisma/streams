@@ -21,7 +21,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `s3lite` | local S3 emulator with configurable latency, conditional PUTs, ambiguous failures, stale object/LIST responses, and metadata-preserving body corruption — the dev/CI store |
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
-| `streams-provider-check` | destructive unique-prefix probe for the conditional, consistency, range, multipart, copy, and delete semantics required from each recovery provider |
+| `streams-provider-check` | destructive unique-prefix probe for conditional, consistency, ordered/exclusive cursor listing, range, multipart, copy, and delete semantics required from each recovery/audit provider |
 | `streams-at-rest-check` | exact-ETag stable-corpus scan for operator-supplied forbidden payload/key byte patterns; emits aggregate evidence without echoing secrets |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
 | `bench` | single-node benchmark matrix (see [bench/run_matrix.sh](./bench/run_matrix.sh)) |
@@ -108,6 +108,33 @@ with an empty pool rather than dead sockets.
 | `PRIMARY_SCRUB_MAX_OBJECT_BYTES` | 268435456 | fail-closed per-manifest/SST/WAL read bound; 1 MiB to 1 GiB |
 | `BACKUP_WRITE_FORMAT` | 3 | recovery-corpus writer; use 2 for the read-first/rollback wave and 3 after every backup and restore binary is format-3 capable |
 | `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires a complete post-primary-sweep point plus healthy recovery and primary scrubbers |
+
+**Independent audit settings:**
+
+| env | default | notes |
+|---|---|---|
+| `AUDIT_MIRROR_S3_ENDPOINT` / `AUDIT_MIRROR_S3_BUCKET` | — | enables an immutable second audit copy; production requires a different provider/account. The primary endpoint+ops-bucket pair is rejected |
+| `AUDIT_MIRROR_S3_REGION` | `us-east-1` | audit-provider region |
+| `AUDIT_MIRROR_S3_ACCESS_KEY_ID` / `AUDIT_MIRROR_S3_SECRET_ACCESS_KEY` | — | required together; the access-key id must differ from the primary identity and the principal needs read/create/delete only in its audit prefix |
+| `AUDIT_MIRROR_PATH_PREFIX` | — | independent audit namespace inside the mirror bucket |
+| `AUDIT_MIRROR_S3_ALLOW_HTTP` | false | test-only HTTP escape hatch; leave false in production |
+| `REQUIRE_AUDIT_MIRROR` | false | production release guard; fail startup unless the independent mirror is configured |
+| `AUDIT_SAMPLE_DENOMINATOR` | 100 | sample one in N authenticated data-plane requests; 1–1,000,000 |
+| `AUDIT_PRIMARY_RETENTION_SECS` / `AUDIT_MIRROR_RETENTION_SECS` | 30 d / 365 d | provider-clock retention; mirror retention must cover primary retention and may be at most seven years |
+| `AUDIT_MAINTENANCE_INTERVAL_SECS` / `AUDIT_MAINTENANCE_OBJECTS_PER_INTERVAL` | 300 / 1000 | durable-cursor reconciliation and pruning cadence/bound |
+| `AUDIT_MAINTENANCE_MAX_OBJECT_BYTES` | 8 MiB | fail-closed stable-read bound for one control or NDJSON audit object |
+
+Control operations succeed only after identical immutable writes to primary and
+mirror. Sampled batches retain one path and body while retrying either failed
+side. On every process start, readiness remains red until durable cursors have
+traversed both primary audit prefixes and byte-verified or repaired every
+mirror object. Primary deletion occurs only after that exact mirror check;
+retention age and “now” both come from each provider's object metadata, not a
+host clock. Cursor updates use conditional writes, so overlapping generations
+cannot silently skip a range. Provision provider-native encryption, object
+lock/lifecycle, and export access on the mirror account as deployment policy;
+audit payloads contain identity metadata and are deliberately not encrypted
+with customer stream keys.
 
 The actor creates an expiring checkpoint for every initialized live shard and
 every initialized active stream-history DB after the shard cut; it records
@@ -225,6 +252,9 @@ cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
 | `METRICS_KEY` | — | enables the internal `__metrics__` stream (billing/usage records), encrypted with this key |
 | `METRICS_LB_URL` | — | metrics appends are routed like tenant writes (through the LB) so the shard's ring owner serves them |
 | `METRICS_AUTH_TOKEN` | — | scoped service JWT for `__metrics__`; required with JWKS mode when metrics are enabled |
+| `METRICS_CUSTOMER_ID` | — | exact `sub` of the scoped metrics principal; only this customer plus `__metrics__` name is excluded from self-metering |
+| `METRICS_EXPORT_INTERVAL_SECS` | 15 | bounded per-tenant/per-stream RED interval; sequence advances only after the encrypted append is acknowledged |
+| `REQUIRE_METRICS_EXPORT` | false | production release guard; fail startup unless key, LB URL, and customer id are all configured |
 | `INSTANCE_NAME` | `streams` | instance tag in standalone mode. Fleet mode requires `streams-N`, with `1 <= N <= FLEET_MAX` |
 
 Admission defaults are deployment-wide fallbacks; every production customer
@@ -576,12 +606,21 @@ to OTel at the platform boundary if that is the platform-native transport.
 Load [ops/prometheus-alerts.json](./ops/prometheus-alerts.json) as a Prometheus-
 compatible JSON/YAML rule file. Every alert has a hold time, page/ticket
 severity, cell blast radius, and checked-in runbook target. CI validates the
-bounded schema and runs `scripts/ci-operability-game-day.sh`: it proves the
+bounded 14-rule schema, including missing/unhealthy audit and billing sinks,
+and runs `scripts/ci-operability-game-day.sh`: it proves the
 scrape requires operator authorization, records live RED/shard signals, leaks
 no tenant-controlled label, replays a stale topology, observes readiness 503
 and `component="topology"} 0`, then restores the current topology and requires
 recovery. A release environment must additionally prove its real collector,
 rule evaluator, notification route, inhibition, and ownership labels.
+
+`scripts/ci-audit-mirror.sh` cuts an independent audit provider and proves
+control-plane fail-closed behavior, retry-stable sampled batches, and recovery.
+`scripts/ci-billing-export.sh` rejects an exporter append at the HTTP boundary,
+then proves byte-identical payload and producer id/epoch/sequence on retry,
+one encrypted delivered interval, and no recursive self-metering. These are
+software failure drills; the production identities, provider/account blast
+radius, collector, and notification path still require deployed evidence.
 
 **Healthy baselines** (pilot, 4×1-CPU fleet, 16 shards, conc 128×4 offered):
 

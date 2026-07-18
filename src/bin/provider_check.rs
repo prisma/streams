@@ -110,6 +110,7 @@ async fn run_probe(
     object: &ObjPath,
     multipart: &ObjPath,
     copied: &ObjPath,
+    cursor_objects: &[ObjPath; 3],
 ) -> anyhow::Result<ProviderEvidence> {
     let total_started = Instant::now();
     let v1 = Bytes::from_static(b"prisma-streams-provider-v1");
@@ -186,14 +187,44 @@ async fn run_probe(
     );
     let conditional_update_ms = elapsed_ms(started);
 
+    for (index, path) in cursor_objects.iter().enumerate() {
+        store
+            .put_opts(
+                path,
+                PutPayload::from(Bytes::from(format!("cursor-{index}"))),
+                PutOptions::from(PutMode::Create),
+            )
+            .await
+            .context("create ordered-list cursor probe")?;
+    }
     let started = Instant::now();
-    let listed = store
-        .list(Some(&ObjPath::from(format!("runs/{run_id}"))))
-        .try_collect::<Vec<_>>()
-        .await?;
+    let prefix = ObjPath::from(format!("runs/{run_id}"));
+    let listed = store.list(Some(&prefix)).try_collect::<Vec<_>>().await?;
     anyhow::ensure!(
         listed.iter().any(|meta| meta.location == *object),
         "list-after-write did not expose the created object"
+    );
+    anyhow::ensure!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].location < pair[1].location),
+        "provider listing is not strictly lexicographically ordered"
+    );
+    let after_first = store
+        .list_with_offset(Some(&prefix), &cursor_objects[0])
+        .try_collect::<Vec<_>>()
+        .await?;
+    anyhow::ensure!(
+        after_first
+            .iter()
+            .all(|meta| meta.location > cursor_objects[0])
+            && after_first
+                .iter()
+                .any(|meta| meta.location == cursor_objects[1])
+            && after_first
+                .iter()
+                .any(|meta| meta.location == cursor_objects[2]),
+        "provider listing does not implement an exclusive lexicographic offset"
     );
     let immediate_list_ms = elapsed_ms(started);
 
@@ -246,10 +277,16 @@ async fn run_probe(
     let copy_ms = elapsed_ms(started);
 
     let started = Instant::now();
-    for path in [object, multipart, copied] {
+    for path in [object, multipart, copied]
+        .into_iter()
+        .chain(cursor_objects.iter())
+    {
         store.delete(path).await?;
     }
-    for path in [object, multipart, copied] {
+    for path in [object, multipart, copied]
+        .into_iter()
+        .chain(cursor_objects.iter())
+    {
         anyhow::ensure!(
             matches!(
                 store.head(path).await,
@@ -279,6 +316,7 @@ async fn run_probe(
             "range_get",
             "conditional_update_fencing",
             "strong_list_after_write",
+            "ordered_exclusive_offset_list",
             "multipart_upload",
             "server_side_copy",
             "strong_delete_visibility",
@@ -295,6 +333,11 @@ async fn main() -> anyhow::Result<()> {
     let object = ObjPath::from(format!("{root}/object"));
     let multipart = ObjPath::from(format!("{root}/multipart"));
     let copied = ObjPath::from(format!("{root}/copied"));
+    let cursor_objects = [
+        ObjPath::from(format!("{root}/cursor-a")),
+        ObjPath::from(format!("{root}/cursor-b")),
+        ObjPath::from(format!("{root}/cursor-c")),
+    ];
     let result = run_probe(
         &store,
         args.provider_id,
@@ -302,12 +345,16 @@ async fn main() -> anyhow::Result<()> {
         &object,
         &multipart,
         &copied,
+        &cursor_objects,
     )
     .await;
 
     // Best-effort cleanup also runs after a failed assertion. A failed
     // multipart completion is explicitly aborted inside `run_probe`.
-    for path in [&object, &multipart, &copied] {
+    for path in [&object, &multipart, &copied]
+        .into_iter()
+        .chain(cursor_objects.iter())
+    {
         let _ = store.delete(path).await;
     }
     println!("{}", serde_json::to_string(&result?)?);

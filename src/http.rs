@@ -132,6 +132,9 @@ pub struct AppState {
     /// internal metrics client. Tenant JWTs never grant operator access.
     pub auth_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Exact internal billing stream identity; no user-selected name alone
+    /// can opt out of metering or create an exporter feedback loop.
+    pub metrics_identity: Option<(String, String)>,
     /// Fixed-label RED metrics for the external monitoring scrape path.
     pub telemetry: Arc<crate::telemetry::Telemetry>,
 }
@@ -1069,6 +1072,14 @@ fn forbidden() -> Response {
 }
 
 impl AppState {
+    fn should_meter(&self, customer: &str, stream: &str) -> bool {
+        self.metrics_identity
+            .as_ref()
+            .is_none_or(|(internal_customer, internal_stream)| {
+                customer != internal_customer || stream != internal_stream
+            })
+    }
+
     /// Shard engine for `hash`, opening the shard log on first use (which
     /// fences any previous owner). A shard that was just fenced away is
     /// held off for 3 s (anti-flap while the router converges) → 503.
@@ -1454,6 +1465,46 @@ fn render_operational_metrics(state: &AppState) -> String {
     out.push_str(&format!(
         "streams_audit_dropped_total {}\n",
         state.audit.dropped()
+    ));
+    out.push_str(
+        "# HELP streams_audit_mirror_configured Whether audit events use an independent mirror.\n",
+    );
+    out.push_str("# TYPE streams_audit_mirror_configured gauge\n");
+    metric_bool(
+        &mut out,
+        "streams_audit_mirror_configured",
+        "",
+        state.audit.mirror_configured(),
+    );
+    out.push_str("# HELP streams_billing_export_configured Whether the encrypted billing stream exporter is enabled.\n");
+    out.push_str("# TYPE streams_billing_export_configured gauge\n");
+    metric_bool(
+        &mut out,
+        "streams_billing_export_configured",
+        "",
+        state.metrics.export_configured(),
+    );
+    out.push_str(
+        "# HELP streams_billing_export_healthy Whether the most recent export attempt succeeded.\n",
+    );
+    out.push_str("# TYPE streams_billing_export_healthy gauge\n");
+    metric_bool(
+        &mut out,
+        "streams_billing_export_healthy",
+        "",
+        state.metrics.export_healthy(),
+    );
+    out.push_str("# HELP streams_billing_export_failures_total Failed retry-stable billing export attempts.\n");
+    out.push_str("# TYPE streams_billing_export_failures_total counter\n");
+    out.push_str(&format!(
+        "streams_billing_export_failures_total {}\n",
+        state.metrics.export_failures()
+    ));
+    out.push_str("# HELP streams_billing_dropped_series_total Billing series rejected at the cardinality bound.\n");
+    out.push_str("# TYPE streams_billing_dropped_series_total counter\n");
+    out.push_str(&format!(
+        "streams_billing_dropped_series_total {}\n",
+        state.metrics.dropped_series_total()
     ));
     out.push_str("# HELP streams_admission_shed_total Instance-level overload responses.\n");
     out.push_str("# TYPE streams_admission_shed_total counter\n");
@@ -1914,6 +1965,17 @@ async fn stream_entry(
         Ok(principal) => principal,
         Err(response) => return response,
     };
+    let started = std::time::Instant::now();
+    let audit_customer = principal.customer_id.clone();
+    let audit_token = principal.token_id.clone();
+    let audit_name = name.clone();
+    let audit_method = method.clone();
+    let metered_name = name
+        .split_once("/queue/")
+        .or_else(|| name.split_once("/touch/"))
+        .map(|(stream, _)| stream)
+        .unwrap_or(&name)
+        .to_string();
     let queue_receive = method == Method::POST
         && name
             .split_once("/queue/")
@@ -1932,13 +1994,18 @@ async fn stream_entry(
     let (tenant_guard, limits) =
         match admit_customer(&state, &principal.customer_id, request_quota, is_live).await {
             Ok(admission) => admission,
-            Err(response) => return response,
+            Err(response) => {
+                if st.should_meter(&audit_customer, &metered_name) {
+                    st.metrics.request(
+                        &audit_customer,
+                        &metered_name,
+                        response.status(),
+                        started.elapsed(),
+                    );
+                }
+                return response;
+            }
         };
-    let started = std::time::Instant::now();
-    let audit_customer = principal.customer_id.clone();
-    let audit_token = principal.token_id.clone();
-    let audit_name = name.clone();
-    let audit_method = method.clone();
     let resp = stream_entry_inner(
         State(state),
         Path(name),
@@ -1966,7 +2033,7 @@ async fn stream_entry(
         status: resp.status().as_u16(),
         duration_us: started.elapsed().as_micros().min(u64::MAX as u128) as u64,
     };
-    let sample_data_plane = !control_plane && rand::random_ratio(1, 100);
+    let sample_data_plane = !control_plane && st.audit.should_sample();
     if control_plane {
         if let Err(error) = st.audit.record_durable(&audit_event).await {
             tracing::error!("durable control-plane audit failed: {error}");
@@ -1980,6 +2047,14 @@ async fn stream_entry(
                     header::RETRY_AFTER,
                     axum::http::HeaderValue::from_static("1"),
                 );
+                if st.should_meter(&audit_customer, &metered_name) {
+                    st.metrics.request(
+                        &audit_customer,
+                        &metered_name,
+                        response.status(),
+                        started.elapsed(),
+                    );
+                }
                 return hold_tenant_admission(response, tenant_guard, meter_egress);
             }
         }
@@ -1996,6 +2071,14 @@ async fn stream_entry(
             status = resp.status().as_u16(),
             duration_us = started.elapsed().as_micros() as u64,
             "request audit"
+        );
+    }
+    if st.should_meter(&audit_customer, &metered_name) {
+        st.metrics.request(
+            &audit_customer,
+            &metered_name,
+            resp.status(),
+            started.elapsed(),
         );
     }
     hold_tenant_admission(resp, tenant_guard, meter_egress)
@@ -3943,7 +4026,7 @@ async fn append(
     };
     match outcome {
         Ok(ack) => {
-            if !ack.duplicate {
+            if !ack.duplicate && state.should_meter(desc.owner(), &name) {
                 state.metrics.append(desc.owner(), &name, metric_bytes);
             }
             let status = if ack.duplicate || close_only || producer.is_none() {
@@ -4386,7 +4469,9 @@ async fn read(
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
             // a tail probe is billable work even when it returns no bytes
             // (run-1 finding: `offset=now` reads were invisible to billing).
-            state.metrics.read(desc.owner(), &name, 0);
+            if state.should_meter(desc.owner(), &name) {
+                state.metrics.read(desc.owner(), &name, 0);
+            }
             let mut r = Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .header("Stream-Next-Offset", tail_token(end))
@@ -4458,7 +4543,9 @@ async fn read(
         buf.freeze()
     };
 
-    state.metrics.read(desc.owner(), &name, body.len() as u64);
+    if state.should_meter(desc.owner(), &name) {
+        state.metrics.read(desc.owner(), &name, body.len() as u64);
+    }
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -5163,7 +5250,9 @@ async fn queue_entry(
         Ok(b) => b,
         Err(response) => return response,
     };
-    state.metrics.queue(desc.owner(), &stream);
+    if state.should_meter(desc.owner(), &stream) {
+        state.metrics.queue(desc.owner(), &stream);
+    }
 
     match verb {
         "receive" => {
@@ -5346,10 +5435,12 @@ pub async fn metrics_flusher(
     instance: String,
     lb_url: String,
     auth: String,
+    export_interval: Duration,
 ) {
     // Billing records go through the ROUTER like any tenant write (run-3
     // finding: local appends to a shared-namespace stream fence-fight the
-    // shard's ring owner). Lossy by design: failures log and drop.
+    // shard's ring owner). One drained, serialized interval remains pending
+    // with the same producer sequence until the append is acknowledged.
     let client = reqwest::Client::builder()
         .pool_idle_timeout(Duration::from_secs(4))
         .timeout(Duration::from_secs(10))
@@ -5358,12 +5449,30 @@ pub async fn metrics_flusher(
     let url = format!("{}/v1/stream/__metrics__", lb_url.trim_end_matches('/'));
     let mut created = false;
     let mut seq = 0u64;
-    let mut tick = tokio::time::interval(Duration::from_secs(15));
+    let process_id = format!(
+        "metrics-{}-{:032x}",
+        crate::crypto::hex(&crate::crypto::stream_hash(&instance)),
+        rand::random::<u128>()
+    );
+    let mut pending: Option<Vec<u8>> = None;
+    let mut tick = tokio::time::interval(export_interval);
     loop {
         tick.tick().await;
-        let drained = state.metrics.drain();
-        if drained.is_empty() {
-            continue;
+        if pending.is_none() {
+            let drained = state.metrics.drain();
+            if drained.is_empty() {
+                continue;
+            }
+            let record = json!([{
+                "ts_ms": now_ms(),
+                "instance": instance,
+                "process_id": process_id,
+                "seq": seq,
+                "interval_s": export_interval.as_secs(),
+                "streams": drained.streams,
+                "dropped_series": drained.dropped_series,
+            }]);
+            pending = Some(serde_json::to_vec(&record).expect("serialize metrics export"));
         }
         if !created {
             match client
@@ -5377,35 +5486,41 @@ pub async fn metrics_flusher(
                 Ok(r) if r.status().is_success() => created = true,
                 Ok(r) => {
                     tracing::warn!("metrics stream create via router: {}", r.status());
+                    state.metrics.record_export_result(false);
                     continue;
                 }
                 Err(e) => {
                     tracing::warn!("metrics stream create via router: {e}");
+                    state.metrics.record_export_result(false);
                     continue;
                 }
             }
         }
-        seq += 1;
-        let record = json!([{
-            "ts_ms": now_ms(),
-            "instance": instance,
-            "seq": seq,
-            "interval_s": 15,
-            "streams": drained.streams,
-            "dropped_series": drained.dropped_series,
-        }]);
         match client
             .post(&url)
             .header("authorization", format!("Bearer {auth}"))
             .header("stream-encryption-key", &metrics_key)
             .header("content-type", "application/json")
-            .json(&record)
+            .header("producer-id", &process_id)
+            .header("producer-epoch", "0")
+            .header("producer-seq", seq.to_string())
+            .body(pending.as_ref().expect("pending export").clone())
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => tracing::warn!("metrics append via router: {}", r.status()),
-            Err(e) => tracing::warn!("metrics append via router: {e}"),
+            Ok(r) if r.status().is_success() => {
+                state.metrics.record_export_result(true);
+                pending = None;
+                seq = seq.saturating_add(1);
+            }
+            Ok(r) => {
+                state.metrics.record_export_result(false);
+                tracing::warn!("metrics append via router: {}", r.status());
+            }
+            Err(e) => {
+                state.metrics.record_export_result(false);
+                tracing::warn!("metrics append via router: {e}");
+            }
         }
     }
 }

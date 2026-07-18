@@ -34,6 +34,8 @@ jobs:
           bash scripts/ci-backup-coordinator.sh
           bash scripts/ci-provider-failover.sh
           bash scripts/ci-at-rest-inspection.sh
+          bash scripts/ci-audit-mirror.sh
+          bash scripts/ci-billing-export.sh
           bash scripts/ci-history-envelope-migration.sh
           bash scripts/ci-operability-game-day.sh
           bash scripts/ci-primary-scrub.sh

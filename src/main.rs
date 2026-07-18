@@ -112,6 +112,54 @@ struct Args {
     #[arg(long, env = "REQUIRE_BACKUP", default_value_t = false)]
     require_backup: bool,
 
+    /// Independent incident/audit provider. Control events are acknowledged
+    /// only after immutable writes to both the primary ops store and this
+    /// mirror; sampled batches retry each side independently.
+    #[arg(long, env = "AUDIT_MIRROR_S3_ENDPOINT")]
+    audit_mirror_s3_endpoint: Option<String>,
+    #[arg(long, env = "AUDIT_MIRROR_S3_BUCKET")]
+    audit_mirror_s3_bucket: Option<String>,
+    #[arg(long, env = "AUDIT_MIRROR_S3_REGION", default_value = "us-east-1")]
+    audit_mirror_s3_region: String,
+    #[arg(long, env = "AUDIT_MIRROR_S3_ACCESS_KEY_ID")]
+    audit_mirror_s3_access_key_id: Option<String>,
+    #[arg(long, env = "AUDIT_MIRROR_S3_SECRET_ACCESS_KEY")]
+    audit_mirror_s3_secret_access_key: Option<String>,
+    #[arg(long, env = "AUDIT_MIRROR_PATH_PREFIX")]
+    audit_mirror_path_prefix: Option<String>,
+    #[arg(long, env = "AUDIT_MIRROR_S3_ALLOW_HTTP", default_value_t = false)]
+    audit_mirror_s3_allow_http: bool,
+    #[arg(long, env = "REQUIRE_AUDIT_MIRROR", default_value_t = false)]
+    require_audit_mirror: bool,
+    #[arg(long, env = "AUDIT_SAMPLE_DENOMINATOR", default_value_t = 100)]
+    audit_sample_denominator: u32,
+    #[arg(
+        long,
+        env = "AUDIT_PRIMARY_RETENTION_SECS",
+        default_value_t = 30 * 24 * 60 * 60
+    )]
+    audit_primary_retention_secs: u64,
+    #[arg(
+        long,
+        env = "AUDIT_MIRROR_RETENTION_SECS",
+        default_value_t = 365 * 24 * 60 * 60
+    )]
+    audit_mirror_retention_secs: u64,
+    #[arg(long, env = "AUDIT_MAINTENANCE_INTERVAL_SECS", default_value_t = 300)]
+    audit_maintenance_interval_secs: u64,
+    #[arg(
+        long,
+        env = "AUDIT_MAINTENANCE_OBJECTS_PER_INTERVAL",
+        default_value_t = 1_000
+    )]
+    audit_maintenance_objects_per_interval: usize,
+    #[arg(
+        long,
+        env = "AUDIT_MAINTENANCE_MAX_OBJECT_BYTES",
+        default_value_t = 8 * 1024 * 1024
+    )]
+    audit_maintenance_max_object_bytes: u64,
+
     #[arg(long, env = "SLATE_S3_REGION", default_value = "us-east-1")]
     region: String,
     #[arg(long, env = "SLATE_S3_ACCESS_KEY_ID", default_value = "test")]
@@ -292,6 +340,14 @@ struct Args {
     /// mode AUTH_TOKEN is used when this is unset.
     #[arg(long, env = "METRICS_AUTH_TOKEN")]
     metrics_auth_token: Option<String>,
+    /// Customer/sub claim of the scoped metrics service principal. Only this
+    /// exact customer's `__metrics__` stream is excluded from self-metering.
+    #[arg(long, env = "METRICS_CUSTOMER_ID")]
+    metrics_customer_id: Option<String>,
+    #[arg(long, env = "METRICS_EXPORT_INTERVAL_SECS", default_value_t = 15)]
+    metrics_export_interval_secs: u64,
+    #[arg(long, env = "REQUIRE_METRICS_EXPORT", default_value_t = false)]
+    require_metrics_export: bool,
 
     /// Instance tag recorded in metrics records.
     #[arg(long, env = "INSTANCE_NAME", default_value = "streams")]
@@ -621,6 +677,65 @@ impl Args {
         };
         Ok(Some(store))
     }
+
+    fn audit_mirror_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
+        let Some(endpoint) = &self.audit_mirror_s3_endpoint else {
+            anyhow::ensure!(
+                self.audit_mirror_s3_bucket.is_none()
+                    && self.audit_mirror_s3_access_key_id.is_none()
+                    && self.audit_mirror_s3_secret_access_key.is_none()
+                    && self.audit_mirror_path_prefix.is_none(),
+                "AUDIT_MIRROR_S3_ENDPOINT is required when any audit mirror setting is configured"
+            );
+            return Ok(None);
+        };
+        let bucket = self
+            .audit_mirror_s3_bucket
+            .as_deref()
+            .context("AUDIT_MIRROR_S3_BUCKET is required")?;
+        let access_key = self
+            .audit_mirror_s3_access_key_id
+            .as_deref()
+            .context("AUDIT_MIRROR_S3_ACCESS_KEY_ID is required")?;
+        let secret_key = self
+            .audit_mirror_s3_secret_access_key
+            .as_deref()
+            .context("AUDIT_MIRROR_S3_SECRET_ACCESS_KEY is required")?;
+        let ops_bucket = self.ops_bucket.as_deref().unwrap_or(&self.bucket);
+        anyhow::ensure!(
+            endpoint.trim_end_matches('/') != self.s3_endpoint.trim_end_matches('/')
+                || bucket != ops_bucket,
+            "audit mirror must not be the primary ops bucket"
+        );
+        anyhow::ensure!(
+            access_key != self.access_key_id,
+            "audit mirror must use credentials independent from the primary store"
+        );
+        let store = AmazonS3Builder::new()
+            .with_endpoint(endpoint)
+            .with_bucket_name(bucket)
+            .with_region(&self.audit_mirror_s3_region)
+            .with_access_key_id(access_key)
+            .with_secret_access_key(secret_key)
+            .with_allow_http(self.audit_mirror_s3_allow_http)
+            .with_conditional_put(S3ConditionalPut::ETagMatch)
+            .with_client_options(
+                object_store::ClientOptions::new()
+                    .with_allow_http(self.audit_mirror_s3_allow_http)
+                    .with_timeout(Duration::from_millis(self.s3_request_timeout_ms))
+                    .with_pool_idle_timeout(Duration::from_secs(4)),
+            )
+            .build()
+            .context("build audit mirror object store")?;
+        let store: Arc<dyn ObjectStore> = match &self.audit_mirror_path_prefix {
+            Some(prefix) => Arc::new(object_store::prefix::PrefixStore::new(
+                store,
+                prefix.as_str(),
+            )),
+            None => Arc::new(store),
+        };
+        Ok(Some(store))
+    }
 }
 
 fn shard_settings(args: &Args) -> Settings {
@@ -881,14 +996,65 @@ async fn async_main() -> anyhow::Result<()> {
     {
         anyhow::bail!("the internal metrics flusher requires METRICS_AUTH_TOKEN in JWKS mode");
     }
+    anyhow::ensure!(
+        matches!(
+            (
+                &args.metrics_key,
+                &args.metrics_lb_url,
+                &args.metrics_customer_id
+            ),
+            (Some(_), Some(_), Some(_)) | (None, None, None)
+        ),
+        "METRICS_KEY, METRICS_LB_URL, and METRICS_CUSTOMER_ID must be configured together"
+    );
+    if let Some(customer) = &args.metrics_customer_id {
+        anyhow::ensure!(
+            !customer.is_empty()
+                && customer.len() <= 128
+                && customer.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                }),
+            "METRICS_CUSTOMER_ID is not a bounded customer identifier"
+        );
+    }
+    anyhow::ensure!(
+        (1..=3_600).contains(&args.metrics_export_interval_secs),
+        "METRICS_EXPORT_INTERVAL_SECS must be between 1 and 3600"
+    );
+    if args.require_metrics_export && args.metrics_key.is_none() {
+        anyhow::bail!("REQUIRE_METRICS_EXPORT=true but metrics export is not configured");
+    }
 
     let ops_store = args.store_for(&args.ops_bucket)?;
     let shard_store = args.store_for(&args.shard_bucket)?;
     let data_store = args.store_for(&args.data_bucket)?;
     let backup_store = args.backup_store()?;
+    let audit_mirror = args.audit_mirror_store()?;
     if args.require_backup && backup_store.is_none() {
         anyhow::bail!("REQUIRE_BACKUP=true but BACKUP_S3_ENDPOINT is not configured");
     }
+    if args.require_audit_mirror && audit_mirror.is_none() {
+        anyhow::bail!("REQUIRE_AUDIT_MIRROR=true but AUDIT_MIRROR_S3_ENDPOINT is not configured");
+    }
+    anyhow::ensure!(
+        (1..=1_000_000).contains(&args.audit_sample_denominator),
+        "AUDIT_SAMPLE_DENOMINATOR must be between 1 and 1000000"
+    );
+    anyhow::ensure!(
+        (24 * 60 * 60..=365 * 24 * 60 * 60).contains(&args.audit_primary_retention_secs),
+        "AUDIT_PRIMARY_RETENTION_SECS must be between one day and one year"
+    );
+    anyhow::ensure!(
+        args.audit_mirror_retention_secs >= args.audit_primary_retention_secs
+            && args.audit_mirror_retention_secs <= 7 * 365 * 24 * 60 * 60,
+        "AUDIT_MIRROR_RETENTION_SECS must cover primary retention and be at most seven years"
+    );
+    anyhow::ensure!(
+        (60..=24 * 60 * 60).contains(&args.audit_maintenance_interval_secs)
+            && (1..=100_000).contains(&args.audit_maintenance_objects_per_interval)
+            && (64 * 1024..=64 * 1024 * 1024).contains(&args.audit_maintenance_max_object_bytes),
+        "audit maintenance interval, object count, or object size bound is invalid"
+    );
     if backup_store.is_some() {
         anyhow::ensure!(
             crate::fleet::valid_instance_name(&args.instance_name),
@@ -993,7 +1159,19 @@ async fn async_main() -> anyhow::Result<()> {
 
     let keys = Arc::new(KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());
-    let audit = crate::audit::AuditLog::start(ops_store.clone(), &args.instance_name);
+    let audit = crate::audit::AuditLog::start_with_config(
+        ops_store.clone(),
+        &args.instance_name,
+        crate::audit::AuditConfig {
+            mirror: audit_mirror,
+            sample_denominator: args.audit_sample_denominator,
+            primary_retention: Duration::from_secs(args.audit_primary_retention_secs),
+            mirror_retention: Duration::from_secs(args.audit_mirror_retention_secs),
+            maintenance_interval: Duration::from_secs(args.audit_maintenance_interval_secs),
+            maintenance_objects_per_interval: args.audit_maintenance_objects_per_interval,
+            maintenance_max_object_bytes: args.audit_maintenance_max_object_bytes,
+        },
+    );
 
     // Shards open lazily on first routed request (COMPUTE-SPEC §5.1):
     // opening fences the previous owner, so ownership follows routing.
@@ -1156,6 +1334,10 @@ async fn async_main() -> anyhow::Result<()> {
         authn,
         auth_token: args.auth_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
+        metrics_identity: args
+            .metrics_customer_id
+            .clone()
+            .map(|customer| (customer, "__metrics__".to_string())),
         telemetry: Arc::new(crate::telemetry::Telemetry::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
@@ -1188,24 +1370,19 @@ async fn async_main() -> anyhow::Result<()> {
         },
     );
     start_topology_watcher(state.clone(), ops_store.clone());
-    match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
-        (Some(mk), Some(lb)) => {
-            let st = state.clone();
-            let instance = args.instance_name.clone();
-            let metrics_auth = args
-                .metrics_auth_token
-                .clone()
-                .or_else(|| args.auth_token.clone())
-                .unwrap_or_default();
-            tokio::spawn(async move {
-                crate::http::metrics_flusher(st, mk, instance, lb, metrics_auth).await;
-            });
-        }
-        (Some(_), None) => tracing::warn!(
-            "METRICS_KEY set without METRICS_LB_URL; metrics stream disabled \
-             (billing appends must go through the router)"
-        ),
-        _ => {}
+    if let (Some(mk), Some(lb)) = (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
+        state.metrics.configure_export();
+        let st = state.clone();
+        let instance = args.instance_name.clone();
+        let export_interval = Duration::from_secs(args.metrics_export_interval_secs);
+        let metrics_auth = args
+            .metrics_auth_token
+            .clone()
+            .or_else(|| args.auth_token.clone())
+            .unwrap_or_default();
+        tokio::spawn(async move {
+            crate::http::metrics_flusher(st, mk, instance, lb, metrics_auth, export_interval).await;
+        });
     }
     if let Some(fleet_store) = args.fleet_store()? {
         {

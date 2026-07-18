@@ -48,6 +48,50 @@
           }
         },
         {
+          "alert": "StreamsAuditMirrorMissing",
+          "expr": "streams_audit_mirror_configured == 0",
+          "for": "2m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Independent audit mirroring is not configured",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsBillingExportMissing",
+          "expr": "streams_billing_export_configured == 0",
+          "for": "2m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Encrypted billing export is not configured",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsBillingExportUnhealthy",
+          "expr": "streams_billing_export_healthy == 0 and on(job, instance) streams_billing_export_configured == 1",
+          "for": "2m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Retry-stable billing export cannot reach its stream",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
+          "alert": "StreamsBillingSeriesDropped",
+          "expr": "increase(streams_billing_dropped_series_total[5m]) > 0",
+          "for": "0m",
+          "labels": { "severity": "page" },
+          "annotations": {
+            "summary": "Billing series exceeded the bounded cardinality envelope",
+            "blast_radius": "cell={{ $labels.cell }} instance={{ $labels.instance }}",
+            "runbook": "RUNBOOK.md#8-monitoring"
+          }
+        },
+        {
           "alert": "StreamsAppendAvailabilityFastBurn",
           "expr": "sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class=\"5xx\"}[5m])) / clamp_min(sum by(cell) (rate(streams_http_requests_total{operation=\"append\",status_class!=\"429\"}[5m])), 0.001) > 0.0072",
           "for": "5m",

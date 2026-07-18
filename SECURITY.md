@@ -50,4 +50,8 @@ without the dual reader is not a rollback target after the first v2 block.
 
 Control metadata, offsets, timestamps, and routing keys are not confidential.
 Tenant payloads and root keys are. Customers must not place secrets in routing
-keys, stream names, or other documented metadata fields.
+keys, stream names, or other documented metadata fields. Audit records contain
+customer, stream, token-id, method, status, and latency metadata and therefore
+require an independently credentialed restricted bucket with provider-side
+encryption, retention/object-lock policy, and audited export access. They never
+contain customer stream keys and are not encrypted with those keys.

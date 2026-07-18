@@ -16,8 +16,12 @@ if not isinstance(groups, list) or not groups:
 allowed_metrics = {
     "streams_admission_shed_total",
     "streams_audit_dropped_total",
+    "streams_audit_mirror_configured",
     "streams_backup_component_ready",
     "streams_backup_configured",
+    "streams_billing_dropped_series_total",
+    "streams_billing_export_configured",
+    "streams_billing_export_healthy",
     "streams_component_ready",
     "streams_http_requests_total",
     "streams_process_resident_memory_bytes",
@@ -58,7 +62,11 @@ required = {
     "StreamsComponentUnready",
     "StreamsBackupUnhealthy",
     "StreamsAuditDropped",
+    "StreamsAuditMirrorMissing",
     "StreamsAppendAvailabilityFastBurn",
+    "StreamsBillingExportMissing",
+    "StreamsBillingExportUnhealthy",
+    "StreamsBillingSeriesDropped",
     "StreamsDurableAckLatency",
 }
 missing = required - names
