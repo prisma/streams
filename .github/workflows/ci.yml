@@ -23,6 +23,8 @@ jobs:
         run: cargo check --all-targets
       - name: Validate operational alert policy
         run: python3 scripts/ci-alert-rules.py ops/prometheus-alerts.json
+      - name: Validate aggregate AWS release gate
+        run: python3 scripts/ci-aws-release-gate.py
       - name: Dependency advisories, licenses, bans, and sources
         run: |
           cargo install cargo-deny --version 0.20.2 --locked

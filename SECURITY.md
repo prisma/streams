@@ -21,6 +21,14 @@ first-party primary/recovery payload-and-key leakage control. They do not replac
 the independent encryption-envelope review required by
 `AWS-QUALITY-GATE.md`.
 
+`scripts/judge-aws-release.py` requires the review, at-rest, IAM, failover,
+mixed-version, soak, audit/billing, and notification evidence to share one
+immutable release ID and verifies every declared artifact SHA-256. The
+manifest and external attestations must be generated and retained by an
+access-controlled immutable release system: the offline judge detects packet
+tampering and inconsistency, but does not authenticate human identities by
+their JSON names alone.
+
 ## Audited RustSec exceptions
 
 The exact exceptions live in `deny.toml`; each is narrow and must be reviewed
