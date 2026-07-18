@@ -7,12 +7,18 @@
 //! durable cursor prevents failover from starving the high end of a cell.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::Range;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
+use futures_util::stream::BoxStream;
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, UpdateVersion,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use slatedb::admin::AdminBuilder;
@@ -103,7 +109,150 @@ struct HistoryBaseline {
     sha256: String,
     #[serde(default)]
     source_etag: Option<String>,
+    /// The keyed writer reopened and logically decoded this object before
+    /// making its absorbed frontier authoritative. Pre-publication baselines
+    /// are already sufficient for keyless byte-integrity checks, but this
+    /// monotonic bit preserves the stronger writer validation without an
+    /// O(history) rescan on every absorb.
+    #[serde(default)]
+    logical_verified: bool,
     created_ms: i64,
+}
+
+/// History-only object-store wrapper that establishes the immutable digest
+/// before a compacted SST becomes visible. The wrapper is constructed only by
+/// the keyed history writer, after its block transformer has encoded the
+/// payload. Publishing the baseline first makes every crash point safe:
+/// baseline-only and baseline+unreferenced-SST are harmless orphans, while a
+/// manifest can never reference an SST that predates its baseline.
+#[derive(Debug)]
+pub struct HistoryIntegrityStore {
+    inner: Arc<dyn ObjectStore>,
+    baseline_store: Arc<dyn ObjectStore>,
+    compacted_prefix: String,
+    max_object_bytes: u64,
+}
+
+impl HistoryIntegrityStore {
+    pub fn new(
+        inner: Arc<dyn ObjectStore>,
+        baseline_store: Arc<dyn ObjectStore>,
+        database_path: &str,
+        max_object_bytes: u64,
+    ) -> Self {
+        Self {
+            inner,
+            baseline_store,
+            compacted_prefix: format!("{database_path}/compacted/"),
+            max_object_bytes,
+        }
+    }
+
+    fn is_history_sst(&self, path: &ObjPath) -> bool {
+        path.as_ref().starts_with(&self.compacted_prefix)
+            && path.as_ref().ends_with(".sst")
+            && !path.as_ref()[self.compacted_prefix.len()..].contains('/')
+    }
+}
+
+impl std::fmt::Display for HistoryIntegrityStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HistoryIntegrityStore({})", self.inner)
+    }
+}
+
+fn history_integrity_store_error(message: impl Into<String>) -> object_store::Error {
+    object_store::Error::Generic {
+        store: "history-integrity",
+        source: message.into().into(),
+    }
+}
+
+#[async_trait]
+impl ObjectStore for HistoryIntegrityStore {
+    async fn put_opts(
+        &self,
+        location: &ObjPath,
+        payload: PutPayload,
+        options: PutOptions,
+    ) -> object_store::Result<PutResult> {
+        if self.is_history_sst(location) {
+            prepare_history_payload_baseline(
+                self.baseline_store.clone(),
+                location.as_ref(),
+                &payload,
+                self.max_object_bytes,
+            )
+            .await
+            .map_err(|error| history_integrity_store_error(error.to_string()))?;
+        }
+        self.inner.put_opts(location, payload, options).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjPath,
+        options: PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn MultipartUpload>> {
+        if self.is_history_sst(location) {
+            return Err(object_store::Error::NotSupported {
+                source: "history SST multipart uploads cannot publish an atomic integrity baseline"
+                    .into(),
+            });
+        }
+        self.inner.put_multipart_opts(location, options).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjPath,
+        options: GetOptions,
+    ) -> object_store::Result<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &ObjPath,
+        ranges: &[Range<u64>],
+    ) -> object_store::Result<Vec<Bytes>> {
+        self.inner.get_ranges(location, ranges).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, object_store::Result<ObjPath>>,
+    ) -> BoxStream<'static, object_store::Result<ObjPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjPath>,
+    ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjPath>,
+    ) -> object_store::Result<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjPath,
+        to: &ObjPath,
+        options: CopyOptions,
+    ) -> object_store::Result<()> {
+        if self.is_history_sst(to) {
+            return Err(object_store::Error::NotSupported {
+                source: "history SST copies cannot bypass the keyed integrity writer".into(),
+            });
+        }
+        self.inner.copy_opts(from, to, options).await
+    }
 }
 
 pub async fn scrub_batch(
@@ -519,9 +668,48 @@ async fn verify_compacted(
     Ok(())
 }
 
-/// Establish immutable whole-object digests for newly written customer-key
+/// Establish a create-only digest before the keyed history writer publishes a
+/// compacted SST. This is called from `HistoryIntegrityStore::put_opts` on the
+/// exact transformed payload, before the underlying object PUT. An existing
+/// baseline must describe identical bytes, so retries are idempotent while an
+/// attempted immutable-path rewrite fails before changing primary data.
+async fn prepare_history_payload_baseline(
+    baseline_store: Arc<dyn ObjectStore>,
+    source_path: &str,
+    payload: &PutPayload,
+    max_object_bytes: u64,
+) -> anyhow::Result<()> {
+    let size = payload.content_length() as u64;
+    anyhow::ensure!(
+        size > 0 && size <= max_object_bytes,
+        "history SST size is outside the integrity bound"
+    );
+    let mut digest = Sha256::new();
+    for chunk in payload {
+        digest.update(chunk);
+    }
+    create_history_baseline(
+        baseline_store,
+        HistoryBaseline {
+            format_version: HISTORY_BASELINE_FORMAT_VERSION,
+            source_path: source_path.to_string(),
+            size,
+            sha256: crate::crypto::hex(&digest.finalize()),
+            // The object is intentionally not visible yet. Its digest is the
+            // immutable identity; a later scrub validates the stored body.
+            source_etag: None,
+            logical_verified: false,
+            created_ms: crate::backup::wall_time_ms(),
+        },
+    )
+    .await
+}
+
+/// Reconcile immutable whole-object digests for newly written customer-key
 /// encrypted history SSTs. The writer still has the customer key here, so a
-/// new object is logically decoded before its create-only baseline is trusted.
+/// newly discovered legacy/unwrapped object is logically decoded before its
+/// create-only baseline is trusted. Normal writes already have their exact
+/// baseline from the pre-publication wrapper above.
 pub async fn record_history_baselines(
     baseline_store: Arc<dyn ObjectStore>,
     data_store: Arc<dyn ObjectStore>,
@@ -554,6 +742,27 @@ pub async fn record_history_baselines(
         match read_history_baseline(baseline_store.clone(), &source_path).await? {
             Some(existing) => {
                 validate_history_baseline(&existing, &source_path, size, &sha256)?;
+                // Baselines written before this field existed always carried
+                // the post-PUT ETag and were established only after logical
+                // decoding, so that is the backward-compatible proof.
+                if !existing.logical_verified && existing.source_etag.is_none() {
+                    verify_compacted(
+                        &root,
+                        store,
+                        &handle,
+                        max_object_bytes,
+                        Some(transformer.clone()),
+                    )
+                    .await?;
+                    finalize_history_baseline(
+                        baseline_store.clone(),
+                        &source_path,
+                        size,
+                        &sha256,
+                        source_etag,
+                    )
+                    .await?;
+                }
             }
             None => {
                 verify_compacted(
@@ -572,6 +781,7 @@ pub async fn record_history_baselines(
                         size,
                         sha256,
                         source_etag,
+                        logical_verified: true,
                         created_ms: crate::backup::wall_time_ms(),
                     },
                 )
@@ -678,6 +888,53 @@ async fn create_history_baseline(
     }
 }
 
+async fn finalize_history_baseline(
+    store: Arc<dyn ObjectStore>,
+    source_path: &str,
+    size: u64,
+    sha256: &str,
+    source_etag: Option<String>,
+) -> anyhow::Result<()> {
+    let path = history_baseline_path(source_path);
+    for _ in 0..5 {
+        let result = store.get(&path).await?;
+        anyhow::ensure!(
+            result.meta.size <= MAX_HISTORY_BASELINE_BYTES as u64,
+            "history integrity baseline is too large"
+        );
+        let version = UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let raw = result.bytes().await?;
+        let mut baseline: HistoryBaseline = serde_json::from_slice(&raw)?;
+        validate_history_baseline(&baseline, source_path, size, sha256)?;
+        if baseline.logical_verified || baseline.source_etag.is_some() {
+            return Ok(());
+        }
+        baseline.logical_verified = true;
+        baseline.source_etag = source_etag.clone();
+        let encoded = serde_json::to_vec(&baseline)?;
+        anyhow::ensure!(
+            encoded.len() <= MAX_HISTORY_BASELINE_BYTES,
+            "history integrity baseline is too large"
+        );
+        match store
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded)),
+                PutOptions::from(PutMode::Update(version)),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("history baseline finalization CAS retries exhausted")
+}
+
 fn validate_history_baseline(
     baseline: &HistoryBaseline,
     source_path: &str,
@@ -704,7 +961,7 @@ fn validate_history_baseline(
     Ok(())
 }
 
-fn history_baseline_path(source_path: &str) -> ObjPath {
+pub(crate) fn history_baseline_path(source_path: &str) -> ObjPath {
     let digest = Sha256::digest(format!("history\0{source_path}"));
     ObjPath::from(format!(
         "integrity/history/{}.json",
@@ -1074,6 +1331,32 @@ mod tests {
             .unwrap();
         assert!(verify_work(&unit, &config).await.is_err());
         db.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_writer_baseline_precedes_and_fences_immutable_sst_put() {
+        let integrity: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let data: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let writer =
+            HistoryIntegrityStore::new(data.clone(), integrity.clone(), "streams/history-a", 1024);
+        let path = ObjPath::from("streams/history-a/compacted/one.sst");
+        writer
+            .put(&path, PutPayload::from_static(b"encrypted-sst"))
+            .await
+            .unwrap();
+        verify_history_baseline(path.as_ref(), data.clone(), integrity.clone(), 1024)
+            .await
+            .unwrap();
+
+        let error = writer
+            .put(&path, PutPayload::from_static(b"changed-sst"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("writer-verified baseline"));
+        assert_eq!(
+            data.get(&path).await.unwrap().bytes().await.unwrap(),
+            Bytes::from_static(b"encrypted-sst")
+        );
     }
 
     #[tokio::test]

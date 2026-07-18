@@ -22,6 +22,7 @@ One crate, several binaries (`cargo build --release` builds them all):
 | `streams-keys` | generates stream encryption keys (32-byte base64) |
 | `streams-restore` | validates and restores a complete recovery snapshot into empty, offline object-store targets |
 | `streams-registry-restore` | restartably merges one cell point's exact registry closure into an offline global registry target; conflicting bytes fail closed |
+| `streams-cell-move` | break-glass, restartable encrypted stream transfer between two physical cells; installs a durable source fence before one descriptor cutover CAS |
 | `streams-provider-check` | destructive unique-prefix probe for conditional, consistency, ordered/exclusive cursor listing, range, multipart, copy, and delete semantics required from each recovery/audit provider |
 | `streams-at-rest-check` | exact-ETag stable-corpus scan for operator-supplied forbidden payload/key byte patterns; emits aggregate evidence without echoing secrets |
 | `streams-shard-admin` | fail-closed offline metadata-only shard split; publishes topology only after both projection clones exist |
@@ -96,8 +97,9 @@ environment on every deploy** — see the §8.3 trap.
 | `REGISTRY_S3_ACCESS_KEY_ID` / `REGISTRY_S3_SECRET_ACCESS_KEY` | — | required and must use an access-key id distinct from the cell data principal |
 | `REGISTRY_PATH_PREFIX` | — | required, non-empty, and outside `cells/`; never reuse a cell-local prefix |
 | `REGISTRY_S3_ALLOW_HTTP` | false | test-only escape hatch |
+| `FLEET_PREFIX` | — | required operationally for online moves; use a descendant such as `cells/<id>/fleet-coordination` so the mover can prove every live member advertises the move-fence protocol |
 
-The descriptor's immutable `cell` decides all existing operations. A request
+The descriptor's authoritative `cell` decides all existing operations. A request
 at another cell returns 409 with `Streams-Replay-To-Cell` before shard/key work.
 New placement uses the last-known-good directory and durable customer affinity;
 draining/frozen or zero-weight cells receive no new streams but continue serving
@@ -191,11 +193,14 @@ referenced shard SST block/index/statistics record, and every live WAL found
 either in the manifest interval or above its replay watermark in object
 storage. This latter union includes acknowledged WALs whose next ID has not yet
 reached a remote manifest. History blocks use customer-held keys, which the
-background actor deliberately does not retain. The absorber therefore
-logically decodes each newly written history SST while it has the request key,
-then creates an immutable whole-ciphertext SHA-256 baseline under
-`integrity/history/`; later sweeps compare primary bytes to that baseline. A
-missing baseline fails closed. Any primary failure clears snapshot health, and
+background actor deliberately does not retain. The keyed history-store wrapper
+therefore create-only publishes the exact transformed SST payload's SHA-256
+baseline under `integrity/history/` before the SST PUT. Only then can SlateDB
+publish a manifest that references it. The absorber logically decodes the new
+SST and monotonically marks that verification before advancing the absorbed
+frontier; a crash earlier leaves the hot range authoritative and only harmless
+baseline/SST orphans. Later keyless sweeps compare primary bytes to that
+baseline. A missing or conflicting baseline fails closed. Any primary failure clears snapshot health, and
 repair must finish a primary sweep and publish a fresh recovery point before
 readiness returns. `scripts/ci-primary-scrub.sh` corrupts same-length shard and
 encrypted-history SSTs and proves this red-to-repaired transition.
@@ -998,6 +1003,65 @@ secret-free artifact shape. A short or local run is not release evidence.
   `__legacy__` owners and any directory with more than the target cell. Do not
   add a second cell until the post-audit reports zero pending placements and
   indices and the first cell has produced/dark-restored a recovery point.
+- **Cross-cell stream move:** use only the break-glass mover identity, never a
+  serving-cell principal. The target must be active with placement weight and
+  the customer's durable affinity must still have room below four cells. Keep
+  one stable operation id for every retry:
+
+  ```bash
+  streams-cell-move \
+    --customer-id "$CUSTOMER_ID" --stream "$STREAM" \
+    --source-cell "$SOURCE_CELL" --target-cell "$TARGET_CELL" \
+    --operation-id "$OPERATION_ID" \
+    --registry-endpoint "$REGISTRY_S3_ENDPOINT" \
+    --registry-bucket "$REGISTRY_S3_BUCKET" \
+    --registry-access-key-id "$REGISTRY_S3_ACCESS_KEY_ID" \
+    --registry-secret-access-key "$REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --registry-prefix "$REGISTRY_PATH_PREFIX" \
+    --source-endpoint "$SOURCE_S3_ENDPOINT" --source-bucket "$SOURCE_S3_BUCKET" \
+    --source-access-key-id "$SOURCE_S3_ACCESS_KEY_ID" \
+    --source-secret-access-key "$SOURCE_S3_SECRET_ACCESS_KEY" \
+    --source-prefix "cells/$SOURCE_CELL" \
+    --source-fleet-prefix "$SOURCE_FLEET_PREFIX" \
+    --target-endpoint "$TARGET_S3_ENDPOINT" --target-bucket "$TARGET_S3_BUCKET" \
+    --target-access-key-id "$TARGET_S3_ACCESS_KEY_ID" \
+    --target-secret-access-key "$TARGET_S3_SECRET_ACCESS_KEY" \
+    --target-prefix "cells/$TARGET_CELL" \
+    --target-fleet-prefix "$TARGET_FLEET_PREFIX" \
+    --confirm-target-stream-replaceable
+  ```
+
+  Freeze serving deploys and instance-count changes in both cells for the
+  command window. Before touching the registry, and again immediately before
+  cutover, the mover requires fresh, non-draining aggregate heartbeats from
+  both fleet prefixes and requires every member to advertise the current
+  `cell_move_protocol`. An N-1 binary that predates the fence either publishes
+  no capability or strips it while aggregating, so mixed-version moves fail
+  closed. Wake a scale-to-zero target and wait for fresh fleet readiness first.
+  A retry that observes the matching completed operation deliberately needs no
+  live fleet because it performs no mutation.
+
+  The registry first records `cell_move.state=preparing` while source remains
+  authoritative. The mover opens (and therefore writer-fences) both physical
+  shards, writes one remote-durable fence per total/per-key storage hash in the
+  source, replaces only those non-authoritative target key ranges, and verifies
+  an exact count/byte/SHA-256 digest. It copies checkpointed encrypted history
+  SSTs and their writer-verified integrity baselines as opaque bytes; it never
+  receives the customer key. The descriptor CAS to target is the sole serving
+  visibility point and retains `state=completed` plus the operation id, so a
+  retry after a lost response cannot clear the now-authoritative target.
+  Immediately before that CAS, the mover rewrites the source fence durably;
+  failure proves another writer epoch intervened and leaves the stream safely
+  preparing for a retry.
+
+  A crash before cutover leaves the descriptor preparing and the stream safely
+  unavailable; rerun the same operation id. A crash after cutover resolves as
+  already completed. Other streams sharing either physical shard can see brief
+  503s while its writer is fenced. The former cell's fenced key range/history
+  are deliberately retained for rollback. Its history DB leaves active
+  backup/scrub enumeration immediately; the raw range remains inside the
+  shared fenced shard until retention-qualified reclamation, which is still an
+  operator follow-up before high-volume rebalancing.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 

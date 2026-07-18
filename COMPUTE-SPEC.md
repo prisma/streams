@@ -421,8 +421,20 @@ coordination state, ever.
   a live descriptor cannot be published without its owning-cell marker.
 - Routers resolve stream → cell from the registry descriptor (cached with
   the descriptor); in-cell routing is R1/R2 unchanged. Cross-cell stream
-  moves exist only as an operator migration (copy-then-cutover via
-  fencing) — never automatic. Before the fleet reaches tens of cells,
+  moves are operator-only and restartable, never automatic. The descriptor
+  first enters `preparing` while source remains authoritative; the mover fences
+  the source shard writer, persists a per-storage-hash source tombstone, copies
+  the exact raw encrypted shard ranges plus checkpointed encrypted history and
+  integrity baselines, verifies the target, and only then CASes `cell` to the
+  target. A retained completed operation id makes the final response
+  idempotent. The actor requires fresh source and target `fleet.json` views
+  before preparing and again before cutover; every non-draining heartbeat must
+  advertise `cell_move_protocol >= 1`. A pre-protocol binary cannot advertise
+  it, and an old aggregate writer strips it, so rolling-version skew fails
+  closed. Deploys and scaling are frozen for the bounded move window, and the
+  final source-fence rewrite proves the mover still owns the writer epoch. No
+  customer key crosses the cell boundary. Before the fleet
+  reaches tens of cells,
   the migration tooling and rebalancing policy ship: a cell saturating at
   max=64 instances stops taking new-stream placement (weight→0 in
   cells.json) and its hottest movable tenants are queued for migration;
@@ -574,9 +586,11 @@ The coordinator also owns a bounded live-primary integrity sweep. It decodes
 the latest manifest and every referenced shard SST/WAL through SlateDB's
 checksummed reader, unioning the manifest WAL range with listed WAL IDs above
 the replay watermark so newly acknowledged WALs are not skipped. Customer-key
-encrypted history SSTs are logically verified by the absorber at creation;
-the absorber then creates an immutable ciphertext SHA-256 baseline in ops, and
-the keyless background sweep compares against that baseline. Readiness stays
+encrypted history SSTs pass through a keyed writer wrapper that create-only
+publishes the exact transformed payload's SHA-256 baseline in ops before the
+SST can become visible. The absorber then logically verifies it and records a
+monotonic verification before advancing the hot-tier frontier; the keyless
+background sweep compares against that baseline. Readiness stays
 red until a complete cursor sweep after startup/takeover. A detected primary
 failure invalidates snapshot health, so repair requires a completed sweep and
 a fresh marker-last recovery point before the cell can become ready again.

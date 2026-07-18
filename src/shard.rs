@@ -1059,6 +1059,13 @@ impl ShardEngine {
         &self,
         hash: StorageHash,
     ) -> Result<Arc<StreamHandle>, slatedb::Error> {
+        if let Some(raw) = self.db.get(crate::cell_move_fence::key(&hash)).await? {
+            let fence = crate::cell_move_fence::decode(&raw).map_err(slatedb::Error::data)?;
+            return Err(slatedb::Error::unavailable(format!(
+                "stream moved to cell {} by operation {}",
+                fence.target_cell, fence.operation_id
+            )));
+        }
         if let Some(handle) = self.streams.lock().unwrap().get(&hash) {
             return Ok(handle);
         }
@@ -2487,6 +2494,36 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn durable_cell_move_fence_rejects_a_reopened_stream() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let hash = [9u8; 32];
+        let db = Db::builder("cell-move-fence", store).build().await.unwrap();
+        db.put(
+            crate::cell_move_fence::key(&hash),
+            crate::cell_move_fence::encode(&"ab".repeat(16), "cell-b").unwrap(),
+        )
+        .await
+        .unwrap();
+        let (absorb_tx, _absorb_rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            String::new(),
+            Arc::new(db),
+            ShardConfig::default(),
+            absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
+            None,
+            None,
+        );
+        let error = match engine.stream_handle(hash).await {
+            Ok(_) => panic!("durably moved stream must not reopen"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), slatedb::ErrorKind::Unavailable);
+        assert!(error.to_string().contains("cell-b"));
     }
 
     #[tokio::test]

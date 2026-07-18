@@ -64,6 +64,11 @@ pub struct ShardActivity {
 pub struct Heartbeat {
     pub instance: String,
     pub ts_ms: i64,
+    /// Online cross-cell move safety protocol. Old binaries deserialize this
+    /// as absent and republish no capability, so the mover can reject a mixed
+    /// fleet before changing a descriptor or copying data.
+    #[serde(default)]
+    pub cell_move_protocol: u32,
     pub rps: f64,
     /// p50 of commit durable-wait over the last 15 s across owned shards
     /// (ms). The latency dimension of the load vector (§4.2): rps alone
@@ -152,6 +157,7 @@ fn valid_prefix(prefix: &str) -> bool {
 fn heartbeat_shape_is_valid(heartbeat: &Heartbeat, expected_instance: &str) -> bool {
     if heartbeat.instance != expected_instance
         || !valid_instance_name(&heartbeat.instance)
+        || heartbeat.cell_move_protocol > 1_000_000
         || heartbeat.owned_shards.len() > MAX_SHARDS_PER_HEARTBEAT
         || heartbeat.shard_activity.len() > MAX_SHARDS_PER_HEARTBEAT
         || !heartbeat.rps.is_finite()
@@ -688,6 +694,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let hb = Heartbeat {
                 instance: cfg.instance.clone(),
                 ts_ms: now_ms(),
+                cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
                 rps: (ewma_rps * 10.0).round() / 10.0,
                 ack_p50_ms,
                 cpu_pct: (ewma_cpu * 10.0).round() / 10.0,
@@ -1042,6 +1049,7 @@ mod tests {
         Heartbeat {
             instance: instance.to_string(),
             ts_ms: now_ms(),
+            cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
             rps: 1.0,
             ack_p50_ms: 2.0,
             cpu_pct: 3.0,

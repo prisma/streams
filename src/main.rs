@@ -1,5 +1,6 @@
 mod audit;
 mod auth;
+mod cell_move_fence;
 mod fleet;
 mod history;
 mod http;

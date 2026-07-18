@@ -28,7 +28,7 @@ jobs:
         run: cargo test --release
       - name: Smoke (restart safety and recovery against s3lite)
         run: |
-          cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-registry-restore --bin streams-provider-check --bin streams-at-rest-check --bin streams-shard-admin --bin streams-cell-admin --bin bench
+          cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-registry-restore --bin streams-provider-check --bin streams-at-rest-check --bin streams-shard-admin --bin streams-cell-admin --bin streams-cell-move --bin bench
           bash scripts/ci-smoke.sh
           bash scripts/ci-absorber-recovery.sh
           bash scripts/ci-multicell-placement.sh

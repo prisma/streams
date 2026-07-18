@@ -683,7 +683,14 @@ impl Absorber {
             self.cfg.history_block_write_format,
         ));
         let path = history_db_path(hash);
-        let db = Db::builder(path.as_str(), self.data_store.clone())
+        let write_store: Arc<dyn ObjectStore> =
+            Arc::new(streams_slate::primary_scrub::HistoryIntegrityStore::new(
+                self.data_store.clone(),
+                self.integrity_store.clone(),
+                &path,
+                self.cfg.integrity_max_object_bytes,
+            ));
+        let db = Db::builder(path.as_str(), write_store)
             .with_settings(history_settings())
             .with_db_cache(history_cache())
             .with_block_transformer(transformer.clone())

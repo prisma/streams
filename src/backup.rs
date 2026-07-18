@@ -2872,13 +2872,18 @@ async fn restore_snapshot_filtered(
     );
     validate_snapshot_layout(&report)?;
     if let Some(selected) = roles {
+        let mut declared = 0usize;
         for role in selected {
             validate_role(role)?;
-            anyhow::ensure!(
-                report.roles.contains(role),
-                "snapshot does not declare selected restore role {role}"
-            );
+            declared += usize::from(report.roles.contains(role));
         }
+        // Physical role buckets may be shared. Snapshot construction records
+        // the preferred role once (shard before ops/data), while callers name
+        // every semantic cell-local role they are willing to restore.
+        anyhow::ensure!(
+            declared > 0,
+            "snapshot declares none of the selected restore roles"
+        );
     }
 
     // Restore is deliberately fail-closed rather than merging a snapshot with
@@ -3169,7 +3174,7 @@ pub async fn merge_registry_snapshot(
     Ok(merged)
 }
 
-async fn copy_stream(
+pub(crate) async fn copy_stream(
     mut stream: futures_util::stream::BoxStream<'static, object_store::Result<Bytes>>,
     destination: Arc<dyn ObjectStore>,
     target: &ObjPath,

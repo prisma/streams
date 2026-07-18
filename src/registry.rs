@@ -30,10 +30,16 @@ pub struct StreamDesc {
     /// pre-multitenant pilot; those are visible solely to `__legacy__`.
     #[serde(default)]
     pub customer_id: String,
-    /// Immutable global placement. Empty only for legacy single-cell
-    /// descriptors created before cells were enabled.
+    /// Globally authoritative placement. Empty only for legacy single-cell
+    /// descriptors created before cells were enabled. Managed moves change it
+    /// only through the fenced `cell_move` state machine below.
     #[serde(default)]
     pub cell: String,
+    /// Bounded, restartable placement transition. A completed record is kept
+    /// in the descriptor until the next move so retries and audits can resolve
+    /// a lost final response without a second data copy.
+    #[serde(default)]
+    pub cell_move: Option<CellMove>,
     pub name: String,
     /// 16-byte hex; minted per creation, bound into HKDF (V9 mandate).
     pub stream_epoch: String,
@@ -125,6 +131,26 @@ pub struct PinnedTemplate {
     pub fields: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CellMoveState {
+    Preparing,
+    Completed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellMove {
+    pub version: u32,
+    pub operation_id: String,
+    pub source_cell: String,
+    pub target_cell: String,
+    pub state: CellMoveState,
+    pub started_ms: i64,
+    #[serde(default)]
+    pub completed_ms: Option<i64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CustomerCellAffinity {
@@ -174,6 +200,12 @@ impl StreamDesc {
 
     pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
         crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
+    }
+
+    pub fn cell_move_in_progress(&self) -> bool {
+        self.cell_move
+            .as_ref()
+            .is_some_and(|movement| movement.state == CellMoveState::Preparing)
     }
 
     /// Storage identity: derived from (name, stream_epoch) so a recreated
@@ -788,6 +820,37 @@ fn validate_descriptor_scope(
             "stream descriptor has invalid admission limits",
         ));
     }
+    if let Some(movement) = &descriptor.cell_move {
+        let valid_operation = movement.operation_id.len() == 32
+            && movement
+                .operation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        let valid_cells = crate::cells::valid_cell_id(&movement.source_cell)
+            && crate::cells::valid_cell_id(&movement.target_cell)
+            && movement.source_cell != movement.target_cell;
+        let valid_state = match movement.state {
+            CellMoveState::Preparing => {
+                descriptor.cell == movement.source_cell && movement.completed_ms.is_none()
+            }
+            CellMoveState::Completed => {
+                descriptor.cell == movement.target_cell
+                    && movement
+                        .completed_ms
+                        .is_some_and(|completed| completed >= movement.started_ms)
+            }
+        };
+        if movement.version != 1
+            || !valid_operation
+            || !valid_cells
+            || movement.started_ms <= 0
+            || !valid_state
+        {
+            return Err(registry_error(
+                "stream descriptor has invalid cell move state",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -929,6 +992,234 @@ impl Registry {
             }
         }
         Err(registry_error("customer cell affinity create raced"))
+    }
+
+    async fn ensure_customer_cell_affinity_contains(
+        &self,
+        customer_id: &str,
+        source_cell: &str,
+        target_cell: &str,
+    ) -> Result<CustomerCellAffinity, object_store::Error> {
+        let path = customer_cell_affinity_path(customer_id);
+        for _ in 0..10 {
+            let result = self.store.get(&path).await?;
+            if result.meta.size > 16 * 1024 {
+                return Err(registry_error("customer cell affinity is too large"));
+            }
+            let version = UpdateVersion {
+                e_tag: result.meta.e_tag.clone(),
+                version: result.meta.version.clone(),
+            };
+            let raw = result.bytes().await?;
+            let mut affinity = parse_json::<CustomerCellAffinity>(&raw, "customer cell affinity")?;
+            validate_customer_cell_affinity(&affinity)?;
+            if !affinity.cells.iter().any(|cell| cell == source_cell) {
+                return Err(registry_error(
+                    "customer affinity omits the stream source cell",
+                ));
+            }
+            if affinity.cells.iter().any(|cell| cell == target_cell) {
+                return Ok(affinity);
+            }
+            affinity.cells.push(target_cell.to_string());
+            affinity.cells.sort();
+            validate_customer_cell_affinity(&affinity)?;
+            let encoded = serde_json::to_vec(&affinity).expect("customer cell affinity json");
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(encoded),
+                    PutOptions::from(PutMode::Update(version)),
+                )
+                .await
+            {
+                Ok(_) => return Ok(affinity),
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error(
+            "customer cell affinity CAS retries exhausted",
+        ))
+    }
+
+    /// Begin or resume one stream's cross-cell movement. The source remains
+    /// authoritative while `Preparing`; the data mover must install its
+    /// durable source-shard fence before copying and calling `complete_cell_move`.
+    pub async fn begin_cell_move(
+        &self,
+        customer_id: &str,
+        name: &str,
+        expected_source_cell: &str,
+        target_cell: &str,
+        operation_id: &str,
+    ) -> Result<StreamDesc, object_store::Error> {
+        if customer_id.is_empty()
+            || customer_id == "__legacy__"
+            || !crate::cells::valid_cell_id(expected_source_cell)
+            || !crate::cells::valid_cell_id(target_cell)
+            || expected_source_cell == target_cell
+            || operation_id.len() != 32
+            || !operation_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(registry_error("invalid cell move request"));
+        }
+        if let Some(current) = self.get(customer_id, name).await?
+            && current.cell_move.as_ref().is_some_and(|movement| {
+                movement.state == CellMoveState::Completed
+                    && movement.operation_id == operation_id
+                    && movement.source_cell == expected_source_cell
+                    && movement.target_cell == target_cell
+            })
+        {
+            return Ok(current);
+        }
+        let directory = crate::cells::load(&self.store).await?;
+        if directory.get(expected_source_cell).is_none()
+            || !directory.get(target_cell).is_some_and(|cell| {
+                cell.state == crate::cells::CellState::Active && cell.weight > 0
+            })
+        {
+            return Err(registry_error(
+                "cell move source or placement-eligible target is absent",
+            ));
+        }
+        self.ensure_customer_cell_affinity_contains(customer_id, expected_source_cell, target_cell)
+            .await?;
+
+        let path = desc_path(customer_id, name);
+        for _ in 0..10 {
+            let result = self.store.get(&path).await?;
+            let version = UpdateVersion {
+                e_tag: result.meta.e_tag.clone(),
+                version: result.meta.version.clone(),
+            };
+            if result.meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+                return Err(registry_error("stream descriptor is too large"));
+            }
+            let raw = result.bytes().await?;
+            let mut descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            if descriptor.cell_move.as_ref().is_some_and(|movement| {
+                movement.operation_id == operation_id
+                    && movement.source_cell == expected_source_cell
+                    && movement.target_cell == target_cell
+            }) {
+                return Ok(descriptor);
+            }
+            if descriptor
+                .cell_move
+                .as_ref()
+                .is_some_and(|movement| movement.state == CellMoveState::Preparing)
+            {
+                return Err(registry_error(
+                    "stream already has a different cell move in progress",
+                ));
+            }
+            if descriptor.deleted || descriptor.cell != expected_source_cell {
+                return Err(registry_error(
+                    "stream is deleted or no longer belongs to the expected source cell",
+                ));
+            }
+            let started_ms = chrono::Utc::now().timestamp_millis();
+            descriptor.cell_move = Some(CellMove {
+                version: 1,
+                operation_id: operation_id.to_string(),
+                source_cell: expected_source_cell.to_string(),
+                target_cell: target_cell.to_string(),
+                state: CellMoveState::Preparing,
+                started_ms,
+                completed_ms: None,
+            });
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            let mut target_descriptor = descriptor.clone();
+            target_descriptor.cell = target_cell.to_string();
+            target_descriptor.cell_move = None;
+            self.ensure_cell_stream_index(&target_descriptor).await?;
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(
+                        serde_json::to_vec(&descriptor).expect("stream descriptor json"),
+                    ),
+                    PutOptions::from(PutMode::Update(version)),
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(customer_id, name);
+                    return Ok(descriptor);
+                }
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("begin cell move CAS retries exhausted"))
+    }
+
+    /// Linearize a fully copied stream onto its target cell. A retry after a
+    /// lost response resolves the retained completed operation id instead of
+    /// initiating another placement mutation.
+    pub async fn complete_cell_move(
+        &self,
+        customer_id: &str,
+        name: &str,
+        operation_id: &str,
+    ) -> Result<StreamDesc, object_store::Error> {
+        let path = desc_path(customer_id, name);
+        for _ in 0..10 {
+            let result = self.store.get(&path).await?;
+            let version = UpdateVersion {
+                e_tag: result.meta.e_tag.clone(),
+                version: result.meta.version.clone(),
+            };
+            if result.meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+                return Err(registry_error("stream descriptor is too large"));
+            }
+            let raw = result.bytes().await?;
+            let mut descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            let Some(movement) = descriptor.cell_move.as_ref() else {
+                return Err(registry_error("stream has no cell move to complete"));
+            };
+            if movement.operation_id != operation_id {
+                return Err(registry_error("cell move operation id does not match"));
+            }
+            if movement.state == CellMoveState::Completed {
+                return Ok(descriptor);
+            }
+            let target = movement.target_cell.clone();
+            let mut completed = movement.clone();
+            descriptor.cell = target;
+            completed.state = CellMoveState::Completed;
+            completed.completed_ms = Some(chrono::Utc::now().timestamp_millis());
+            descriptor.cell_move = Some(completed);
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            self.ensure_cell_stream_index(&descriptor).await?;
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(
+                        serde_json::to_vec(&descriptor).expect("stream descriptor json"),
+                    ),
+                    PutOptions::from(PutMode::Update(version)),
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(customer_id, name);
+                    return Ok(descriptor);
+                }
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("complete cell move CAS retries exhausted"))
     }
 
     async fn ensure_cell_stream_index(
@@ -1336,7 +1627,9 @@ impl Registry {
         // A create may publish through another cell. There is no cross-process
         // invalidation channel, so caching absence would turn a successful
         // global descriptor CAS into transient wrong-cell 404s. Positive
-        // descriptors are immutable in placement and safe for the short TTL;
+        // descriptors are placement-stable outside an operator move. During a
+        // move, a stale source cache is stopped by the durable shard fence and
+        // a stale target cache may replay/503 only until this short TTL;
         // authenticated miss traffic is bounded by tenant admission.
         if fetched.is_some() {
             self.cache.lock().unwrap().insert(key, fetched.clone());
@@ -1410,7 +1703,17 @@ impl Registry {
             let raw = got.bytes().await?;
             let current = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&current, customer_id, name)?;
+            if current.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
             if current.stream_epoch != expected_epoch {
+                self.cache
+                    .lock()
+                    .unwrap()
+                    .insert(cache_key(customer_id, name), Some(current.clone()));
+                return Ok((false, current));
+            }
+            if current.cell != fresh.cell {
                 self.cache
                     .lock()
                     .unwrap()
@@ -1473,6 +1776,9 @@ impl Registry {
             let raw = got.bytes().await?;
             let mut desc = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&desc, customer_id, name)?;
+            if desc.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
             apply(&mut desc);
             validate_descriptor_scope(&desc, customer_id, name)?;
             let body = serde_json::to_vec(&desc).expect("desc json");
@@ -1522,6 +1828,9 @@ impl Registry {
             let raw = got.bytes().await?;
             let mut desc = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&desc, customer_id, name)?;
+            if desc.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
             let now = chrono::Utc::now().timestamp_millis();
             let Some(ttl_secs) = desc.ttl_secs else {
                 return Ok(Some(desc));
@@ -1586,6 +1895,9 @@ impl Registry {
             let raw = got.bytes().await?;
             let mut source = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&source, customer_id, source_name)?;
+            if source.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
             if source.stream_epoch != expected_source_epoch {
                 return Ok(false);
             }
@@ -1644,6 +1956,9 @@ impl Registry {
             let raw = got.bytes().await?;
             let mut source = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&source, customer_id, source_name)?;
+            if source.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
             if source.stream_epoch != expected_source_epoch {
                 return Ok(None);
             }
@@ -1731,6 +2046,7 @@ impl Registry {
         customer_id: &str,
         name: &str,
         expected_epoch: &str,
+        expected_cell: &str,
     ) -> Result<Option<(bool, StreamDesc)>, object_store::Error> {
         for _ in 0..5 {
             let path = desc_path(customer_id, name);
@@ -1743,7 +2059,10 @@ impl Registry {
             let raw = got.bytes().await?;
             let mut desc = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
             validate_descriptor_scope(&desc, customer_id, name)?;
-            if desc.stream_epoch != expected_epoch || desc.deleted {
+            if desc.cell_move_in_progress() {
+                return Err(registry_error("stream cell move is in progress"));
+            }
+            if desc.stream_epoch != expected_epoch || desc.cell != expected_cell || desc.deleted {
                 return Ok(Some((false, desc)));
             }
             desc.deleted = true;
@@ -2194,6 +2513,7 @@ mod tests {
         StreamDesc {
             customer_id: "__legacy__".to_string(),
             cell: String::new(),
+            cell_move: None,
             name: name.to_string(),
             stream_epoch: epoch.to_string(),
             key_fingerprint: format!("fingerprint-{epoch}"),
@@ -2370,6 +2690,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cell_move_descriptor_is_restartable_and_changes_recovery_authority_once() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(
+                &ObjPath::from(crate::cells::CELLS_PATH),
+                PutPayload::from_static(
+                    br#"{"version":1,"generation":2,"cells":[{"cell_id":"cell-a","region":"a","ops_prefix":"cells/cell-a","weight":1,"state":"active"},{"cell_id":"cell-b","region":"b","ops_prefix":"cells/cell-b","weight":1,"state":"active"}]}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        let registry = Registry::new(store.clone());
+        registry
+            .get_or_create_customer_cell_affinity("customer-a", "cell-a")
+            .await
+            .unwrap();
+        let mut desc = descriptor("orders", &"05".repeat(16));
+        desc.customer_id = "customer-a".into();
+        desc.cell = "cell-a".into();
+        assert!(registry.create(desc.clone()).await.unwrap().0);
+
+        let operation = "ab".repeat(16);
+        let preparing = registry
+            .begin_cell_move("customer-a", "orders", "cell-a", "cell-b", &operation)
+            .await
+            .unwrap();
+        assert!(preparing.cell_move_in_progress());
+        assert_eq!(preparing.cell, "cell-a");
+        assert_eq!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap(),
+            vec![history_db_path(&desc.storage_hash())]
+        );
+        assert!(
+            active_history_db_paths_for_cell(&store, Some("cell-b"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            registry
+                .update("customer-a", "orders", |_| {})
+                .await
+                .is_err(),
+            "ordinary descriptor mutations must not cross the move CAS"
+        );
+
+        let completed = registry
+            .complete_cell_move("customer-a", "orders", &operation)
+            .await
+            .unwrap();
+        assert_eq!(completed.cell, "cell-b");
+        assert_eq!(
+            completed.cell_move.as_ref().unwrap().state,
+            CellMoveState::Completed
+        );
+        let stale_delete = registry
+            .mark_deleted("customer-a", "orders", &desc.stream_epoch, "cell-a")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stale_delete.0);
+        assert_eq!(stale_delete.1.cell, "cell-b");
+        assert!(!stale_delete.1.deleted);
+        let mut stale_recreate = descriptor("orders", &"06".repeat(16));
+        stale_recreate.customer_id = "customer-a".into();
+        stale_recreate.cell = "cell-a".into();
+        let stale_recreate = registry
+            .recreate("customer-a", "orders", &desc.stream_epoch, stale_recreate)
+            .await
+            .unwrap();
+        assert!(!stale_recreate.0);
+        assert_eq!(stale_recreate.1.cell, "cell-b");
+        assert!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            active_history_db_paths_for_cell(&store, Some("cell-b"))
+                .await
+                .unwrap(),
+            vec![history_db_path(&desc.storage_hash())]
+        );
+        store
+            .put(
+                &ObjPath::from(crate::cells::CELLS_PATH),
+                PutPayload::from_static(
+                    br#"{"version":1,"generation":3,"cells":[{"cell_id":"cell-b","region":"b","ops_prefix":"cells/cell-b","weight":1,"state":"active"}]}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            registry
+                .begin_cell_move("customer-a", "orders", "cell-a", "cell-b", &operation,)
+                .await
+                .unwrap()
+                .cell,
+            "cell-b",
+            "a retry after the final response was lost must resolve completion"
+        );
+    }
+
+    #[tokio::test]
     async fn orphan_and_losing_cell_indices_are_safe() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let orphan = CellStreamIndex {
@@ -2527,11 +2954,11 @@ mod tests {
         );
 
         registry
-            .mark_deleted("__legacy__", "root", "root-epoch")
+            .mark_deleted("__legacy__", "root", "root-epoch", "")
             .await
             .unwrap();
         let middle = registry
-            .mark_deleted("__legacy__", "middle", "middle-epoch")
+            .mark_deleted("__legacy__", "middle", "middle-epoch", "")
             .await
             .unwrap()
             .unwrap()
@@ -2551,7 +2978,7 @@ mod tests {
         );
 
         let leaf = registry
-            .mark_deleted("__legacy__", "leaf", "leaf-epoch")
+            .mark_deleted("__legacy__", "leaf", "leaf-epoch", "")
             .await
             .unwrap()
             .unwrap()

@@ -1516,6 +1516,7 @@ mod tests {
         let mut heartbeat = crate::fleet::Heartbeat {
             instance: "streams-1".to_string(),
             ts_ms: 1,
+            cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
             rps: 0.0,
             ack_p50_ms: 0.0,
             cpu_pct: 0.0,

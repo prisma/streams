@@ -126,13 +126,17 @@ manifest CAS and recovery-point machinery as other history changes.
 ## Encrypted-history integrity baseline
 
 History SlateDB blocks are encrypted with the customer-supplied stream key;
-the service intentionally does not persist that key. On every absorb, the
-writer still has the key, so it logically decodes each newly referenced SST,
-downloads its exact ciphertext, and conditionally creates a version-1 digest
-record under `integrity/history/` before advancing the absorbed boundary. The
-background cell scrubber can then detect missing or same-length corrupt
-ciphertext without key custody. SST paths and their baseline records are
-immutable; a conflicting create is corruption, not an update.
+the service intentionally does not persist that key. On every absorb, a
+history-only object-store wrapper conditionally creates the version-1 digest
+record under `integrity/history/` from the exact transformed PUT payload before
+the SST becomes visible. It then writes the SST; only a later manifest can make
+the object live. The keyed writer logically decodes each newly referenced SST
+and monotonically finalizes that verification before advancing the absorbed
+boundary. A crash at any earlier point leaves the hot range authoritative and
+only unreferenced baseline/SST orphans. The background cell scrubber can detect
+missing or same-length corrupt ciphertext without key custody. SST paths and
+their digest identity are immutable; a conflicting create is corruption, not
+an update.
 
 This is a fail-closed rollout boundary. A cell with history SSTs created by a
 binary that predates the ledger will remain unready because a keyless process

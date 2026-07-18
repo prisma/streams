@@ -88,15 +88,17 @@ start_cell() {
   local port="$2"
   local log="$3"
   RUST_LOG=info "${TARGET_DIR}/streams-slate" \
-    --listen "127.0.0.1:${port}" --instance-name "${cell}-1" \
+    --listen "127.0.0.1:${port}" --instance-name streams-1 \
     --s3-endpoint "${S3_URL}" --bucket streams --region auto \
     --access-key-id "${cell}-data" --secret-access-key "${cell}-data-secret" \
     --path-prefix "cells/${cell}" --cell-id "${cell}" \
+    --fleet-prefix "cells/${cell}/fleet-coordination" --fleet-max 1 \
     --registry-s3-endpoint "${S3_URL}" --registry-s3-bucket streams \
     --registry-s3-region auto --registry-s3-access-key-id registry-control \
     --registry-s3-secret-access-key registry-control-secret \
     --registry-s3-allow-http --registry-path-prefix global-registry \
     --cell-directory-refresh-secs 5 --initial-shards 1 \
+    --absorb-bytes 1 --absorb-age-secs 1 \
     --auth-jwks-url "${S3_URL}/auth/jwks.json" \
     --auth-revocation-url "${S3_URL}/auth/revocations.json" \
     --auth-issuer "${ISSUER}" --auth-audience "${AUDIENCE}" \
@@ -294,6 +296,18 @@ body="$(curl --fail --silent --show-error \
   -H "stream-encryption-key: ${KEY}")"
 [[ "${body}" == '[{"cell":true}]' ]] || fail "owning cell returned the wrong body"
 
+# Force the keyed absorber to publish encrypted history before moving. The
+# mover must copy that physical database and its writer-verified baselines
+# without receiving the customer key.
+selected_log="${TMP_DIR}/cell-${selected#c-}.log"
+attempts=0
+until grep -q 'absorbed .* records into streams/' "${selected_log}"; do
+  attempts=$((attempts + 1))
+  (( attempts <= 300 )) || fail "selected cell did not create encrypted history before move"
+  sleep 0.1
+done
+sleep 0.5
+
 # Force coordinator takeover so a fresh point necessarily captures the stream
 # and its exact cell-local registry closure after the create.
 initial_snapshot="$(latest_snapshot "${selected}")"
@@ -352,6 +366,108 @@ put_directory "${directory_v2}"
 wait_ready "${URL_A}" "${TMP_DIR}/cell-a.log"
 wait_ready "${URL_B}" "${TMP_DIR}/cell-b.log"
 
+# Move the live stream to the other physical cell. The tool has no stream key:
+# it copies the exact raw shard range and checkpointed encrypted history, then
+# changes global placement only after a durable source-shard fence exists.
+move_source="${selected}"
+move_source_url="${selected_url}"
+move_target="${other}"
+move_target_url="${other_url}"
+move_operation='1234567890abcdef1234567890abcdef'
+"${TARGET_DIR}/streams-cell-move" \
+  --customer-id tenant-a --stream cell-pinned \
+  --source-cell "${move_source}" --target-cell "${move_target}" \
+  --operation-id "${move_operation}" --allow-http \
+  --confirm-target-stream-replaceable \
+  --registry-endpoint "${S3_URL}" --registry-bucket streams \
+  --registry-region auto --registry-access-key-id registry-control \
+  --registry-secret-access-key registry-control-secret \
+  --registry-prefix global-registry \
+  --source-endpoint "${S3_URL}" --source-bucket streams \
+  --source-region auto --source-access-key-id "${move_source}-move" \
+  --source-secret-access-key "${move_source}-move-secret" \
+  --source-prefix "cells/${move_source}" \
+  --source-fleet-prefix "cells/${move_source}/fleet-coordination" \
+  --target-endpoint "${S3_URL}" --target-bucket streams \
+  --target-region auto --target-access-key-id "${move_target}-move" \
+  --target-secret-access-key "${move_target}-move-secret" \
+  --target-prefix "cells/${move_target}" \
+  --target-fleet-prefix "cells/${move_target}/fleet-coordination" \
+  >"${TMP_DIR}/cell-move.json"
+
+# A stale positive descriptor at the former cell may briefly avoid the global
+# replay response, but the local shard fence must still make a write impossible.
+status="$(curl --silent --show-error -o "${TMP_DIR}/stale-source.body" \
+  --write-out '%{http_code}' -X POST \
+  "${move_source_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}" -H 'content-type: application/json' \
+  -d '[{"must":"not-commit"}]')"
+[[ "${status}" != "204" && "${status}" != "200" ]] || fail "former cell accepted a post-fence append"
+status="$(curl --silent --show-error -o "${TMP_DIR}/stale-source-delete.body" \
+  --write-out '%{http_code}' -X DELETE \
+  "${move_source_url}/v1/stream/cell-pinned" "${auth[@]}")"
+[[ "${status}" != "204" && "${status}" != "200" ]] || fail "former cell deleted the moved descriptor"
+
+attempts=0
+until body="$(curl --fail --silent --show-error \
+  "${move_target_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}" 2>/dev/null)"; do
+  attempts=$((attempts + 1))
+  (( attempts <= 120 )) || fail "target cell did not serve the completed move"
+  sleep 0.1
+done
+[[ "${body}" == '[{"cell":true}]' ]] || fail "cell move lost encrypted history"
+curl --fail --silent --show-error -X POST \
+  "${move_target_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}" -H 'content-type: application/json' \
+  -d '[{"after":"move"}]' >/dev/null
+body="$(curl --fail --silent --show-error \
+  "${move_target_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}")"
+[[ "${body}" == '[{"cell":true},{"after":"move"}]' ]] || fail "target did not continue the moved offset sequence"
+
+descriptor="$(curl --fail --silent --show-error \
+  "${S3_URL}/streams/global-registry/registry/by-customer/${customer_hash}/by-name/${name_hash:0:2}/${name_hash}.json")"
+[[ "${descriptor}" == *"\"cell\":\"${move_target}\""* ]] || fail "move did not publish target placement"
+[[ "${descriptor}" == *'"state":"completed"'* ]] || fail "move completion was not retained idempotently"
+affinity="$(curl --fail --silent --show-error \
+  "${S3_URL}/streams/global-registry/customers/${customer_hash}/cell-affinity.json")"
+[[ "${affinity}" == *'"c-a"'* && "${affinity}" == *'"c-b"'* ]] || fail "move did not durably expand customer affinity"
+
+# The lost-response retry must resolve the retained completion without
+# clearing or recopying the now-authoritative target.
+retry_report="$("${TARGET_DIR}/streams-cell-move" \
+  --customer-id tenant-a --stream cell-pinned \
+  --source-cell "${move_source}" --target-cell "${move_target}" \
+  --operation-id "${move_operation}" --allow-http \
+  --confirm-target-stream-replaceable \
+  --registry-endpoint "${S3_URL}" --registry-bucket streams \
+  --registry-region auto --registry-access-key-id registry-control \
+  --registry-secret-access-key registry-control-secret \
+  --registry-prefix global-registry \
+  --source-endpoint "${S3_URL}" --source-bucket streams \
+  --source-region auto --source-access-key-id "${move_source}-move" \
+  --source-secret-access-key "${move_source}-move-secret" \
+  --source-prefix "cells/${move_source}" \
+  --source-fleet-prefix "cells/${move_source}/fleet-coordination" \
+  --target-endpoint "${S3_URL}" --target-bucket streams \
+  --target-region auto --target-access-key-id "${move_target}-move" \
+  --target-secret-access-key "${move_target}-move-secret" \
+  --target-prefix "cells/${move_target}" \
+  --target-fleet-prefix "cells/${move_target}/fleet-coordination")"
+[[ "${retry_report}" == *'"already_completed": true'* ]] || fail "move retry did not resolve completion"
+
+selected="${move_target}"
+selected_url="${move_target_url}"
+other="${move_source}"
+other_url="${move_source_url}"
+initial_snapshot="$(latest_snapshot "${selected}")"
+restart_selected_cell "${selected}" "${initial_snapshot}"
+body="$(curl --fail --silent --show-error \
+  "${selected_url}/v1/stream/cell-pinned" "${auth[@]}" \
+  -H "stream-encryption-key: ${KEY}")"
+[[ "${body}" == '[{"cell":true},{"after":"move"}]' ]] || fail "moved target restart lost data"
+
 # Destroy both serving cells and the live global registry from the serving
 # path, restore the selected point into empty primary + registry targets, and
 # prove the first decrypted read. The recovery point must not need a global
@@ -392,6 +508,6 @@ wait_ready "${selected_url}" "${recovered_log}"
 body="$(curl --fail --silent --show-error \
   "${selected_url}/v1/stream/cell-pinned" "${auth[@]}" \
   -H "stream-encryption-key: ${KEY}")"
-[[ "${body}" == '[{"cell":true}]' ]] || fail "managed registry recovery lost the stream"
+[[ "${body}" == '[{"cell":true},{"after":"move"}]' ]] || fail "managed registry recovery lost the moved stream"
 
-echo "multi-cell placement, registry recovery, replay, and LKG drill passed"
+echo "multi-cell placement, fenced move, registry recovery, replay, and LKG drill passed"

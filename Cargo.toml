@@ -99,3 +99,7 @@ path = "src/bin/cell_admin.rs"
 [[bin]]
 name = "streams-registry-restore"
 path = "src/bin/registry_restore.rs"
+
+[[bin]]
+name = "streams-cell-move"
+path = "src/bin/cell_move.rs"

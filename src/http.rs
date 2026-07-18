@@ -53,7 +53,8 @@ pub struct ShardOpener {
 pub struct AppState {
     pub registry: Registry,
     /// Managed multi-cell mode. `None` preserves the legacy single-cell
-    /// contract; `Some` requires immutable matching descriptor placement.
+    /// contract; `Some` requires matching authoritative placement, with
+    /// durable source-shard fences covering operator moves.
     pub cell_id: Option<String>,
     pub cell_directory: std::sync::RwLock<Option<crate::cells::CellDirectory>>,
     pub cells_ready: std::sync::atomic::AtomicBool,
@@ -1860,6 +1861,7 @@ fn replay_to_cell(cell_id: &str) -> Response {
 
 enum CellOwnershipError {
     Unassigned,
+    Moving,
     Replay(String),
 }
 
@@ -1871,12 +1873,27 @@ impl CellOwnershipError {
                 "cell_unassigned",
                 "legacy descriptor has no cell placement; migrate it before enabling multi-cell serving",
             ),
+            Self::Moving => {
+                let mut response = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "cell_moving",
+                    "stream is crossing a durable cell fence; retry",
+                );
+                response.headers_mut().insert(
+                    header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("1"),
+                );
+                response
+            }
             Self::Replay(cell_id) => replay_to_cell(&cell_id),
         }
     }
 }
 
 fn require_local_cell(state: &AppState, descriptor: &StreamDesc) -> Result<(), CellOwnershipError> {
+    if descriptor.cell_move_in_progress() {
+        return Err(CellOwnershipError::Moving);
+    }
     match (state.cell_id.as_deref(), descriptor.cell.as_str()) {
         (None, "") => Ok(()),
         (Some(local), assigned) if local == assigned => Ok(()),
@@ -2595,6 +2612,7 @@ fn fresh_desc(
     StreamDesc {
         customer_id: customer_id.to_string(),
         cell,
+        cell_move: None,
         name: name.to_string(),
         stream_epoch: hex(&epoch),
         key_fingerprint: key.fingerprint(&epoch),
@@ -3641,7 +3659,7 @@ async fn create_stream_with_quota(
                 if created {
                     let _ = state
                         .registry
-                        .mark_deleted(&customer_id, &name, &desc.stream_epoch)
+                        .mark_deleted(&customer_id, &name, &desc.stream_epoch, &desc.cell)
                         .await;
                 }
                 return err_resp(
@@ -3726,7 +3744,7 @@ async fn delete_stream(state: Arc<AppState>, customer_id: String, name: String) 
     }
     match state
         .registry
-        .mark_deleted(&customer_id, &name, &observed.stream_epoch)
+        .mark_deleted(&customer_id, &name, &observed.stream_epoch, &observed.cell)
         .await
     {
         Ok(Some((true, desc))) => {
@@ -3742,7 +3760,10 @@ async fn delete_stream(state: Arc<AppState>, customer_id: String, name: String) 
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Some((false, desc))) => dead_stream_response(&desc),
+        Ok(Some((false, desc))) => match require_local_cell(&state, &desc) {
+            Ok(()) => dead_stream_response(&desc),
+            Err(response) => response.into_response(),
+        },
         Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
         Err(error) => err_resp(
             StatusCode::INTERNAL_SERVER_ERROR,

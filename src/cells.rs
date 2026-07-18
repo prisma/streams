@@ -109,7 +109,7 @@ impl CellDirectory {
     }
 
     /// Weighted rendezvous is used only for create placement. Reads route by
-    /// the immutable cell persisted in the stream descriptor.
+    /// the authoritative cell persisted in the stream descriptor.
     pub fn select<'a>(
         &'a self,
         customer_id: &str,
