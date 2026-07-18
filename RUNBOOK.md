@@ -149,9 +149,12 @@ with an empty pool rather than dead sockets.
 | `AUDIT_MAINTENANCE_INTERVAL_SECS` / `AUDIT_MAINTENANCE_OBJECTS_PER_INTERVAL` | 300 / 1000 | durable-cursor reconciliation and pruning cadence/bound |
 | `AUDIT_MAINTENANCE_MAX_OBJECT_BYTES` | 8 MiB | fail-closed stable-read bound for one control or NDJSON audit object |
 
-Control operations succeed only after identical immutable writes to primary and
-mirror. Sampled batches retain one path and body while retrying either failed
-side. On every process start, readiness remains red until durable cursors have
+Control and state-changing operator operations succeed only after identical
+immutable writes to primary and mirror. Authenticated read-only operator access
+is unsampled and uses the bounded one-second batch path; queue rejection turns
+the response into retryable 503. Sampled tenant events share those batches,
+which retain one path and body while retrying either failed side. On every
+process start, readiness remains red until durable cursors have
 traversed both primary audit prefixes and byte-verified or repaired every
 mirror object. Primary deletion occurs only after that exact mirror check;
 retention age and “now” both come from each provider's object metadata, not a
@@ -476,10 +479,10 @@ OOM-killed container under load otherwise stays down.
 | `PUT /v1/stream/{name}` | bearer + `Stream-Encryption-Key` | create (400 `missing_key` without the key header) |
 | `POST /v1/stream/{name}` | bearer + key | append (`{"events":[…]}`); 204 on durable commit |
 | `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
-| `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
+| `GET /v1/debug/timings` | operator bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
 | `GET /v1/debug/load` | operator bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
 | `GET /v1/debug/capabilities` | operator bearer | immutable release ID plus live/history/recovery reader and writer ranges for this instance, and the same bounded declaration for every member in its fresh aggregate; contains no tenant or shard identifiers |
-| `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
+| `GET /v1/debug/store?window=60&swap=1` | operator bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
 | `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape; no tenant-controlled labels |
 | `GET /v1/debug/sleep?ms=N` | operator bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
 
@@ -691,8 +694,10 @@ point age and an observed reconfiguration fence. A release environment must
 additionally prove its real collector, rule evaluator, notification route,
 inhibition, and ownership labels.
 
-`scripts/ci-audit-mirror.sh` cuts an independent audit provider and proves
-control-plane fail-closed behavior, retry-stable sampled batches, and recovery.
+`scripts/ci-audit-mirror.sh` proves full-fidelity operator identity/resource
+records without one object per scrape, a synchronously mirrored admin mutation,
+then cuts an independent audit provider and proves control-plane fail-closed
+behavior, retry-stable batches, and recovery.
 `scripts/ci-billing-export.sh` rejects an exporter append at the HTTP boundary,
 then proves byte-identical payload and producer id/epoch/sequence on retry,
 one encrypted delivered interval, and no recursive self-metering. These are

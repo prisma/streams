@@ -185,12 +185,6 @@ fn bearer(raw: Option<&str>) -> Result<&str, AuthError> {
         .ok_or(AuthError::Missing)
 }
 
-pub fn constant_time_bearer_matches(authorization: Option<&str>, expected: &str) -> bool {
-    bearer(authorization)
-        .map(|supplied| bool::from(expected.as_bytes().ct_eq(supplied.as_bytes())))
-        .unwrap_or(false)
-}
-
 #[derive(Clone)]
 pub struct JwksConfig {
     pub url: String,

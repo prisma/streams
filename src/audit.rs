@@ -1,9 +1,10 @@
 //! Durable, bounded access audit sink.
 //!
-//! Create/delete records are written synchronously as immutable objects so a
+//! Control mutations are written synchronously as immutable objects so a
 //! successful control-plane response is never emitted without its audit
-//! record. Sampled data-plane records use a bounded channel and one-second
-//! NDJSON batches to avoid turning high request rates into object explosions.
+//! record. Sampled data-plane records and full-fidelity read-only operator
+//! records use a bounded channel and one-second NDJSON batches to avoid turning
+//! high request rates (including metrics scrapes) into object explosions.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -163,11 +164,22 @@ impl AuditLog {
         rand::random_ratio(1, self.sample_denominator)
     }
 
-    pub fn record_sampled(&self, event: AuditEvent) {
-        if self.tx.try_send(event).is_err() {
+    /// Queue an event for the one-second immutable batch writer.
+    ///
+    /// Callers that require full-fidelity audit (read-only operator routes)
+    /// must observe the result and fail the request if admission is rejected.
+    /// Sampled data-plane callers deliberately ignore it after readiness and
+    /// the loss counter have been updated.
+    pub fn record_batched(&self, event: AuditEvent) -> anyhow::Result<()> {
+        self.tx.try_send(event).map_err(|error| {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             self.batch_healthy.store(false, Ordering::Release);
-        }
+            anyhow::anyhow!("audit batch queue rejected event: {error}")
+        })
+    }
+
+    pub fn record_sampled(&self, event: AuditEvent) {
+        let _ = self.record_batched(event);
     }
 
     pub async fn record_durable(&self, event: &AuditEvent) -> anyhow::Result<()> {
@@ -684,6 +696,29 @@ mod tests {
             dropped: AtomicU64::new(0),
             sample_denominator: 100,
         }
+    }
+
+    #[test]
+    fn batched_queue_rejection_is_visible_and_fails_readiness() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let (tx, _rx) = mpsc::channel(1);
+        let audit = AuditLog {
+            store,
+            mirror: None,
+            instance_hash: "instance-hash".to_string(),
+            tx,
+            sequence: AtomicU64::new(0),
+            control_healthy: AtomicBool::new(true),
+            batch_healthy: AtomicBool::new(true),
+            maintenance_healthy: AtomicBool::new(true),
+            dropped: AtomicU64::new(0),
+            sample_denominator: 100,
+        };
+
+        audit.record_batched(event()).unwrap();
+        assert!(audit.record_batched(event()).is_err());
+        assert_eq!(audit.dropped(), 1);
+        assert!(!audit.ready());
     }
 
     #[tokio::test]

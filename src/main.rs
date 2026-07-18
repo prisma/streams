@@ -1571,7 +1571,6 @@ async fn async_main() -> anyhow::Result<()> {
             .conformance_ordering_segments
             .map(|n| ("per-key".to_string(), n)),
         authn,
-        auth_token: args.auth_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
         metrics_identity: args
             .metrics_customer_id

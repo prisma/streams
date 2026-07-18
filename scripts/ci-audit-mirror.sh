@@ -66,6 +66,82 @@ wait_count() {
   done
 }
 
+wait_at_least() {
+  local endpoint="$1"
+  local bucket="$2"
+  local prefix="$3"
+  local expected="$4"
+  local attempts=0
+  until (( $(object_count "${endpoint}" "${bucket}" "${prefix}") >= expected )); do
+    attempts=$((attempts + 1))
+    if (( attempts > 150 )); then
+      echo "audit object count did not reach ${expected}: ${endpoint}/${bucket}/${prefix}" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+}
+
+operator_audit_present() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+endpoint, bucket, prefix = sys.argv[1:]
+query = urllib.parse.urlencode({"list-type": "2", "prefix": prefix})
+with urllib.request.urlopen(f"{endpoint}/{bucket}?{query}", timeout=2) as response:
+    root = ET.fromstring(response.read())
+keys = [node.text for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Key"]
+records = []
+debug_objects = set()
+for key in keys:
+    url = f"{endpoint}/{bucket}/{urllib.parse.quote(key, safe='/')}"
+    with urllib.request.urlopen(url, timeout=2) as response:
+        body = response.read().decode()
+    payloads = body.splitlines() if key.endswith(".ndjson") else [body]
+    for payload in payloads:
+        if not payload:
+            continue
+        event = json.loads(payload)
+        records.append(event)
+        if event.get("stream") == "/v1/debug/metrics":
+            debug_objects.add(key)
+
+debug = [event for event in records if event.get("stream") == "/v1/debug/metrics"]
+admin = [
+    event for event in records
+    if event.get("stream") == "/v1/admin/shards/root/split"
+]
+assert len(debug) == 10, f"expected 10 full-fidelity debug events, got {len(debug)}"
+assert len(debug_objects) < len(debug), "debug reads became one object per request"
+assert len(admin) == 1, f"expected one durable admin event, got {len(admin)}"
+for event in debug + admin:
+    assert event["customer_id"] == "__legacy__"
+    assert event["token_id"] == "legacy"
+    assert event["status"] == 200
+assert all(event["method"] == "GET" for event in debug)
+assert admin[0]["method"] == "POST"
+PY
+}
+
+wait_operator_audit() {
+  local endpoint="$1"
+  local bucket="$2"
+  local prefix="$3"
+  local attempts=0
+  until operator_audit_present "${endpoint}" "${bucket}" "${prefix}" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    if (( attempts > 150 )); then
+      operator_audit_present "${endpoint}" "${bucket}" "${prefix}"
+      exit 1
+    fi
+    sleep 0.1
+  done
+}
+
 inject_mirror() {
   curl --fail --silent -X POST "${MIRROR_URL}/_s3lite/fault" \
     -H 'content-type: application/json' -d "$1" >/dev/null
@@ -98,11 +174,24 @@ curl --fail --silent --show-error -X PUT "${STREAMS_URL}/v1/stream/audited" \
   "${auth[@]}" "${stream[@]}" -d '[]' >/dev/null
 curl --fail --silent --show-error -X POST "${STREAMS_URL}/v1/stream/audited" \
   "${auth[@]}" "${stream[@]}" -d '{"audit":1}' >/dev/null
+for _ in {1..10}; do
+  curl --fail --silent --show-error "${STREAMS_URL}/v1/debug/metrics" \
+    "${auth[@]}" >/dev/null
+done
+curl --fail --silent --show-error -X POST \
+  "${STREAMS_URL}/v1/admin/shards/root/split" "${auth[@]}" >/dev/null
 
-wait_count "${PRIMARY_URL}" primary audit-primary/audit/control/ 1
-wait_count "${MIRROR_URL}" mirror audit-secondary/audit/control/ 1
-wait_count "${PRIMARY_URL}" primary audit-primary/audit/batches/ 1
-wait_count "${MIRROR_URL}" mirror audit-secondary/audit/batches/ 1
+wait_count "${PRIMARY_URL}" primary audit-primary/audit/control/ 2
+wait_count "${MIRROR_URL}" mirror audit-secondary/audit/control/ 2
+wait_at_least "${PRIMARY_URL}" primary audit-primary/audit/batches/ 1
+wait_at_least "${MIRROR_URL}" mirror audit-secondary/audit/batches/ 1
+wait_operator_audit "${PRIMARY_URL}" primary audit-primary/audit/
+wait_operator_audit "${MIRROR_URL}" mirror audit-secondary/audit/
+
+control_primary_before="$(object_count \
+  "${PRIMARY_URL}" primary audit-primary/audit/control/)"
+control_mirror_before="$(object_count \
+  "${MIRROR_URL}" mirror audit-secondary/audit/control/)"
 
 # A control operation is not reported successful when its independent audit
 # write fails. Retrying the idempotent create records a mirrored event and
@@ -119,10 +208,17 @@ curl --fail --silent -X DELETE "${MIRROR_URL}/_s3lite/fault" >/dev/null
 curl --fail --silent --show-error -X PUT \
   "${STREAMS_URL}/v1/stream/audit-failure" "${auth[@]}" "${stream[@]}" -d '[]' >/dev/null
 wait_ready
-wait_count "${MIRROR_URL}" mirror audit-secondary/audit/control/ 2
+wait_count "${PRIMARY_URL}" primary audit-primary/audit/control/ \
+  "$((control_primary_before + 2))"
+wait_at_least "${MIRROR_URL}" mirror audit-secondary/audit/control/ \
+  "$((control_mirror_before + 1))"
 
 # Sampled batches retain one stable primary object while the mirror retries;
 # a mirror outage cannot turn into duplicate primary billing/audit batches.
+batch_primary_before="$(object_count \
+  "${PRIMARY_URL}" primary audit-primary/audit/batches/)"
+batch_mirror_before="$(object_count \
+  "${MIRROR_URL}" mirror audit-secondary/audit/batches/)"
 inject_mirror '{"operation":"put","key_contains":"audit/batches/","remaining":100,"status":503}'
 curl --fail --silent --show-error -X POST "${STREAMS_URL}/v1/stream/audited" \
   "${auth[@]}" "${stream[@]}" -d '{"audit":2}' >/dev/null
@@ -136,14 +232,18 @@ until [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
   fi
   sleep 0.1
 done
-wait_count "${PRIMARY_URL}" primary audit-primary/audit/batches/ 2
-[[ "$(object_count "${MIRROR_URL}" mirror audit-secondary/audit/batches/)" == "1" ]]
+wait_count "${PRIMARY_URL}" primary audit-primary/audit/batches/ \
+  "$((batch_primary_before + 1))"
+[[ "$(object_count "${MIRROR_URL}" mirror audit-secondary/audit/batches/)" \
+  == "${batch_mirror_before}" ]]
 curl --fail --silent -X DELETE "${MIRROR_URL}/_s3lite/fault" >/dev/null
 wait_ready
-wait_count "${MIRROR_URL}" mirror audit-secondary/audit/batches/ 2
-[[ "$(object_count "${PRIMARY_URL}" primary audit-primary/audit/batches/)" == "2" ]]
+wait_count "${MIRROR_URL}" mirror audit-secondary/audit/batches/ \
+  "$((batch_mirror_before + 1))"
+[[ "$(object_count "${PRIMARY_URL}" primary audit-primary/audit/batches/)" \
+  == "$((batch_primary_before + 1))" ]]
 
 curl --fail --silent "${STREAMS_URL}/v1/debug/metrics" "${auth[@]}" |
   grep -q '^streams_audit_mirror_configured 1$'
 
-echo "independent audit dual-write, retry, and readiness drill passed"
+echo "full-fidelity operator batching, durable admin audit, dual-write, retry, and readiness drill passed"

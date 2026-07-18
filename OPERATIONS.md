@@ -217,16 +217,18 @@ therefore two-tier and documented to customers:
 
 ### 3.4 Access audit
 
-Per-request audit records (tenant, stream, verb, token-id, result, latency)
+Per-request audit records (principal, resource, verb, token-id, result, latency)
 are written to the cell ops bucket and an independently credentialed audit
-provider. Create/delete records are synchronously persisted as identical
-immutable objects on both sides before a successful response is returned;
-sampled (1 % by default) data-plane reads/appends use bounded one-second NDJSON
-batches that retain one object identity while either side retries. Per-tenant
-counters remain full fidelity via the metrics stream. Queue loss, write
-failure, corrupt/missing mirror content, or maintenance failure makes readiness
-fail, and an unaudited successful control mutation is returned as retryable
-503 instead.
+provider. Create/delete and privileged state-changing admin records are
+synchronously persisted as identical immutable objects on both sides before a
+successful response is returned. Every authenticated operator debug read is
+recorded (no sampling) through bounded one-second NDJSON batches, so a metrics
+scrape does not create an object; sampled (1 % by default) tenant data-plane
+reads/appends share that batching path. A full-fidelity operator read fails 503
+if its event cannot enter the bounded queue. Per-tenant counters remain full
+fidelity via the metrics stream. Queue loss, write failure, corrupt/missing
+mirror content, or maintenance failure makes readiness fail, and an unaudited
+successful control mutation is returned as retryable 503 instead.
 
 Every boot reconciles both primary prefixes through conditionally persisted
 bounded cursors before readiness can pass. A primary object is pruned only

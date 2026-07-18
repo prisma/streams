@@ -137,9 +137,6 @@ pub struct AppState {
     pub default_ordering: Option<(String, u32)>,
     /// Bearer token required on /v1/* when set (pilot authn).
     pub authn: Authenticator,
-    /// Pilot/operator token retained for debug endpoints and the pilot's
-    /// internal metrics client. Tenant JWTs never grant operator access.
-    pub auth_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
     /// Exact internal billing stream identity; no user-selected name alone
     /// can opt out of metering or create an exporter feedback loop.
@@ -1063,15 +1060,6 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal, Resp
         })
 }
 
-fn operator_authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    if authenticate(state, headers).is_ok_and(|principal| principal.operator) {
-        return true;
-    }
-    state.auth_token.as_deref().is_some_and(|expected| {
-        crate::auth::constant_time_bearer_matches(authorization(headers), expected)
-    })
-}
-
 fn forbidden() -> Response {
     err_resp(
         StatusCode::FORBIDDEN,
@@ -1309,22 +1297,96 @@ async fn record_http_telemetry(
     response
 }
 
+fn operator_unauthorized() -> Response {
+    err_resp(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "operator token required",
+    )
+}
+
+fn audit_unavailable() -> Response {
+    let mut response = err_resp(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "audit_unavailable",
+        "operation completed but its audit record could not be accepted; retry",
+    );
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    response
+}
+
+/// Authenticate and audit the complete privileged HTTP surface in one route
+/// layer. Debug reads are full fidelity but batched; state-changing admin
+/// calls synchronously dual-write their result. Query strings are deliberately
+/// excluded, while the bounded path retains an admin call's exact shard target.
+async fn audit_operator_request(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let principal = match authenticate(&state, req.headers()) {
+        Ok(principal) if principal.operator => principal,
+        Ok(_) => return operator_unauthorized(),
+        Err(response) => return response,
+    };
+    let started = std::time::Instant::now();
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let durable = path.starts_with("/v1/admin/");
+    let response = next.run(req).await;
+    let event = crate::audit::AuditEvent {
+        timestamp_ms: now_ms(),
+        customer_id: principal.customer_id.clone(),
+        token_id: principal.token_id.clone(),
+        stream: path.clone(),
+        method: method.to_string(),
+        status: response.status().as_u16(),
+        duration_us: started.elapsed().as_micros().min(u64::MAX as u128) as u64,
+    };
+    let audit_result = if durable {
+        state.audit.record_durable(&event).await
+    } else {
+        state.audit.record_batched(event)
+    };
+    if let Err(error) = audit_result {
+        tracing::error!(
+            customer_id = %principal.customer_id,
+            token_id = %principal.token_id,
+            resource = %path,
+            method = %method,
+            durable,
+            "privileged request audit failed: {error}"
+        );
+        if response.status().is_success() {
+            return audit_unavailable();
+        }
+    } else {
+        tracing::info!(
+            target: "streams_audit",
+            customer_id = %principal.customer_id,
+            token_id = %principal.token_id,
+            resource = %path,
+            method = %method,
+            status = response.status().as_u16(),
+            duration_us = started.elapsed().as_micros() as u64,
+            durable,
+            "privileged request audit"
+        );
+    }
+    response
+}
+
 /// Calibrated-latency endpoint for edge probes: holds the request for
 /// ?ms= milliseconds doing no engine work. Lets a probe separate an
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
 /// (rate constant regardless of latency).
 async fn debug_sleep(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<AppState>>,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
     let ms: u64 = q
         .get("ms")
         .and_then(|v| v.parse().ok())
@@ -1336,14 +1398,7 @@ async fn debug_sleep(
 
 /// Live resource gauge for probes: in-flight now, peak since last call,
 /// and RSS.
-async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
+async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
     let peak = state
         .inflight_peak
@@ -1363,14 +1418,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
 /// storage paths. A heartbeat produced by an old binary (or republished by an
 /// old aggregator) appears with an all-zero capability envelope, allowing the
 /// rollout judge to stop rather than infer compatibility from a release tag.
-async fn debug_capabilities(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
+async fn debug_capabilities(State(state): State<Arc<AppState>>) -> Response {
     let mut fleet = crate::fleet::live_heartbeats();
     fleet.sort_unstable_by(|left, right| left.instance.cmp(&right.instance));
     let fleet: Vec<_> = fleet
@@ -1404,17 +1452,9 @@ async fn debug_capabilities(State(state): State<Arc<AppState>>, headers: HeaderM
 /// the outbound in-flight gauge. ?swap=1 resets the peak (sampler only —
 /// heartbeats read it non-destructively).
 async fn debug_store(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    State(_state): State<Arc<AppState>>,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
     let window: u64 = q
         .get("window")
         .and_then(|v| v.parse().ok())
@@ -1706,14 +1746,7 @@ fn render_operational_metrics(state: &AppState) -> String {
     out
 }
 
-async fn debug_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
+async fn debug_metrics(State(state): State<Arc<AppState>>) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -1727,15 +1760,7 @@ async fn debug_metrics(State(state): State<Arc<AppState>>, headers: HeaderMap) -
 async fn admin_split_shard(
     State(state): State<Arc<AppState>>,
     Path(parent): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
     let parent = if parent == "root" {
         String::new()
     } else {
@@ -1764,15 +1789,7 @@ async fn admin_split_shard(
 async fn admin_merge_shards(
     State(state): State<Arc<AppState>>,
     Path(parent): Path<String>,
-    headers: HeaderMap,
 ) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
     let parent = if parent == "root" {
         String::new()
     } else {
@@ -1799,11 +1816,7 @@ async fn admin_merge_shards(
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(health_ready))
-        .route("/health/ready", get(health_ready))
-        .route("/health/live", get(|| async { "ok" }))
-        .route("/v1/streams", get(list_streams))
+    let operator_routes = Router::new()
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/capabilities", get(debug_capabilities))
@@ -1812,6 +1825,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/sleep", get(debug_sleep))
         .route("/v1/admin/shards/{parent}/split", post(admin_split_shard))
         .route("/v1/admin/shards/{parent}/merge", post(admin_merge_shards))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            audit_operator_request,
+        ));
+    Router::new()
+        .route("/health", get(health_ready))
+        .route("/health/ready", get(health_ready))
+        .route("/health/live", get(|| async { "ok" }))
+        .route("/v1/streams", get(list_streams))
+        .merge(operator_routes)
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -2056,14 +2079,7 @@ fn storage_err_resp(error: slatedb::Error) -> Response {
 
 /// Commit-pipeline timing samples per shard: how long db.write took vs how
 /// long the group then waited for the durable watermark. Diagnostic only.
-async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !operator_authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "operator token required",
-        );
-    }
+async fn debug_timings(State(state): State<Arc<AppState>>) -> Response {
     let mut shards = serde_json::Map::new();
     let engines: Vec<(String, Arc<ShardEngine>)> = state
         .shards
