@@ -520,6 +520,15 @@ durable provider-independent cursor and feeds readiness independently of
 snapshot completion. Restore supports both legacy full-copy format 1 and
 content-addressed format 2, but only into empty offline targets.
 
+One instance per cell holds a renewable six-second CAS backup lease in the ops
+store. The lease epoch and monotonic per-epoch sequences fence mutable backup
+indexes, references, scrub state, the latest pointer, and a durable health
+record. Followers consume that fresh health record for readiness and perform no
+backup-provider scan/copy/GC work. Takeover triggers an immediate point and
+scrub batch; a delayed prior holder cannot regress any ordered publication.
+Content deletion must additionally be isolated across lease epochs before GA,
+because the object-store interface has no conditional-delete primitive.
+
 ---
 
 ## 11. Deployment

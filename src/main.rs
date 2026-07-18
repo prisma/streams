@@ -863,6 +863,10 @@ async fn async_main() -> anyhow::Result<()> {
     }
     if backup_store.is_some() {
         anyhow::ensure!(
+            crate::fleet::valid_instance_name(&args.instance_name),
+            "INSTANCE_NAME must be a bounded ASCII coordinator identity when backup is enabled"
+        );
+        anyhow::ensure!(
             args.backup_interval_secs >= 60,
             "BACKUP_INTERVAL_SECS must be at least 60"
         );
@@ -925,6 +929,10 @@ async fn async_main() -> anyhow::Result<()> {
                 shard_store: shard_store.clone(),
                 data_store: data_store.clone(),
                 lifetime: Duration::from_secs(args.backup_checkpoint_lifetime_secs),
+            }),
+            coordinator: Some(streams_slate::backup::BackupCoordinator {
+                store: ops_store.clone(),
+                owner: args.instance_name.clone(),
             }),
         }
     });

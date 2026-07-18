@@ -120,6 +120,18 @@ durable provider-independent cursor, so a missing as well as corrupt recovery
 object fails readiness. Shared physical role buckets are copied once,
 preferring the shard role so manifest filtering cannot be bypassed.
 
+Every backup-enabled instance contends for `backup/coordinator-lease.json` in
+the cell's ops store. Only the holder of the renewable six-second CAS lease may
+snapshot, prune, or advance the scrub cursor. Mutable source indexes, blob
+references, scrub state, `latest.json`, and `backup/health.json` carry the lease
+epoch plus a monotonic sequence and use conditional writes; a delayed old
+holder cannot overwrite takeover state. Followers read the current epoch's
+fresh health record, so all instances expose the same readiness result without
+duplicating backup I/O. `INSTANCE_NAME` is the bounded coordinator identity.
+Until epoch-isolated content GC lands, this is a singleton/publication fence,
+not a proof that a process paused inside an unconditional provider delete can
+never overlap its successor; that closure remains a GA gate.
+
 ### 3.2 Engine (shard log)
 
 | env | default | guidance |
@@ -605,6 +617,9 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   an operator to repair a blob in place only with the exact expected bytes.
   A measured failover against the actual independent provider remains a GA
   release gate in [OPERATIONS.md §2](./OPERATIONS.md).
+  CI also runs two backup-enabled instances, kills the actual six-second lease
+  holder, requires an epoch-incremented point from the survivor, and rejects
+  duplicate completion markers.
 - **Online shard split:** send an operator-authenticated request to the
   current ring owner (`root` means the empty prefix):
 

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
@@ -16,6 +16,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use object_store::path::Path as ObjPath;
 use object_store::{
     GetOptions, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
+    UpdateVersion,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -33,6 +34,10 @@ const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
 const MAX_SCRUB_STATE_BYTES: usize = 4 * 1024;
+const COORDINATOR_FORMAT_VERSION: u32 = 1;
+const COORDINATOR_LEASE_MS: i64 = 6_000;
+const COORDINATOR_RENEW_MS: u64 = 2_000;
+const MAX_COORDINATOR_DOCUMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct BackupSource {
@@ -48,6 +53,12 @@ pub struct BackupPins {
     pub lifetime: Duration,
 }
 
+#[derive(Clone)]
+pub struct BackupCoordinator {
+    pub store: Arc<dyn ObjectStore>,
+    pub owner: String,
+}
+
 pub struct BackupConfig {
     pub sources: Vec<BackupSource>,
     pub destination: Arc<dyn ObjectStore>,
@@ -56,6 +67,7 @@ pub struct BackupConfig {
     pub scrub_interval: Duration,
     pub scrub_objects_per_interval: usize,
     pub pins: Option<BackupPins>,
+    pub coordinator: Option<BackupCoordinator>,
 }
 
 pub struct BackupStatus {
@@ -91,6 +103,10 @@ pub struct SnapshotReport {
     pub pinned_shards: u64,
     #[serde(default)]
     pub pinned_history_dbs: u64,
+    #[serde(default)]
+    pub coordinator_epoch: u64,
+    #[serde(default)]
+    pub coordinator_sequence: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -117,6 +133,10 @@ struct SourceIndex {
     blob_path: String,
     snapshot_id: String,
     referenced_ms: i64,
+    #[serde(default)]
+    coordinator_epoch: u64,
+    #[serde(default)]
+    coordinator_sequence: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -125,6 +145,10 @@ struct BlobReference {
     blob_path: String,
     snapshot_id: String,
     referenced_ms: i64,
+    #[serde(default)]
+    coordinator_epoch: u64,
+    #[serde(default)]
+    coordinator_sequence: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -135,6 +159,46 @@ struct ScrubState {
     /// restarts from starving the high end of a large recovery corpus.
     cursor: Option<String>,
     updated_ms: i64,
+    #[serde(default)]
+    coordinator_epoch: u64,
+    #[serde(default)]
+    coordinator_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CoordinatorLease {
+    format_version: u32,
+    owner: String,
+    token: String,
+    epoch: u64,
+    lease_until_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CoordinatorHealth {
+    format_version: u32,
+    lease_epoch: u64,
+    sequence: u64,
+    generated_ms: i64,
+    latest_completed_ms: i64,
+    last_scrub_ms: i64,
+    snapshot_healthy: bool,
+    scrub_healthy: bool,
+}
+
+struct CoordinatorState {
+    config: BackupCoordinator,
+    token: String,
+    owned: AtomicBool,
+    epoch: AtomicU64,
+    lease_until_ms: AtomicI64,
+    mutation_sequence: AtomicU64,
+}
+
+#[derive(Clone)]
+struct PublicationFence {
+    state: Arc<CoordinatorState>,
+    epoch: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -200,6 +264,16 @@ struct PinnedBackupState {
     history_manifests: HashMap<String, Option<PinnedDbManifest>>,
 }
 
+struct SnapshotContext<'a> {
+    pins: Option<&'a BackupPins>,
+    pinned_state: Option<&'a PinnedBackupState>,
+    started_ms: i64,
+    snapshot_id: &'a str,
+    fence: Option<&'a PublicationFence>,
+    coordinator_epoch: u64,
+    coordinator_sequence: u64,
+}
+
 #[derive(Clone)]
 struct PinnedDbManifest {
     manifest_id: u64,
@@ -209,31 +283,407 @@ struct PinnedDbManifest {
     compactions_id: Option<u64>,
 }
 
+impl CoordinatorState {
+    fn fence(self: &Arc<Self>) -> Option<PublicationFence> {
+        let epoch = self.epoch.load(Ordering::Acquire);
+        (self.owned.load(Ordering::Acquire)
+            && epoch > 0
+            && self.lease_until_ms.load(Ordering::Acquire) > now_ms())
+        .then(|| PublicationFence {
+            state: self.clone(),
+            epoch,
+        })
+    }
+}
+
+impl PublicationFence {
+    fn check_local(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state.owned.load(Ordering::Acquire)
+                && self.state.epoch.load(Ordering::Acquire) == self.epoch
+                && self.state.lease_until_ms.load(Ordering::Acquire) > now_ms(),
+            "backup coordinator lease was lost"
+        );
+        Ok(())
+    }
+
+    async fn verify_remote(&self) -> anyhow::Result<()> {
+        self.check_local()?;
+        let encoded = self
+            .state
+            .config
+            .store
+            .get(&coordinator_lease_path())
+            .await?
+            .bytes()
+            .await?;
+        anyhow::ensure!(
+            encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+            "backup coordinator lease is too large"
+        );
+        let lease: CoordinatorLease = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(
+            coordinator_lease_is_valid(&lease)
+                && lease.owner == self.state.config.owner
+                && lease.token == self.state.token
+                && lease.epoch == self.epoch
+                && lease.lease_until_ms > now_ms(),
+            "backup coordinator lease was lost"
+        );
+        Ok(())
+    }
+}
+
+fn valid_coordinator_owner(owner: &str) -> bool {
+    !owner.is_empty()
+        && owner.len() <= 128
+        && owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn coordinator_lease_is_valid(lease: &CoordinatorLease) -> bool {
+    lease.format_version == COORDINATOR_FORMAT_VERSION
+        && valid_coordinator_owner(&lease.owner)
+        && lease.token.len() == 32
+        && lease.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && lease.epoch > 0
+        && lease.lease_until_ms > 0
+}
+
+fn coordinator_token() -> String {
+    let mut token = [0u8; 16];
+    use rand::RngCore;
+    rand::rng().fill_bytes(&mut token);
+    crate::crypto::hex(&token)
+}
+
+async fn claim_coordinator(state: &CoordinatorState) -> anyhow::Result<Option<CoordinatorLease>> {
+    anyhow::ensure!(
+        valid_coordinator_owner(&state.config.owner),
+        "invalid backup coordinator owner"
+    );
+    let path = coordinator_lease_path();
+    for _ in 0..5 {
+        let now = now_ms();
+        match state.config.store.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let encoded = result.bytes().await?;
+                anyhow::ensure!(
+                    encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+                    "backup coordinator lease is too large"
+                );
+                let current: CoordinatorLease = serde_json::from_slice(&encoded)?;
+                anyhow::ensure!(
+                    coordinator_lease_is_valid(&current)
+                        && current.lease_until_ms <= now.saturating_add(60_000)
+                        && !(current.token == state.token && current.owner != state.config.owner),
+                    "malformed backup coordinator lease"
+                );
+                if current.token != state.token && current.lease_until_ms > now {
+                    return Ok(None);
+                }
+                let next = CoordinatorLease {
+                    format_version: COORDINATOR_FORMAT_VERSION,
+                    owner: state.config.owner.clone(),
+                    token: state.token.clone(),
+                    epoch: if current.token == state.token {
+                        current.epoch
+                    } else {
+                        current
+                            .epoch
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("backup coordinator epoch exhausted"))?
+                    },
+                    lease_until_ms: now.saturating_add(COORDINATOR_LEASE_MS),
+                };
+                match state
+                    .config
+                    .store
+                    .put_opts(
+                        &path,
+                        PutPayload::from(Bytes::from(serde_json::to_vec(&next)?)),
+                        PutOptions::from(PutMode::Update(version)),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(Some(next)),
+                    Err(object_store::Error::Precondition { .. }) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                let lease = CoordinatorLease {
+                    format_version: COORDINATOR_FORMAT_VERSION,
+                    owner: state.config.owner.clone(),
+                    token: state.token.clone(),
+                    epoch: 1,
+                    lease_until_ms: now.saturating_add(COORDINATOR_LEASE_MS),
+                };
+                match state
+                    .config
+                    .store
+                    .put_opts(
+                        &path,
+                        PutPayload::from(Bytes::from(serde_json::to_vec(&lease)?)),
+                        PutOptions::from(PutMode::Create),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(Some(lease)),
+                    Err(object_store::Error::AlreadyExists { .. }) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup coordinator lease CAS retries exhausted")
+}
+
+fn start_coordinator(config: BackupCoordinator) -> Arc<CoordinatorState> {
+    let state = Arc::new(CoordinatorState {
+        config,
+        token: coordinator_token(),
+        owned: AtomicBool::new(false),
+        epoch: AtomicU64::new(0),
+        lease_until_ms: AtomicI64::new(0),
+        mutation_sequence: AtomicU64::new(0),
+    });
+    let renew = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(COORDINATOR_RENEW_MS));
+        loop {
+            tick.tick().await;
+            match claim_coordinator(&renew).await {
+                Ok(Some(lease)) => {
+                    renew.epoch.store(lease.epoch, Ordering::Release);
+                    renew
+                        .lease_until_ms
+                        .store(lease.lease_until_ms, Ordering::Release);
+                    renew.owned.store(true, Ordering::Release);
+                }
+                Ok(None) => {
+                    renew.owned.store(false, Ordering::Release);
+                    renew.lease_until_ms.store(0, Ordering::Release);
+                }
+                Err(error) => {
+                    renew.owned.store(false, Ordering::Release);
+                    renew.lease_until_ms.store(0, Ordering::Release);
+                    tracing::error!("backup coordinator lease failed: {error:#}");
+                }
+            }
+        }
+    });
+    state
+}
+
+fn leadership_fence(
+    coordinator: Option<&Arc<CoordinatorState>>,
+) -> Option<Option<PublicationFence>> {
+    match coordinator {
+        Some(coordinator) => coordinator.fence().map(Some),
+        None => Some(None),
+    }
+}
+
+async fn publish_coordinator_health(
+    fence: &PublicationFence,
+    health: &CoordinatorHealth,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        health.format_version == COORDINATOR_FORMAT_VERSION
+            && health.lease_epoch == fence.epoch
+            && health.sequence > 0
+            && health.generated_ms > 0,
+        "invalid backup coordinator health"
+    );
+    fence.verify_remote().await?;
+    let path = coordinator_health_path();
+    let encoded = serde_json::to_vec(health)?;
+    anyhow::ensure!(
+        encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+        "backup coordinator health is too large"
+    );
+    for _ in 0..5 {
+        let mode = match fence.state.config.store.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let current_bytes = result.bytes().await?;
+                anyhow::ensure!(
+                    current_bytes.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+                    "backup coordinator health is too large"
+                );
+                let current: CoordinatorHealth = serde_json::from_slice(&current_bytes)?;
+                let current_order = (current.lease_epoch, current.sequence);
+                let next_order = (health.lease_epoch, health.sequence);
+                anyhow::ensure!(
+                    current_order <= next_order,
+                    "backup coordinator health publication was fenced"
+                );
+                if current_order == next_order {
+                    anyhow::ensure!(
+                        current.format_version == health.format_version
+                            && current.generated_ms == health.generated_ms
+                            && current.latest_completed_ms == health.latest_completed_ms
+                            && current.last_scrub_ms == health.last_scrub_ms
+                            && current.snapshot_healthy == health.snapshot_healthy
+                            && current.scrub_healthy == health.scrub_healthy,
+                        "conflicting backup coordinator health sequence"
+                    );
+                    return Ok(());
+                }
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        fence.verify_remote().await?;
+        match fence
+            .state
+            .config
+            .store
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded.clone())),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup coordinator health CAS retries exhausted")
+}
+
+async fn load_coordinator_health(
+    coordinator: &CoordinatorState,
+    snapshot_interval: Duration,
+    scrub_interval: Duration,
+) -> anyhow::Result<CoordinatorHealth> {
+    let lease_bytes = coordinator
+        .config
+        .store
+        .get(&coordinator_lease_path())
+        .await?
+        .bytes()
+        .await?;
+    anyhow::ensure!(
+        lease_bytes.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+        "backup coordinator lease is too large"
+    );
+    let lease: CoordinatorLease = serde_json::from_slice(&lease_bytes)?;
+    let now = now_ms();
+    anyhow::ensure!(
+        coordinator_lease_is_valid(&lease)
+            && lease.lease_until_ms > now
+            && lease.lease_until_ms <= now.saturating_add(60_000),
+        "backup coordinator lease is stale"
+    );
+    let encoded = coordinator
+        .config
+        .store
+        .get(&coordinator_health_path())
+        .await?
+        .bytes()
+        .await?;
+    anyhow::ensure!(
+        encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
+        "backup coordinator health is too large"
+    );
+    let mut health: CoordinatorHealth = serde_json::from_slice(&encoded)?;
+    anyhow::ensure!(
+        health.format_version == COORDINATOR_FORMAT_VERSION
+            && health.lease_epoch == lease.epoch
+            && health.sequence > 0
+            && health.generated_ms > 0
+            && health.generated_ms <= now.saturating_add(60_000),
+        "backup coordinator health is malformed or from another epoch"
+    );
+    let snapshot_budget = duration_ms(snapshot_interval.saturating_mul(2)).saturating_add(60_000);
+    let scrub_budget = duration_ms(scrub_interval.saturating_mul(3)).saturating_add(10_000);
+    let report_budget = scrub_budget.max(COORDINATOR_LEASE_MS.saturating_mul(2));
+    health.snapshot_healthy &= now
+        .checked_sub(health.latest_completed_ms)
+        .is_some_and(|age| (0..=snapshot_budget).contains(&age));
+    health.scrub_healthy &= now
+        .checked_sub(health.last_scrub_ms)
+        .is_some_and(|age| (0..=scrub_budget).contains(&age));
+    anyhow::ensure!(
+        now.checked_sub(health.generated_ms)
+            .is_some_and(|age| (0..=report_budget).contains(&age)),
+        "backup coordinator health is stale"
+    );
+    Ok(health)
+}
+
+fn duration_ms(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
 pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
     // A configured backup is not healthy until at least one marker-last
     // snapshot has actually completed.
     let status = Arc::new(BackupStatus {
         snapshot_healthy: AtomicBool::new(false),
-        scrub_healthy: AtomicBool::new(true),
+        scrub_healthy: AtomicBool::new(false),
     });
+    let coordinator = config.coordinator.clone().map(start_coordinator);
     let actor_status = status.clone();
     tokio::spawn(async move {
         let mut snapshot_tick = tokio::time::interval(config.interval.max(Duration::from_secs(60)));
         let mut scrub_tick =
             tokio::time::interval(config.scrub_interval.max(Duration::from_secs(10)));
+        let mut coordinator_tick = tokio::time::interval(Duration::from_secs(1));
+        let mut active_epoch = 0u64;
+        let mut snapshot_sequence = 0u64;
+        let mut health_sequence = 0u64;
+        let mut latest_completed_ms = 0i64;
+        let mut last_scrub_ms = 0i64;
+        let mut was_leader = coordinator.is_none();
         loop {
             tokio::select! {
                 _ = snapshot_tick.tick() => {
-                    let result = snapshot_once_with_pins(
+                    let Some(fence) = leadership_fence(coordinator.as_ref()) else {
+                        continue;
+                    };
+                    let epoch = fence.as_ref().map_or(0, |fence| fence.epoch);
+                    if epoch != active_epoch {
+                        active_epoch = epoch;
+                        snapshot_sequence = 0;
+                        health_sequence = 0;
+                        latest_completed_ms = 0;
+                        last_scrub_ms = 0;
+                    }
+                    snapshot_sequence = snapshot_sequence.saturating_add(1).max(1);
+                    let result = snapshot_once_with_pins_fenced(
                         &config.sources,
                         config.destination.clone(),
                         config.pins.as_ref(),
+                        fence.as_ref(),
+                        epoch,
+                        snapshot_sequence,
                     ).await;
                     match result {
                         Ok(report) => {
-                            match prune_once(config.destination.clone(), config.retention).await {
+                            match prune_once_fenced(
+                                config.destination.clone(),
+                                config.retention,
+                                fence.as_ref(),
+                            ).await {
                                 Ok(pruned) => {
                                     actor_status.snapshot_healthy.store(true, Ordering::Release);
+                                    latest_completed_ms = report.completed_ms;
                                     tracing::info!(
                                         snapshot = %report.snapshot_id,
                                         objects = report.objects,
@@ -258,14 +708,37 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             tracing::error!("backup snapshot failed: {error:#}");
                         }
                     }
+                    if let Some(fence) = fence.as_ref() {
+                        health_sequence = health_sequence.saturating_add(1).max(1);
+                        let health = CoordinatorHealth {
+                            format_version: COORDINATOR_FORMAT_VERSION,
+                            lease_epoch: fence.epoch,
+                            sequence: health_sequence,
+                            generated_ms: now_ms(),
+                            latest_completed_ms,
+                            last_scrub_ms,
+                            snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
+                            scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                        };
+                        if let Err(error) = publish_coordinator_health(fence, &health).await {
+                            actor_status.snapshot_healthy.store(false, Ordering::Release);
+                            actor_status.scrub_healthy.store(false, Ordering::Release);
+                            tracing::error!("backup coordinator health publication failed: {error:#}");
+                        }
+                    }
                 }
                 _ = scrub_tick.tick() => {
+                    let Some(fence) = leadership_fence(coordinator.as_ref()) else {
+                        continue;
+                    };
                     match scrub_blob_batch(
                         config.destination.clone(),
                         config.scrub_objects_per_interval.max(1),
+                        fence.as_ref(),
                     ).await {
                         Ok(checked) => {
                             actor_status.scrub_healthy.store(true, Ordering::Release);
+                            last_scrub_ms = now_ms();
                             tracing::info!(checked, "backup content scrub batch complete");
                         }
                         Err(error) => {
@@ -273,6 +746,57 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             tracing::error!("backup content scrub failed: {error:#}");
                         }
                     }
+                    if let Some(fence) = fence.as_ref() {
+                        if fence.epoch != active_epoch {
+                            active_epoch = fence.epoch;
+                            snapshot_sequence = 0;
+                            health_sequence = 0;
+                            latest_completed_ms = 0;
+                        }
+                        health_sequence = health_sequence.saturating_add(1).max(1);
+                        let health = CoordinatorHealth {
+                            format_version: COORDINATOR_FORMAT_VERSION,
+                            lease_epoch: fence.epoch,
+                            sequence: health_sequence,
+                            generated_ms: now_ms(),
+                            latest_completed_ms,
+                            last_scrub_ms,
+                            snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
+                            scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                        };
+                        if let Err(error) = publish_coordinator_health(fence, &health).await {
+                            actor_status.snapshot_healthy.store(false, Ordering::Release);
+                            actor_status.scrub_healthy.store(false, Ordering::Release);
+                            tracing::error!("backup coordinator health publication failed: {error:#}");
+                        }
+                    }
+                }
+                _ = coordinator_tick.tick(), if coordinator.is_some() => {
+                    let is_leader = coordinator
+                        .as_ref()
+                        .and_then(|coordinator| coordinator.fence())
+                        .is_some();
+                    if is_leader && !was_leader {
+                        snapshot_tick.reset_immediately();
+                        scrub_tick.reset_immediately();
+                    } else if !is_leader {
+                        match load_coordinator_health(
+                            coordinator.as_ref().expect("coordinator exists"),
+                            config.interval,
+                            config.scrub_interval,
+                        ).await {
+                            Ok(health) => {
+                                actor_status.snapshot_healthy.store(health.snapshot_healthy, Ordering::Release);
+                                actor_status.scrub_healthy.store(health.scrub_healthy, Ordering::Release);
+                            }
+                            Err(error) => {
+                                actor_status.snapshot_healthy.store(false, Ordering::Release);
+                                actor_status.scrub_healthy.store(false, Ordering::Release);
+                                tracing::warn!("backup coordinator health unavailable: {error:#}");
+                            }
+                        }
+                    }
+                    was_leader = is_leader;
                 }
             }
         }
@@ -284,14 +808,33 @@ pub async fn snapshot_once(
     sources: &[BackupSource],
     destination: Arc<dyn ObjectStore>,
 ) -> anyhow::Result<SnapshotReport> {
-    snapshot_once_with_pins(sources, destination, None).await
+    snapshot_once_with_pins_fenced(sources, destination, None, None, 0, 0).await
 }
 
+#[cfg(test)]
 async fn snapshot_once_with_pins(
     sources: &[BackupSource],
     destination: Arc<dyn ObjectStore>,
     pins: Option<&BackupPins>,
 ) -> anyhow::Result<SnapshotReport> {
+    snapshot_once_with_pins_fenced(sources, destination, pins, None, 0, 0).await
+}
+
+async fn snapshot_once_with_pins_fenced(
+    sources: &[BackupSource],
+    destination: Arc<dyn ObjectStore>,
+    pins: Option<&BackupPins>,
+    fence: Option<&PublicationFence>,
+    coordinator_epoch: u64,
+    coordinator_sequence: u64,
+) -> anyhow::Result<SnapshotReport> {
+    if let Some(fence) = fence {
+        fence.check_local()?;
+        anyhow::ensure!(
+            coordinator_epoch == fence.epoch && coordinator_sequence > 0,
+            "backup publication order does not match its coordinator lease"
+        );
+    }
     let started_ms = now_ms();
     let snapshot_id = format!("{:020}-{:032x}", started_ms.max(0), rand::random::<u128>());
     let (pinned_state, leases) = match pins {
@@ -304,10 +847,15 @@ async fn snapshot_once_with_pins(
     let result = snapshot_once_inner(
         sources,
         destination,
-        pins,
-        pinned_state.as_ref(),
-        started_ms,
-        &snapshot_id,
+        SnapshotContext {
+            pins,
+            pinned_state: pinned_state.as_ref(),
+            started_ms,
+            snapshot_id: &snapshot_id,
+            fence,
+            coordinator_epoch,
+            coordinator_sequence,
+        },
     )
     .await;
     let release = release_checkpoint_leases(leases).await;
@@ -326,11 +874,17 @@ async fn snapshot_once_with_pins(
 async fn snapshot_once_inner(
     sources: &[BackupSource],
     destination: Arc<dyn ObjectStore>,
-    pins: Option<&BackupPins>,
-    pinned_state: Option<&PinnedBackupState>,
-    started_ms: i64,
-    snapshot_id: &str,
+    context: SnapshotContext<'_>,
 ) -> anyhow::Result<SnapshotReport> {
+    let SnapshotContext {
+        pins,
+        pinned_state,
+        started_ms,
+        snapshot_id,
+        fence,
+        coordinator_epoch,
+        coordinator_sequence,
+    } = context;
     let mut objects = 0u64;
     let mut bytes = 0u64;
     let mut copied_objects = 0u64;
@@ -340,10 +894,22 @@ async fn snapshot_once_inner(
     let mut inventory_checksum = [0u8; 32];
 
     for source in sources {
+        if let Some(fence) = fence {
+            fence.check_local()?;
+        }
         validate_role(source.role)?;
         roles.push(source.role.to_string());
         let mut listing = source.store.list(None);
         while let Some(meta) = listing.try_next().await? {
+            if matches!(
+                meta.location.as_ref(),
+                "backup/coordinator-lease.json" | "backup/health.json"
+            ) {
+                continue;
+            }
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             if matches!(source.role, "shard" | "data")
                 && pinned_state
                     .is_some_and(|state| object_is_outside_recovery_point(&meta.location, state))
@@ -382,8 +948,26 @@ async fn snapshot_once_inner(
                     record
                 }
             };
-            write_source_index(destination.clone(), &record, &source_etag, snapshot_id).await?;
-            touch_blob_reference(destination.clone(), &record, snapshot_id).await?;
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
+            write_source_index(
+                destination.clone(),
+                &record,
+                &source_etag,
+                snapshot_id,
+                coordinator_epoch,
+                coordinator_sequence,
+            )
+            .await?;
+            touch_blob_reference(
+                destination.clone(),
+                &record,
+                snapshot_id,
+                coordinator_epoch,
+                coordinator_sequence,
+            )
+            .await?;
             let inventory = serde_json::to_vec(&record)?;
             anyhow::ensure!(
                 inventory.len() <= MAX_INVENTORY_BYTES,
@@ -411,6 +995,9 @@ async fn snapshot_once_inner(
     if let (Some(pins), Some(state)) = (pins, pinned_state) {
         verify_pinned_state(pins, state).await?;
     }
+    if let Some(fence) = fence {
+        fence.verify_remote().await?;
+    }
 
     let report = SnapshotReport {
         format_version: SNAPSHOT_FORMAT_VERSION,
@@ -432,6 +1019,8 @@ async fn snapshot_once_inner(
                 .filter(|manifest| manifest.is_some())
                 .count() as u64
         }),
+        coordinator_epoch,
+        coordinator_sequence,
     };
     let marker = marker_path(snapshot_id);
     destination
@@ -445,14 +1034,80 @@ async fn snapshot_once_inner(
         )
         .await?;
     // This mutable convenience pointer is never the authority: restore still
-    // requires and validates the immutable marker named by this report.
-    destination
-        .put(
-            &ObjPath::from("latest.json"),
-            PutPayload::from(Bytes::from(serde_json::to_vec(&report)?)),
-        )
-        .await?;
+    // requires and validates the immutable marker named by this report. A
+    // coordinated actor CAS-orders it by lease epoch/sequence so a delayed
+    // old leader cannot regress the pointer after takeover.
+    if let Some(fence) = fence {
+        fence.verify_remote().await?;
+        publish_latest(destination, &report).await?;
+    } else {
+        destination
+            .put(
+                &ObjPath::from("latest.json"),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&report)?)),
+            )
+            .await?;
+    }
     Ok(report)
+}
+
+async fn publish_latest(
+    destination: Arc<dyn ObjectStore>,
+    report: &SnapshotReport,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        report.coordinator_epoch > 0 && report.coordinator_sequence > 0,
+        "coordinated latest pointer has no publication order"
+    );
+    let path = ObjPath::from("latest.json");
+    let encoded = serde_json::to_vec(report)?;
+    for _ in 0..5 {
+        let mode = match destination.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let current_bytes = result.bytes().await?;
+                anyhow::ensure!(
+                    current_bytes.len() <= MAX_INVENTORY_BYTES,
+                    "latest pointer is too large"
+                );
+                let current: SnapshotReport = serde_json::from_slice(&current_bytes)?;
+                validate_snapshot_id(&current.snapshot_id)?;
+                let current_order = (current.coordinator_epoch, current.coordinator_sequence);
+                let next_order = (report.coordinator_epoch, report.coordinator_sequence);
+                anyhow::ensure!(
+                    current_order <= next_order,
+                    "backup latest pointer publication was fenced"
+                );
+                if current_order == next_order {
+                    anyhow::ensure!(
+                        current.snapshot_id == report.snapshot_id,
+                        "conflicting backup latest pointer sequence"
+                    );
+                    return Ok(());
+                }
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        match destination
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded.clone())),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup latest pointer CAS retries exhausted")
 }
 
 async fn read_backup_topology(store: &Arc<dyn ObjectStore>) -> anyhow::Result<BackupTopology> {
@@ -931,6 +1586,8 @@ async fn write_source_index(
     record: &InventoryRecord,
     source_etag: &str,
     snapshot_id: &str,
+    coordinator_epoch: u64,
+    coordinator_sequence: u64,
 ) -> anyhow::Result<()> {
     let index = SourceIndex {
         role: record.role.clone(),
@@ -945,25 +1602,72 @@ async fn write_source_index(
             .ok_or_else(|| anyhow::anyhow!("incremental record has no blob path"))?,
         snapshot_id: snapshot_id.to_string(),
         referenced_ms: now_ms(),
+        coordinator_epoch,
+        coordinator_sequence,
     };
     let encoded = serde_json::to_vec(&index)?;
     anyhow::ensure!(
         encoded.len() <= MAX_INVENTORY_BYTES,
         "source index too large"
     );
-    destination
-        .put(
-            &source_index_path(&record.role, &record.source_path),
-            PutPayload::from(Bytes::from(encoded)),
-        )
-        .await?;
-    Ok(())
+    let path = source_index_path(&record.role, &record.source_path);
+    if coordinator_epoch == 0 {
+        destination
+            .put(&path, PutPayload::from(Bytes::from(encoded)))
+            .await?;
+        return Ok(());
+    }
+    for _ in 0..5 {
+        let mode = match destination.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let current: SourceIndex = serde_json::from_slice(&result.bytes().await?)?;
+                let current_order = (current.coordinator_epoch, current.coordinator_sequence);
+                let next_order = (coordinator_epoch, coordinator_sequence);
+                anyhow::ensure!(
+                    current_order <= next_order,
+                    "backup source-index update was fenced"
+                );
+                if current_order == next_order {
+                    anyhow::ensure!(
+                        current.snapshot_id == snapshot_id
+                            && current.role == record.role
+                            && current.source_path == record.source_path,
+                        "conflicting backup source-index sequence"
+                    );
+                    return Ok(());
+                }
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        match destination
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded.clone())),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup source-index CAS retries exhausted")
 }
 
 async fn touch_blob_reference(
     destination: Arc<dyn ObjectStore>,
     record: &InventoryRecord,
     snapshot_id: &str,
+    coordinator_epoch: u64,
+    coordinator_sequence: u64,
 ) -> anyhow::Result<()> {
     let reference = BlobReference {
         sha256: record.sha256.clone(),
@@ -973,14 +1677,58 @@ async fn touch_blob_reference(
             .ok_or_else(|| anyhow::anyhow!("incremental record has no blob path"))?,
         snapshot_id: snapshot_id.to_string(),
         referenced_ms: now_ms(),
+        coordinator_epoch,
+        coordinator_sequence,
     };
-    destination
-        .put(
-            &blob_reference_path(&record.sha256),
-            PutPayload::from(Bytes::from(serde_json::to_vec(&reference)?)),
-        )
-        .await?;
-    Ok(())
+    let path = blob_reference_path(&record.sha256);
+    let encoded = serde_json::to_vec(&reference)?;
+    if coordinator_epoch == 0 {
+        destination
+            .put(&path, PutPayload::from(Bytes::from(encoded)))
+            .await?;
+        return Ok(());
+    }
+    for _ in 0..5 {
+        let mode = match destination.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let current: BlobReference = serde_json::from_slice(&result.bytes().await?)?;
+                let current_order = (current.coordinator_epoch, current.coordinator_sequence);
+                let next_order = (coordinator_epoch, coordinator_sequence);
+                anyhow::ensure!(
+                    current_order <= next_order,
+                    "backup blob-reference update was fenced"
+                );
+                if current_order == next_order {
+                    anyhow::ensure!(
+                        current.snapshot_id == snapshot_id && current.sha256 == record.sha256,
+                        "conflicting backup blob-reference sequence"
+                    );
+                    return Ok(());
+                }
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        match destination
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded.clone())),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup blob-reference CAS retries exhausted")
 }
 
 async fn verify_blob_digest(
@@ -1225,6 +1973,17 @@ pub async fn prune_once(
     destination: Arc<dyn ObjectStore>,
     retention: Duration,
 ) -> anyhow::Result<u64> {
+    prune_once_fenced(destination, retention, None).await
+}
+
+async fn prune_once_fenced(
+    destination: Arc<dyn ObjectStore>,
+    retention: Duration,
+    fence: Option<&PublicationFence>,
+) -> anyhow::Result<u64> {
+    if let Some(fence) = fence {
+        fence.verify_remote().await?;
+    }
     anyhow::ensure!(!retention.is_zero(), "backup retention must be positive");
     let cutoff = now_ms().saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
     let snapshots_prefix = ObjPath::from("snapshots");
@@ -1286,6 +2045,9 @@ pub async fn prune_once(
         if generation_from_path(&meta.location, "snapshots")
             .is_some_and(|id| delete_generations.contains(&id))
         {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             destination.delete(&meta.location).await?;
             pruned = pruned.saturating_add(1);
         }
@@ -1295,6 +2057,9 @@ pub async fn prune_once(
         if generation_from_path(&meta.location, "staging")
             .is_some_and(|id| delete_generations.contains(&id))
         {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             destination.delete(&meta.location).await?;
             pruned = pruned.saturating_add(1);
         }
@@ -1316,6 +2081,9 @@ pub async fn prune_once(
             "malformed blob reference"
         );
         if reference.referenced_ms < cutoff && delete_generations.contains(&reference.snapshot_id) {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             match destination
                 .delete(&ObjPath::parse(&reference.blob_path)?)
                 .await
@@ -1338,6 +2106,9 @@ pub async fn prune_once(
         let encoded = destination.get(&meta.location).await?.bytes().await?;
         let index: SourceIndex = serde_json::from_slice(&encoded)?;
         if index.referenced_ms < cutoff && delete_generations.contains(&index.snapshot_id) {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             destination.delete(&meta.location).await?;
             pruned = pruned.saturating_add(1);
         }
@@ -1345,7 +2116,14 @@ pub async fn prune_once(
     Ok(pruned)
 }
 
-async fn scrub_blob_batch(destination: Arc<dyn ObjectStore>, limit: usize) -> anyhow::Result<u64> {
+async fn scrub_blob_batch(
+    destination: Arc<dyn ObjectStore>,
+    limit: usize,
+    fence: Option<&PublicationFence>,
+) -> anyhow::Result<u64> {
+    if let Some(fence) = fence {
+        fence.check_local()?;
+    }
     // Walk references rather than blobs so deletion of a required blob is a
     // scrub failure rather than silently disappearing from the scan set. Do
     // not rely on provider listing order: retain the bounded lexicographically
@@ -1378,6 +2156,9 @@ async fn scrub_blob_batch(destination: Arc<dyn ObjectStore>, limit: usize) -> an
 
         let mut checked = 0u64;
         for (location, size) in candidates {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
             anyhow::ensure!(
                 size <= MAX_INVENTORY_BYTES as u64,
                 "blob reference is too large"
@@ -1399,7 +2180,10 @@ async fn scrub_blob_batch(destination: Arc<dyn ObjectStore>, limit: usize) -> an
             cursor = Some(location);
             checked = checked.saturating_add(1);
         }
-        write_scrub_cursor(destination, cursor.as_ref()).await?;
+        if let Some(fence) = fence {
+            fence.verify_remote().await?;
+        }
+        write_scrub_cursor(destination, cursor.as_ref(), fence).await?;
         return Ok(checked);
     }
 }
@@ -1429,21 +2213,74 @@ async fn read_scrub_cursor(destination: Arc<dyn ObjectStore>) -> anyhow::Result<
 async fn write_scrub_cursor(
     destination: Arc<dyn ObjectStore>,
     cursor: Option<&ObjPath>,
+    fence: Option<&PublicationFence>,
 ) -> anyhow::Result<()> {
+    let (coordinator_epoch, coordinator_sequence) = match fence {
+        Some(fence) => {
+            let previous = fence
+                .state
+                .mutation_sequence
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                    value.checked_add(1)
+                })
+                .map_err(|_| anyhow::anyhow!("backup mutation sequence exhausted"))?;
+            (fence.epoch, previous + 1)
+        }
+        None => (0, 0),
+    };
     let state = ScrubState {
         format_version: SCRUB_STATE_FORMAT_VERSION,
         cursor: cursor.map(ToString::to_string),
         updated_ms: now_ms(),
+        coordinator_epoch,
+        coordinator_sequence,
     };
     let encoded = serde_json::to_vec(&state)?;
     anyhow::ensure!(
         encoded.len() <= MAX_SCRUB_STATE_BYTES,
         "backup scrub state is too large"
     );
-    destination
-        .put(&scrub_state_path(), PutPayload::from(Bytes::from(encoded)))
-        .await?;
-    Ok(())
+    let path = scrub_state_path();
+    if coordinator_epoch == 0 {
+        destination
+            .put(&path, PutPayload::from(Bytes::from(encoded)))
+            .await?;
+        return Ok(());
+    }
+    for _ in 0..5 {
+        let mode = match destination.get(&path).await {
+            Ok(result) => {
+                let version = UpdateVersion {
+                    e_tag: result.meta.e_tag.clone(),
+                    version: result.meta.version.clone(),
+                };
+                let current: ScrubState = serde_json::from_slice(&result.bytes().await?)?;
+                let current_order = (current.coordinator_epoch, current.coordinator_sequence);
+                let next_order = (coordinator_epoch, coordinator_sequence);
+                anyhow::ensure!(
+                    current_order < next_order,
+                    "backup scrub cursor update was fenced"
+                );
+                PutMode::Update(version)
+            }
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        match destination
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded.clone())),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!("backup scrub cursor CAS retries exhausted")
 }
 
 fn validate_inventory_record(record: &InventoryRecord, format_version: u32) -> anyhow::Result<()> {
@@ -1489,6 +2326,14 @@ fn blob_reference_path(sha256: &str) -> ObjPath {
 
 fn scrub_state_path() -> ObjPath {
     ObjPath::from("scrub-state.json")
+}
+
+fn coordinator_lease_path() -> ObjPath {
+    ObjPath::from("backup/coordinator-lease.json")
+}
+
+fn coordinator_health_path() -> ObjPath {
+    ObjPath::from("backup/health.json")
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -1782,7 +2627,7 @@ mod tests {
             .put(&blob.location, PutPayload::from_static(b"corruption"))
             .await
             .unwrap();
-        let error = scrub_blob_batch(backup, 1).await.unwrap_err();
+        let error = scrub_blob_batch(backup, 1, None).await.unwrap_err();
         assert!(error.to_string().contains("digest mismatch"));
     }
 
@@ -1814,7 +2659,7 @@ mod tests {
         references.sort();
 
         for expected in references.iter().chain(references.iter().take(1)) {
-            assert_eq!(scrub_blob_batch(backup.clone(), 1).await.unwrap(), 1);
+            assert_eq!(scrub_blob_batch(backup.clone(), 1, None).await.unwrap(), 1);
             let encoded = backup
                 .get(&scrub_state_path())
                 .await
@@ -1825,6 +2670,128 @@ mod tests {
             let state: ScrubState = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(state.cursor.as_deref(), Some(expected.as_ref()));
         }
+    }
+
+    #[tokio::test]
+    async fn coordinator_takeover_fences_delayed_publications() {
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let destination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let first = Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store: coordination.clone(),
+                owner: "streams-1".to_string(),
+            },
+            token: "a".repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            lease_until_ms: AtomicI64::new(0),
+            mutation_sequence: AtomicU64::new(0),
+        });
+        let first_lease = claim_coordinator(&first).await.unwrap().unwrap();
+        first.epoch.store(first_lease.epoch, Ordering::Release);
+        first
+            .lease_until_ms
+            .store(first_lease.lease_until_ms, Ordering::Release);
+        first.owned.store(true, Ordering::Release);
+        let first_fence = first.fence().unwrap();
+        first_fence.verify_remote().await.unwrap();
+
+        let report = |epoch, sequence, snapshot_id: &str| SnapshotReport {
+            format_version: SNAPSHOT_FORMAT_VERSION,
+            snapshot_id: snapshot_id.to_string(),
+            started_ms: now_ms(),
+            completed_ms: now_ms(),
+            objects: 0,
+            bytes: 0,
+            roles: Vec::new(),
+            inventory_checksum: hex_encode(&[0; 32]),
+            copied_objects: 0,
+            copied_bytes: 0,
+            reused_objects: 0,
+            pinned_shards: 0,
+            pinned_history_dbs: 0,
+            coordinator_epoch: epoch,
+            coordinator_sequence: sequence,
+        };
+        publish_latest(destination.clone(), &report(first_lease.epoch, 1, "first"))
+            .await
+            .unwrap();
+
+        let mut expired = first_lease.clone();
+        expired.lease_until_ms = now_ms().saturating_sub(1);
+        coordination
+            .put(
+                &coordinator_lease_path(),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&expired).unwrap())),
+            )
+            .await
+            .unwrap();
+        let second = Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store: coordination.clone(),
+                owner: "streams-2".to_string(),
+            },
+            token: "b".repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            lease_until_ms: AtomicI64::new(0),
+            mutation_sequence: AtomicU64::new(0),
+        });
+        let second_lease = claim_coordinator(&second).await.unwrap().unwrap();
+        assert_eq!(second_lease.epoch, first_lease.epoch + 1);
+        second.epoch.store(second_lease.epoch, Ordering::Release);
+        second
+            .lease_until_ms
+            .store(second_lease.lease_until_ms, Ordering::Release);
+        second.owned.store(true, Ordering::Release);
+        let second_fence = second.fence().unwrap();
+        publish_latest(
+            destination.clone(),
+            &report(second_lease.epoch, 1, "second"),
+        )
+        .await
+        .unwrap();
+        let delayed = publish_latest(
+            destination.clone(),
+            &report(first_lease.epoch, u64::MAX, "delayed"),
+        )
+        .await
+        .unwrap_err();
+        assert!(delayed.to_string().contains("fenced"));
+        assert!(first_fence.verify_remote().await.is_err());
+
+        let now = now_ms();
+        let health = CoordinatorHealth {
+            format_version: COORDINATOR_FORMAT_VERSION,
+            lease_epoch: second_lease.epoch,
+            sequence: 1,
+            generated_ms: now,
+            latest_completed_ms: now,
+            last_scrub_ms: now,
+            snapshot_healthy: true,
+            scrub_healthy: true,
+        };
+        publish_coordinator_health(&second_fence, &health)
+            .await
+            .unwrap();
+        let observed =
+            load_coordinator_health(&second, Duration::from_secs(60), Duration::from_secs(10))
+                .await
+                .unwrap();
+        assert!(observed.snapshot_healthy && observed.scrub_healthy);
+        assert!(
+            publish_coordinator_health(
+                &first_fence,
+                &CoordinatorHealth {
+                    lease_epoch: first_lease.epoch,
+                    sequence: u64::MAX,
+                    ..health
+                },
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(latest_snapshot_id(destination).await.unwrap(), "second");
     }
 
     #[tokio::test]
@@ -1925,10 +2892,15 @@ mod tests {
                 },
             ],
             backup.clone(),
-            Some(&pins),
-            Some(&state),
-            42,
-            snapshot_id,
+            SnapshotContext {
+                pins: Some(&pins),
+                pinned_state: Some(&state),
+                started_ms: 42,
+                snapshot_id,
+                fence: None,
+                coordinator_epoch: 0,
+                coordinator_sequence: 0,
+            },
         )
         .await
         .unwrap();
@@ -2022,10 +2994,15 @@ mod tests {
                 },
             ],
             backup.clone(),
-            Some(&pins),
-            Some(&state),
-            43,
-            snapshot_id,
+            SnapshotContext {
+                pins: Some(&pins),
+                pinned_state: Some(&state),
+                started_ms: 43,
+                snapshot_id,
+                fence: None,
+                coordinator_epoch: 0,
+                coordinator_sequence: 0,
+            },
         )
         .await
         .unwrap();
@@ -2173,6 +3150,8 @@ mod tests {
             reused_objects: 0,
             pinned_shards: 0,
             pinned_history_dbs: 0,
+            coordinator_epoch: 0,
+            coordinator_sequence: 0,
         };
         backup
             .put(

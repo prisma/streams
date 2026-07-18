@@ -25,6 +25,7 @@ jobs:
           cargo build --release --bin s3lite --bin streams-slate --bin streams-keys --bin streams-restore --bin streams-shard-admin
           bash scripts/ci-smoke.sh
           bash scripts/ci-backup-restore.sh
+          bash scripts/ci-backup-coordinator.sh
           bash scripts/ci-object-store-faults.sh
           bash scripts/ci-corruption-stale.sh
           bash scripts/ci-shard-split.sh

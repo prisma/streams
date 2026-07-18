@@ -93,6 +93,7 @@ first_report="$(curl --fail --silent "${S3_URL}/backup/ci-backup/latest.json")"
 first_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${first_report}")"
 [[ -n "${first_snapshot}" ]]
 grep -Eq '"pinned_history_dbs":[1-9][0-9]*' <<<"${first_report}"
+grep -Eq '"coordinator_epoch":[1-9][0-9]*' <<<"${first_report}"
 
 # Advance the primary after the first complete recovery point, then restart the
 # backup actor. The second immediate snapshot must reuse immutable blobs while
@@ -107,8 +108,19 @@ start_streams primary ci-primary \
   --backup-s3-endpoint "${S3_URL}" --backup-s3-bucket backup \
   --backup-s3-access-key-id test --backup-s3-secret-access-key test \
   --backup-path-prefix ci-backup --backup-interval-secs 60 --require-backup
-second_report="$(curl --fail --silent "${S3_URL}/backup/ci-backup/latest.json")"
-second_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${second_report}")"
+attempts=0
+second_snapshot="${first_snapshot}"
+while [[ "${second_snapshot}" == "${first_snapshot}" ]]; do
+  attempts=$((attempts + 1))
+  if (( attempts > 150 )); then
+    echo "backup coordinator did not take over after restart" >&2
+    tail -100 "${TMP_DIR}/streams.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+  second_report="$(curl --fail --silent "${S3_URL}/backup/ci-backup/latest.json")"
+  second_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${second_report}")"
+done
 [[ -n "${second_snapshot}" && "${second_snapshot}" != "${first_snapshot}" ]]
 grep -Eq '"reused_objects":[1-9][0-9]*' <<<"${second_report}"
 stop_streams
@@ -172,7 +184,7 @@ STREAMS_PID=$!
 attempts=0
 until grep -q 'backup content scrub failed' "${TMP_DIR}/streams.log"; do
   attempts=$((attempts + 1))
-  if (( attempts > 100 )); then
+  if (( attempts > 150 )); then
     echo "backup scrub did not detect same-size corruption" >&2
     tail -100 "${TMP_DIR}/streams.log" >&2 || true
     exit 1
