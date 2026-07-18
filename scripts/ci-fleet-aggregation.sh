@@ -8,6 +8,7 @@ PORT_2="${PORT_2:-18122}"
 PORT_3="${PORT_3:-18123}"
 S3_URL="http://127.0.0.1:${S3_PORT}"
 AUTH_TOKEN="fleet-aggregation-token"
+EXPECTED_RELEASE_ID="${EXPECTED_RELEASE_ID:-0.1.0}"
 PREFIX="ci-fleet-aggregation"
 FLEET_PREFIX="${PREFIX}-fleet"
 TMP_DIR="$(mktemp -d)"
@@ -121,6 +122,81 @@ start_instance streams-3
 wait_ready streams-1
 wait_ready streams-2
 wait_ready streams-3
+
+# Every direct instance view must converge on the same bounded capability
+# envelope. The gate also proves that this operator surface is not public.
+judge_args=(--phase ci-read-first --run-id ci-fleet-capabilities
+  --expected-history-writer 2 --expected-backup-writer 3
+  --expected-release "${EXPECTED_RELEASE_ID}"
+  --output "${TMP_DIR}/capability-evidence.json")
+for instance in streams-1 streams-2 streams-3; do
+  url="$(url_for "${instance}")"
+  [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    "${url}/v1/debug/capabilities")" == "401" ]]
+  snapshot_path="${TMP_DIR}/${instance}-capabilities.json"
+  curl --fail --silent --show-error "${url}/v1/debug/capabilities" \
+    -H "authorization: Bearer ${AUTH_TOKEN}" >"${snapshot_path}"
+  judge_args+=(--snapshot "${snapshot_path}" --expected-instance "${instance}")
+done
+python3 scripts/judge-mixed-version-canary.py "${judge_args[@]}"
+grep -q '"passed": true' "${TMP_DIR}/capability-evidence.json"
+
+# Exercise the judge's mixed-release and pairwise-reader logic with copies of
+# the real converged views. These are judge fixtures, not deployment evidence.
+SYNTHETIC_RELEASE_ID="ci-synthetic-next"
+[[ "${SYNTHETIC_RELEASE_ID}" != "${EXPECTED_RELEASE_ID}" ]]
+python3 - "${TMP_DIR}" "${SYNTHETIC_RELEASE_ID}" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+next_release = sys.argv[2]
+for instance in ("streams-1", "streams-2", "streams-3"):
+    source = root / f"{instance}-capabilities.json"
+    document = json.loads(source.read_text())
+    nodes = [document["local"], *document["fleet"]]
+    for node in nodes:
+        if node["instance"] == "streams-3":
+            node["capabilities"]["release_id"] = next_release
+    (root / f"{instance}-mixed-capabilities.json").write_text(json.dumps(document))
+
+    incompatible = json.loads(json.dumps(document))
+    for node in [incompatible["local"], *incompatible["fleet"]]:
+        if node["instance"] in ("streams-1", "streams-2"):
+            node["capabilities"]["history_writer"] = 1
+        else:
+            node["capabilities"]["history_reader_min"] = 2
+            node["capabilities"]["history_reader_max"] = 2
+            node["capabilities"]["history_writer"] = 2
+    (root / f"{instance}-incompatible-capabilities.json").write_text(
+        json.dumps(incompatible)
+    )
+PY
+
+mixed_args=(--phase ci-mixed --run-id ci-fleet-mixed
+  --expected-history-writer 2 --expected-backup-writer 3
+  --expected-release "${EXPECTED_RELEASE_ID}"
+  --expected-release "${SYNTHETIC_RELEASE_ID}"
+  --output "${TMP_DIR}/mixed-capability-evidence.json")
+incompatible_args=(--phase ci-incompatible --run-id ci-fleet-incompatible
+  --expected-history-writer 2 --expected-backup-writer 3
+  --expected-release "${EXPECTED_RELEASE_ID}"
+  --expected-release "${SYNTHETIC_RELEASE_ID}"
+  --output "${TMP_DIR}/incompatible-capability-evidence.json")
+for instance in streams-1 streams-2 streams-3; do
+  mixed_args+=(--snapshot "${TMP_DIR}/${instance}-mixed-capabilities.json"
+    --expected-instance "${instance}")
+  incompatible_args+=(--snapshot "${TMP_DIR}/${instance}-incompatible-capabilities.json"
+    --expected-instance "${instance}")
+done
+python3 scripts/judge-mixed-version-canary.py "${mixed_args[@]}"
+if python3 scripts/judge-mixed-version-canary.py "${incompatible_args[@]}" \
+  >"${TMP_DIR}/incompatible.out" 2>"${TMP_DIR}/incompatible.err"; then
+  echo "capability judge accepted an incompatible mixed fleet" >&2
+  exit 1
+fi
+grep -q 'history reader cannot read every writer' "${TMP_DIR}/incompatible.err"
 
 FLEET_URL="${S3_URL}/streams/${FLEET_PREFIX}/fleet.json"
 LEASE_URL="${S3_URL}/streams/${FLEET_PREFIX}/fleet/aggregate-lease.json"

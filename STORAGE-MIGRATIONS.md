@@ -5,6 +5,18 @@ normal rolling-deploy detail: writers stay on the old format until both the new
 release and the immediately previous release can safely coexist with every
 object the new release may publish.
 
+Every production build sets `STREAMS_RELEASE_ID` to its immutable source
+revision. At each read-first, canary-flip, rollback, and finalization phase,
+capture the operator-only `/v1/debug/capabilities` endpoint directly from every
+instance and run `scripts/judge-mixed-version-canary.py`. The gate requires
+complete converged membership, the exact expected old/new release set, uniform
+writer configuration, and every reader to cover every writer in the cell. Keep
+the snapshots and the mode-0600, secret-free verdict with release evidence.
+An all-zero capability envelope means an old binary or old aggregator stripped
+the declaration and fails the gate. Consequently, the capability-envelope
+release must first bake fleet-wide in old-writer/read-first mode; it cannot be
+used retroactively to claim an older binary's compatibility.
+
 ## Current formats
 
 | surface | readable | writable | rollback boundary |
@@ -60,12 +72,15 @@ format 2→3 read-first wave. A pre-protocol-2 binary is not a rollback target.
    `BACKUP_WRITE_FORMAT=2`. It reads formats 1/2/3 but emits format 2. While in
    this mode the coordinated actor does not delete shared legacy blobs, because
    a prior epoch could still be paused inside an unconditional provider delete.
+   The capability judge must report recovery reader 1..3, writer 2, and
+   coordination protocol 2 for every member before promotion.
 2. **Prove the reader.** Require a successful format-2 dark restore, green
    rolling scrub, one coordinator takeover, and confirmation that every cell
    runs the new reader. Do not flip a cell with an old backup or restore binary.
 3. **Flip one canary cell.** Set `BACKUP_WRITE_FORMAT=3`. Require a format-3
    point, epoch-incremented takeover point, scrub pass, and dark restore. Then
-   advance through the deployment waves in `COMPUTE-SPEC.md`.
+   advance through the deployment waves in `COMPUTE-SPEC.md`. Each flipped
+   cell must produce a capability artifact with recovery writer 3.
 4. **Retain rollback data.** Keep at least two known-good format-2 points for
    the full rollback window. Format-3 metadata/content is in a top-level root
    that the previous format-2 actor does not list.
@@ -105,11 +120,14 @@ The current reader accepts both envelopes and the writer is selected at boot:
 1. **Read-first wave:** deploy this binary to every instance with
    `HISTORY_BLOCK_WRITE_FORMAT=1`. Exercise reads, absorbs, compaction,
    primary scrubbing, recovery-point restore, and an instance rollback while
-   the corpus remains legacy-writable.
+   the corpus remains legacy-writable. Require a capability artifact showing
+   history reader 1..2 and writer 1 throughout the mixed release wave.
 2. **Canary flip:** set `HISTORY_BLOCK_WRITE_FORMAT=2` in one cell. Force
    absorption and compaction, prove the mixed legacy/v2 DB reads through every
    route, inspect primary and recovery objects for payload/key leakage, and
-   dark-restore the point. Do not run a pre-dual-reader binary after this step.
+   dark-restore the point. Require a capability artifact showing writer 2 and
+   no legacy/unknown member. Do not run a pre-dual-reader binary after this
+   step.
 3. **Fleet flip:** advance by the deployment waves in `COMPUTE-SPEC.md`.
    Rollback uses the same dual-reader release with writer 1; it can read v2 but
    emits legacy until the incident is resolved. Restoring a pre-flip point is

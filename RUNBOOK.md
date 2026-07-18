@@ -54,8 +54,10 @@ permanent zombie: the domain serves the platform 404, `versions list` says
 rustup target add x86_64-unknown-linux-musl
 cargo install cargo-zigbuild        # zig-based cross linker
 
-# every release build for Compute
-cargo zigbuild --release --target x86_64-unknown-linux-musl --bin streams-slate --bin pilot
+# every release build for Compute; the immutable ID is part of canary evidence
+STREAMS_RELEASE_ID="$(git rev-parse HEAD)" \
+  cargo zigbuild --release --target x86_64-unknown-linux-musl \
+  --bin streams-slate --bin pilot
 
 # ALWAYS verify the architecture before uploading (e_machine 0x3e = x86_64)
 xxd -s 18 -l 2 target/x86_64-unknown-linux-musl/release/streams-slate  # expect: 3e00
@@ -476,6 +478,7 @@ OOM-killed container under load otherwise stays down.
 | `GET /v1/stream/{name}?…` | bearer + key | read/tail (offsets, long-poll, SSE; profile-specific routes per [PROFILES.md](./PROFILES.md)) |
 | `GET /v1/debug/timings` | bearer | per-shard commit-pipeline rings: `queue_wait_us`, `encode_us`, `write_us`, `durable_wait_us` per group — splits our pipeline from store waits |
 | `GET /v1/debug/load` | operator bearer | `inflight_now`, `inflight_peak` (swap-on-read), `rss_mb`, `admit_shed` |
+| `GET /v1/debug/capabilities` | operator bearer | immutable release ID plus live/history/recovery reader and writer ranges for this instance, and the same bounded declaration for every member in its fresh aggregate; contains no tenant or shard identifiers |
 | `GET /v1/debug/store?window=60&swap=1` | bearer | per-(op,class) object-store latency cells (`put:wal`, `get:manifest`, …: n/err/p50/p90/p99/max), slow-op ring (≥300 ms with paths), outbound in-flight gauge, **timer sentinels** (`timer_thread`, `timer_tokio` drift) and `steal_pct`. `swap=1` resets the gauge peak — samplers only |
 | `GET /v1/debug/metrics` | operator bearer | bounded OpenMetrics RED/component/backup/WAL/memory/per-open-shard scrape; no tenant-controlled labels |
 | `GET /v1/debug/sleep?ms=N` | operator bearer | calibrated-latency probe (≤5000 ms): separates concurrency caps from rate caps at the edge |
@@ -619,7 +622,9 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
    full release suite, and every CI drill against the exact locked graph. The
    three audited RustSec exceptions and removal conditions live in
    `SECURITY.md`; no new exception is a routine dependency update.
-2. Build + verify arch (§2). Upload binaries; capture presigned URLs.
+2. Build with `STREAMS_RELEASE_ID` set to the immutable source revision and
+   verify arch (§2). Upload binaries; capture presigned URLs. A package-version
+   fallback is useful locally but is not acceptable release identity.
 3. Roll servers one at a time from the canonical script (full env restated,
    including the binary URL).
 4. **Health-gate each instance before the next**: poll `/health` up to
@@ -630,7 +635,16 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 6. Redeploying under live load can zombie an instance (observed ~once per
    ~20 deploys). The heal is simply another deploy. Watch the first minute
    of `/v1/debug/load` after each roll.
-7. After load tests: destroy generator versions, redeploy servers/LBs
+7. At every stable read-first, writer-flip, rollback, and finalization phase,
+   capture `/v1/debug/capabilities` directly from every instance using an
+   operator header file (mode 0600; `curl -H @file` keeps it out of argv). Run
+   `scripts/judge-mixed-version-canary.py` with the exact expected instance and
+   release sets and expected history/recovery writers. Preserve the raw
+   secret-free snapshots plus the judge artifact. Promotion is forbidden if a
+   member is absent, draining, legacy/unknown, reports a different ring or
+   backup-coordination protocol, cannot read every active writer, or disagrees
+   with any aggregate view. A load-balancer-only capture is not evidence.
+8. After load tests: destroy generator versions, redeploy servers/LBs
    *without* `KEEP_AWAKE` so the fleet scales to zero.
 
 ### 7.5 Platform failure modes you will meet

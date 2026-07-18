@@ -30,6 +30,10 @@ const SNAPSHOT_FRESH_MS: i64 = 10_000;
 const MAX_FLEET_INSTANCES: usize = 64;
 const MAX_SHARDS_PER_HEARTBEAT: usize = 1_536;
 const MAX_ROUTER_REPORTS: usize = 32;
+pub const RING_PROTOCOL_VERSION: u32 = 1;
+const LEGACY_LIVE_WRITER: u32 = 2;
+const LEGACY_HISTORY_WRITER: u32 = 1;
+const LEGACY_BACKUP_WRITER: u32 = 2;
 
 static LIVE_HEARTBEATS: OnceLock<RwLock<Vec<Heartbeat>>> = OnceLock::new();
 
@@ -60,6 +64,166 @@ pub struct ShardActivity {
     pub appended_bytes: u64,
 }
 
+/// Bounded release/storage compatibility declaration carried by every
+/// heartbeat and preserved in the aggregate. An old instance or old
+/// aggregator strips this field, which new canary tooling observes as the
+/// all-zero legacy value instead of guessing compatibility.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, Eq, PartialEq)]
+pub struct FleetCapabilities {
+    pub version: u32,
+    pub release_id: String,
+    pub ring_protocol: u32,
+    pub live_reader_min: u32,
+    pub live_reader_max: u32,
+    pub live_writer: u32,
+    pub history_reader_min: u32,
+    pub history_reader_max: u32,
+    pub history_writer: u32,
+    pub backup_reader_min: u32,
+    pub backup_reader_max: u32,
+    pub backup_writer: u32,
+    pub backup_coordination_protocol: u32,
+}
+
+impl FleetCapabilities {
+    pub fn current(history_writer: u8, backup_writer: u32) -> Result<Self, String> {
+        let release_id = option_env!("STREAMS_RELEASE_ID")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_string();
+        let capabilities = Self {
+            version: 1,
+            release_id,
+            ring_protocol: RING_PROTOCOL_VERSION,
+            live_reader_min: 2,
+            live_reader_max: 2,
+            live_writer: 2,
+            history_reader_min: 1,
+            history_reader_max: 2,
+            history_writer: u32::from(history_writer),
+            backup_reader_min: 1,
+            backup_reader_max: 3,
+            backup_writer,
+            backup_coordination_protocol: 2,
+        };
+        if capabilities.is_valid() && capabilities.version == 1 {
+            Ok(capabilities)
+        } else {
+            Err("compiled release ID or configured storage capabilities are invalid".to_string())
+        }
+    }
+
+    fn is_legacy_unknown(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn is_valid(&self) -> bool {
+        if self.is_legacy_unknown() {
+            return true;
+        }
+        let valid_release = !self.release_id.is_empty()
+            && self.release_id.len() <= 128
+            && self.release_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+')
+            });
+        let valid_range = |minimum: u32, maximum: u32, writer: u32| {
+            minimum > 0
+                && minimum <= maximum
+                && maximum <= 1_000_000
+                && (minimum..=maximum).contains(&writer)
+        };
+        self.version == 1
+            && valid_release
+            && (1..=1_000_000).contains(&self.ring_protocol)
+            && valid_range(self.live_reader_min, self.live_reader_max, self.live_writer)
+            && valid_range(
+                self.history_reader_min,
+                self.history_reader_max,
+                self.history_writer,
+            )
+            && valid_range(
+                self.backup_reader_min,
+                self.backup_reader_max,
+                self.backup_writer,
+            )
+            && (1..=1_000_000).contains(&self.backup_coordination_protocol)
+    }
+}
+
+fn reader_covers(minimum: u32, maximum: u32, writer: u32) -> bool {
+    (minimum..=maximum).contains(&writer)
+}
+
+/// Serving-time backstop for a deployment gate mistake. Legacy/unknown
+/// members may coexist only during the old-writer adoption wave. Once any
+/// configured writer flips, every member must explicitly declare compatible
+/// ranges. Known members are checked in both directions because either one may
+/// own a shard or become backup coordinator during the wave.
+fn fleet_capabilities_are_compatible(
+    local: &FleetCapabilities,
+    heartbeats: &[Heartbeat],
+) -> Result<(), String> {
+    debug_assert!(local.is_valid() && !local.is_legacy_unknown());
+    for heartbeat in heartbeats {
+        let remote = &heartbeat.capabilities;
+        if remote.is_legacy_unknown() {
+            if local.live_writer != LEGACY_LIVE_WRITER
+                || local.history_writer != LEGACY_HISTORY_WRITER
+                || local.backup_writer != LEGACY_BACKUP_WRITER
+            {
+                return Err(format!(
+                    "legacy capability member {} remains after a writer flip",
+                    heartbeat.instance
+                ));
+            }
+            continue;
+        }
+        if remote.ring_protocol != local.ring_protocol {
+            return Err(format!(
+                "ring protocol mismatch with {}",
+                heartbeat.instance
+            ));
+        }
+        if remote.backup_coordination_protocol != local.backup_coordination_protocol {
+            return Err(format!(
+                "backup coordination protocol mismatch with {}",
+                heartbeat.instance
+            ));
+        }
+        let compatible = reader_covers(
+            local.live_reader_min,
+            local.live_reader_max,
+            remote.live_writer,
+        ) && reader_covers(
+            remote.live_reader_min,
+            remote.live_reader_max,
+            local.live_writer,
+        ) && reader_covers(
+            local.history_reader_min,
+            local.history_reader_max,
+            remote.history_writer,
+        ) && reader_covers(
+            remote.history_reader_min,
+            remote.history_reader_max,
+            local.history_writer,
+        ) && reader_covers(
+            local.backup_reader_min,
+            local.backup_reader_max,
+            remote.backup_writer,
+        ) && reader_covers(
+            remote.backup_reader_min,
+            remote.backup_reader_max,
+            local.backup_writer,
+        );
+        if !compatible {
+            return Err(format!(
+                "storage format compatibility mismatch with {}",
+                heartbeat.instance
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Heartbeat {
     pub instance: String,
@@ -69,6 +233,8 @@ pub struct Heartbeat {
     /// fleet before changing a descriptor or copying data.
     #[serde(default)]
     pub cell_move_protocol: u32,
+    #[serde(default)]
+    pub capabilities: FleetCapabilities,
     pub rps: f64,
     /// p50 of commit durable-wait over the last 15 s across owned shards
     /// (ms). The latency dimension of the load vector (§4.2): rps alone
@@ -158,6 +324,7 @@ fn heartbeat_shape_is_valid(heartbeat: &Heartbeat, expected_instance: &str) -> b
     if heartbeat.instance != expected_instance
         || !valid_instance_name(&heartbeat.instance)
         || heartbeat.cell_move_protocol > 1_000_000
+        || !heartbeat.capabilities.is_valid()
         || heartbeat.owned_shards.len() > MAX_SHARDS_PER_HEARTBEAT
         || heartbeat.shard_activity.len() > MAX_SHARDS_PER_HEARTBEAT
         || !heartbeat.rps.is_finite()
@@ -695,6 +862,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 instance: cfg.instance.clone(),
                 ts_ms: now_ms(),
                 cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
+                capabilities: state.fleet_capabilities.clone(),
                 rps: (ewma_rps * 10.0).round() / 10.0,
                 ack_p50_ms,
                 cpu_pct: (ewma_cpu * 10.0).round() / 10.0,
@@ -782,6 +950,13 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 }
             };
             replace_live_heartbeats(live_heartbeats.clone());
+            if let Err(error) =
+                fleet_capabilities_are_compatible(&state.fleet_capabilities, &live_heartbeats)
+            {
+                tracing::error!("fleet compatibility gate failed: {error}");
+                state.fleet_ready.store(false, Ordering::Release);
+                continue;
+            }
 
             // 2b. Fleet load derived from the same aggregate every instance
             // uses for placement and automatic merge activity.
@@ -1050,6 +1225,7 @@ mod tests {
             instance: instance.to_string(),
             ts_ms: now_ms(),
             cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
+            capabilities: FleetCapabilities::current(2, 3).unwrap(),
             rps: 1.0,
             ack_p50_ms: 2.0,
             cpu_pct: 3.0,
@@ -1077,6 +1253,22 @@ mod tests {
         assert!(heartbeat_is_valid(&valid, "streams-1", now));
         valid.shard_activity.push(valid.shard_activity[0].clone());
         assert!(!heartbeat_is_valid(&valid, "streams-1", now));
+
+        let mut malformed_capabilities = heartbeat("streams-1");
+        malformed_capabilities.capabilities.history_reader_min = 0;
+        assert!(!heartbeat_is_valid(
+            &malformed_capabilities,
+            "streams-1",
+            now
+        ));
+
+        let encoded = serde_json::to_value(heartbeat("streams-1")).unwrap();
+        let mut legacy = encoded.as_object().unwrap().clone();
+        legacy.remove("capabilities");
+        let mut legacy: Heartbeat = serde_json::from_value(legacy.into()).unwrap();
+        legacy.ts_ms = now;
+        assert_eq!(legacy.capabilities, FleetCapabilities::default());
+        assert!(heartbeat_is_valid(&legacy, "streams-1", now));
 
         let duplicate = heartbeat("streams-1");
         let snapshot = FleetSnapshot {
@@ -1106,6 +1298,28 @@ mod tests {
             4,
             now
         ));
+    }
+
+    #[test]
+    fn runtime_compatibility_allows_adoption_and_rejects_unsafe_flip() {
+        let read_first = FleetCapabilities::current(1, 2).unwrap();
+        let mut legacy = heartbeat("streams-1");
+        legacy.capabilities = FleetCapabilities::default();
+        assert!(fleet_capabilities_are_compatible(&read_first, &[legacy.clone()]).is_ok());
+
+        let flipped_history = FleetCapabilities::current(2, 2).unwrap();
+        assert!(fleet_capabilities_are_compatible(&flipped_history, &[legacy]).is_err());
+
+        let mut compatible = heartbeat("streams-2");
+        compatible.capabilities = FleetCapabilities::current(1, 2).unwrap();
+        assert!(fleet_capabilities_are_compatible(&flipped_history, &[compatible.clone()]).is_ok());
+
+        compatible.capabilities.history_reader_max = 1;
+        assert!(fleet_capabilities_are_compatible(&flipped_history, &[compatible]).is_err());
+
+        let mut ring_skew = heartbeat("streams-3");
+        ring_skew.capabilities.ring_protocol += 1;
+        assert!(fleet_capabilities_are_compatible(&flipped_history, &[ring_skew]).is_err());
     }
 
     #[tokio::test]

@@ -8,6 +8,9 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      STREAMS_RELEASE_ID: ci-${{ github.sha }}
+      EXPECTED_RELEASE_ID: ci-${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

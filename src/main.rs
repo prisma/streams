@@ -1283,6 +1283,11 @@ async fn async_main() -> anyhow::Result<()> {
     }
     let backup_write_format =
         streams_slate::backup::BackupWriteFormat::try_from(args.backup_write_format)?;
+    let fleet_capabilities = crate::fleet::FleetCapabilities::current(
+        args.history_block_write_format,
+        args.backup_write_format,
+    )
+    .map_err(anyhow::Error::msg)?;
     let backup_config = backup_store.map(|destination| {
         // A role bucket may be shared by all three logical stores. Snapshot
         // each physical keyspace once; the first role is the restore name.
@@ -1516,6 +1521,7 @@ async fn async_main() -> anyhow::Result<()> {
         split_ready: std::sync::atomic::AtomicBool::new(true),
         merge_ready: std::sync::atomic::AtomicBool::new(true),
         fleet_ready: std::sync::atomic::AtomicBool::new(args.fleet_prefix.is_none()),
+        fleet_capabilities,
         shards: std::sync::RwLock::new(HashMap::new()),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),

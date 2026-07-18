@@ -640,9 +640,20 @@ all changes ship read-compatible first.
   ships one release before write support), so rolling back one release
   never strands unreadable coordination state. Emergency un-flip is a
   documented operator action (rewrite the object at `v-1` via
-  break-glass). The ring function itself is versioned: heartbeats
-  carry `ring_fn`; a mixed cell computes with `min(ring_fn)` so both
-  versions agree on placement during the wave.
+  break-glass). Every heartbeat carries a versioned, bounded capability
+  envelope: immutable release ID, ring protocol, and live/history/recovery
+  reader ranges and active writers. The operator-only direct-instance view
+  includes both the local declaration and the fresh aggregate. Promotion
+  requires `scripts/judge-mixed-version-canary.py` to observe the exact cell
+  membership and release set, identical nonzero ring and coordination
+  protocols, and pairwise reader coverage for every active writer. Ring
+  protocol skew halts the wave; ownership never guesses or silently selects
+  an algorithm. A pre-envelope instance or old aggregator appears as a
+  legacy/unknown declaration and cannot pass a writer flip. The same pairwise
+  check is a serving-time readiness backstop on every instance: an explicit
+  protocol/read-range conflict fails fleet readiness, while an unknown member
+  is admitted only with live/history/recovery writers held at 2/1/2 for the
+  capability-adoption wave.
 - **Version-skew hazards learned in the pilot, now contract:** replicas
   of stopped versions can keep serving pinned keep-alive connections —
   the router MUST drain by connection on version retirement, and clients

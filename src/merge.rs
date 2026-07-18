@@ -1517,6 +1517,7 @@ mod tests {
             instance: "streams-1".to_string(),
             ts_ms: 1,
             cell_move_protocol: crate::cell_move_fence::PROTOCOL_VERSION,
+            capabilities: crate::fleet::FleetCapabilities::current(2, 3).unwrap(),
             rps: 0.0,
             ack_p50_ms: 0.0,
             cpu_pct: 0.0,

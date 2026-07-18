@@ -74,6 +74,9 @@ pub struct AppState {
     /// The last ring remains installed for fencing-safe outage behavior, but
     /// readiness must expose the degraded control plane.
     pub fleet_ready: std::sync::atomic::AtomicBool,
+    /// Immutable build/runtime storage compatibility advertised in fleet
+    /// heartbeats and the operator-only canary endpoint.
+    pub fleet_capabilities: crate::fleet::FleetCapabilities,
     pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
     pub opener: ShardOpener,
     /// Serializes shard opens; also carries anti-flap state.
@@ -1355,6 +1358,47 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     .into_response()
 }
 
+/// Bounded compatibility evidence for mixed-version deployment canaries.
+/// This deliberately exposes no tenant identifiers, shard names, load, or
+/// storage paths. A heartbeat produced by an old binary (or republished by an
+/// old aggregator) appears with an all-zero capability envelope, allowing the
+/// rollout judge to stop rather than infer compatibility from a release tag.
+async fn debug_capabilities(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
+    let mut fleet = crate::fleet::live_heartbeats();
+    fleet.sort_unstable_by(|left, right| left.instance.cmp(&right.instance));
+    let fleet: Vec<_> = fleet
+        .into_iter()
+        .map(|heartbeat| {
+            json!({
+                "instance": heartbeat.instance,
+                "ts_ms": heartbeat.ts_ms,
+                "draining": heartbeat.draining,
+                "cell_move_protocol": heartbeat.cell_move_protocol,
+                "capabilities": heartbeat.capabilities,
+            })
+        })
+        .collect();
+    axum::Json(json!({
+        "format_version": 1,
+        "observed_at_ms": now_ms(),
+        "local": {
+            "instance": state.instance_name,
+            "cell_move_protocol": crate::cell_move_fence::PROTOCOL_VERSION,
+            "capabilities": &state.fleet_capabilities,
+        },
+        "aggregate_ready": state.fleet_ready.load(std::sync::atomic::Ordering::Acquire),
+        "fleet": fleet,
+    }))
+    .into_response()
+}
+
 /// Object-store client latency snapshot (O14a): per (op, path-class)
 /// percentiles over ?window= seconds (default 60), the slow-op ring, and
 /// the outbound in-flight gauge. ?swap=1 resets the peak (sampler only —
@@ -1762,6 +1806,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/streams", get(list_streams))
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
+        .route("/v1/debug/capabilities", get(debug_capabilities))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/metrics", get(debug_metrics))
         .route("/v1/debug/sleep", get(debug_sleep))
