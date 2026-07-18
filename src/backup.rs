@@ -7,9 +7,9 @@
 //! partial or corrupt snapshots are never restorable.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, TryStreamExt};
@@ -33,9 +33,10 @@ const MAX_PINNED_SHARDS: usize = 16_384;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
 const GC_INTENT_FORMAT_VERSION: u32 = 1;
+const RETENTION_CLOCK_FORMAT_VERSION: u32 = 1;
 const MAX_SCRUB_STATE_BYTES: usize = 4 * 1024;
-const COORDINATOR_FORMAT_VERSION: u32 = 1;
-const COORDINATOR_LEASE_MS: i64 = 6_000;
+const COORDINATOR_FORMAT_VERSION: u32 = 2;
+const COORDINATOR_LEASE_DURATION: Duration = Duration::from_secs(6);
 const COORDINATOR_RENEW_MS: u64 = 2_000;
 const MAX_COORDINATOR_DOCUMENT_BYTES: usize = 16 * 1024;
 
@@ -214,8 +215,24 @@ struct GcIntent {
     created_ms: i64,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct RetentionClockProbe {
+    format_version: u32,
+    token: String,
+    coordinator_epoch: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CoordinatorLease {
+    format_version: u32,
+    owner: String,
+    token: String,
+    epoch: u64,
+    renewal_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LegacyCoordinatorLease {
     format_version: u32,
     owner: String,
     token: String,
@@ -223,20 +240,50 @@ struct CoordinatorLease {
     lease_until_ms: i64,
 }
 
+enum DecodedCoordinatorLease {
+    Current(CoordinatorLease),
+    Legacy(LegacyCoordinatorLease),
+}
+
+struct LeaseObservation {
+    identity: String,
+    token: Option<String>,
+    epoch: u64,
+    renewal_sequence: u64,
+    /// The first renewal sequence observed after startup, takeover, or an
+    /// interval in which the previous lease version became stale. Health
+    /// published before this sequence cannot prove that the current owner is
+    /// alive, even when its wall-clock timestamp looks recent.
+    confirmed_since_sequence: Option<u64>,
+    first_seen: Instant,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct CoordinatorHealth {
     format_version: u32,
     lease_epoch: u64,
+    #[serde(default)]
+    lease_renewal_sequence: u64,
     sequence: u64,
     generated_ms: i64,
     latest_completed_ms: i64,
     last_scrub_ms: i64,
     snapshot_healthy: bool,
     scrub_healthy: bool,
+    #[serde(default = "max_u64")]
+    snapshot_age_ms: u64,
+    #[serde(default = "max_u64")]
+    scrub_age_ms: u64,
     #[serde(default)]
     last_primary_scrub_ms: i64,
     #[serde(default)]
     primary_scrub_healthy: bool,
+    #[serde(default = "max_u64")]
+    primary_scrub_age_ms: u64,
+}
+
+const fn max_u64() -> u64 {
+    u64::MAX
 }
 
 struct CoordinatorState {
@@ -244,7 +291,9 @@ struct CoordinatorState {
     token: String,
     owned: AtomicBool,
     epoch: AtomicU64,
-    lease_until_ms: AtomicI64,
+    renewal_sequence: AtomicU64,
+    last_renewed: Mutex<Option<Instant>>,
+    lease_observation: Mutex<Option<LeaseObservation>>,
     mutation_sequence: AtomicU64,
 }
 
@@ -340,13 +389,92 @@ struct PinnedDbManifest {
 impl CoordinatorState {
     fn fence(self: &Arc<Self>) -> Option<PublicationFence> {
         let epoch = self.epoch.load(Ordering::Acquire);
-        (self.owned.load(Ordering::Acquire)
-            && epoch > 0
-            && self.lease_until_ms.load(Ordering::Acquire) > now_ms())
-        .then(|| PublicationFence {
-            state: self.clone(),
-            epoch,
-        })
+        (self.owned.load(Ordering::Acquire) && epoch > 0 && self.local_lease_is_fresh()).then(
+            || PublicationFence {
+                state: self.clone(),
+                epoch,
+            },
+        )
+    }
+
+    fn local_lease_is_fresh(&self) -> bool {
+        self.last_renewed
+            .lock()
+            .expect("coordinator renewal lock poisoned")
+            .is_some_and(|renewed| renewed.elapsed() < COORDINATOR_LEASE_DURATION)
+    }
+
+    fn note_renewed(&self, renewal_sequence: u64) {
+        self.renewal_sequence
+            .store(renewal_sequence, Ordering::Release);
+        *self
+            .last_renewed
+            .lock()
+            .expect("coordinator renewal lock poisoned") = Some(Instant::now());
+        *self
+            .lease_observation
+            .lock()
+            .expect("coordinator observation lock poisoned") = None;
+    }
+
+    fn clear_renewal(&self) {
+        *self
+            .last_renewed
+            .lock()
+            .expect("coordinator renewal lock poisoned") = None;
+        self.renewal_sequence.store(0, Ordering::Release);
+    }
+
+    /// Returns true only after the exact remote lease version has remained
+    /// unchanged for one complete local monotonic lease interval.
+    fn remote_lease_is_stale(&self, identity: String, current: Option<(&str, u64, u64)>) -> bool {
+        let mut observation = self
+            .lease_observation
+            .lock()
+            .expect("coordinator observation lock poisoned");
+        match observation.as_mut() {
+            Some(current) if current.identity == identity => {
+                current.first_seen.elapsed() >= COORDINATOR_LEASE_DURATION
+            }
+            _ => {
+                let confirmed_since_sequence = match (observation.as_ref(), current) {
+                    (Some(previous), Some((token, epoch, renewal_sequence)))
+                        if previous.token.as_deref() == Some(token)
+                            && previous.epoch == epoch
+                            && renewal_sequence > previous.renewal_sequence =>
+                    {
+                        if previous.first_seen.elapsed() < COORDINATOR_LEASE_DURATION {
+                            previous.confirmed_since_sequence.or(Some(renewal_sequence))
+                        } else {
+                            Some(renewal_sequence)
+                        }
+                    }
+                    _ => None,
+                };
+                *observation = Some(LeaseObservation {
+                    identity,
+                    token: current.map(|(token, _, _)| token.to_string()),
+                    epoch: current.map_or(0, |(_, epoch, _)| epoch),
+                    renewal_sequence: current.map_or(0, |(_, _, sequence)| sequence),
+                    confirmed_since_sequence,
+                    first_seen: Instant::now(),
+                });
+                false
+            }
+        }
+    }
+
+    fn remote_lease_confirmation(&self, identity: &str) -> Option<u64> {
+        self.lease_observation
+            .lock()
+            .expect("coordinator observation lock poisoned")
+            .as_ref()
+            .and_then(|observed| {
+                (observed.identity == identity
+                    && observed.first_seen.elapsed() < COORDINATOR_LEASE_DURATION)
+                    .then_some(observed.confirmed_since_sequence)
+                    .flatten()
+            })
     }
 }
 
@@ -355,7 +483,7 @@ impl PublicationFence {
         anyhow::ensure!(
             self.state.owned.load(Ordering::Acquire)
                 && self.state.epoch.load(Ordering::Acquire) == self.epoch
-                && self.state.lease_until_ms.load(Ordering::Acquire) > now_ms(),
+                && self.state.local_lease_is_fresh(),
             "backup coordinator lease was lost"
         );
         Ok(())
@@ -387,13 +515,14 @@ impl PublicationFence {
             encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
             "backup coordinator lease is too large"
         );
-        let lease: CoordinatorLease = serde_json::from_slice(&encoded)?;
+        let DecodedCoordinatorLease::Current(lease) = decode_coordinator_lease(&encoded)? else {
+            anyhow::bail!("backup coordinator still uses the legacy lease protocol");
+        };
         anyhow::ensure!(
             coordinator_lease_is_valid(&lease)
                 && lease.owner == self.state.config.owner
                 && lease.token == self.state.token
-                && lease.epoch == self.epoch
-                && lease.lease_until_ms > now_ms(),
+                && lease.epoch == self.epoch,
             "backup coordinator lease was lost"
         );
         Ok(())
@@ -414,7 +543,67 @@ fn coordinator_lease_is_valid(lease: &CoordinatorLease) -> bool {
         && lease.token.len() == 32
         && lease.token.bytes().all(|byte| byte.is_ascii_hexdigit())
         && lease.epoch > 0
+        && lease.renewal_sequence > 0
+}
+
+fn legacy_coordinator_lease_is_valid(lease: &LegacyCoordinatorLease) -> bool {
+    lease.format_version == 1
+        && valid_coordinator_owner(&lease.owner)
+        && lease.token.len() == 32
+        && lease.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && lease.epoch > 0
         && lease.lease_until_ms > 0
+}
+
+fn decode_coordinator_lease(encoded: &[u8]) -> anyhow::Result<DecodedCoordinatorLease> {
+    #[derive(Deserialize)]
+    struct Header {
+        format_version: u32,
+    }
+    match serde_json::from_slice::<Header>(encoded)?.format_version {
+        COORDINATOR_FORMAT_VERSION => {
+            let lease: CoordinatorLease = serde_json::from_slice(encoded)?;
+            anyhow::ensure!(
+                coordinator_lease_is_valid(&lease),
+                "malformed backup coordinator lease"
+            );
+            Ok(DecodedCoordinatorLease::Current(lease))
+        }
+        1 => {
+            let lease: LegacyCoordinatorLease = serde_json::from_slice(encoded)?;
+            anyhow::ensure!(
+                legacy_coordinator_lease_is_valid(&lease),
+                "malformed legacy backup coordinator lease"
+            );
+            Ok(DecodedCoordinatorLease::Legacy(lease))
+        }
+        _ => anyhow::bail!("unsupported backup coordinator lease protocol"),
+    }
+}
+
+fn coordinator_lease_identity(
+    lease: &DecodedCoordinatorLease,
+    encoded: &[u8],
+    e_tag: Option<&str>,
+    version: Option<&str>,
+) -> String {
+    let (protocol, token, epoch, sequence) = match lease {
+        DecodedCoordinatorLease::Current(lease) => (
+            lease.format_version,
+            lease.token.as_str(),
+            lease.epoch,
+            lease.renewal_sequence,
+        ),
+        DecodedCoordinatorLease::Legacy(lease) => {
+            (lease.format_version, lease.token.as_str(), lease.epoch, 0)
+        }
+    };
+    let content_sha256 = hex_encode(&Sha256::digest(encoded));
+    format!(
+        "{protocol}:{token}:{epoch}:{sequence}:{content_sha256}:{}:{}",
+        e_tag.unwrap_or(""),
+        version.unwrap_or("")
+    )
 }
 
 fn coordinator_token() -> String {
@@ -431,41 +620,70 @@ async fn claim_coordinator(state: &CoordinatorState) -> anyhow::Result<Option<Co
     );
     let path = coordinator_lease_path();
     for _ in 0..5 {
-        let now = now_ms();
         match state.config.store.get(&path).await {
             Ok(result) => {
+                let meta = result.meta.clone();
                 let version = UpdateVersion {
-                    e_tag: result.meta.e_tag.clone(),
-                    version: result.meta.version.clone(),
+                    e_tag: meta.e_tag.clone(),
+                    version: meta.version.clone(),
                 };
                 let encoded = result.bytes().await?;
                 anyhow::ensure!(
                     encoded.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
                     "backup coordinator lease is too large"
                 );
-                let current: CoordinatorLease = serde_json::from_slice(&encoded)?;
-                anyhow::ensure!(
-                    coordinator_lease_is_valid(&current)
-                        && current.lease_until_ms <= now.saturating_add(60_000)
-                        && !(current.token == state.token && current.owner != state.config.owner),
-                    "malformed backup coordinator lease"
+                let current = decode_coordinator_lease(&encoded)?;
+                let identity = coordinator_lease_identity(
+                    &current,
+                    &encoded,
+                    meta.e_tag.as_deref(),
+                    meta.version.as_deref(),
                 );
-                if current.token != state.token && current.lease_until_ms > now {
-                    return Ok(None);
-                }
+                let (epoch, renewal_sequence) = match &current {
+                    DecodedCoordinatorLease::Current(current) if current.token == state.token => {
+                        anyhow::ensure!(
+                            current.owner == state.config.owner,
+                            "backup coordinator token changed owner"
+                        );
+                        (
+                            current.epoch,
+                            current.renewal_sequence.checked_add(1).ok_or_else(|| {
+                                anyhow::anyhow!("backup coordinator renewal sequence exhausted")
+                            })?,
+                        )
+                    }
+                    DecodedCoordinatorLease::Current(current) => {
+                        if !state.remote_lease_is_stale(
+                            identity,
+                            Some((&current.token, current.epoch, current.renewal_sequence)),
+                        ) {
+                            return Ok(None);
+                        }
+                        (
+                            current.epoch.checked_add(1).ok_or_else(|| {
+                                anyhow::anyhow!("backup coordinator epoch exhausted")
+                            })?,
+                            1,
+                        )
+                    }
+                    DecodedCoordinatorLease::Legacy(current) => {
+                        if !state.remote_lease_is_stale(identity, None) {
+                            return Ok(None);
+                        }
+                        (
+                            current.epoch.checked_add(1).ok_or_else(|| {
+                                anyhow::anyhow!("backup coordinator epoch exhausted")
+                            })?,
+                            1,
+                        )
+                    }
+                };
                 let next = CoordinatorLease {
                     format_version: COORDINATOR_FORMAT_VERSION,
                     owner: state.config.owner.clone(),
                     token: state.token.clone(),
-                    epoch: if current.token == state.token {
-                        current.epoch
-                    } else {
-                        current
-                            .epoch
-                            .checked_add(1)
-                            .ok_or_else(|| anyhow::anyhow!("backup coordinator epoch exhausted"))?
-                    },
-                    lease_until_ms: now.saturating_add(COORDINATOR_LEASE_MS),
+                    epoch,
+                    renewal_sequence,
                 };
                 match state
                     .config
@@ -477,7 +695,10 @@ async fn claim_coordinator(state: &CoordinatorState) -> anyhow::Result<Option<Co
                     )
                     .await
                 {
-                    Ok(_) => return Ok(Some(next)),
+                    Ok(_) => {
+                        state.note_renewed(next.renewal_sequence);
+                        return Ok(Some(next));
+                    }
                     Err(object_store::Error::Precondition { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 }
@@ -488,7 +709,7 @@ async fn claim_coordinator(state: &CoordinatorState) -> anyhow::Result<Option<Co
                     owner: state.config.owner.clone(),
                     token: state.token.clone(),
                     epoch: 1,
-                    lease_until_ms: now.saturating_add(COORDINATOR_LEASE_MS),
+                    renewal_sequence: 1,
                 };
                 match state
                     .config
@@ -500,7 +721,10 @@ async fn claim_coordinator(state: &CoordinatorState) -> anyhow::Result<Option<Co
                     )
                     .await
                 {
-                    Ok(_) => return Ok(Some(lease)),
+                    Ok(_) => {
+                        state.note_renewed(lease.renewal_sequence);
+                        return Ok(Some(lease));
+                    }
                     Err(object_store::Error::AlreadyExists { .. }) => continue,
                     Err(error) => return Err(error.into()),
                 }
@@ -517,29 +741,29 @@ fn start_coordinator(config: BackupCoordinator) -> Arc<CoordinatorState> {
         token: coordinator_token(),
         owned: AtomicBool::new(false),
         epoch: AtomicU64::new(0),
-        lease_until_ms: AtomicI64::new(0),
+        renewal_sequence: AtomicU64::new(0),
+        last_renewed: Mutex::new(None),
+        lease_observation: Mutex::new(None),
         mutation_sequence: AtomicU64::new(0),
     });
     let renew = state.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(COORDINATOR_RENEW_MS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
             match claim_coordinator(&renew).await {
                 Ok(Some(lease)) => {
                     renew.epoch.store(lease.epoch, Ordering::Release);
-                    renew
-                        .lease_until_ms
-                        .store(lease.lease_until_ms, Ordering::Release);
                     renew.owned.store(true, Ordering::Release);
                 }
                 Ok(None) => {
                     renew.owned.store(false, Ordering::Release);
-                    renew.lease_until_ms.store(0, Ordering::Release);
+                    renew.clear_renewal();
                 }
                 Err(error) => {
                     renew.owned.store(false, Ordering::Release);
-                    renew.lease_until_ms.store(0, Ordering::Release);
+                    renew.clear_renewal();
                     tracing::error!("backup coordinator lease failed: {error:#}");
                 }
             }
@@ -564,6 +788,7 @@ async fn publish_coordinator_health(
     anyhow::ensure!(
         health.format_version == COORDINATOR_FORMAT_VERSION
             && health.lease_epoch == fence.epoch
+            && health.lease_renewal_sequence > 0
             && health.sequence > 0
             && health.generated_ms > 0,
         "invalid backup coordinator health"
@@ -603,7 +828,11 @@ async fn publish_coordinator_health(
                             && current.snapshot_healthy == health.snapshot_healthy
                             && current.scrub_healthy == health.scrub_healthy
                             && current.last_primary_scrub_ms == health.last_primary_scrub_ms
-                            && current.primary_scrub_healthy == health.primary_scrub_healthy,
+                            && current.primary_scrub_healthy == health.primary_scrub_healthy
+                            && current.lease_renewal_sequence == health.lease_renewal_sequence
+                            && current.snapshot_age_ms == health.snapshot_age_ms
+                            && current.scrub_age_ms == health.scrub_age_ms
+                            && current.primary_scrub_age_ms == health.primary_scrub_age_ms,
                         "conflicting backup coordinator health sequence"
                     );
                     return Ok(());
@@ -640,24 +869,39 @@ async fn load_coordinator_health(
     scrub_interval: Duration,
     primary_scrub_interval: Duration,
 ) -> anyhow::Result<CoordinatorHealth> {
-    let lease_bytes = coordinator
+    let lease_result = coordinator
         .config
         .store
         .get(&coordinator_lease_path())
-        .await?
-        .bytes()
         .await?;
+    let lease_meta = lease_result.meta.clone();
+    let lease_bytes = lease_result.bytes().await?;
     anyhow::ensure!(
         lease_bytes.len() <= MAX_COORDINATOR_DOCUMENT_BYTES,
         "backup coordinator lease is too large"
     );
-    let lease: CoordinatorLease = serde_json::from_slice(&lease_bytes)?;
-    let now = now_ms();
+    let decoded_lease = decode_coordinator_lease(&lease_bytes)?;
+    let DecodedCoordinatorLease::Current(lease) = &decoded_lease else {
+        anyhow::bail!("backup coordinator still uses the legacy lease protocol");
+    };
+    let lease_identity = coordinator_lease_identity(
+        &decoded_lease,
+        &lease_bytes,
+        lease_meta.e_tag.as_deref(),
+        lease_meta.version.as_deref(),
+    );
+    let local_leader = coordinator.owned.load(Ordering::Acquire)
+        && lease.token == coordinator.token
+        && lease.epoch == coordinator.epoch.load(Ordering::Acquire)
+        && coordinator.local_lease_is_fresh();
+    let confirmed_since_sequence = if local_leader {
+        Some(lease.renewal_sequence)
+    } else {
+        coordinator.remote_lease_confirmation(&lease_identity)
+    };
     anyhow::ensure!(
-        coordinator_lease_is_valid(&lease)
-            && lease.lease_until_ms > now
-            && lease.lease_until_ms <= now.saturating_add(60_000),
-        "backup coordinator lease is stale"
+        coordinator_lease_is_valid(lease) && confirmed_since_sequence.is_some(),
+        "backup coordinator lease has not proven a recent renewal"
     );
     let encoded = coordinator
         .config
@@ -671,40 +915,63 @@ async fn load_coordinator_health(
         "backup coordinator health is too large"
     );
     let mut health: CoordinatorHealth = serde_json::from_slice(&encoded)?;
+    let confirmed_since_sequence = confirmed_since_sequence.expect("checked above");
     anyhow::ensure!(
         health.format_version == COORDINATOR_FORMAT_VERSION
             && health.lease_epoch == lease.epoch
+            && health.lease_renewal_sequence >= confirmed_since_sequence
+            && health.lease_renewal_sequence <= lease.renewal_sequence
             && health.sequence > 0
             && health.generated_ms > 0
-            && health.generated_ms <= now.saturating_add(60_000),
+            && (!health.snapshot_healthy || health.latest_completed_ms > 0)
+            && (!health.scrub_healthy || health.last_scrub_ms > 0)
+            && (!health.primary_scrub_healthy || health.last_primary_scrub_ms > 0),
         "backup coordinator health is malformed or from another epoch"
     );
-    let snapshot_budget = duration_ms(snapshot_interval.saturating_mul(2)).saturating_add(60_000);
-    let scrub_budget = duration_ms(scrub_interval.saturating_mul(3)).saturating_add(10_000);
+    // A publication carrying sequence S happened after lease renewal S. Every
+    // subsequent live lease version is observed for less than the full lease
+    // interval. Using one complete interval per version (including S) is a
+    // conservative, clock-independent upper bound on publication age.
+    let renewal_versions = lease
+        .renewal_sequence
+        .saturating_sub(health.lease_renewal_sequence)
+        .saturating_add(1);
+    let publication_age_upper_ms =
+        duration_ms_u64(COORDINATOR_LEASE_DURATION).saturating_mul(renewal_versions);
+    let snapshot_interval = snapshot_interval.max(Duration::from_secs(60));
+    let scrub_interval = scrub_interval.max(Duration::from_secs(10));
+    let primary_scrub_interval = primary_scrub_interval.max(Duration::from_secs(10));
+    let snapshot_budget =
+        duration_ms_u64(snapshot_interval.saturating_mul(2)).saturating_add(60_000);
+    let scrub_budget = duration_ms_u64(scrub_interval.saturating_mul(3)).saturating_add(10_000);
     let primary_scrub_budget =
-        duration_ms(primary_scrub_interval.saturating_mul(3)).saturating_add(10_000);
-    let report_budget = scrub_budget
-        .max(primary_scrub_budget)
-        .max(COORDINATOR_LEASE_MS.saturating_mul(2));
-    health.snapshot_healthy &= now
-        .checked_sub(health.latest_completed_ms)
-        .is_some_and(|age| (0..=snapshot_budget).contains(&age));
-    health.scrub_healthy &= now
-        .checked_sub(health.last_scrub_ms)
-        .is_some_and(|age| (0..=scrub_budget).contains(&age));
-    health.primary_scrub_healthy &= now
-        .checked_sub(health.last_primary_scrub_ms)
-        .is_some_and(|age| (0..=primary_scrub_budget).contains(&age));
+        duration_ms_u64(primary_scrub_interval.saturating_mul(3)).saturating_add(10_000);
+    let report_budget = scrub_budget.max(primary_scrub_budget).max(duration_ms_u64(
+        COORDINATOR_LEASE_DURATION.saturating_mul(2),
+    ));
+    health.snapshot_healthy &= health
+        .snapshot_age_ms
+        .saturating_add(publication_age_upper_ms)
+        <= snapshot_budget;
+    health.scrub_healthy &=
+        health.scrub_age_ms.saturating_add(publication_age_upper_ms) <= scrub_budget;
+    health.primary_scrub_healthy &= health
+        .primary_scrub_age_ms
+        .saturating_add(publication_age_upper_ms)
+        <= primary_scrub_budget;
     anyhow::ensure!(
-        now.checked_sub(health.generated_ms)
-            .is_some_and(|age| (0..=report_budget).contains(&age)),
+        publication_age_upper_ms <= report_budget,
         "backup coordinator health is stale"
     );
     Ok(health)
 }
 
-fn duration_ms(duration: Duration) -> i64 {
-    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+fn duration_ms_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn monotonic_age_ms(at: Option<Instant>) -> u64 {
+    at.map_or(u64::MAX, |at| duration_ms_u64(at.elapsed()))
 }
 
 pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
@@ -730,6 +997,9 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
         let mut latest_completed_ms = 0i64;
         let mut last_scrub_ms = 0i64;
         let mut last_primary_scrub_ms = 0i64;
+        let mut latest_completed_at = None;
+        let mut last_scrub_at = None;
+        let mut last_primary_scrub_at = None;
         let mut was_leader = coordinator.is_none();
         loop {
             tokio::select! {
@@ -745,6 +1015,8 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         latest_completed_ms = 0;
                         last_scrub_ms = 0;
                         last_primary_scrub_ms = 0;
+                        last_scrub_at = None;
+                        last_primary_scrub_at = None;
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
@@ -776,6 +1048,9 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                         .store(primary_healthy, Ordering::Release);
                                     if primary_healthy {
                                         latest_completed_ms = report.completed_ms;
+                                        latest_completed_at = Some(Instant::now());
+                                    } else {
+                                        latest_completed_at = None;
                                     }
                                     tracing::info!(
                                         snapshot = %report.snapshot_id,
@@ -792,12 +1067,14 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 }
                                 Err(error) => {
                                     actor_status.snapshot_healthy.store(false, Ordering::Release);
+                                    latest_completed_at = None;
                                     tracing::error!("backup retention failed: {error:#}");
                                 }
                             }
                         }
                         Err(error) => {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
+                            latest_completed_at = None;
                             tracing::error!("backup snapshot failed: {error:#}");
                         }
                     }
@@ -806,14 +1083,18 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         let health = CoordinatorHealth {
                             format_version: COORDINATOR_FORMAT_VERSION,
                             lease_epoch: fence.epoch,
+                            lease_renewal_sequence: fence.state.renewal_sequence.load(Ordering::Acquire),
                             sequence: health_sequence,
                             generated_ms: now_ms(),
                             latest_completed_ms,
                             last_scrub_ms,
                             snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
                             scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            snapshot_age_ms: monotonic_age_ms(latest_completed_at),
+                            scrub_age_ms: monotonic_age_ms(last_scrub_at),
                             last_primary_scrub_ms,
                             primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
+                            primary_scrub_age_ms: monotonic_age_ms(last_primary_scrub_at),
                         };
                         if let Err(error) = publish_coordinator_health(fence, &health).await {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
@@ -835,6 +1116,8 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         latest_completed_ms = 0;
                         last_scrub_ms = 0;
                         last_primary_scrub_ms = 0;
+                        latest_completed_at = None;
+                        last_primary_scrub_at = None;
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
@@ -847,10 +1130,12 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         Ok(checked) => {
                             actor_status.scrub_healthy.store(true, Ordering::Release);
                             last_scrub_ms = now_ms();
+                            last_scrub_at = Some(Instant::now());
                             tracing::info!(checked, "backup content scrub batch complete");
                         }
                         Err(error) => {
                             actor_status.scrub_healthy.store(false, Ordering::Release);
+                            last_scrub_at = None;
                             tracing::error!("backup content scrub failed: {error:#}");
                         }
                     }
@@ -859,14 +1144,18 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         let health = CoordinatorHealth {
                             format_version: COORDINATOR_FORMAT_VERSION,
                             lease_epoch: fence.epoch,
+                            lease_renewal_sequence: fence.state.renewal_sequence.load(Ordering::Acquire),
                             sequence: health_sequence,
                             generated_ms: now_ms(),
                             latest_completed_ms,
                             last_scrub_ms,
                             snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
                             scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            snapshot_age_ms: monotonic_age_ms(latest_completed_at),
+                            scrub_age_ms: monotonic_age_ms(last_scrub_at),
                             last_primary_scrub_ms,
                             primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
+                            primary_scrub_age_ms: monotonic_age_ms(last_primary_scrub_at),
                         };
                         if let Err(error) = publish_coordinator_health(fence, &health).await {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
@@ -888,6 +1177,8 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         latest_completed_ms = 0;
                         last_scrub_ms = 0;
                         last_primary_scrub_ms = 0;
+                        latest_completed_at = None;
+                        last_scrub_at = None;
                         actor_status.snapshot_healthy.store(false, Ordering::Release);
                         actor_status.scrub_healthy.store(false, Ordering::Release);
                         actor_status.primary_scrub_healthy.store(false, Ordering::Release);
@@ -934,6 +1225,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 }
                             }
                             last_primary_scrub_ms = now_ms();
+                            last_primary_scrub_at = Some(Instant::now());
                             tracing::info!(
                                 checked = report.checked,
                                 completed_sweep = report.completed_sweep,
@@ -944,6 +1236,8 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                             actor_status.primary_scrub_healthy.store(false, Ordering::Release);
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
                             latest_completed_ms = 0;
+                            latest_completed_at = None;
+                            last_primary_scrub_at = None;
                             tracing::error!("primary SlateDB integrity scrub failed: {error:#}");
                         }
                     }
@@ -952,14 +1246,18 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         let health = CoordinatorHealth {
                             format_version: COORDINATOR_FORMAT_VERSION,
                             lease_epoch: fence.epoch,
+                            lease_renewal_sequence: fence.state.renewal_sequence.load(Ordering::Acquire),
                             sequence: health_sequence,
                             generated_ms: now_ms(),
                             latest_completed_ms,
                             last_scrub_ms,
                             snapshot_healthy: actor_status.snapshot_healthy.load(Ordering::Acquire),
                             scrub_healthy: actor_status.scrub_healthy.load(Ordering::Acquire),
+                            snapshot_age_ms: monotonic_age_ms(latest_completed_at),
+                            scrub_age_ms: monotonic_age_ms(last_scrub_at),
                             last_primary_scrub_ms,
                             primary_scrub_healthy: actor_status.primary_scrub_healthy.load(Ordering::Acquire),
+                            primary_scrub_age_ms: monotonic_age_ms(last_primary_scrub_at),
                         };
                         if let Err(error) = publish_coordinator_health(fence, &health).await {
                             actor_status.snapshot_healthy.store(false, Ordering::Release);
@@ -2235,6 +2533,74 @@ async fn ensure_gc_intent(
     }
 }
 
+/// Obtain "now" from the recovery provider itself. Comparing provider object
+/// timestamps with a producer wall clock would let a skewed process expire the
+/// entire recovery corpus. The random CAS payload also prevents a stale read
+/// from being mistaken for the just-written probe.
+async fn retention_provider_now_ms(
+    destination: Arc<dyn ObjectStore>,
+    fence: Option<&PublicationFence>,
+) -> anyhow::Result<i64> {
+    let path = retention_clock_path();
+    for _ in 0..5 {
+        if let Some(fence) = fence {
+            fence.verify_remote().await?;
+        }
+        let mode = match destination.head(&path).await {
+            Ok(meta) => PutMode::Update(UpdateVersion {
+                e_tag: meta.e_tag,
+                version: meta.version,
+            }),
+            Err(object_store::Error::NotFound { .. }) => PutMode::Create,
+            Err(error) => return Err(error.into()),
+        };
+        let probe = RetentionClockProbe {
+            format_version: RETENTION_CLOCK_FORMAT_VERSION,
+            token: coordinator_token(),
+            coordinator_epoch: fence.map_or(0, |fence| fence.epoch),
+        };
+        let encoded = serde_json::to_vec(&probe)?;
+        match destination
+            .put_opts(
+                &path,
+                PutPayload::from(Bytes::from(encoded)),
+                PutOptions::from(mode),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(object_store::Error::Precondition { .. })
+            | Err(object_store::Error::AlreadyExists { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(fence) = fence {
+            fence.verify_remote().await?;
+        }
+        let result = destination.get(&path).await?;
+        let meta = result.meta.clone();
+        anyhow::ensure!(
+            meta.size <= MAX_COORDINATOR_DOCUMENT_BYTES as u64,
+            "backup retention clock probe is too large"
+        );
+        let observed: RetentionClockProbe = serde_json::from_slice(&result.bytes().await?)?;
+        if observed.token != probe.token {
+            continue;
+        }
+        anyhow::ensure!(
+            observed.format_version == RETENTION_CLOCK_FORMAT_VERSION
+                && observed.coordinator_epoch == probe.coordinator_epoch,
+            "malformed backup retention clock probe"
+        );
+        let provider_now_ms = meta.last_modified.timestamp_millis();
+        anyhow::ensure!(
+            provider_now_ms > 0,
+            "backup provider returned an invalid object timestamp"
+        );
+        return Ok(provider_now_ms);
+    }
+    anyhow::bail!("backup retention clock probe CAS retries exhausted")
+}
+
 pub async fn prune_once(
     destination: Arc<dyn ObjectStore>,
     retention: Duration,
@@ -2252,9 +2618,12 @@ async fn prune_once_fenced(
         fence.verify_remote().await?;
     }
     anyhow::ensure!(!retention.is_zero(), "backup retention must be positive");
-    let cutoff = now_ms().saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
+    let provider_now_ms = retention_provider_now_ms(destination.clone(), fence).await?;
+    let cutoff =
+        provider_now_ms.saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
     let snapshots_prefix = ObjPath::from("snapshots");
     let mut generations = HashSet::new();
+    let mut generation_latest_modified = HashMap::new();
     let mut completed = HashMap::new();
     let mut listing = destination.list(Some(&snapshots_prefix));
     while let Some(meta) = listing.try_next().await? {
@@ -2262,7 +2631,18 @@ async fn prune_once_fenced(
             continue;
         };
         validate_snapshot_id(&snapshot_id)?;
+        let modified_ms = meta.last_modified.timestamp_millis();
+        anyhow::ensure!(
+            modified_ms > 0,
+            "backup provider returned an invalid snapshot timestamp"
+        );
         generations.insert(snapshot_id.clone());
+        generation_latest_modified
+            .entry(snapshot_id.clone())
+            .and_modify(|timestamp: &mut i64| {
+                *timestamp = (*timestamp).max(modified_ms);
+            })
+            .or_insert(modified_ms);
         anyhow::ensure!(
             generations.len() <= MAX_SNAPSHOT_GENERATIONS,
             "backup snapshot generation count exceeds safety bound"
@@ -2279,7 +2659,7 @@ async fn prune_once_fenced(
                 "snapshot marker id mismatch during retention"
             );
             validate_snapshot_layout(&report)?;
-            completed.insert(snapshot_id, (report.completed_ms, report.coordinator_epoch));
+            completed.insert(snapshot_id, (modified_ms, report.coordinator_epoch));
         }
     }
     let staging_prefix = ObjPath::from("staging");
@@ -2287,7 +2667,18 @@ async fn prune_once_fenced(
     while let Some(meta) = listing.try_next().await? {
         if let Some(snapshot_id) = generation_from_path(&meta.location, "staging") {
             validate_snapshot_id(&snapshot_id)?;
-            generations.insert(snapshot_id);
+            let modified_ms = meta.last_modified.timestamp_millis();
+            anyhow::ensure!(
+                modified_ms > 0,
+                "backup provider returned an invalid staging timestamp"
+            );
+            generations.insert(snapshot_id.clone());
+            generation_latest_modified
+                .entry(snapshot_id)
+                .and_modify(|timestamp: &mut i64| {
+                    *timestamp = (*timestamp).max(modified_ms);
+                })
+                .or_insert(modified_ms);
             anyhow::ensure!(
                 generations.len() <= MAX_SNAPSHOT_GENERATIONS,
                 "backup snapshot generation count exceeds safety bound"
@@ -2326,12 +2717,37 @@ async fn prune_once_fenced(
         );
     }
 
+    let newest_completed = completed
+        .iter()
+        .max_by(|(left_id, (left_time, _)), (right_id, (right_time, _))| {
+            left_time
+                .cmp(right_time)
+                .then_with(|| left_id.cmp(right_id))
+        })
+        .map(|(snapshot_id, _)| snapshot_id.clone());
+    let latest_completed = match destination.get(&ObjPath::from("latest.json")).await {
+        Ok(result) => {
+            let encoded = result.bytes().await?;
+            anyhow::ensure!(
+                encoded.len() <= MAX_INVENTORY_BYTES,
+                "latest pointer is too large"
+            );
+            let report: SnapshotReport = serde_json::from_slice(&encoded)?;
+            validate_snapshot_id(&report.snapshot_id)?;
+            validate_snapshot_layout(&report)?;
+            completed
+                .contains_key(&report.snapshot_id)
+                .then_some(report.snapshot_id)
+        }
+        Err(object_store::Error::NotFound { .. }) => None,
+        Err(error) => return Err(error.into()),
+    };
     let mut delete_generations = HashSet::new();
     for snapshot_id in generations {
         let expired = completed
             .get(&snapshot_id)
-            .map(|(completed_ms, _)| *completed_ms)
-            .or_else(|| snapshot_started_ms(&snapshot_id))
+            .map(|(marker_modified_ms, _)| *marker_modified_ms)
+            .or_else(|| generation_latest_modified.get(&snapshot_id).copied())
             .is_some_and(|timestamp| timestamp < cutoff);
         let generation_epoch = completed
             .get(&snapshot_id)
@@ -2339,7 +2755,11 @@ async fn prune_once_fenced(
             .or_else(|| snapshot_coordinator_epoch(&snapshot_id))
             .unwrap_or(0);
         let fenced = fence.is_some_and(|fence| generation_epoch > fence.epoch);
-        if expired && !fenced {
+        if expired
+            && !fenced
+            && newest_completed.as_ref() != Some(&snapshot_id)
+            && latest_completed.as_ref() != Some(&snapshot_id)
+        {
             delete_generations.insert(snapshot_id);
         }
     }
@@ -2402,9 +2822,7 @@ async fn prune_once_fenced(
                 // after it has re-homed all live references.
                 continue;
             }
-            if reference.referenced_ms < cutoff
-                && delete_generations.contains(&reference.snapshot_id)
-            {
+            if delete_generations.contains(&reference.snapshot_id) {
                 if let Some(fence) = fence {
                     fence.check_local()?;
                 }
@@ -2437,7 +2855,7 @@ async fn prune_once_fenced(
         if fence.is_some_and(|fence| index.coordinator_epoch > fence.epoch) {
             continue;
         }
-        if index.referenced_ms < cutoff && delete_generations.contains(&index.snapshot_id) {
+        if delete_generations.contains(&index.snapshot_id) {
             if let Some(fence) = fence {
                 fence.check_local()?;
             }
@@ -2765,6 +3183,10 @@ fn coordinator_health_path() -> ObjPath {
     ObjPath::from("backup/health.json")
 }
 
+fn retention_clock_path() -> ObjPath {
+    ObjPath::from("retention/provider-clock.json")
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -2845,10 +3267,6 @@ fn generation_from_path(path: &ObjPath, root: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn snapshot_started_ms(snapshot_id: &str) -> Option<i64> {
-    snapshot_id.split('-').next()?.parse().ok()
-}
-
 fn snapshot_coordinator_epoch(snapshot_id: &str) -> Option<u64> {
     let encoded = snapshot_id.split('-').nth(1)?.strip_prefix('e')?;
     (encoded.len() == 20 && encoded.bytes().all(|byte| byte.is_ascii_digit()))
@@ -2925,6 +3343,45 @@ pub(crate) fn wall_time_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn test_coordinator(
+        store: Arc<dyn ObjectStore>,
+        owner: &str,
+        token_byte: char,
+    ) -> Arc<CoordinatorState> {
+        Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store,
+                owner: owner.to_string(),
+            },
+            token: token_byte.to_string().repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            renewal_sequence: AtomicU64::new(0),
+            last_renewed: Mutex::new(None),
+            lease_observation: Mutex::new(None),
+            mutation_sequence: AtomicU64::new(0),
+        })
+    }
+
+    async fn activate_coordinator(state: &Arc<CoordinatorState>) -> CoordinatorLease {
+        let lease = claim_coordinator(state).await.unwrap().unwrap();
+        state.epoch.store(lease.epoch, Ordering::Release);
+        state.owned.store(true, Ordering::Release);
+        lease
+    }
+
+    async fn take_over_coordinator(state: &Arc<CoordinatorState>) -> CoordinatorLease {
+        assert!(claim_coordinator(state).await.unwrap().is_none());
+        state
+            .lease_observation
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .first_seen = Instant::now() - COORDINATOR_LEASE_DURATION;
+        activate_coordinator(state).await
+    }
+
     #[tokio::test]
     async fn complete_snapshot_restores_exact_objects() {
         let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -2989,7 +3446,7 @@ mod tests {
             role: "ops",
             store: source,
         }];
-        let mut first = snapshot_once(&sources, backup.clone()).await.unwrap();
+        let first = snapshot_once(&sources, backup.clone()).await.unwrap();
         let second = snapshot_once(&sources, backup.clone()).await.unwrap();
         assert_eq!(first.copied_objects, 2);
         assert_eq!(second.copied_objects, 0);
@@ -3004,12 +3461,7 @@ mod tests {
             2
         );
 
-        first.completed_ms = 1;
-        backup
-            .put(
-                &marker_path(&first.snapshot_id),
-                PutPayload::from(Bytes::from(serde_json::to_vec(&first).unwrap())),
-            )
+        ensure_gc_intent(backup.clone(), &first.snapshot_id, first.coordinator_epoch)
             .await
             .unwrap();
         assert!(
@@ -3042,6 +3494,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retention_uses_provider_age_not_untrusted_report_time() {
+        let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        source
+            .put(&ObjPath::from("one"), PutPayload::from_static(b"durable"))
+            .await
+            .unwrap();
+        let sources = [BackupSource {
+            role: "ops",
+            store: source,
+        }];
+        let mut forged_old = snapshot_once(&sources, backup.clone()).await.unwrap();
+        forged_old.completed_ms = 1;
+        backup
+            .put(
+                &marker_path(&forged_old.snapshot_id),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&forged_old).unwrap())),
+            )
+            .await
+            .unwrap();
+        let newest = snapshot_once(&sources, backup.clone()).await.unwrap();
+
+        assert_eq!(
+            prune_once(backup.clone(), Duration::from_secs(24 * 60 * 60))
+                .await
+                .unwrap(),
+            0
+        );
+        backup
+            .head(&marker_path(&forged_old.snapshot_id))
+            .await
+            .unwrap();
+        backup
+            .head(&marker_path(&newest.snapshot_id))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn takeover_rehomes_blobs_so_delayed_old_epoch_delete_is_harmless() {
         let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -3058,23 +3549,8 @@ mod tests {
             store: source,
         }];
 
-        let first = Arc::new(CoordinatorState {
-            config: BackupCoordinator {
-                store: coordination.clone(),
-                owner: "streams-1".to_string(),
-            },
-            token: "a".repeat(32),
-            owned: AtomicBool::new(false),
-            epoch: AtomicU64::new(0),
-            lease_until_ms: AtomicI64::new(0),
-            mutation_sequence: AtomicU64::new(0),
-        });
-        let first_lease = claim_coordinator(&first).await.unwrap().unwrap();
-        first.epoch.store(first_lease.epoch, Ordering::Release);
-        first
-            .lease_until_ms
-            .store(first_lease.lease_until_ms, Ordering::Release);
-        first.owned.store(true, Ordering::Release);
+        let first = test_coordinator(coordination.clone(), "streams-1", 'a');
+        let first_lease = activate_coordinator(&first).await;
         let first_fence = first.fence().unwrap();
         let first_report = snapshot_once_with_pins_fenced(
             &sources,
@@ -3089,32 +3565,8 @@ mod tests {
         .unwrap();
         assert_eq!(first_report.format_version, SNAPSHOT_FORMAT_VERSION);
 
-        let mut expired = first_lease.clone();
-        expired.lease_until_ms = now_ms().saturating_sub(1);
-        coordination
-            .put(
-                &coordinator_lease_path(),
-                PutPayload::from(Bytes::from(serde_json::to_vec(&expired).unwrap())),
-            )
-            .await
-            .unwrap();
-        let second = Arc::new(CoordinatorState {
-            config: BackupCoordinator {
-                store: coordination,
-                owner: "streams-2".to_string(),
-            },
-            token: "b".repeat(32),
-            owned: AtomicBool::new(false),
-            epoch: AtomicU64::new(0),
-            lease_until_ms: AtomicI64::new(0),
-            mutation_sequence: AtomicU64::new(0),
-        });
-        let second_lease = claim_coordinator(&second).await.unwrap().unwrap();
-        second.epoch.store(second_lease.epoch, Ordering::Release);
-        second
-            .lease_until_ms
-            .store(second_lease.lease_until_ms, Ordering::Release);
-        second.owned.store(true, Ordering::Release);
+        let second = test_coordinator(coordination, "streams-2", 'b');
+        let second_lease = take_over_coordinator(&second).await;
         let second_fence = second.fence().unwrap();
         let second_report = snapshot_once_with_pins_fenced(
             &sources,
@@ -3188,25 +3640,10 @@ mod tests {
             .put(&ObjPath::from("one"), PutPayload::from_static(b"legacy-v2"))
             .await
             .unwrap();
-        let coordinator = Arc::new(CoordinatorState {
-            config: BackupCoordinator {
-                store: coordination,
-                owner: "read-first".to_string(),
-            },
-            token: "c".repeat(32),
-            owned: AtomicBool::new(false),
-            epoch: AtomicU64::new(0),
-            lease_until_ms: AtomicI64::new(0),
-            mutation_sequence: AtomicU64::new(0),
-        });
-        let lease = claim_coordinator(&coordinator).await.unwrap().unwrap();
-        coordinator.epoch.store(lease.epoch, Ordering::Release);
-        coordinator
-            .lease_until_ms
-            .store(lease.lease_until_ms, Ordering::Release);
-        coordinator.owned.store(true, Ordering::Release);
+        let coordinator = test_coordinator(coordination, "read-first", 'c');
+        let lease = activate_coordinator(&coordinator).await;
         let fence = coordinator.fence().unwrap();
-        let mut report = snapshot_once_with_pins_fenced(
+        let report = snapshot_once_with_pins_fenced(
             &[BackupSource {
                 role: "ops",
                 store: source,
@@ -3226,32 +3663,13 @@ mod tests {
         );
         let digest = hex_encode(&Sha256::digest(b"legacy-v2"));
         let reference_path = blob_reference_path(&digest);
-        let mut reference: BlobReference = serde_json::from_slice(
-            &backup
-                .get(&reference_path)
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
+        ensure_gc_intent(
+            backup.clone(),
+            &report.snapshot_id,
+            report.coordinator_epoch,
         )
+        .await
         .unwrap();
-        reference.referenced_ms = 1;
-        backup
-            .put(
-                &reference_path,
-                PutPayload::from(Bytes::from(serde_json::to_vec(&reference).unwrap())),
-            )
-            .await
-            .unwrap();
-        report.completed_ms = 1;
-        backup
-            .put(
-                &marker_path(&report.snapshot_id),
-                PutPayload::from(Bytes::from(serde_json::to_vec(&report).unwrap())),
-            )
-            .await
-            .unwrap();
 
         prune_once_fenced(
             backup.clone(),
@@ -3287,43 +3705,7 @@ mod tests {
         .unwrap();
         let digest = hex_encode(&Sha256::digest(b"collect-me"));
         let reference_path = blob_reference_path(&digest);
-        let mut reference: BlobReference = serde_json::from_slice(
-            &backup
-                .get(&reference_path)
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        reference.referenced_ms = 1;
-        backup
-            .put(
-                &reference_path,
-                PutPayload::from(Bytes::from(serde_json::to_vec(&reference).unwrap())),
-            )
-            .await
-            .unwrap();
         let index_path = source_index_path("ops", "one");
-        let mut index: SourceIndex = serde_json::from_slice(
-            &backup
-                .get(&index_path)
-                .await
-                .unwrap()
-                .bytes()
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        index.referenced_ms = 1;
-        backup
-            .put(
-                &index_path,
-                PutPayload::from(Bytes::from(serde_json::to_vec(&index).unwrap())),
-            )
-            .await
-            .unwrap();
         ensure_gc_intent(backup.clone(), &report.snapshot_id, 0)
             .await
             .unwrap();
@@ -3433,23 +3815,8 @@ mod tests {
     async fn coordinator_takeover_fences_delayed_publications() {
         let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let destination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let first = Arc::new(CoordinatorState {
-            config: BackupCoordinator {
-                store: coordination.clone(),
-                owner: "streams-1".to_string(),
-            },
-            token: "a".repeat(32),
-            owned: AtomicBool::new(false),
-            epoch: AtomicU64::new(0),
-            lease_until_ms: AtomicI64::new(0),
-            mutation_sequence: AtomicU64::new(0),
-        });
-        let first_lease = claim_coordinator(&first).await.unwrap().unwrap();
-        first.epoch.store(first_lease.epoch, Ordering::Release);
-        first
-            .lease_until_ms
-            .store(first_lease.lease_until_ms, Ordering::Release);
-        first.owned.store(true, Ordering::Release);
+        let first = test_coordinator(coordination.clone(), "streams-1", 'a');
+        let first_lease = activate_coordinator(&first).await;
         let first_fence = first.fence().unwrap();
         first_fence.verify_remote().await.unwrap();
 
@@ -3474,33 +3841,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expired = first_lease.clone();
-        expired.lease_until_ms = now_ms().saturating_sub(1);
-        coordination
-            .put(
-                &coordinator_lease_path(),
-                PutPayload::from(Bytes::from(serde_json::to_vec(&expired).unwrap())),
-            )
-            .await
-            .unwrap();
-        let second = Arc::new(CoordinatorState {
-            config: BackupCoordinator {
-                store: coordination.clone(),
-                owner: "streams-2".to_string(),
-            },
-            token: "b".repeat(32),
-            owned: AtomicBool::new(false),
-            epoch: AtomicU64::new(0),
-            lease_until_ms: AtomicI64::new(0),
-            mutation_sequence: AtomicU64::new(0),
-        });
-        let second_lease = claim_coordinator(&second).await.unwrap().unwrap();
+        let second = test_coordinator(coordination.clone(), "streams-2", 'b');
+        let second_lease = take_over_coordinator(&second).await;
         assert_eq!(second_lease.epoch, first_lease.epoch + 1);
-        second.epoch.store(second_lease.epoch, Ordering::Release);
-        second
-            .lease_until_ms
-            .store(second_lease.lease_until_ms, Ordering::Release);
-        second.owned.store(true, Ordering::Release);
         let second_fence = second.fence().unwrap();
         publish_latest(
             destination.clone(),
@@ -3517,18 +3860,21 @@ mod tests {
         assert!(delayed.to_string().contains("fenced"));
         assert!(first_fence.verify_remote().await.is_err());
 
-        let now = now_ms();
         let health = CoordinatorHealth {
             format_version: COORDINATOR_FORMAT_VERSION,
             lease_epoch: second_lease.epoch,
+            lease_renewal_sequence: second_lease.renewal_sequence,
             sequence: 1,
-            generated_ms: now,
-            latest_completed_ms: now,
-            last_scrub_ms: now,
+            generated_ms: i64::MAX,
+            latest_completed_ms: i64::MAX,
+            last_scrub_ms: i64::MAX,
             snapshot_healthy: true,
             scrub_healthy: true,
-            last_primary_scrub_ms: now,
+            snapshot_age_ms: 0,
+            scrub_age_ms: 0,
+            last_primary_scrub_ms: i64::MAX,
             primary_scrub_healthy: true,
+            primary_scrub_age_ms: 0,
         };
         publish_coordinator_health(&second_fence, &health)
             .await
@@ -3559,6 +3905,172 @@ mod tests {
         assert_eq!(
             latest_snapshot_id(destination).await.unwrap(),
             format!("00000000000000000001-e{:020}-second", second_lease.epoch)
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_takeover_uses_monotonic_observation_not_wall_clock() {
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let legacy = LegacyCoordinatorLease {
+            format_version: 1,
+            owner: "legacy-fast-clock".to_string(),
+            token: "d".repeat(32),
+            epoch: 41,
+            lease_until_ms: i64::MAX,
+        };
+        coordination
+            .put(
+                &coordinator_lease_path(),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&legacy).unwrap())),
+            )
+            .await
+            .unwrap();
+
+        let current = test_coordinator(coordination.clone(), "current", 'e');
+        let current_lease = take_over_coordinator(&current).await;
+        assert_eq!(current_lease.epoch, 42);
+        assert_eq!(current_lease.renewal_sequence, 1);
+        let encoded = coordination
+            .get(&coordinator_lease_path())
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("lease_until_ms"));
+
+        let contender = test_coordinator(coordination, "contender", 'f');
+        assert!(claim_coordinator(&contender).await.unwrap().is_none());
+        contender
+            .lease_observation
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .first_seen = Instant::now() - COORDINATOR_LEASE_DURATION;
+        let renewed = claim_coordinator(&current).await.unwrap().unwrap();
+        assert_eq!(renewed.epoch, current_lease.epoch);
+        assert_eq!(renewed.renewal_sequence, 2);
+        assert!(claim_coordinator(&contender).await.unwrap().is_none());
+
+        *current.last_renewed.lock().unwrap() = Some(Instant::now() - COORDINATOR_LEASE_DURATION);
+        assert!(current.fence().is_none());
+    }
+
+    #[tokio::test]
+    async fn follower_requires_a_recent_renewal_and_health_from_after_a_pause() {
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let leader = test_coordinator(coordination.clone(), "leader", 'a');
+        let first = activate_coordinator(&leader).await;
+        let fence = leader.fence().unwrap();
+        let follower = test_coordinator(coordination, "follower", 'b');
+        let health = |lease_renewal_sequence, sequence| CoordinatorHealth {
+            format_version: COORDINATOR_FORMAT_VERSION,
+            lease_epoch: first.epoch,
+            lease_renewal_sequence,
+            sequence,
+            generated_ms: i64::MAX,
+            latest_completed_ms: i64::MAX,
+            last_scrub_ms: i64::MAX,
+            snapshot_healthy: true,
+            scrub_healthy: true,
+            snapshot_age_ms: 0,
+            scrub_age_ms: 0,
+            last_primary_scrub_ms: i64::MAX,
+            primary_scrub_healthy: true,
+            primary_scrub_age_ms: 0,
+        };
+
+        publish_coordinator_health(&fence, &health(first.renewal_sequence, 1))
+            .await
+            .unwrap();
+        assert!(claim_coordinator(&follower).await.unwrap().is_none());
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("has not proven a recent renewal")
+        );
+
+        let second = claim_coordinator(&leader).await.unwrap().unwrap();
+        assert!(claim_coordinator(&follower).await.unwrap().is_none());
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .is_err(),
+            "health published before the observed renewal must remain fenced"
+        );
+        publish_coordinator_health(&fence, &health(second.renewal_sequence, 2))
+            .await
+            .unwrap();
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap()
+            .snapshot_healthy
+        );
+
+        follower
+            .lease_observation
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .first_seen = Instant::now() - COORDINATOR_LEASE_DURATION;
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .is_err(),
+            "an unchanged lease must stop carrying health after the monotonic timeout"
+        );
+
+        let third = claim_coordinator(&leader).await.unwrap().unwrap();
+        assert!(claim_coordinator(&follower).await.unwrap().is_none());
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .is_err(),
+            "a post-pause renewal must require a post-pause health publication"
+        );
+        publish_coordinator_health(&fence, &health(third.renewal_sequence, 3))
+            .await
+            .unwrap();
+        assert!(
+            load_coordinator_health(
+                &follower,
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+                Duration::from_secs(10),
+            )
+            .await
+            .unwrap()
+            .snapshot_healthy
         );
     }
 

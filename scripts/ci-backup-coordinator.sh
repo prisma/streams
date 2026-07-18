@@ -94,6 +94,12 @@ first_epoch="$(sed -n 's/.*"coordinator_epoch":\([0-9]*\).*/\1/p' <<<"${first_re
 [[ -n "${first_snapshot}" && "${first_epoch}" =~ ^[1-9][0-9]*$ ]]
 lease="$(curl --fail --silent \
   "${S3_URL}/primary/coord-primary/backup/coordinator-lease.json")"
+grep -q '"format_version":2' <<<"${lease}"
+grep -Eq '"renewal_sequence":[1-9][0-9]*' <<<"${lease}"
+if grep -q 'lease_until_ms' <<<"${lease}"; then
+  echo "clock-dependent coordinator lease was published" >&2
+  exit 1
+fi
 owner="$(sed -n 's/.*"owner":"\([^"]*\)".*/\1/p' <<<"${lease}")"
 case "${owner}" in
   streams-1)

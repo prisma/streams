@@ -139,13 +139,23 @@ readiness returns. `scripts/ci-primary-scrub.sh` corrupts same-length shard and
 encrypted-history SSTs and proves this red-to-repaired transition.
 
 Every backup-enabled instance contends for `backup/coordinator-lease.json` in
-the cell's ops store. Only the holder of the renewable six-second CAS lease may
-snapshot, prune, or advance the scrub cursor. Mutable source indexes, blob
-references, scrub state, `latest.json`, and `backup/health.json` carry the lease
-epoch plus a monotonic sequence and use conditional writes; a delayed old
-holder cannot overwrite takeover state. Followers read the current epoch's
-fresh health record, so all instances expose the same readiness result without
-duplicating backup I/O. `INSTANCE_NAME` is the bounded coordinator identity.
+the cell's ops store. The holder CAS-increments a renewal sequence every two
+seconds; there is no wall-clock lease deadline. A contender records the exact
+token/epoch/sequence/content digest plus provider version and may take over only
+after that identity is unchanged for six seconds on its local monotonic clock.
+Only the holder may snapshot, prune, or advance the scrub cursor. Mutable
+source indexes, blob references, scrub state, `latest.json`, and
+`backup/health.json` carry the lease epoch plus a monotonic sequence and use
+conditional writes; a delayed old
+holder cannot overwrite takeover state. Followers initially fail closed until
+they observe the same holder renew, then accept only health published at or
+after that proof. After an unchanged six-second interval they repeat the
+handshake. Health freshness uses leader-relative monotonic ages and bounded
+renewal gaps; its Unix timestamps are audit-only. Thus all instances expose the
+same readiness result without duplicating backup I/O. `INSTANCE_NAME` is the
+bounded coordinator identity. Protocol-1 absolute-expiry leases are readable
+only for a monotonic takeover upgrade; see `STORAGE-MIGRATIONS.md` before any
+binary rollback.
 Format-3 blobs and references live under `formats/3/` and include the lease
 epoch in their physical path. A takeover checksum-rehomes unchanged content
 before publishing its point. Thus a provider DELETE admitted by epoch N can
@@ -154,7 +164,11 @@ format-2 read-first wave, coordinated legacy-blob GC is disabled; format 3
 reclaims it only after live content has been re-homed. Retention durably creates
 `gc-intents/<snapshot>/intent.json`, removes the complete marker, deletes
 content/metadata, and removes the intent last, so a crash resumes instead of
-leaking an unreachable last-reference blob.
+leaking an unreachable last-reference blob. Its cutoff comes from
+`retention/provider-clock.json`: the actor CAS-writes a random probe and compares
+that provider timestamp only with provider `Last-Modified` metadata. Host Unix
+time is audit-only, and the newest completed recovery point is retained even
+after the nominal window.
 
 ### 3.2 Engine (shard log)
 
@@ -648,8 +662,9 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   in that migration document; there is intentionally no keyless auto-baseline.
   A measured failover against the actual independent provider remains a GA
   release gate in [OPERATIONS.md §2](./OPERATIONS.md).
-  CI also runs two backup-enabled instances, kills the actual six-second lease
-  holder, requires an epoch-incremented point from the survivor, and rejects
+  CI also runs two backup-enabled instances, kills the actual lease holder,
+  requires the survivor to wait through the six-second monotonic unchanged-
+  version window, publishes an epoch-incremented point, and rejects
   duplicate completion markers. It then starts a format-2 rollback writer,
   requires another epoch increment and reused objects, and proves the format-2
   and format-3 reference roots coexist.

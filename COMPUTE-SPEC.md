@@ -514,19 +514,29 @@ compactions record, and WAL interval. A final topology and pin recheck prevents
 a split/merge, compaction, or absorber write from publishing an incoherent
 point. Exact source ETags index immutable SHA-256
 blobs, so later points copy only changed objects while retaining a complete
-checksummed inventory. Retention deletes expired point metadata before its
-last-referenced blobs; a bounded rolling scrub hashes referenced blobs using a
-durable provider-independent cursor and feeds readiness independently of
-snapshot completion. Restore supports legacy full-copy format 1, shared
+checksummed inventory. Retention compares provider `Last-Modified` values with
+a fresh CAS-written provider clock probe, never with a Compute host clock, and
+always preserves the newest completed point. It deletes expired point metadata
+before its last-referenced blobs; a bounded rolling scrub hashes referenced
+blobs using a durable provider-independent cursor and feeds readiness
+independently of snapshot completion. Restore supports legacy full-copy format 1, shared
 content-addressed format 2, and epoch-isolated content-addressed format 3, but
 only into empty offline targets.
 
-One instance per cell holds a renewable six-second CAS backup lease in the ops
-store. The lease epoch and monotonic per-epoch sequences fence mutable backup
-indexes, references, scrub state, the latest pointer, and a durable health
-record. Followers consume that fresh health record for readiness and perform no
-backup-provider scan/copy/GC work. Takeover triggers an immediate point and
-scrub batch; a delayed prior holder cannot regress any ordered publication.
+One instance per cell holds a renewable CAS backup lease in the ops store. The
+holder conditionally advances a renewal sequence every two seconds; the lease
+contains no wall-clock expiry. A contender may replace it only after the exact
+token/epoch/sequence/content digest and provider version have remained unchanged
+for six seconds measured by the contender's local monotonic clock. The lease
+epoch and monotonic per-epoch sequences fence mutable backup indexes,
+references, scrub state, the latest pointer, and a durable health record.
+Followers do not trust their first view of a lease: they require an observed
+same-owner renewal, and after any six-second gap require health published at or
+after the new renewal. Health carries leader-measured relative ages; wall-clock
+fields are audit metadata, never liveness authority. Followers consume that
+proven-fresh record for readiness and perform no backup-provider scan/copy/GC
+work. Takeover triggers an immediate point and scrub batch; a delayed prior
+holder cannot regress any ordered publication.
 Format-3 blob and reference paths contain that lease epoch. Takeover
 checksum-rehomes unchanged content before publication, so a delayed
 unconditional delete from an old epoch cannot name current recovery content.

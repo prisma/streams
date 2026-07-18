@@ -11,6 +11,7 @@ object the new release may publish.
 |---|---:|---:|---|
 | live topology/shard/registry | 2 | 2 | pre-v2 pilot data is rejected; this service has no in-place v1 corpus |
 | encrypted-history integrity baseline | 1 | 1, create-only | baseline must precede readiness enforcement; never infer it without the customer key |
+| backup coordination lease / health / retention clock | lease 1 or 2 / health 2 / clock 1 | lease 2 / health 2 / clock 1 | protocol 1 is takeover input only; it is never trusted for readiness or eligible as a production rollback writer |
 | recovery point | 1, 2, 3 | 2 or 3 via `BACKUP_WRITE_FORMAT` | one binary release; format-1 and format-2 points remain restorable |
 
 Recovery format 1 stores snapshot-local objects. Format 2 stores shared
@@ -19,6 +20,17 @@ SHA-256 blobs and references. Format 3 stores blobs and references below
 snapshot id. On takeover, unchanged content is streamed through a checksummed
 staging object into the new epoch before its inventory is published. A paused
 old epoch can therefore delete only its own content paths.
+
+Coordination protocol 2 replaces the protocol-1 absolute `lease_until_ms`
+with a token, epoch, and renewal sequence. A protocol-2 contender ignores the
+legacy deadline—including `i64::MAX`—and conditionally upgrades only after the
+exact legacy object content and provider version remain unchanged for six
+locally measured monotonic seconds. Protocol-2 health uses relative monotonic
+ages and requires an observed post-startup/post-pause lease renewal. Once any
+cell writes a protocol-2 lease, a protocol-1 binary cannot parse it and fails
+closed. Protocol 2 is therefore the first supported production coordinator
+protocol: deploy it everywhere in format-2 recovery mode before the recovery
+format 2→3 read-first wave. A pre-protocol-2 binary is not a rollback target.
 
 ## Recovery format 2 to 3
 
@@ -38,7 +50,8 @@ old epoch can therefore delete only its own content paths.
 5. **Finish.** After the rollback window, format-3 retention may collect legacy
    blobs only when their last reference points at an expired generation.
 
-Rollback by one release is safe before or after the flip. The previous binary
+Rollback by one release is safe before or after the flip only when that release
+already implements coordination protocol 2. The previous eligible binary
 claims a higher coordinator epoch, ignores the `formats/3/` reference root,
 copies primary objects into format-2 paths, and publishes a newer format-2
 `latest.json`. Its restore tool can then use that point or an explicitly retained
