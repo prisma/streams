@@ -488,6 +488,11 @@ OOM-killed container under load otherwise stays down.
 | `POST /v1/admin/shards/{parent}/split` | operator bearer + distinct operator approval | online fenced split; production requires `X-Prisma-Operator-Approval: Bearer …` |
 | `POST /v1/admin/shards/{parent}/merge` | operator bearer + distinct operator approval | online fenced sibling merge; production requires `X-Prisma-Operator-Approval: Bearer …` |
 
+Every response includes a service-generated `X-Prisma-Request-Id` (32 lowercase
+hex characters). Caller-supplied values are stripped. Version-1 audit records
+carry the identical `request_id`; use that join key for retry/503 investigations
+and customer support. The TypeScript `StreamsError.requestId` exposes it.
+
 **429 semantics**: every body uses
 `{"error":{"code":"throttled","scope":…,"dimension":…,"limit":n,
 "observed":n,"retry_after_ms":n}}` with standards-compliant `Retry-After: 1`

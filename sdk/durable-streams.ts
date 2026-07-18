@@ -88,8 +88,13 @@ export class StreamsClient {
 }
 
 export class StreamsError extends Error {
+  public readonly requestId: string | null;
+
   constructor(op: string, public response: Response) {
-    super(`${op}: HTTP ${response.status}`);
+    const requestId = response.headers.get("x-prisma-request-id");
+    super(`${op}: HTTP ${response.status}${requestId ? ` (request ${requestId})` : ""}`);
+    this.name = "StreamsError";
+    this.requestId = requestId;
   }
 }
 

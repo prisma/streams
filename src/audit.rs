@@ -94,6 +94,8 @@ impl Default for AuditConfig {
 
 #[derive(Clone, Serialize)]
 pub struct AuditEvent {
+    pub format_version: u32,
+    pub request_id: String,
     pub timestamp_ms: i64,
     pub customer_id: String,
     pub token_id: String,
@@ -603,6 +605,8 @@ mod tests {
 
     fn event() -> AuditEvent {
         AuditEvent {
+            format_version: 1,
+            request_id: "00000000000000000000000000000001".into(),
             timestamp_ms: 1,
             customer_id: "customer".into(),
             token_id: "token".into(),

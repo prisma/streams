@@ -57,11 +57,19 @@ S3_PID=$!
 KEY="$(${TARGET_DIR}/streams-keys generate)"
 start_streams
 
+assert_request_id() {
+  grep -Eiq '^x-prisma-request-id: [0-9a-f]{32}\r?$' "$1"
+  ! grep -qi '^x-prisma-request-id: caller-controlled' "$1"
+}
+
 # Create-with-body must be a durable idempotent transaction across a hard
 # process loss. The exact retry cannot duplicate; a different body conflicts.
-curl --fail --silent --show-error -X PUT "${STREAMS_URL}/v1/stream/restart" \
+curl --fail --silent --show-error -D "${TMP_DIR}/create.headers" \
+  -X PUT "${STREAMS_URL}/v1/stream/restart" \
   "${auth[@]}" -H "stream-encryption-key: ${KEY}" \
+  -H 'x-prisma-request-id: caller-controlled' \
   -H "content-type: application/json" -d '[{"n":1},{"n":2}]' >/dev/null
+assert_request_id "${TMP_DIR}/create.headers"
 kill -9 "${STREAMS_PID}"
 wait "${STREAMS_PID}" 2>/dev/null || true
 STREAMS_PID=""
@@ -94,9 +102,11 @@ body="$(curl --fail --silent --show-error "${STREAMS_URL}/v1/stream/restart" \
 [[ "${body}" == '[{"n":1},{"n":2},{"n":3}]' ]]
 
 # Operator diagnostics and tenant data fail closed without credentials.
-status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+status="$(curl --silent --output /dev/null -D "${TMP_DIR}/unauthorized.headers" \
+  --write-out '%{http_code}' \
   "${STREAMS_URL}/v1/debug/sleep?ms=1")"
 [[ "${status}" == "401" ]]
+assert_request_id "${TMP_DIR}/unauthorized.headers"
 status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   "${STREAMS_URL}/v1/stream/restart" -H "stream-encryption-key: ${KEY}")"
 [[ "${status}" == "401" ]]

@@ -173,16 +173,25 @@ admin_url="${STREAMS_URL}/v1/admin/shards/root/split"
   "${admin_url}" -H "authorization: Bearer ${OPERATOR_TOKEN_A}" \
   -H "x-prisma-operator-approval: Bearer ${OPERATOR_TOKEN_B}")" == "403" ]]
 curl --fail --silent --show-error -X POST "${admin_url}" \
+  -D "${TMP_DIR}/admin.headers" \
   -H "authorization: Bearer ${OPERATOR_TOKEN_A}" \
   -H "x-prisma-operator-approval: Bearer ${APPROVER_TOKEN_A}" >/dev/null
-python3 - "${S3_URL}" "${PREFIX}" <<'PY'
+python3 - "${S3_URL}" "${PREFIX}" "${TMP_DIR}/admin.headers" <<'PY'
 import json
 import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-endpoint, prefix = sys.argv[1:]
+endpoint, prefix, headers_path = sys.argv[1:]
+admin_request_id = None
+for line in open(headers_path, encoding="utf-8"):
+    name, _, value = line.partition(":")
+    if name.lower() == "x-prisma-request-id":
+        admin_request_id = value.strip()
+assert admin_request_id is not None
+assert len(admin_request_id) == 32
+int(admin_request_id, 16)
 audit_prefix = f"{prefix}/audit/control/"
 query = urllib.parse.urlencode({"list-type": "2", "prefix": audit_prefix})
 with urllib.request.urlopen(f"{endpoint}/streams?{query}", timeout=2) as response:
@@ -195,11 +204,16 @@ for key in keys:
     with urllib.request.urlopen(url, timeout=2) as response:
         events.append(json.load(response))
 assert sorted(event["status"] for event in events) == [200, 403, 403, 403]
+assert all(event["format_version"] == 1 for event in events)
+assert all(len(event["request_id"]) == 32 for event in events)
+assert all(int(event["request_id"], 16) >= 0 for event in events)
+assert len({event["request_id"] for event in events}) == 4
 assert all(event["customer_id"] == "soak-operator" for event in events)
 assert all(event["token_id"] == "soak-operator-a" for event in events)
 assert all(event["stream"] == "/v1/admin/shards/root/split" for event in events)
 assert all(event["method"] == "POST" for event in events)
 event = next(event for event in events if event["status"] == 200)
+assert event["request_id"] == admin_request_id
 assert event["customer_id"] == "soak-operator"
 assert event["token_id"] == "soak-operator-a"
 assert event["approval_customer_id"] == "soak-approver"

@@ -83,14 +83,14 @@ wait_at_least() {
 }
 
 operator_audit_present() {
-  python3 - "$1" "$2" "$3" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
 import json
 import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-endpoint, bucket, prefix = sys.argv[1:]
+endpoint, bucket, prefix, admin_request_id = sys.argv[1:]
 query = urllib.parse.urlencode({"list-type": "2", "prefix": prefix})
 with urllib.request.urlopen(f"{endpoint}/{bucket}?{query}", timeout=2) as response:
     root = ET.fromstring(response.read())
@@ -119,11 +119,16 @@ assert len(debug) == 10, f"expected 10 full-fidelity debug events, got {len(debu
 assert len(debug_objects) < len(debug), "debug reads became one object per request"
 assert len(admin) == 1, f"expected one durable admin event, got {len(admin)}"
 for event in debug + admin:
+    assert event["format_version"] == 1
+    assert len(event["request_id"]) == 32
+    int(event["request_id"], 16)
     assert event["customer_id"] == "__legacy__"
     assert event["token_id"] == "legacy"
     assert event["status"] == 200
 assert all(event["method"] == "GET" for event in debug)
 assert admin[0]["method"] == "POST"
+assert admin[0]["request_id"] == admin_request_id
+assert len({event["request_id"] for event in debug + admin}) == 11
 PY
 }
 
@@ -131,11 +136,14 @@ wait_operator_audit() {
   local endpoint="$1"
   local bucket="$2"
   local prefix="$3"
+  local admin_request_id="$4"
   local attempts=0
-  until operator_audit_present "${endpoint}" "${bucket}" "${prefix}" 2>/dev/null; do
+  until operator_audit_present \
+    "${endpoint}" "${bucket}" "${prefix}" "${admin_request_id}" 2>/dev/null; do
     attempts=$((attempts + 1))
     if (( attempts > 150 )); then
-      operator_audit_present "${endpoint}" "${bucket}" "${prefix}"
+      operator_audit_present \
+        "${endpoint}" "${bucket}" "${prefix}" "${admin_request_id}"
       exit 1
     fi
     sleep 0.1
@@ -179,14 +187,21 @@ for _ in {1..10}; do
     "${auth[@]}" >/dev/null
 done
 curl --fail --silent --show-error -X POST \
+  -D "${TMP_DIR}/admin.headers" \
   "${STREAMS_URL}/v1/admin/shards/root/split" "${auth[@]}" >/dev/null
+admin_request_id="$(awk '
+  tolower($1) == "x-prisma-request-id:" { gsub("\r", "", $2); print $2 }
+' "${TMP_DIR}/admin.headers")"
+[[ "${admin_request_id}" =~ ^[0-9a-f]{32}$ ]]
 
 wait_count "${PRIMARY_URL}" primary audit-primary/audit/control/ 2
 wait_count "${MIRROR_URL}" mirror audit-secondary/audit/control/ 2
 wait_at_least "${PRIMARY_URL}" primary audit-primary/audit/batches/ 1
 wait_at_least "${MIRROR_URL}" mirror audit-secondary/audit/batches/ 1
-wait_operator_audit "${PRIMARY_URL}" primary audit-primary/audit/
-wait_operator_audit "${MIRROR_URL}" mirror audit-secondary/audit/
+wait_operator_audit \
+  "${PRIMARY_URL}" primary audit-primary/audit/ "${admin_request_id}"
+wait_operator_audit \
+  "${MIRROR_URL}" mirror audit-secondary/audit/ "${admin_request_id}"
 
 control_primary_before="$(object_count \
   "${PRIMARY_URL}" primary audit-primary/audit/control/)"

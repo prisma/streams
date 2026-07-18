@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, HttpBody};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -39,6 +39,16 @@ const MAX_ROUTING_KEY_BYTES: usize = 4 * 1024;
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_LONG_POLL: Duration = Duration::from_secs(30);
 const OPERATOR_APPROVAL_HEADER: &str = "x-prisma-operator-approval";
+const REQUEST_ID_HEADER: &str = "x-prisma-request-id";
+
+#[derive(Clone)]
+struct RequestId(String);
+
+impl RequestId {
+    fn generate() -> Self {
+        Self(format!("{:032x}", rand::random::<u128>()))
+    }
+}
 
 /// Everything needed to open a shard log on demand. Shards are opened
 /// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
@@ -1298,6 +1308,24 @@ async fn record_http_telemetry(
     response
 }
 
+async fn assign_request_id(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    // Never accept a caller-selected correlation identifier: audit IDs are
+    // service assertions and must not collide or contain attacker text.
+    req.headers_mut().remove(REQUEST_ID_HEADER);
+    let request_id = RequestId::generate();
+    req.extensions_mut().insert(request_id.clone());
+    let mut response = next.run(req).await;
+    response.headers_mut().insert(
+        REQUEST_ID_HEADER,
+        axum::http::HeaderValue::from_str(&request_id.0)
+            .expect("generated request ID is a valid header value"),
+    );
+    response
+}
+
 fn operator_unauthorized() -> Response {
     err_resp(
         StatusCode::UNAUTHORIZED,
@@ -1378,6 +1406,7 @@ fn authenticate_operator_approval(
 }
 
 fn operator_audit_event(
+    request_id: &RequestId,
     principal: &Principal,
     approval: Option<&Principal>,
     path: &str,
@@ -1386,6 +1415,8 @@ fn operator_audit_event(
     duration: Duration,
 ) -> crate::audit::AuditEvent {
     crate::audit::AuditEvent {
+        format_version: 1,
+        request_id: request_id.0.clone(),
         timestamp_ms: now_ms(),
         customer_id: principal.customer_id.clone(),
         token_id: principal.token_id.clone(),
@@ -1420,6 +1451,11 @@ async fn audit_operator_request(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    let request_id = req
+        .extensions()
+        .get::<RequestId>()
+        .cloned()
+        .expect("request ID middleware must wrap operator routes");
     let principal = match authenticate(&state, req.headers()) {
         Ok(principal) if principal.operator => principal,
         Ok(_) => return operator_unauthorized(),
@@ -1434,6 +1470,7 @@ async fn audit_operator_request(
             Ok(approval) => approval,
             Err(rejection) => {
                 let event = operator_audit_event(
+                    &request_id,
                     &principal,
                     rejection.principal.as_ref(),
                     &path,
@@ -1470,6 +1507,7 @@ async fn audit_operator_request(
     };
     let response = next.run(req).await;
     let event = operator_audit_event(
+        &request_id,
         &principal,
         approval.as_ref(),
         &path,
@@ -1986,6 +2024,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             );
             resp
         }))
+        .layer(axum::middleware::from_fn(assign_request_id))
         .with_state(state)
 }
 
@@ -2315,6 +2354,7 @@ pub struct ReadParams {
 
 async fn stream_entry(
     State(state): State<Arc<AppState>>,
+    Extension(request_id): Extension<RequestId>,
     Path(name): Path<String>,
     Query(params): Query<ReadParams>,
     method: Method,
@@ -2398,6 +2438,8 @@ async fn stream_entry(
     }
     let control_plane = matches!(audit_method, Method::PUT | Method::DELETE);
     let audit_event = crate::audit::AuditEvent {
+        format_version: 1,
+        request_id: request_id.0,
         timestamp_ms: now_ms(),
         customer_id: audit_customer.clone(),
         token_id: audit_token.clone(),

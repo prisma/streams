@@ -225,8 +225,8 @@ therefore two-tier and documented to customers:
 
 ### 3.4 Access audit
 
-Per-request audit records (principal, optional second approver, resource, verb,
-token-id, result, latency)
+Versioned per-request audit records (service-generated request ID, principal,
+optional second approver, resource, verb, token-id, result, latency)
 are written to the cell ops bucket and an independently credentialed audit
 provider. Create/delete and privileged state-changing admin records are
 synchronously persisted as identical immutable objects on both sides before a
@@ -238,6 +238,13 @@ if its event cannot enter the bounded queue. Per-tenant counters remain full
 fidelity via the metrics stream. Queue loss, write failure, corrupt/missing
 mirror content, or maintenance failure makes readiness fail, and an unaudited
 successful control mutation is returned as retryable 503 instead.
+
+Every response carries the same 128-bit lowercase-hex ID stored in its audit
+record. The service strips any caller-supplied `X-Prisma-Request-Id` before
+routing and generates its own, preventing correlation collisions or log-text
+injection. Audit JSON sets `format_version: 1`; consumers must treat historical
+records without that field as legacy format 0. SDK errors surface the response
+ID directly for support and incident correlation.
 
 Every boot reconciles both primary prefixes through conditionally persisted
 bounded cursors before readiness can pass. A primary object is pruned only
