@@ -840,6 +840,22 @@ pub struct Topology {
     /// Complete binary prefix code over the stream-hash bit space. "" = one
     /// shard covering everything.
     pub shards: Vec<String>,
+    /// Generation-specific DB paths for online split children. Unmapped
+    /// shards use the canonical `shards/<prefix>` path.
+    #[serde(default)]
+    pub shard_paths: HashMap<String, String>,
+}
+
+impl Topology {
+    pub fn db_path(&self, prefix: &str) -> String {
+        self.shard_paths.get(prefix).cloned().unwrap_or_else(|| {
+            if prefix.is_empty() {
+                "shards/root".to_string()
+            } else {
+                format!("shards/{prefix}")
+            }
+        })
+    }
 }
 
 const TOPOLOGY_PATH: &str = "topology.json";
@@ -892,6 +908,15 @@ pub async fn cas_publish_topology_split(
     parent: &str,
     expected_version: u64,
 ) -> Result<Topology, object_store::Error> {
+    cas_publish_topology_split_with_paths(store, parent, expected_version, None).await
+}
+
+pub async fn cas_publish_topology_split_with_paths(
+    store: &Arc<dyn ObjectStore>,
+    parent: &str,
+    expected_version: u64,
+    child_paths: Option<(&str, &str)>,
+) -> Result<Topology, object_store::Error> {
     let path = ObjPath::from(TOPOLOGY_PATH);
     let result = store.get(&path).await?;
     let etag = result.meta.e_tag.clone();
@@ -910,8 +935,17 @@ pub async fn cas_publish_topology_split(
         return Err(registry_error("maximum shard-prefix depth reached"));
     }
     topology.shards.remove(index);
+    topology.shard_paths.remove(parent);
     topology.shards.push(format!("{parent}0"));
     topology.shards.push(format!("{parent}1"));
+    if let Some((zero_path, one_path)) = child_paths {
+        topology
+            .shard_paths
+            .insert(format!("{parent}0"), zero_path.to_string());
+        topology
+            .shard_paths
+            .insert(format!("{parent}1"), one_path.to_string());
+    }
     topology.shards.sort();
     topology.version = topology
         .version
@@ -963,6 +997,7 @@ pub async fn load_or_init_topology(
         version: 1,
         storage_format: 2,
         shards,
+        shard_paths: HashMap::new(),
     };
     let raw = serde_json::to_vec(&topo).expect("topology json");
     match store
@@ -1025,6 +1060,17 @@ fn validate_topology(topology: &Topology) -> Result<(), object_store::Error> {
     }
     if topology.shards.is_empty() {
         return Err(registry_error("topology must contain at least one shard"));
+    }
+    for (prefix, path) in &topology.shard_paths {
+        if !topology.shards.contains(prefix)
+            || path.len() > 512
+            || !path.starts_with("shards/")
+            || path.contains("//")
+            || path.split('/').any(|component| component == "..")
+        {
+            return Err(registry_error("invalid topology shard path mapping"));
+        }
+        ObjPath::parse(path).map_err(|_| registry_error("invalid topology shard object path"))?;
     }
     let mut root = PrefixNode::default();
     for prefix in &topology.shards {
@@ -1304,6 +1350,7 @@ mod tests {
                 version: 1,
                 storage_format: 2,
                 shards: vec!["0".into(), "10".into(), "11".into()],
+                shard_paths: HashMap::new(),
             })
             .is_ok()
         );
@@ -1312,6 +1359,7 @@ mod tests {
                 version: 1,
                 storage_format: 2,
                 shards: vec!["0".into(), "10".into()],
+                shard_paths: HashMap::new(),
             })
             .is_err()
         );
@@ -1320,6 +1368,7 @@ mod tests {
                 version: 1,
                 storage_format: 2,
                 shards: vec!["0".into(), "00".into(), "1".into()],
+                shard_paths: HashMap::new(),
             })
             .is_err()
         );

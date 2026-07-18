@@ -268,13 +268,17 @@ ambiguity contract). Target: p99 < 15 s from crash to full shard availability.
 ### 5.4 Shard split/merge (override-gated, self-triggered)
 Trigger: shard sustained > 60% of single-shard write ceiling (split), or two
 cold siblings (merge). The shard's owner executes: CAS a split intent →
-hold that shard's appends in the ingest queue (bounded by the append
-timeout) → flush → clone the shard log into two children with hash-range
+return retryable 503 for that shard and close local admission → drain an
+ordered barrier through remote durability → flush → clone the shard log into two children with hash-range
 projections (bit-prefix `p` → `p0`, `p1`; hash-first keys make each child a
 single `projection_range`) → CAS `topology.json` → resume. Children are
 placed by the ring (typically one stays local, one hands off via normal
 fencing); the retired parent's SSTs stay referenced by the children until
-compaction ages them out. Merge is the reverse via manifest-union.
+compaction ages them out. Before releasing a parent ACK, every owner checks
+the shard-store intent after remote durability; this is the safety fence for
+a stale ring owner. Intents use renewable 12 s leases and new clone paths on
+cross-process takeover. Merge is the reverse via manifest-union and is not
+yet implemented.
 
 ---
 
@@ -332,7 +336,7 @@ Prices: Standard $0.02/GB/mo; Archive-IR $0.004/GB/mo + $0.03/GB retrieval,
 | failure | behavior |
 |---|---|
 | router has stale ring | 409 + replay header corrects per request; no client impact |
-| two owners briefly (split-brain) | loser fenced on next WAL/manifest CAS; unacked writes error → retry |
+| two owners briefly (split-brain) | loser fenced on WAL/manifest CAS; during split, the post-durability shard-intent check withholds stale parent ACKs → retry |
 | ops bucket unavailable | freeze ring, keep serving, no scaling; alarm |
 | heartbeat write storms / CAS conflicts | all state converges from derived functions; conflicts are benign re-reads |
 | reconnect stampede after crash | client jitter (SDK) + router slow-start + CDN absorbs durable tails |

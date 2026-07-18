@@ -13,8 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use object_store::ObjectStoreExt;
 use slatedb::config::{DurabilityLevel, ScanOptions, WriteOptions};
-use slatedb::{Db, WriteBatch};
+use slatedb::{CloseReason, Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::crypto::{FrameHeader, decode_frame, encrypt_frame};
@@ -287,6 +288,12 @@ pub enum CommitOp {
         hash: StorageHash,
         upto: u64,
     },
+    /// Ordered after every operation admitted before a split quiescence gate.
+    /// It never enters a WriteBatch; the committer resolves it only after its
+    /// fair backlog and every prior remote-durability ACK group are empty.
+    Barrier {
+        resp: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -311,7 +318,7 @@ impl FairCommitQueue {
         match op {
             CommitOp::Append(request) => FairKey::Tenant(request.customer_id.clone()),
             CommitOp::Queue { customer_id, .. } => FairKey::Tenant(customer_id.clone()),
-            CommitOp::Absorbed { .. } => FairKey::Internal,
+            CommitOp::Absorbed { .. } | CommitOp::Barrier { .. } => FairKey::Internal,
         }
     }
 
@@ -464,17 +471,28 @@ pub struct ShardEngine {
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
     flush_wake: Notify,
+    in_flight_empty: Notify,
     shutdown: Notify,
     closed: AtomicBool,
+    accepting: AtomicBool,
+    admission_gate: Mutex<()>,
+    quiesce_gate: tokio::sync::Mutex<()>,
     writer_epoch: u64,
     last_owner_proof: Mutex<std::time::Instant>,
     owner_proof_lock: tokio::sync::Mutex<()>,
     absorb_tx: mpsc::Sender<AbsorbSignal>,
+    /// Strong split fence checked after remote durability but before ACKs.
+    /// Without this, a stale ring owner can acknowledge a parent write after
+    /// another process cloned it into children.
+    split_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
     /// Invoked when the shard db closes (fenced by a new owner / fatal):
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
     /// get stale immediately instead of dangling until timeout.
     on_close: Option<Arc<dyn Fn() + Send + Sync>>,
     pub stats_appended: AtomicU64,
+    /// Plaintext payload bytes committed since this engine opened. Used as a
+    /// monotonic input to the sustained hot-shard split trigger.
+    pub stats_appended_bytes: AtomicU64,
     /// Last commit-group timings for /v1/debug/timings.
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
 }
@@ -493,6 +511,7 @@ impl ShardEngine {
         cfg: ShardConfig,
         absorb_tx: mpsc::Sender<AbsorbSignal>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+        split_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
     ) -> Arc<ShardEngine> {
         let (tx, rx) = mpsc::channel(cfg.queue_reqs);
         let writer_epoch = db.status().current_manifest.writer_epoch();
@@ -503,14 +522,20 @@ impl ShardEngine {
             tx,
             in_flight: Mutex::new(Vec::new()),
             flush_wake: Notify::new(),
+            in_flight_empty: Notify::new(),
             shutdown: Notify::new(),
             closed: AtomicBool::new(false),
+            accepting: AtomicBool::new(true),
+            admission_gate: Mutex::new(()),
+            quiesce_gate: tokio::sync::Mutex::new(()),
             writer_epoch,
             last_owner_proof: Mutex::new(std::time::Instant::now()),
             owner_proof_lock: tokio::sync::Mutex::new(()),
             absorb_tx,
+            split_fence_store,
             on_close,
             stats_appended: AtomicU64::new(0),
+            stats_appended_bytes: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
         });
         let committer = engine.clone();
@@ -550,7 +575,8 @@ impl ShardEngine {
 
     #[allow(clippy::result_large_err)]
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
-        if self.closed.load(Ordering::Acquire) {
+        let _gate = self.admission_gate.lock().unwrap();
+        if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
             return Err(req);
         }
         self.tx
@@ -598,6 +624,8 @@ impl ShardEngine {
     }
 
     fn mark_moved(&self) {
+        let _gate = self.admission_gate.lock().unwrap();
+        self.accepting.store(false, Ordering::Release);
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -612,6 +640,7 @@ impl ShardEngine {
                 let _ = resp.send(Err("shard moved".to_string()));
             }
         }
+        self.in_flight_empty.notify_waiters();
         if let Some(callback) = &self.on_close {
             callback();
         }
@@ -624,11 +653,34 @@ impl ShardEngine {
         self.mark_moved();
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    async fn split_fence_exists(&self) -> Result<bool, String> {
+        let Some(store) = &self.split_fence_store else {
+            return Ok(false);
+        };
+        let name = if self.prefix.is_empty() {
+            "root"
+        } else {
+            &self.prefix
+        };
+        let path = object_store::path::Path::from(format!("split-intents/{name}.json"));
+        match store.head(&path).await {
+            Ok(_) => Ok(true),
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     pub async fn submit_absorbed(&self, hash: StorageHash, upto: u64) {
-        if self.closed.load(Ordering::Acquire) {
+        let gate = self.admission_gate.lock().unwrap();
+        if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
             return;
         }
-        let _ = self.tx.send(CommitOp::Absorbed { hash, upto }).await;
+        let _ = self.tx.try_send(CommitOp::Absorbed { hash, upto });
+        drop(gate);
     }
 
     pub async fn submit_queue(
@@ -637,21 +689,57 @@ impl ShardEngine {
         hash: StorageHash,
         op: crate::queue::QueueOp,
     ) -> Result<crate::queue::QueueOut, String> {
-        if self.closed.load(Ordering::Acquire) {
+        let gate = self.admission_gate.lock().unwrap();
+        if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
             return Err("shard moved".to_string());
         }
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(CommitOp::Queue {
+            .try_send(CommitOp::Queue {
                 customer_id,
                 hash,
                 op,
                 resp: tx,
             })
-            .await
-            .map_err(|_| "committer gone".to_string())?;
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => "committer overloaded".to_string(),
+                mpsc::error::TrySendError::Closed(_) => "committer gone".to_string(),
+            })?;
+        drop(gate);
         rx.await
             .map_err(|_| "committer dropped request".to_string())?
+    }
+
+    /// Stop admitting operations, order a barrier after every operation that
+    /// won the admission mutex, wait for their remote durable ACK groups, and
+    /// flush/close the parent DB. After success the caller may safely create
+    /// projection clones. This operation is one-way by design.
+    pub async fn quiesce_for_split(&self) -> Result<(), String> {
+        let _quiesce = self.quiesce_gate.lock().await;
+        {
+            let _gate = self.admission_gate.lock().unwrap();
+            if self.closed.load(Ordering::Acquire) {
+                return Err("shard already closed".to_string());
+            }
+            if !self.accepting.swap(false, Ordering::AcqRel) {
+                return Err("shard already quiescing".to_string());
+            }
+        }
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(CommitOp::Barrier { resp: tx })
+            .await
+            .map_err(|_| "committer closed before split barrier".to_string())?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+            .await
+            .map_err(|_| "split durability barrier timed out".to_string())?
+            .map_err(|_| "split durability barrier responder dropped".to_string())??;
+        self.db
+            .close()
+            .await
+            .map_err(|error| format!("close quiesced shard: {error}"))?;
+        self.mark_moved();
+        Ok(())
     }
 
     pub async fn stream_handle(
@@ -681,6 +769,7 @@ impl ShardEngine {
 
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
         let mut fair = FairCommitQueue::default();
+        let mut barrier: Option<oneshot::Sender<Result<(), String>>> = None;
         loop {
             if self.closed.load(Ordering::Acquire) {
                 fair.fail_all();
@@ -688,6 +777,22 @@ impl ShardEngine {
                 return;
             }
             if fair.len == 0 {
+                if let Some(resp) = barrier.take() {
+                    loop {
+                        let notified = self.in_flight_empty.notified();
+                        if self.in_flight.lock().unwrap().is_empty() {
+                            break;
+                        }
+                        notified.await;
+                    }
+                    let result = self
+                        .db
+                        .flush()
+                        .await
+                        .map_err(|error| format!("flush split barrier: {error}"));
+                    let _ = resp.send(result);
+                    return;
+                }
                 let first = tokio::select! {
                     biased;
                     _ = self.shutdown.notified() => {
@@ -697,12 +802,22 @@ impl ShardEngine {
                     op = rx.recv() => op,
                 };
                 let Some(first) = first else { return };
-                fair.push(first);
+                match first {
+                    CommitOp::Barrier { resp } => {
+                        barrier = Some(resp);
+                        continue;
+                    }
+                    op => fair.push(op),
+                }
             }
             // Look ahead beyond the byte limit so a queue of large requests
             // from one tenant cannot hide a small request from another.
-            while fair.len < cfg.max_batch_reqs {
+            while fair.len < cfg.max_batch_reqs && barrier.is_none() {
                 match rx.try_recv() {
+                    Ok(CommitOp::Barrier { resp }) => {
+                        barrier = Some(resp);
+                        break;
+                    }
                     Ok(op) => fair.push(op),
                     Err(_) => break,
                 }
@@ -715,13 +830,17 @@ impl ShardEngine {
             // cycle ships one BIG group instead of many tiny ones — bursts
             // measured 90 MB/s through this exact path. Quiet streams skip
             // the wait entirely (latency unchanged at low rate).
-            if fair.len >= cfg.pace_min_reqs && fair.len < cfg.max_batch_reqs {
+            if barrier.is_none() && fair.len >= cfg.pace_min_reqs && fair.len < cfg.max_batch_reqs {
                 let deadline = tokio::time::Instant::now() + cfg.gather_window;
                 loop {
                     if fair.len >= cfg.max_batch_reqs {
                         break;
                     }
                     match tokio::time::timeout_at(deadline, rx.recv()).await {
+                        Ok(Some(CommitOp::Barrier { resp })) => {
+                            barrier = Some(resp);
+                            break;
+                        }
                         Ok(Some(op)) => {
                             fair.push(op);
                             if self.closed.load(Ordering::Acquire) {
@@ -787,6 +906,7 @@ impl ShardEngine {
                 CommitOp::Append(r) => r.hash,
                 CommitOp::Absorbed { hash, .. } => *hash,
                 CommitOp::Queue { hash, .. } => *hash,
+                CommitOp::Barrier { .. } => unreachable!("barrier enters commit group"),
             };
             // The handle load is async, so holding a HashMap Entry across it
             // would make the control flow and future lifetime worse.
@@ -1274,6 +1394,7 @@ impl ShardEngine {
                     }
                     queue_pending.push((resp, out));
                 }
+                CommitOp::Barrier { .. } => unreachable!("barrier enters commit group"),
             }
         }
 
@@ -1354,6 +1475,8 @@ impl ShardEngine {
                     }
                 }
                 self.stats_appended.fetch_add(records, Ordering::Relaxed);
+                self.stats_appended_bytes
+                    .fetch_add(group_bytes, Ordering::Relaxed);
                 self.in_flight.lock().unwrap().push(InFlightGroup {
                     seq: handle.seqnum(),
                     written_at: std::time::Instant::now(),
@@ -1395,7 +1518,15 @@ impl ShardEngine {
                     // Fenced or closed: this shard moved. The process serves
                     // other shards; groups here fail via dropped responders,
                     // and touch waiters are woken with stale right now.
-                    tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}");
+                    match reason {
+                        CloseReason::Clean => {
+                            tracing::info!(shard = %self.prefix, "shard db closed cleanly")
+                        }
+                        CloseReason::Fenced => {
+                            tracing::warn!(shard = %self.prefix, "shard writer was fenced")
+                        }
+                        _ => tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}"),
+                    }
                     self.mark_moved();
                     return;
                 }
@@ -1406,6 +1537,32 @@ impl ShardEngine {
                 let split = q.partition_point(|g| g.seq <= durable_seq);
                 q.drain(..split).collect()
             };
+            if !ready.is_empty() {
+                let fenced = match self.split_fence_exists().await {
+                    Ok(fenced) => fenced,
+                    Err(error) => {
+                        tracing::error!(shard = %self.prefix, "split fence check failed closed: {error}");
+                        true
+                    }
+                };
+                if fenced {
+                    tracing::warn!(
+                        shard = %self.prefix,
+                        groups = ready.len(),
+                        "withholding durable acknowledgements behind split fence"
+                    );
+                    for group in ready {
+                        for (resp, _) in group.acks {
+                            let _ = resp.send(Err(AppendErr::ShardMoved));
+                        }
+                        for (resp, _) in group.queue_acks {
+                            let _ = resp.send(Err("shard moved".to_string()));
+                        }
+                    }
+                    self.mark_moved();
+                    return;
+                }
+            }
             for group in ready {
                 *self.last_owner_proof.lock().unwrap() = std::time::Instant::now();
                 {
@@ -1445,6 +1602,9 @@ impl ShardEngine {
                     t.journal.ingest(&t.key_ids, t.next_offset);
                 }
             }
+            if self.in_flight.lock().unwrap().is_empty() {
+                self.in_flight_empty.notify_waiters();
+            }
             tokio::select! {
                 changed = status_rx.changed() => {
                     if changed.is_err() {
@@ -1466,6 +1626,9 @@ fn fail_commit_op(op: CommitOp) {
             let _ = resp.send(Err("shard moved".to_string()));
         }
         CommitOp::Absorbed { .. } => {}
+        CommitOp::Barrier { resp } => {
+            let _ = resp.send(Err("shard moved".to_string()));
+        }
     }
 }
 
@@ -1727,8 +1890,14 @@ mod tests {
                 .unwrap(),
         );
         let (absorb_tx, _absorb_rx) = mpsc::channel(1);
-        let engine =
-            ShardEngine::start(String::new(), db1, ShardConfig::default(), absorb_tx, None);
+        let engine = ShardEngine::start(
+            String::new(),
+            db1,
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+            None,
+        );
         let db2 = Db::builder("owner-proof", store).build().await.unwrap();
         assert!(db2.status().current_manifest.writer_epoch() > engine.writer_epoch);
         *engine.last_owner_proof.lock().unwrap() =
@@ -1742,5 +1911,110 @@ mod tests {
         );
         assert!(engine.closed.load(Ordering::Acquire));
         db2.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn split_barrier_durably_drains_prior_writes_and_rejects_new_ones() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("split-barrier", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (absorb_tx, _absorb_rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+            None,
+        );
+        let hash = [4u8; 32];
+        let (resp, ack) = oneshot::channel();
+        assert!(
+            engine
+                .try_enqueue(AppendReq {
+                    customer_id: "customer-a".into(),
+                    hash,
+                    enqueued_at: std::time::Instant::now(),
+                    entries: vec![Bytes::from_static(b"before-barrier")],
+                    routing_key: String::new(),
+                    key_version: 0,
+                    subkey: [7; 32],
+                    ts_hint_ms: None,
+                    seq: None,
+                    bytes: 14,
+                    close: false,
+                    producer: None,
+                    deferred_error: None,
+                    touch: None,
+                    resp,
+                })
+                .is_ok()
+        );
+
+        let quiescing = {
+            let engine = engine.clone();
+            tokio::spawn(async move { engine.quiesce_for_split().await })
+        };
+        while engine.accepting.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+        let CommitOp::Append(after) = append_op("customer-b", 1) else {
+            unreachable!()
+        };
+        assert!(engine.try_enqueue(after).is_err());
+        assert_eq!(ack.await.unwrap().unwrap().next_offset, 1);
+        quiescing.await.unwrap().unwrap();
+
+        let reopened = Db::builder("split-barrier", store).build().await.unwrap();
+        assert!(reopened.get(record_key(&hash, 0)).await.unwrap().is_some());
+        assert_eq!(
+            decode_tail(&reopened.get(tail_key(&hash)).await.unwrap().unwrap())
+                .unwrap()
+                .next,
+            1
+        );
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn durable_group_is_not_acknowledged_after_split_intent() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("split-fence", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        store
+            .put(
+                &object_store::path::Path::from("split-intents/root.json"),
+                object_store::PutPayload::from_static(b"fenced"),
+            )
+            .await
+            .unwrap();
+        let (absorb_tx, _absorb_rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+            Some(store),
+        );
+        let CommitOp::Append(req) = append_op("customer-a", 0) else {
+            unreachable!()
+        };
+        let (resp, ack) = oneshot::channel();
+        let req = AppendReq { resp, ..req };
+        assert!(engine.try_enqueue(req).is_ok());
+
+        assert!(matches!(ack.await.unwrap(), Err(AppendErr::ShardMoved)));
+        assert!(engine.is_closed());
     }
 }

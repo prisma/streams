@@ -15,14 +15,14 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 | Area | Mandatory exit evidence | Current verdict |
 |---|---|---|
-| Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, and pre/post-commit timeout/429/5xx/412 faults are automated. Stale-read injection and measured recovery bounds remain. |
+| Durability and ordering | crash/fence/timeout fault matrix; linearizable incarnation changes; no ACK before remote durability; contiguous atomic appends; bounded recovery | **Amber.** Incarnation CAS races, hard-restart create-with-body idempotence, durable producer dedupe, real two-writer fencing, split-brain post-durability ACK fencing, and pre/post-commit timeout/429/5xx/412 faults are automated. Stale-read injection and general measured recovery bounds remain. |
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. Asymmetric JWTs, prefix/verb scopes, monotonic revocation polling, and durable control-plane audit exist. Production multi-tenant E2E and an independent security review remain. |
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Per-customer concurrency and streaming write-byte buckets isolate noisy tenants; persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit state is bounded. Durable account quotas and a measured noisy-neighbor gate remain. |
-| Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Red.** Physical keys now begin with the stable routing hash, exact projection bounds and topology CAS are tested, all servers install last-known-good topology updates, and an offline metadata-only split drill preserves both hash halves. Automatic intent/barrier split, merge, and the global cell layer remain. |
+| Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split has a CAS-created shard-store intent, closed admission, remote-durability barrier, exact projection clones, generation-specific paths, one-CAS topology publish, renewable ownership, crash reconciliation, and a calibrated sustained-byte trigger. Concurrent producers, hard restart under a new identity, automatic refinement, separate role buckets, and a deliberately stale second owner are exercised. Merge, abandoned-generation GC, per-stream hot-share policy, and the global cell placement layer remain. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup/PITR copy actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Immutable checksummed snapshots and an empty-target restore are exercised end to end. Incremental PITR, retention, continuous scrub, provider failover, and measured RPO/RTO remain. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
-| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, object-store fault, projected-split, and the current 338-test upstream suite run in CI. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
+| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, object-store fault, offline/online/automatic/stale-owner split drills, and the current 338-test upstream suite run in CI. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
 | Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** Pilot benchmarks are valuable but are not a repeatable release gate. |
 
 ## Non-negotiable release scenarios
@@ -94,14 +94,31 @@ documented cell limits. A feature described only in `SPEC.md`,
 - Commit groups use persistent per-tenant round-robin look-ahead, so a run of
   large requests from one customer cannot hide a small request from another;
   FIFO order is preserved within each customer.
+- Online split intents and renewable 12-second leases live with shard data,
+  so an ops-only outage does not become a global write outage. Admission is
+  closed before an ordered barrier drains every prior group through remote
+  durability; both children must reopen before one topology CAS can expose
+  their generation-specific paths.
+- Every durable parent group checks the shard-store intent before releasing
+  ACKs. A stale second owner therefore returns a retryable error rather than
+  acknowledging data outside the clone snapshot. CI forces that two-owner
+  race with separate ops/shard/data buckets and proves the acknowledged
+  prefix is exact.
+- Split recovery rotates clone generations when a different process takes
+  over an expired lease, preventing it from clearing objects an old request
+  may still be writing. The forced mid-clone kill drill recovers under a new
+  identity inside a 16-second test bound and preserves exact producer data.
+- A shard sustained above 60% of the configured, deployment-calibrated byte
+  ceiling automatically enters the same split actor. Disabled-by-zero is the
+  explicit operator override; the default sustain window is 60 seconds.
 
 ## Immediate red-gate queue
 
 1. Add stale-read/corrupt-SST injection, production-JWT multi-tenant E2E,
    durable account/stream quotas, and a measured noisy-neighbor workload.
-2. Turn the offline split primitive into an automatic distributed
-   intent/quiescence-barrier actor; add merge, crash-at-every-step recovery,
-   and an explicit storage-format migration/rollback plan.
+2. Add crash injection at every split phase, abandoned-generation retention/
+   GC, sibling merge, per-stream hot-share enforcement, and an explicit
+   storage-format migration/rollback plan.
 3. Replace full snapshots with checkpoint-pinned incremental PITR, add bounded
    retention/GC and continuous manifest/SST scrubbing, then measure RPO/RTO in
    a real independent-provider failover drill.

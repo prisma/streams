@@ -7,6 +7,7 @@ mod metrics;
 mod offsets;
 mod queue;
 mod shard;
+mod split;
 mod store_timing;
 mod touch;
 mod touch_keys;
@@ -88,6 +89,19 @@ struct Args {
     /// Initial shard count (power of two) if no topology exists yet (D3).
     #[arg(long, env = "INITIAL_SHARDS", default_value_t = 1)]
     initial_shards: usize,
+
+    /// Calibrated sustained write ceiling for one shard on this deployment.
+    /// When non-zero, an owner automatically splits a shard after it remains
+    /// above 60% of this payload-byte rate for auto_split_sustain_secs.
+    /// Zero is the explicit operator override that disables automatic split.
+    #[arg(
+        long,
+        env = "SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC",
+        default_value_t = 0
+    )]
+    single_shard_write_ceiling_bytes_per_sec: u64,
+    #[arg(long, env = "AUTO_SPLIT_SUSTAIN_SECS", default_value_t = 60)]
+    auto_split_sustain_secs: u64,
 
     /// Shard-log WAL flush interval (D22, amended). 5 ms minted WAL SSTs
     /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
@@ -533,18 +547,22 @@ fn start_topology_watcher(state: Arc<AppState>, store: Arc<dyn ObjectStore>) {
                     if topology.version > current {
                         let live: std::collections::HashSet<&str> =
                             topology.shards.iter().map(String::as_str).collect();
-                        let retired: Vec<Arc<ShardEngine>> = state
-                            .shards
-                            .read()
-                            .unwrap()
-                            .iter()
-                            .filter(|(prefix, _)| !live.contains(prefix.as_str()))
-                            .map(|(_, engine)| engine.clone())
-                            .collect();
-                        *state.shard_prefixes.write().unwrap() = topology.shards.clone();
+                        *state.topology.write().unwrap() = topology.clone();
                         state
                             .topology_version
                             .store(topology.version, std::sync::atomic::Ordering::Release);
+                        let retired: Vec<Arc<ShardEngine>> = {
+                            let mut shards = state.shards.write().unwrap();
+                            let retired_prefixes: Vec<_> = shards
+                                .keys()
+                                .filter(|prefix| !live.contains(prefix.as_str()))
+                                .cloned()
+                                .collect();
+                            retired_prefixes
+                                .into_iter()
+                                .filter_map(|prefix| shards.remove(&prefix))
+                                .collect()
+                        };
                         for engine in retired {
                             engine.retire();
                         }
@@ -713,7 +731,7 @@ async fn async_main() -> anyhow::Result<()> {
         let trim_per_op = args.trim_per_op;
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
-            open: Box::new(move |prefix: String| {
+            open: Box::new(move |prefix: String, path: String| {
                 let shard_store = shard_store.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
@@ -735,13 +753,8 @@ async fn async_main() -> anyhow::Result<()> {
                 }
                 let state_slot = state_slot.clone();
                 Box::pin(async move {
-                    let path = if prefix.is_empty() {
-                        "shards/root".to_string()
-                    } else {
-                        format!("shards/{prefix}")
-                    };
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
-                    let db = Db::builder(path.as_str(), shard_store)
+                    let db = Db::builder(path.as_str(), shard_store.clone())
                         .with_settings(settings)
                         .with_db_cache(shared_cache)
                         .build()
@@ -768,6 +781,7 @@ async fn async_main() -> anyhow::Result<()> {
                         },
                         absorb_tx,
                         Some(on_close),
+                        Some(shard_store.clone()),
                     );
                     Absorber::start(
                         data_store,
@@ -789,9 +803,12 @@ async fn async_main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         registry,
-        shard_prefixes: std::sync::RwLock::new(topology.shards.clone()),
+        topology: std::sync::RwLock::new(topology.clone()),
         topology_version: std::sync::atomic::AtomicU64::new(topology.version),
         topology_ready: std::sync::atomic::AtomicBool::new(true),
+        splitting_prefixes: std::sync::RwLock::new(HashSet::new()),
+        split_workers: std::sync::Mutex::new(HashSet::new()),
+        split_ready: std::sync::atomic::AtomicBool::new(true),
         shards: std::sync::RwLock::new(HashMap::new()),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),
@@ -812,6 +829,8 @@ async fn async_main() -> anyhow::Result<()> {
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         data_store,
+        ops_store: ops_store.clone(),
+        shard_store: shard_store.clone(),
         keys,
         touch,
         default_key: args.conformance_default_key.clone(),
@@ -823,6 +842,17 @@ async fn async_main() -> anyhow::Result<()> {
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    crate::split::initialize(&state)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("load split intents")?;
+    crate::split::start(
+        state.clone(),
+        crate::split::AutoSplitConfig {
+            single_shard_write_ceiling_bytes_per_sec: args.single_shard_write_ceiling_bytes_per_sec,
+            sustain: Duration::from_secs(args.auto_split_sustain_secs.max(1)),
+        },
+    );
     start_topology_watcher(state.clone(), ops_store.clone());
     match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
         (Some(mk), Some(lb)) => {

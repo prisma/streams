@@ -114,6 +114,8 @@ actor described in [OPERATIONS.md §2](./OPERATIONS.md) replaces it.
 | env | default | guidance |
 |---|---|---|
 | `INITIAL_SHARDS` | 1 | power of two; pilot fleet used 16. Set at keyspace creation; topology is stored |
+| `SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` | 0 (automatic split off) | measured sustained payload-byte ceiling for one shard on this deployment. Non-zero enables online split at 60%; do not copy a value across instance/store classes without recalibration |
+| `AUTO_SPLIT_SUSTAIN_SECS` | 60 | time above the 60% threshold before automatic split; minimum 1 s |
 | `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25 |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
@@ -461,8 +463,10 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 
 ## 11. Data operations
 
-- **Storage layout** (all under `PATH_PREFIX/`): `topology.json`,
-  `shards/<id>/…` (SlateDB per-shard: `wal/`, `manifest/`, `compacted/`),
+- **Storage layout** (all under `PATH_PREFIX/`): `topology.json` in the ops
+  role; `split-intents/` and `shards/<id>/…` in the shard role (SlateDB
+  per-shard: `wal/`, `manifest/`, `compacted/`),
+  online children under `shards/splits/<operation-id>/<prefix>/…`,
   `history/…` (absorbed per-stream SSTs), `registry/…` (by-name),
   `fleet/`+`routers/` under `FLEET_PREFIX`. Everything except
   topology/fleet metadata is tenant-key ciphertext.
@@ -497,8 +501,32 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   changes, byte-count changes, or SHA-256 mismatches. Incremental checkpoint
   pinning, PITR, retention, and scrubber drills remain GA work in
   [OPERATIONS.md §2](./OPERATIONS.md).
-- **Controlled shard split:** today this is an offline maintenance primitive,
-  not the automatic online actor. Stop every serving writer for the cell,
+- **Online shard split:** send an operator-authenticated request to the
+  current ring owner (`root` means the empty prefix):
+
+  ```bash
+  curl -X POST "$STREAMS_URL/v1/admin/shards/root/split" \
+    -H "authorization: Bearer $OPERATOR_TOKEN"
+  ```
+
+  The actor creates a conditional intent in the shard store, returns 503 for
+  that prefix, drains all earlier groups through remote durability, flushes
+  and closes the parent, creates and reopens two exact projection clones, and
+  publishes both generation-specific paths in one topology CAS. Producer
+  clients must retry 503/408/429 with the same producer sequence. A 12-second
+  renewable lease permits bounded takeover; a replacement rotates to fresh
+  clone paths, derives progress from durable objects, and cleans the intent
+  only after topology publication. Every parent ACK checks the intent after
+  WAL durability, so even a stale second owner cannot acknowledge data that
+  misses the children.
+
+  Set `SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` to the calibrated ceiling to
+  enable the same actor automatically after 60% is sustained for
+  `AUTO_SPLIT_SUSTAIN_SECS`. Zero is the explicit disable override. CI covers
+  concurrent producers, restart and different-identity takeover, automatic
+  recursive refinement, and a stale two-owner race with split role buckets.
+
+- **Offline shard split fallback:** stop every serving writer for the cell,
   then run:
 
   ```bash
@@ -513,8 +541,9 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   clones, then changes `topology.json` with one expected-version CAS. A CAS
   failure leaves safe orphan children and the old topology live. CI proves
   opposite hash halves remain readable and independently writable after
-  restart. Do not use this online: the distributed intent/quiescence barrier
-  and crash-step reconciler are still a release blocker.
+  restart. This tool remains useful for an offline repair, but the HTTP actor
+  is the normal online path. Merge and abandoned split-generation GC remain
+  release-gate work.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the

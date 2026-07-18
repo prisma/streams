@@ -414,7 +414,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // Publish the ring's ACTIVE set for the R2 ownership check:
             // the first `desired` ordinal instances, dropping any that have
-            // been heartbeat-dark >30 s (wedged — requests would have woken
+            // been heartbeat-dark >10 s (the liveness contract in §2; a
+            // request would have woken a merely-sleeping instance)
             // a merely-sleeping one). Self is always fresh (just wrote).
             // Falls back to the unfiltered ordinal set if filtering empties
             // it (bootstrap: everyone asleep, first request must land).
@@ -426,7 +427,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .iter()
                     .filter(|n| {
                         **n == cfg.instance
-                            || hb_age_ms.get(*n).map(|a| *a < 30_000).unwrap_or(false)
+                            || hb_age_ms.get(*n).map(|a| *a < 10_000).unwrap_or(false)
                     })
                     .cloned()
                     .collect();

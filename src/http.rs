@@ -2,7 +2,7 @@
 //! shard tail), ciphertext frames by default, server-side decryption for
 //! `format=json`, long-poll tails.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use object_store::ObjectStore;
@@ -26,7 +26,7 @@ use crate::crypto::{
 };
 use crate::history::{KeyCache, read_history};
 use crate::offsets::Offset;
-use crate::registry::{Registry, StorageHash, StreamDesc, shard_for_hash};
+use crate::registry::{Registry, StorageHash, StreamDesc, Topology, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -39,21 +39,27 @@ const MAX_LONG_POLL: Duration = Duration::from_secs(30);
 /// Everything needed to open a shard log on demand. Shards are opened
 /// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
 /// previous owner, so ownership follows routing with no coordination.
+pub type ShardOpenFuture =
+    futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>;
+pub type ShardOpenFn = dyn Fn(String, String) -> ShardOpenFuture + Send + Sync;
+
 pub struct ShardOpener {
-    pub open: Box<
-        dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
-            + Send
-            + Sync,
-    >,
+    pub open: Box<ShardOpenFn>,
 }
 
 pub struct AppState {
     pub registry: Registry,
     /// Last-known-good topology, replaced atomically by the topology watcher.
     /// Requests never observe a partially parsed or partially applied trie.
-    pub shard_prefixes: std::sync::RwLock<Vec<String>>,
+    pub topology: std::sync::RwLock<Topology>,
     pub topology_version: std::sync::atomic::AtomicU64,
     pub topology_ready: std::sync::atomic::AtomicBool,
+    pub splitting_prefixes: std::sync::RwLock<HashSet<String>>,
+    /// Process-local exclusion for split reconcilers. The durable intent is
+    /// the fleet-wide lock; this prevents an operator request and the intent
+    /// scanner from running the same operation concurrently on one process.
+    pub split_workers: std::sync::Mutex<HashSet<String>>,
+    pub split_ready: std::sync::atomic::AtomicBool,
     pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
     pub opener: ShardOpener,
     /// Serializes shard opens; also carries anti-flap state.
@@ -96,6 +102,8 @@ pub struct AppState {
     pub instance_name: String,
     pub ring_active: std::sync::RwLock<Vec<String>>,
     pub data_store: Arc<dyn ObjectStore>,
+    pub ops_store: Arc<dyn ObjectStore>,
+    pub shard_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
     pub touch: Arc<crate::touch::TouchRegistry>,
     /// Conformance/dev accommodation: used when a request carries no
@@ -369,10 +377,24 @@ impl AppState {
     /// fences any previous owner). A shard that was just fenced away is
     /// held off for 3 s (anti-flap while the router converges) → 503.
     async fn engine_for(self: &Arc<Self>, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
-        let prefix = {
-            let topology = self.shard_prefixes.read().unwrap();
-            shard_for_hash(&topology, hash)
+        let (prefix, db_path) = {
+            let topology = self.topology.read().unwrap();
+            let prefix = shard_for_hash(&topology.shards, hash);
+            let path = topology.db_path(&prefix);
+            (prefix, path)
         };
+        if self.splitting_prefixes.read().unwrap().contains(&prefix) {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shard_splitting",
+                "shard is crossing a durable split barrier; retry",
+            );
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            return Err(response);
+        }
         // Check placement before consulting the local engine cache. Ring
         // changes must stop a former owner immediately; the old order let a
         // cached engine bypass this guard indefinitely.
@@ -434,7 +456,7 @@ impl AppState {
                 return Err(response);
             }
         }
-        match (self.opener.open)(prefix.clone()).await {
+        match (self.opener.open)(prefix.clone(), db_path).await {
             Ok(engine) => {
                 lock.remove(&prefix);
                 self.shards.write().unwrap().insert(prefix, engine.clone());
@@ -622,6 +644,43 @@ async fn debug_store(
     axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
 }
 
+async fn admin_split_shard(
+    State(state): State<Arc<AppState>>,
+    Path(parent): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
+    let parent = if parent == "root" {
+        String::new()
+    } else {
+        parent
+    };
+    match crate::split::request(state, parent).await {
+        Ok(topology) => axum::Json(topology).into_response(),
+        Err(error) if error.contains("current shard owner") => {
+            err_resp(StatusCode::CONFLICT, "not_ring_owner", &error)
+        }
+        Err(error) if error.contains("not live") || error.contains("binary prefix") => {
+            err_resp(StatusCode::BAD_REQUEST, "invalid_split", &error)
+        }
+        Err(error) => {
+            let mut response =
+                err_resp(StatusCode::SERVICE_UNAVAILABLE, "split_unavailable", &error);
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
+        }
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_ready))
@@ -632,6 +691,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/sleep", get(debug_sleep))
+        .route("/v1/admin/shards/{parent}/split", post(admin_split_shard))
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -654,6 +714,7 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
         && state
             .topology_ready
             .load(std::sync::atomic::Ordering::Acquire)
+        && state.split_ready.load(std::sync::atomic::Ordering::Acquire)
     {
         (
             StatusCode::OK,
