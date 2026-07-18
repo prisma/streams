@@ -186,6 +186,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-backup", action="store_true")
     parser.add_argument("--min-req-per-sec", type=nonnegative_float, default=1.0)
     parser.add_argument("--max-error-rate", type=nonnegative_float, default=0.0005)
+    parser.add_argument("--max-p50-ms", type=nonnegative_float, default=100.0)
     parser.add_argument("--max-p99-ms", type=nonnegative_float, default=250.0)
     parser.add_argument("--max-p999-ms", type=nonnegative_float, default=1000.0)
     parser.add_argument("--max-rss-bytes", type=positive_int, default=800 * 1024 * 1024)
@@ -202,10 +203,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-unflushed-wal-ssts", type=positive_int, default=1024)
     parser.add_argument("--max-fence-events", type=int, default=0)
     parser.add_argument(
-        "--max-idle-cpu-core-fraction", type=nonnegative_float, default=0.10
+        "--max-idle-cpu-core-fraction", type=nonnegative_float
     )
     parser.add_argument(
-        "--max-idle-object-store-ops-per-sec", type=nonnegative_float, default=10.0
+        "--max-idle-object-store-ops-per-sec", type=nonnegative_float
+    )
+    parser.add_argument(
+        "--max-object-store-ops-per-1000-entries",
+        type=nonnegative_float,
     )
     args = parser.parse_args()
     if args.warmup_secs < 0 or args.drain_secs < 0:
@@ -218,6 +223,18 @@ def parse_args() -> argparse.Namespace:
         parser.error("release soak must run for at least 24 hours (or use --allow-short for CI)")
     if args.idle_secs < MIN_IDLE_BASELINE_SECS and not args.allow_short:
         parser.error("idle baseline must run for at least five minutes (or use --allow-short for CI)")
+    for field in (
+        "max_idle_cpu_core_fraction",
+        "max_idle_object_store_ops_per_sec",
+        "max_object_store_ops_per_1000_entries",
+    ):
+        if getattr(args, field) is None:
+            if not args.allow_short:
+                parser.error(
+                    "production evidence requires explicit idle CPU, idle store, "
+                    "and loaded store-operation budgets"
+                )
+            setattr(args, field, 1e18)
     if args.auth_token_refresh_secs > 3600:
         parser.error("auth token refresh interval must be at most 3600 seconds")
     if args.attacker_concurrency > 64:
@@ -381,6 +398,18 @@ def labeled_values(
     ]
 
 
+def object_store_operation_series(metrics: dict[str, float]) -> dict[str, float]:
+    pattern = re.compile(
+        r'^streams_object_store_operations_total\{operation="(put|mpu|get|head|delete|list|copy)",class="(wal|manifest|sst|fleet|other)"\}$'
+    )
+    series: dict[str, float] = {}
+    for key, value in metrics.items():
+        match = pattern.match(key)
+        if match:
+            series[f"{match.group(1)}:{match.group(2)}"] = value
+    return series
+
+
 def finite_or_none(value: float | None) -> float | None:
     return value if value is not None and math.isfinite(value) else None
 
@@ -404,7 +433,10 @@ def scrape(base: str, operator_token: str, elapsed: float) -> dict[str, object]:
     )
     backup_budget = next(iter(values(metrics, "streams_backup_rpo_budget_seconds")), 0.0)
     cpu_seconds = next(iter(values(metrics, "streams_process_cpu_seconds_total")), None)
-    object_operations = values(metrics, "streams_object_store_operations_total")
+    object_operation_series = object_store_operation_series(metrics)
+    fleet_active_instances = next(
+        iter(values(metrics, "streams_fleet_active_instances")), None
+    )
     data_plane_requests = labeled_values(
         metrics,
         "streams_http_requests_total",
@@ -417,12 +449,14 @@ def scrape(base: str, operator_token: str, elapsed: float) -> dict[str, object]:
         "ready": ready_status == 200,
         "metrics_ok": True,
         "instance_hash": metric_label(metrics, "streams_instance_info", "instance_hash"),
+        "fleet_active_instances": finite_or_none(fleet_active_instances),
         "components_ready": bool(components) and all(value == 1 for value in components),
         "rss_bytes": max(values(metrics, "streams_process_resident_memory_bytes"), default=0),
         "cpu_seconds_total": finite_or_none(cpu_seconds),
-        "object_store_operations_total": sum(object_operations)
-        if object_operations
+        "object_store_operations_total": sum(object_operation_series.values())
+        if len(object_operation_series) == 35
         else None,
+        "object_store_operation_series": object_operation_series,
         "data_plane_requests_total": sum(data_plane_requests)
         if data_plane_requests
         else None,
@@ -478,6 +512,30 @@ def counter_rate(
     if elapsed <= 0:
         return None, None, False
     return delta / elapsed, delta, True
+
+
+def series_deltas(
+    samples: list[dict[str, object]], field: str, expected_series: int
+) -> tuple[dict[str, float], bool]:
+    if len(samples) < 2:
+        return {}, False
+    observed = [sample.get(field) for sample in samples]
+    if any(not isinstance(series, dict) for series in observed):
+        return {}, False
+    typed = [series for series in observed if isinstance(series, dict)]
+    keys = set(typed[0])
+    if len(keys) != expected_series or any(set(series) != keys for series in typed):
+        return {}, False
+    deltas: dict[str, float] = {}
+    for key in sorted(keys):
+        values_for_key = [float(series[key]) for series in typed]
+        if any(not math.isfinite(value) for value in values_for_key) or any(
+            current < previous
+            for previous, current in zip(values_for_key, values_for_key[1:])
+        ):
+            return {}, False
+        deltas[key] = values_for_key[-1] - values_for_key[0]
+    return deltas, True
 
 
 def monitor_phase(
@@ -763,6 +821,9 @@ def main() -> int:
         object_rate, object_delta, object_valid = counter_rate(
             target_samples, "object_store_operations_total"
         )
+        object_series_delta, object_series_valid = series_deltas(
+            target_samples, "object_store_operation_series", 35
+        )
         data_rate, data_delta, data_valid = counter_rate(
             target_samples, "data_plane_requests_total"
         )
@@ -786,10 +847,14 @@ def main() -> int:
                 "cpu_seconds_delta": cpu_delta,
                 "object_store_ops_per_sec": object_rate,
                 "object_store_operations_delta": object_delta,
+                "object_store_operations_by_class": object_series_delta,
                 "data_plane_requests_per_sec": data_rate,
                 "data_plane_requests_delta": data_delta,
                 "identity_stable": identity_stable,
-                "counters_monotonic": cpu_valid and object_valid and data_valid,
+                "counters_monotonic": cpu_valid
+                and object_valid
+                and object_series_valid
+                and data_valid,
             }
         )
     instance_hashes = [rate["instance_hash"] for rate in idle_rates]
@@ -851,11 +916,68 @@ def main() -> int:
     attempts = req_ok + errors
     error_rate = errors / attempts if attempts else 1.0
     latency = summary.get("latency_ms", {}) if summary else {}
+    p50 = float(latency.get("p50", math.inf)) if isinstance(latency, dict) else math.inf
     p99 = float(latency.get("p99", math.inf)) if isinstance(latency, dict) else math.inf
     p999 = float(latency.get("p999", math.inf)) if isinstance(latency, dict) else math.inf
+    p50_observed = finite_or_none(p50)
     p99_observed = finite_or_none(p99)
     p999_observed = finite_or_none(p999)
     rps = float(summary.get("req_per_sec", 0.0)) if summary else 0.0
+    entries_per_request = int(summary.get("entries_per_req", 0)) if summary else 0
+    successful_entries = req_ok * entries_per_request
+    workload_store_counters: list[dict[str, object]] = []
+    for target_index, target in enumerate(args.metrics_url):
+        target_idle = [
+            sample for sample in idle_good if str(sample["target"]) == target
+        ]
+        target_workload = [
+            sample for sample in good if str(sample["target"]) == target
+        ]
+        combined = target_idle[-1:] + target_workload
+        _, store_delta, store_valid = counter_rate(
+            combined, "object_store_operations_total"
+        )
+        store_series_delta, store_series_valid = series_deltas(
+            combined, "object_store_operation_series", 35
+        )
+        expected_hash = idle_rates[target_index]["instance_hash"]
+        identity_continuous = expected_hash is not None and all(
+            sample.get("instance_hash") == expected_hash for sample in combined
+        )
+        workload_store_counters.append(
+            {
+                "target_index": target_index,
+                "instance_hash": expected_hash,
+                "samples": len(combined),
+                "object_store_operations_delta": store_delta,
+                "object_store_operations_by_class": store_series_delta,
+                "counter_monotonic": store_valid and store_series_valid,
+                "identity_continuous": identity_continuous,
+            }
+        )
+    workload_counters_valid = bool(workload_store_counters) and all(
+        bool(item["counter_monotonic"]) and bool(item["identity_continuous"])
+        for item in workload_store_counters
+    )
+    workload_store_operations = sum(
+        float(item["object_store_operations_delta"])
+        for item in workload_store_counters
+        if item["object_store_operations_delta"] is not None
+    )
+    workload_store_operations_by_class: dict[str, float] = {}
+    for item in workload_store_counters:
+        series = item["object_store_operations_by_class"]
+        if not isinstance(series, dict):
+            continue
+        for name, value in series.items():
+            workload_store_operations_by_class[name] = (
+                workload_store_operations_by_class.get(name, 0.0) + float(value)
+            )
+    object_store_ops_per_1000_entries = (
+        workload_store_operations * 1000.0 / successful_entries
+        if workload_counters_valid and successful_entries > 0
+        else math.inf
+    )
     offset_verification = summary.get("offset_verification", {}) if summary else {}
     auth_evidence = summary.get("auth", {}) if summary else {}
     offsets_verified = bool(
@@ -871,6 +993,24 @@ def main() -> int:
     expected_idle_samples = (
         max(2, math.ceil(args.idle_secs / args.monitor_secs) + 1)
         * len(args.metrics_url)
+    )
+    fleet_counts = {
+        int(sample["fleet_active_instances"])
+        for sample in idle_good + good
+        if sample.get("fleet_active_instances") is not None
+        and float(sample["fleet_active_instances"]).is_integer()
+    }
+    fleet_coverage_valid = (
+        len(idle_good) == len(idle_samples)
+        and len(good) == len(samples)
+        and len(fleet_counts) == 1
+        and next(iter(fleet_counts)) == len(args.metrics_url)
+        and all(
+            sample.get("fleet_active_instances") is not None
+            and float(sample["fleet_active_instances"]).is_integer()
+            and int(sample["fleet_active_instances"]) == len(args.metrics_url)
+            for sample in idle_good + good
+        )
     )
     rpo_samples = [
         (
@@ -938,6 +1078,14 @@ def main() -> int:
             f">={MIN_RELEASE_SOAK_SECS}",
             args.duration_secs >= MIN_RELEASE_SOAK_SECS or args.allow_short,
         ),
+        "fleet_metrics_coverage": check(
+            {
+                "reported_active_instance_counts": sorted(fleet_counts),
+                "direct_metrics_targets": len(args.metrics_url),
+            },
+            "every active instance has one distinct direct metrics target for the full run",
+            fleet_coverage_valid,
+        ),
         "bench_exit": check(bench.returncode, 0, bench.returncode == 0 and summary is not None),
         "durable_offsets": check(
             offset_verification,
@@ -1003,8 +1151,22 @@ def main() -> int:
         ),
         "append_error_rate": check(error_rate, args.max_error_rate, error_rate <= args.max_error_rate),
         "throughput": check(rps, args.min_req_per_sec, rps >= args.min_req_per_sec),
+        "ack_p50_ms": check(p50_observed, args.max_p50_ms, p50_observed is not None and p50 <= args.max_p50_ms),
         "ack_p99_ms": check(p99_observed, args.max_p99_ms, p99_observed is not None and p99 <= args.max_p99_ms),
         "ack_p999_ms": check(p999_observed, args.max_p999_ms, p999_observed is not None and p999 <= args.max_p999_ms),
+        "workload_store_counter_continuity": check(
+            workload_store_counters,
+            "stable instance identity and monotonic store counter through drain",
+            workload_counters_valid,
+        ),
+        "object_store_ops_per_1000_entries": check(
+            finite_or_none(object_store_ops_per_1000_entries),
+            args.max_object_store_ops_per_1000_entries,
+            workload_counters_valid
+            and successful_entries > 0
+            and object_store_ops_per_1000_entries
+            <= args.max_object_store_ops_per_1000_entries,
+        ),
         "monitor_coverage": check(len(good), expected_samples, len(good) >= expected_samples),
         "readiness": check(
             sum(not bool(sample.get("ready")) for sample in samples),
@@ -1079,6 +1241,13 @@ def main() -> int:
             "idle_cpu_core_fraction_max": finite_or_none(idle_cpu_max),
             "idle_object_store_ops_per_sec_max": finite_or_none(
                 idle_object_ops_max
+            ),
+            "workload_store_counters": workload_store_counters,
+            "successful_entries": successful_entries,
+            "object_store_operations": workload_store_operations,
+            "object_store_operations_by_class": workload_store_operations_by_class,
+            "object_store_ops_per_1000_entries": finite_or_none(
+                object_store_ops_per_1000_entries
             ),
             "samples": len(samples),
             "successful_samples": len(good),

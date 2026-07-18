@@ -263,7 +263,8 @@ if ! python3 scripts/release-soak.py \
   --require-noisy-neighbor --min-attacker-attempts 10 \
   --max-idle-cpu-core-fraction 2 \
   --max-idle-object-store-ops-per-sec 10000 \
-  --max-p99-ms 2000 --max-p999-ms 5000 \
+  --max-object-store-ops-per-1000-entries 50000 \
+  --max-p50-ms 2000 --max-p99-ms 2000 --max-p999-ms 5000 \
   >"${TMP_DIR}/soak.stdout"; then
   [[ ! -f "${TMP_DIR}/evidence.json" ]] || cat "${TMP_DIR}/evidence.json" >&2
   cat "${TMP_DIR}/soak.stdout" >&2
@@ -288,10 +289,21 @@ assert evidence["monitor"]["idle_samples"] >= 3
 assert len(evidence["monitor"]["idle_rates"]) == 1
 assert evidence["monitor"]["idle_rates"][0]["identity_stable"] is True
 assert all(rate["counters_monotonic"] for rate in evidence["monitor"]["idle_rates"])
+assert len(evidence["monitor"]["idle_rates"][0]["object_store_operations_by_class"]) == 35
 assert evidence["monitor"]["idle_rates"][0]["data_plane_requests_delta"] == 0
 assert evidence["checks"]["idle_quiescent"]["passed"] is True
 assert evidence["checks"]["idle_cpu_core_fraction"]["passed"] is True
 assert evidence["checks"]["idle_object_store_ops_per_sec"]["passed"] is True
+assert evidence["checks"]["workload_store_counter_continuity"]["passed"] is True
+assert evidence["checks"]["object_store_ops_per_1000_entries"]["passed"] is True
+assert evidence["checks"]["fleet_metrics_coverage"]["passed"] is True
+assert evidence["monitor"]["successful_entries"] > 0
+assert evidence["monitor"]["object_store_ops_per_1000_entries"] >= 0
+assert len(evidence["monitor"]["object_store_operations_by_class"]) == 35
+assert (
+    sum(evidence["monitor"]["object_store_operations_by_class"].values())
+    == evidence["monitor"]["object_store_operations"]
+)
 assert evidence["monitor"]["samples"] >= 6
 assert evidence["bench"]["auth"]["source"] == "file"
 assert evidence["bench"]["auth"]["subject_pinned"] is True
@@ -330,6 +342,7 @@ if python3 scripts/release-soak.py \
   --idle-secs 1 --duration-secs 1 --warmup-secs 0 --monitor-secs 1 --drain-secs 0 \
   --concurrency 1 --streams 1 --payload-bytes 64 --allow-short \
   --max-idle-cpu-core-fraction 2 --max-idle-object-store-ops-per-sec 10000 \
+  --max-object-store-ops-per-1000-entries 10000 \
   --min-req-per-sec 1000000000000 --max-p99-ms 5000 --max-p999-ms 5000 \
   >"${TMP_DIR}/rejected.stdout"; then
   echo "release soak accepted an impossible throughput budget" >&2
@@ -344,9 +357,21 @@ evidence = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert evidence["status"] == "fail"
 assert evidence["checks"]["throughput"]["passed"] is False
 assert evidence["checks"]["idle_counters"]["passed"] is False
+assert evidence["checks"]["fleet_metrics_coverage"]["passed"] is False
 assert all(rate["identity_stable"] for rate in evidence["monitor"]["idle_rates"])
 assert len({rate["instance_hash"] for rate in evidence["monitor"]["idle_rates"]}) == 1
 PY
+
+if python3 scripts/release-soak.py \
+  --url "${STREAMS_URL}" --metrics-url "${STREAMS_URL}" \
+  --bench-bin "${TARGET_DIR}/bench" --evidence "${TMP_DIR}/missing-cost-budget.json" \
+  --release-id ci-missing-budget --target-label hermetic-s3lite \
+  --instance-class local-process --storage-provider s3lite \
+  >"${TMP_DIR}/missing-cost-budget.out" 2>"${TMP_DIR}/missing-cost-budget.err"; then
+  echo "release soak accepted production evidence without explicit cost budgets" >&2
+  exit 1
+fi
+grep -q 'production evidence requires explicit' "${TMP_DIR}/missing-cost-budget.err"
 
 if SOAK_STREAM_KEY=forbidden-raw-secret python3 scripts/release-soak.py \
   --url "${STREAMS_URL}" --metrics-url "${STREAMS_URL}" \

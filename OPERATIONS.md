@@ -388,7 +388,12 @@ duplicate URL from passing as fleet coverage. Any append, read, control, or
 queue request observed during the baseline also fails it. Metrics scraping and
 its audit cost are deliberately inside that baseline. CI exercises only its
 explicit short mode; no short/local artifact satisfies the performance release
-gate.
+gate. The same counters must remain monotonic and attached to the same instance
+through load and drain; the judge sums their deltas and budgets provider
+operation attempts per 1,000 successfully acknowledged records. ACK p50, p99,
+and p99.9 each have independent regression budgets. Every scrape's installed
+active-ring count must equal the distinct direct metrics-target count, so a
+scale event cannot silently leave a new instance outside the evidence.
 
 Every row of COMPUTE-SPEC §8 (failure matrix) plus §12.4 quarantine and
 §2.3 restore has a runbook entry; runbooks live next to this spec and are
@@ -399,15 +404,18 @@ isolation unit so pages carry a cell id and a blast-radius statement.
 
 ## 6. Capacity & unit-economics model
 
-Measured inputs (pilot + benchmarks): ~220-byte single-record appends cost
-1 gateway hop + share of one WAL PUT (25 ms window) + share of one L0 PUT +
-compaction amplification ≈ **3–4 object-store ops amortized per 1,000
-records at healthy batching**, ~90 % zstd compression in history tier.
+Measured inputs (pilot + benchmarks): ~220-byte single-record appends cost one
+gateway hop plus shares of a WAL PUT (25 ms window), L0 PUT, manifest reads,
+history absorption, and compaction. There is no workload-independent
+operations-per-record constant: it depends on shard count, effective batch size,
+throughput, backup/scrub cadence, and provider semantics. Release evidence must
+therefore supply an approved budget and records the exact fixed 35-cell
+operation/path-class delta. History data has shown ~90 % zstd compression.
 
 | driver | model |
 |---|---|
 | storage | raw bytes × ~0.12 (compression) × provider $/GB-mo; history >30 d quiet → archive tier at 1/5 cost (COMPUTE-SPEC §7) |
-| requests | WAL PUTs ≈ shards × 40/s max (25 ms) but load-proportional under batching; per-million-appends object-op cost ≈ (1M / effective batch size) × 2.5 ops |
+| requests | WAL PUTs ≈ active shards × 40/s max (25 ms) but load-proportional under batching; estimate total request cost from the 35-cell soak delta, not WAL alone |
 | compute | instances = max over §4.2 dims; ~6k appends/s/core target, 8k conns/instance |
 | capacity planning | reactive autoscaler (§4) for minutes-scale; forecasted floor per cell from 7-day peak × 1.3, pre-provisioned as cell weights in `cells.json`; new-cell lead time is the planning horizon (< 1 h, it's stateless) |
 

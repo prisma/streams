@@ -1652,6 +1652,12 @@ fn render_operational_metrics(state: &AppState) -> String {
     out.push_str(&format!(
         "streams_instance_info{{instance_hash=\"{instance_hash}\"}} 1\n"
     ));
+    out.push_str("# HELP streams_fleet_active_instances Instances in the installed active ring.\n");
+    out.push_str("# TYPE streams_fleet_active_instances gauge\n");
+    out.push_str(&format!(
+        "streams_fleet_active_instances {}\n",
+        state.ring_active.read().unwrap().len().max(1)
+    ));
     state.telemetry.render_openmetrics(&mut out);
 
     out.push_str(

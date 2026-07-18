@@ -802,8 +802,10 @@ scripts/release-soak.py \
   --storage-provider tigris-independent-recovery \
   --require-noisy-neighbor \
   --require-backup \
-  --max-idle-cpu-core-fraction 0.10 \
-  --max-idle-object-store-ops-per-sec 10 \
+  --max-idle-cpu-core-fraction "${APPROVED_IDLE_CPU_CORE_FRACTION}" \
+  --max-idle-object-store-ops-per-sec "${APPROVED_IDLE_STORE_OPS_PER_SEC}" \
+  --max-object-store-ops-per-1000-entries "${APPROVED_STORE_OPS_PER_1000}" \
+  --max-p50-ms 100 \
   --min-req-per-sec 1000
 ```
 
@@ -816,7 +818,9 @@ even for a short run; CI uses the same mode-0600 file path as production.
 
 Tune throughput and latency budgets only from an approved baseline for the
 same instance/store class; do the same for the idle CPU and provider-request
-budgets, and record the chosen arguments with the artifact. Evidence format 2
+budgets, and record the chosen arguments with the artifact. The three idle/
+store-cost arguments are mandatory for production evidence; there are no
+universal defaults. Evidence format 2
 contains a per-instance-index idle rate and the maximum used for each verdict,
 without serializing internal metrics URLs. Every supplied endpoint must retain
 one stable pseudonymous instance hash, distinct from every other endpoint; do
@@ -826,10 +830,23 @@ append/read/control/queue requests, fails on an identity/process/counter reset,
 and includes the cost of authenticated metrics scraping and audit persistence.
 The script refuses a run shorter than 24 hours or an idle baseline shorter than
 five minutes unless `--allow-short` is explicit.
+Across load and drain the pseudonymous identity must stay fixed and the store
+counter must remain monotonic. The summed delta is divided by exact successful
+entries and checked against `--max-object-store-ops-per-1000-entries`; background,
+audit, backup, and recovery traffic therefore remains part of loaded unit cost.
+The artifact includes all 35 fixed operation/path-class deltas so reviewers can
+distinguish WAL writes from manifest, history, registry, and fleet amplification.
+Every scrape must also report an installed active-ring size equal to the number
+of distinct direct `--metrics-url` targets. Pin fleet size for the run; a scale
+event fails the artifact and requires a new run with complete direct coverage
+rather than omitting an instance from cost and health totals.
+Use separate `--max-p50-ms`, `--max-p99-ms`, and `--max-p999-ms` regression
+budgets from the approved target baseline.
 That escape is used only by `scripts/ci-release-soak-harness.sh` to test the
 judge, production JWT subject isolation, live token rotation, attacker 429s,
-metric parser, monotonic idle CPU/object-operation rates, durable-offset proof,
-and secret-free artifact shape. A short or local run is not release evidence.
+metric parser, monotonic idle and loaded object-operation accounting,
+durable-offset proof, and secret-free artifact shape. A short or local run is
+not release evidence.
 
 ## 10. Troubleshooting matrix
 
