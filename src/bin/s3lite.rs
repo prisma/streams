@@ -3,13 +3,15 @@
 //! Implements enough of the S3 REST API for both SlateDB (via the
 //! `object_store` AWS client: conditional PUTs, range GETs, ListObjectsV2,
 //! multipart uploads, batch delete) and the existing Prisma Streams R2 client
-//! (plain PUT/GET/HEAD/DELETE/ListV2). Authorization headers are ignored.
+//! (plain PUT/GET/HEAD/DELETE/ListV2). Authorization headers are ignored unless
+//! `--iam-policy` enables the test-only prefix policy emulator.
 //!
 //! Every S3 operation sleeps `--latency-ms` (default 25) before executing to
 //! emulate object-store round-trip latency. `GET /_s3lite/stats` (no latency)
 //! reports op counts for PUT-amplification comparisons.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,6 +39,88 @@ struct Args {
     /// history tier during sustained runs. Never used in correctness tests.
     #[arg(long)]
     discard_substr: Option<String>,
+    /// Test-only JSON policy mapping SigV4 access-key IDs to exact bucket
+    /// prefixes. This checks isolation harness behavior; it is not an S3
+    /// signature validator and is never production authorization.
+    #[arg(long)]
+    iam_policy: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct IamPolicy {
+    format_version: u32,
+    grants: Vec<IamGrant>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct IamGrant {
+    access_key_id: String,
+    bucket: String,
+    prefix: String,
+}
+
+impl IamPolicy {
+    fn load(path: &PathBuf) -> anyhow::Result<Self> {
+        let encoded = std::fs::read(path)?;
+        anyhow::ensure!(encoded.len() <= 256 * 1024, "IAM policy is too large");
+        let policy: Self = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(policy.format_version == 1, "unsupported IAM policy format");
+        anyhow::ensure!(
+            (1..=256).contains(&policy.grants.len()),
+            "IAM policy must contain 1..=256 grants"
+        );
+        let mut unique = std::collections::HashSet::new();
+        for grant in &policy.grants {
+            anyhow::ensure!(
+                !grant.access_key_id.is_empty()
+                    && grant.access_key_id.len() <= 128
+                    && grant.access_key_id.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                    }),
+                "IAM grant has an invalid access-key ID"
+            );
+            anyhow::ensure!(
+                !grant.bucket.is_empty()
+                    && grant.bucket.len() <= 255
+                    && !grant.bucket.contains('/'),
+                "IAM grant has an invalid bucket"
+            );
+            anyhow::ensure!(
+                !grant.prefix.is_empty()
+                    && grant.prefix.len() <= 1024
+                    && !grant.prefix.starts_with('/')
+                    && !grant.prefix.ends_with('/'),
+                "IAM grant prefix must be a non-empty canonical path"
+            );
+            object_store::path::Path::parse(&grant.prefix)?;
+            anyhow::ensure!(
+                unique.insert((
+                    grant.access_key_id.as_str(),
+                    grant.bucket.as_str(),
+                    grant.prefix.as_str(),
+                )),
+                "IAM policy contains a duplicate grant"
+            );
+        }
+        Ok(policy)
+    }
+
+    fn allows_bucket(&self, access_key_id: &str, bucket: &str) -> bool {
+        self.grants
+            .iter()
+            .any(|grant| grant.access_key_id == access_key_id && grant.bucket == bucket)
+    }
+
+    fn allows_key(&self, access_key_id: &str, bucket: &str, key: &str) -> bool {
+        self.grants.iter().any(|grant| {
+            grant.access_key_id == access_key_id
+                && grant.bucket == bucket
+                && (key == grant.prefix
+                    || key
+                        .strip_prefix(&grant.prefix)
+                        .is_some_and(|suffix| suffix.starts_with('/')))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -105,6 +189,7 @@ struct AppState {
     upload_counter: AtomicU64,
     stats: Stats,
     fault: Mutex<Option<FaultRule>>,
+    iam_policy: Option<IamPolicy>,
 }
 
 impl AppState {
@@ -119,6 +204,7 @@ impl AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let iam_policy = args.iam_policy.as_ref().map(IamPolicy::load).transpose()?;
     let state = Arc::new(AppState {
         latency: Duration::from_millis(args.latency_ms),
         discard_substr: args.discard_substr.clone(),
@@ -130,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
         upload_counter: AtomicU64::new(1),
         stats: Stats::default(),
         fault: Mutex::new(None),
+        iam_policy,
     });
 
     let app = Router::new().fallback(handle).with_state(state);
@@ -160,6 +247,35 @@ fn query_map(uri: &Uri) -> HashMap<String, String> {
         }
     }
     out
+}
+
+fn sigv4_access_key(headers: &HeaderMap) -> Option<&str> {
+    let authorization = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let credential = authorization.split("Credential=").nth(1)?;
+    let access_key = credential.split('/').next()?;
+    (!access_key.is_empty()).then_some(access_key)
+}
+
+fn copy_source_allowed(policy: &IamPolicy, access_key_id: &str, headers: &HeaderMap) -> bool {
+    let Some(source) = headers
+        .get("x-amz-copy-source")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| percent_decode(value.trim_start_matches('/'), false))
+    else {
+        return false;
+    };
+    let Some((bucket, key)) = source.split_once('/') else {
+        return false;
+    };
+    policy.allows_key(access_key_id, bucket, key)
+}
+
+fn access_denied() -> Response {
+    s3_error(
+        StatusCode::FORBIDDEN,
+        "AccessDenied",
+        "s3lite test IAM policy denied the request",
+    )
 }
 
 /// Percent-decode. `plus_is_space` applies to query strings only; in object
@@ -286,6 +402,31 @@ async fn handle(
     let full_key = format!("{bucket}/{key}");
 
     let operation = operation_name(&method, key.is_empty(), &query);
+    let access_key_id = if let Some(policy) = &state.iam_policy {
+        let Some(access_key_id) = sigv4_access_key(&headers) else {
+            return access_denied();
+        };
+        let allowed = if operation == "list" {
+            query
+                .get("prefix")
+                .is_some_and(|prefix| policy.allows_key(access_key_id, &bucket, prefix))
+        } else if key.is_empty() {
+            policy.allows_bucket(access_key_id, &bucket)
+        } else {
+            policy.allows_key(access_key_id, &bucket, &key)
+        };
+        if !allowed {
+            return access_denied();
+        }
+        if headers.contains_key("x-amz-copy-source")
+            && !copy_source_allowed(policy, access_key_id, &headers)
+        {
+            return access_denied();
+        }
+        Some(access_key_id.to_string())
+    } else {
+        None
+    };
     let fault_key = if operation == "list" {
         format!(
             "{full_key}?prefix={}",
@@ -317,7 +458,7 @@ async fn handle(
             fault.as_ref().is_some_and(|rule| rule.stale_list),
         ),
         (Method::POST, true) if query.contains_key("delete") => {
-            batch_delete(&state, &bucket, body).await
+            batch_delete(&state, &bucket, access_key_id.as_deref(), body).await
         }
         (Method::HEAD, true) => StatusCode::OK.into_response(),
         (Method::PUT, true) => StatusCode::OK.into_response(), // create bucket
@@ -820,7 +961,12 @@ fn list_objects(
     ([(header::CONTENT_TYPE, "application/xml")], body).into_response()
 }
 
-async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Response {
+async fn batch_delete(
+    state: &Arc<AppState>,
+    bucket: &str,
+    access_key_id: Option<&str>,
+    body: Body,
+) -> Response {
     state.stats.delete.fetch_add(1, Ordering::Relaxed);
     let data = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
@@ -841,11 +987,24 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
             .replace("&quot;", "\"")
             .replace("&apos;", "'")
             .replace("&amp;", "&");
+        deleted.push(key.to_string());
+        rest = &after[end + 6..];
+    }
+    if let Some(policy) = &state.iam_policy {
+        let Some(access_key_id) = access_key_id else {
+            return access_denied();
+        };
+        if deleted
+            .iter()
+            .any(|key| !policy.allows_key(access_key_id, bucket, key))
+        {
+            return access_denied();
+        }
+    }
+    for key in &deleted {
         let full_key = format!("{bucket}/{key}");
         state.objects.lock().unwrap().remove(&full_key);
         state.previous_objects.lock().unwrap().remove(&full_key);
-        deleted.push(key.to_string());
-        rest = &after[end + 6..];
     }
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",

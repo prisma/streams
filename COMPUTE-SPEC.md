@@ -456,7 +456,12 @@ Cell boundaries are credential boundaries, or they are nothing:
   that principal read/write ONLY under `cells/<cell-id>/…` for ops state
   and that cell's data prefixes. Writing another cell's `topology.json`
   is denied by policy, not by convention — a prefix-computation bug or a
-  leaked wave-1 canary credential is contained to its cell.
+  leaked wave-1 canary credential is contained to its cell. Before a second
+  production cell is admitted, `streams-cell-iam-check` must produce a
+  secret-free real-provider artifact: all three registry/cell principals prove
+  their own GET/HEAD/LIST/PUT/multipart/DELETE/batch-delete path, and all 42
+  directed cross-boundary attempts return explicit S3 `403 AccessDenied`.
+  Separately bucketed ops/shard/data roles require separate runs.
 - **Registry role is separate.** Serving instances use a distinct registry
   credential from their cell data credential; production provisioning must
   bind its writes to the registry API/policy rather than granting that identity

@@ -103,3 +103,7 @@ path = "src/bin/registry_restore.rs"
 [[bin]]
 name = "streams-cell-move"
 path = "src/bin/cell_move.rs"
+
+[[bin]]
+name = "streams-cell-iam-check"
+path = "src/bin/cell_iam_check.rs"

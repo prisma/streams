@@ -1003,6 +1003,41 @@ secret-free artifact shape. A short or local run is not release evidence.
   `__legacy__` owners and any directory with more than the target cell. Do not
   add a second cell until the post-audit reports zero pending placements and
   indices and the first cell has produced/dark-restored a recovery point.
+- **Managed-cell IAM release gate:** before admitting a second production cell,
+  use three independently identified workload credentials to prove the global
+  registry and both cell namespaces are provider-enforced trust boundaries:
+
+  ```bash
+  streams-cell-iam-check \
+    --provider-id "$PROVIDER_ACCOUNT_LABEL" \
+    --endpoint "$SLATE_S3_ENDPOINT" --region "$SLATE_S3_REGION" \
+    --registry-bucket "$REGISTRY_S3_BUCKET" \
+    --registry-prefix "$REGISTRY_PATH_PREFIX" \
+    --registry-access-key-id "$REGISTRY_S3_ACCESS_KEY_ID" \
+    --registry-secret-access-key "$REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --cell-a-id "$CELL_A" --cell-a-bucket "$CELL_A_S3_BUCKET" \
+    --cell-a-access-key-id "$CELL_A_S3_ACCESS_KEY_ID" \
+    --cell-a-secret-access-key "$CELL_A_S3_SECRET_ACCESS_KEY" \
+    --cell-b-id "$CELL_B" --cell-b-bucket "$CELL_B_S3_BUCKET" \
+    --cell-b-access-key-id "$CELL_B_S3_ACCESS_KEY_ID" \
+    --cell-b-secret-access-key "$CELL_B_S3_SECRET_ACCESS_KEY" \
+    >"$RELEASE_EVIDENCE_DIR/cell-iam.json"
+  ```
+
+  The probe creates unique disposable objects only below the three supplied
+  namespaces. Each principal must conditionally create, GET, HEAD, LIST,
+  multipart-write, delete, and batch-delete inside its own namespace. Across
+  all six directed registry/cell trust boundaries, the same seven operations
+  must return an actual S3 `403 AccessDenied`; 404, timeout, 5xx, invalid
+  credentials, or a silently empty LIST fail the run. It re-reads every owner
+  sentinel after hostile operations and verifies cleanup before emitting a
+  secret-free `status=pass` artifact with 21 positive checks and 42 denials.
+  The three access-key IDs must differ; `--allow-shared-test-credentials` is
+  for a hermetic emulator only. If ops, shard, and data use separate buckets,
+  repeat the gate for each corresponding cell-bucket pair. Preserve the JSON
+  with provider policy exports and the release evidence. The opt-in `s3lite
+  --iam-policy` mode and its deliberate-overgrant negative control validate
+  the harness in CI, but do not substitute for a real provider run.
 - **Cross-cell stream move:** use only the break-glass mover identity, never a
   serving-cell principal. The target must be active with placement weight and
   the customer's durable affinity must still have room below four cells. Keep
