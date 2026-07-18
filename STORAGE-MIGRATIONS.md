@@ -17,6 +17,18 @@ the declaration and fails the gate. Consequently, the capability-envelope
 release must first bake fleet-wide in old-writer/read-first mode; it cannot be
 used retroactively to claim an older binary's compatibility.
 
+After each capability verdict, run
+`scripts/mixed-version-semantic-canary.py` with the same run ID and phase. Its
+four strict phases are `read-first`, `canary-flip`, `rollback`, and `finalize`.
+The mode-0600 state chains immutable phase evidence to the capability artifact;
+each phase exact-retries one producer sequence and requires every configured
+ingress route to return the exact accumulated marker corpus. A crash after the
+marker/evidence but before the state replace resumes without a duplicate.
+This proves live wire/registry/offset continuity: rollback reads post-flip data,
+and finalization reads data written during rollback. It cannot prove that those
+records entered the migrated physical format by itself, so the absorption,
+inspection, scrub, takeover, and dark-restore requirements below remain gates.
+
 ## Current formats
 
 | surface | readable | writable | rollback boundary |

@@ -623,7 +623,10 @@ all changes ship read-compatible first.
   append error rate, ack p50/p99, fence-event rate, replay-header rate,
   CAS-conflict rate, absorber lag, RSS. Breach ⇒ automatic halt +
   rollback of that wave (previous binary redeploy; instances drain per
-  §5.2, shards fence back).
+  §5.2, shards fence back). For format-affecting waves, the direct-instance
+  capability verdict and the phase-chained semantic canary are also mandatory:
+  read-first, writer flip, rollback, and finalization each exact-retry a write
+  and prove the accumulated corpus through every declared ingress route.
 - **Release soak:** the 24-hour one-cell wave is judged with distinct victim
   and attacker JWT subjects. Both mode-0600 token files must rotate while
   retaining their subject; every oversized attacker append must be a scoped

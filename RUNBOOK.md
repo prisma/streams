@@ -643,7 +643,17 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
    secret-free snapshots plus the judge artifact. Promotion is forbidden if a
    member is absent, draining, legacy/unknown, reports a different ring or
    backup-coordination protocol, cannot read every active writer, or disagrees
-   with any aggregate view. A load-balancer-only capture is not evidence.
+   with any aggregate view. A load-balancer-only capability capture is not
+   evidence. Then run `scripts/mixed-version-semantic-canary.py` with the same
+   run/phase and capability artifact. Its file-only JWT and stream-key inputs
+   must remain mode 0600. Preserve its state file and immutable per-phase
+   evidence while running `read-first` → `canary-flip` → `rollback` →
+   `finalize`: each phase exact-retries one producer write and every declared
+   ingress route must read the accumulated sequence. Thus rollback must read
+   post-flip data and finalization must read rollback data. The tool resumes a
+   crash after evidence creation without appending a second marker. This live
+   proof supplements—never replaces—the phase's forced absorption, primary/
+   recovery scrub, at-rest inspection, and dark restore.
 8. After load tests: destroy generator versions, redeploy servers/LBs
    *without* `KEEP_AWAKE` so the fleet scales to zero.
 
