@@ -10,6 +10,7 @@ object the new release may publish.
 | surface | readable | writable | rollback boundary |
 |---|---:|---:|---|
 | live topology/shard/registry | 2 | 2 | pre-v2 pilot data is rejected; this service has no in-place v1 corpus |
+| stream cell placement/index | unassigned or 1 | 1 | before adding a second cell, quiesce the sole cell and run `streams-cell-admin`; a managed cell refuses unassigned descriptors |
 | history block envelope | legacy 1, bound 2 | 1 or 2 via `HISTORY_BLOCK_WRITE_FORMAT` | deploy the dual reader everywhere with writer 1 before any cell emits 2 |
 | encrypted-history integrity baseline | 1 | 1, create-only | baseline must precede readiness enforcement; never infer it without the customer key |
 | backup coordination lease / health / retention clock | lease 1 or 2 / health 2 / clock 1 | lease 2 / health 2 / clock 1 | protocol 1 is takeover input only; it is never trusted for readiness or eligible as a production rollback writer |
@@ -21,6 +22,26 @@ SHA-256 blobs and references. Format 3 stores blobs and references below
 snapshot id. On takeover, unchanged content is streamed through a checksummed
 staging object into the new epoch before its inventory is published. A paused
 old epoch can therefore delete only its own content paths.
+
+## Single-cell registry to managed cells
+
+Cell placement is an explicit one-way control-plane migration. Create a valid
+`cells.json` containing exactly one active target cell, stop every process that
+can create streams, and first run `streams-cell-admin` without `--apply`. The
+audit is bounded by `--max-descriptors` and refuses pilot descriptors whose
+owner is `__legacy__`, placements outside the target cell, corrupt identity,
+or a multi-cell directory.
+
+Then rerun with `--apply --confirm-serving-quiesced`. For every tenant it
+create-only CASes a one-cell affinity; for every stream it writes the immutable
+cell recovery index before CAS-stamping the global descriptor. The command is
+restart-safe and performs a second zero-pending audit before success. Only then
+may the target start with `CELL_ID`; add a second cell in a later directory
+generation after all processes and recovery actors have proven the new index.
+There is no automatic fallback that guesses an unassigned descriptor's owner.
+After the CAS wave, rollback keeps managed `CELL_ID` mode and the one-cell
+directory; do not erase placements or indices. A binary without the separate
+registry/cell reader is no longer an eligible rollback target.
 
 Coordination protocol 2 replaces the protocol-1 absolute `lease_until_ms`
 with a token, epoch, and renewal sequence. A protocol-2 contender ignores the

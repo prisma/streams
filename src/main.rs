@@ -15,7 +15,7 @@ mod telemetry;
 mod touch;
 mod touch_keys;
 
-use streams_slate::{crypto, registry};
+use streams_slate::{cells, crypto, registry};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -361,6 +361,31 @@ struct Args {
     #[arg(long, env = "PATH_PREFIX")]
     path_prefix: Option<String>,
 
+    /// Managed cell identity. Enabling this mode requires PATH_PREFIX to be
+    /// exactly cells/<id> and a separately credentialed global registry.
+    #[arg(long, env = "CELL_ID")]
+    cell_id: Option<String>,
+    #[arg(long, env = "CELL_DIRECTORY_REFRESH_SECS", default_value_t = 60)]
+    cell_directory_refresh_secs: u64,
+
+    /// Global stream registry + cells.json. In legacy single-cell mode these
+    /// default to the ordinary ops store. Managed cells require explicit,
+    /// separately scoped credentials and a non-cell prefix.
+    #[arg(long, env = "REGISTRY_S3_ENDPOINT")]
+    registry_s3_endpoint: Option<String>,
+    #[arg(long, env = "REGISTRY_S3_BUCKET")]
+    registry_s3_bucket: Option<String>,
+    #[arg(long, env = "REGISTRY_S3_REGION", default_value = "us-east-1")]
+    registry_s3_region: String,
+    #[arg(long, env = "REGISTRY_S3_ACCESS_KEY_ID")]
+    registry_s3_access_key_id: Option<String>,
+    #[arg(long, env = "REGISTRY_S3_SECRET_ACCESS_KEY")]
+    registry_s3_secret_access_key: Option<String>,
+    #[arg(long, env = "REGISTRY_S3_ALLOW_HTTP", default_value_t = false)]
+    registry_s3_allow_http: bool,
+    #[arg(long, env = "REGISTRY_PATH_PREFIX")]
+    registry_path_prefix: Option<String>,
+
     /// Fleet coordination prefix (COMPUTE-SPEC §2): heartbeats + desired.json
     /// live here, shared by all instances of the fleet. Enables the
     /// heartbeat/autoscale loop when set.
@@ -606,6 +631,62 @@ impl Args {
         Ok(match &self.path_prefix {
             Some(p) => Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str())),
             None => Arc::new(s3),
+        })
+    }
+
+    fn registry_store(&self) -> anyhow::Result<Arc<dyn ObjectStore>> {
+        let store: Arc<dyn ObjectStore> = match &self.registry_s3_endpoint {
+            Some(endpoint) => {
+                let bucket = self
+                    .registry_s3_bucket
+                    .as_deref()
+                    .context("REGISTRY_S3_BUCKET is required with REGISTRY_S3_ENDPOINT")?;
+                let access_key = self
+                    .registry_s3_access_key_id
+                    .as_deref()
+                    .context("REGISTRY_S3_ACCESS_KEY_ID is required")?;
+                let secret_key = self
+                    .registry_s3_secret_access_key
+                    .as_deref()
+                    .context("REGISTRY_S3_SECRET_ACCESS_KEY is required")?;
+                Arc::new(crate::store_timing::TimingStore::new(
+                    AmazonS3Builder::new()
+                        .with_endpoint(endpoint)
+                        .with_bucket_name(bucket)
+                        .with_region(&self.registry_s3_region)
+                        .with_access_key_id(access_key)
+                        .with_secret_access_key(secret_key)
+                        .with_allow_http(self.registry_s3_allow_http)
+                        .with_conditional_put(S3ConditionalPut::ETagMatch)
+                        .with_client_options(
+                            object_store::ClientOptions::new()
+                                .with_allow_http(self.registry_s3_allow_http)
+                                .with_timeout(Duration::from_millis(self.s3_request_timeout_ms))
+                                .with_pool_idle_timeout(Duration::from_secs(4)),
+                        )
+                        .build()
+                        .context("build registry object store")?,
+                ))
+            }
+            None => {
+                anyhow::ensure!(
+                    self.registry_s3_bucket.is_none()
+                        && self.registry_s3_access_key_id.is_none()
+                        && self.registry_s3_secret_access_key.is_none(),
+                    "REGISTRY_S3_ENDPOINT is required when registry credentials are configured"
+                );
+                Arc::new(crate::store_timing::TimingStore::new(
+                    self.raw_store(&self.ops_bucket)?,
+                ))
+            }
+        };
+        Ok(match &self.registry_path_prefix {
+            Some(prefix) => Arc::new(object_store::prefix::PrefixStore::new(
+                store,
+                prefix.as_str(),
+            )),
+            None if self.registry_s3_endpoint.is_none() => return self.store_for(&self.ops_bucket),
+            None => store,
         })
     }
 
@@ -868,10 +949,109 @@ fn start_topology_watcher(state: Arc<AppState>, store: Arc<dyn ObjectStore>) {
     });
 }
 
+fn start_cell_directory_watcher(
+    state: Arc<AppState>,
+    store: Arc<dyn ObjectStore>,
+    refresh: Duration,
+) {
+    let Some(cell_id) = state.cell_id.clone() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut last_good = std::time::Instant::now();
+        let mut tick = tokio::time::interval(refresh);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Startup already loaded and validated generation 1+.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let result = match cells::load(&store).await {
+                Ok(directory) => {
+                    if directory.get(&cell_id).is_none() {
+                        Err(format!("CELL_ID {cell_id} disappeared from cells.json"))
+                    } else {
+                        let current = state.cell_directory.read().unwrap().clone();
+                        match current {
+                            Some(current) if directory.generation < current.generation => {
+                                Err("cells.json generation rolled back".to_string())
+                            }
+                            Some(current)
+                                if directory.generation == current.generation
+                                    && directory != current =>
+                            {
+                                Err("cells.json changed without a generation advance".to_string())
+                            }
+                            _ => Ok(directory),
+                        }
+                    }
+                }
+                Err(error) => Err(error.to_string()),
+            };
+            match result {
+                Ok(directory) => {
+                    let generation = directory.generation;
+                    *state.cell_directory.write().unwrap() = Some(directory);
+                    last_good = std::time::Instant::now();
+                    state
+                        .cells_ready
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    tracing::debug!(generation, "validated cells.json");
+                }
+                Err(error) => {
+                    tracing::warn!("cell directory refresh failed: {error}");
+                    if last_good.elapsed() > refresh.saturating_mul(2) {
+                        state
+                            .cells_ready
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                }
+            }
+        }
+    });
+}
+
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
     let history_block_write_format =
         HistoryBlockWriteFormat::try_from(args.history_block_write_format)?;
+
+    if let Some(cell_id) = &args.cell_id {
+        anyhow::ensure!(cells::valid_cell_id(cell_id), "CELL_ID is invalid");
+        let expected_prefix = cells::cell_prefix(cell_id);
+        anyhow::ensure!(
+            args.path_prefix.as_deref() == Some(expected_prefix.as_str()),
+            "managed CELL_ID requires PATH_PREFIX=cells/<cell-id>"
+        );
+        anyhow::ensure!(
+            args.registry_s3_endpoint.is_some()
+                && args.registry_s3_bucket.is_some()
+                && args.registry_s3_access_key_id.is_some()
+                && args.registry_s3_secret_access_key.is_some(),
+            "managed CELL_ID requires separately configured registry credentials"
+        );
+        anyhow::ensure!(
+            args.registry_s3_access_key_id.as_deref() != Some(args.access_key_id.as_str()),
+            "managed CELL_ID registry and cell data credentials must be distinct"
+        );
+        anyhow::ensure!(
+            args.registry_path_prefix
+                .as_deref()
+                .is_some_and(|prefix| !prefix.is_empty() && !prefix.starts_with("cells/")),
+            "managed CELL_ID requires a non-cell REGISTRY_PATH_PREFIX"
+        );
+        anyhow::ensure!(
+            args.fleet_prefix.as_deref().is_none_or(|prefix| {
+                prefix
+                    .strip_prefix(&expected_prefix)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+            }),
+            "FLEET_PREFIX must be inside the configured cell prefix"
+        );
+        anyhow::ensure!(
+            (5..=3_600).contains(&args.cell_directory_refresh_secs),
+            "CELL_DIRECTORY_REFRESH_SECS must be between 5 and 3600"
+        );
+    }
 
     anyhow::ensure!(
         args.auto_merge_cold_fraction_pct <= 20,
@@ -992,6 +1172,10 @@ async fn async_main() -> anyhow::Result<()> {
             "AUTH_JWKS_URL, AUTH_REVOCATION_URL, AUTH_ISSUER, and AUTH_AUDIENCE must be set together"
         ),
     };
+    anyhow::ensure!(
+        args.cell_id.is_none() || authn.production_ready(),
+        "managed CELL_ID mode requires production JWKS authentication"
+    );
     if authn.production_ready()
         && args.metrics_key.is_some()
         && args.metrics_lb_url.is_some()
@@ -1031,6 +1215,7 @@ async fn async_main() -> anyhow::Result<()> {
     let ops_store = args.store_for(&args.ops_bucket)?;
     let shard_store = args.store_for(&args.shard_bucket)?;
     let data_store = args.store_for(&args.data_bucket)?;
+    let registry_store = args.registry_store()?;
     let backup_store = args.backup_store()?;
     let audit_mirror = args.audit_mirror_store()?;
     if args.require_backup && backup_store.is_none() {
@@ -1140,7 +1325,9 @@ async fn async_main() -> anyhow::Result<()> {
             primary_scrub_objects_per_interval: args.primary_scrub_objects_per_interval,
             primary_scrub_max_object_bytes: args.primary_scrub_max_object_bytes,
             pins: Some(streams_slate::backup::BackupPins {
+                cell_id: args.cell_id.clone(),
                 topology_store: ops_store.clone(),
+                registry_store: registry_store.clone(),
                 shard_store: shard_store.clone(),
                 data_store: data_store.clone(),
                 lifetime: Duration::from_secs(args.backup_checkpoint_lifetime_secs),
@@ -1153,7 +1340,23 @@ async fn async_main() -> anyhow::Result<()> {
         }
     });
 
-    let registry = Registry::new(ops_store.clone());
+    let cell_directory = match &args.cell_id {
+        Some(cell_id) => {
+            let directory = cells::load(&registry_store)
+                .await
+                .context("load cells.json")?;
+            let local = directory
+                .get(cell_id)
+                .with_context(|| format!("CELL_ID {cell_id} is absent from cells.json"))?;
+            anyhow::ensure!(
+                Some(local.ops_prefix.as_str()) == args.path_prefix.as_deref(),
+                "cells.json ops_prefix does not match PATH_PREFIX"
+            );
+            Some(directory)
+        }
+        None => None,
+    };
+    let registry = Registry::new(registry_store.clone());
     let topology = load_or_init_topology(&ops_store, args.initial_shards)
         .await
         .context("load topology")?;
@@ -1301,6 +1504,9 @@ async fn async_main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         registry,
+        cell_id: args.cell_id.clone(),
+        cell_directory: std::sync::RwLock::new(cell_directory),
+        cells_ready: std::sync::atomic::AtomicBool::new(true),
         topology: std::sync::RwLock::new(topology.clone()),
         topology_version: std::sync::atomic::AtomicU64::new(topology.version),
         topology_ready: std::sync::atomic::AtomicBool::new(true),
@@ -1363,6 +1569,11 @@ async fn async_main() -> anyhow::Result<()> {
         telemetry,
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    start_cell_directory_watcher(
+        state.clone(),
+        registry_store,
+        Duration::from_secs(args.cell_directory_refresh_secs),
+    );
     crate::split::initialize(&state)
         .await
         .map_err(anyhow::Error::msg)

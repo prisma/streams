@@ -91,3 +91,7 @@ path = "src/bin/provider_check.rs"
 [[bin]]
 name = "streams-at-rest-check"
 path = "src/bin/at_rest_check.rs"
+
+[[bin]]
+name = "streams-cell-admin"
+path = "src/bin/cell_admin.rs"

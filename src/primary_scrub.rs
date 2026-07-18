@@ -28,7 +28,9 @@ const MAX_HISTORY_BASELINE_BYTES: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub struct PrimaryScrubConfig {
+    pub cell_id: Option<String>,
     pub topology_store: Arc<dyn ObjectStore>,
+    pub registry_store: Arc<dyn ObjectStore>,
     pub shard_store: Arc<dyn ObjectStore>,
     pub data_store: Arc<dyn ObjectStore>,
     pub max_object_bytes: u64,
@@ -212,7 +214,12 @@ async fn database_targets(config: &PrimaryScrubConfig) -> anyhow::Result<Vec<Dat
             },
         );
     }
-    for path in crate::registry::active_history_db_paths(&config.topology_store).await? {
+    for path in crate::registry::active_history_db_paths_for_cell(
+        &config.registry_store,
+        config.cell_id.as_deref(),
+    )
+    .await?
+    {
         targets.insert(
             format!("data:{path}"),
             DatabaseTarget {
@@ -851,7 +858,9 @@ mod tests {
         db.flush().await.unwrap();
         db.close().await.unwrap();
         PrimaryScrubConfig {
-            topology_store: ops,
+            cell_id: None,
+            topology_store: ops.clone(),
+            registry_store: ops,
             shard_store: shards,
             data_store: data,
             max_object_bytes: 16 * 1024 * 1024,
@@ -1041,7 +1050,9 @@ mod tests {
             },
         };
         let config = PrimaryScrubConfig {
+            cell_id: None,
             topology_store: Arc::new(object_store::memory::InMemory::new()),
+            registry_store: Arc::new(object_store::memory::InMemory::new()),
             shard_store: store.clone(),
             data_store: Arc::new(object_store::memory::InMemory::new()),
             max_object_bytes: 16 * 1024 * 1024,
@@ -1105,7 +1116,9 @@ mod tests {
             .find(|unit| matches!(unit.work, Work::HistoryObject { .. }))
             .unwrap();
         let config = PrimaryScrubConfig {
-            topology_store: ops,
+            cell_id: None,
+            topology_store: ops.clone(),
+            registry_store: ops,
             shard_store: Arc::new(object_store::memory::InMemory::new()),
             data_store: data.clone(),
             max_object_bytes: 16 * 1024 * 1024,

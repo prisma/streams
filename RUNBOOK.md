@@ -85,6 +85,25 @@ environment on every deploy** — see the §8.3 trap.
 | `PATH_PREFIX` | — | key prefix inside the bucket; independent deployments can share a bucket. **Changing it = a fresh, empty keyspace** |
 | `S3_REQUEST_TIMEOUT_MS` | 30000 | overall request deadline (50–300000 ms); timeout errors are retried, but no durable watermark/ACK advances until a request succeeds |
 
+**Managed-cell settings:**
+
+| env | default | notes |
+|---|---|---|
+| `CELL_ID` | — | enables managed-cell mode; requires production JWKS auth and `PATH_PREFIX=cells/<id>` |
+| `CELL_DIRECTORY_REFRESH_SECS` | 60 | 5–3600 s; `cells.json` generation rollback or same-generation mutation retains last-known-good routing, fails the cells readiness component after two missed refresh windows, and blocks new placement |
+| `REGISTRY_S3_ENDPOINT` / `REGISTRY_S3_BUCKET` / `REGISTRY_S3_REGION` | — | explicit global registry authority in managed mode; it contains `cells.json`, affinities, descriptors, and per-cell recovery indices |
+| `REGISTRY_S3_ACCESS_KEY_ID` / `REGISTRY_S3_SECRET_ACCESS_KEY` | — | required and must use an access-key id distinct from the cell data principal |
+| `REGISTRY_PATH_PREFIX` | — | required, non-empty, and outside `cells/`; never reuse a cell-local prefix |
+| `REGISTRY_S3_ALLOW_HTTP` | false | test-only escape hatch |
+
+The descriptor's immutable `cell` decides all existing operations. A request
+at another cell returns 409 with `Streams-Replay-To-Cell` before shard/key work.
+New placement uses the last-known-good directory and durable customer affinity;
+draining/frozen or zero-weight cells receive no new streams but continue serving
+their pinned streams. Backup and primary scrub list only the local immutable
+`registry/by-cell/<id>/` projection, then validate each entry against the
+global descriptor; they never enumerate another cell's history namespace.
+
 Provider requirements (strong read-after-write, conditional PUT/If-Match,
 durability): [OPERATIONS.md §1](./OPERATIONS.md). Tigris satisfies all of
 them and negotiates HTTP/1.1 (relevant to §10's latency story). The client
@@ -919,6 +938,32 @@ secret-free artifact shape. A short or local run is not release evidence.
   is the normal online path.
 - **Fresh environment**: pick a new `PATH_PREFIX` (and `FLEET_PREFIX`).
   Cheap, instant, and how every pilot run isolated itself.
+- **First managed-cell cutover:** publish `cells.json` with exactly one active
+  cell and keep serving quiesced. Audit, apply, and verify placement with:
+
+  ```bash
+  streams-cell-admin --cell-id "$CELL_ID" \
+    --s3-endpoint "$REGISTRY_S3_ENDPOINT" \
+    --s3-bucket "$REGISTRY_S3_BUCKET" \
+    --s3-region "$REGISTRY_S3_REGION" \
+    --s3-access-key-id "$REGISTRY_S3_ACCESS_KEY_ID" \
+    --s3-secret-access-key "$REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --path-prefix "$REGISTRY_PATH_PREFIX" --max-descriptors 100000
+
+  streams-cell-admin --cell-id "$CELL_ID" --apply \
+    --confirm-serving-quiesced \
+    --s3-endpoint "$REGISTRY_S3_ENDPOINT" \
+    --s3-bucket "$REGISTRY_S3_BUCKET" \
+    --s3-region "$REGISTRY_S3_REGION" \
+    --s3-access-key-id "$REGISTRY_S3_ACCESS_KEY_ID" \
+    --s3-secret-access-key "$REGISTRY_S3_SECRET_ACCESS_KEY" \
+    --path-prefix "$REGISTRY_PATH_PREFIX" --max-descriptors 100000
+  ```
+
+  Add `--s3-allow-http` only in a local drill. The command refuses legacy
+  `__legacy__` owners and any directory with more than the target cell. Do not
+  add a second cell until the post-audit reports zero pending placements and
+  indices and the first cell has produced/dark-restored a recovery point.
 - **Decommission**: stop generators, redeploy without `KEEP_AWAKE`, let the
   platform sleep the fleet; delete the prefix when the data is disposable.
 

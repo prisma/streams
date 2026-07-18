@@ -52,6 +52,11 @@ pub struct ShardOpener {
 
 pub struct AppState {
     pub registry: Registry,
+    /// Managed multi-cell mode. `None` preserves the legacy single-cell
+    /// contract; `Some` requires immutable matching descriptor placement.
+    pub cell_id: Option<String>,
+    pub cell_directory: std::sync::RwLock<Option<crate::cells::CellDirectory>>,
+    pub cells_ready: std::sync::atomic::AtomicBool,
     /// Last-known-good topology, replaced atomically by the topology watcher.
     /// Requests never observe a partially parsed or partially applied trie.
     pub topology: std::sync::RwLock<Topology>,
@@ -1433,6 +1438,12 @@ fn render_operational_metrics(state: &AppState) -> String {
         "{component=\"fleet\"}",
         state.fleet_ready.load(std::sync::atomic::Ordering::Acquire),
     );
+    metric_bool(
+        &mut out,
+        "streams_component_ready",
+        "{component=\"cells\"}",
+        state.cells_ready.load(std::sync::atomic::Ordering::Acquire),
+    );
 
     out.push_str("# HELP streams_backup_configured Whether independent recovery is configured.\n");
     out.push_str("# TYPE streams_backup_configured gauge\n");
@@ -1785,6 +1796,7 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
         && state.split_ready.load(std::sync::atomic::Ordering::Acquire)
         && state.merge_ready.load(std::sync::atomic::Ordering::Acquire)
         && state.fleet_ready.load(std::sync::atomic::Ordering::Acquire)
+        && state.cells_ready.load(std::sync::atomic::Ordering::Acquire)
     {
         (
             StatusCode::OK,
@@ -1830,6 +1842,104 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
         json!({"error": {"code": code, "message": message}}).to_string(),
     )
         .into_response()
+}
+
+fn replay_to_cell(cell_id: &str) -> Response {
+    let mut response = err_resp(
+        StatusCode::CONFLICT,
+        "not_cell_owner",
+        &format!("stream is pinned to cell {cell_id}"),
+    );
+    if let Ok(value) = axum::http::HeaderValue::from_str(cell_id) {
+        response
+            .headers_mut()
+            .insert("streams-replay-to-cell", value);
+    }
+    response
+}
+
+enum CellOwnershipError {
+    Unassigned,
+    Replay(String),
+}
+
+impl CellOwnershipError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Unassigned => err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cell_unassigned",
+                "legacy descriptor has no cell placement; migrate it before enabling multi-cell serving",
+            ),
+            Self::Replay(cell_id) => replay_to_cell(&cell_id),
+        }
+    }
+}
+
+fn require_local_cell(state: &AppState, descriptor: &StreamDesc) -> Result<(), CellOwnershipError> {
+    match (state.cell_id.as_deref(), descriptor.cell.as_str()) {
+        (None, "") => Ok(()),
+        (Some(local), assigned) if local == assigned => Ok(()),
+        (Some(_), "") => Err(CellOwnershipError::Unassigned),
+        (_, assigned) => Err(CellOwnershipError::Replay(assigned.to_string())),
+    }
+}
+
+async fn placement_for_create(
+    state: &AppState,
+    customer_id: &str,
+    stream_name: &str,
+) -> Result<String, Response> {
+    let Some(local_cell) = state.cell_id.as_deref() else {
+        return Ok(String::new());
+    };
+    if !state.cells_ready.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "placement_unavailable",
+            "cell directory is unavailable; retry",
+        ));
+    }
+    let Some(directory) = state.cell_directory.read().unwrap().clone() else {
+        return Err(err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "placement_unavailable",
+            "cell directory is unavailable; retry",
+        ));
+    };
+    let proposed = directory
+        .select(customer_id, stream_name, &[])
+        .map_err(|message| {
+            err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "placement_unavailable",
+                &message,
+            )
+        })?;
+    let affinity = state
+        .registry
+        .get_or_create_customer_cell_affinity(customer_id, &proposed.cell_id)
+        .await
+        .map_err(|error| {
+            err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "placement_unavailable",
+                &error.to_string(),
+            )
+        })?;
+    let selected = directory
+        .select(customer_id, stream_name, &affinity.cells)
+        .map_err(|message| {
+            err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "placement_unavailable",
+                &message,
+            )
+        })?;
+    if selected.cell_id != local_cell {
+        return Err(replay_to_cell(&selected.cell_id));
+    }
+    Ok(selected.cell_id.clone())
 }
 
 fn throttled_resp(reason: ThrottleReason, retry_after_seconds: u64) -> Response {
@@ -2458,6 +2568,7 @@ fn stream_config_matches(
 #[allow(clippy::too_many_arguments)]
 fn fresh_desc(
     customer_id: &str,
+    cell: String,
     name: &str,
     key: &StreamKey,
     content_type: String,
@@ -2483,6 +2594,7 @@ fn fresh_desc(
     };
     StreamDesc {
         customer_id: customer_id.to_string(),
+        cell,
         name: name.to_string(),
         stream_epoch: hex(&epoch),
         key_fingerprint: key.fingerprint(&epoch),
@@ -2636,6 +2748,7 @@ async fn prepare_fork(
             ));
         }
     };
+    require_local_cell(state, &source).map_err(CellOwnershipError::into_response)?;
     if source.is_per_key() {
         return Err(err_resp(
             StatusCode::BAD_REQUEST,
@@ -3100,6 +3213,11 @@ async fn create_stream_with_quota(
             );
         }
     };
+    if let Some(descriptor) = &existing
+        && let Err(response) = require_local_cell(&state, descriptor)
+    {
+        return response.into_response();
+    }
     let consumes_stream_slot = existing
         .as_ref()
         .is_none_or(|descriptor| descriptor.deleted);
@@ -3208,6 +3326,7 @@ async fn create_stream_with_quota(
             // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
             let mut fresh = fresh_desc(
                 &customer_id,
+                state.cell_id.clone().unwrap_or_default(),
                 &name,
                 &key,
                 content_type.clone(),
@@ -3243,6 +3362,9 @@ async fn create_stream_with_quota(
                     // A concurrent recreator won. Treat it exactly like an
                     // already-existing stream; never cache or use the losing
                     // request's key for the winner's incarnation.
+                    if let Err(response) = require_local_cell(&state, &d) {
+                        return response.into_response();
+                    }
                     match check_key(raw_key(&headers, &state), &d) {
                         KeyCheck::Ok(..) => {}
                         KeyCheck::Wrong => {
@@ -3279,8 +3401,13 @@ async fn create_stream_with_quota(
             }
         }
         None => {
+            let selected_cell = match placement_for_create(&state, &customer_id, &name).await {
+                Ok(cell) => cell,
+                Err(response) => return response,
+            };
             let mut fresh = fresh_desc(
                 &customer_id,
+                selected_cell,
                 &name,
                 &key,
                 content_type.clone(),
@@ -3309,6 +3436,9 @@ async fn create_stream_with_quota(
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
                     // Raced: treat as idempotent-config path.
+                    if let Err(response) = require_local_cell(&state, &d) {
+                        return response.into_response();
+                    }
                     match check_key(raw_key(&headers, &state), &d) {
                         KeyCheck::Ok(..) => {}
                         KeyCheck::Wrong => {
@@ -3576,6 +3706,9 @@ async fn delete_stream(state: Arc<AppState>, customer_id: String, name: String) 
             );
         }
     };
+    if let Err(response) = require_local_cell(&state, &observed) {
+        return response.into_response();
+    }
     if !desc_alive(&observed) {
         if observed.fork_children.is_empty()
             && let Err(error) = state
@@ -3668,6 +3801,9 @@ async fn touch_entry(
             );
         }
     };
+    if let Err(response) = require_local_cell(&state, &desc) {
+        return response.into_response();
+    }
     if desc.profile.as_deref() != Some("state-protocol") {
         return err_resp(StatusCode::NOT_FOUND, "not_found", "touch is not enabled");
     }
@@ -3842,6 +3978,9 @@ async fn append(
             );
         }
     };
+    if let Err(response) = require_local_cell(&state, &desc) {
+        return response.into_response();
+    }
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
@@ -4365,6 +4504,9 @@ async fn read(
             );
         }
     };
+    if let Err(response) = require_local_cell(&state, &desc) {
+        return response.into_response();
+    }
     // A single-segment per-key stream is the degenerate case: totally
     // ordered, epoch-0 tokens — serve it through the standard path so every
     // semantic (incl. unkeyed live reads) is byte-identical.
@@ -5248,6 +5390,9 @@ async fn queue_entry(
             );
         }
     };
+    if let Err(response) = require_local_cell(&state, &desc) {
+        return response.into_response();
+    }
     if desc.profile.as_deref() != Some("queue") {
         return err_resp(
             StatusCode::NOT_FOUND,
@@ -5623,6 +5768,7 @@ mod tests {
     fn admission_descriptor(name: &str, limits: ResolvedStreamLimits) -> StreamDesc {
         fresh_desc(
             "customer-a",
+            String::new(),
             name,
             &StreamKey([7; 32]),
             "application/octet-stream".to_string(),

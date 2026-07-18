@@ -28,6 +28,10 @@ pub struct StreamDesc {
     /// pre-multitenant pilot; those are visible solely to `__legacy__`.
     #[serde(default)]
     pub customer_id: String,
+    /// Immutable global placement. Empty only for legacy single-cell
+    /// descriptors created before cells were enabled.
+    #[serde(default)]
+    pub cell: String,
     pub name: String,
     /// 16-byte hex; minted per creation, bound into HKDF (V9 mandate).
     pub stream_epoch: String,
@@ -119,6 +123,35 @@ pub struct PinnedTemplate {
     pub fields: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomerCellAffinity {
+    pub version: u32,
+    pub cells: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct CellMigrationReport {
+    pub scanned: usize,
+    pub pending_placements: usize,
+    pub pending_indices: usize,
+    pub migrated_placements: usize,
+    pub repaired_indices: usize,
+}
+
+/// Immutable, cell-local projection of the globally CAS'd stream descriptor.
+/// It is published before the descriptor and revalidated against that source
+/// of truth when enumerated, so a failed/racing create can leave only a safe
+/// orphan while a live descriptor can never be absent from its cell index.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CellStreamIndex {
+    version: u32,
+    customer_id: String,
+    name: String,
+    cell: String,
+}
+
 fn default_content_type() -> String {
     "application/octet-stream".to_string()
 }
@@ -202,26 +235,96 @@ pub fn history_db_path(hash: &StorageHash) -> String {
 /// descriptors. Backup and primary integrity actors share this fail-closed
 /// implementation so they cannot silently protect different data sets.
 pub async fn active_history_db_paths(store: &Arc<dyn ObjectStore>) -> anyhow::Result<Vec<String>> {
+    active_history_db_paths_for_cell(store, None).await
+}
+
+/// Enumerate active history databases for one cell without scanning the
+/// global descriptor namespace. `None` is the legacy single-cell mode.
+pub async fn active_history_db_paths_for_cell(
+    store: &Arc<dyn ObjectStore>,
+    cell_id: Option<&str>,
+) -> anyhow::Result<Vec<String>> {
     use futures_util::TryStreamExt;
 
     let mut paths = std::collections::HashSet::new();
-    let mut listing = store.list(Some(&ObjPath::from("registry")));
+    let prefix = match cell_id {
+        Some(cell_id) => {
+            anyhow::ensure!(
+                crate::cells::valid_cell_id(cell_id),
+                "invalid recovery cell id"
+            );
+            cell_stream_index_prefix(cell_id)
+        }
+        None => ObjPath::from("registry"),
+    };
+    let mut listing = store.list(Some(&prefix));
+    let mut indexed_streams = 0usize;
     while let Some(meta) = listing.try_next().await? {
-        if !meta.location.as_ref().ends_with(".json")
-            || !meta.location.as_ref().contains("/by-name/")
-        {
+        if !meta.location.as_ref().ends_with(".json") {
             continue;
         }
         anyhow::ensure!(
             meta.size <= MAX_DESCRIPTOR_BYTES as u64,
-            "registry descriptor is too large for recovery"
+            "registry recovery record is too large"
         );
         let encoded = store.get(&meta.location).await?.bytes().await?;
-        let descriptor: StreamDesc = serde_json::from_slice(&encoded)?;
-        anyhow::ensure!(
-            descriptor_path_for(descriptor.owner(), &descriptor.name) == meta.location,
-            "registry descriptor identity does not match its recovery path"
-        );
+        let descriptor = if let Some(cell_id) = cell_id {
+            let index: CellStreamIndex = serde_json::from_slice(&encoded)?;
+            anyhow::ensure!(
+                index.version == 1
+                    && index.cell == cell_id
+                    && !index.customer_id.is_empty()
+                    && index.customer_id != "__legacy__"
+                    && index.customer_id.len() <= 1_024
+                    && !index.name.is_empty()
+                    && index.name.len() <= 1_024
+                    && cell_stream_index_path(&index.customer_id, &index.name, &index.cell)
+                        == meta.location,
+                "cell stream index identity is invalid for recovery"
+            );
+            indexed_streams += 1;
+            anyhow::ensure!(
+                indexed_streams <= MAX_ACTIVE_HISTORY_DBS,
+                "stream index count exceeds the recovery cell bound"
+            );
+            let descriptor_path = descriptor_path_for(&index.customer_id, &index.name);
+            let result = match store.get(&descriptor_path).await {
+                Ok(result) => result,
+                // A create writes the index first. A missing descriptor is a
+                // safe orphan left by a crash or a lost global create race.
+                Err(object_store::Error::NotFound { .. }) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            anyhow::ensure!(
+                result.meta.size <= MAX_DESCRIPTOR_BYTES as u64,
+                "registry descriptor is too large for recovery"
+            );
+            let raw = result.bytes().await?;
+            let descriptor: StreamDesc = serde_json::from_slice(&raw)?;
+            anyhow::ensure!(
+                descriptor.owner() == index.customer_id && descriptor.name == index.name,
+                "registry descriptor identity does not match its cell index"
+            );
+            // A losing placement race, or an explicit future move, leaves the
+            // old immutable marker behind. Only the authoritative owner acts.
+            if descriptor.cell != cell_id {
+                continue;
+            }
+            descriptor
+        } else {
+            if !meta.location.as_ref().contains("/by-name/")
+                || meta.location.as_ref().contains("/by-cell/")
+            {
+                continue;
+            }
+            serde_json::from_slice(&encoded)?
+        };
+        if cell_id.is_none() {
+            anyhow::ensure!(
+                descriptor_path_for(descriptor.owner(), &descriptor.name) == meta.location,
+                "registry descriptor identity does not match its recovery path"
+            );
+        }
         anyhow::ensure!(
             !descriptor.owner().is_empty()
                 && descriptor.owner().len() <= 1_024
@@ -488,6 +591,22 @@ fn desc_path(customer_id: &str, name: &str) -> ObjPath {
     }
 }
 
+fn cell_stream_index_prefix(cell_id: &str) -> ObjPath {
+    // Include the next fixed component so an S3 byte-prefix list for `c-a`
+    // can never include sibling `c-aa`.
+    ObjPath::from(format!("registry/by-cell/{cell_id}/by-customer"))
+}
+
+fn cell_stream_index_path(customer_id: &str, name: &str, cell_id: &str) -> ObjPath {
+    let customer_hash = hex(&stream_hash(customer_id));
+    let name_hash = hex(&stream_hash(name));
+    ObjPath::from(format!(
+        "registry/by-cell/{cell_id}/by-customer/{customer_hash}/by-name/{}/{}.json",
+        &name_hash[..2],
+        name_hash
+    ))
+}
+
 /// Canonical descriptor location used by recovery enumeration to reject a
 /// malformed body whose claimed tenant/name does not match its durable key.
 pub(crate) fn descriptor_path_for(customer_id: &str, name: &str) -> ObjPath {
@@ -512,12 +631,32 @@ fn stream_quota_lease_path(customer_id: &str) -> ObjPath {
     ))
 }
 
+fn customer_cell_affinity_path(customer_id: &str) -> ObjPath {
+    ObjPath::from(format!(
+        "customers/{}/cell-affinity.json",
+        hex(&stream_hash(customer_id))
+    ))
+}
+
+fn validate_customer_cell_affinity(
+    affinity: &CustomerCellAffinity,
+) -> Result<(), object_store::Error> {
+    if affinity.version != 1 || affinity.cells.is_empty() {
+        return Err(registry_error("invalid customer cell affinity"));
+    }
+    crate::cells::validate_customer_affinity(&affinity.cells)
+        .map_err(|_| registry_error("invalid customer cell affinity"))
+}
+
 fn validate_descriptor_scope(
     descriptor: &StreamDesc,
     customer_id: &str,
     name: &str,
 ) -> Result<(), object_store::Error> {
-    if descriptor.owner() != customer_id || descriptor.name != name {
+    if descriptor.owner() != customer_id
+        || descriptor.name != name
+        || (!descriptor.cell.is_empty() && !crate::cells::valid_cell_id(&descriptor.cell))
+    {
         return Err(registry_error(
             "stream descriptor identity does not match its registry path",
         ));
@@ -628,6 +767,282 @@ impl Registry {
             .unwrap()
             .insert(customer_id.to_string(), limits.clone());
         Ok(limits)
+    }
+
+    /// Return the durable at-most-four-cell affinity for a customer, creating
+    /// the initial one-cell assignment with a create-only CAS. Concurrent
+    /// stream creates may propose different cells, but every caller observes
+    /// the same winning document before publishing a stream descriptor.
+    pub async fn get_or_create_customer_cell_affinity(
+        &self,
+        customer_id: &str,
+        proposed_cell: &str,
+    ) -> Result<CustomerCellAffinity, object_store::Error> {
+        if customer_id.is_empty()
+            || customer_id.len() > 256
+            || !crate::cells::valid_cell_id(proposed_cell)
+        {
+            return Err(registry_error("invalid customer cell placement request"));
+        }
+        let path = customer_cell_affinity_path(customer_id);
+        for _ in 0..5 {
+            match self.store.get(&path).await {
+                Ok(result) => {
+                    if result.meta.size > 16 * 1024 {
+                        return Err(registry_error("customer cell affinity is too large"));
+                    }
+                    let raw = result.bytes().await?;
+                    let affinity =
+                        parse_json::<CustomerCellAffinity>(&raw, "customer cell affinity")?;
+                    validate_customer_cell_affinity(&affinity)?;
+                    return Ok(affinity);
+                }
+                Err(object_store::Error::NotFound { .. }) => {
+                    let affinity = CustomerCellAffinity {
+                        version: 1,
+                        cells: vec![proposed_cell.to_string()],
+                    };
+                    match self
+                        .store
+                        .put_opts(
+                            &path,
+                            PutPayload::from(
+                                serde_json::to_vec(&affinity).expect("cell affinity json"),
+                            ),
+                            PutOptions::from(PutMode::Create),
+                        )
+                        .await
+                    {
+                        Ok(_) => return Ok(affinity),
+                        Err(object_store::Error::AlreadyExists { .. }) => continue,
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("customer cell affinity create raced"))
+    }
+
+    async fn ensure_cell_stream_index(
+        &self,
+        descriptor: &StreamDesc,
+    ) -> Result<(), object_store::Error> {
+        if descriptor.cell.is_empty() {
+            return Ok(());
+        }
+        let index = CellStreamIndex {
+            version: 1,
+            customer_id: descriptor.owner().to_string(),
+            name: descriptor.name.clone(),
+            cell: descriptor.cell.clone(),
+        };
+        if index.customer_id == "__legacy__"
+            || index.customer_id.is_empty()
+            || index.customer_id.len() > 1_024
+            || index.name.is_empty()
+            || index.name.len() > 1_024
+            || !crate::cells::valid_cell_id(&index.cell)
+        {
+            return Err(registry_error("invalid cell stream index identity"));
+        }
+        let path = cell_stream_index_path(&index.customer_id, &index.name, &index.cell);
+        let body = PutPayload::from(serde_json::to_vec(&index).expect("cell stream index json"));
+        match self
+            .store
+            .put_opts(&path, body, PutOptions::from(PutMode::Create))
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                let result = self.store.get(&path).await?;
+                if result.meta.size > 16 * 1024 {
+                    return Err(registry_error("cell stream index is too large"));
+                }
+                let raw = result.bytes().await?;
+                let current = parse_json::<CellStreamIndex>(&raw, "cell stream index")?;
+                if current != index {
+                    return Err(registry_error("cell stream index identity mismatch"));
+                }
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn cell_stream_index_exists(
+        &self,
+        descriptor: &StreamDesc,
+    ) -> Result<bool, object_store::Error> {
+        if descriptor.cell.is_empty() {
+            return Ok(false);
+        }
+        let expected = CellStreamIndex {
+            version: 1,
+            customer_id: descriptor.owner().to_string(),
+            name: descriptor.name.clone(),
+            cell: descriptor.cell.clone(),
+        };
+        let path = cell_stream_index_path(&expected.customer_id, &expected.name, &expected.cell);
+        match self.store.get(&path).await {
+            Ok(result) => {
+                if result.meta.size > 16 * 1024 {
+                    return Err(registry_error("cell stream index is too large"));
+                }
+                let raw = result.bytes().await?;
+                let current = parse_json::<CellStreamIndex>(&raw, "cell stream index")?;
+                if current != expected {
+                    return Err(registry_error("cell stream index identity mismatch"));
+                }
+                Ok(true)
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn assign_descriptor_cell(
+        &self,
+        customer_id: &str,
+        name: &str,
+        cell_id: &str,
+    ) -> Result<bool, object_store::Error> {
+        let path = desc_path(customer_id, name);
+        for _ in 0..10 {
+            let result = self.store.get(&path).await?;
+            let etag = result.meta.e_tag.clone();
+            if result.meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+                return Err(registry_error("stream descriptor is too large"));
+            }
+            let raw = result.bytes().await?;
+            let mut descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            validate_descriptor_scope(&descriptor, customer_id, name)?;
+            if !descriptor.cell.is_empty() && descriptor.cell != cell_id {
+                return Err(registry_error(
+                    "stream descriptor is already assigned to a different cell",
+                ));
+            }
+            if descriptor.cell == cell_id {
+                self.ensure_cell_stream_index(&descriptor).await?;
+                return Ok(false);
+            }
+            descriptor.cell = cell_id.to_string();
+            self.ensure_cell_stream_index(&descriptor).await?;
+            let body = serde_json::to_vec(&descriptor).expect("stream descriptor json");
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(body),
+                    PutOptions::from(PutMode::Update(UpdateVersion {
+                        e_tag: etag,
+                        version: None,
+                    })),
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(customer_id, name);
+                    return Ok(true);
+                }
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(registry_error("descriptor placement CAS retries exhausted"))
+    }
+
+    /// Audit or perform the only supported no-placement migration: every
+    /// descriptor is assigned to the sole active cell before a second cell is
+    /// admitted. Serving must be quiesced by the caller while `apply` is true
+    /// so a concurrent create cannot land behind the strongly-consistent list.
+    pub async fn migrate_single_cell_descriptors(
+        &self,
+        cell_id: &str,
+        max_descriptors: usize,
+        apply: bool,
+    ) -> anyhow::Result<CellMigrationReport> {
+        use futures_util::TryStreamExt;
+
+        anyhow::ensure!(
+            crate::cells::valid_cell_id(cell_id),
+            "invalid migration cell id"
+        );
+        anyhow::ensure!(
+            (1..=10_000_000).contains(&max_descriptors),
+            "max descriptors must be between 1 and 10000000"
+        );
+        let directory = crate::cells::load(&self.store).await?;
+        anyhow::ensure!(
+            directory.cells.len() == 1
+                && directory.cells[0].cell_id == cell_id
+                && directory.cells[0].state == crate::cells::CellState::Active
+                && directory.cells[0].weight > 0,
+            "placement migration requires cells.json to contain exactly the target active cell"
+        );
+
+        let mut report = CellMigrationReport::default();
+        let mut listing = self.store.list(Some(&ObjPath::from("registry")));
+        while let Some(meta) = listing.try_next().await? {
+            let location = meta.location.as_ref();
+            if !location.ends_with(".json")
+                || !location.contains("/by-name/")
+                || location.contains("/by-cell/")
+            {
+                continue;
+            }
+            report.scanned += 1;
+            anyhow::ensure!(
+                report.scanned <= max_descriptors,
+                "descriptor count exceeds the explicit migration bound"
+            );
+            anyhow::ensure!(
+                meta.size <= MAX_DESCRIPTOR_BYTES as u64,
+                "stream descriptor is too large"
+            );
+            let raw = self.store.get(&meta.location).await?.bytes().await?;
+            let descriptor = parse_json::<StreamDesc>(&raw, "stream descriptor")?;
+            validate_descriptor_scope(&descriptor, descriptor.owner(), &descriptor.name)?;
+            anyhow::ensure!(
+                descriptor_path_for(descriptor.owner(), &descriptor.name) == meta.location,
+                "stream descriptor identity does not match its registry path"
+            );
+            anyhow::ensure!(
+                descriptor.owner() != "__legacy__",
+                "legacy pilot descriptors have no tenant identity and cannot enter managed cells"
+            );
+            anyhow::ensure!(
+                descriptor.cell.is_empty() || descriptor.cell == cell_id,
+                "descriptor is assigned outside the sole migration cell"
+            );
+
+            if descriptor.cell.is_empty() {
+                report.pending_placements += 1;
+                if !apply {
+                    continue;
+                }
+                let affinity = self
+                    .get_or_create_customer_cell_affinity(descriptor.owner(), cell_id)
+                    .await?;
+                anyhow::ensure!(
+                    affinity.cells == [cell_id],
+                    "customer affinity is not confined to the sole migration cell"
+                );
+                if self
+                    .assign_descriptor_cell(descriptor.owner(), &descriptor.name, cell_id)
+                    .await?
+                {
+                    report.migrated_placements += 1;
+                }
+            } else if !self.cell_stream_index_exists(&descriptor).await? {
+                report.pending_indices += 1;
+                if apply {
+                    self.ensure_cell_stream_index(&descriptor).await?;
+                    report.repaired_indices += 1;
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Serialize the count-and-create decision for one customer. The lease is
@@ -811,7 +1226,14 @@ impl Registry {
             Err(object_store::Error::NotFound { .. }) => None,
             Err(e) => return Err(e),
         };
-        self.cache.lock().unwrap().insert(key, fetched.clone());
+        // A create may publish through another cell. There is no cross-process
+        // invalidation channel, so caching absence would turn a successful
+        // global descriptor CAS into transient wrong-cell 404s. Positive
+        // descriptors are immutable in placement and safe for the short TTL;
+        // authenticated miss traffic is bounded by tenant admission.
+        if fetched.is_some() {
+            self.cache.lock().unwrap().insert(key, fetched.clone());
+        }
         Ok(fetched)
     }
 
@@ -820,8 +1242,10 @@ impl Registry {
         &self,
         desc: StreamDesc,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
-        let raw = serde_json::to_vec(&desc).expect("desc json");
         let customer_id = desc.owner().to_string();
+        validate_descriptor_scope(&desc, &customer_id, &desc.name)?;
+        self.ensure_cell_stream_index(&desc).await?;
+        let raw = serde_json::to_vec(&desc).expect("desc json");
         let key = cache_key(&customer_id, &desc.name);
         match self
             .store
@@ -862,6 +1286,7 @@ impl Registry {
         fresh: StreamDesc,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
         validate_descriptor_scope(&fresh, customer_id, name)?;
+        self.ensure_cell_stream_index(&fresh).await?;
         let path = desc_path(customer_id, name);
         for _ in 0..5 {
             let got = match self.store.get(&path).await {
@@ -1661,6 +2086,7 @@ mod tests {
     fn descriptor(name: &str, epoch: &str) -> StreamDesc {
         StreamDesc {
             customer_id: "__legacy__".to_string(),
+            cell: String::new(),
             name: name.to_string(),
             stream_epoch: epoch.to_string(),
             key_fingerprint: format!("fingerprint-{epoch}"),
@@ -1751,6 +2177,182 @@ mod tests {
             .unwrap();
         let registry = Registry::new(store);
         assert!(registry.get("__legacy__", "bad").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_customer_cell_affinity_has_one_bounded_winner() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let left = Registry::new(store.clone());
+        let right = Registry::new(store);
+        let (left, right) = tokio::join!(
+            left.get_or_create_customer_cell_affinity("customer", "c-left"),
+            right.get_or_create_customer_cell_affinity("customer", "c-right"),
+        );
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_eq!(left, right);
+        assert_eq!(left.cells.len(), 1);
+        assert!(matches!(left.cells[0].as_str(), "c-left" | "c-right"));
+    }
+
+    #[tokio::test]
+    async fn a_cross_cell_create_is_visible_after_an_observed_miss() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let observing_cell = Registry::new(store.clone());
+        let creating_cell = Registry::new(store);
+        assert!(
+            observing_cell
+                .get("customer-a", "orders")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let mut desc = descriptor("orders", "epoch");
+        desc.customer_id = "customer-a".into();
+        assert!(creating_cell.create(desc).await.unwrap().0);
+        assert!(
+            observing_cell
+                .get("customer-a", "orders")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_descriptor_cell_fails_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let mut desc = descriptor("bad-cell", "epoch");
+        desc.cell = "../other".to_string();
+        store
+            .put(
+                &desc_path("__legacy__", "bad-cell"),
+                PutPayload::from(serde_json::to_vec(&desc).unwrap()),
+            )
+            .await
+            .unwrap();
+        let registry = Registry::new(store);
+        assert!(registry.get("__legacy__", "bad-cell").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cell_index_bounds_recovery_enumeration_to_the_authoritative_cell() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let registry = Registry::new(store.clone());
+        let mut desc = descriptor("orders", &"01".repeat(16));
+        desc.customer_id = "customer-a".into();
+        desc.cell = "cell-a".into();
+        assert!(registry.create(desc.clone()).await.unwrap().0);
+        let mut prefix_neighbor = descriptor("neighbor", &"04".repeat(16));
+        prefix_neighbor.customer_id = "customer-b".into();
+        prefix_neighbor.cell = "cell-aa".into();
+        assert!(registry.create(prefix_neighbor).await.unwrap().0);
+
+        assert_eq!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap(),
+            vec![history_db_path(&desc.storage_hash())]
+        );
+        assert!(
+            active_history_db_paths_for_cell(&store, Some("cell-b"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn orphan_and_losing_cell_indices_are_safe() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let orphan = CellStreamIndex {
+            version: 1,
+            customer_id: "customer-a".into(),
+            name: "orphan".into(),
+            cell: "cell-a".into(),
+        };
+        store
+            .put(
+                &cell_stream_index_path("customer-a", "orphan", "cell-a"),
+                PutPayload::from(serde_json::to_vec(&orphan).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let registry = Registry::new(store.clone());
+        let mut winner = descriptor("orders", &"02".repeat(16));
+        winner.customer_id = "customer-a".into();
+        winner.cell = "cell-b".into();
+        assert!(registry.create(winner).await.unwrap().0);
+        let loser = CellStreamIndex {
+            version: 1,
+            customer_id: "customer-a".into(),
+            name: "orders".into(),
+            cell: "cell-a".into(),
+        };
+        store
+            .put(
+                &cell_stream_index_path("customer-a", "orders", "cell-a"),
+                PutPayload::from(serde_json::to_vec(&loser).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn single_cell_migration_is_audited_idempotent_and_recovery_complete() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        store
+            .put(
+                &ObjPath::from(crate::cells::CELLS_PATH),
+                PutPayload::from_static(
+                    br#"{"version":1,"generation":1,"cells":[{"cell_id":"cell-a","region":"test","ops_prefix":"cells/cell-a","weight":1,"state":"active"}]}"#,
+                ),
+            )
+            .await
+            .unwrap();
+        let registry = Registry::new(store.clone());
+        let mut desc = descriptor("orders", &"03".repeat(16));
+        desc.customer_id = "customer-a".into();
+        assert!(registry.create(desc.clone()).await.unwrap().0);
+
+        let audit = registry
+            .migrate_single_cell_descriptors("cell-a", 10, false)
+            .await
+            .unwrap();
+        assert_eq!(audit.scanned, 1);
+        assert_eq!(audit.pending_placements, 1);
+        assert!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let applied = registry
+            .migrate_single_cell_descriptors("cell-a", 10, true)
+            .await
+            .unwrap();
+        assert_eq!(applied.migrated_placements, 1);
+        let post = registry
+            .migrate_single_cell_descriptors("cell-a", 10, false)
+            .await
+            .unwrap();
+        assert_eq!(post.pending_placements, 0);
+        assert_eq!(post.pending_indices, 0);
+        assert_eq!(
+            active_history_db_paths_for_cell(&store, Some("cell-a"))
+                .await
+                .unwrap(),
+            vec![history_db_path(&desc.storage_hash())]
+        );
     }
 
     #[tokio::test]

@@ -48,7 +48,9 @@ pub struct BackupSource {
 
 #[derive(Clone)]
 pub struct BackupPins {
+    pub cell_id: Option<String>,
     pub topology_store: Arc<dyn ObjectStore>,
+    pub registry_store: Arc<dyn ObjectStore>,
     pub shard_store: Arc<dyn ObjectStore>,
     pub data_store: Arc<dyn ObjectStore>,
     pub lifetime: Duration,
@@ -1271,7 +1273,9 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 Ok((coordinator_epoch, coordinator_sequence)) => {
                                     crate::primary_scrub::scrub_batch(
                                         &crate::primary_scrub::PrimaryScrubConfig {
+                                            cell_id: pins.cell_id.clone(),
                                             topology_store: pins.topology_store.clone(),
+                                            registry_store: pins.registry_store.clone(),
                                             shard_store: pins.shard_store.clone(),
                                             data_store: pins.data_store.clone(),
                                             max_object_bytes: config.primary_scrub_max_object_bytes,
@@ -1961,7 +1965,11 @@ async fn acquire_history_checkpoints(
     pins: &BackupPins,
     snapshot_id: &str,
 ) -> anyhow::Result<(Vec<CheckpointLease>, Vec<String>)> {
-    let paths = crate::registry::active_history_db_paths(&pins.topology_store).await?;
+    let paths = crate::registry::active_history_db_paths_for_cell(
+        &pins.registry_store,
+        pins.cell_id.as_deref(),
+    )
+    .await?;
     let mut leases = Vec::new();
     let mut absent = Vec::new();
     for path in paths {
@@ -4451,7 +4459,9 @@ mod tests {
             ],
             backup,
             Some(&BackupPins {
-                topology_store: ops,
+                cell_id: None,
+                topology_store: ops.clone(),
+                registry_store: ops,
                 shard_store: shards.clone(),
                 data_store: shards.clone(),
                 lifetime: Duration::from_secs(60),
@@ -4519,7 +4529,9 @@ mod tests {
         }));
 
         let pins = BackupPins {
+            cell_id: None,
             topology_store: ops.clone(),
+            registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: shards.clone(),
             lifetime: Duration::from_secs(60),
@@ -4622,7 +4634,9 @@ mod tests {
         db.close().await.unwrap();
 
         let pins = BackupPins {
+            cell_id: None,
             topology_store: ops.clone(),
+            registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: shards.clone(),
             lifetime: Duration::from_secs(60),
@@ -4724,7 +4738,9 @@ mod tests {
         history.close().await.unwrap();
 
         let pins = BackupPins {
+            cell_id: None,
             topology_store: ops.clone(),
+            registry_store: ops.clone(),
             shard_store: shards.clone(),
             data_store: data.clone(),
             lifetime: Duration::from_secs(60),
@@ -4843,7 +4859,9 @@ mod tests {
             ],
             backup.clone(),
             Some(&BackupPins {
-                topology_store: ops,
+                cell_id: None,
+                topology_store: ops.clone(),
+                registry_store: ops,
                 shard_store: shards.clone(),
                 data_store: shards,
                 lifetime: Duration::from_secs(60),

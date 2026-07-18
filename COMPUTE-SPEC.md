@@ -413,6 +413,12 @@ coordination state, ever.
   only on cell add/drain (operator-rate, not request-rate), polled by
   routers every 60 s. There is no global topology, no global ring, no
   global heartbeat set.
+- The global registry remains the linearizable name/placement authority, but
+  it is not a fleet fan-out surface. Each published descriptor first creates
+  an immutable marker under `registry/by-cell/<cell-id>/...`; per-cell backup
+  and primary scrub list only that prefix and revalidate every marker against
+  the descriptor. A crash or losing create can leave an ignored orphan marker;
+  a live descriptor cannot be published without its owning-cell marker.
 - Routers resolve stream → cell from the registry descriptor (cached with
   the descriptor); in-cell routing is R1/R2 unchanged. Cross-cell stream
   moves exist only as an operator migration (copy-then-cutover via
@@ -432,6 +438,11 @@ Cell boundaries are credential boundaries, or they are nothing:
   and that cell's data prefixes. Writing another cell's `topology.json`
   is denied by policy, not by convention — a prefix-computation bug or a
   leaked wave-1 canary credential is contained to its cell.
+- **Registry role is separate.** Serving instances use a distinct registry
+  credential from their cell data credential; production provisioning must
+  bind its writes to the registry API/policy rather than granting that identity
+  access to any `cells/<other-id>/` prefix. The checked binary rejects reused
+  identities and a registry prefix nested below `cells/`.
 - **Role split within a cell:** serving role (data + ops RW), compactor
   role (shard-log data RW, no registry writes), copy-actor role
   (primary read-only + backup-bucket write-only), GC role (the only
