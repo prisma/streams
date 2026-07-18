@@ -31,6 +31,16 @@ const LEASE_MS: i64 = 12_000;
 const LEASE_RENEW_MS: u64 = 3_000;
 const MAX_INTENTS: usize = 1_536;
 
+/// Release-mode crash injection used only by the split recovery matrix. The
+/// deliberately awkward TEST name prevents this from looking like an
+/// operator feature; production manifests must never set it.
+fn test_crash_after(phase: &str) {
+    if std::env::var("STREAMS_TEST_SPLIT_CRASH_AFTER").as_deref() == Ok(phase) {
+        tracing::error!(phase, "test crash after durable split transition");
+        std::process::abort();
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct AutoSplitConfig {
     pub single_shard_write_ceiling_bytes_per_sec: u64,
@@ -435,6 +445,7 @@ async fn reconcile_inner(
                 .delete(&intent_path(&intent.parent))
                 .await
                 .map_err(|error| error.to_string())?;
+            test_crash_after("intent_deleted");
             state
                 .splitting_prefixes
                 .write()
@@ -446,6 +457,7 @@ async fn reconcile_inner(
     }
 
     open_and_quiesce_parent(&state, &intent).await?;
+    test_crash_after("parent_quiesced");
     if lease_lost.load(Ordering::Acquire) {
         return Err("split intent lease renewal failed".to_string());
     }
@@ -457,6 +469,7 @@ async fn reconcile_inner(
         &intent.zero_path,
     )
     .await?;
+    test_crash_after("zero_child_ready");
     if lease_lost.load(Ordering::Acquire) {
         return Err("split intent lease renewal failed".to_string());
     }
@@ -468,6 +481,7 @@ async fn reconcile_inner(
         &intent.one_path,
     )
     .await?;
+    test_crash_after("one_child_ready");
     if lease_lost.load(Ordering::Acquire) {
         return Err("split intent lease renewal failed".to_string());
     }
@@ -505,12 +519,14 @@ async fn reconcile_inner(
         }
     }
     let topology = published.ok_or_else(|| "topology split CAS retries exhausted".to_string())?;
+    test_crash_after("topology_published");
     install_topology(&state, topology);
     state
         .shard_store
         .delete(&intent_path(&intent.parent))
         .await
         .map_err(|error| error.to_string())?;
+    test_crash_after("intent_deleted");
     state
         .splitting_prefixes
         .write()
@@ -710,6 +726,7 @@ pub async fn request(state: Arc<AppState>, parent: String) -> Result<Topology, S
         return Err("split operation is already running".to_string());
     };
     create_intent(&state, &parent).await?;
+    test_crash_after("intent_created");
     state
         .splitting_prefixes
         .write()
@@ -718,6 +735,7 @@ pub async fn request(state: Arc<AppState>, parent: String) -> Result<Topology, S
     let claimed = claim_intent(&state, &parent)
         .await?
         .ok_or_else(|| "split intent is leased by another instance".to_string())?;
+    test_crash_after("intent_claimed");
     reconcile(state.clone(), claimed).await?;
     let topology = state.topology.read().unwrap().clone();
     Ok(topology)

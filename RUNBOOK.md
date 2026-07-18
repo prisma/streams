@@ -553,6 +553,11 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   WAL durability, so even a stale second owner cannot acknowledge data that
   misses the children.
 
+  `scripts/ci-split-crash-matrix.sh` aborts the release binary after each of
+  the seven durable transitions and proves recovery. Its
+  `STREAMS_TEST_SPLIT_CRASH_AFTER` environment variable is a CI-only test hook
+  and must never be present in a production manifest.
+
   Set `SINGLE_SHARD_WRITE_CEILING_BYTES_PER_SEC` to the calibrated ceiling to
   enable the same actor automatically after 60% is sustained for
   `AUTO_SPLIT_SUSTAIN_SECS`. Zero is the explicit disable override. CI covers

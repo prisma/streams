@@ -31,6 +31,7 @@ jobs:
           bash scripts/ci-online-shard-split.sh
           bash scripts/ci-auto-shard-split.sh
           bash scripts/ci-split-stale-owner.sh
+          bash scripts/ci-split-crash-matrix.sh
           bash scripts/ci-jwt-multitenant.sh
           bash scripts/ci-durable-quotas.sh
           bash scripts/ci-noisy-neighbor.sh
