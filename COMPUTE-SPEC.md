@@ -283,7 +283,20 @@ Candidates are retained for 24 hours; the five-minute GC re-reads topology
 plus every active intent immediately before deletion and fails closed above
 100,000 listed objects per run. Published ancestor paths are never inferred
 disposable because descendant clone manifests may still reference their SSTs.
-Merge is the reverse via manifest-union and is not yet implemented.
+
+Merge is the reverse and is available through the operator gate: create one
+parent-scoped renewable intent, CAS-occupy both children's per-shard intent
+paths, drain/flush each child, create a non-overlapping SlateDB manifest-union
+clone, verify it reopens, and publish `p0,p1 → p` in one topology CAS. The
+per-child objects are also the post-durability ACK fences, so a stale owner
+can contribute only ambiguous/unacknowledged data after the snapshot. The
+barrier writes a reserved 17-byte tombstone outside the service key grammar
+before its ordered WAL→L0 flush; this advances replay state even when a
+projected child contains only out-of-range inherited WAL rows. Split and merge
+locks become CAS-written released tombstones instead of being deleted, which
+prevents a delayed claimant from deleting a later operation on a reused
+prefix. Merge takeover/abandoned-generation GC follows the split protocol.
+The sustained-cold automatic merge trigger remains to be implemented.
 
 ---
 

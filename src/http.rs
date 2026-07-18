@@ -55,11 +55,12 @@ pub struct AppState {
     pub topology_version: std::sync::atomic::AtomicU64,
     pub topology_ready: std::sync::atomic::AtomicBool,
     pub splitting_prefixes: std::sync::RwLock<HashSet<String>>,
-    /// Process-local exclusion for split reconcilers. The durable intent is
-    /// the fleet-wide lock; this prevents an operator request and the intent
-    /// scanner from running the same operation concurrently on one process.
+    /// Process-local exclusion for split/merge reconcilers. Durable intent
+    /// objects are the fleet-wide locks; this prevents an operator request
+    /// and scanner from running the same operation concurrently here.
     pub split_workers: std::sync::Mutex<HashSet<String>>,
     pub split_ready: std::sync::atomic::AtomicBool,
+    pub merge_ready: std::sync::atomic::AtomicBool,
     pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
     pub opener: ShardOpener,
     /// Serializes shard opens; also carries anti-flap state.
@@ -745,6 +746,43 @@ async fn admin_split_shard(
     }
 }
 
+async fn admin_merge_shards(
+    State(state): State<Arc<AppState>>,
+    Path(parent): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !operator_authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator token required",
+        );
+    }
+    let parent = if parent == "root" {
+        String::new()
+    } else {
+        parent
+    };
+    match crate::merge::request(state, parent).await {
+        Ok(topology) => axum::Json(topology).into_response(),
+        Err(error) if error.contains("current merge coordinator") => {
+            err_resp(StatusCode::CONFLICT, "not_merge_coordinator", &error)
+        }
+        Err(error) if error.contains("live sibling") || error.contains("binary prefix") => {
+            err_resp(StatusCode::BAD_REQUEST, "invalid_merge", &error)
+        }
+        Err(error) => {
+            let mut response =
+                err_resp(StatusCode::SERVICE_UNAVAILABLE, "merge_unavailable", &error);
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response
+        }
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_ready))
@@ -756,6 +794,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/sleep", get(debug_sleep))
         .route("/v1/admin/shards/{parent}/split", post(admin_split_shard))
+        .route("/v1/admin/shards/{parent}/merge", post(admin_merge_shards))
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -779,6 +818,7 @@ async fn health_ready(State(state): State<Arc<AppState>>) -> Response {
             .topology_ready
             .load(std::sync::atomic::Ordering::Acquire)
         && state.split_ready.load(std::sync::atomic::Ordering::Acquire)
+        && state.merge_ready.load(std::sync::atomic::Ordering::Acquire)
     {
         (
             StatusCode::OK,

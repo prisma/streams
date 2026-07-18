@@ -107,6 +107,6 @@ if (( accepted > 0 )); then
 fi
 actual="$(curl --fail --silent --show-error "${URL_A}/v1/stream/race" "${auth[@]}")"
 [[ "${actual}" == "${expected}" ]]
-grep -q 'withholding durable acknowledgements behind split fence' "${TMP_DIR}/b.log"
+grep -q 'withholding durable acknowledgements behind reconfiguration fence' "${TMP_DIR}/b.log"
 
 echo "stale-owner split acknowledgement fence passed"

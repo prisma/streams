@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use object_store::ObjectStoreExt;
-use slatedb::config::{DurabilityLevel, ScanOptions, WriteOptions};
+use slatedb::config::{DurabilityLevel, FlushOptions, FlushType, ScanOptions, WriteOptions};
 use slatedb::{CloseReason, Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -481,10 +481,10 @@ pub struct ShardEngine {
     last_owner_proof: Mutex<std::time::Instant>,
     owner_proof_lock: tokio::sync::Mutex<()>,
     absorb_tx: mpsc::Sender<AbsorbSignal>,
-    /// Strong split fence checked after remote durability but before ACKs.
+    /// Strong reconfiguration fence checked after remote durability but before ACKs.
     /// Without this, a stale ring owner can acknowledge a parent write after
     /// another process cloned it into children.
-    split_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
+    reconfiguration_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
     /// Invoked when the shard db closes (fenced by a new owner / fatal):
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
     /// get stale immediately instead of dangling until timeout.
@@ -510,6 +510,26 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn union_flush_sentinel(prefix: &str) -> Result<Vec<u8>, String> {
+    if prefix.is_empty()
+        || prefix.len() > 128
+        || !prefix.bytes().all(|bit| bit == b'0' || bit == b'1')
+    {
+        return Err("union source must have a non-empty binary shard prefix".to_string());
+    }
+    let mut value = 0u128;
+    for bit in prefix.bytes() {
+        value = (value << 1) | u128::from(bit == b'1');
+    }
+    let lower = value << (128 - prefix.len());
+    let mut key = Vec::with_capacity(17);
+    key.extend_from_slice(&lower.to_be_bytes());
+    // Every service key is at least routing-hash16 + incarnation16 + kind1.
+    // A 17-byte key is therefore permanently outside the application grammar.
+    key.push(0xff);
+    Ok(key)
+}
+
 impl ShardEngine {
     pub fn start(
         prefix: String,
@@ -517,7 +537,7 @@ impl ShardEngine {
         cfg: ShardConfig,
         absorb_tx: mpsc::Sender<AbsorbSignal>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
-        split_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
+        reconfiguration_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
     ) -> Arc<ShardEngine> {
         let (tx, rx) = mpsc::channel(cfg.queue_reqs);
         let writer_epoch = db.status().current_manifest.writer_epoch();
@@ -538,7 +558,7 @@ impl ShardEngine {
             last_owner_proof: Mutex::new(std::time::Instant::now()),
             owner_proof_lock: tokio::sync::Mutex::new(()),
             absorb_tx,
-            split_fence_store,
+            reconfiguration_fence_store,
             on_close,
             stats_appended: AtomicU64::new(0),
             stats_appended_bytes: AtomicU64::new(0),
@@ -666,18 +686,21 @@ impl ShardEngine {
         self.closed.load(Ordering::Acquire)
     }
 
-    async fn split_fence_exists(&self) -> Result<bool, String> {
-        let Some(store) = &self.split_fence_store else {
+    async fn reconfiguration_fence_exists(&self) -> Result<bool, String> {
+        let Some(store) = &self.reconfiguration_fence_store else {
             return Ok(false);
         };
-        let name = if self.prefix.is_empty() {
-            "root"
-        } else {
-            &self.prefix
-        };
-        let path = object_store::path::Path::from(format!("split-intents/{name}.json"));
-        match store.head(&path).await {
-            Ok(_) => Ok(true),
+        let path = crate::reconfiguration::fence_path(&self.prefix);
+        match store.get(&path).await {
+            Ok(result) => {
+                let raw = result.bytes().await.map_err(|error| error.to_string())?;
+                match crate::reconfiguration::decode_fence(&raw)? {
+                    crate::reconfiguration::FenceDocument::Released(_)
+                    | crate::reconfiguration::FenceDocument::ReleasedSplit(_) => Ok(false),
+                    crate::reconfiguration::FenceDocument::Split
+                    | crate::reconfiguration::FenceDocument::Merge(_) => Ok(true),
+                }
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(error) => Err(error.to_string()),
         }
@@ -724,6 +747,19 @@ impl ShardEngine {
     /// flush/close the parent DB. After success the caller may safely create
     /// projection clones. This operation is one-way by design.
     pub async fn quiesce_for_split(&self) -> Result<(), String> {
+        self.quiesce_for_reconfiguration(false).await
+    }
+
+    /// Merge sources must have no replayable data WAL. A projected child can
+    /// contain only out-of-range rows in an inherited WAL, leaving its
+    /// memtable empty and preventing SlateDB from advancing the replay
+    /// watermark. A reserved, invalid-for-the-service tombstone makes that
+    /// progress explicit without adding a readable application key.
+    pub async fn quiesce_for_union(&self) -> Result<(), String> {
+        self.quiesce_for_reconfiguration(true).await
+    }
+
+    async fn quiesce_for_reconfiguration(&self, union_source: bool) -> Result<(), String> {
         let _quiesce = self.quiesce_gate.lock().await;
         {
             let _gate = self.admission_gate.lock().unwrap();
@@ -743,6 +779,33 @@ impl ShardEngine {
             .await
             .map_err(|_| "split durability barrier timed out".to_string())?
             .map_err(|_| "split durability barrier responder dropped".to_string())??;
+        if union_source {
+            let key = union_flush_sentinel(&self.prefix)?;
+            self.db
+                .delete_with_options(&key, &WriteOptions::default())
+                .await
+                .map_err(|error| format!("write union flush sentinel: {error}"))?;
+        }
+        // Flush WAL first, then freeze/flush the memtable. SlateDB's memtable
+        // flush snapshots `recent_flushed_wal_id` before its internally
+        // requested WAL flush completes; doing these as two ordered calls is
+        // what advances replay_after_wal_id through the final data WAL.
+        self.db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::Wal,
+            })
+            .await
+            .map_err(|error| format!("flush quiesced shard WAL: {error}"))?;
+        // A projected clone can inherit a replayable data WAL even if this
+        // child never receives a post-split write. Multi-source SlateDB union
+        // deliberately rejects data WALs, so every reconfiguration barrier
+        // materializes replayed + newly committed state into L0.
+        self.db
+            .flush_with_options(FlushOptions {
+                flush_type: FlushType::MemTable,
+            })
+            .await
+            .map_err(|error| format!("flush quiesced shard to L0: {error}"))?;
         self.db
             .close()
             .await
@@ -1547,10 +1610,10 @@ impl ShardEngine {
                 q.drain(..split).collect()
             };
             if !ready.is_empty() {
-                let fenced = match self.split_fence_exists().await {
+                let fenced = match self.reconfiguration_fence_exists().await {
                     Ok(fenced) => fenced,
                     Err(error) => {
-                        tracing::error!(shard = %self.prefix, "split fence check failed closed: {error}");
+                        tracing::error!(shard = %self.prefix, "reconfiguration fence check failed closed: {error}");
                         true
                     }
                 };
@@ -1558,7 +1621,7 @@ impl ShardEngine {
                     tracing::warn!(
                         shard = %self.prefix,
                         groups = ready.len(),
-                        "withholding durable acknowledgements behind split fence"
+                        "withholding durable acknowledgements behind reconfiguration fence"
                     );
                     for group in ready {
                         for (resp, _) in group.acks {
@@ -1767,6 +1830,17 @@ pub async fn read_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn union_flush_sentinel_is_in_range_but_outside_the_service_key_grammar() {
+        let zero = union_flush_sentinel("0").unwrap();
+        let one = union_flush_sentinel("1").unwrap();
+        assert_eq!(zero.len(), 17);
+        assert_eq!(one.len(), 17);
+        assert_eq!(zero[0] & 0x80, 0);
+        assert_eq!(one[0] & 0x80, 0x80);
+        assert!(union_flush_sentinel("").is_err());
+    }
 
     fn handle(hash: StorageHash) -> Arc<StreamHandle> {
         Arc::new(StreamHandle {

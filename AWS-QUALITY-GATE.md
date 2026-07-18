@@ -19,10 +19,10 @@ documented cell limits. A feature described only in `SPEC.md`,
 | Tenant isolation and authz | customer-scoped identity in every descriptor and request; locally verified scoped tokens; verb/prefix enforcement; no cross-tenant list/existence oracle; revocation; audit | **Amber.** Customer identity scopes registry, storage, routing, metrics, and requests. A real RS256/JWKS service drill proves identical-name isolation, per-tenant listing/non-disclosure, prefix/verb denial, live token revocation, and rollback-resistant revocation versions. Durable control-plane audit exists. An independent security review remains. |
 | Encryption and key custody | independently reviewed envelope; canonical codecs; key zeroization/expiry; no persisted keys; recreate/rotation tests; ciphertext-at-rest inspection | **Amber.** Envelope is implemented. Canonical frame parsing and bounded/zeroized key caching are now tested; independent review and full at-rest tests remain. |
 | Resource governance | per-stream and per-customer admission; fair committer scheduling; bounded queues, maps, caches, connections, response sizes, and background work; overload returns scoped 429/503 | **Amber.** Bounded, durable per-customer limit documents override concurrency/write-byte admission and enforce exact live stream-name counts through a cross-instance CAS lease plus authoritative recount. Every 429 carries a tested machine-readable scope, dimension, limit, observed value, and retry delay; moving shards are not mislabeled as queue pressure. Persistent per-tenant round-robin commit scheduling looks past large requests; registry/key/stream/producer/consumer/touch/metric/audit/limit state is bounded. A production-JWT CI workload now proves an abusive throttled tenant cannot break another tenant's exact writes and enforces a baseline-relative local latency bound. Remaining dimensions are read rates/bytes, connection rates, queue receives, and per-stream weights; target-hardware isolation belongs to the performance gate. |
-| Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split has a CAS-created shard-store intent, closed admission, remote-durability barrier, exact projection clones, generation-specific paths, one-CAS topology publish, renewable ownership, reference-aware abandoned-generation GC, crash reconciliation, and a calibrated sustained-byte trigger. Concurrent producers, hard restart under a new identity, deterministic crashes after all seven durable transitions, automatic refinement, separate role buckets, and a deliberately stale second owner are exercised. Merge, per-stream hot-share policy, and the global cell placement layer remain. |
+| Horizontal scaling | automatic split/merge with quiesce proof; fleet aggregation; cell placement/isolation; hot-key behavior; no global coordination bottleneck at target scale | **Amber.** Online split and operator-gated sibling merge use renewable shard-store intents, per-shard post-durability fences, closed admission, ordered WAL→L0 barriers, generation-specific clone paths, reopen verification, and one-CAS topology publication. Split uses exact projection clones; merge uses SlateDB's non-overlapping manifest union. Both rotate cross-process takeover generations, conservatively GC only durable abandoned candidates, survive deterministic crashes at all seven transitions, and are exercised against a stale second writer. Split has a calibrated sustained-byte trigger. Automatic cold-merge policy, per-stream hot-share enforcement, fleet aggregation, and the global cell placement layer remain. |
 | Availability and recovery | readiness distinct from liveness; stale-owner read guard; poison-shard quarantine; backup/PITR copy actor; restore and provider-failover drills with measured RPO/RTO | **Amber.** Readiness includes auth/revocation/audit/backup health; idle owners revalidate writer epoch within five seconds; repeated shard-open failures quarantine. Immutable checksummed snapshots and an empty-target restore are exercised end to end. Injected SST corruption fails without a success or partial plaintext and recovers from the untouched source. Incremental PITR, retention, continuous scrub, provider failover, and measured RPO/RTO remain. |
 | Operability and SLOs | RED metrics by tenant/cell/shard; bounded-cardinality telemetry; actionable alerts; audit trail; capacity model; on-call runbooks exercised by game days | **Amber.** Tenant-scoped bounded metrics and immutable durable audit records exist, with audit health in readiness. Alert automation, retention/export, and game-day evidence remain. |
-| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, offline/online/automatic/stale-owner split drills, and the current 338-test upstream suite run in CI. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
+| Verification and release | hermetic unit/integration/property/chaos/soak suites; conformance run in CI; lint/format/security/license gates; canary and rollback automation | **Amber.** Focused tests, warning-free serving/recovery/admin clippy, formatting/check gates, hard-restart, backup/dark-restore, transport/conditional/corruption/stale-response faults, production-JWT tenant isolation/revocation, offline/online/automatic/stale-owner split drills, online/repeated/stale-owner/takeover-GC merge drills, separate seven-phase split and merge crash matrices, and the current 338-test upstream suite run in CI. Supply-chain gates, mixed-version canary/rollback, and soak automation remain. |
 | Performance and cost | repeatable target-hardware tests for p50/p99/p99.9, recovery, compaction, absorption lag, idle cost, noisy-neighbor isolation, and 24 h+ soak with regression budgets | **Red.** Pilot benchmarks are valuable but are not a repeatable release gate. |
 
 ## Non-negotiable release scenarios
@@ -116,12 +116,27 @@ documented cell limits. A feature described only in `SPEC.md`,
   its marker and objects are reclaimed, and rechecks the live sibling's data.
 - A release-mode test hook aborts after intent creation, claim, parent
   quiescence, zero-child verification, one-child verification, topology
-  publication, and intent deletion. The CI matrix independently rebuilds each
+  publication, and intent release. The CI matrix independently rebuilds each
   state, then requires exact acknowledged data, two valid children, intent
   cleanup, and the next producer write after restart.
 - A shard sustained above 60% of the configured, deployment-calibrated byte
   ceiling automatically enters the same split actor. Disabled-by-zero is the
   explicit operator override; the default sustain window is 60 seconds.
+- Sibling merge CAS-creates one coordinator intent and atomically occupies
+  each child's existing split-intent namespace, making split-vs-merge
+  exclusion linearizable. Both child writers stop ACKing behind those durable
+  fences, drain through WAL then L0, and become a non-overlapping SlateDB
+  manifest union before one topology CAS exposes the parent. A reserved
+  17-byte tombstone outside the service key grammar advances WAL replay for
+  an otherwise-empty projected child. Released locks are CAS tombstones, not
+  deletes that a delayed actor could race with a later split/merge cycle.
+- CI proves two complete split→merge cycles preserve exact bytes and producer
+  continuation, a stale second writer cannot ACK outside the union snapshot,
+  all seven merge transitions recover independently, and a different-identity
+  takeover rotates then garbage-collects a non-empty abandoned target. A
+  delayed child split that validates before merge publication is forced to
+  replace the released lock, observe the changed topology, durably abort its
+  generation, and leave readiness green.
 - The S3 emulator can serve a prior object version or prior LIST result, or
   flip a response bit while preserving ETag and length. CI hard-restarts into
   a stale manifest-discovery LIST that omits the newest immutable manifest,
@@ -149,8 +164,8 @@ documented cell limits. A feature described only in `SPEC.md`,
 
 1. Add the remaining account/per-stream quota dimensions and an independent
    security review.
-2. Add sibling merge, per-stream hot-share enforcement, and an explicit
-   storage-format migration/rollback plan.
+2. Add automatic cold-sibling merge policy, per-stream hot-share enforcement,
+   and an explicit storage-format migration/rollback plan.
 3. Replace full snapshots with checkpoint-pinned incremental PITR, add bounded
    retention/GC and continuous manifest/SST scrubbing, then measure RPO/RTO in
    a real independent-provider failover drill.

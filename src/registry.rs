@@ -1277,6 +1277,68 @@ pub async fn cas_publish_topology_split_with_paths(
     Ok(topology)
 }
 
+/// Publish `parent0,parent1 -> parent` with one topology CAS. The caller must
+/// have quiesced both children behind durable per-shard fences and verified a
+/// union clone at `parent_path` before making it visible.
+pub async fn cas_publish_topology_merge_with_path(
+    store: &Arc<dyn ObjectStore>,
+    parent: &str,
+    expected_version: u64,
+    parent_path: &str,
+) -> Result<Topology, object_store::Error> {
+    let path = ObjPath::from(TOPOLOGY_PATH);
+    let result = store.get(&path).await?;
+    let etag = result.meta.e_tag.clone();
+    let raw = result.bytes().await?;
+    let mut topology = parse_json::<Topology>(&raw, "topology")?;
+    validate_topology(&topology)?;
+    if topology.version != expected_version {
+        return Err(registry_error(
+            "topology version changed before merge publish",
+        ));
+    }
+    if parent.len() >= 128 || !parent.bytes().all(|bit| bit == b'0' || bit == b'1') {
+        return Err(registry_error("invalid merge parent prefix"));
+    }
+    let zero = format!("{parent}0");
+    let one = format!("{parent}1");
+    if topology.shards.contains(&parent.to_string()) {
+        return Err(registry_error("merge parent is already live"));
+    }
+    if !topology.shards.contains(&zero) || !topology.shards.contains(&one) {
+        return Err(registry_error("merge children are not both live siblings"));
+    }
+    ObjPath::parse(parent_path).map_err(|_| registry_error("invalid merged shard object path"))?;
+
+    topology
+        .shards
+        .retain(|prefix| prefix != &zero && prefix != &one);
+    topology.shard_paths.remove(&zero);
+    topology.shard_paths.remove(&one);
+    topology.shards.push(parent.to_string());
+    topology
+        .shard_paths
+        .insert(parent.to_string(), parent_path.to_string());
+    topology.shards.sort();
+    topology.version = topology
+        .version
+        .checked_add(1)
+        .ok_or_else(|| registry_error("topology version overflow"))?;
+    validate_topology(&topology)?;
+    let body = serde_json::to_vec(&topology).expect("topology json");
+    store
+        .put_opts(
+            &path,
+            PutPayload::from(body),
+            PutOptions::from(PutMode::Update(UpdateVersion {
+                e_tag: etag,
+                version: None,
+            })),
+        )
+        .await?;
+    Ok(topology)
+}
+
 pub async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
     initial_shards: usize,
@@ -1747,6 +1809,31 @@ mod tests {
                 .is_err()
         );
         assert_eq!(load_topology(&store).await.unwrap().shards, vec!["0", "1"]);
+    }
+
+    #[tokio::test]
+    async fn topology_merge_publish_is_one_versioned_cas() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let initial = load_or_init_topology(&store, 1).await.unwrap();
+        let split = cas_publish_topology_split(&store, "", initial.version)
+            .await
+            .unwrap();
+        let merged_path = "shards/merges/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/root";
+        let merged = cas_publish_topology_merge_with_path(&store, "", split.version, merged_path)
+            .await
+            .unwrap();
+        assert_eq!(merged.version, split.version + 1);
+        assert_eq!(merged.shards, vec![""]);
+        assert_eq!(merged.db_path(""), merged_path);
+        assert!(
+            cas_publish_topology_merge_with_path(&store, "", split.version, merged_path)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            load_topology(&store).await.unwrap().db_path(""),
+            merged_path
+        );
     }
 
     #[tokio::test]

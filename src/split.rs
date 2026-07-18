@@ -18,6 +18,7 @@ use slatedb::admin::AdminBuilder;
 use slatedb::{CloneSourceSpec, DbReader};
 
 use crate::http::{AppState, ring_pick};
+use crate::reconfiguration::{FenceDocument, decode_fence, fence_path, prefix_from_fence_path};
 use crate::registry::{
     Topology, cas_publish_topology_split_with_paths, load_topology, shard_projection_bounds,
 };
@@ -59,6 +60,8 @@ struct HotSample {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SplitIntent {
     version: u32,
+    #[serde(default = "active_status")]
+    status: String,
     operation_id: String,
     parent: String,
     parent_path: String,
@@ -69,6 +72,10 @@ struct SplitIntent {
     lease_until_ms: i64,
     #[serde(default)]
     abandoned_generations: Vec<AbandonedGeneration>,
+}
+
+fn active_status() -> String {
+    "active".to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -82,13 +89,6 @@ struct GcCandidate {
     version: u32,
     operation_id: String,
     abandoned_ms: i64,
-}
-
-fn intent_path(parent: &str) -> ObjPath {
-    ObjPath::from(format!(
-        "split-intents/{}.json",
-        if parent.is_empty() { "root" } else { parent }
-    ))
 }
 
 fn new_operation(parent: &str) -> (String, String, String) {
@@ -106,6 +106,7 @@ fn new_operation(parent: &str) -> (String, String, String) {
 
 fn validate_intent(intent: &SplitIntent) -> Result<(), String> {
     if intent.version != INTENT_VERSION
+        || (intent.status != "active" && intent.status != "released")
         || intent.operation_id.len() != 32
         || !intent
             .operation_id
@@ -148,10 +149,22 @@ async fn read_intent(
     store: &Arc<dyn ObjectStore>,
     parent: &str,
 ) -> Result<Option<(SplitIntent, Option<String>)>, String> {
-    match store.get(&intent_path(parent)).await {
+    match store.get(&fence_path(parent)).await {
         Ok(result) => {
             let etag = result.meta.e_tag.clone();
             let raw = result.bytes().await.map_err(|error| error.to_string())?;
+            match decode_fence(&raw)? {
+                FenceDocument::Split => {}
+                FenceDocument::Merge(_) => {
+                    return Err("shard is locked by a sibling merge".to_string());
+                }
+                FenceDocument::Released(_) => {
+                    return Err("shard has a released reconfiguration tombstone".to_string());
+                }
+                FenceDocument::ReleasedSplit(_) => {
+                    return Err("shard has a released split tombstone".to_string());
+                }
+            }
             let intent: SplitIntent =
                 serde_json::from_slice(&raw).map_err(|_| "malformed split intent".to_string())?;
             validate_intent(&intent)?;
@@ -172,6 +185,7 @@ async fn create_intent(state: &AppState, parent: &str) -> Result<SplitIntent, St
     let (operation_id, zero_path, one_path) = new_operation(parent);
     let intent = SplitIntent {
         version: INTENT_VERSION,
+        status: active_status(),
         operation_id,
         parent: parent.to_string(),
         parent_path: topology.db_path(parent),
@@ -183,22 +197,58 @@ async fn create_intent(state: &AppState, parent: &str) -> Result<SplitIntent, St
         abandoned_generations: Vec::new(),
     };
     validate_intent(&intent)?;
-    let result = state
-        .shard_store
-        .put_opts(
-            &intent_path(parent),
-            PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
-            PutOptions::from(PutMode::Create),
-        )
-        .await;
-    match result {
-        Ok(_) => Ok(intent),
-        Err(object_store::Error::AlreadyExists { .. }) => read_intent(&state.shard_store, parent)
-            .await?
-            .map(|(intent, _)| intent)
-            .ok_or_else(|| "split intent raced then disappeared".to_string()),
-        Err(error) => Err(error.to_string()),
+    let path = fence_path(parent);
+    for _ in 0..5 {
+        match state
+            .shard_store
+            .put_opts(
+                &path,
+                PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
+                PutOptions::from(PutMode::Create),
+            )
+            .await
+        {
+            Ok(_) => return Ok(intent),
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                let result = state
+                    .shard_store
+                    .get(&path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let etag = result.meta.e_tag.clone();
+                let raw = result.bytes().await.map_err(|error| error.to_string())?;
+                match decode_fence(&raw)? {
+                    FenceDocument::Released(_) | FenceDocument::ReleasedSplit(_) => match state
+                        .shard_store
+                        .put_opts(
+                            &path,
+                            PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
+                            PutOptions::from(PutMode::Update(UpdateVersion {
+                                e_tag: etag,
+                                version: None,
+                            })),
+                        )
+                        .await
+                    {
+                        Ok(_) => return Ok(intent),
+                        Err(object_store::Error::Precondition { .. }) => continue,
+                        Err(error) => return Err(error.to_string()),
+                    },
+                    FenceDocument::Merge(_) => {
+                        return Err("shard is locked by a sibling merge".to_string());
+                    }
+                    FenceDocument::Split => {
+                        let current: SplitIntent = serde_json::from_slice(&raw)
+                            .map_err(|_| "malformed split intent".to_string())?;
+                        validate_intent(&current)?;
+                        return Ok(current);
+                    }
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     }
+    Err("split intent tombstone CAS retries exhausted".to_string())
 }
 
 async fn claim_intent(state: &AppState, parent: &str) -> Result<Option<SplitIntent>, String> {
@@ -236,7 +286,7 @@ async fn claim_intent(state: &AppState, parent: &str) -> Result<Option<SplitInte
         let result = state
             .shard_store
             .put_opts(
-                &intent_path(parent),
+                &fence_path(parent),
                 PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
                 PutOptions::from(PutMode::Update(UpdateVersion {
                     e_tag: etag,
@@ -295,7 +345,7 @@ async fn renew_intent(state: &AppState, parent: &str, operation_id: &str) -> Res
         match state
             .shard_store
             .put_opts(
-                &intent_path(parent),
+                &fence_path(parent),
                 PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
                 PutOptions::from(PutMode::Update(UpdateVersion {
                     e_tag: etag,
@@ -327,6 +377,70 @@ async fn verify_intent_owner(
         return Err("split intent is not owned before topology publish".to_string());
     }
     Ok(())
+}
+
+async fn release_intent(state: &AppState, expected: &SplitIntent) -> Result<(), String> {
+    transition_intent_to_released(state, expected, false).await
+}
+
+async fn abort_intent(state: &AppState, expected: &SplitIntent) -> Result<(), String> {
+    transition_intent_to_released(state, expected, true).await
+}
+
+async fn transition_intent_to_released(
+    state: &AppState,
+    expected: &SplitIntent,
+    abandoned: bool,
+) -> Result<(), String> {
+    for _ in 0..5 {
+        let Some((mut intent, etag)) = read_intent(&state.shard_store, &expected.parent).await?
+        else {
+            // Backward-compatible recovery for completion by an older binary.
+            return Ok(());
+        };
+        if intent.operation_id != expected.operation_id
+            || intent.lease_owner != state.instance_name
+            || intent.lease_until_ms <= now_ms()
+        {
+            return Err("split intent ownership changed before release".to_string());
+        }
+        if abandoned
+            && !intent
+                .abandoned_generations
+                .iter()
+                .any(|generation| generation.operation_id == intent.operation_id)
+        {
+            if intent.abandoned_generations.len() >= 64 {
+                return Err("split abandoned generation bound exceeded".to_string());
+            }
+            intent.abandoned_generations.push(AbandonedGeneration {
+                operation_id: intent.operation_id.clone(),
+                abandoned_ms: now_ms(),
+            });
+        }
+        intent.status = "released".to_string();
+        intent.lease_until_ms = 0;
+        match state
+            .shard_store
+            .put_opts(
+                &fence_path(&intent.parent),
+                PutPayload::from(serde_json::to_vec(&intent).expect("intent json")),
+                PutOptions::from(PutMode::Update(UpdateVersion {
+                    e_tag: etag,
+                    version: None,
+                })),
+            )
+            .await
+        {
+            Ok(_) => {
+                persist_gc_candidates(state, &intent).await?;
+                return Ok(());
+            }
+            Err(object_store::Error::Precondition { .. }) => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("split intent release CAS retries exhausted".to_string())
 }
 
 struct SplitWorkerGuard {
@@ -367,7 +481,7 @@ fn acquire_worker(state: &Arc<AppState>, parent: &str) -> Option<SplitWorkerGuar
     })
 }
 
-fn is_ring_owner(state: &AppState, parent: &str) -> bool {
+pub(crate) fn is_ring_owner(state: &AppState, parent: &str) -> bool {
     let active = state.ring_active.read().unwrap();
     active.is_empty()
         || active
@@ -469,7 +583,7 @@ async fn open_and_quiesce_parent(
     engine.quiesce_for_split().await
 }
 
-fn install_topology(state: &AppState, topology: Topology) {
+pub(crate) fn install_topology(state: &AppState, topology: Topology) {
     let live: std::collections::HashSet<&str> =
         topology.shards.iter().map(String::as_str).collect();
     *state.topology.write().unwrap() = topology.clone();
@@ -509,11 +623,7 @@ async fn reconcile_inner(
         // pair; this also resolves a lost successful CAS response.
         if published_children_are_valid(&state, &current, &intent.parent).await {
             install_topology(&state, current);
-            state
-                .shard_store
-                .delete(&intent_path(&intent.parent))
-                .await
-                .map_err(|error| error.to_string())?;
+            release_intent(&state, &intent).await?;
             test_crash_after("intent_deleted");
             state
                 .splitting_prefixes
@@ -522,7 +632,13 @@ async fn reconcile_inner(
                 .remove(&intent.parent);
             return Ok(());
         }
-        return Err("split parent disappeared into an unrelated topology".to_string());
+        abort_intent(&state, &intent).await?;
+        state
+            .splitting_prefixes
+            .write()
+            .unwrap()
+            .remove(&intent.parent);
+        return Err("split aborted because its parent topology changed".to_string());
     }
 
     open_and_quiesce_parent(&state, &intent).await?;
@@ -567,7 +683,13 @@ async fn reconcile_inner(
                 published = Some(topology);
                 break;
             }
-            return Err("split parent disappeared into invalid children".to_string());
+            abort_intent(&state, &intent).await?;
+            state
+                .splitting_prefixes
+                .write()
+                .unwrap()
+                .remove(&intent.parent);
+            return Err("split aborted because its parent topology changed".to_string());
         }
         renew_intent(&state, &intent.parent, &intent.operation_id).await?;
         verify_intent_owner(&state, &intent.parent, &intent.operation_id).await?;
@@ -590,11 +712,7 @@ async fn reconcile_inner(
     let topology = published.ok_or_else(|| "topology split CAS retries exhausted".to_string())?;
     test_crash_after("topology_published");
     install_topology(&state, topology);
-    state
-        .shard_store
-        .delete(&intent_path(&intent.parent))
-        .await
-        .map_err(|error| error.to_string())?;
+    release_intent(&state, &intent).await?;
     test_crash_after("intent_deleted");
     state
         .splitting_prefixes
@@ -623,28 +741,69 @@ async fn reconcile(state: Arc<AppState>, intent: SplitIntent) -> Result<(), Stri
     reconcile_inner(state, intent, lease_lost).await
 }
 
-async fn list_intents(store: &Arc<dyn ObjectStore>) -> Result<Vec<SplitIntent>, String> {
+struct IntentScan {
+    splits: Vec<SplitIntent>,
+    blocked_prefixes: std::collections::HashSet<String>,
+}
+
+async fn list_intents(store: &Arc<dyn ObjectStore>) -> Result<IntentScan, String> {
     let mut list = store.list(Some(&ObjPath::from("split-intents")));
     let mut intents = Vec::new();
+    let mut blocked_prefixes = std::collections::HashSet::new();
+    let mut count = 0usize;
     while let Some(item) = list.next().await {
         let meta = item.map_err(|error| error.to_string())?;
         if !meta.location.as_ref().ends_with(".json") {
             continue;
         }
+        count = count.saturating_add(1);
+        if count > MAX_INTENTS {
+            return Err("reconfiguration fence count exceeds topology bound".to_string());
+        }
+        let prefix = prefix_from_fence_path(&meta.location)?;
         let result = store
             .get(&meta.location)
             .await
             .map_err(|error| error.to_string())?;
         let raw = result.bytes().await.map_err(|error| error.to_string())?;
+        match decode_fence(&raw)? {
+            FenceDocument::Merge(fence) => {
+                if fence.child != prefix {
+                    return Err("merge fence path does not match its child".to_string());
+                }
+                blocked_prefixes.insert(prefix);
+                continue;
+            }
+            FenceDocument::Released(fence) => {
+                if fence.child != prefix {
+                    return Err("released fence path does not match its child".to_string());
+                }
+                continue;
+            }
+            FenceDocument::ReleasedSplit(fence) => {
+                if fence.parent != prefix {
+                    return Err("released split fence path does not match its parent".to_string());
+                }
+                let intent: SplitIntent = serde_json::from_slice(&raw)
+                    .map_err(|_| "malformed released split intent".to_string())?;
+                validate_intent(&intent)?;
+                continue;
+            }
+            FenceDocument::Split => {}
+        }
         let intent: SplitIntent =
             serde_json::from_slice(&raw).map_err(|_| "malformed split intent".to_string())?;
         validate_intent(&intent)?;
-        intents.push(intent);
-        if intents.len() > MAX_INTENTS {
-            return Err("split intent count exceeds topology bound".to_string());
+        if intent.parent != prefix {
+            return Err("split intent path does not match its parent".to_string());
         }
+        blocked_prefixes.insert(prefix);
+        intents.push(intent);
     }
-    Ok(intents)
+    Ok(IntentScan {
+        splits: intents,
+        blocked_prefixes,
+    })
 }
 
 fn split_operation(path: &str) -> Option<&str> {
@@ -688,7 +847,7 @@ async fn gc_abandoned_generations(state: &AppState, retention: Duration) -> Resu
     let topology = load_topology(&state.ops_store)
         .await
         .map_err(|error| error.to_string())?;
-    let intents = list_intents(&state.shard_store).await?;
+    let intents = list_intents(&state.shard_store).await?.splits;
     let referenced = referenced_split_operations(&topology, &intents);
     let cutoff_ms =
         now_ms().saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
@@ -736,7 +895,7 @@ async fn gc_abandoned_generations(state: &AppState, retention: Duration) -> Resu
         let topology = load_topology(&state.ops_store)
             .await
             .map_err(|error| error.to_string())?;
-        let intents = list_intents(&state.shard_store).await?;
+        let intents = list_intents(&state.shard_store).await?.splits;
         if referenced_split_operations(&topology, &intents).contains(&operation) {
             continue;
         }
@@ -772,7 +931,7 @@ async fn gc_abandoned_generations(state: &AppState, retention: Duration) -> Resu
 pub async fn initialize(state: &Arc<AppState>) -> Result<(), String> {
     let intents = list_intents(&state.shard_store).await?;
     let mut splitting = state.splitting_prefixes.write().unwrap();
-    splitting.extend(intents.into_iter().map(|intent| intent.parent));
+    splitting.extend(intents.blocked_prefixes);
     Ok(())
 }
 
@@ -783,7 +942,7 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
         let mut next_gc = Instant::now() + auto.gc_interval;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let intents = match list_intents(&state.shard_store).await {
+            let scan = match list_intents(&state.shard_store).await {
                 Ok(intents) => intents,
                 Err(error) => {
                     tracing::error!("split intent scan failed: {error}");
@@ -792,18 +951,12 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
                 }
             };
             {
-                let topology = state.topology.read().unwrap().clone();
                 let mut splitting = state.splitting_prefixes.write().unwrap();
                 splitting.clear();
-                splitting.extend(
-                    intents
-                        .iter()
-                        .filter(|intent| topology.shards.contains(&intent.parent))
-                        .map(|intent| intent.parent.clone()),
-                );
+                splitting.extend(scan.blocked_prefixes);
             }
             state.split_ready.store(true, Ordering::Release);
-            for intent in intents {
+            for intent in scan.splits {
                 // The original owner is allowed to finish during a ring
                 // resize. Otherwise only the current owner may take over.
                 let owns_lease =
@@ -817,8 +970,12 @@ pub fn start(state: Arc<AppState>, auto: AutoSplitConfig) {
                 match claim_intent(&state, &intent.parent).await {
                     Ok(Some(claimed)) => {
                         if let Err(error) = reconcile(state.clone(), claimed).await {
-                            tracing::error!(parent = %intent.parent, "split reconcile failed: {error}");
-                            state.split_ready.store(false, Ordering::Release);
+                            if error.starts_with("split aborted") {
+                                tracing::warn!(parent = %intent.parent, "{error}");
+                            } else {
+                                tracing::error!(parent = %intent.parent, "split reconcile failed: {error}");
+                                state.split_ready.store(false, Ordering::Release);
+                            }
                         }
                     }
                     Ok(None) => {}
@@ -937,6 +1094,7 @@ mod tests {
         };
         let intent = SplitIntent {
             version: INTENT_VERSION,
+            status: active_status(),
             operation_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             parent: "1".to_string(),
             parent_path: "shards/splits/cccccccccccccccccccccccccccccccc/1".to_string(),

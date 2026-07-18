@@ -3,9 +3,11 @@ mod auth;
 mod fleet;
 mod history;
 mod http;
+mod merge;
 mod metrics;
 mod offsets;
 mod queue;
+mod reconfiguration;
 mod shard;
 mod split;
 mod store_timing;
@@ -817,6 +819,7 @@ async fn async_main() -> anyhow::Result<()> {
         splitting_prefixes: std::sync::RwLock::new(HashSet::new()),
         split_workers: std::sync::Mutex::new(HashSet::new()),
         split_ready: std::sync::atomic::AtomicBool::new(true),
+        merge_ready: std::sync::atomic::AtomicBool::new(true),
         shards: std::sync::RwLock::new(HashMap::new()),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),
@@ -854,11 +857,22 @@ async fn async_main() -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)
         .context("load split intents")?;
+    crate::merge::initialize(&state)
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("load merge intents")?;
     crate::split::start(
         state.clone(),
         crate::split::AutoSplitConfig {
             single_shard_write_ceiling_bytes_per_sec: args.single_shard_write_ceiling_bytes_per_sec,
             sustain: Duration::from_secs(args.auto_split_sustain_secs.max(1)),
+            gc_retention: Duration::from_secs(args.split_gc_retention_secs.min(365 * 24 * 60 * 60)),
+            gc_interval: Duration::from_secs(args.split_gc_interval_secs.clamp(1, 24 * 60 * 60)),
+        },
+    );
+    crate::merge::start(
+        state.clone(),
+        crate::merge::MergeConfig {
             gc_retention: Duration::from_secs(args.split_gc_retention_secs.min(365 * 24 * 60 * 60)),
             gc_interval: Duration::from_secs(args.split_gc_interval_secs.clamp(1, 24 * 60 * 60)),
         },
