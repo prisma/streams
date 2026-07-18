@@ -88,6 +88,10 @@ struct Args {
     backup_scrub_interval_secs: u64,
     #[arg(long, env = "BACKUP_SCRUB_OBJECTS_PER_INTERVAL", default_value_t = 256)]
     backup_scrub_objects_per_interval: usize,
+    /// Recovery-corpus write format. Use 2 for the read-first migration wave;
+    /// flip to 3 only after every backup/restore binary reads format 3.
+    #[arg(long, env = "BACKUP_WRITE_FORMAT", default_value_t = 3)]
+    backup_write_format: u32,
     /// Release-mode guard: fail startup unless backup is configured.
     #[arg(long, env = "REQUIRE_BACKUP", default_value_t = false)]
     require_backup: bool,
@@ -886,6 +890,8 @@ async fn async_main() -> anyhow::Result<()> {
             "backup scrub interval or batch is out of range"
         );
     }
+    let backup_write_format =
+        streams_slate::backup::BackupWriteFormat::try_from(args.backup_write_format)?;
     let backup_config = backup_store.map(|destination| {
         // A role bucket may be shared by all three logical stores. Snapshot
         // each physical keyspace once; the first role is the restore name.
@@ -934,6 +940,7 @@ async fn async_main() -> anyhow::Result<()> {
                 store: ops_store.clone(),
                 owner: args.instance_name.clone(),
             }),
+            write_format: backup_write_format,
         }
     });
 

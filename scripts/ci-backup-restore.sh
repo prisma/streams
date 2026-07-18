@@ -94,10 +94,12 @@ first_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' <<<"${first_repo
 [[ -n "${first_snapshot}" ]]
 grep -Eq '"pinned_history_dbs":[1-9][0-9]*' <<<"${first_report}"
 grep -Eq '"coordinator_epoch":[1-9][0-9]*' <<<"${first_report}"
+grep -q '"format_version":3' <<<"${first_report}"
 
 # Advance the primary after the first complete recovery point, then restart the
-# backup actor. The second immediate snapshot must reuse immutable blobs while
-# capturing the later durable append as a distinct PITR point.
+# backup actor. The second immediate snapshot must re-home immutable blobs into
+# the takeover epoch while capturing the later durable append as a distinct
+# PITR point; primary objects with unchanged ETags still count as reused.
 curl --fail --silent --show-error -X POST "${STREAMS_URL}/v1/stream/recovery" \
   "${auth[@]}" -H "stream-encryption-key: ${KEY}" \
   -H "content-type: application/json" -H "stream-producer: backup-test" \
@@ -123,6 +125,10 @@ while [[ "${second_snapshot}" == "${first_snapshot}" ]]; do
 done
 [[ -n "${second_snapshot}" && "${second_snapshot}" != "${first_snapshot}" ]]
 grep -Eq '"reused_objects":[1-9][0-9]*' <<<"${second_report}"
+second_epoch="$(sed -n 's/.*"coordinator_epoch":\([0-9]*\).*/\1/p' \
+  <<<"${second_report}")"
+[[ "${second_epoch}" =~ ^[1-9][0-9]*$ ]]
+second_epoch_padded="$(printf '%020d' "${second_epoch}")"
 stop_streams
 
 "${TARGET_DIR}/streams-restore" \
@@ -161,7 +167,7 @@ stop_streams
 # indexing will still reuse it, but the independent rolling scrub must keep
 # readiness red; a later snapshot success must not erase scrub failure state.
 blob_key="$(curl --fail --silent \
-  "${S3_URL}/backup?list-type=2&prefix=ci-backup%2Fblobs%2Fsha256%2F" |
+  "${S3_URL}/backup?list-type=2&prefix=ci-backup%2Fformats%2F3%2Fblobs%2Fepochs%2F${second_epoch_padded}%2F" |
   grep -o '<Key>[^<]*' | sed -n '1s/<Key>//p')"
 [[ -n "${blob_key}" ]]
 blob_size="$(curl --fail --silent --head "${S3_URL}/backup/${blob_key}" |

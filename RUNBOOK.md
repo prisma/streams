@@ -102,6 +102,7 @@ with an empty pool rather than dead sockets.
 | `BACKUP_RETENTION_SECS` | 604800 | complete/partial point and unreferenced-blob retention; at least two intervals, at most one year |
 | `BACKUP_CHECKPOINT_LIFETIME_SECS` | 3600 | expiry safety net for per-shard SlateDB pins; at least two intervals, at most one day; successful copies delete eagerly |
 | `BACKUP_SCRUB_INTERVAL_SECS` / `BACKUP_SCRUB_OBJECTS_PER_INTERVAL` | 60 / 256 | continuously hash this many referenced recovery blobs; 10 s minimum, 100000 maximum batch |
+| `BACKUP_WRITE_FORMAT` | 3 | recovery-corpus writer; use 2 for the read-first/rollback wave and 3 after every backup and restore binary is format-3 capable |
 | `REQUIRE_BACKUP` | false | fail startup when backup is absent; readiness requires both a complete point and a healthy scrubber |
 
 The actor creates an expiring checkpoint for every initialized live shard and
@@ -128,9 +129,15 @@ epoch plus a monotonic sequence and use conditional writes; a delayed old
 holder cannot overwrite takeover state. Followers read the current epoch's
 fresh health record, so all instances expose the same readiness result without
 duplicating backup I/O. `INSTANCE_NAME` is the bounded coordinator identity.
-Until epoch-isolated content GC lands, this is a singleton/publication fence,
-not a proof that a process paused inside an unconditional provider delete can
-never overlap its successor; that closure remains a GA gate.
+Format-3 blobs and references live under `formats/3/` and include the lease
+epoch in their physical path. A takeover checksum-rehomes unchanged content
+before publishing its point. Thus a provider DELETE admitted by epoch N can
+only name epoch-N content and cannot damage an epoch-(N+1) point. During the
+format-2 read-first wave, coordinated legacy-blob GC is disabled; format 3
+reclaims it only after live content has been re-homed. Retention durably creates
+`gc-intents/<snapshot>/intent.json`, removes the complete marker, deletes
+content/metadata, and removes the intent last, so a crash resumes instead of
+leaking an unreachable last-reference blob.
 
 ### 3.2 Engine (shard log)
 
@@ -613,13 +620,19 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
   and the per-role target bucket flags when role buckets are split. The tool
   refuses non-empty targets, incomplete markers, changed inventories,
   byte-count changes, or SHA-256 mismatches. Format-1 full-copy points remain
-  restorable for rollback; format 2 resolves content-addressed blobs and allows
-  an operator to repair a blob in place only with the exact expected bytes.
+  restorable for rollback; format 2 resolves shared content-addressed blobs.
+  Format 3 binds each point and content path to its coordinator epoch while
+  checksum-rehoming unchanged objects on takeover. All content-addressed
+  formats allow an operator to repair a blob in place only with the exact
+  expected bytes. Follow [STORAGE-MIGRATIONS.md](./STORAGE-MIGRATIONS.md) for
+  the read-first format-2 to format-3 flip and one-version rollback.
   A measured failover against the actual independent provider remains a GA
   release gate in [OPERATIONS.md §2](./OPERATIONS.md).
   CI also runs two backup-enabled instances, kills the actual six-second lease
   holder, requires an epoch-incremented point from the survivor, and rejects
-  duplicate completion markers.
+  duplicate completion markers. It then starts a format-2 rollback writer,
+  requires another epoch increment and reused objects, and proves the format-2
+  and format-3 reference roots coexist.
 - **Online shard split:** send an operator-authenticated request to the
   current ring owner (`root` means the empty prefix):
 

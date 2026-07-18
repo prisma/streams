@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 use slatedb::admin::{Admin, AdminBuilder};
 use slatedb::config::CheckpointOptions;
 
-const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+const CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION: u32 = 2;
 const LEGACY_SNAPSHOT_FORMAT_VERSION: u32 = 1;
 const COPY_PART_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INVENTORY_BYTES: usize = 16 * 1024;
@@ -33,6 +34,7 @@ const MAX_PINNED_HISTORY_DBS: usize = 100_000;
 const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_GENERATIONS: usize = 100_000;
 const SCRUB_STATE_FORMAT_VERSION: u32 = 1;
+const GC_INTENT_FORMAT_VERSION: u32 = 1;
 const MAX_SCRUB_STATE_BYTES: usize = 4 * 1024;
 const COORDINATOR_FORMAT_VERSION: u32 = 1;
 const COORDINATOR_LEASE_MS: i64 = 6_000;
@@ -59,6 +61,40 @@ pub struct BackupCoordinator {
     pub owner: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackupWriteFormat {
+    V2,
+    V3,
+}
+
+impl BackupWriteFormat {
+    fn version(self) -> u32 {
+        match self {
+            Self::V2 => CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION,
+            Self::V3 => SNAPSHOT_FORMAT_VERSION,
+        }
+    }
+
+    fn content_epoch(self, coordinator_epoch: u64) -> u64 {
+        match self {
+            Self::V2 => 0,
+            Self::V3 => coordinator_epoch,
+        }
+    }
+}
+
+impl TryFrom<u32> for BackupWriteFormat {
+    type Error = anyhow::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION => Ok(Self::V2),
+            SNAPSHOT_FORMAT_VERSION => Ok(Self::V3),
+            _ => anyhow::bail!("BACKUP_WRITE_FORMAT must be 2 or 3"),
+        }
+    }
+}
+
 pub struct BackupConfig {
     pub sources: Vec<BackupSource>,
     pub destination: Arc<dyn ObjectStore>,
@@ -68,6 +104,7 @@ pub struct BackupConfig {
     pub scrub_objects_per_interval: usize,
     pub pins: Option<BackupPins>,
     pub coordinator: Option<BackupCoordinator>,
+    pub write_format: BackupWriteFormat,
 }
 
 pub struct BackupStatus {
@@ -163,6 +200,14 @@ struct ScrubState {
     coordinator_epoch: u64,
     #[serde(default)]
     coordinator_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct GcIntent {
+    format_version: u32,
+    snapshot_id: String,
+    coordinator_epoch: u64,
+    created_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -270,6 +315,7 @@ struct SnapshotContext<'a> {
     started_ms: i64,
     snapshot_id: &'a str,
     fence: Option<&'a PublicationFence>,
+    write_format: BackupWriteFormat,
     coordinator_epoch: u64,
     coordinator_sequence: u64,
 }
@@ -671,6 +717,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                         config.destination.clone(),
                         config.pins.as_ref(),
                         fence.as_ref(),
+                        config.write_format,
                         epoch,
                         snapshot_sequence,
                     ).await;
@@ -680,6 +727,7 @@ pub fn start(config: BackupConfig) -> Arc<BackupStatus> {
                                 config.destination.clone(),
                                 config.retention,
                                 fence.as_ref(),
+                                config.write_format == BackupWriteFormat::V3,
                             ).await {
                                 Ok(pruned) => {
                                     actor_status.snapshot_healthy.store(true, Ordering::Release);
@@ -808,7 +856,16 @@ pub async fn snapshot_once(
     sources: &[BackupSource],
     destination: Arc<dyn ObjectStore>,
 ) -> anyhow::Result<SnapshotReport> {
-    snapshot_once_with_pins_fenced(sources, destination, None, None, 0, 0).await
+    snapshot_once_with_pins_fenced(
+        sources,
+        destination,
+        None,
+        None,
+        BackupWriteFormat::V2,
+        0,
+        0,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -817,7 +874,16 @@ async fn snapshot_once_with_pins(
     destination: Arc<dyn ObjectStore>,
     pins: Option<&BackupPins>,
 ) -> anyhow::Result<SnapshotReport> {
-    snapshot_once_with_pins_fenced(sources, destination, pins, None, 0, 0).await
+    snapshot_once_with_pins_fenced(
+        sources,
+        destination,
+        pins,
+        None,
+        BackupWriteFormat::V2,
+        0,
+        0,
+    )
+    .await
 }
 
 async fn snapshot_once_with_pins_fenced(
@@ -825,6 +891,7 @@ async fn snapshot_once_with_pins_fenced(
     destination: Arc<dyn ObjectStore>,
     pins: Option<&BackupPins>,
     fence: Option<&PublicationFence>,
+    write_format: BackupWriteFormat,
     coordinator_epoch: u64,
     coordinator_sequence: u64,
 ) -> anyhow::Result<SnapshotReport> {
@@ -836,7 +903,20 @@ async fn snapshot_once_with_pins_fenced(
         );
     }
     let started_ms = now_ms();
-    let snapshot_id = format!("{:020}-{:032x}", started_ms.max(0), rand::random::<u128>());
+    anyhow::ensure!(
+        write_format != BackupWriteFormat::V3 || coordinator_epoch > 0,
+        "format-3 backup requires a coordinator epoch"
+    );
+    let snapshot_id = if write_format == BackupWriteFormat::V2 {
+        format!("{:020}-{:032x}", started_ms.max(0), rand::random::<u128>())
+    } else {
+        format!(
+            "{:020}-e{:020}-{:032x}",
+            started_ms.max(0),
+            coordinator_epoch,
+            rand::random::<u128>()
+        )
+    };
     let (pinned_state, leases) = match pins {
         Some(pins) => {
             let (state, leases) = acquire_checkpoint_leases(pins, &snapshot_id).await?;
@@ -853,6 +933,7 @@ async fn snapshot_once_with_pins_fenced(
             started_ms,
             snapshot_id: &snapshot_id,
             fence,
+            write_format,
             coordinator_epoch,
             coordinator_sequence,
         },
@@ -882,6 +963,7 @@ async fn snapshot_once_inner(
         started_ms,
         snapshot_id,
         fence,
+        write_format,
         coordinator_epoch,
         coordinator_sequence,
     } = context;
@@ -892,6 +974,7 @@ async fn snapshot_once_inner(
     let mut reused_objects = 0u64;
     let mut roles = Vec::new();
     let mut inventory_checksum = [0u8; 32];
+    let content_epoch = write_format.content_epoch(coordinator_epoch);
 
     for source in sources {
         if let Some(fence) = fence {
@@ -926,6 +1009,8 @@ async fn snapshot_once_inner(
                 &meta.location,
                 &source_etag,
                 meta.size,
+                snapshot_id,
+                content_epoch,
             )
             .await?
             {
@@ -941,6 +1026,7 @@ async fn snapshot_once_inner(
                         &meta.location,
                         &source_etag,
                         meta.size,
+                        content_epoch,
                     )
                     .await?;
                     copied_objects = copied_objects.saturating_add(1);
@@ -964,6 +1050,7 @@ async fn snapshot_once_inner(
                 destination.clone(),
                 &record,
                 snapshot_id,
+                content_epoch,
                 coordinator_epoch,
                 coordinator_sequence,
             )
@@ -1000,7 +1087,7 @@ async fn snapshot_once_inner(
     }
 
     let report = SnapshotReport {
-        format_version: SNAPSHOT_FORMAT_VERSION,
+        format_version: write_format.version(),
         snapshot_id: snapshot_id.to_string(),
         started_ms,
         completed_ms: now_ms(),
@@ -1059,6 +1146,7 @@ async fn publish_latest(
         report.coordinator_epoch > 0 && report.coordinator_sequence > 0,
         "coordinated latest pointer has no publication order"
     );
+    validate_snapshot_layout(report)?;
     let path = ObjPath::from("latest.json");
     let encoded = serde_json::to_vec(report)?;
     for _ in 0..5 {
@@ -1478,6 +1566,8 @@ async fn reusable_record(
     source_path: &ObjPath,
     source_etag: &str,
     size: u64,
+    snapshot_id: &str,
+    coordinator_epoch: u64,
 ) -> anyhow::Result<Option<InventoryRecord>> {
     let path = source_index_path(role, source_path.as_ref());
     let encoded = match destination.get(&path).await {
@@ -1495,26 +1585,64 @@ async fn reusable_record(
         || index.source_etag != source_etag
         || index.size != size
         || !valid_sha256(&index.sha256)
-        || index.blob_path != blob_path_for_sha(&index.sha256).as_ref()
+        || !valid_index_blob_layout(&index)
     {
         return Ok(None);
     }
-    let blob = ObjPath::parse(&index.blob_path)?;
-    let meta = match destination.head(&blob).await {
+    let indexed_blob = ObjPath::parse(&index.blob_path)?;
+    let desired_blob = blob_path_for_epoch(&index.sha256, coordinator_epoch);
+    let meta = match destination.head(&indexed_blob).await {
         Ok(meta) if meta.size == size => meta,
         Ok(_) | Err(object_store::Error::NotFound { .. }) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let backup_etag = meta
-        .e_tag
-        .ok_or_else(|| anyhow::anyhow!("backup blob {blob} has no ETag"))?;
+    let backup_etag = if indexed_blob == desired_blob {
+        meta.e_tag
+            .ok_or_else(|| anyhow::anyhow!("backup blob {indexed_blob} has no ETag"))?
+    } else {
+        // A new coordinator epoch never shares a deletable content path with
+        // its predecessor. Re-home a still-valid immutable blob through a
+        // checksummed staging object; if the old epoch is being collected at
+        // the same time, fall back to copying the primary object instead.
+        let get = match destination.get(&indexed_blob).await {
+            Ok(get) => get,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let staging = staging_path(snapshot_id, role, source_path.as_ref());
+        let copied = copy_stream(get.into_stream(), destination.clone(), &staging).await;
+        let (copied_size, digest, _) = match copied {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = destination.delete(&staging).await;
+                return Ok(None);
+            }
+        };
+        if copied_size != size || hex_encode(&digest) != index.sha256 {
+            let _ = destination.delete(&staging).await;
+            return Ok(None);
+        }
+        if let Err(error) = destination.copy(&staging, &desired_blob).await {
+            let _ = destination.delete(&staging).await;
+            return Err(error.into());
+        }
+        destination.delete(&staging).await?;
+        let promoted = destination.head(&desired_blob).await?;
+        anyhow::ensure!(
+            promoted.size == size,
+            "re-homed backup blob has the wrong size"
+        );
+        promoted
+            .e_tag
+            .ok_or_else(|| anyhow::anyhow!("backup blob {desired_blob} has no ETag"))?
+    };
     Ok(Some(InventoryRecord {
         role: role.to_string(),
         source_path: source_path.to_string(),
         size,
         sha256: index.sha256,
         backup_etag,
-        blob_path: Some(index.blob_path),
+        blob_path: Some(desired_blob.to_string()),
     }))
 }
 
@@ -1525,6 +1653,7 @@ async fn copy_incremental_object(
     source_path: &ObjPath,
     source_etag: &str,
     expected_size: u64,
+    coordinator_epoch: u64,
 ) -> anyhow::Result<InventoryRecord> {
     let get = source
         .store
@@ -1550,7 +1679,7 @@ async fn copy_incremental_object(
         anyhow::bail!("object {source_path} changed size during snapshot");
     }
     let sha256 = hex_encode(&digest);
-    let blob = blob_path_for_sha(&sha256);
+    let blob = blob_path_for_epoch(&sha256, coordinator_epoch);
     let existing_is_valid = match destination.head(&blob).await {
         Ok(meta) if meta.size == size => verify_blob_digest(destination.clone(), &blob, &sha256)
             .await
@@ -1666,6 +1795,7 @@ async fn touch_blob_reference(
     destination: Arc<dyn ObjectStore>,
     record: &InventoryRecord,
     snapshot_id: &str,
+    content_epoch: u64,
     coordinator_epoch: u64,
     coordinator_sequence: u64,
 ) -> anyhow::Result<()> {
@@ -1680,7 +1810,7 @@ async fn touch_blob_reference(
         coordinator_epoch,
         coordinator_sequence,
     };
-    let path = blob_reference_path(&record.sha256);
+    let path = blob_reference_path_for_epoch(&record.sha256, content_epoch);
     let encoded = serde_json::to_vec(&reference)?;
     if coordinator_epoch == 0 {
         destination
@@ -1765,6 +1895,7 @@ pub async fn latest_snapshot_id(backup: Arc<dyn ObjectStore>) -> anyhow::Result<
     );
     let report: SnapshotReport = serde_json::from_slice(&encoded)?;
     validate_snapshot_id(&report.snapshot_id)?;
+    validate_snapshot_layout(&report)?;
     Ok(report.snapshot_id)
 }
 
@@ -1786,7 +1917,9 @@ pub async fn restore_snapshot(
     anyhow::ensure!(
         matches!(
             report.format_version,
-            LEGACY_SNAPSHOT_FORMAT_VERSION | SNAPSHOT_FORMAT_VERSION
+            LEGACY_SNAPSHOT_FORMAT_VERSION
+                | CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION
+                | SNAPSHOT_FORMAT_VERSION
         ),
         "unsupported snapshot format {}",
         report.format_version
@@ -1795,6 +1928,7 @@ pub async fn restore_snapshot(
         report.snapshot_id == snapshot_id,
         "snapshot marker id mismatch"
     );
+    validate_snapshot_layout(&report)?;
 
     // Restore is deliberately fail-closed rather than merging a snapshot with
     // live state. Do all emptiness checks before writing any role.
@@ -1823,7 +1957,7 @@ pub async fn restore_snapshot(
         xor_digest(&mut inventory_checksum, Sha256::digest(&encoded).into());
         let record: InventoryRecord = serde_json::from_slice(&encoded)?;
         validate_role(&record.role)?;
-        validate_inventory_record(&record, report.format_version)?;
+        validate_inventory_record(&record, &report)?;
         anyhow::ensure!(
             report.roles.contains(&record.role),
             "inventory references undeclared role {}",
@@ -1863,7 +1997,7 @@ pub async fn restore_snapshot(
         );
         let encoded = backup.get(&meta.location).await?.bytes().await?;
         let record: InventoryRecord = serde_json::from_slice(&encoded)?;
-        validate_inventory_record(&record, report.format_version)?;
+        validate_inventory_record(&record, &report)?;
         anyhow::ensure!(
             inventory_path(snapshot_id, &record.role, &record.source_path) == meta.location,
             "inventory path mismatch"
@@ -1878,7 +2012,7 @@ pub async fn restore_snapshot(
                 record.role, record.source_path
             )),
         };
-        // Format 2 is content-addressed and verified by SHA-256 below. Avoid
+        // Formats 2 and 3 are content-addressed and verified by SHA-256 below. Avoid
         // binding old inventories to a provider ETag if an operator repairs a
         // corrupt blob in place with the exact expected content.
         let get = if report.format_version == LEGACY_SNAPSHOT_FORMAT_VERSION {
@@ -1969,17 +2103,61 @@ async fn copy_stream(
     Ok((size, hasher.finalize().into(), put))
 }
 
+async fn ensure_gc_intent(
+    destination: Arc<dyn ObjectStore>,
+    snapshot_id: &str,
+    coordinator_epoch: u64,
+) -> anyhow::Result<()> {
+    validate_snapshot_id(snapshot_id)?;
+    let intent = GcIntent {
+        format_version: GC_INTENT_FORMAT_VERSION,
+        snapshot_id: snapshot_id.to_string(),
+        coordinator_epoch,
+        created_ms: now_ms(),
+    };
+    let path = gc_intent_path(snapshot_id);
+    let encoded = serde_json::to_vec(&intent)?;
+    match destination
+        .put_opts(
+            &path,
+            PutPayload::from(Bytes::from(encoded)),
+            PutOptions::from(PutMode::Create),
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(object_store::Error::AlreadyExists { .. }) => {
+            let existing = destination.get(&path).await?.bytes().await?;
+            anyhow::ensure!(
+                existing.len() <= MAX_INVENTORY_BYTES,
+                "backup GC intent is too large"
+            );
+            let existing: GcIntent = serde_json::from_slice(&existing)?;
+            anyhow::ensure!(
+                existing.format_version == GC_INTENT_FORMAT_VERSION
+                    && existing.snapshot_id == snapshot_id
+                    && existing.coordinator_epoch == coordinator_epoch
+                    && existing.created_ms > 0,
+                "conflicting backup GC intent"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 pub async fn prune_once(
     destination: Arc<dyn ObjectStore>,
     retention: Duration,
 ) -> anyhow::Result<u64> {
-    prune_once_fenced(destination, retention, None).await
+    prune_once_fenced(destination, retention, None, true).await
 }
 
 async fn prune_once_fenced(
     destination: Arc<dyn ObjectStore>,
     retention: Duration,
     fence: Option<&PublicationFence>,
+    allow_legacy_content_gc: bool,
 ) -> anyhow::Result<u64> {
     if let Some(fence) = fence {
         fence.verify_remote().await?;
@@ -2011,7 +2189,8 @@ async fn prune_once_fenced(
                 report.snapshot_id == snapshot_id,
                 "snapshot marker id mismatch during retention"
             );
-            completed.insert(snapshot_id, report.completed_ms);
+            validate_snapshot_layout(&report)?;
+            completed.insert(snapshot_id, (report.completed_ms, report.coordinator_epoch));
         }
     }
     let staging_prefix = ObjPath::from("staging");
@@ -2026,20 +2205,160 @@ async fn prune_once_fenced(
             );
         }
     }
+    let gc_prefix = ObjPath::from("gc-intents");
+    let mut pending_gc = HashMap::new();
+    let mut listing = destination.list(Some(&gc_prefix));
+    while let Some(meta) = listing.try_next().await? {
+        anyhow::ensure!(
+            meta.size <= MAX_INVENTORY_BYTES as u64,
+            "backup GC intent is too large"
+        );
+        let Some(snapshot_id) = generation_from_path(&meta.location, "gc-intents") else {
+            anyhow::bail!("malformed backup GC intent path");
+        };
+        validate_snapshot_id(&snapshot_id)?;
+        anyhow::ensure!(
+            meta.location == gc_intent_path(&snapshot_id),
+            "malformed backup GC intent path"
+        );
+        let encoded = destination.get(&meta.location).await?.bytes().await?;
+        let intent: GcIntent = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(
+            intent.format_version == GC_INTENT_FORMAT_VERSION
+                && intent.snapshot_id == snapshot_id
+                && intent.created_ms > 0,
+            "malformed backup GC intent"
+        );
+        generations.insert(snapshot_id.clone());
+        pending_gc.insert(snapshot_id, intent.coordinator_epoch);
+        anyhow::ensure!(
+            generations.len() <= MAX_SNAPSHOT_GENERATIONS,
+            "backup snapshot generation count exceeds safety bound"
+        );
+    }
 
     let mut delete_generations = HashSet::new();
     for snapshot_id in generations {
         let expired = completed
             .get(&snapshot_id)
-            .copied()
+            .map(|(completed_ms, _)| *completed_ms)
             .or_else(|| snapshot_started_ms(&snapshot_id))
             .is_some_and(|timestamp| timestamp < cutoff);
-        if expired {
+        let generation_epoch = completed
+            .get(&snapshot_id)
+            .map(|(_, epoch)| *epoch)
+            .or_else(|| snapshot_coordinator_epoch(&snapshot_id))
+            .unwrap_or(0);
+        let fenced = fence.is_some_and(|fence| generation_epoch > fence.epoch);
+        if expired && !fenced {
             delete_generations.insert(snapshot_id);
+        }
+    }
+    for (snapshot_id, generation_epoch) in &pending_gc {
+        if fence.is_none_or(|fence| *generation_epoch <= fence.epoch) {
+            delete_generations.insert(snapshot_id.clone());
         }
     }
 
     let mut pruned = 0u64;
+    for snapshot_id in &delete_generations {
+        let generation_epoch = completed
+            .get(snapshot_id)
+            .map(|(_, epoch)| *epoch)
+            .or_else(|| pending_gc.get(snapshot_id).copied())
+            .or_else(|| snapshot_coordinator_epoch(snapshot_id))
+            .unwrap_or(0);
+        if let Some(fence) = fence {
+            fence.check_local()?;
+        }
+        ensure_gc_intent(destination.clone(), snapshot_id, generation_epoch).await?;
+    }
+    // The complete marker is restore authority. Remove it only after the
+    // resumable intent is durable, before any referenced content is deleted.
+    for snapshot_id in &delete_generations {
+        if let Some(fence) = fence {
+            fence.check_local()?;
+        }
+        match destination.delete(&marker_path(snapshot_id)).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    for refs_prefix in ["blob-refs", "formats/3/blob-refs"] {
+        let refs_prefix = ObjPath::from(refs_prefix);
+        let mut listing = destination.list(Some(&refs_prefix));
+        while let Some(meta) = listing.try_next().await? {
+            anyhow::ensure!(
+                meta.size <= MAX_INVENTORY_BYTES as u64,
+                "blob reference is too large"
+            );
+            let encoded = destination.get(&meta.location).await?.bytes().await?;
+            let reference: BlobReference = serde_json::from_slice(&encoded)?;
+            anyhow::ensure!(
+                valid_sha256(&reference.sha256)
+                    && valid_blob_reference_layout(&reference, &meta.location),
+                "malformed blob reference"
+            );
+            if fence.is_some_and(|fence| reference.coordinator_epoch > fence.epoch) {
+                continue;
+            }
+            if fence.is_some()
+                && !allow_legacy_content_gc
+                && reference.blob_path == blob_path_for_sha(&reference.sha256).as_ref()
+            {
+                // During the read-first format-2 migration wave, retain shared
+                // legacy blobs. An old epoch may still be paused inside an
+                // unconditional delete. Format 3 can safely collect them only
+                // after it has re-homed all live references.
+                continue;
+            }
+            if reference.referenced_ms < cutoff
+                && delete_generations.contains(&reference.snapshot_id)
+            {
+                if let Some(fence) = fence {
+                    fence.check_local()?;
+                }
+                match destination
+                    .delete(&ObjPath::parse(&reference.blob_path)?)
+                    .await
+                {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+                    Err(error) => return Err(error.into()),
+                }
+                destination.delete(&meta.location).await?;
+                pruned = pruned.saturating_add(2);
+            }
+        }
+    }
+
+    let indexes_prefix = ObjPath::from("source-index");
+    let mut listing = destination.list(Some(&indexes_prefix));
+    while let Some(meta) = listing.try_next().await? {
+        anyhow::ensure!(
+            meta.size <= MAX_INVENTORY_BYTES as u64,
+            "source index is too large"
+        );
+        let encoded = destination.get(&meta.location).await?.bytes().await?;
+        let index: SourceIndex = serde_json::from_slice(&encoded)?;
+        anyhow::ensure!(
+            valid_sha256(&index.sha256) && valid_index_blob_layout(&index),
+            "malformed backup source index"
+        );
+        if fence.is_some_and(|fence| index.coordinator_epoch > fence.epoch) {
+            continue;
+        }
+        if index.referenced_ms < cutoff && delete_generations.contains(&index.snapshot_id) {
+            if let Some(fence) = fence {
+                fence.check_local()?;
+            }
+            destination.delete(&meta.location).await?;
+            pruned = pruned.saturating_add(1);
+        }
+    }
+    // Content and mutable indexes are now gone or retained by a newer point.
+    // Remove residual inventory/staging metadata, then the intent last. A
+    // crash before the final delete simply resumes this generation next pass.
     let mut listing = destination.list(Some(&snapshots_prefix));
     while let Some(meta) = listing.try_next().await? {
         if generation_from_path(&meta.location, "snapshots")
@@ -2064,54 +2383,12 @@ async fn prune_once_fenced(
             pruned = pruned.saturating_add(1);
         }
     }
-
-    let refs_prefix = ObjPath::from("blob-refs");
-    let mut listing = destination.list(Some(&refs_prefix));
-    while let Some(meta) = listing.try_next().await? {
-        anyhow::ensure!(
-            meta.size <= MAX_INVENTORY_BYTES as u64,
-            "blob reference is too large"
-        );
-        let encoded = destination.get(&meta.location).await?.bytes().await?;
-        let reference: BlobReference = serde_json::from_slice(&encoded)?;
-        anyhow::ensure!(
-            valid_sha256(&reference.sha256)
-                && reference.blob_path == blob_path_for_sha(&reference.sha256).as_ref()
-                && meta.location == blob_reference_path(&reference.sha256),
-            "malformed blob reference"
-        );
-        if reference.referenced_ms < cutoff && delete_generations.contains(&reference.snapshot_id) {
-            if let Some(fence) = fence {
-                fence.check_local()?;
-            }
-            match destination
-                .delete(&ObjPath::parse(&reference.blob_path)?)
-                .await
-            {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                Err(error) => return Err(error.into()),
-            }
-            destination.delete(&meta.location).await?;
-            pruned = pruned.saturating_add(2);
+    for snapshot_id in &delete_generations {
+        if let Some(fence) = fence {
+            fence.check_local()?;
         }
-    }
-
-    let indexes_prefix = ObjPath::from("source-index");
-    let mut listing = destination.list(Some(&indexes_prefix));
-    while let Some(meta) = listing.try_next().await? {
-        anyhow::ensure!(
-            meta.size <= MAX_INVENTORY_BYTES as u64,
-            "source index is too large"
-        );
-        let encoded = destination.get(&meta.location).await?.bytes().await?;
-        let index: SourceIndex = serde_json::from_slice(&encoded)?;
-        if index.referenced_ms < cutoff && delete_generations.contains(&index.snapshot_id) {
-            if let Some(fence) = fence {
-                fence.check_local()?;
-            }
-            destination.delete(&meta.location).await?;
-            pruned = pruned.saturating_add(1);
-        }
+        destination.delete(&gc_intent_path(snapshot_id)).await?;
+        pruned = pruned.saturating_add(1);
     }
     Ok(pruned)
 }
@@ -2128,22 +2405,24 @@ async fn scrub_blob_batch(
     // scrub failure rather than silently disappearing from the scan set. Do
     // not rely on provider listing order: retain the bounded lexicographically
     // smallest set after the durable cursor while scanning the full prefix.
-    let prefix = ObjPath::from("blob-refs");
     let mut cursor = read_scrub_cursor(destination.clone()).await?;
     let mut wrapped = false;
     loop {
         let mut candidates = BTreeMap::new();
-        let mut listing = destination.list(Some(&prefix));
-        while let Some(meta) = listing.try_next().await? {
-            if cursor
-                .as_ref()
-                .is_some_and(|offset| meta.location <= *offset)
-            {
-                continue;
-            }
-            candidates.insert(meta.location, meta.size);
-            if candidates.len() > limit {
-                candidates.pop_last();
+        for prefix in ["blob-refs", "formats/3/blob-refs"] {
+            let prefix = ObjPath::from(prefix);
+            let mut listing = destination.list(Some(&prefix));
+            while let Some(meta) = listing.try_next().await? {
+                if cursor
+                    .as_ref()
+                    .is_some_and(|offset| meta.location <= *offset)
+                {
+                    continue;
+                }
+                candidates.insert(meta.location, meta.size);
+                if candidates.len() > limit {
+                    candidates.pop_last();
+                }
             }
         }
         if candidates.is_empty() && cursor.is_some() && !wrapped {
@@ -2167,8 +2446,7 @@ async fn scrub_blob_batch(
             let reference: BlobReference = serde_json::from_slice(&encoded)?;
             anyhow::ensure!(
                 valid_sha256(&reference.sha256)
-                    && reference.blob_path == blob_path_for_sha(&reference.sha256).as_ref()
-                    && location == blob_reference_path(&reference.sha256),
+                    && valid_blob_reference_layout(&reference, &location),
                 "malformed blob reference"
             );
             verify_blob_digest(
@@ -2283,12 +2561,43 @@ async fn write_scrub_cursor(
     anyhow::bail!("backup scrub cursor CAS retries exhausted")
 }
 
-fn validate_inventory_record(record: &InventoryRecord, format_version: u32) -> anyhow::Result<()> {
+fn validate_snapshot_layout(report: &SnapshotReport) -> anyhow::Result<()> {
+    match report.format_version {
+        SNAPSHOT_FORMAT_VERSION => {
+            anyhow::ensure!(
+                report.coordinator_epoch > 0
+                    && report.coordinator_sequence > 0
+                    && snapshot_coordinator_epoch(&report.snapshot_id)
+                        == Some(report.coordinator_epoch),
+                "format-3 snapshot is not bound to its coordinator epoch"
+            );
+        }
+        CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION | LEGACY_SNAPSHOT_FORMAT_VERSION => {
+            anyhow::ensure!(
+                snapshot_coordinator_epoch(&report.snapshot_id).is_none(),
+                "legacy snapshot id unexpectedly carries a coordinator epoch"
+            );
+        }
+        _ => anyhow::bail!("unsupported snapshot format {}", report.format_version),
+    }
+    Ok(())
+}
+
+fn validate_inventory_record(
+    record: &InventoryRecord,
+    report: &SnapshotReport,
+) -> anyhow::Result<()> {
     anyhow::ensure!(valid_sha256(&record.sha256), "invalid inventory digest");
     anyhow::ensure!(!record.backup_etag.is_empty(), "inventory ETag is empty");
     ObjPath::parse(&record.source_path)?;
-    match (format_version, &record.blob_path) {
+    match (report.format_version, &record.blob_path) {
         (SNAPSHOT_FORMAT_VERSION, Some(path)) => {
+            anyhow::ensure!(
+                path == blob_path_for_epoch(&record.sha256, report.coordinator_epoch).as_ref(),
+                "format-3 inventory blob path is outside its coordinator epoch"
+            );
+        }
+        (CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION, Some(path)) => {
             anyhow::ensure!(
                 path == blob_path_for_sha(&record.sha256).as_ref(),
                 "inventory blob path does not match its digest"
@@ -2320,8 +2629,48 @@ fn blob_path_for_sha(sha256: &str) -> ObjPath {
     ObjPath::from(format!("blobs/sha256/{}/{sha256}", &sha256[..2]))
 }
 
+fn blob_path_for_epoch(sha256: &str, coordinator_epoch: u64) -> ObjPath {
+    if coordinator_epoch == 0 {
+        blob_path_for_sha(sha256)
+    } else {
+        ObjPath::from(format!(
+            "formats/3/blobs/epochs/{coordinator_epoch:020}/sha256/{}/{sha256}",
+            &sha256[..2]
+        ))
+    }
+}
+
 fn blob_reference_path(sha256: &str) -> ObjPath {
     ObjPath::from(format!("blob-refs/{}/{sha256}.json", &sha256[..2]))
+}
+
+fn blob_reference_path_for_epoch(sha256: &str, coordinator_epoch: u64) -> ObjPath {
+    if coordinator_epoch == 0 {
+        blob_reference_path(sha256)
+    } else {
+        ObjPath::from(format!(
+            "formats/3/blob-refs/epochs/{coordinator_epoch:020}/{}/{sha256}.json",
+            &sha256[..2]
+        ))
+    }
+}
+
+fn valid_index_blob_layout(index: &SourceIndex) -> bool {
+    index.blob_path == blob_path_for_sha(&index.sha256).as_ref()
+        || (index.coordinator_epoch > 0
+            && index.blob_path
+                == blob_path_for_epoch(&index.sha256, index.coordinator_epoch).as_ref())
+}
+
+fn valid_blob_reference_layout(reference: &BlobReference, location: &ObjPath) -> bool {
+    let legacy = reference.blob_path == blob_path_for_sha(&reference.sha256).as_ref()
+        && *location == blob_reference_path(&reference.sha256);
+    let epoch = reference.coordinator_epoch > 0
+        && reference.blob_path
+            == blob_path_for_epoch(&reference.sha256, reference.coordinator_epoch).as_ref()
+        && *location
+            == blob_reference_path_for_epoch(&reference.sha256, reference.coordinator_epoch);
+    legacy || epoch
 }
 
 fn scrub_state_path() -> ObjPath {
@@ -2420,8 +2769,19 @@ fn snapshot_started_ms(snapshot_id: &str) -> Option<i64> {
     snapshot_id.split('-').next()?.parse().ok()
 }
 
+fn snapshot_coordinator_epoch(snapshot_id: &str) -> Option<u64> {
+    let encoded = snapshot_id.split('-').nth(1)?.strip_prefix('e')?;
+    (encoded.len() == 20 && encoded.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| encoded.parse().ok())
+        .flatten()
+}
+
 fn marker_path(snapshot_id: &str) -> ObjPath {
     ObjPath::from(format!("snapshots/{snapshot_id}/_complete.json"))
+}
+
+fn gc_intent_path(snapshot_id: &str) -> ObjPath {
+    ObjPath::from(format!("gc-intents/{snapshot_id}/intent.json"))
 }
 
 fn inventory_path(snapshot_id: &str, role: &str, source_path: &str) -> ObjPath {
@@ -2598,6 +2958,319 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn takeover_rehomes_blobs_so_delayed_old_epoch_delete_is_harmless() {
+        let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        source
+            .put(
+                &ObjPath::from("one"),
+                PutPayload::from_static(b"durable ciphertext"),
+            )
+            .await
+            .unwrap();
+        let sources = [BackupSource {
+            role: "data",
+            store: source,
+        }];
+
+        let first = Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store: coordination.clone(),
+                owner: "streams-1".to_string(),
+            },
+            token: "a".repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            lease_until_ms: AtomicI64::new(0),
+            mutation_sequence: AtomicU64::new(0),
+        });
+        let first_lease = claim_coordinator(&first).await.unwrap().unwrap();
+        first.epoch.store(first_lease.epoch, Ordering::Release);
+        first
+            .lease_until_ms
+            .store(first_lease.lease_until_ms, Ordering::Release);
+        first.owned.store(true, Ordering::Release);
+        let first_fence = first.fence().unwrap();
+        let first_report = snapshot_once_with_pins_fenced(
+            &sources,
+            backup.clone(),
+            None,
+            Some(&first_fence),
+            BackupWriteFormat::V3,
+            first_lease.epoch,
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_report.format_version, SNAPSHOT_FORMAT_VERSION);
+
+        let mut expired = first_lease.clone();
+        expired.lease_until_ms = now_ms().saturating_sub(1);
+        coordination
+            .put(
+                &coordinator_lease_path(),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&expired).unwrap())),
+            )
+            .await
+            .unwrap();
+        let second = Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store: coordination,
+                owner: "streams-2".to_string(),
+            },
+            token: "b".repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            lease_until_ms: AtomicI64::new(0),
+            mutation_sequence: AtomicU64::new(0),
+        });
+        let second_lease = claim_coordinator(&second).await.unwrap().unwrap();
+        second.epoch.store(second_lease.epoch, Ordering::Release);
+        second
+            .lease_until_ms
+            .store(second_lease.lease_until_ms, Ordering::Release);
+        second.owned.store(true, Ordering::Release);
+        let second_fence = second.fence().unwrap();
+        let second_report = snapshot_once_with_pins_fenced(
+            &sources,
+            backup.clone(),
+            None,
+            Some(&second_fence),
+            BackupWriteFormat::V3,
+            second_lease.epoch,
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second_report.reused_objects, 1);
+
+        let digest = hex_encode(&Sha256::digest(b"durable ciphertext"));
+        let first_blob = blob_path_for_epoch(&digest, first_lease.epoch);
+        let second_blob = blob_path_for_epoch(&digest, second_lease.epoch);
+        assert_ne!(first_blob, second_blob);
+        backup.head(&first_blob).await.unwrap();
+        backup.head(&second_blob).await.unwrap();
+        backup
+            .head(&blob_reference_path_for_epoch(&digest, second_lease.epoch))
+            .await
+            .unwrap();
+        assert!(
+            backup
+                .list(Some(&ObjPath::from("blob-refs")))
+                .try_next()
+                .await
+                .unwrap()
+                .is_none(),
+            "a format-2 binary would discover a format-3 reference"
+        );
+        assert_eq!(
+            scrub_blob_batch(backup.clone(), 1, Some(&second_fence))
+                .await
+                .unwrap(),
+            1
+        );
+
+        // Model an epoch-1 provider DELETE that was admitted before takeover
+        // and only completed after epoch 2 published. It cannot name or damage
+        // epoch-2 content.
+        backup.delete(&first_blob).await.unwrap();
+        let restored: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        restore_snapshot(
+            backup,
+            &second_report.snapshot_id,
+            &HashMap::from([("data".to_string(), restored.clone())]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            restored
+                .get(&ObjPath::from("one"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+            Bytes::from_static(b"durable ciphertext")
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinated_format2_wave_retains_shared_content_until_flip() {
+        let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let coordination: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        source
+            .put(&ObjPath::from("one"), PutPayload::from_static(b"legacy-v2"))
+            .await
+            .unwrap();
+        let coordinator = Arc::new(CoordinatorState {
+            config: BackupCoordinator {
+                store: coordination,
+                owner: "read-first".to_string(),
+            },
+            token: "c".repeat(32),
+            owned: AtomicBool::new(false),
+            epoch: AtomicU64::new(0),
+            lease_until_ms: AtomicI64::new(0),
+            mutation_sequence: AtomicU64::new(0),
+        });
+        let lease = claim_coordinator(&coordinator).await.unwrap().unwrap();
+        coordinator.epoch.store(lease.epoch, Ordering::Release);
+        coordinator
+            .lease_until_ms
+            .store(lease.lease_until_ms, Ordering::Release);
+        coordinator.owned.store(true, Ordering::Release);
+        let fence = coordinator.fence().unwrap();
+        let mut report = snapshot_once_with_pins_fenced(
+            &[BackupSource {
+                role: "ops",
+                store: source,
+            }],
+            backup.clone(),
+            None,
+            Some(&fence),
+            BackupWriteFormat::V2,
+            lease.epoch,
+            1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report.format_version,
+            CONTENT_ADDRESSED_SNAPSHOT_FORMAT_VERSION
+        );
+        let digest = hex_encode(&Sha256::digest(b"legacy-v2"));
+        let reference_path = blob_reference_path(&digest);
+        let mut reference: BlobReference = serde_json::from_slice(
+            &backup
+                .get(&reference_path)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        reference.referenced_ms = 1;
+        backup
+            .put(
+                &reference_path,
+                PutPayload::from(Bytes::from(serde_json::to_vec(&reference).unwrap())),
+            )
+            .await
+            .unwrap();
+        report.completed_ms = 1;
+        backup
+            .put(
+                &marker_path(&report.snapshot_id),
+                PutPayload::from(Bytes::from(serde_json::to_vec(&report).unwrap())),
+            )
+            .await
+            .unwrap();
+
+        prune_once_fenced(
+            backup.clone(),
+            Duration::from_secs(24 * 60 * 60),
+            Some(&fence),
+            false,
+        )
+        .await
+        .unwrap();
+        backup.head(&blob_path_for_sha(&digest)).await.unwrap();
+        backup.head(&reference_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retention_resumes_from_intent_after_all_point_metadata_is_lost() {
+        let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        source
+            .put(
+                &ObjPath::from("one"),
+                PutPayload::from_static(b"collect-me"),
+            )
+            .await
+            .unwrap();
+        let report = snapshot_once(
+            &[BackupSource {
+                role: "ops",
+                store: source,
+            }],
+            backup.clone(),
+        )
+        .await
+        .unwrap();
+        let digest = hex_encode(&Sha256::digest(b"collect-me"));
+        let reference_path = blob_reference_path(&digest);
+        let mut reference: BlobReference = serde_json::from_slice(
+            &backup
+                .get(&reference_path)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        reference.referenced_ms = 1;
+        backup
+            .put(
+                &reference_path,
+                PutPayload::from(Bytes::from(serde_json::to_vec(&reference).unwrap())),
+            )
+            .await
+            .unwrap();
+        let index_path = source_index_path("ops", "one");
+        let mut index: SourceIndex = serde_json::from_slice(
+            &backup
+                .get(&index_path)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        index.referenced_ms = 1;
+        backup
+            .put(
+                &index_path,
+                PutPayload::from(Bytes::from(serde_json::to_vec(&index).unwrap())),
+            )
+            .await
+            .unwrap();
+        ensure_gc_intent(backup.clone(), &report.snapshot_id, 0)
+            .await
+            .unwrap();
+        let snapshot_prefix = ObjPath::from(format!("snapshots/{}", report.snapshot_id));
+        let objects = backup
+            .list(Some(&snapshot_prefix))
+            .map_ok(|meta| meta.location)
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for object in objects {
+            backup.delete(&object).await.unwrap();
+        }
+
+        prune_once(backup.clone(), Duration::from_secs(24 * 60 * 60))
+            .await
+            .unwrap();
+        for path in [
+            blob_path_for_sha(&digest),
+            reference_path,
+            index_path,
+            gc_intent_path(&report.snapshot_id),
+        ] {
+            assert!(matches!(
+                backup.head(&path).await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn content_scrub_detects_blob_corruption() {
         let source: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let backup: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
@@ -2696,9 +3369,9 @@ mod tests {
         let first_fence = first.fence().unwrap();
         first_fence.verify_remote().await.unwrap();
 
-        let report = |epoch, sequence, snapshot_id: &str| SnapshotReport {
+        let report = |epoch, sequence, label: &str| SnapshotReport {
             format_version: SNAPSHOT_FORMAT_VERSION,
-            snapshot_id: snapshot_id.to_string(),
+            snapshot_id: format!("00000000000000000001-e{epoch:020}-{label}"),
             started_ms: now_ms(),
             completed_ms: now_ms(),
             objects: 0,
@@ -2791,7 +3464,10 @@ mod tests {
             .await
             .is_err()
         );
-        assert_eq!(latest_snapshot_id(destination).await.unwrap(), "second");
+        assert_eq!(
+            latest_snapshot_id(destination).await.unwrap(),
+            format!("00000000000000000001-e{:020}-second", second_lease.epoch)
+        );
     }
 
     #[tokio::test]
@@ -2898,6 +3574,7 @@ mod tests {
                 started_ms: 42,
                 snapshot_id,
                 fence: None,
+                write_format: BackupWriteFormat::V2,
                 coordinator_epoch: 0,
                 coordinator_sequence: 0,
             },
@@ -3000,6 +3677,7 @@ mod tests {
                 started_ms: 43,
                 snapshot_id,
                 fence: None,
+                write_format: BackupWriteFormat::V2,
                 coordinator_epoch: 0,
                 coordinator_sequence: 0,
             },

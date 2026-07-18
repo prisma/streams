@@ -517,8 +517,9 @@ blobs, so later points copy only changed objects while retaining a complete
 checksummed inventory. Retention deletes expired point metadata before its
 last-referenced blobs; a bounded rolling scrub hashes referenced blobs using a
 durable provider-independent cursor and feeds readiness independently of
-snapshot completion. Restore supports both legacy full-copy format 1 and
-content-addressed format 2, but only into empty offline targets.
+snapshot completion. Restore supports legacy full-copy format 1, shared
+content-addressed format 2, and epoch-isolated content-addressed format 3, but
+only into empty offline targets.
 
 One instance per cell holds a renewable six-second CAS backup lease in the ops
 store. The lease epoch and monotonic per-epoch sequences fence mutable backup
@@ -526,8 +527,15 @@ indexes, references, scrub state, the latest pointer, and a durable health
 record. Followers consume that fresh health record for readiness and perform no
 backup-provider scan/copy/GC work. Takeover triggers an immediate point and
 scrub batch; a delayed prior holder cannot regress any ordered publication.
-Content deletion must additionally be isolated across lease epochs before GA,
-because the object-store interface has no conditional-delete primitive.
+Format-3 blob and reference paths contain that lease epoch. Takeover
+checksum-rehomes unchanged content before publication, so a delayed
+unconditional delete from an old epoch cannot name current recovery content.
+Retention writes an immutable per-generation GC intent before removing the
+complete marker and removes that intent last, making every deletion phase
+restartable without exposing a marker over missing content.
+Format 3 uses a top-level namespace that format-2 binaries do not scan, and a
+write-format switch implements the read-first/flip/one-version-rollback
+contract in [STORAGE-MIGRATIONS.md](./STORAGE-MIGRATIONS.md).
 
 ---
 

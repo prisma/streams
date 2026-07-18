@@ -42,6 +42,7 @@ start_member() {
   local instance="$1"
   local port="$2"
   local log="$3"
+  shift 3
   RUST_LOG=info "${TARGET_DIR}/streams-slate" \
     --listen "127.0.0.1:${port}" \
     --s3-endpoint "${S3_URL}" --bucket primary --region auto \
@@ -52,6 +53,7 @@ start_member() {
     --backup-s3-access-key-id test --backup-s3-secret-access-key test \
     --backup-path-prefix coord-backup --backup-interval-secs 60 \
     --backup-scrub-interval-secs 10 --require-backup \
+    "$@" \
     >"${log}" 2>&1 &
   MEMBER_PID=$!
 }
@@ -137,4 +139,56 @@ marker_count="$(curl --fail --silent \
   grep -o '<Key>[^<]*_complete.json' | wc -l | tr -d ' ')"
 [[ "${marker_count}" == "2" ]]
 
-echo "fenced backup coordinator failover smoke passed"
+# Exercise the one-version rollback contract after format 3 has published.
+# The rollback writer must claim a higher epoch, ignore the format-3 reference
+# root for its format-2 content layout, and publish a restorable format-2 point.
+if [[ -n "${FIRST_PID}" ]]; then
+  kill "${FIRST_PID}"
+  wait "${FIRST_PID}" 2>/dev/null || true
+  FIRST_PID=""
+else
+  kill "${SECOND_PID}"
+  wait "${SECOND_PID}" 2>/dev/null || true
+  SECOND_PID=""
+fi
+start_member streams-rollback "${FIRST_PORT}" "${TMP_DIR}/rollback.log" \
+  --backup-write-format 2
+FIRST_PID="${MEMBER_PID}"
+
+attempts=0
+rollback_snapshot="${second_snapshot}"
+rollback_epoch="${second_epoch}"
+until [[ "${rollback_snapshot}" != "${second_snapshot}" ]] \
+  && (( rollback_epoch > second_epoch )); do
+  attempts=$((attempts + 1))
+  if (( attempts > 150 )); then
+    echo "format-2 rollback did not publish a higher-epoch point" >&2
+    tail -100 "${TMP_DIR}/rollback.log" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+  rollback_report="$(curl --fail --silent \
+    "${S3_URL}/backup/coord-backup/latest.json")"
+  rollback_snapshot="$(sed -n 's/.*"snapshot_id":"\([^"]*\)".*/\1/p' \
+    <<<"${rollback_report}")"
+  rollback_epoch="$(sed -n 's/.*"coordinator_epoch":\([0-9]*\).*/\1/p' \
+    <<<"${rollback_report}")"
+done
+grep -q '"format_version":2' <<<"${rollback_report}"
+grep -Eq '"reused_objects":[1-9][0-9]*' <<<"${rollback_report}"
+wait_ready "${FIRST_PORT}" "${TMP_DIR}/rollback.log"
+
+format3_refs="$(curl --fail --silent \
+  "${S3_URL}/backup?list-type=2&prefix=coord-backup%2Fformats%2F3%2Fblob-refs%2F" |
+  grep -o '<Key>[^<]*' | wc -l | tr -d ' ')"
+format2_refs="$(curl --fail --silent \
+  "${S3_URL}/backup?list-type=2&prefix=coord-backup%2Fblob-refs%2F" |
+  grep -o '<Key>[^<]*' | wc -l | tr -d ' ')"
+[[ "${format3_refs}" =~ ^[1-9][0-9]*$ && "${format2_refs}" =~ ^[1-9][0-9]*$ ]]
+
+marker_count="$(curl --fail --silent \
+  "${S3_URL}/backup?list-type=2&prefix=coord-backup%2Fsnapshots%2F" |
+  grep -o '<Key>[^<]*_complete.json' | wc -l | tr -d ' ')"
+[[ "${marker_count}" == "3" ]]
+
+echo "fenced backup coordinator failover and format rollback smoke passed"
