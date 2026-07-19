@@ -687,9 +687,15 @@ async fn load_snapshot(store: &Arc<dyn ObjectStore>) -> Result<FleetSnapshot, St
     if !snapshot_is_valid(&snapshot, now) {
         return Err("malformed or stale fleet snapshot".to_string());
     }
+    // Age heartbeats against the snapshot's own generation time, not the
+    // consumer clock: snapshot staleness is bounded separately above, and
+    // judging embedded heartbeats by consumer-now double-counts snapshot
+    // age — any aggregate a few seconds old read as "no fresh heartbeats"
+    // and flapped fleet readiness cell-wide (pilot13 2026-07-19).
+    let aggregated_at = snapshot.generated_at_ms;
     snapshot
         .heartbeats
-        .retain(|heartbeat| heartbeat_is_valid(heartbeat, &heartbeat.instance, now));
+        .retain(|heartbeat| heartbeat_is_valid(heartbeat, &heartbeat.instance, aggregated_at));
     if snapshot.heartbeats.is_empty() {
         return Err("fleet snapshot has no fresh heartbeats".to_string());
     }
