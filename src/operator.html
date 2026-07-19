@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streams Cell Operator</title>
+<style>
+:root {
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1a2130; --muted:#5b6572; --line:#e3e7ee;
+  --good:#1d7f4f; --warn:#a86a00; --bad:#b3362b; --accent:#2458c5; --chip:#eef1f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0f141c; --panel:#171e29; --ink:#e6eaf1; --muted:#93a0b4; --line:#26303f;
+          --good:#3fbf82; --warn:#e0a34a; --bad:#e06156; --accent:#6c9bf2; --chip:#212b3a; }
+}
+* { box-sizing:border-box }
+body { margin:0; background:var(--bg); color:var(--ink);
+  font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:baseline;
+  padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+  position:sticky; top:0; z-index:2; }
+header h1 { font-size:16px; margin:0; font-weight:650 }
+header .meta { color:var(--muted); font-size:12.5px }
+main { max-width:1220px; margin:0 auto; padding:18px 20px 60px; display:grid; gap:16px }
+section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px }
+section h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted) }
+table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums }
+th,td { text-align:right; padding:4px 8px; border-bottom:1px solid var(--line); white-space:nowrap }
+th:first-child,td:first-child { text-align:left }
+th { color:var(--muted); font-weight:600; font-size:12px }
+.scroll { overflow-x:auto }
+.pill { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; background:var(--chip) }
+.pill.good { color:var(--good) } .pill.warn { color:var(--warn) } .pill.bad { color:var(--bad) }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:1px }
+.dot.good { background:var(--good) } .dot.warn { background:var(--warn) } .dot.bad { background:var(--bad) }
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:2px 14px }
+.kv div:nth-child(odd) { color:var(--muted) }
+.small { font-size:12.5px; color:var(--muted) }
+a { color:var(--accent); text-decoration:none } a:hover { text-decoration:underline }
+#runbook { display:none }
+#runbook.open { display:block }
+#rb h1,#rb h2,#rb h3 { scroll-margin-top:70px }
+#rb pre { background:var(--chip); padding:10px; border-radius:8px; overflow-x:auto; font-size:12.5px }
+#rb code { background:var(--chip); padding:1px 4px; border-radius:4px; font-size:12.5px }
+#rb table { margin:8px 0 }
+#rb th, #rb td { text-align:left; white-space:normal }
+.stale { color:var(--bad); font-weight:600 }
+button { background:var(--chip); color:var(--ink); border:1px solid var(--line);
+  border-radius:8px; padding:5px 12px; cursor:pointer; font:inherit; font-size:12.5px }
+</style>
+</head>
+<body>
+<header>
+  <h1>Streams Cell Operator</h1>
+  <span class="meta" id="hdr">loading…</span>
+  <span class="meta" id="age"></span>
+  <span style="flex:1"></span>
+  <button onclick="toggleRunbook()">Runbook</button>
+</header>
+<main>
+  <section id="sec-ready"><h2>Readiness</h2><div id="ready"></div></section>
+  <section><h2>Fleet (cell view)</h2><div class="scroll"><div id="fleet"></div></div></section>
+  <div class="grid2">
+    <section><h2>Backup &amp; integrity</h2><div id="backup"></div></section>
+    <section><h2>Reconfiguration (split / merge)</h2><div id="reconf"></div></section>
+  </div>
+  <section><h2>This instance — object store &amp; runtime</h2><div class="scroll"><div id="local"></div></div></section>
+  <section><h2>Alerts</h2><div id="alerts"></div></section>
+  <section id="runbook"><h2>Runbook</h2><div id="rb" class="small">loading…</div></section>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = (v, d=0) => (v === null || v === undefined || Number.isNaN(v)) ? "—" : Number(v).toFixed(d);
+const pill = (ok, txtGood, txtBad, warn) =>
+  `<span class="pill ${ok ? "good" : (warn ? "warn" : "bad")}">${ok ? txtGood : txtBad}</span>`;
+
+let lastData = null, lastFetch = 0;
+
+function fmtAge(ms) {
+  if (ms < 0) return "—";
+  if (ms < 90000) return Math.round(ms/1000) + "s";
+  if (ms < 5400000) return Math.round(ms/60000) + "m";
+  return Math.round(ms/3600000) + "h";
+}
+
+function renderReady(d) {
+  const c = d.components || {};
+  const rows = Object.entries(c).map(([k, v]) =>
+    `<span style="margin-right:14px"><span class="dot ${v ? "good" : "bad"}"></span>${esc(k)}</span>`);
+  const b = d.backup;
+  rows.push(`<span style="margin-right:14px"><span class="dot ${b ? (b.ready ? "good" : "bad") : "warn"}"></span>backup${b ? "" : " (not configured)"}</span>`);
+  $("ready").innerHTML = rows.join("");
+}
+
+function renderHeader(d) {
+  const l = d.local || {};
+  $("hdr").textContent =
+    `cell ${l.cell_id ?? "single"} · serving ${l.instance ?? "?"} · release ${l.release_id ?? "?"} · topology v${l.topology_version ?? "?"}`;
+}
+
+function renderFleet(d) {
+  const f = d.fleet || {};
+  const agg = f.aggregate;
+  const hbs = (agg && agg.heartbeats) || f.heartbeats_fallback || [];
+  const desired = (f.desired && (f.desired.desired ?? f.desired.count)) ?? (typeof f.desired === "number" ? f.desired : "—");
+  const now = d.ts_ms;
+  let src = agg ? `aggregate (epoch ${agg.lease_epoch}, seq ${agg.sequence}, age ${fmtAge(now - agg.generated_at_ms)})`
+                : (f.heartbeats_fallback ? "raw heartbeats (aggregator unavailable)" : "unavailable");
+  const aggStale = agg && (now - agg.generated_at_ms > 15000);
+  let sum = { rps:0, cores:0, infl:0, shards:0, live:0 };
+  const rows = hbs.map(h => {
+    const age = now - (h.ts_ms || 0);
+    const live = age < 10000;
+    if (live) { sum.rps += h.rps||0; sum.cores += (h.cpu_pct||0)/100; sum.infl += h.inflight||0; sum.live++; }
+    sum.shards += (h.owned_shards||[]).length;
+    return `<tr>
+      <td><span class="dot ${live ? "good" : "bad"}"></span>${esc(h.instance ?? "?")}${h.draining ? " (draining)" : ""}</td>
+      <td>${fmtAge(age)}</td><td>${num(h.rps)}</td><td>${num(h.ack_p50_ms)}</td>
+      <td>${num(h.cpu_pct,1)}%</td><td>${num(h.rss_mb)}</td>
+      <td>${num(h.inflight)}/${num(h.inflight_peak)}</td>
+      <td>${num(h.wal_put_p50_ms)}/${num(h.wal_put_p99_ms)}</td>
+      <td>${num(h.out_inflight)}/${num(h.out_inflight_peak)}</td>
+      <td>${(h.owned_shards||[]).length}</td></tr>`;
+  }).join("");
+  const routers = (f.routers||[]).map(r =>
+    `<span class="pill" style="margin-right:8px">${esc(r.router ?? r.name ?? "router")}: client p50 ${num(r.client_p50_ms)}ms</span>`).join("");
+  $("fleet").innerHTML = `
+    <div class="small" style="margin-bottom:8px">source: <span class="${aggStale ? "stale" : ""}">${esc(src)}</span>
+      · desired ${esc(String(desired))} · live ${sum.live} · Σrps ${num(sum.rps)} · Σcores ${num(sum.cores,2)}
+      · Σinflight ${num(sum.infl)} · shards owned ${sum.shards}
+      ${agg && agg.edge_p50_ms ? ` · edge p50 ${num(agg.edge_p50_ms)}ms` : ""}</div>
+    <table><thead><tr><th>instance</th><th>beat</th><th>rps</th><th>ack p50 ms</th><th>cpu</th><th>rss MB</th>
+      <th>inflight</th><th>wal put p50/p99</th><th>store out</th><th>shards</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="10" class="small">no heartbeats</td></tr>`}</tbody></table>
+    <div style="margin-top:8px">${routers}</div>`;
+}
+
+function renderBackup(d) {
+  const b = d.backup;
+  if (!b) { $("backup").innerHTML = `<span class="small">backup not configured on this instance</span>`; return; }
+  $("backup").innerHTML = `<div class="kv">
+    <div>overall</div><div>${pill(b.ready, "ready", "NOT READY")}</div>
+    <div>snapshot actor</div><div>${pill(b.snapshot, "healthy", "unhealthy")}</div>
+    <div>recovery scrub</div><div>${pill(b.recovery_scrub, "healthy", "unhealthy")}</div>
+    <div>primary scrub</div><div>${pill(b.primary_scrub, "healthy", "unhealthy")}</div></div>
+    <div class="small" style="margin-top:8px">Restore procedure: runbook §11 · <code>streams-restore</code> validates digests into empty offline targets.</div>`;
+}
+
+function renderReconf(d) {
+  const r = d.reconfigurations;
+  const l = d.local || {};
+  if (!r) { $("reconf").innerHTML = `<span class="small">unavailable</span>`; return; }
+  const active = r.filter(x => x.kind === "split" || x.kind === "merge");
+  const rows = r.map(x => `<tr><td><code>${esc(x.shard)}</code></td><td>${esc(x.kind)}</td>
+     <td>${fmtAge(d.ts_ms - x.modified_ms)}</td></tr>`).join("");
+  $("reconf").innerHTML = `
+    <div class="small" style="margin-bottom:6px">${active.length} active fence(s) · ${l.splitting ?? 0} local worker(s)</div>
+    ${r.length ? `<table><thead><tr><th>shard</th><th>state</th><th>age</th></tr></thead><tbody>${rows}</tbody></table>`
+               : `<span class="small">no split/merge intents in the cell</span>`}`;
+}
+
+function renderLocal(d) {
+  const l = d.local || {}, s = l.store || {};
+  const ops = s.ops || {};
+  const rows = Object.entries(ops).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td>${v.n}</td><td>${v.err}</td><td>${v.p50_ms}</td><td>${v.p90_ms}</td><td>${v.p99_ms}</td><td>${v.max_ms}</td></tr>`).join("");
+  const tt = s.timer_thread || {}, tk = s.timer_tokio || {};
+  const tokBad = (tk.p99_us||0) > 100000;
+  const slow = (s.slow||[]).slice(0,5).map(o =>
+    `<span class="pill" style="margin-right:6px">${esc(o.op)}:${esc(o.class)} ${o.ms}ms ${o.ago_s}s ago</span>`).join("");
+  $("local").innerHTML = `
+    <div class="small" style="margin-bottom:8px">
+      inflight ${l.inflight}/${l.inflight_peak} (cap ${l.admit_max_inflight || "off"}) ·
+      shed ${l.admit_shed} · rss ${l.rss_mb} MB (shed at ${l.rss_shed_mb || "off"}) ·
+      open shards ${l.open_shards} · store out ${s.out_inflight_now}/${s.out_inflight_peak} ·
+      timer drift tokio p99 <span class="${tokBad ? "stale" : ""}">${num((tk.p99_us||0)/1000,1)}ms</span>
+      / thread ${num((tt.p99_us||0)/1000,1)}ms · steal ${(s.steal_pct === null || s.steal_pct === undefined || s.steal_pct < 0) ? "n/a" : s.steal_pct + "%"}</div>
+    <table><thead><tr><th>op:class (60s)</th><th>n</th><th>err</th><th>p50</th><th>p90</th><th>p99</th><th>max ms</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7" class="small">no store ops in window</td></tr>`}</tbody></table>
+    <div style="margin-top:8px">${slow}</div>`;
+}
+
+// Cheap local evaluation of a few catalog conditions; everything else is
+// catalog-only (real evaluation belongs to the metrics pipeline).
+function evaluated(d) {
+  const out = [];
+  const c = d.components || {};
+  for (const [k, v] of Object.entries(c)) if (!v) out.push([`component ${k} unready`, "bad"]);
+  if (d.backup && !d.backup.ready) out.push(["backup/scrub unhealthy", "bad"]);
+  const f = d.fleet || {}, agg = f.aggregate;
+  if (agg && d.ts_ms - agg.generated_at_ms > 15000) out.push(["fleet aggregate stale", "warn"]);
+  if (!agg && f.heartbeats_fallback) out.push(["fleet aggregator unavailable (fallback view)", "warn"]);
+  const hbs = (agg && agg.heartbeats) || f.heartbeats_fallback || [];
+  for (const h of hbs) {
+    if (d.ts_ms - (h.ts_ms||0) < 10000 && (h.ack_p50_ms||0) > 250)
+      out.push([`${h.instance}: ack p50 ${Math.round(h.ack_p50_ms)}ms > 250ms`, "warn"]);
+    if (d.ts_ms - (h.ts_ms||0) >= 10000) out.push([`${h.instance}: heartbeat stale`, "warn"]);
+  }
+  const tk = (d.local && d.local.store && d.local.store.timer_tokio) || {};
+  if ((tk.p99_us||0) > 100000) out.push(["event-loop drift > 100ms (blocking-work regression)", "bad"]);
+  return out;
+}
+
+function renderAlerts(d) {
+  const ev = evaluated(d);
+  const evHtml = ev.length
+    ? ev.map(([t, lvl]) => `<span class="pill ${lvl}" style="margin:0 8px 6px 0; display:inline-block">${esc(t)}</span>`).join("")
+    : `<span class="pill good">no locally-evaluated conditions firing</span>`;
+  let rules = [];
+  try { rules = (d.alert_rules.groups || []).flatMap(g => g.rules || []); } catch (e) {}
+  const rows = rules.map(r => {
+    const anchor = ((r.annotations||{}).runbook || "").replace("RUNBOOK.md", "");
+    return `<tr><td style="white-space:normal">${esc(r.alert)}</td>
+      <td>${esc((r.labels||{}).severity || "")}</td>
+      <td style="white-space:normal">${esc((r.annotations||{}).summary || "")}</td>
+      <td><a href="${esc(anchor)}" onclick="openRunbook('${esc(anchor.slice(1))}')">runbook</a></td></tr>`;
+  }).join("");
+  $("alerts").innerHTML = `
+    <div style="margin-bottom:10px">${evHtml}</div>
+    <div class="small" style="margin-bottom:6px">catalog (${rules.length} rules; live evaluation runs in the metrics pipeline):</div>
+    <div class="scroll"><table><thead><tr><th>alert</th><th>severity</th><th>summary</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+// -- minimal markdown rendering for the embedded runbook (headings, code
+// fences, inline code, links, tables-as-pre, paragraphs) --
+function mdRender(md) {
+  const lines = md.split("\n");
+  let html = "", inCode = false, para = [];
+  const slug = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim().replace(/ +/g, "-");
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, h) => `<a href="${h}">${t}</a>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  const flush = () => { if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; } };
+  let table = [];
+  const flushTable = () => {
+    if (!table.length) return;
+    html += `<pre>${esc(table.join("\n"))}</pre>`; table = [];
+  };
+  for (const ln of lines) {
+    if (ln.startsWith("```")) { flush(); flushTable(); inCode = !inCode; html += inCode ? "<pre>" : "</pre>"; continue; }
+    if (inCode) { html += esc(ln) + "\n"; continue; }
+    if (/^\|/.test(ln)) { flush(); table.push(ln); continue; }
+    flushTable();
+    const h = ln.match(/^(#{1,3}) (.*)/);
+    if (h) { flush(); const lvl = h[1].length; html += `<h${lvl} id="${slug(h[2])}">${inline(h[2])}</h${lvl}>`; continue; }
+    if (ln.trim() === "" || ln.trim() === "---") { flush(); continue; }
+    para.push(ln.trim());
+  }
+  flush(); flushTable();
+  return html;
+}
+
+let runbookLoaded = false;
+async function loadRunbook() {
+  if (runbookLoaded) return;
+  const md = await (await fetch("/operator/runbook")).text();
+  $("rb").innerHTML = mdRender(md);
+  runbookLoaded = true;
+}
+function toggleRunbook() {
+  $("runbook").classList.toggle("open");
+  if ($("runbook").classList.contains("open")) loadRunbook().then(() => $("runbook").scrollIntoView());
+}
+function openRunbook(anchor) {
+  $("runbook").classList.add("open");
+  loadRunbook().then(() => { const el = document.getElementById(anchor); if (el) el.scrollIntoView(); });
+}
+
+async function refresh() {
+  try {
+    const d = await (await fetch("/operator/data.json", {cache:"no-store"})).json();
+    lastData = d; lastFetch = Date.now();
+    renderHeader(d); renderReady(d); renderFleet(d); renderBackup(d);
+    renderReconf(d); renderLocal(d); renderAlerts(d);
+  } catch (e) {
+    $("hdr").textContent = "data fetch failed — retrying";
+  }
+}
+setInterval(() => { $("age").textContent = lastFetch ? `updated ${fmtAge(Date.now()-lastFetch)} ago` : ""; }, 1000);
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

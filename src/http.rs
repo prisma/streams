@@ -63,6 +63,10 @@ pub struct ShardOpener {
 
 pub struct AppState {
     pub registry: Registry,
+    /// Fleet-prefixed store clone for the /operator dashboard's
+    /// cell-wide reads (fleet.json, heartbeats, desired, routers).
+    /// None when fleet mode is off.
+    pub operator_fleet_store: Option<Arc<dyn ObjectStore>>,
     /// Managed multi-cell mode. `None` preserves the legacy single-cell
     /// contract; `Some` requires matching authoritative placement, with
     /// durable source-shard fences covering operator moves.
@@ -2033,6 +2037,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health_ready))
         .route("/health/ready", get(health_ready))
         .route("/health/live", get(|| async { "ok" }))
+        // Cell operator dashboard: deliberately unauthenticated (operator
+        // decision 2026-07-18); payload is operational metadata only — no
+        // stream names, tenant identifiers, tokens, or keys.
+        .route("/operator", get(crate::operator::page))
+        .route("/operator/data.json", get(crate::operator::data))
+        .route("/operator/runbook", get(crate::operator::runbook))
         .route("/v1/streams", get(list_streams))
         .merge(operator_routes)
         .route("/v1/stream/{*name}", any(stream_entry))

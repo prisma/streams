@@ -7,6 +7,7 @@ mod http;
 mod merge;
 mod metrics;
 mod offsets;
+mod operator;
 mod queue;
 mod reconfiguration;
 mod shard;
@@ -1522,6 +1523,7 @@ async fn async_main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         registry,
+        operator_fleet_store: args.fleet_store()?,
         cell_id: args.cell_id.clone(),
         cell_directory: std::sync::RwLock::new(cell_directory),
         cells_ready: std::sync::atomic::AtomicBool::new(true),

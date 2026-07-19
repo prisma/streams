@@ -686,6 +686,26 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 
 ## 8. Monitoring
 
+### 8.0 The /operator dashboard
+
+Every server serves a cell-wide operator dashboard at **`/operator`**
+(HTML, auto-refreshing every 5 s; JSON at `/operator/data.json`; the
+embedded copy of this runbook at `/operator/runbook`). It shows readiness
+components, the fleet cell view (epoch-fenced aggregate with raw-heartbeat
+fallback), backup/scrub health, active split/merge fences, this instance's
+per-op-class object-store latency + timer sentinels, the full alert
+catalog with runbook links, and a small set of locally evaluated
+conditions (component unready, stale heartbeats/aggregate, ack-p50 breach,
+event-loop drift).
+
+The route is **deliberately unauthenticated** (operator decision
+2026-07-18) so on-call can reach it without credentials. Its payload is
+restricted to operational metadata — no stream names, tenant identifiers,
+tokens, keys, or signed URLs may ever be added to it. If the deployment's
+network posture changes, front it with network-level controls; do not add
+per-request auth here without revisiting that decision.
+
+
 **Primary feeds**: fleet heartbeats (object store), LB `/stats` (per-upstream
 rps/ackMs/live/cpu + desired), and an operator-authenticated scrape of
 `/v1/debug/metrics` per instance. The scrape contains fixed operation/status/
