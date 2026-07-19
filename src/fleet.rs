@@ -34,7 +34,11 @@ const AGGREGATION_VERSION: u32 = 1;
 /// lease expiry + one claim cycle.
 const AGGREGATOR_LEASE_MS: i64 = 20_000;
 const HEARTBEAT_FRESH_MS: i64 = 10_000;
-const SNAPSHOT_FRESH_MS: i64 = 10_000;
+/// Consumers accept an aggregate up to this old. Sized with the aggregator
+/// round length on a real provider (~2-3 s with parallel reads, tails
+/// worse): 10 s left followers flapping ready/not-ready at the boundary
+/// (pilot13 2026-07-19).
+const SNAPSHOT_FRESH_MS: i64 = 30_000;
 const MAX_FLEET_INSTANCES: usize = 64;
 const MAX_SHARDS_PER_HEARTBEAT: usize = 1_536;
 const MAX_ROUTER_REPORTS: usize = 32;
@@ -546,10 +550,18 @@ async fn collect_heartbeats(
         return Err("fleet heartbeat candidate count exceeds cell bound".to_string());
     }
     let now = now_ms();
-    let mut heartbeats = Vec::new();
-    for instance in candidates {
+    // Parallel reads: serially, fleet_max GETs at real-provider latency
+    // (~250 ms p50) dominated the aggregation round, aging the published
+    // snapshot toward its freshness bound before the next publish.
+    let reads = candidates.iter().map(|instance| {
         let path = ObjPath::from(format!("fleet/{instance}.json"));
-        match store.get(&path).await {
+        let store = store.clone();
+        let instance = instance.clone();
+        async move { (instance, store.get(&path).await) }
+    });
+    let mut heartbeats = Vec::new();
+    for (instance, result) in futures_util::future::join_all(reads).await {
+        match result {
             Ok(result) => {
                 let raw = result.bytes().await.map_err(|error| error.to_string())?;
                 let heartbeat: Heartbeat = serde_json::from_slice(&raw)
