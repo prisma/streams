@@ -10,7 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use object_store::ObjectStoreExt;
@@ -603,6 +603,38 @@ struct InFlightGroup {
     touches: Vec<TouchFeed>,
 }
 
+/// A negative fence observation is safe to reuse only if the reconfiguration
+/// actor waits at least this long after publishing its durable intent before
+/// it opens/quiesces the source DB. That ordering lets acknowledgements which
+/// used the old negative observation finish before the clone boundary.
+pub(crate) const RECONFIGURATION_FENCE_NEGATIVE_TTL: Duration = Duration::from_secs(1);
+const RECONFIGURATION_FENCE_RETRY_MIN: Duration = Duration::from_millis(25);
+const RECONFIGURATION_FENCE_RETRY_MAX: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Default)]
+struct ReconfigurationFenceCache {
+    clear_until: Option<Instant>,
+    consecutive_errors: u32,
+}
+
+enum ReconfigurationFenceCheck {
+    Clear,
+    Fenced,
+    Retry {
+        error: String,
+        delay: Duration,
+        attempt: u32,
+    },
+}
+
+/// Reconfiguration actors call this only after the fence object is durably
+/// visible. A writer which cached the immediately preceding NotFound may ack
+/// during this grace period, but the actor cannot establish its clone/union
+/// boundary until every such negative observation has expired.
+pub(crate) async fn await_reconfiguration_fence_propagation() {
+    tokio::time::sleep(RECONFIGURATION_FENCE_NEGATIVE_TTL).await;
+}
+
 pub struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
@@ -626,6 +658,11 @@ pub struct ShardEngine {
     /// Without this, a stale ring owner can acknowledge a parent write after
     /// another process cloned it into children.
     reconfiguration_fence_store: Option<Arc<dyn object_store::ObjectStore>>,
+    /// Successful absence/released observations are short-lived. This keeps
+    /// the normal ACK path off object storage while bounding fence discovery.
+    /// Errors never populate the cache: durable groups stay pending and the
+    /// acker retries instead of tearing down the shard.
+    reconfiguration_fence_cache: Mutex<ReconfigurationFenceCache>,
     /// Invoked when the shard db closes (fenced by a new owner / fatal):
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
     /// get stale immediately instead of dangling until timeout.
@@ -772,6 +809,7 @@ impl ShardEngine {
             absorb_tx,
             telemetry,
             reconfiguration_fence_store,
+            reconfiguration_fence_cache: Mutex::new(ReconfigurationFenceCache::default()),
             on_close,
             stats_appended: AtomicU64::new(0),
             stats_appended_bytes: AtomicU64::new(0),
@@ -909,23 +947,70 @@ impl ShardEngine {
         self.closed.load(Ordering::Acquire)
     }
 
-    async fn reconfiguration_fence_exists(&self) -> Result<bool, String> {
+    async fn check_reconfiguration_fence(&self) -> ReconfigurationFenceCheck {
         let Some(store) = &self.reconfiguration_fence_store else {
-            return Ok(false);
+            return ReconfigurationFenceCheck::Clear;
         };
+        if self
+            .reconfiguration_fence_cache
+            .lock()
+            .unwrap()
+            .clear_until
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return ReconfigurationFenceCheck::Clear;
+        }
         let path = crate::reconfiguration::fence_path(&self.prefix);
-        match store.get(&path).await {
+        // Base the TTL on the start of the read, not its completion. A GET
+        // which overlaps the fence PUT may legally return the preceding
+        // NotFound after that PUT completes; using the completion instant
+        // would extend the negative cache beyond the actor's grace period.
+        let probe_started = Instant::now();
+        let observed = match store.get(&path).await {
             Ok(result) => {
-                let raw = result.bytes().await.map_err(|error| error.to_string())?;
-                match crate::reconfiguration::decode_fence(&raw)? {
-                    crate::reconfiguration::FenceDocument::Released(_)
-                    | crate::reconfiguration::FenceDocument::ReleasedSplit(_) => Ok(false),
-                    crate::reconfiguration::FenceDocument::Split
-                    | crate::reconfiguration::FenceDocument::Merge(_) => Ok(true),
+                let raw = match result.bytes().await {
+                    Ok(raw) => raw,
+                    Err(error) => return self.retry_reconfiguration_fence(error.to_string()),
+                };
+                match crate::reconfiguration::decode_fence(&raw) {
+                    Err(error) => return self.retry_reconfiguration_fence(error),
+                    Ok(
+                        crate::reconfiguration::FenceDocument::Released(_)
+                        | crate::reconfiguration::FenceDocument::ReleasedSplit(_),
+                    ) => false,
+                    Ok(
+                        crate::reconfiguration::FenceDocument::Split
+                        | crate::reconfiguration::FenceDocument::Merge(_),
+                    ) => true,
                 }
             }
-            Err(object_store::Error::NotFound { .. }) => Ok(false),
-            Err(error) => Err(error.to_string()),
+            Err(object_store::Error::NotFound { .. }) => false,
+            Err(error) => return self.retry_reconfiguration_fence(error.to_string()),
+        };
+        let mut cache = self.reconfiguration_fence_cache.lock().unwrap();
+        cache.consecutive_errors = 0;
+        if observed {
+            cache.clear_until = None;
+            ReconfigurationFenceCheck::Fenced
+        } else {
+            cache.clear_until = Some(probe_started + RECONFIGURATION_FENCE_NEGATIVE_TTL);
+            ReconfigurationFenceCheck::Clear
+        }
+    }
+
+    fn retry_reconfiguration_fence(&self, error: String) -> ReconfigurationFenceCheck {
+        let mut cache = self.reconfiguration_fence_cache.lock().unwrap();
+        cache.clear_until = None;
+        cache.consecutive_errors = cache.consecutive_errors.saturating_add(1);
+        let attempt = cache.consecutive_errors;
+        let shift = attempt.saturating_sub(1).min(6);
+        let delay = RECONFIGURATION_FENCE_RETRY_MIN
+            .saturating_mul(1u32 << shift)
+            .min(RECONFIGURATION_FENCE_RETRY_MAX);
+        ReconfigurationFenceCheck::Retry {
+            error,
+            delay,
+            attempt,
         }
     }
 
@@ -1925,41 +2010,63 @@ impl ShardEngine {
                 }
                 status.durable_seq
             };
-            let ready: Vec<InFlightGroup> = {
-                let mut q = self.in_flight.lock().unwrap();
-                let split = q.partition_point(|g| g.seq <= durable_seq);
-                q.drain(..split).collect()
+            let ready_count = {
+                let q = self.in_flight.lock().unwrap();
+                q.partition_point(|g| g.seq <= durable_seq)
             };
-            if !ready.is_empty() {
-                let fenced = match self.reconfiguration_fence_exists().await {
-                    Ok(fenced) => fenced,
-                    Err(error) => {
-                        tracing::error!(shard = %self.prefix, "reconfiguration fence check failed closed: {error}");
-                        true
+            if ready_count > 0 {
+                match self.check_reconfiguration_fence().await {
+                    ReconfigurationFenceCheck::Clear => {}
+                    ReconfigurationFenceCheck::Retry {
+                        error,
+                        delay,
+                        attempt,
+                    } => {
+                        if attempt == 1 || attempt.is_power_of_two() {
+                            tracing::warn!(
+                                shard = %self.prefix,
+                                attempt,
+                                retry_ms = delay.as_millis(),
+                                "reconfiguration fence check failed; retaining durable acknowledgements for retry: {error}"
+                            );
+                        }
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => {}
+                            _ = self.shutdown.notified() => return,
+                        }
+                        continue;
                     }
-                };
-                if fenced {
-                    self.record_fence_once(crate::telemetry::FenceKind::Reconfiguration);
-                    tracing::warn!(
-                        shard = %self.prefix,
-                        groups = ready.len(),
-                        "withholding durable acknowledgements behind reconfiguration fence"
-                    );
-                    for group in ready {
-                        for (resp, _) in group.acks {
-                            let _ = resp.send(Err(AppendErr::ShardMoved));
+                    ReconfigurationFenceCheck::Fenced => {
+                        let ready: Vec<InFlightGroup> = {
+                            let mut q = self.in_flight.lock().unwrap();
+                            q.drain(..ready_count).collect()
+                        };
+                        self.record_fence_once(crate::telemetry::FenceKind::Reconfiguration);
+                        tracing::warn!(
+                            shard = %self.prefix,
+                            groups = ready.len(),
+                            "withholding durable acknowledgements behind reconfiguration fence"
+                        );
+                        for group in ready {
+                            for (resp, _) in group.acks {
+                                let _ = resp.send(Err(AppendErr::ShardMoved));
+                            }
+                            for (resp, _) in group.queue_acks {
+                                let _ = resp.send(Err("shard moved".to_string()));
+                            }
+                            for resp in group.absorbed_acks {
+                                let _ = resp.send(Err("shard moved".to_string()));
+                            }
                         }
-                        for (resp, _) in group.queue_acks {
-                            let _ = resp.send(Err("shard moved".to_string()));
-                        }
-                        for resp in group.absorbed_acks {
-                            let _ = resp.send(Err("shard moved".to_string()));
-                        }
+                        self.mark_moved();
+                        return;
                     }
-                    self.mark_moved();
-                    return;
                 }
             }
+            let ready: Vec<InFlightGroup> = {
+                let mut q = self.in_flight.lock().unwrap();
+                q.drain(..ready_count).collect()
+            };
             for group in ready {
                 *self.last_owner_proof.lock().unwrap() = std::time::Instant::now();
                 {
@@ -2186,6 +2293,128 @@ pub async fn read_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use futures_util::stream::BoxStream;
+    use object_store::path::Path as ObjPath;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    };
+
+    #[derive(Debug)]
+    struct FenceTestStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        fence_gets: AtomicU64,
+        fail_fence_gets: AtomicU64,
+    }
+
+    impl FenceTestStore {
+        fn new(inner: Arc<dyn object_store::ObjectStore>) -> Self {
+            Self {
+                inner,
+                fence_gets: AtomicU64::new(0),
+                fail_fence_gets: AtomicU64::new(0),
+            }
+        }
+
+        fn fail_next_fence_gets(&self, count: u64) {
+            self.fail_fence_gets.store(count, Ordering::Release);
+        }
+
+        fn take_fence_failure(&self) -> bool {
+            self.fail_fence_gets
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    (remaining > 0).then(|| remaining - 1)
+                })
+                .is_ok()
+        }
+    }
+
+    impl std::fmt::Display for FenceTestStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "FenceTestStore({})", self.inner)
+        }
+    }
+
+    #[async_trait]
+    impl object_store::ObjectStore for FenceTestStore {
+        async fn put_opts(
+            &self,
+            location: &ObjPath,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjPath,
+            options: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &ObjPath,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            if location.as_ref().starts_with("split-intents/") {
+                self.fence_gets.fetch_add(1, Ordering::Relaxed);
+                if self.take_fence_failure() {
+                    return Err(object_store::Error::Generic {
+                        store: "fence-test",
+                        source: std::io::Error::other("injected transient fence GET failure")
+                            .into(),
+                    });
+                }
+            }
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<ObjPath>>,
+        ) -> BoxStream<'static, object_store::Result<ObjPath>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> object_store::Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &ObjPath,
+            to: &ObjPath,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    async fn append_and_wait(engine: &ShardEngine, stream: u8) -> Result<AppendAck, AppendErr> {
+        let CommitOp::Append(req) = append_op_on("customer-a", stream, 1, 1) else {
+            unreachable!()
+        };
+        let (resp, ack) = oneshot::channel();
+        assert!(engine.try_enqueue(AppendReq { resp, ..req }).is_ok());
+        tokio::time::timeout(Duration::from_secs(5), ack)
+            .await
+            .expect("durable acknowledgement timed out")
+            .expect("durable acknowledgement responder dropped")
+    }
 
     #[test]
     fn union_flush_sentinel_is_in_range_but_outside_the_service_key_grammar() {
@@ -2677,22 +2906,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn durable_group_is_not_acknowledged_after_split_intent() {
-        let store: Arc<dyn object_store::ObjectStore> =
+    async fn absent_reconfiguration_fence_is_cached_across_ack_cycles() {
+        let data_store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
+        let fence_store = Arc::new(FenceTestStore::new(data_store.clone()));
         let db = Arc::new(
-            Db::builder("split-fence", store.clone())
+            Db::builder("fence-negative-cache", data_store)
                 .build()
                 .await
                 .unwrap(),
         );
-        store
+        let (absorb_tx, _absorb_rx) = mpsc::channel(16);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
+            None,
+            Some(fence_store.clone()),
+        );
+
+        assert!(append_and_wait(&engine, 7).await.is_ok());
+        assert_eq!(fence_store.fence_gets.load(Ordering::Acquire), 1);
+        for _ in 0..3 {
+            assert!(append_and_wait(&engine, 7).await.is_ok());
+        }
+        assert_eq!(
+            fence_store.fence_gets.load(Ordering::Acquire),
+            1,
+            "the normal durable-ack path must reuse the negative observation"
+        );
+        assert!(!engine.is_closed());
+    }
+
+    #[tokio::test]
+    async fn transient_fence_get_failure_retries_without_failing_a_durable_append() {
+        let data_store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let fence_store = Arc::new(FenceTestStore::new(data_store.clone()));
+        fence_store.fail_next_fence_gets(1);
+        let db = Arc::new(
+            Db::builder("fence-get-retry", data_store)
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (absorb_tx, _absorb_rx) = mpsc::channel(4);
+        let engine = ShardEngine::start(
+            String::new(),
+            db,
+            ShardConfig::default(),
+            absorb_tx,
+            Arc::new(crate::telemetry::Telemetry::default()),
+            None,
+            Some(fence_store.clone()),
+        );
+
+        assert_eq!(append_and_wait(&engine, 8).await.unwrap().next_offset, 1);
+        assert_eq!(fence_store.fence_gets.load(Ordering::Acquire), 2);
+        assert!(!engine.is_closed());
+    }
+
+    #[tokio::test]
+    async fn transient_fence_get_failure_does_not_release_an_ack_past_a_real_fence() {
+        let data_store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        data_store
             .put(
                 &object_store::path::Path::from("split-intents/root.json"),
-                object_store::PutPayload::from_static(b"fenced"),
+                object_store::PutPayload::from_static(br#"{"version":1}"#),
             )
             .await
             .unwrap();
+        let fence_store = Arc::new(FenceTestStore::new(data_store.clone()));
+        fence_store.fail_next_fence_gets(1);
+        let db = Arc::new(
+            Db::builder("fence-get-retry-active", data_store)
+                .build()
+                .await
+                .unwrap(),
+        );
         let (absorb_tx, _absorb_rx) = mpsc::channel(1);
         let engine = ShardEngine::start(
             String::new(),
@@ -2701,16 +2995,14 @@ mod tests {
             absorb_tx,
             Arc::new(crate::telemetry::Telemetry::default()),
             None,
-            Some(store),
+            Some(fence_store.clone()),
         );
-        let CommitOp::Append(req) = append_op("customer-a", 0) else {
-            unreachable!()
-        };
-        let (resp, ack) = oneshot::channel();
-        let req = AppendReq { resp, ..req };
-        assert!(engine.try_enqueue(req).is_ok());
 
-        assert!(matches!(ack.await.unwrap(), Err(AppendErr::ShardMoved)));
+        assert!(matches!(
+            append_and_wait(&engine, 9).await,
+            Err(AppendErr::ShardMoved)
+        ));
+        assert_eq!(fence_store.fence_gets.load(Ordering::Acquire), 2);
         assert!(engine.is_closed());
     }
 }

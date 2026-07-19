@@ -842,6 +842,11 @@ async fn reconcile_inner(
         blocked.insert(intent.zero.clone());
         blocked.insert(intent.one.clone());
     }
+    // Both child fences are durable. Wait out the ACKers' bounded negative
+    // cache before opening either source and establishing the union boundary.
+    // Any acknowledgement allowed during this grace period is therefore part
+    // of the source DB that follows.
+    crate::shard::await_reconfiguration_fence_propagation().await;
     verify_intent_owner(&state, &intent).await?;
     open_and_quiesce_child(&state, &intent.zero, &intent.zero_path).await?;
     test_crash_after("zero_quiesced");

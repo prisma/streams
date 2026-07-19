@@ -202,11 +202,16 @@ release-packet logic; it does not turn any absent real artifact above green.
   closed before an ordered barrier drains every prior group through remote
   durability; both children must reopen before one topology CAS can expose
   their generation-specific paths.
-- Every durable parent group checks the shard-store intent before releasing
-  ACKs. A stale second owner therefore returns a retryable error rather than
-  acknowledging data outside the clone snapshot. CI forces that two-owner
-  race with separate ops/shard/data buckets and proves the acknowledged
-  prefix is exact.
+- Durable parent groups reuse a one-second, proven-absent shard-intent
+  observation instead of adding an object-store GET to every ACK. The actor
+  waits out that cache before opening/quiescing the source, so a stale second
+  owner still returns a retryable error rather than acknowledging data outside
+  the clone snapshot. GET/body failures retain the durable group and retry
+  with bounded backoff; they do not close the shard or turn a provider blip
+  into errors for already-durable appends. Unit coverage counts exact fence
+  GETs across ACK cycles and injects both transient-clear and transient-active
+  outcomes. CI forces the two-owner race with separate ops/shard/data buckets
+  and proves the acknowledged prefix is exact.
 - Split recovery rotates clone generations when a different process takes
   over an expired lease, preventing it from clearing objects an old request
   may still be writing. The forced mid-clone kill drill recovers under a new
@@ -228,8 +233,9 @@ release-packet logic; it does not turn any absent real artifact above green.
 - Sibling merge CAS-creates one coordinator intent and atomically occupies
   each child's existing split-intent namespace, making split-vs-merge
   exclusion linearizable. Both child writers stop ACKing behind those durable
-  fences, drain through WAL then L0, and become a non-overlapping SlateDB
-  manifest union before one topology CAS exposes the parent. A reserved
+  fences after the actor waits out the bounded negative observation, drain
+  through WAL then L0, and become a non-overlapping SlateDB manifest union
+  before one topology CAS exposes the parent. A reserved
   17-byte tombstone outside the service key grammar advances WAL replay for
   an otherwise-empty projected child. Released locks are CAS tombstones, not
   deletes that a delayed actor could race with a later split/merge cycle.

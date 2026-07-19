@@ -641,6 +641,10 @@ async fn reconcile_inner(
         return Err("split aborted because its parent topology changed".to_string());
     }
 
+    // ACKers cache a proven-absent fence briefly. The intent is already
+    // durable; wait out that cache before establishing the parent snapshot so
+    // every acknowledgement admitted by the old observation is included.
+    crate::shard::await_reconfiguration_fence_propagation().await;
     open_and_quiesce_parent(&state, &intent).await?;
     test_crash_after("parent_quiesced");
     if lease_lost.load(Ordering::Acquire) {

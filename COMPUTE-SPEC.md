@@ -277,9 +277,15 @@ projections (bit-prefix `p` → `p0`, `p1`; hash-first keys make each child a
 single `projection_range`) → CAS `topology.json` → resume. Children are
 placed by the ring (typically one stays local, one hands off via normal
 fencing); the retired parent's SSTs stay referenced by the children until
-compaction ages them out. Before releasing a parent ACK, every owner checks
-the shard-store intent after remote durability; this is the safety fence for
-a stale ring owner. Intents use renewable 12 s leases and new clone paths on
+compaction ages them out. Before releasing a parent ACK, every owner consults
+a one-second negative cache of the shard-store intent; only an expired or
+previously observed intent performs a remote GET. The actor waits out the
+cache after publishing the intent and before opening/quiescing the source, so
+cached-clear ACKs precede and are included in the clone boundary. A transient
+GET/body error retains the already-durable group and retries with bounded
+backoff instead of closing the shard. This is the safety fence for a stale
+ring owner without putting a store round-trip on every ACK. Intents use
+renewable 12 s leases and new clone paths on
 cross-process takeover. The intent atomically records each superseded,
 never-published operation and materializes a durable GC-candidate marker.
 Candidates are retained for 24 hours; the five-minute GC re-reads topology
@@ -290,8 +296,9 @@ disposable because descendant clone manifests may still reference their SSTs.
 Merge is the reverse and is available through the operator gate or automatic
 cold policy: create one
 parent-scoped renewable intent, CAS-occupy both children's per-shard intent
-paths, drain/flush each child, create a non-overlapping SlateDB manifest-union
-clone, verify it reopens, and publish `p0,p1 → p` in one topology CAS. The
+paths, wait out the bounded negative-ACK cache, drain/flush each child, create
+a non-overlapping SlateDB manifest-union clone, verify it reopens, and publish
+`p0,p1 → p` in one topology CAS. The
 per-child objects are also the post-durability ACK fences, so a stale owner
 can contribute only ambiguous/unacknowledged data after the snapshot. The
 barrier writes a reserved 17-byte tombstone outside the service key grammar

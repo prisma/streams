@@ -1069,9 +1069,11 @@ packet proves the judge; it is never production evidence.
   clients must retry 503/408/429 with the same producer sequence. A 12-second
   renewable lease permits bounded takeover; a replacement rotates to fresh
   clone paths, derives progress from durable objects, and cleans the intent
-  only after topology publication. Every parent ACK checks the intent after
-  WAL durability, so even a stale second owner cannot acknowledge data that
-  misses the children.
+  only after topology publication. The ACKer caches a confirmed-absent intent
+  for one second; the actor waits that full interval before quiescing, so even
+  a stale second owner cannot acknowledge data that misses the children.
+  Transient intent GET failures keep durable ACK groups pending and retry with
+  25 ms–1 s bounded backoff rather than closing the shard.
 
   `scripts/ci-split-crash-matrix.sh` aborts the release binary after each of
   the seven durable transitions and proves recovery. Its
@@ -1105,8 +1107,9 @@ packet proves the judge; it is never production evidence.
   ```
 
   Both child intent paths become durable ACK fences before either source is
-  quiesced. The actor drains WAL then L0, builds and verifies a non-overlapping
-  manifest union, and publishes both children→parent in one topology CAS.
+  quiesced. The actor waits out the ACKers' one-second negative cache, drains
+  WAL then L0, builds and verifies a non-overlapping manifest union, and
+  publishes both children→parent in one topology CAS.
   Leases, takeover generations, released CAS tombstones, and abandoned-target
   GC follow the split protocol. The seven-phase merge crash matrix, a stale
   writer drill, repeated split→merge cycles, and takeover-GC drill run in CI.
