@@ -307,9 +307,12 @@ async fn lb() {
                     && let Ok(snapshot) = serde_json::from_slice::<serde_json::Value>(&raw)
                 {
                     let generated = snapshot["generated_at_ms"].as_i64().unwrap_or(0);
+                    // Match the server's SNAPSHOT_FRESH_MS: at real-provider
+                    // publish cadence a 10 s bound dropped most aggregates
+                    // and collapsed the routed live set (pilot13 2026-07-19).
                     let fresh_snapshot = now_ms
                         .checked_sub(generated)
-                        .is_some_and(|age| (0..10_000).contains(&age));
+                        .is_some_and(|age| (0..30_000).contains(&age));
                     if fresh_snapshot
                         && snapshot["version"].as_u64() == Some(1)
                         && snapshot["heartbeats"]
@@ -325,6 +328,11 @@ async fn lb() {
                                 aggregate.clear();
                                 break;
                             };
+                            // Age embedded heartbeats against the snapshot's
+                            // generation, not this process's clock: rebase so
+                            // the liveness window below measures
+                            // (generated - ts_ms), never snapshot transit age.
+                            let ts_ms = now_ms.saturating_sub(generated.saturating_sub(ts_ms));
                             let values = (
                                 heartbeat["rps"].as_f64(),
                                 heartbeat["ack_p50_ms"].as_f64(),
