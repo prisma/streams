@@ -24,7 +24,15 @@ use crate::http::AppState;
 use crate::shard::now_ms;
 
 const AGGREGATION_VERSION: u32 = 1;
-const AGGREGATOR_LEASE_MS: i64 = 6_000;
+/// One aggregation round is ~12-16 serial object-store ops (heartbeat GETs,
+/// router listing, lease verify, snapshot read, CAS). Against a real
+/// provider those ops run ~250 ms p50 with 300-800 ms tails (Tigris,
+/// pilot13 2026-07-19) — a 6 s lease expired mid-round on every claimant
+/// and the cell never published an aggregate. 20 s absorbs a full round of
+/// tail latencies while staying far under the 60 s future-bound sanity
+/// check; failover latency after an aggregator death remains bounded by
+/// lease expiry + one claim cycle.
+const AGGREGATOR_LEASE_MS: i64 = 20_000;
 const HEARTBEAT_FRESH_MS: i64 = 10_000;
 const SNAPSHOT_FRESH_MS: i64 = 10_000;
 const MAX_FLEET_INSTANCES: usize = 64;
