@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "./config";
-import { SqliteDurableStore } from "./db/db";
+import { SqliteDurableStore, STREAM_FLAG_DELETED } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
 import { zstdDecompressSync } from "./util/zstd";
 import { localSegmentPath, schemaObjectKey, segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
@@ -71,6 +71,16 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
       const closedProducerSeq = typeof manifest.closed_producer_seq === "number" ? manifest.closed_producer_seq : null;
       const ttlSeconds = typeof manifest.ttl_seconds === "number" ? manifest.ttl_seconds : null;
       const streamFlags = typeof manifest.stream_flags === "number" ? manifest.stream_flags : 0;
+
+      // Tombstoned (deleted) and expired manifests restore as a row-only
+      // tombstone: the retention reaper may already have removed segment and
+      // index objects under this prefix, so head-checking them here would abort
+      // the whole bootstrap. The restored row re-arms the reaper, which resumes
+      // the cleanup and hard-deletes the row once the prefix is empty.
+      if (manifestIsTombstone(manifest, nowMs)) {
+        restoreTombstoneRow(db, manifest, nowMs);
+        continue;
+      }
 
       const segmentOffsetsBytes = decodeZstdBase64(manifest.segment_offsets ?? "");
       const segmentBlocksBytes = decodeZstdBase64(manifest.segment_blocks ?? "");
@@ -353,6 +363,53 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
   } finally {
     db.close();
   }
+}
+
+/** A manifest whose stream can never serve again: deleted or past expiry. */
+export function manifestIsTombstone(manifest: Manifest, nowMs: bigint): boolean {
+  const streamFlags = typeof manifest.stream_flags === "number" ? manifest.stream_flags : 0;
+  const expiresAtMs = parseIsoMs(manifest.expires_at);
+  return (streamFlags & STREAM_FLAG_DELETED) !== 0 || (expiresAtMs != null && expiresAtMs <= nowMs);
+}
+
+/**
+ * Restores a doomed stream as a row-only tombstone: enough identity for reads
+ * to answer 404/410 and for the retention reaper to resume cleanup, without
+ * head-checking segment objects that may already be deleted.
+ */
+export function restoreTombstoneRow(db: SqliteDurableStore, manifest: Manifest, nowMs: bigint): void {
+  const stream = String(manifest.name ?? "");
+  if (!stream) return;
+  const nextOffsetNum = typeof manifest.next_offset === "number" ? manifest.next_offset : 0;
+  db.restoreStreamRow({
+    stream,
+    created_at_ms: parseIsoMs(manifest.created_at) ?? nowMs,
+    updated_at_ms: nowMs,
+    content_type: typeof manifest.content_type === "string" ? manifest.content_type : "application/octet-stream",
+    profile: typeof manifest.profile === "string" && manifest.profile !== "" ? manifest.profile : "generic",
+    stream_seq: typeof manifest.stream_seq === "string" ? manifest.stream_seq : null,
+    closed: typeof manifest.closed === "number" ? manifest.closed : 0,
+    closed_producer_id: typeof manifest.closed_producer_id === "string" ? manifest.closed_producer_id : null,
+    closed_producer_epoch: typeof manifest.closed_producer_epoch === "number" ? manifest.closed_producer_epoch : null,
+    closed_producer_seq: typeof manifest.closed_producer_seq === "number" ? manifest.closed_producer_seq : null,
+    ttl_seconds: typeof manifest.ttl_seconds === "number" ? manifest.ttl_seconds : null,
+    epoch: typeof manifest.epoch === "number" ? manifest.epoch : 0,
+    next_offset: BigInt(nextOffsetNum),
+    sealed_through: -1n,
+    uploaded_through: -1n,
+    uploaded_segment_count: 0,
+    pending_rows: 0n,
+    pending_bytes: 0n,
+    logical_size_bytes: parseManifestBigInt(manifest.logical_size_bytes) ?? 0n,
+    wal_rows: 0n,
+    wal_bytes: 0n,
+    last_append_ms: nowMs,
+    last_segment_cut_ms: nowMs,
+    segment_in_progress: 0,
+    expires_at_ms: parseIsoMs(manifest.expires_at),
+    stream_flags: typeof manifest.stream_flags === "number" ? manifest.stream_flags : 0,
+  });
+  db.upsertManifestRow(stream, Number(manifest.generation ?? 0), Number(manifest.generation ?? 0), nowMs, null, null);
 }
 
 function parseManifestBigInt(value: unknown): bigint | null {

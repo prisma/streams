@@ -477,7 +477,7 @@ describe("assumptions", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("delete is tombstone, listing excludes deleted, and acceleration state is scrubbed", async () => {
+  test("delete tombstones, hides the stream, scrubs acceleration state, and reaps", async () => {
     const root = mkdtempSync(join(tmpdir(), "ds-assume-"));
     const cfg = makeConfig(root);
     const app = createApp(cfg, new MockR2Store());
@@ -498,10 +498,16 @@ describe("assumptions", () => {
     const list = await fetch(`${baseUrl}/v1/streams`);
     const arr = await list.json();
     expect(arr.find((x: any) => x.name === "del")).toBeUndefined();
+    // The row survives only as a tombstone until the nudged reap clears the
+    // object-store prefix and hard-deletes it.
     const deletedRow = app.deps.db.getStream("del");
-    expect(deletedRow).not.toBeNull();
-    expect(deletedRow && app.deps.db.isDeleted(deletedRow)).toBe(true);
+    if (deletedRow) expect(app.deps.db.isDeleted(deletedRow)).toBe(true);
     expectAccelerationStateCleared(app.deps.db, "del");
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline && app.deps.db.getStream("del") !== null) {
+      await sleep(25);
+    }
+    expect(app.deps.db.getStream("del")).toBeNull();
 
     server.stop();
     await app.close();

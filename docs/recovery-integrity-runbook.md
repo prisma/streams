@@ -45,6 +45,24 @@ Correctness depends on explicit commit points in the write path:
   - applies chunked WAL GC up to that bound
 - This is the remote durability/visibility commit point.
 
+5. Deletion commit points (expiry and DELETE):
+- Local soft delete (`STREAM_FLAG_DELETED` on the stream row) records the
+  delete intent; the row is the durable resume token for cleanup.
+- Tombstone manifest publish (deleted flag, or a past `expires_at` already in
+  the manifest) is the remote delete-intent commit: from here, restore from
+  object storage recovers the stream only as a row-only tombstone (no segment
+  head checks), so a half-cleaned prefix can never abort bootstrap.
+- Remote data objects are deleted before `manifest.json`; the manifest going
+  away is the remote invisibility point.
+- Local hard delete runs only after the stream's remote prefix is verifiably
+  empty; this is the final commit. A crash anywhere earlier re-runs the reap
+  idempotently on the next sweep tick.
+- An un-acked DELETE (5xx on the tombstone publish) still converges: the local
+  soft-deleted row drives the reaper, which republishes the tombstone first.
+- A periodic scan restores row-only tombstones for doomed manifests that have
+  no local row (local SQLite is ephemeral across redeploys), so retention holds
+  even when the node that created a stream is gone.
+
 ### 1.2 Core safety invariants
 
 For every stream, these invariants must hold:

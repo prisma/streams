@@ -22,7 +22,9 @@ import {
 } from "./schema/registry";
 import { decodeJsonPayloadResult } from "./schema/read_json";
 import { resolvePointerResult } from "./util/json_pointer";
-import { ExpirySweeper } from "./expiry_sweeper";
+import { NullObjectStore } from "./objectstore/null";
+import { StreamReaper } from "./retention";
+import { RetentionSweeper } from "./retention_sweeper";
 import type { StatsCollector } from "./stats";
 import { BackpressureGate } from "./backpressure";
 import { MemoryPressureMonitor } from "./memory";
@@ -206,6 +208,14 @@ function tooLarge(msg: string): Response {
 
 function unavailable(msg = "server shutting down"): Response {
   return json(503, { error: { code: "unavailable", message: msg } }, retryAfterHeaders(UNAVAILABLE_RETRY_AFTER_SECONDS));
+}
+
+function retentionInProgress(): Response {
+  return json(
+    503,
+    { error: { code: "retention_in_progress", message: "stream cleanup in progress; retry" } },
+    retryAfterHeaders("1")
+  );
 }
 
 function overloaded(msg = "ingest queue full", code = "overloaded"): Response {
@@ -465,6 +475,7 @@ export type App = {
     registry: SchemaRegistryStore;
     profiles: StreamProfileStore;
     touch: TouchProcessorManager;
+    reaper: StreamReaper;
     stats?: StatsCollector;
     backpressure?: BackpressureGate;
     memory?: MemoryPressureMonitor;
@@ -1105,7 +1116,18 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     },
     collectRuntimeMetrics,
   });
-  const expirySweeper = new ExpirySweeper(cfg, db);
+  // Without a remote store a stream's only state is local, so a reap is just
+  // the local cleanup and there is nothing for the retention scan to list.
+  const remoteRetention = !(store instanceof NullObjectStore);
+  const reaper = new StreamReaper(cfg, db, store, (stream) => uploader.publishManifest(stream), {
+    metrics,
+    diskCache: runtime.segmentDiskCache,
+    localOnly: !remoteRetention,
+  });
+  const retentionSweeper = new RetentionSweeper(cfg, db, store, reaper, {
+    metrics,
+    scanEnabled: remoteRetention,
+  });
   const streamSizeReconciler = new StreamSizeReconciler(
     db,
     store,
@@ -1131,7 +1153,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     })();
   }
   metricsEmitter.start();
-  expirySweeper.start();
+  retentionSweeper.start();
   touch.start();
   streamSizeReconciler.start();
 
@@ -2608,12 +2630,15 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
               const bodyBytes = new Uint8Array(ab);
 
               let srow = db.getStream(stream);
-              if (srow && db.isDeleted(srow)) {
-                db.hardDeleteStream(stream);
-                srow = null;
-              }
-              if (srow && srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) {
-                db.hardDeleteStream(stream);
+              const doomed =
+                srow != null && (db.isDeleted(srow) || (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms));
+              if (doomed) {
+                // The old incarnation's objects must be gone before the name is
+                // reused: new uploads reuse the same segment keys, so creating
+                // over remnants would interleave two incarnations under one
+                // prefix (and serve stale cached segment bytes).
+                const reapRes = await reaper.reapForRecreate(stream);
+                if (Result.isError(reapRes)) return retentionInProgress();
                 srow = null;
               }
 
@@ -2721,6 +2746,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           notifier.notifyDetailsChanged(stream);
           notifier.notifyClose(stream);
           await uploader.publishManifest(stream);
+          retentionSweeper.nudge();
           return new Response(null, { status: 204, headers: withNosniff() });
         }
 
@@ -3341,7 +3367,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     uploader.stop(true);
     await indexer?.stop();
     metricsEmitter.stop();
-    expirySweeper.stop();
+    retentionSweeper.stop();
     streamSizeReconciler.stop();
     ingest.stop();
     memorySampler?.stop();
@@ -3365,6 +3391,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
       metrics,
       registry,
       profiles,
+      reaper,
       touch,
       stats,
       backpressure,

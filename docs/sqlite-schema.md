@@ -78,6 +78,10 @@ Additional columns present in the current implementation:
 - Retention/flags:
   - `expires_at_ms`
   - `stream_flags`
+  - Lifecycle: expiry or DELETE sets the deleted flag (soft delete); the row
+    survives as the durable resume token while the reaper clears the stream's
+    object-store prefix, and is hard-deleted (all per-stream rows removed) only
+    once the prefix is verifiably empty.
 - WAL accounting:
   - `logical_size_bytes`
   - `wal_rows`

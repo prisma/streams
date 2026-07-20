@@ -193,19 +193,43 @@ and if it is missing a background reconciliation pass can rebuild it from
 published segments plus retained WAL. Profiles and schemas only shape how a
 stream is interpreted.
 
-## Stream Deletion Enforcement
+## Stream Deletion Enforcement and Retention
 
 `DELETE /v1/stream/{name}` is enforced as a tombstone plus local acceleration
 scrub:
 
-- the stream row stays in SQLite with the deleted flag set
+- the stream row stays in SQLite with the deleted flag set until the reap below
+  completes
 - the same local delete transaction removes all stream-owned acceleration state:
   - routing index state and runs
   - exact secondary index state and runs
   - routing-key lexicon state and runs
   - bundled search companion plans and per-segment companion rows
+- before acking, the manifest is republished carrying the deleted flag, so the
+  stream is a tombstone in remote object storage
 - the request path does not synchronously delete already-published remote
   segment, manifest, schema, or index objects
+
+Remote cleanup is owned by the retention sweeper and the `StreamReaper`
+(`src/retention.ts`, `src/retention_sweeper.ts`), which run as background loops
+alongside the uploader and reconciler:
+
+- the expiry phase soft-deletes streams whose `expires_at` has passed
+  (`Stream-TTL` / `Stream-Expires-At`), converging expiry and DELETE on one
+  reapable state: the deleted-flagged local row
+- the reap deletes the stream's remote objects data-first with `manifest.json`
+  strictly last, then hard-deletes local rows once the prefix is verifiably
+  empty; every step is idempotent and resumes after a crash
+- restore-from-R2 recovers tombstoned or expired manifests as row-only
+  tombstones (no segment head checks), so a half-reaped prefix re-arms the reap
+  instead of aborting bootstrap
+- a low-frequency object-store scan restores row-only tombstones for doomed
+  manifests that have no local row, which keeps retention converging on
+  deployments whose local SQLite is ephemeral across restarts
+- recreating a deleted or expired stream name reaps the old incarnation inline
+  before the create, so two incarnations never interleave under one prefix
+- the uploader skips segments of deleted streams, so an in-flight reap cannot
+  be re-populated by late uploads
 
 Startup re-enforces the same invariant before background loops start. On boot,
 the server scans tombstoned streams and re-runs the acceleration scrub so older
