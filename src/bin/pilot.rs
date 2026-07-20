@@ -366,7 +366,12 @@ async fn lb() {
                         aggregate.get(&format!("streams-{}", i + 1))
                     {
                         age = now_ms.saturating_sub(*ts_ms);
-                        let live = (0..10_000).contains(&age);
+                        // Embedded heartbeats are already ~3-7 s old at
+                        // publication (aggregation pipeline); a 10 s window
+                        // left ~3 s of margin and flapped the routed live
+                        // set (pilot13 2026-07-19). The snapshot's own 30 s
+                        // staleness bound caps total age.
+                        let live = (0..20_000).contains(&age);
                         entry = if live {
                             (*rps, *ack, true, *cpu)
                         } else {
