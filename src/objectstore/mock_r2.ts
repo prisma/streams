@@ -50,6 +50,7 @@ export class MockR2Store implements ObjectStore {
   private headCount = 0;
   private listCount = 0;
   private memBytes = 0;
+  private readonly getCountByKey = new Map<string, number>();
 
   constructor(opts: MockR2Options | MockR2Faults = {}) {
     if ("failPutEvery" in opts || "putDelayMs" in opts) {
@@ -160,6 +161,7 @@ export class MockR2Store implements ObjectStore {
 
   async get(key: string, opts: GetOptions = {}): Promise<Uint8Array | null> {
     this.getCount++;
+    this.getCountByKey.set(key, (this.getCountByKey.get(key) ?? 0) + 1);
     this.maybeFail(this.getCount, this.faults.failGetEvery, `MockR2: injected GET failure for ${key}`);
     this.maybeTimeout(this.getCount, this.faults.timeoutGetEvery, `MockR2: injected GET timeout for ${key}`);
     await sleep(this.faults.getDelayMs ?? 0);
@@ -238,8 +240,19 @@ export class MockR2Store implements ObjectStore {
   }
 
   // Helpers for tests
+  setDelays(delays: Pick<MockR2Faults, "getDelayMs" | "headDelayMs" | "listDelayMs" | "putDelayMs">): void {
+    if (delays.getDelayMs !== undefined) this.faults.getDelayMs = delays.getDelayMs;
+    if (delays.headDelayMs !== undefined) this.faults.headDelayMs = delays.headDelayMs;
+    if (delays.listDelayMs !== undefined) this.faults.listDelayMs = delays.listDelayMs;
+    if (delays.putDelayMs !== undefined) this.faults.putDelayMs = delays.putDelayMs;
+  }
+
   has(key: string): boolean {
     return this.data.has(key);
+  }
+
+  getCountFor(key: string): number {
+    return this.getCountByKey.get(key) ?? 0;
   }
 
   size(): number {
@@ -265,5 +278,6 @@ export class MockR2Store implements ObjectStore {
     this.getCount = 0;
     this.headCount = 0;
     this.listCount = 0;
+    this.getCountByKey.clear();
   }
 }

@@ -273,6 +273,10 @@ async function main(): Promise<void> {
       }
       throw error;
     }
+    const lazyRestoreEnabled = process.argv.slice(2).includes("--lazy-restore");
+    if (lazyRestoreEnabled) {
+      process.env.DS_LAZY_RESTORE = "1";
+    }
     cfg = loadConfig();
     const args = process.argv.slice(2);
 
@@ -354,7 +358,7 @@ async function main(): Promise<void> {
       });
     }
 
-    if (bootstrapEnabled) {
+    if (bootstrapEnabled && !lazyRestoreEnabled) {
       await bootstrapFromR2(cfg, store, { clearLocal: true });
     }
 

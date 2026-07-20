@@ -4,11 +4,20 @@ import type { Config } from "./config";
 import { SqliteDurableStore } from "./db/db";
 import type { ObjectStore } from "./objectstore/interface";
 import { zstdDecompressSync } from "./util/zstd";
-import { localSegmentPath, schemaObjectKey, segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
-import { retry } from "./util/retry";
+import { localSegmentPath, manifestObjectKey, schemaObjectKey, segmentObjectKey, streamHash16Hex } from "./util/stream_paths";
+import { retry, type RetryOptions } from "./util/retry";
 import { dsError } from "./util/ds_error.ts";
 
 type Manifest = Record<string, any>;
+
+function objectStoreRetryOpts(cfg: Config): RetryOptions {
+  return {
+    retries: cfg.objectStoreRetries,
+    baseDelayMs: cfg.objectStoreBaseDelayMs,
+    maxDelayMs: cfg.objectStoreMaxDelayMs,
+    timeoutMs: cfg.objectStoreTimeoutMs,
+  };
+}
 
 export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { clearLocal?: boolean } = {}): Promise<void> {
   if (opts.clearLocal !== false) {
@@ -33,12 +42,7 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
 
   const db = new SqliteDurableStore(cfg.dbPath, { cacheBytes: cfg.sqliteCacheBytes });
   try {
-    const retryOpts = {
-      retries: cfg.objectStoreRetries,
-      baseDelayMs: cfg.objectStoreBaseDelayMs,
-      maxDelayMs: cfg.objectStoreMaxDelayMs,
-      timeoutMs: cfg.objectStoreTimeoutMs,
-    };
+    const retryOpts = objectStoreRetryOpts(cfg);
     const keys = await retry(() => store.list("streams/"), retryOpts);
     const manifestKeys = keys.filter((k) => k.endsWith("/manifest.json"));
     for (const mkey of manifestKeys) {
@@ -48,8 +52,51 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         return data;
       }, retryOpts);
       const manifest = JSON.parse(new TextDecoder().decode(mbytes)) as Manifest;
+      await restoreManifestIntoDb(cfg, store, db, manifest, mkey, retryOpts);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Hydrate one stream's SQLite index rows from its published R2 manifest, into an
+ * already-open store. Returns `"hydrated"` when the manifest exists and was
+ * applied, or `"absent"` when no manifest exists for that stream (a genuine
+ * not-found). Throws only on object-store/decode failures.
+ *
+ * The rows produced are identical to what {@link bootstrapFromR2} writes for the
+ * same stream, so the reader's segment/WAL merge stays correct whether the index
+ * was restored eagerly on boot or lazily on the first read miss.
+ */
+export async function hydrateStreamFromR2(
+  cfg: Config,
+  store: ObjectStore,
+  db: SqliteDurableStore,
+  streamName: string
+): Promise<"hydrated" | "absent"> {
+  const shash = streamHash16Hex(streamName);
+  const mkey = manifestObjectKey(shash);
+  const retryOpts = objectStoreRetryOpts(cfg);
+  const mbytes = await retry(() => store.get(mkey), retryOpts);
+  if (!mbytes) return "absent";
+  const manifest = JSON.parse(new TextDecoder().decode(mbytes)) as Manifest;
+  const stream = String(manifest.name ?? "");
+  if (!stream) return "absent";
+  await restoreManifestIntoDb(cfg, store, db, manifest, mkey, retryOpts);
+  return "hydrated";
+}
+
+async function restoreManifestIntoDb(
+  cfg: Config,
+  store: ObjectStore,
+  db: SqliteDurableStore,
+  manifest: Manifest,
+  mkey: string,
+  retryOpts: RetryOptions
+): Promise<void> {
       const stream = String(manifest.name ?? "");
-      if (!stream) continue;
+      if (!stream) return;
 
       const shash = streamHash16Hex(stream);
       const nowMs = db.nowMs();
@@ -349,10 +396,6 @@ export async function bootstrapFromR2(cfg: Config, store: ObjectStore, opts: { c
         db.upsertSchemaRegistry(stream, new TextDecoder().decode(schemaBytes));
         db.setSchemaUploadedSizeBytes(stream, schemaBytes.byteLength);
       }
-    }
-  } finally {
-    db.close();
-  }
 }
 
 function parseManifestBigInt(value: unknown): bigint | null {

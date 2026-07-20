@@ -11,6 +11,7 @@ import { parseDurationMsResult } from "./util/duration";
 import { Metrics } from "./metrics";
 import { parseTimestampMsResult } from "./util/time";
 import { cleanupTempSegments } from "./util/cleanup";
+import { hydrateStreamFromR2 } from "./bootstrap";
 import { MetricsEmitter } from "./metrics_emitter";
 import {
   SchemaRegistryStore,
@@ -629,6 +630,32 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
     memorySampler,
   });
   const { store, reader, segmenter, uploader, indexer, uploadSchemaRegistry, getRuntimeMemorySnapshot, getLocalStorageUsage } = runtime;
+
+  const hydrateInFlight = new Map<string, Promise<"hydrated" | "absent">>();
+  /**
+   * Lazy-restore lookup: resolves a stream row for the read path. When the eager
+   * R2 bootstrap was skipped (`--lazy-restore`) and the stream's index rows are
+   * not yet in local SQLite, this hydrates them from that stream's R2 manifest on
+   * demand, then re-reads the row. Concurrent readers of the same cold stream
+   * share one hydration (single-flight, evicted on settle). A stream with no
+   * manifest in R2 resolves to `null`, i.e. a genuine not-found.
+   *
+   * When lazy restore is off this is a single synchronous `getStream`, so the
+   * eager and local modes keep their existing hot-path behavior.
+   */
+  const getStreamForRead = async (stream: string): Promise<StreamRow | null> => {
+    const existing = db.getStream(stream);
+    if (existing || !cfg.lazyRestore) return existing;
+    let pending = hydrateInFlight.get(stream);
+    if (!pending) {
+      pending = hydrateStreamFromR2(cfg, store, db, stream).finally(() => {
+        hydrateInFlight.delete(stream);
+      });
+      hydrateInFlight.set(stream, pending);
+    }
+    await pending;
+    return db.getStream(stream);
+  };
   const runtimeHighWater: RuntimeMemoryHighWaterSnapshot = {
     process: {},
     process_breakdown: {},
@@ -1830,6 +1857,8 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
           return capability;
         };
 
+        if (observeReq.include.events && observeReq.streams.events) await getStreamForRead(observeReq.streams.events);
+        if (observeReq.include.trace && observeReq.streams.traces) await getStreamForRead(observeReq.streams.traces);
         const eventCorrelation =
           observeReq.include.events && observeReq.streams.events ? loadCorrelationCapability(observeReq.streams.events, "events") : null;
         if (eventCorrelation instanceof Response) return eventCorrelation;
@@ -2191,7 +2220,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isSchema) {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 
@@ -2254,7 +2283,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isProfile) {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 
@@ -2293,6 +2322,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
 
         if (isDetails || isIndexStatus) {
           if (req.method !== "GET") return badRequest("unsupported method");
+          await getStreamForRead(stream);
           const liveParam = url.searchParams.get("live") ?? "";
           let longPoll = false;
           if (liveParam === "" || liveParam === "false" || liveParam === "0") longPoll = false;
@@ -2382,7 +2412,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isRoutingKeys) {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
           if (req.method !== "GET") return badRequest("unsupported method");
@@ -2429,7 +2459,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isSearch) {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 
@@ -2507,7 +2537,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (isAggregate) {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
           if (req.method !== "POST") return badRequest("unsupported method");
@@ -2725,7 +2755,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (req.method === "HEAD") {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
           const tailOffset = encodeOffset(srow.epoch, srow.next_offset - 1n);
@@ -2891,7 +2921,7 @@ export function createAppCore(cfg: Config, opts: CreateAppCoreOptions): App {
         }
 
         if (req.method === "GET") {
-          const srow = db.getStream(stream);
+          const srow = await getStreamForRead(stream);
           if (!srow || db.isDeleted(srow)) return notFound();
           if (srow.expires_at_ms != null && db.nowMs() > srow.expires_at_ms) return notFound("stream expired");
 

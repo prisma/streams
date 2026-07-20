@@ -123,6 +123,13 @@ Full mode:
 - `--bootstrap-from-r2` does not restore transient local SQLite state such as
   the unuploaded WAL tail, producer dedupe state, or runtime live/template
   state.
+- `--lazy-restore` is an alternative to eager `--bootstrap-from-r2`: the server
+  serves `/health` immediately and hydrates each stream's index from its R2
+  manifest on the first read miss, producing the same SQLite rows the eager pass
+  would. Prefer it when eager restore of a large backlog would blow a startup
+  health check. It restores the same published state and, like eager bootstrap,
+  does not restore the unuploaded WAL tail or other transient local state. A read
+  for a stream with no published manifest is a genuine not-found.
 - Deleting a node without a local snapshot is only safe after the streams you
   care about have uploaded through the tail you need and published a manifest
   for that state.
