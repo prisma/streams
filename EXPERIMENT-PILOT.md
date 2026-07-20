@@ -1360,3 +1360,70 @@ build/compaction inline with commit-ack notification), fix shipped
 (worker floor ≥2, default now in main.rs) and validated at 3×/4.4×.
 Follow-up engine work: blocking-quanta hygiene; provider-tail hedging
 if the A-class grows.
+
+## Run 15 — the slate-codex on-platform campaign (2026-07-19/20)
+
+Goal: deploy slate-codex to the regular 4-instance setup and compare
+against the v20 baseline. Outcome: **no valid benchmark window — but the
+campaign root-caused one production-blocking codex bug, produced nine
+committed integration fixes, and three platform findings.**
+
+### The blocking bug: history-absorption debt war
+
+On any keyspace that has experienced shard ownership movement, codex's
+absorption-debt recovery reconstructs overlapping work-sets on multiple
+instances. Each instance's absorber opens the same per-stream history
+DBs; SlateDB fencing makes every opener kill the previous one
+("detected newer DB client"); all sides retry forever.
+
+Evidence (c-fleet, pilot17, 2026-07-20):
+- ~10 absorb-fence failures/second sustained; **223 in a 15 s window on
+  a freshly restarted, stable, quiet fleet** — reconstruction itself
+  double-claims; not a churn artifact, does not self-heal.
+- 20–60 % CPU on "idle" instances (the war), rising to caps under load.
+- Creates and appends hang until the platform front door's 30 s kill
+  (502) even with 9 ms store ops; only registry-conflict 409s complete.
+- Held requests accumulate to ADMIT_MAX_INFLIGHT; the instance then
+  429s everything ("connections, observed 257/256") — total cell
+  unavailability. Every zero-goodput load test of the campaign (both
+  regions, old and fresh services, platform and laptop generators)
+  reduces to this mechanism.
+
+Fix direction: absorption work must have a single claimant — strictly
+follow current ring ownership; a fenced absorber must DROP its claim
+(handing off via durable marker) instead of retrying; debt-marker
+reconstruction must be CAS-claimed per epoch so exactly one
+reconstructor wins. The gate's "idle debt survives process movement"
+test covers single-mover choreography, not N-way post-churn
+reconstruction — add a churn matrix.
+
+### Also found and fixed on-platform (committed, 9 fixes)
+
+download-stall ranged S3-direct binary fetch; METRICS_CUSTOMER_ID env;
+storage-format keyspace gate (fresh keyspace path); aggregator lease
+6 s→20 s; parallel heartbeat fan-in; snapshot-generation-time heartbeat
+aging (server); the same two consumer fixes in the router; router
+liveness window 10 s→20 s. Plus one config finding: per-customer
+admission defaults (inflight 64) bind instantly under single-principal
+benchmarks — ADMIT_MAX_INFLIGHT_PER_CUSTOMER=0 is the documented
+benchmark escape.
+
+### Platform findings (handed to the Compute team)
+
+1. Bun 1.4-canary runtime rollout broke SigV4 presigned fetches from
+   instances (403; laptop-verified same URL 206).
+2. Service wedging: existing services stopped waking/deploying; fresh
+   services worked; later platform fix verified (all recovered).
+3. Instance-egress latency oscillation: store ops from instances flapped
+   6 ms → 241 ms → 9 ms over hours (minute-by-minute log captured)
+   while laptop→Tigris stayed ~50 ms; long-lived flows silently killed;
+   front door kills long-polls at 30 s with 502.
+
+### Verdict revision
+
+The earlier "merge with the fence fix" recommendation is WITHDRAWN.
+slate-codex must not merge until the absorption-debt war is fixed: it
+is a data-plane-killing regression that only manifests after ownership
+churn — precisely the condition production creates and local CI does
+not. The branch's hardening remains valuable and the bug is precisely
+localized with a minimal reproduction.
