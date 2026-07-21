@@ -32,7 +32,9 @@ pub struct AesBlockTransformer {
 
 impl AesBlockTransformer {
     pub fn new(key: &StreamKey) -> AesBlockTransformer {
-        AesBlockTransformer { cipher: Aes256Gcm::new((&key.0).into()) }
+        AesBlockTransformer {
+            cipher: Aes256Gcm::new((&key.0).into()),
+        }
     }
 }
 
@@ -44,7 +46,13 @@ impl BlockTransformer for AesBlockTransformer {
         rand::rng().fill_bytes(&mut nonce);
         let ct = self
             .cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: &data, aad: b"" })
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &data,
+                    aad: b"",
+                },
+            )
             .map_err(|_| block_err("block encrypt failed"))?;
         let mut out = Vec::with_capacity(12 + ct.len());
         out.extend_from_slice(&nonce);
@@ -116,7 +124,12 @@ pub fn decode_hist_record(v: &Bytes) -> Option<HistRecord> {
     let rk_len = u16::from_le_bytes(v[13..15].try_into().ok()?) as usize;
     let routing_key = String::from_utf8(v.get(15..15 + rk_len)?.to_vec()).ok()?;
     let payload = v.slice(15 + rk_len..);
-    Some(HistRecord { ts, key_version, routing_key, payload })
+    Some(HistRecord {
+        ts,
+        key_version,
+        routing_key,
+        payload,
+    })
 }
 
 // ---- settings (D23 maintenance profile + F2 pattern) ----
@@ -148,8 +161,9 @@ fn history_settings() -> Settings {
     // compactor (and lifts the L0 caps so flushes never block on it). Used
     // with the s3lite --discard-substr mode, where history SST bodies are
     // dropped and must never be re-read. Production keeps the compactor.
-    let compactor_off =
-        std::env::var("HISTORY_COMPACTOR").map(|v| v == "off").unwrap_or(false);
+    let compactor_off = std::env::var("HISTORY_COMPACTOR")
+        .map(|v| v == "off")
+        .unwrap_or(false);
     Settings {
         wal_enabled: false,
         flush_interval: Some(Duration::from_millis(100)),
@@ -189,10 +203,14 @@ pub struct KeyCache {
 
 impl KeyCache {
     pub fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
-        self.map
-            .lock()
-            .unwrap()
-            .insert(hash, KeyEntry { key, epoch, at: Instant::now() });
+        self.map.lock().unwrap().insert(
+            hash,
+            KeyEntry {
+                key,
+                epoch,
+                at: Instant::now(),
+            },
+        );
     }
 
     pub fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
@@ -235,6 +253,22 @@ impl Default for AbsorberConfig {
 struct PendingAbsorb {
     bytes: u64,
     since: Instant,
+    /// Consecutive non-fence absorb failures; drives exponential backoff so
+    /// a persistent error retries at tick·2^n instead of every tick.
+    failures: u32,
+    /// Earliest next attempt (backoff); zero-delay until the first failure.
+    retry_after: Option<Instant>,
+}
+
+/// Fence-class absorb errors mean this engine lost the shard to a new owner:
+/// retrying can never succeed and — worse — keeps evicting the rightful
+/// owner's history db in a ping-pong ("the absorption war", 2026-07-20).
+/// The correct move is to DROP the claim; the owner accumulates its own
+/// signals from its own appends.
+fn absorb_error_is_fence(msg: &str) -> bool {
+    msg.contains("detected newer DB client")
+        || msg.contains("Fenced")
+        || msg.contains("Closed error")
 }
 
 pub struct Absorber {
@@ -251,51 +285,96 @@ impl Absorber {
         keys: Arc<KeyCache>,
         cfg: AbsorberConfig,
         mut rx: mpsc::Receiver<AbsorbSignal>,
-    ) {
-        let absorber = Absorber { data_store, shard, keys, cfg };
+    ) -> tokio::task::JoinHandle<()> {
+        let absorber = Absorber {
+            data_store,
+            shard,
+            keys,
+            cfg,
+        };
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
             let mut tick = tokio::time::interval(absorber.cfg.tick);
             loop {
+                // Lifecycle: this task holds the engine Arc, so the signal
+                // channel can never close on its own — without this check a
+                // fenced shard's absorber survives as a zombie, retrying
+                // forever against a dead db (the absorption war's fuel).
+                if absorber.shard.is_closed() {
+                    let dropped: u64 = pending.values().map(|p| p.bytes).sum();
+                    tracing::info!(
+                        shard = %absorber.shard.prefix,
+                        pending_bytes = dropped,
+                        "absorber exiting: shard fenced/closed"
+                    );
+                    return;
+                }
                 tokio::select! {
                     sig = rx.recv() => {
                         let Some(sig) = sig else { return };
                         let e = pending.entry(sig.hash).or_insert(PendingAbsorb {
                             bytes: 0,
                             since: Instant::now(),
+                            failures: 0,
+                            retry_after: None,
                         });
                         e.bytes += sig.appended_bytes;
                     }
                     _ = tick.tick() => {
+                        let now = Instant::now();
                         let due: Vec<[u8; 16]> = pending
                             .iter()
                             .filter(|(_, p)| {
-                                p.bytes >= absorber.cfg.threshold_bytes
-                                    || p.since.elapsed() >= absorber.cfg.threshold_age
+                                (p.bytes >= absorber.cfg.threshold_bytes
+                                    || p.since.elapsed() >= absorber.cfg.threshold_age)
+                                    && p.retry_after.map(|t| now >= t).unwrap_or(true)
                             })
                             .map(|(h, _)| *h)
                             .collect();
                         for hash in due {
+                            if absorber.shard.is_closed() {
+                                break; // exit path above runs on next loop
+                            }
                             match absorber.absorb_one(&hash).await {
                                 Ok(absorbed) => {
                                     if absorbed {
                                         pending.remove(&hash);
+                                    } else if let Some(p) = pending.get_mut(&hash) {
+                                        // key missing: keep pending; retried
+                                        // when the next keyed request arrives.
+                                        p.failures = 0;
+                                        p.retry_after = None;
                                     }
-                                    // key missing: keep pending; retried when
-                                    // the next keyed request arrives.
                                 }
                                 Err(e) => {
-                                    tracing::warn!(
-                                        "absorb failed for {}: {e}",
-                                        hex(&hash)
-                                    );
+                                    let msg = e.to_string();
+                                    if absorb_error_is_fence(&msg) {
+                                        tracing::warn!(
+                                            "dropping absorb claim for {} (fence-class): {msg}",
+                                            hex(&hash)
+                                        );
+                                        pending.remove(&hash);
+                                    } else if let Some(p) = pending.get_mut(&hash) {
+                                        p.failures = p.failures.saturating_add(1);
+                                        let shift = p.failures.min(6);
+                                        p.retry_after =
+                                            Some(now + absorber.cfg.tick * 2u32.pow(shift));
+                                        // Log at failure 1, 2, 4, 8, ... only.
+                                        if p.failures.is_power_of_two() {
+                                            tracing::warn!(
+                                                failures = p.failures,
+                                                "absorb failed for {}: {msg}",
+                                                hex(&hash)
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        });
+        })
     }
 
     /// Returns Ok(false) if the stream key isn't available.
@@ -326,18 +405,16 @@ impl Absorber {
             use futures_util::StreamExt;
             let shard = self.shard.clone();
             let handle = handle.clone();
-            futures_util::stream::iter((from..upto).step_by(WINDOW as usize).map(
-                move |s| {
-                    let shard = shard.clone();
-                    let handle = handle.clone();
-                    let e = (s + WINDOW).min(upto);
-                    async move {
-                        read_frames_range(&shard, &handle, s, e, 64 * 1024 * 1024)
-                            .await
-                            .map(|r| (e, r))
-                    }
-                },
-            ))
+            futures_util::stream::iter((from..upto).step_by(WINDOW as usize).map(move |s| {
+                let shard = shard.clone();
+                let handle = handle.clone();
+                let e = (s + WINDOW).min(upto);
+                async move {
+                    read_frames_range(&shard, &handle, s, e, 64 * 1024 * 1024)
+                        .await
+                        .map(|r| (e, r))
+                }
+            }))
             .buffered(4)
         };
         use futures_util::StreamExt;
@@ -353,7 +430,12 @@ impl Absorber {
                 let sk = *subkeys
                     .entry((frame.header.routing_key.clone(), frame.header.key_version))
                     .or_insert_with(|| {
-                        derive_subkey(&key, &epoch, &frame.header.routing_key, frame.header.key_version)
+                        derive_subkey(
+                            &key,
+                            &epoch,
+                            &frame.header.routing_key,
+                            frame.header.key_version,
+                        )
                     });
                 let pt = decrypt_frame(&sk, hash, &frame, raw)
                     .map_err(|e| anyhow::anyhow!("absorb decrypt: {e}"))?;
@@ -393,13 +475,17 @@ impl Absorber {
             let mut wb = WriteBatch::new();
             let end = (i + self.cfg.batch_puts / 2).min(items.len());
             for (offset, rec) in &items[i..end] {
-                let value = encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
+                let value =
+                    encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
                 wb.put(hist_record_key(*offset), value.clone());
                 wb.put(hist_key_index_key(&rec.routing_key, *offset), value);
             }
             db.write_with_options(
                 wb,
-                &WriteOptions { await_durable: false, ..Default::default() },
+                &WriteOptions {
+                    await_durable: false,
+                    ..Default::default()
+                },
             )
             .await?;
             i = end;
@@ -444,11 +530,17 @@ pub async fn read_history(
         .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
         .build()
         .await?;
-    let mut out = HistoryReadResult { records: Vec::new(), last_offset: None, completed: true };
+    let mut out = HistoryReadResult {
+        records: Vec::new(),
+        last_offset: None,
+        completed: true,
+    };
     let mut total = 0usize;
     match key_filter {
         None => {
-            let mut iter = reader.scan(hist_record_key(from)..hist_record_key(upto)).await?;
+            let mut iter = reader
+                .scan(hist_record_key(from)..hist_record_key(upto))
+                .await?;
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
                 if let Some(rec) = decode_hist_record(&kv.value) {
@@ -490,4 +582,65 @@ pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbS
 
 pub fn ts_now() -> i64 {
     now_ms()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shard::{ShardConfig, ShardEngine};
+    use slatedb::Db;
+
+    #[test]
+    fn fence_class_errors_are_recognized() {
+        assert!(absorb_error_is_fence(
+            "error: detected newer DB client at manifest 7"
+        ));
+        assert!(absorb_error_is_fence("Fenced"));
+        assert!(absorb_error_is_fence("io wrapper: Closed error: db closed"));
+        assert!(!absorb_error_is_fence("timeout waiting for PUT"));
+        assert!(!absorb_error_is_fence("connection reset by peer"));
+    }
+
+    /// The absorption-war regression test: an absorber whose shard engine
+    /// is fenced by a second opener must EXIT (it holds the engine Arc, so
+    /// nothing else can end it), not retry forever against the dead db.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn absorber_exits_when_shard_engine_is_fenced() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db1 = Db::builder("t/shard", store.clone()).build().await.unwrap();
+        let (absorb_tx, absorb_rx) = absorber_channel();
+        let engine = ShardEngine::start(
+            "t".into(),
+            Arc::new(db1),
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        let handle = Absorber::start(
+            store.clone(),
+            engine.clone(),
+            Arc::new(KeyCache::default()),
+            AbsorberConfig {
+                tick: Duration::from_millis(50),
+                ..Default::default()
+            },
+            absorb_rx,
+        );
+        // Give it pending work so exit isn't the empty-queue accident.
+        engine.stream_handle([7u8; 16]).await.ok();
+
+        // Second opener on the same path fences the first (SlateDB CAS).
+        let _db2 = Db::builder("t/shard", store.clone()).build().await.unwrap();
+
+        // The fenced engine flips closed, and the absorber task exits.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !engine.is_closed() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(engine.is_closed(), "engine never observed the fence");
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("absorber did not exit after its engine was fenced")
+            .unwrap();
+    }
 }

@@ -12,7 +12,7 @@ bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 chrono = "0.4"
 hdrhistogram = "7"
-object_store = { version = "0.14", features = ["aws"] }
+object_store = { version = "0.14.1", features = ["aws"] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }

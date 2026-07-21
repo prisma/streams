@@ -372,6 +372,24 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 rps/ackMs/live/cpu + desired), `/v1/debug/*` per instance. OTel export is
 spec'd in [OPERATIONS.md §5](./OPERATIONS.md).
 
+**Operator dashboard**: every server serves `/operator` — UNSECURED by
+explicit product decision (on-call must see the cell without credentials),
+so its payload is restricted to operational metadata: never stream names,
+tenant identifiers, tokens, keys, or signed URLs. Panels: this-instance
+load/RSS, admission (instance cap, per-stream cap, shed counters, RSS shed
+threshold), fleet heartbeat table (freshness judged against the serving
+instance's clock, not the browser's), and the per-op object-store latency
+table with the O14a sentinels. `/operator/data.json` is the same payload as
+JSON; `/operator/runbook` serves this document (compiled into the binary).
+
+**Memory envelope** (AWS-readyness.md §2): the platform kernel kills the
+process at ~750 MB RSS on the pilot instance class, and the crash loop that
+follows is unrecoverable under load (each replacement replays WAL under full
+pressure and dies again — observed on slate-codex 2026-07-21). Therefore:
+`ADMIT_RSS_SHED_MB` defaults to 600 and must always sit well below the kill
+line; steady-state feature budgets must sum ≤ 450 MB, leaving headroom for
+shard-open replay and compaction bursts.
+
 **Healthy baselines** (pilot, 4×1-CPU fleet, 16 shards, conc 128×4 offered):
 
 | signal | healthy | investigate |
@@ -454,3 +472,20 @@ backups are ciphertext. Metrics stream is encrypted under `METRICS_KEY`.
 Full identity/custody/audit design: [OPERATIONS.md §3](./OPERATIONS.md).
 Never commit tokens, keys, or presigned URLs; the deploy scripts keep them
 in a local scratch directory outside the repo.
+
+## 13. The release gate
+
+Every substantive change runs, in order:
+
+1. `scripts/release-gate.sh` — fmt, clippy no-new-warnings (baseline in
+   `scripts/clippy-warning-baseline.txt`), the unit suite, `cargo deny check`
+   (advisories, licenses, bans, sources; exceptions live in `deny.toml` and
+   `SECURITY.md`).
+2. The **single-instance saturation benchmark** on Prisma Compute
+   (`scripts/bench-fra-ab.sh`; procedure and pass thresholds in
+   [AWS-readyness.md §5](./AWS-readyness.md)). One server, the pilot
+   generator aimed straight at it, fresh management-API bucket, conc 128 /
+   32 streams / batch 16, ≥16 min. No client errors, no restarts, RSS
+   ≤ 620 MB, throughput/latency within the recorded baseline band
+   (`bench/fra-ab-baseline.md`). This exact harness is what exposed the
+   slate-codex OOM crash loop — treat a red run as a hard stop.

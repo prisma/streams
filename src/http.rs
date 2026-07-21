@@ -30,14 +30,20 @@ use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_LONG_POLL: Duration = Duration::from_secs(30);
+// The platform front door kills any request at ~30 s with a 502 (measured
+// 30.16 s on Prisma Compute). Every server-side wait must conclude below it
+// so clients see clean empty responses instead of gateway errors.
+const MAX_LONG_POLL: Duration = Duration::from_secs(25);
 
 /// Everything needed to open a shard log on demand. Shards are opened
 /// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
 /// previous owner, so ownership follows routing with no coordination.
 pub struct ShardOpener {
-    pub open:
-        Box<dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>> + Send + Sync>,
+    pub open: Box<
+        dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
+            + Send
+            + Sync,
+    >,
 }
 
 pub struct AppState {
@@ -70,6 +76,17 @@ pub struct AppState {
     pub rss_mb_cached: std::sync::atomic::AtomicU64,
     /// 429s issued by the admission backstop (observability).
     pub admit_shed: std::sync::atomic::AtomicU64,
+    /// Per-stream inflight append cap (0 = off): one hot stream cannot
+    /// occupy every admission slot of its shard owner. Scoped 429 +
+    /// Retry-After. The counter map is bounded: entries are removed at
+    /// zero, and past `STREAM_INFLIGHT_MAX_TRACKED` new streams are
+    /// admitted untracked (fail open on the bound, never leak).
+    pub admit_max_inflight_per_stream: i64,
+    pub stream_inflight: std::sync::Mutex<HashMap<[u8; 16], i64>>,
+    pub stream_shed: std::sync::atomic::AtomicU64,
+    /// Fleet-coordination store (heartbeats/desired.json) for the operator
+    /// dashboard's cell view; None when running standalone.
+    pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
     /// This instance's name plus the ring's active instance set, updated by
     /// the fleet loop from desired.json + heartbeat liveness (a selected
     /// instance that has gone heartbeat-dark >30 s is dropped until it
@@ -169,7 +186,11 @@ impl AppState {
             let state = self.clone();
             let prefix = prefix.to_string();
             tokio::spawn(async move {
-                state.open_lock.lock().await.insert(prefix, std::time::Instant::now());
+                state
+                    .open_lock
+                    .lock()
+                    .await
+                    .insert(prefix, std::time::Instant::now());
             });
         }
     }
@@ -179,7 +200,98 @@ impl AppState {
 struct InflightGuard(Arc<AppState>);
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        self.0.inflight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Bound on distinct streams tracked by the per-stream admission map.
+const STREAM_INFLIGHT_MAX_TRACKED: usize = 65_536;
+
+#[derive(Debug, PartialEq)]
+enum SlotTry {
+    /// Limiter off or the map is at its bound: admit without tracking
+    /// (fail open on the bound, never leak).
+    Untracked,
+    Acquired,
+    AtCap,
+}
+
+fn stream_slot_try(m: &mut HashMap<[u8; 16], i64>, cap: i64, hash: [u8; 16]) -> SlotTry {
+    if cap <= 0 {
+        return SlotTry::Untracked;
+    }
+    match m.get_mut(&hash) {
+        Some(v) => {
+            if *v >= cap {
+                return SlotTry::AtCap;
+            }
+            *v += 1;
+            SlotTry::Acquired
+        }
+        None => {
+            if m.len() >= STREAM_INFLIGHT_MAX_TRACKED {
+                return SlotTry::Untracked;
+            }
+            m.insert(hash, 1);
+            SlotTry::Acquired
+        }
+    }
+}
+
+/// Entries are removed at zero so the map stays proportional to
+/// concurrently-active streams.
+fn stream_slot_release(m: &mut HashMap<[u8; 16], i64>, hash: &[u8; 16]) {
+    if let Some(v) = m.get_mut(hash) {
+        *v -= 1;
+        if *v <= 0 {
+            m.remove(hash);
+        }
+    }
+}
+
+/// RAII per-stream inflight slot (None = untracked).
+struct StreamSlot {
+    state: Arc<AppState>,
+    hash: [u8; 16],
+}
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        stream_slot_release(&mut self.state.stream_inflight.lock().unwrap(), &self.hash);
+    }
+}
+
+/// Acquire a per-stream slot, or a scoped 429 when the stream is at its cap.
+#[allow(clippy::result_large_err)] // Err is the ready-to-send 429 Response, same as engine_for
+fn acquire_stream_slot(
+    state: &Arc<AppState>,
+    hash: [u8; 16],
+) -> Result<Option<StreamSlot>, Response> {
+    let outcome = stream_slot_try(
+        &mut state.stream_inflight.lock().unwrap(),
+        state.admit_max_inflight_per_stream,
+        hash,
+    );
+    match outcome {
+        SlotTry::Untracked => Ok(None),
+        SlotTry::Acquired => Ok(Some(StreamSlot {
+            state: state.clone(),
+            hash,
+        })),
+        SlotTry::AtCap => {
+            state
+                .stream_shed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut r = err_resp(
+                StatusCode::TOO_MANY_REQUESTS,
+                "stream_overloaded",
+                "too many concurrent requests for this stream",
+            );
+            r.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            Err(r)
+        }
     }
 }
 
@@ -188,12 +300,19 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let cur = state.inflight.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    state.inflight_peak.fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
+    let cur = state
+        .inflight
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    state
+        .inflight_peak
+        .fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
     let _guard = InflightGuard(state.clone());
     let path_is_stream = req.uri().path().starts_with("/v1/stream");
     if state.admit_max_inflight > 0 && cur > state.admit_max_inflight && path_is_stream {
-        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
         // non-compliant closed-loop client can generate (an instant 429
         // invites an instant retry — measured as a CPU-starving reject
@@ -201,10 +320,7 @@ async fn track_inflight(
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            [
-                ("retry-after", "1"),
-                ("content-type", "application/json"),
-            ],
+            [("retry-after", "1"), ("content-type", "application/json")],
             r#"{"error":{"code":"overloaded","message":"instance at admission capacity; retry"}}"#,
         )
             .into_response();
@@ -214,17 +330,18 @@ async fn track_inflight(
     if state.admit_rss_shed_mb > 0
         && path_is_stream
         && req.method() != axum::http::Method::GET
-        && state.rss_mb_cached.load(std::sync::atomic::Ordering::Relaxed)
+        && state
+            .rss_mb_cached
+            .load(std::sync::atomic::Ordering::Relaxed)
             > state.admit_rss_shed_mb
     {
-        state.admit_shed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            [
-                ("retry-after", "2"),
-                ("content-type", "application/json"),
-            ],
+            [("retry-after", "2"), ("content-type", "application/json")],
             r#"{"error":{"code":"overloaded","message":"instance memory pressure; retry"}}"#,
         )
             .into_response();
@@ -239,7 +356,11 @@ async fn track_inflight(
 async fn debug_sleep(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(100).min(5_000);
+    let ms: u64 = q
+        .get("ms")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(5_000);
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     "ok".into_response()
 }
@@ -248,12 +369,16 @@ async fn debug_sleep(
 /// and RSS.
 async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
-    let peak = state.inflight_peak.swap(now, std::sync::atomic::Ordering::Relaxed);
+    let peak = state
+        .inflight_peak
+        .swap(now, std::sync::atomic::Ordering::Relaxed);
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "streams_tracked": state.stream_inflight.lock().unwrap().len(),
     }))
     .into_response()
 }
@@ -268,9 +393,17 @@ async fn debug_store(
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
     if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
     }
-    let window: u64 = q.get("window").and_then(|v| v.parse().ok()).unwrap_or(60).clamp(1, 300);
+    let window: u64 = q
+        .get("window")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60)
+        .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
 }
@@ -283,8 +416,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/sleep", get(debug_sleep))
+        // Operator dashboard: UNSECURED by explicit product decision (on-call
+        // must see the cell without credentials). The payload is therefore
+        // restricted to operational metadata — never stream names, tenant
+        // identifiers, tokens, keys, or signed URLs.
+        .route("/operator", get(crate::operator::page))
+        .route("/operator/data.json", get(crate::operator::data))
+        .route("/operator/runbook", get(crate::operator::runbook))
         .route("/v1/stream/{*name}", any(stream_entry))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), track_inflight))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_inflight,
+        ))
         .layer(axum::middleware::map_response(|mut resp: Response| async {
             resp.headers_mut().insert(
                 "x-content-type-options",
@@ -327,12 +470,13 @@ fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
 
 /// Commit-pipeline timing samples per shard: how long db.write took vs how
 /// long the group then waited for the durable watermark. Diagnostic only.
-async fn debug_timings(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
     }
     let mut shards = serde_json::Map::new();
     let engines: Vec<(String, Arc<ShardEngine>)> = state
@@ -350,16 +494,18 @@ async fn debug_timings(
             .iter()
             .rev()
             .take(40)
-            .map(|g| json!({
-                "ts_ms": g.ts_ms,
-                "queue_wait_us": g.queue_wait_us,
-                "encode_us": g.encode_us,
-                "write_us": g.write_us,
-                "durable_wait_us": g.durable_wait_us,
-                "reqs": g.reqs,
-                "records": g.records,
-                "bytes": g.bytes,
-            }))
+            .map(|g| {
+                json!({
+                    "ts_ms": g.ts_ms,
+                    "queue_wait_us": g.queue_wait_us,
+                    "encode_us": g.encode_us,
+                    "write_us": g.write_us,
+                    "durable_wait_us": g.durable_wait_us,
+                    "reqs": g.reqs,
+                    "records": g.records,
+                    "bytes": g.bytes,
+                })
+            })
             .collect();
         shards.insert(prefix.clone(), json!(samples));
     }
@@ -370,12 +516,13 @@ async fn debug_timings(
         .into_response()
 }
 
-async fn list_streams(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
     }
     match state.registry.list(1000).await {
         Ok(streams) => {
@@ -396,7 +543,11 @@ async fn list_streams(
             )
                 .into_response()
         }
-        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -421,13 +572,21 @@ async fn stream_entry(
     body: Body,
 ) -> Response {
     let st = state.clone();
-    let resp = stream_entry_inner(State(state), Path(name), Query(params), method, headers, body)
-        .await;
+    let resp = stream_entry_inner(
+        State(state),
+        Path(name),
+        Query(params),
+        method,
+        headers,
+        body,
+    )
+    .await;
     // Only successful work counts toward the fleet load vector — otherwise
     // routing noise (409 replays, 404s) masquerades as demand and drives
     // the desired count up on garbage.
     if resp.status().is_success() {
-        st.fleet_ops.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        st.fleet_ops
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     resp
 }
@@ -441,17 +600,35 @@ async fn stream_entry_inner(
     body: Body,
 ) -> Response {
     if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer token required");
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
     }
     // Queue subresources: /v1/stream/<name>/queue/{consumer}/{receive,ack,extend}
     if let Some((stream, route)) = name.split_once("/queue/") {
-        return queue_entry(state, stream.to_string(), route.to_string(), method, headers, body)
-            .await;
+        return queue_entry(
+            state,
+            stream.to_string(),
+            route.to_string(),
+            method,
+            headers,
+            body,
+        )
+        .await;
     }
     // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
     if let Some((stream, route)) = name.split_once("/touch/") {
-        return touch_entry(state, stream.to_string(), route.to_string(), method, headers, params)
-            .await;
+        return touch_entry(
+            state,
+            stream.to_string(),
+            route.to_string(),
+            method,
+            headers,
+            params,
+        )
+        .await;
     }
     match method {
         Method::PUT => {
@@ -467,7 +644,11 @@ async fn stream_entry_inner(
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => delete_stream(state, name).await,
-        _ => err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "unsupported method"),
+        _ => err_resp(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "unsupported method",
+        ),
     }
 }
 
@@ -490,7 +671,9 @@ fn parse_duration(s: &str) -> Option<Duration> {
 
 fn parse_expiry(headers: &HeaderMap) -> Result<Option<i64>, String> {
     let ttl = headers.get("stream-ttl").and_then(|v| v.to_str().ok());
-    let expires = headers.get("stream-expires-at").and_then(|v| v.to_str().ok());
+    let expires = headers
+        .get("stream-expires-at")
+        .and_then(|v| v.to_str().ok());
     match (ttl, expires) {
         (Some(_), Some(_)) => Err("at most one of Stream-TTL and Stream-Expires-At".into()),
         (Some(t), None) => {
@@ -573,15 +756,25 @@ fn parse_uint_strict(s: &str) -> Option<u64> {
 }
 
 fn hdr(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 fn want_close(headers: &HeaderMap) -> bool {
-    hdr(headers, "stream-closed").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false)
+    hdr(headers, "stream-closed")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn tail_token(next: u64) -> String {
-    if next == 0 { Offset::START } else { Offset(Some(next - 1)) }.encode()
+    if next == 0 {
+        Offset::START
+    } else {
+        Offset(Some(next - 1))
+    }
+    .encode()
 }
 
 /// JSON append batching: top-level array = batch (one message per element);
@@ -674,18 +867,26 @@ async fn create_stream(
     body: Bytes,
 ) -> Response {
     let Some(raw_key_str) = raw_key(&headers, &state) else {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Stream-Encryption-Key required",
+        );
     };
     let key = match StreamKey::from_b64(raw_key_str) {
         Ok(k) => k,
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m),
     };
-    let content_type = hdr(&headers, "content-type")
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let content_type =
+        hdr(&headers, "content-type").unwrap_or_else(|| "application/octet-stream".to_string());
     let ttl_hdr = hdr(&headers, "stream-ttl");
     let exp_hdr = hdr(&headers, "stream-expires-at");
     if ttl_hdr.is_some() && exp_hdr.is_some() {
-        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "TTL and Expires-At together");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "TTL and Expires-At together",
+        );
     }
     let ttl_secs = match &ttl_hdr {
         Some(t) => match parse_ttl_strict(t) {
@@ -707,7 +908,11 @@ async fn create_stream(
     let profile = hdr(&headers, "stream-profile");
     if let Some(p) = &profile {
         if !matches!(p.as_str(), "generic" | "state-protocol" | "queue") {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_profile", "unsupported profile");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_profile",
+                "unsupported profile",
+            );
         }
     }
     // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
@@ -717,93 +922,178 @@ async fn create_stream(
         Some(v) if v.eq_ignore_ascii_case("total") => None,
         Some(v) if v.eq_ignore_ascii_case("per-key") => Some("per-key".to_string()),
         Some(_) => {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_ordering", "ordering must be total or per-key");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_ordering",
+                "ordering must be total or per-key",
+            );
         }
     };
     let segment_count: u32 = match hdr(&headers, "stream-segments") {
         None => {
             if ordering.is_some() {
-                state.default_ordering.as_ref().map(|(_, n)| *n).unwrap_or(2)
+                state
+                    .default_ordering
+                    .as_ref()
+                    .map(|(_, n)| *n)
+                    .unwrap_or(2)
             } else {
                 0
             }
         }
         Some(_) if ordering.is_none() => {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "Stream-Segments requires Stream-Ordering: per-key");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "Stream-Segments requires Stream-Ordering: per-key",
+            );
         }
         Some(v) => match parse_ttl_strict(&v) {
             Some(n) if (1..=256).contains(&n) && (n as u32).is_power_of_two() => n as u32,
             _ => {
-                return err_resp(StatusCode::BAD_REQUEST, "invalid_segments", "Stream-Segments must be a power of two in 1..=256");
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_segments",
+                    "Stream-Segments must be a power of two in 1..=256",
+                );
             }
         },
     };
     if ordering.is_some() {
         if let Some(p) = hdr(&headers, "stream-profile") {
             if p == "state-protocol" || p == "queue" {
-                return err_resp(StatusCode::BAD_REQUEST, "unsupported_combination", "this profile requires total ordering (v1)");
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_combination",
+                    "this profile requires total ordering (v1)",
+                );
             }
         }
     }
     let mut touch_templates: Vec<crate::registry::PinnedTemplate> = Vec::new();
     if let Some(raw) = hdr(&headers, "stream-touch-templates") {
         if profile.as_deref() != Some("state-protocol") {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "templates need state-protocol");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "templates need state-protocol",
+            );
         }
         match serde_json::from_str(&raw) {
             Ok(list) => touch_templates = list,
-            Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string()),
+            Err(e) => {
+                return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string());
+            }
         }
         if touch_templates.len() > crate::touch::MAX_TEMPLATES_PER_STREAM
             || touch_templates
                 .iter()
                 .any(|t| t.entity.is_empty() || t.fields.is_empty() || t.fields.len() > 3)
         {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", "bad template shape/caps");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_templates",
+                "bad template shape/caps",
+            );
         }
     }
 
     // Resolve existing.
     let existing = match state.registry.get(&name).await {
         Ok(v) => v,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
-    let (created, desc) = match existing {
-        Some(d) if desc_alive(&d) => {
-            // Idempotent PUT: config must match.
-            let same_ct =
-                crate::registry::media_type(&d.content_type) == crate::registry::media_type(&content_type)
-                    || hdr(&headers, "content-type").is_none();
+    // Idempotent-PUT validation against a live descriptor: shared by the
+    // alive arm and by a lost recreate race (the winner's incarnation is
+    // live, so the loser must observe it under the same rules).
+    let validate_live =
+        |d: crate::registry::StreamDesc| -> Result<(bool, crate::registry::StreamDesc), Response> {
+            let same_ct = crate::registry::media_type(&d.content_type)
+                == crate::registry::media_type(&content_type)
+                || hdr(&headers, "content-type").is_none();
             if !same_ct
                 || d.ttl_secs != ttl_secs
                 || d.ordering != ordering
                 || (ordering.is_some() && d.segment_count != segment_count)
             {
-                return err_resp(StatusCode::CONFLICT, "config_mismatch", "stream exists with different config");
+                return Err(err_resp(
+                    StatusCode::CONFLICT,
+                    "config_mismatch",
+                    "stream exists with different config",
+                ));
             }
             match check_key(raw_key(&headers, &state), &d) {
                 KeyCheck::Ok(..) => {}
                 KeyCheck::Wrong => {
-                    return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
+                    return Err(err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"));
                 }
                 _ => {}
             }
-            (false, d)
-        }
+            Ok((false, d))
+        };
+    let (created, desc) = match existing {
+        Some(d) if desc_alive(&d) => match validate_live(d) {
+            Ok(v) => v,
+            Err(r) => return r,
+        },
         Some(_) => {
             // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
-            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
-            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            match state.registry.recreate(&name, fresh).await {
-                Ok(d) => (true, d),
+            // Predicated CAS — one winner; a loser validates against the
+            // winner's live descriptor exactly like an idempotent PUT.
+            let mut fresh = fresh_desc(
+                &state,
+                &name,
+                &key,
+                content_type.clone(),
+                ttl_secs,
+                expires_at_ms,
+                profile.clone(),
+                touch_templates.clone(),
+                ordering.clone(),
+                segment_count,
+            );
+            fresh.queue_max_deliveries =
+                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            match state
+                .registry
+                .recreate(&name, fresh, |d| !desc_alive(d))
+                .await
+            {
+                Ok((true, d)) => (true, d),
+                Ok((false, winner)) => match validate_live(winner) {
+                    Ok(v) => v,
+                    Err(r) => return r,
+                },
                 Err(e) => {
-                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
                 }
             }
         }
         None => {
-            let mut fresh = fresh_desc(&state, &name, &key, content_type.clone(), ttl_secs, expires_at_ms, profile.clone(), touch_templates.clone(), ordering.clone(), segment_count);
-            fresh.queue_max_deliveries = hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            let mut fresh = fresh_desc(
+                &state,
+                &name,
+                &key,
+                content_type.clone(),
+                ttl_secs,
+                expires_at_ms,
+                profile.clone(),
+                touch_templates.clone(),
+                ordering.clone(),
+                segment_count,
+            );
+            fresh.queue_max_deliveries =
+                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -817,7 +1107,11 @@ async fn create_stream(
                     (false, d)
                 }
                 Err(e) => {
-                    return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
                 }
             }
         }
@@ -833,7 +1127,10 @@ async fn create_stream(
     // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
     // router can compute placement without knowing the stream epoch; the
     // record keyspace keeps using storage/segment hashes.
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+    {
         Ok(e) => e,
         Err(r) => return r,
     };
@@ -843,7 +1140,11 @@ async fn create_stream(
         match engine.stream_handle(hash).await {
             Ok(h) => h.state.lock().unwrap().durable.next,
             Err(e) => {
-                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
             }
         }
     };
@@ -886,13 +1187,23 @@ async fn create_stream(
                 next = ack.next_offset;
                 closed_now = ack.closed;
             }
-            _ => return err_resp(StatusCode::REQUEST_TIMEOUT, "append_timeout", "initial body timed out"),
+            _ => {
+                return err_resp(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "append_timeout",
+                    "initial body timed out",
+                );
+            }
         }
     } else if !created && close {
         closed_now = true; // preserved on idempotent PUT of a closed stream
     }
 
-    let status = if created { StatusCode::CREATED } else { StatusCode::OK };
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
     let mut resp = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -907,12 +1218,15 @@ async fn create_stream(
     resp.body(Body::empty()).unwrap()
 }
 
-
 async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
     match state.registry.update(&name, |d| d.deleted = true).await {
         Ok(Some(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(None) => err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &e.to_string(),
+        ),
     }
 }
 
@@ -957,7 +1271,13 @@ async fn touch_entry(
     let desc = match state.registry.get(&stream).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     if desc.profile.as_deref() != Some("state-protocol") {
         return err_resp(StatusCode::NOT_FOUND, "not_found", "touch is not enabled");
@@ -968,16 +1288,26 @@ async fn touch_entry(
     // `sig` URL capability as auth (so CDN cache keys are self-authorizing).
     if let Some(key_hex) = route.strip_prefix("key/") {
         if method != Method::GET {
-            return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "GET only");
+            return err_resp(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET only",
+            );
         }
         let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
         if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
-            return err_resp(StatusCode::BAD_REQUEST, "invalid_key", "watch key must be hex16");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "invalid_key",
+                "watch key must be hex16",
+            );
         }
         let sig_ok = match (&params.sig, &desc.touch_sig_key) {
             (Some(sig), Some(stored)) => crate::crypto::unhex(stored)
                 .and_then(|k| <[u8; 32]>::try_from(k).ok())
-                .map(|k| crate::crypto::wait_url_sig(&k, &key_hex) == sig.trim().to_ascii_lowercase())
+                .map(|k| {
+                    crate::crypto::wait_url_sig(&k, &key_hex) == sig.trim().to_ascii_lowercase()
+                })
                 .unwrap_or(false),
             _ => false,
         };
@@ -994,14 +1324,19 @@ async fn touch_entry(
             .timeout
             .as_deref()
             .and_then(parse_duration)
-            .unwrap_or(Duration::from_secs(25))
-            .min(Duration::from_secs(30));
+            .unwrap_or(MAX_LONG_POLL)
+            .min(MAX_LONG_POLL);
         let key_id = crate::touch_keys::key_id_of(&key_hex);
         let out = journal.wait(cursor, vec![key_id], timeout).await;
 
         use crate::touch::WaitOutcome;
         let end_off_enc = |end: u64| {
-            if end == 0 { Offset::START } else { Offset(Some(end - 1)) }.encode()
+            if end == 0 {
+                Offset::START
+            } else {
+                Offset(Some(end - 1))
+            }
+            .encode()
         };
         let (body, cache) = match out {
             // Coalescing (identical in-flight URLs collapsed) delivers the
@@ -1009,14 +1344,23 @@ async fn touch_entry(
             // Measured: long TTLs let desynchronized clients walk a cached
             // hop-chain one generation at a time, so head wakes cache for
             // just 2s and everything else is no-store.
-            WaitOutcome::Touched { cursor, end_offset, proven, cacheable } => (
+            WaitOutcome::Touched {
+                cursor,
+                end_offset,
+                proven,
+                cacheable,
+            } => (
                 json!({
                     "touched": true,
                     "reason": if proven { "touched" } else { "resync" },
                     "cursor": cursor,
                     "streamEndOffset": end_off_enc(end_offset),
                 }),
-                if cacheable { "public, max-age=2" } else { "no-store" },
+                if cacheable {
+                    "public, max-age=2"
+                } else {
+                    "no-store"
+                },
             ),
             // A touch may still arrive for this (key, cursor): never cache.
             WaitOutcome::Timeout { cursor, end_offset } => (
@@ -1056,7 +1400,10 @@ async fn touch_entry(
     match (method, route.as_str()) {
         (Method::GET, "meta") => {
             let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
-            ([(header::CONTENT_TYPE, "application/json")], journal.meta().to_string())
+            (
+                [(header::CONTENT_TYPE, "application/json")],
+                journal.meta().to_string(),
+            )
                 .into_response()
         }
         _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown touch route"),
@@ -1077,16 +1424,34 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
+    };
+    let _stream_slot = match acquire_stream_slot(&state, crate::crypto::stream_hash(&desc.name)) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
 
@@ -1111,17 +1476,28 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         match &ct {
             None => {
                 if producer.is_some() {
-                    deferred = Some(crate::shard::DeferredErr::BadBody("missing Content-Type".into()));
+                    deferred = Some(crate::shard::DeferredErr::BadBody(
+                        "missing Content-Type".into(),
+                    ));
                 } else {
-                    return err_resp(StatusCode::BAD_REQUEST, "missing_content_type", "Content-Type required");
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "missing_content_type",
+                        "Content-Type required",
+                    );
                 }
             }
             Some(c) => {
-                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type) {
+                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type)
+                {
                     if producer.is_some() {
                         deferred = Some(crate::shard::DeferredErr::CtMismatch);
                     } else {
-                        return err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch");
+                        return err_resp(
+                            StatusCode::CONFLICT,
+                            "content_type_mismatch",
+                            "content type mismatch",
+                        );
                     }
                 }
             }
@@ -1184,7 +1560,11 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         if key_ids.is_empty() {
             None
         } else {
-            Some(crate::shard::TouchFeed { journal, key_ids, next_offset: 0 })
+            Some(crate::shard::TouchFeed {
+                journal,
+                key_ids,
+                next_offset: 0,
+            })
         }
     } else {
         None
@@ -1194,7 +1574,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let metric_bytes = bytes as u64;
     let (tx, rx) = oneshot::channel();
     let req = AppendReq {
-            enqueued_at: std::time::Instant::now(),
+        enqueued_at: std::time::Instant::now(),
         hash,
         entries,
         routing_key,
@@ -1209,12 +1589,19 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         touch,
         resp: tx,
     };
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+    {
         Ok(e) => e,
         Err(r) => return r,
     };
     if engine.try_enqueue(req).is_err() {
-        return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "append queue full");
+        return err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "overloaded",
+            "append queue full",
+        );
     }
     let outcome = match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
         Ok(Ok(o)) => o,
@@ -1230,7 +1617,11 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let tok = |next: u64| match seg_ord {
         Some(o) => crate::offsets::encode_ep(
             o,
-            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+            if next == 0 {
+                Offset::START
+            } else {
+                Offset(Some(next - 1))
+            },
         ),
         None => tail_token(next),
     };
@@ -1270,7 +1661,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
                 .header(header::CONTENT_TYPE, "application/json");
             r = r.header(header::CACHE_CONTROL, "no-store");
             r.body(Body::from(
-                json!({"error": {"code": "stream_closed", "message": "stream is closed"}}).to_string(),
+                json!({"error": {"code": "stream_closed", "message": "stream is closed"}})
+                    .to_string(),
             ))
             .unwrap()
         }
@@ -1280,7 +1672,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             .header("Producer-Received-Seq", received.to_string())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}}).to_string(),
+                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}})
+                    .to_string(),
             ))
             .unwrap(),
         Err(AppendErr::ProducerStale { current_epoch }) => Response::builder()
@@ -1288,7 +1681,8 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             .header("Producer-Epoch", current_epoch.to_string())
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}}).to_string(),
+                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}})
+                    .to_string(),
             ))
             .unwrap(),
         Err(AppendErr::ProducerEpochSeq) => err_resp(
@@ -1296,14 +1690,25 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             "producer_epoch_seq",
             "a new epoch must start at seq 0",
         ),
-        Err(AppendErr::CtMismatch) => {
-            err_resp(StatusCode::CONFLICT, "content_type_mismatch", "content type mismatch")
-        }
+        Err(AppendErr::CtMismatch) => err_resp(
+            StatusCode::CONFLICT,
+            "content_type_mismatch",
+            "content type mismatch",
+        ),
         Err(AppendErr::BadBody(m)) => err_resp(StatusCode::BAD_REQUEST, "invalid_body", &m),
         Err(AppendErr::Internal(m)) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+        Err(AppendErr::Moved) => {
+            let mut r = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "shard_moving",
+                "shard fenced by a new owner; retry",
+            );
+            r.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            r
+        }
     }
 }
-
 
 /// A decrypted record ready for response assembly.
 struct PlainRec {
@@ -1338,18 +1743,34 @@ async fn read_records(
         let st = handle.state.lock().unwrap();
         (st.durable.absorbed, st.durable.next)
     };
-    let mut out = ReadOut { recs: Vec::new(), last: None, end, completed: true };
+    let mut out = ReadOut {
+        recs: Vec::new(),
+        last: None,
+        end,
+        completed: true,
+    };
     let mut budget = max_bytes;
 
     let mut history_completed = true;
     if scan_from < absorbed && budget > 0 {
-        let hist = read_history(&state.data_store, &hash, key, scan_from, absorbed, key_filter, budget)
-            .await
-            .map_err(|e| e.to_string())?;
+        let hist = read_history(
+            &state.data_store,
+            &hash,
+            key,
+            scan_from,
+            absorbed,
+            key_filter,
+            budget,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         history_completed = hist.completed;
         for (off, rec) in hist.records {
             budget = budget.saturating_sub(rec.payload.len());
-            out.recs.push(PlainRec { off, payload: rec.payload });
+            out.recs.push(PlainRec {
+                off,
+                payload: rec.payload,
+            });
             out.last = Some(off);
         }
     }
@@ -1378,10 +1799,18 @@ async fn read_records(
             let sk = *subkeys
                 .entry((frame.header.routing_key.clone(), frame.header.key_version))
                 .or_insert_with(|| {
-                    derive_subkey(key, epoch, &frame.header.routing_key, frame.header.key_version)
+                    derive_subkey(
+                        key,
+                        epoch,
+                        &frame.header.routing_key,
+                        frame.header.key_version,
+                    )
                 });
             let pt = decrypt_frame(&sk, &hash, &frame, &raw)?;
-            out.recs.push(PlainRec { off: frame.header.offset, payload: Bytes::from(pt) });
+            out.recs.push(PlainRec {
+                off: frame.header.offset,
+                payload: Bytes::from(pt),
+            });
         }
         if let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
@@ -1402,7 +1831,13 @@ fn interval_cursor(req_cursor: Option<&str>) -> String {
 }
 
 fn read_etag(desc: &StreamDesc, scan_from: u64, end: u64, closed: bool) -> String {
-    format!("\"{}-{}-{}-{}\"", &desc.stream_epoch[..8], scan_from, end, closed as u8)
+    format!(
+        "\"{}-{}-{}-{}\"",
+        &desc.stream_epoch[..8],
+        scan_from,
+        end,
+        closed as u8
+    )
 }
 
 enum StartPos {
@@ -1420,7 +1855,13 @@ async fn read(
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     // A single-segment per-key stream is the degenerate case: totally
     // ordered, epoch-0 tokens — serve it through the standard path so every
@@ -1433,13 +1874,22 @@ async fn read(
     } else {
         desc.storage_hash()
     };
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+    {
         Ok(e) => e,
         Err(r) => return r,
     };
     let handle = match engine.stream_handle(hash).await {
         Ok(h) => h,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     let (mut end, mut closed) = {
         let st = handle.state.lock().unwrap();
@@ -1468,11 +1918,19 @@ async fn read(
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
     state.keys.put(hash, key.clone(), epoch);
@@ -1484,7 +1942,11 @@ async fn read(
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
     };
     if live.is_some() && params.offset.is_none() {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_offset",
+            "live reads require offset",
+        );
     }
     let start = match params.offset.as_deref() {
         None => StartPos::At(0),
@@ -1504,7 +1966,11 @@ async fn read(
             // Instant tail snapshot for plain reads; long-poll from `now`
             // falls through with scan_from = current end.
             if live.is_none() {
-                let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+                let body: Body = if desc.is_json() {
+                    Body::from("[]")
+                } else {
+                    Body::empty()
+                };
                 let mut r = Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -1525,29 +1991,29 @@ async fn read(
     let is_long_poll = live == Some("long-poll");
     if is_long_poll && scan_from >= end {
         if !closed {
-        let wait = params
-            .timeout
-            .as_deref()
-            .and_then(parse_duration)
-            .unwrap_or(Duration::from_secs(3))
-            .min(MAX_LONG_POLL);
-        let deadline = tokio::time::Instant::now() + wait;
-        loop {
-            let notified = handle.notify.notified();
-            let (e2, c2) = {
-                let st = handle.state.lock().unwrap();
-                (st.durable.next, st.durable.closed)
-            };
-            end = e2;
-            closed = c2;
-            if end > scan_from || closed {
-                break;
+            let wait = params
+                .timeout
+                .as_deref()
+                .and_then(parse_duration)
+                .unwrap_or(Duration::from_secs(3))
+                .min(MAX_LONG_POLL);
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let notified = handle.notify.notified();
+                let (e2, c2) = {
+                    let st = handle.state.lock().unwrap();
+                    (st.durable.next, st.durable.closed)
+                };
+                end = e2;
+                closed = c2;
+                if end > scan_from || closed {
+                    break;
+                }
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep_until(deadline) => break,
+                }
             }
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep_until(deadline) => break,
-            }
-        }
         }
         if end <= scan_from {
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
@@ -1568,16 +2034,31 @@ async fn read(
     }
 
     let frames_format = params.format.as_deref() == Some("frames");
-    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, params.key.as_deref(), MAX_READ_BYTES).await {
+    let out = match read_records(
+        &state,
+        &desc,
+        &key,
+        &epoch,
+        &handle,
+        &engine,
+        scan_from,
+        params.key.as_deref(),
+        MAX_READ_BYTES,
+    )
+    .await
+    {
         Ok(o) => o,
         Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     };
-    let next_token = out.last.map(|o| Offset(Some(o)).encode()).unwrap_or_else(|| {
-        match params.offset.as_deref() {
-            Some(raw) if raw != "now" => Offset::parse(raw).map(|o| o.encode()).unwrap_or_else(|_| tail_token(out.end)),
+    let next_token = out
+        .last
+        .map(|o| Offset(Some(o)).encode())
+        .unwrap_or_else(|| match params.offset.as_deref() {
+            Some(raw) if raw != "now" => Offset::parse(raw)
+                .map(|o| o.encode())
+                .unwrap_or_else(|_| tail_token(out.end)),
             _ => tail_token(out.end),
-        }
-    });
+        });
     let up_to_date = out.completed;
     let etag = read_etag(&desc, scan_from, out.end, closed);
     if let Some(inm) = hdr(&headers, "if-none-match") {
@@ -1607,7 +2088,9 @@ async fn read(
         for r in &out.recs {
             let sk = *subkeys
                 .entry(params.key.clone().unwrap_or_default())
-                .or_insert_with(|| derive_subkey(&key, &epoch, params.key.as_deref().unwrap_or(""), 0));
+                .or_insert_with(|| {
+                    derive_subkey(&key, &epoch, params.key.as_deref().unwrap_or(""), 0)
+                });
             let frame = encrypt_frame(
                 &sk,
                 &hash,
@@ -1633,11 +2116,14 @@ async fn read(
     state.metrics.read(&name, body.len() as u64);
     let mut r = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, if frames_format {
-            "application/x-durable-stream-frames".to_string()
-        } else {
-            desc.content_type.clone()
-        })
+        .header(
+            header::CONTENT_TYPE,
+            if frames_format {
+                "application/x-durable-stream-frames".to_string()
+            } else {
+                desc.content_type.clone()
+            },
+        )
         .header("Stream-Next-Offset", next_token)
         .header("ETag", etag)
         .header("Cross-Origin-Resource-Policy", "cross-origin");
@@ -1727,7 +2213,19 @@ async fn sse_response(
             };
             let mut sent_any = false;
             if pos < end && !from_now || (from_now && !first && pos < end) {
-                match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, key_filter.as_deref(), MAX_READ_BYTES).await {
+                match read_records(
+                    &state,
+                    &desc,
+                    &key,
+                    &epoch,
+                    &handle,
+                    &engine,
+                    pos,
+                    key_filter.as_deref(),
+                    MAX_READ_BYTES,
+                )
+                .await
+                {
                     Ok(out) => {
                         for r in &out.recs {
                             let ev = sse_data_event(&desc, &r.payload);
@@ -1787,7 +2285,6 @@ async fn sse_response(
     r.body(Body::from_stream(stream)).unwrap()
 }
 
-
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
 
 async fn read_per_key(
@@ -1801,12 +2298,19 @@ async fn read_per_key(
     let seg_tok = |ord: u32, next: u64| {
         crate::offsets::encode_ep(
             ord,
-            if next == 0 { Offset::START } else { Offset(Some(next - 1)) },
+            if next == 0 {
+                Offset::START
+            } else {
+                Offset(Some(next - 1))
+            },
         )
     };
     // All segments of a per-key stream live in the parent stream's shard
     // (routing unit = stream; Pravega-style cross-shard segments deferred).
-    let parent_engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let parent_engine = match state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+    {
         Ok(e) => e,
         Err(r) => return r,
     };
@@ -1824,7 +2328,13 @@ async fn read_per_key(
                 let st = h.state.lock().unwrap();
                 (st.durable.next, st.durable.closed)
             }
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
+            }
         };
         let mut r = Response::builder()
             .status(StatusCode::OK)
@@ -1842,11 +2352,19 @@ async fn read_per_key(
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
 
@@ -1857,7 +2375,11 @@ async fn read_per_key(
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
     };
     if live.is_some() && params.offset.is_none() {
-        return err_resp(StatusCode::BAD_REQUEST, "missing_offset", "live reads require offset");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "missing_offset",
+            "live reads require offset",
+        );
     }
     // Accommodation #1: whole-stream live tails have no single durable
     // cursor across concurrent segments.
@@ -1887,7 +2409,13 @@ async fn read_per_key(
         state.keys.put(hash, key.clone(), epoch);
         let handle = match engine.stream_handle(hash).await {
             Ok(h) => h,
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
+            }
         };
         let (mut end, closed) = {
             let st = handle.state.lock().unwrap();
@@ -1897,7 +2425,11 @@ async fn read_per_key(
             None => end, // now
             Some((e, p)) => {
                 if e != ord && params.offset.as_deref() != Some("-1") && !(e == 0 && p == 0) {
-                    return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", "offset segment does not own this key");
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_offset",
+                        "offset segment does not own this key",
+                    );
                 }
                 p
             }
@@ -1944,12 +2476,32 @@ async fn read_per_key(
             };
             return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
         }
-        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, scan_from, Some(rk), MAX_READ_BYTES).await
+        let out = match read_records(
+            &state,
+            &desc,
+            &key,
+            &epoch,
+            &handle,
+            &engine,
+            scan_from,
+            Some(rk),
+            MAX_READ_BYTES,
+        )
+        .await
         {
             Ok(o) => o,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
-        return per_key_body(&desc, out, ord, scan_from, closed, seg_tok, live.is_some(), &params);
+        return per_key_body(
+            &desc,
+            out,
+            ord,
+            scan_from,
+            closed,
+            seg_tok,
+            live.is_some(),
+            &params,
+        );
     }
 
     // Unkeyed: segment-sequential replay (accommodation: per-segment order).
@@ -1959,9 +2511,19 @@ async fn read_per_key(
             let (hash, engine) = seg_handle(n - 1);
             let end = match engine.stream_handle(hash).await {
                 Ok(h) => h.state.lock().unwrap().durable.next,
-                Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+                Err(e) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
             };
-            let body: Body = if desc.is_json() { Body::from("[]") } else { Body::empty() };
+            let body: Body = if desc.is_json() {
+                Body::from("[]")
+            } else {
+                Body::empty()
+            };
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -1984,10 +2546,20 @@ async fn read_per_key(
         state.keys.put(hash, key.clone(), epoch);
         let handle = match engine.stream_handle(hash).await {
             Ok(h) => h,
-            Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
+            }
         };
         let closed = handle.state.lock().unwrap().durable.closed;
-        let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, pos, None, budget).await {
+        let out = match read_records(
+            &state, &desc, &key, &epoch, &handle, &engine, pos, None, budget,
+        )
+        .await
+        {
             Ok(o) => o,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
@@ -2045,7 +2617,10 @@ async fn read_per_key(
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, desc.content_type.clone())
-        .header("Stream-Next-Offset", last_tok.unwrap_or_else(|| seg_tok(0, 0)))
+        .header(
+            "Stream-Next-Offset",
+            last_tok.unwrap_or_else(|| seg_tok(0, 0)),
+        )
         .header("Stream-Ordering", "per-key")
         .header("ETag", etag)
         .header("Cross-Origin-Resource-Policy", "cross-origin");
@@ -2070,7 +2645,13 @@ fn per_key_body(
 ) -> Response {
     let consumed = out.last.map(|o| o + 1).unwrap_or(scan_from);
     let up_to_date = out.completed;
-    let etag = format!("\"{}-pk{}-{}-{}\"", &desc.stream_epoch[..8], ord, consumed, out.end);
+    let etag = format!(
+        "\"{}-pk{}-{}-{}\"",
+        &desc.stream_epoch[..8],
+        ord,
+        consumed,
+        out.end
+    );
     let body: Bytes = if desc.is_json() {
         let mut buf = BytesMut::new();
         buf.extend_from_slice(b"[");
@@ -2174,39 +2755,78 @@ async fn queue_entry(
     let desc = match state.registry.get(&stream).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     if desc.profile.as_deref() != Some("queue") {
-        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue profile not enabled");
+        return err_resp(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "queue profile not enabled",
+        );
     }
     let Some((consumer, verb)) = route.split_once('/') else {
-        return err_resp(StatusCode::NOT_FOUND, "not_found", "queue route: {consumer}/{verb}");
+        return err_resp(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "queue route: {consumer}/{verb}",
+        );
     };
     if consumer.is_empty() || consumer.len() > 128 || consumer.contains('\u{0}') {
-        return err_resp(StatusCode::BAD_REQUEST, "invalid_consumer", "bad consumer name");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "invalid_consumer",
+            "bad consumer name",
+        );
     }
     if method != Method::POST {
-        return err_resp(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed", "POST only");
+        return err_resp(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method_not_allowed",
+            "POST only",
+        );
     }
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
-            return err_resp(StatusCode::BAD_REQUEST, "missing_key", "Stream-Encryption-Key required");
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
         }
         KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
         KeyCheck::BadDescriptor => {
-            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", "bad descriptor");
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
         }
     };
     let hash = desc.storage_hash();
     state.keys.put(hash, key.clone(), epoch);
-    let engine = match state.engine_for(&crate::crypto::stream_hash(&desc.name)).await {
+    let engine = match state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+    {
         Ok(e) => e,
         Err(r) => return r,
     };
     let handle = match engine.stream_handle(hash).await {
         Ok(h) => h,
-        Err(e) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string()),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
     };
     let max_deliveries = desc.queue_max_deliveries.unwrap_or(5);
     let dlq_subkey = derive_subkey(&key, &epoch, "$dlq", 0);
@@ -2224,12 +2844,19 @@ async fn queue_entry(
                 match serde_json::from_slice(&raw) {
                     Ok(r) => r,
                     Err(e) => {
-                        return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+                        return err_resp(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request",
+                            &e.to_string(),
+                        );
                     }
                 }
             };
             let max = req.batch_size.unwrap_or(5).clamp(1, 100);
-            let visibility = req.visibility_ms.unwrap_or(30_000).clamp(1_000, 12 * 3600 * 1000);
+            let visibility = req
+                .visibility_ms
+                .unwrap_or(30_000)
+                .clamp(1_000, 12 * 3600 * 1000);
             let wait = req.wait_ms.unwrap_or(0).min(25_000);
             let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
             loop {
@@ -2266,9 +2893,23 @@ async fn queue_entry(
                 if !leased.is_empty() {
                     let lo = leased.iter().map(|(o, _, _)| *o).min().unwrap();
                     let hi = leased.iter().map(|(o, _, _)| *o).max().unwrap();
-                    let out = match read_records(&state, &desc, &key, &epoch, &handle, &engine, lo, None, MAX_READ_BYTES).await {
+                    let out = match read_records(
+                        &state,
+                        &desc,
+                        &key,
+                        &epoch,
+                        &handle,
+                        &engine,
+                        lo,
+                        None,
+                        MAX_READ_BYTES,
+                    )
+                    .await
+                    {
                         Ok(o) => o,
-                        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+                        Err(m) => {
+                            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m);
+                        }
                     };
                     let by_off: HashMap<u64, &PlainRec> =
                         out.recs.iter().map(|r| (r.off, r)).collect();
@@ -2276,8 +2917,7 @@ async fn queue_entry(
                     for (off, lease_gen, attempts) in &leased {
                         let Some(rec) = by_off.get(off) else { continue };
                         let payload: serde_json::Value = if desc.is_json() {
-                            serde_json::from_slice(&rec.payload)
-                                .unwrap_or(serde_json::Value::Null)
+                            serde_json::from_slice(&rec.payload).unwrap_or(serde_json::Value::Null)
                         } else {
                             use base64::Engine;
                             serde_json::Value::String(
@@ -2306,10 +2946,16 @@ async fn queue_entry(
         "ack" => {
             let req: QueueSettleBody = match serde_json::from_slice(&raw) {
                 Ok(r) => r,
-                Err(e) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string()),
+                Err(e) => {
+                    return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
+                }
             };
             let parse = |t: &str| crate::queue::parse_token(t);
-            let acks = req.acks.iter().filter_map(|a| parse(&a.lease_token)).collect();
+            let acks = req
+                .acks
+                .iter()
+                .filter_map(|a| parse(&a.lease_token))
+                .collect();
             let retries = req
                 .retries
                 .iter()
@@ -2334,7 +2980,13 @@ async fn queue_entry(
                 )
                 .await;
             match out {
-                Ok(crate::queue::QueueOut::Settled { acked, retried, extended, dlq, backlog }) => (
+                Ok(crate::queue::QueueOut::Settled {
+                    acked,
+                    retried,
+                    extended,
+                    dlq,
+                    backlog,
+                }) => (
                     [
                         (header::CONTENT_TYPE, "application/json"),
                         (header::CACHE_CONTROL, "no-store"),
@@ -2422,5 +3074,31 @@ pub async fn metrics_flusher(
             Ok(r) => tracing::warn!("metrics append via router: {}", r.status()),
             Err(e) => tracing::warn!("metrics append via router: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_stream_slots_cap_and_release() {
+        let mut m: HashMap<[u8; 16], i64> = HashMap::new();
+        let h = [1u8; 16];
+        // cap 0 = limiter off
+        assert_eq!(stream_slot_try(&mut m, 0, h), SlotTry::Untracked);
+        assert!(m.is_empty());
+        // acquire to cap, then reject
+        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
+        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
+        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::AtCap);
+        // a different stream is unaffected
+        assert_eq!(stream_slot_try(&mut m, 2, [2u8; 16]), SlotTry::Acquired);
+        // release frees a slot and empties the entry at zero
+        stream_slot_release(&mut m, &h);
+        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
+        stream_slot_release(&mut m, &h);
+        stream_slot_release(&mut m, &h);
+        assert!(!m.contains_key(&h), "zero-count entry must be removed");
     }
 }

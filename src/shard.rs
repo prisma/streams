@@ -61,14 +61,26 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     let logical = u64::from_le_bytes(v[17..25].try_into().ok()?);
     let absorbed = u64::from_le_bytes(v[25..33].try_into().ok()?);
     let trimmed = u64::from_le_bytes(v[33..41].try_into().ok()?);
-    let (closed, seq_at) = if v3 { (v[41] == 1, 42usize) } else { (false, 41usize) };
+    let (closed, seq_at) = if v3 {
+        (v[41] == 1, 42usize)
+    } else {
+        (false, 41usize)
+    };
     let seq_len = u16::from_le_bytes(v[seq_at..seq_at + 2].try_into().ok()?) as usize;
     let seq = if seq_len == 0 {
         None
     } else {
         Some(String::from_utf8(v.get(seq_at + 2..seq_at + 2 + seq_len)?.to_vec()).ok()?)
     };
-    Some(TailFields { next, ts, logical, absorbed, trimmed, seq, closed })
+    Some(TailFields {
+        next,
+        ts,
+        logical,
+        absorbed,
+        trimmed,
+        seq,
+        closed,
+    })
 }
 
 pub fn producer_key(hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
@@ -164,14 +176,26 @@ pub struct AppendAck {
 
 #[derive(Debug, Clone)]
 pub enum AppendErr {
-    SeqConflict { current: Option<String> },
-    Closed { next_offset: u64 },
-    ProducerGap { expected: u64, received: u64 },
-    ProducerStale { current_epoch: u64 },
+    SeqConflict {
+        current: Option<String>,
+    },
+    Closed {
+        next_offset: u64,
+    },
+    ProducerGap {
+        expected: u64,
+        received: u64,
+    },
+    ProducerStale {
+        current_epoch: u64,
+    },
     ProducerEpochSeq,
     CtMismatch,
     BadBody(String),
     Internal(String),
+    /// The shard was fenced by a new owner mid-request: retryable, the
+    /// router converges within the anti-flap holdoff.
+    Moved,
 }
 
 pub enum CommitOp {
@@ -186,7 +210,10 @@ pub enum CommitOp {
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
     /// (deferred one round so in-flight readers never lose their range).
-    Absorbed { hash: [u8; 16], upto: u64 },
+    Absorbed {
+        hash: [u8; 16],
+        upto: u64,
+    },
 }
 
 /// Notification to the absorber that a stream accumulated shard-log bytes.
@@ -272,6 +299,11 @@ pub struct ShardEngine {
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
     /// get stale immediately instead of dangling until timeout.
     on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Set once when the shard db reports closed (fenced by a new owner or
+    /// fatal). Everything still holding this engine — request handlers, the
+    /// committer, the absorber — must fail fast / exit instead of retrying
+    /// against a dead db (the "zombie engine" fuel of the absorption war).
+    closed: std::sync::atomic::AtomicBool,
     pub stats_appended: AtomicU64,
     /// Last commit-group timings for /v1/debug/timings.
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
@@ -302,6 +334,7 @@ impl ShardEngine {
             flush_wake: Notify::new(),
             absorb_tx,
             on_close,
+            closed: std::sync::atomic::AtomicBool::new(false),
             stats_appended: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
         });
@@ -324,7 +357,9 @@ impl ShardEngine {
                     last_appended = appended;
                     if let Err(e) = ticker
                         .db
-                        .flush_with_options(FlushOptions { flush_type: FlushType::MemTable })
+                        .flush_with_options(FlushOptions {
+                            flush_type: FlushType::MemTable,
+                        })
                         .await
                     {
                         tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
@@ -336,11 +371,19 @@ impl ShardEngine {
     }
 
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
-        self.tx.try_send(CommitOp::Append(req)).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(CommitOp::Append(r)) => r,
-            mpsc::error::TrySendError::Closed(CommitOp::Append(r)) => r,
-            _ => unreachable!(),
-        })
+        self.tx
+            .try_send(CommitOp::Append(req))
+            .map_err(|e| match e {
+                mpsc::error::TrySendError::Full(CommitOp::Append(r)) => r,
+                mpsc::error::TrySendError::Closed(CommitOp::Append(r)) => r,
+                _ => unreachable!(),
+            })
+    }
+
+    /// True once the shard db reported closed (fenced by a new owner or a
+    /// fatal storage error). Holders must stop using this engine.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 
     pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64) {
@@ -357,13 +400,11 @@ impl ShardEngine {
             .send(CommitOp::Queue { hash, op, resp: tx })
             .await
             .map_err(|_| "committer gone".to_string())?;
-        rx.await.map_err(|_| "committer dropped request".to_string())?
+        rx.await
+            .map_err(|_| "committer dropped request".to_string())?
     }
 
-    pub async fn stream_handle(
-        &self,
-        hash: [u8; 16],
-    ) -> Result<Arc<StreamHandle>, slatedb::Error> {
+    pub async fn stream_handle(&self, hash: [u8; 16]) -> Result<Arc<StreamHandle>, slatedb::Error> {
         if let Some(h) = self.streams.lock().unwrap().get(&hash) {
             return Ok(h.clone());
         }
@@ -437,6 +478,21 @@ impl ShardEngine {
     }
 
     async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
+        if self.is_closed() {
+            // Fenced mid-flight: fail fast instead of writing to a dead db.
+            for op in ops {
+                match op {
+                    CommitOp::Append(r) => {
+                        let _ = r.resp.send(Err(AppendErr::Moved));
+                    }
+                    CommitOp::Queue { resp, .. } => {
+                        let _ = resp.send(Err("shard fenced/moved; retry".into()));
+                    }
+                    CommitOp::Absorbed { .. } => {}
+                }
+            }
+            return;
+        }
         let group_t0 = std::time::Instant::now();
         let mut oldest_enqueue: Option<std::time::Instant> = None;
         for op in &ops {
@@ -520,9 +576,8 @@ impl ShardEngine {
                                     )),
                                     Ok(_) => None,
                                     Err(e) => {
-                                        let _ = req
-                                            .resp
-                                            .send(Err(AppendErr::Internal(e.to_string())));
+                                        let _ =
+                                            req.resp.send(Err(AppendErr::Internal(e.to_string())));
                                         continue;
                                     }
                                 },
@@ -541,9 +596,9 @@ impl ShardEngine {
                         match local.producers.get(&pr.id).copied() {
                             Some((ce, cs)) => {
                                 if pr.epoch < ce {
-                                    let _ = req.resp.send(Err(AppendErr::ProducerStale {
-                                        current_epoch: ce,
-                                    }));
+                                    let _ = req
+                                        .resp
+                                        .send(Err(AppendErr::ProducerStale { current_epoch: ce }));
                                     continue;
                                 }
                                 if pr.epoch == ce && pr.seq <= cs {
@@ -697,7 +752,10 @@ impl ShardEngine {
                     let loaded = { local.handle.state.lock().unwrap().queue.loaded };
                     let mut load_err: Option<String> = None;
                     if !loaded {
-                        let mut fresh = QueueState { consumers: HashMap::new(), loaded: true };
+                        let mut fresh = QueueState {
+                            consumers: HashMap::new(),
+                            loaded: true,
+                        };
                         'tags: for tag in [b'c', b'l', b'x'] {
                             let mut pfx = Vec::with_capacity(17);
                             pfx.extend_from_slice(&hash);
@@ -727,15 +785,13 @@ impl ShardEngine {
                                                     .cursor = cur;
                                             }
                                             _ => {
-                                                let Some(sep) =
-                                                    rest.iter().position(|b| *b == 0)
+                                                let Some(sep) = rest.iter().position(|b| *b == 0)
                                                 else {
                                                     continue;
                                                 };
-                                                let consumer = String::from_utf8_lossy(
-                                                    &rest[..sep],
-                                                )
-                                                .into_owned();
+                                                let consumer =
+                                                    String::from_utf8_lossy(&rest[..sep])
+                                                        .into_owned();
                                                 let off = u64::from_be_bytes(
                                                     rest[sep + 1..sep + 9]
                                                         .try_into()
@@ -812,8 +868,8 @@ impl ShardEngine {
                                     }
                                     let lease = Lease {
                                         deadline_ms: now + visibility_ms as i64,
-                                        delivery_count:
-                                            prev.map(|l| l.delivery_count).unwrap_or(0) + 1,
+                                        delivery_count: prev.map(|l| l.delivery_count).unwrap_or(0)
+                                            + 1,
                                         lease_gen: prev.map(|l| l.lease_gen).unwrap_or(0) + 1,
                                     };
                                     wb.put(lease_key(&hash, &consumer, off), encode_lease(&lease));
@@ -845,7 +901,8 @@ impl ShardEngine {
                                 dlq_subkey,
                             } => {
                                 let cs = st.queue.consumers.entry(consumer.clone()).or_default();
-                                let (mut a, mut r, mut e2, mut dq) = (0usize, 0usize, 0usize, 0usize);
+                                let (mut a, mut r, mut e2, mut dq) =
+                                    (0usize, 0usize, 0usize, 0usize);
                                 for (off, tok_gen) in acks {
                                     if cs.leases.get(&off).map(|l| l.lease_gen) == Some(tok_gen) {
                                         cs.leases.remove(&off);
@@ -869,7 +926,10 @@ impl ShardEngine {
                                             dlq_refs.push((off, l.delivery_count));
                                             dq += 1;
                                         } else {
-                                            let nl = Lease { deadline_ms: now + delay as i64, ..l };
+                                            let nl = Lease {
+                                                deadline_ms: now + delay as i64,
+                                                ..l
+                                            };
                                             cs.leases.insert(off, nl);
                                             wb.put(
                                                 lease_key(&hash, &consumer, off),
@@ -883,8 +943,10 @@ impl ShardEngine {
                                 for (off, tok_gen, vis) in extends {
                                     if let Some(l) = cs.leases.get(&off).copied() {
                                         if l.lease_gen == tok_gen {
-                                            let nl =
-                                                Lease { deadline_ms: now + vis as i64, ..l };
+                                            let nl = Lease {
+                                                deadline_ms: now + vis as i64,
+                                                ..l
+                                            };
                                             cs.leases.insert(off, nl);
                                             wb.put(
                                                 lease_key(&hash, &consumer, off),
@@ -921,8 +983,7 @@ impl ShardEngine {
                     };
                     // Append DLQ reference records under routing key "$dlq".
                     for (orig, attempts) in dlq_refs {
-                        let payload =
-                            format!("{{\"offset\":{orig},\"attempts\":{attempts}}}");
+                        let payload = format!("{{\"offset\":{orig},\"attempts\":{attempts}}}");
                         let offset = local.fields.next;
                         let frame = encrypt_frame(
                             &dlq_subkey,
@@ -962,7 +1023,10 @@ impl ShardEngine {
             }
             tails.push((local.handle.clone(), f.clone()));
             if local.appended_bytes > 0 {
-                signals.push(AbsorbSignal { hash: *hash, appended_bytes: local.appended_bytes });
+                signals.push(AbsorbSignal {
+                    hash: *hash,
+                    appended_bytes: local.appended_bytes,
+                });
             }
         }
         if pending.is_empty() && !changed && queue_pending.is_empty() {
@@ -980,15 +1044,17 @@ impl ShardEngine {
             return;
         }
 
-        let encode_us =
-            group_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
+        let encode_us = group_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
         let group_bytes: u64 = locals.iter().map(|(_, l)| l.appended_bytes).sum();
         let write_t0 = std::time::Instant::now();
         let res = self
             .db
             .write_with_options(
                 wb,
-                &WriteOptions { await_durable: false, ..Default::default() },
+                &WriteOptions {
+                    await_durable: false,
+                    ..Default::default()
+                },
             )
             .await;
         let write_us = write_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
@@ -1039,9 +1105,22 @@ impl ShardEngine {
                 let status = status_rx.borrow_and_update();
                 if let Some(reason) = &status.close_reason {
                     // Fenced or closed: this shard moved. The process serves
-                    // other shards; groups here fail via dropped responders,
-                    // and touch waiters are woken with stale right now.
+                    // other shards. Fail every queued group NOW — waiting for
+                    // Arc drops leaves clients hanging into the front door's
+                    // 30 s kill (the absorber holds this engine, so the Arc
+                    // may never drop). Touch waiters wake with stale.
                     tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}");
+                    self.closed.store(true, Ordering::SeqCst);
+                    let stranded: Vec<InFlightGroup> =
+                        self.in_flight.lock().unwrap().drain(..).collect();
+                    for group in stranded {
+                        for (resp, _) in group.acks {
+                            let _ = resp.send(Err(AppendErr::Moved));
+                        }
+                        for (resp, _) in group.queue_acks {
+                            let _ = resp.send(Err("shard fenced/moved; retry".into()));
+                        }
+                    }
                     if let Some(cb) = &self.on_close {
                         cb();
                     }
@@ -1102,7 +1181,6 @@ impl ShardEngine {
             }
         }
     }
-
 }
 
 /// Frames with offset in [scan_from, durable_next), optionally filtered by
@@ -1126,7 +1204,11 @@ pub async fn read_frames_range(
     max_bytes: usize,
 ) -> Result<FrameReadResult, slatedb::Error> {
     let hash = handle.hash;
-    let mut out = FrameReadResult { frames: Vec::new(), last_offset: None, end: scan_to };
+    let mut out = FrameReadResult {
+        frames: Vec::new(),
+        last_offset: None,
+        end: scan_to,
+    };
     if scan_from >= scan_to {
         return Ok(out);
     }
@@ -1167,7 +1249,11 @@ pub async fn read_frames(
         let st = handle.state.lock().unwrap();
         (handle.hash, st.durable.next)
     };
-    let mut out = FrameReadResult { frames: Vec::new(), last_offset: None, end };
+    let mut out = FrameReadResult {
+        frames: Vec::new(),
+        last_offset: None,
+        end,
+    };
     if scan_from >= end {
         return Ok(out);
     }

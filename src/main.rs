@@ -4,6 +4,7 @@ mod history;
 mod http;
 mod metrics;
 mod offsets;
+mod operator;
 mod queue;
 mod registry;
 mod shard;
@@ -207,9 +208,17 @@ struct Args {
 
     /// RSS shed threshold (MB): 429 writes while RSS exceeds this.
     /// Docker phase 1: without it a 1 GB cgroup OOM-kills the instance at
-    /// full throughput. Set ~78 %% of instance RAM (spec §1.1 alarm).
-    #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 0)]
+    /// full throughput. MUST sit well below the platform kill line (the
+    /// slate-codex A/B died at ~750 MB anon RSS on Prisma Compute with the
+    /// shed configured at 800 — an unreachable guard protects nothing).
+    /// Default 600 for the ~750 MB pilot instance class; 0 = off.
+    #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 600)]
     admit_rss_shed_mb: u64,
+
+    /// Per-stream inflight append cap (0 = off): one hot stream cannot
+    /// occupy every admission slot of its shard owner (scoped 429).
+    #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
+    admit_max_inflight_per_stream: i64,
 
     /// §12-lite admission backstop: shed /v1/stream requests with 429 +
     /// Retry-After beyond this many in flight (0 = off). Protects the
@@ -295,9 +304,14 @@ impl Args {
     /// Fleet-coordination store (heartbeats, desired.json): shared across
     /// instances, so prefixed by --fleet-prefix, not --path-prefix.
     fn fleet_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
-        let Some(p) = &self.fleet_prefix else { return Ok(None) };
+        let Some(p) = &self.fleet_prefix else {
+            return Ok(None);
+        };
         let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?);
-        Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str()))))
+        Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(
+            s3,
+            p.as_str(),
+        ))))
     }
 }
 
@@ -318,7 +332,9 @@ fn shard_settings(args: &Args) -> Settings {
         // D23: fencing correctness comes from CAS write failures, not polls.
         manifest_poll_interval: Duration::from_millis(args.manifest_poll_ms),
         garbage_collector_options: {
-            let mut gc = Settings::default().garbage_collector_options.unwrap_or_default();
+            let mut gc = Settings::default()
+                .garbage_collector_options
+                .unwrap_or_default();
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
@@ -346,7 +362,9 @@ fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| {
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
         })
         .max(2);
     tracing::info!("tokio runtime: {workers} worker threads");
@@ -368,7 +386,11 @@ async fn async_main() -> anyhow::Result<()> {
     let topology = load_or_init_topology(&ops_store, args.initial_shards)
         .await
         .context("load topology")?;
-    tracing::info!("topology v{}: {} shard(s)", topology.version, topology.shards.len());
+    tracing::info!(
+        "topology v{}: {} shard(s)",
+        topology.version,
+        topology.shards.len()
+    );
 
     let keys = Arc::new(KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());
@@ -419,8 +441,7 @@ async fn async_main() -> anyhow::Result<()> {
                         h = h.wrapping_mul(16777619);
                     }
                     let spread = (base.as_millis() as u64 / 2).max(1);
-                    settings.flush_interval =
-                        Some(base + Duration::from_millis(h as u64 % spread));
+                    settings.flush_interval = Some(base + Duration::from_millis(h as u64 % spread));
                 }
                 let state_slot = state_slot.clone();
                 Box::pin(async move {
@@ -443,9 +464,7 @@ async fn async_main() -> anyhow::Result<()> {
                         let state_slot = state_slot.clone();
                         Arc::new(move || {
                             touch.close_shard(&prefix);
-                            if let Some(st) =
-                                state_slot.get().and_then(std::sync::Weak::upgrade)
-                            {
+                            if let Some(st) = state_slot.get().and_then(std::sync::Weak::upgrade) {
                                 st.shard_closed(&prefix);
                             }
                         }) as Arc<dyn Fn() + Send + Sync>
@@ -453,7 +472,10 @@ async fn async_main() -> anyhow::Result<()> {
                     let engine = ShardEngine::start(
                         prefix.clone(),
                         Arc::new(db),
-                        ShardConfig { max_trim_per_op: trim_per_op, ..Default::default() },
+                        ShardConfig {
+                            max_trim_per_op: trim_per_op,
+                            ..Default::default()
+                        },
                         absorb_tx,
                         Some(on_close),
                     );
@@ -475,10 +497,12 @@ async fn async_main() -> anyhow::Result<()> {
         }
     };
 
+    let fleet_store_opt = args.fleet_store()?;
     let state = Arc::new(AppState {
         registry,
         shard_prefixes: topology.shards.clone(),
         shards: std::sync::RwLock::new(HashMap::new()),
+        fleet_store: fleet_store_opt.clone(),
         opener,
         open_lock: tokio::sync::Mutex::new(HashMap::new()),
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
@@ -488,6 +512,9 @@ async fn async_main() -> anyhow::Result<()> {
         admit_rss_shed_mb: args.admit_rss_shed_mb,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
+        admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
+        stream_inflight: std::sync::Mutex::new(HashMap::new()),
+        stream_shed: std::sync::atomic::AtomicU64::new(0),
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         data_store,
@@ -515,7 +542,7 @@ async fn async_main() -> anyhow::Result<()> {
         ),
         _ => {}
     }
-    if let Some(fleet_store) = args.fleet_store()? {
+    if let Some(fleet_store) = fleet_store_opt {
         {
             // RSS sampler for the shed check (500 ms; /proc read per
             // request would be silly).

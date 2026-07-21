@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>streams operator</title>
+<style>
+  :root { --bg:#0b0e11; --panel:#141a21; --ink:#d7dee6; --dim:#7d8a96; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --line:#232b33; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; padding:16px; }
+  h1 { font-size:15px; margin-bottom:2px; }
+  h2 { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin:0 0 8px; }
+  .sub { color:var(--dim); margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:3px 10px 3px 0; white-space:nowrap; }
+  th { color:var(--dim); font-weight:normal; }
+  tr+tr td { border-top:1px solid var(--line); }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .dim { color:var(--dim); }
+  .kv td:first-child { color:var(--dim); padding-right:16px; }
+  a { color:#58a6ff; text-decoration:none; }
+  .err { color:var(--bad); margin-bottom:10px; display:none; }
+</style>
+</head>
+<body>
+<h1>streams operator</h1>
+<div class="sub">unsecured cell view · auto-refresh 5&nbsp;s · <a href="/operator/runbook">runbook</a> · <a href="/v1/debug/store?window=60" target="_blank">store json</a></div>
+<div class="err" id="err"></div>
+<div class="grid">
+  <div class="panel"><h2>this instance</h2><table class="kv" id="local"></table></div>
+  <div class="panel"><h2>admission</h2><table class="kv" id="admission"></table></div>
+  <div class="panel" style="grid-column:1/-1"><h2>fleet</h2><table id="fleet"><thead><tr>
+    <th>instance</th><th>age</th><th>cpu%</th><th>rps</th><th>inflight</th><th>peak</th><th>rss MB</th><th>ack p50</th><th>wal p50</th><th>wal p99</th>
+  </tr></thead><tbody></tbody></table><div class="dim" id="fleetnote"></div></div>
+  <div class="panel" style="grid-column:1/-1"><h2>object store (60 s)</h2><table id="store"><thead><tr>
+    <th>op:class</th><th>n</th><th>err</th><th>p50 ms</th><th>p90 ms</th><th>p99 ms</th><th>max ms</th>
+  </tr></thead><tbody></tbody></table><div class="dim" id="sentinels"></div></div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d=1) => v == null ? "–" : (typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(d)) : v);
+function kv(el, rows) {
+  el.innerHTML = rows.map(([k, v, cls]) => `<tr><td>${k}</td><td class="${cls||""}">${v}</td></tr>`).join("");
+}
+async function tick() {
+  let d;
+  try {
+    d = await (await fetch("/operator/data.json", {cache:"no-store"})).json();
+    $("err").style.display = "none";
+  } catch (e) {
+    $("err").textContent = "data.json fetch failed: " + e; $("err").style.display = "block"; return;
+  }
+  const L = d.local || {};
+  kv($("local"), [
+    ["instance", L.instance || "(standalone)"],
+    ["open shards", fmt(L.open_shards)],
+    ["ring", (L.ring_active || []).join(" ") || "–"],
+    ["rss MB", fmt(L.rss_mb, 0), L.rss_shed_mb > 0 && L.rss_mb > L.rss_shed_mb * 0.9 ? "warn" : ""],
+  ]);
+  kv($("admission"), [
+    ["inflight now / peak", `${fmt(L.inflight)} / ${fmt(L.inflight_peak)}`],
+    ["instance cap", fmt(L.admit_max_inflight)],
+    ["per-stream cap", fmt(L.admit_max_inflight_per_stream)],
+    ["instance sheds", fmt(L.admit_shed), L.admit_shed > 0 ? "warn" : ""],
+    ["stream sheds", fmt(L.stream_shed), L.stream_shed > 0 ? "warn" : ""],
+    ["rss shed at MB", fmt(L.rss_shed_mb)],
+  ]);
+  // Heartbeat freshness is judged against the SERVING instance's clock
+  // (d.ts_ms), never the browser clock — a skewed laptop must not paint a
+  // healthy fleet dead (2026-07-20 dashboard aging bug).
+  const hbs = (d.fleet && d.fleet.heartbeats) || null;
+  const tb = $("fleet").querySelector("tbody");
+  if (!hbs) { tb.innerHTML = `<tr><td colspan="10" class="dim">standalone (no fleet store)</td></tr>`; $("fleetnote").textContent = ""; }
+  else {
+    hbs.sort((a, b) => String(a.instance||"").localeCompare(String(b.instance||"")));
+    tb.innerHTML = hbs.map(h => {
+      const age = (d.ts_ms - (h.ts_ms || 0)) / 1000;
+      const live = age < 10;
+      const cls = live ? "ok" : "bad";
+      return `<tr><td class="${cls}">${h.instance || "?"}</td><td class="${cls}">${age < 0 ? "0" : fmt(age)}s</td>` +
+        `<td>${fmt(h.cpu_pct, 0)}</td><td>${fmt(h.rps, 0)}</td><td>${fmt(h.inflight)}</td><td>${fmt(h.inflight_peak)}</td>` +
+        `<td>${fmt(h.rss_mb, 0)}</td><td>${fmt(h.ack_p50_ms, 0)}</td><td>${fmt(h.wal_put_p50_ms, 0)}</td><td>${fmt(h.wal_put_p99_ms, 0)}</td></tr>`;
+    }).join("");
+    const live = hbs.filter(h => (d.ts_ms - (h.ts_ms || 0)) / 1000 < 10).length;
+    const desired = d.fleet.desired && d.fleet.desired.instances;
+    $("fleetnote").textContent = `${live}/${hbs.length} live` + (desired ? ` · desired: ${desired.join(" ")}` : "");
+  }
+  const ops = (L.store && L.store.ops) || {};
+  $("store").querySelector("tbody").innerHTML = Object.keys(ops).sort().map(k => {
+    const o = ops[k];
+    const ecls = o.err > 0 ? "warn" : "dim";
+    return `<tr><td>${k}</td><td>${fmt(o.n)}</td><td class="${ecls}">${fmt(o.err)}</td>` +
+      `<td>${fmt(o.p50_ms)}</td><td>${fmt(o.p90_ms)}</td><td>${fmt(o.p99_ms)}</td><td>${fmt(o.max_ms)}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="dim">no store ops in window</td></tr>`;
+  const st = L.store || {};
+  const tt = st.timer_tokio || {}, th = st.timer_thread || {};
+  $("sentinels").textContent =
+    `outbound inflight ${fmt(st.out_inflight_now)} (peak ${fmt(st.out_inflight_peak)}) · ` +
+    `timer drift tokio p99 ${fmt((tt.p99_us||0)/1000, 1)}ms over50 ${fmt(tt.over_50ms)} · ` +
+    `thread p99 ${fmt((th.p99_us||0)/1000, 1)}ms · steal ${fmt(st.steal_pct)}%`;
+}
+tick(); setInterval(tick, 5000);
+</script>
+</body>
+</html>

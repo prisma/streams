@@ -111,7 +111,11 @@ impl StreamDesc {
 
 /// Media type with parameters stripped, lowercased.
 pub fn media_type(ct: &str) -> String {
-    ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase()
+    ct.split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
 }
 
 pub struct Registry {
@@ -145,7 +149,18 @@ impl Registry {
         let fetched = match self.store.get(&desc_path(name)).await {
             Ok(r) => {
                 let raw = r.bytes().await?;
-                serde_json::from_slice::<StreamDesc>(&raw).ok()
+                // Fail CLOSED on a corrupt descriptor: treating it as absent
+                // would let a create/recreate path overwrite a live stream's
+                // identity (key epoch, incarnation) — worse than an error.
+                match serde_json::from_slice::<StreamDesc>(&raw) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        return Err(object_store::Error::Generic {
+                            store: "registry",
+                            source: format!("corrupt descriptor for {name:?}: {e}").into(),
+                        });
+                    }
+                }
             }
             Err(object_store::Error::NotFound { .. }) => None,
             Err(e) => return Err(e),
@@ -181,12 +196,13 @@ impl Registry {
             }
             Err(object_store::Error::AlreadyExists { .. }) => {
                 self.invalidate(&desc.name);
-                let existing = self.get(&desc.name).await?.ok_or_else(|| {
-                    object_store::Error::NotFound {
-                        path: desc.name.clone(),
-                        source: "raced create then missing".into(),
-                    }
-                })?;
+                let existing =
+                    self.get(&desc.name)
+                        .await?
+                        .ok_or_else(|| object_store::Error::NotFound {
+                            path: desc.name.clone(),
+                            source: "raced create then missing".into(),
+                        })?;
                 Ok((false, existing))
             }
             Err(e) => Err(e),
@@ -194,19 +210,65 @@ impl Registry {
     }
 
     /// Replace a dead (deleted/expired) descriptor with a fresh incarnation.
+    /// Predicated CAS: the replacement applies only while the current
+    /// descriptor is still dead per `still_dead`. Racing recreators get
+    /// exactly one winner; a loser observes the winner's live descriptor
+    /// (`(false, winner)`) instead of overwriting its incarnation.
     pub async fn recreate(
         &self,
         name: &str,
         fresh: StreamDesc,
-    ) -> Result<StreamDesc, object_store::Error> {
-        let out = self
-            .update(name, |d| {
-                *d = fresh.clone();
-            })
-            .await?;
-        out.ok_or_else(|| object_store::Error::NotFound {
-            path: name.to_string(),
-            source: "recreate on missing descriptor".into(),
+        still_dead: impl Fn(&StreamDesc) -> bool,
+    ) -> Result<(bool, StreamDesc), object_store::Error> {
+        for _ in 0..5 {
+            let got = match self.store.get(&desc_path(name)).await {
+                Ok(r) => r,
+                Err(object_store::Error::NotFound { .. }) => {
+                    return Err(object_store::Error::NotFound {
+                        path: name.to_string(),
+                        source: "recreate on missing descriptor".into(),
+                    });
+                }
+                Err(e) => return Err(e),
+            };
+            let etag = got.meta.e_tag.clone();
+            let raw = got.bytes().await?;
+            let current: StreamDesc =
+                serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
+                    store: "registry",
+                    source: format!("corrupt descriptor for {name:?}: {e}").into(),
+                })?;
+            if !still_dead(&current) {
+                self.cache
+                    .lock()
+                    .unwrap()
+                    .insert(name.to_string(), (Some(current.clone()), Instant::now()));
+                return Ok((false, current));
+            }
+            let body = serde_json::to_vec(&fresh).expect("desc json");
+            match self
+                .store
+                .put_opts(
+                    &desc_path(name),
+                    PutPayload::from(body),
+                    PutOptions::from(PutMode::Update(UpdateVersion {
+                        e_tag: etag,
+                        version: None,
+                    })),
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(name);
+                    return Ok((true, fresh));
+                }
+                Err(object_store::Error::Precondition { .. }) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(object_store::Error::Generic {
+            store: "registry",
+            source: "descriptor CAS retries exhausted".into(),
         })
     }
 
@@ -224,10 +286,12 @@ impl Registry {
             };
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
-            let mut desc: StreamDesc = match serde_json::from_slice(&raw) {
-                Ok(d) => d,
-                Err(_) => return Ok(None),
-            };
+            // Fail CLOSED on corruption (was: treated as missing).
+            let mut desc: StreamDesc =
+                serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
+                    store: "registry",
+                    source: format!("corrupt descriptor during update: {e}").into(),
+                })?;
             apply(&mut desc);
             let body = serde_json::to_vec(&desc).expect("desc json");
             match self
@@ -235,7 +299,10 @@ impl Registry {
                 .put_opts(
                     &desc_path(name),
                     PutPayload::from(body),
-                    PutOptions::from(PutMode::Update(UpdateVersion { e_tag: etag, version: None })),
+                    PutOptions::from(PutMode::Update(UpdateVersion {
+                        e_tag: etag,
+                        version: None,
+                    })),
                 )
                 .await
             {
@@ -300,29 +367,48 @@ pub async fn load_or_init_topology(
     match store.get(&path).await {
         Ok(r) => {
             let raw = r.bytes().await?;
-            return Ok(serde_json::from_slice(&raw).expect("topology json"));
+            // Fail CLOSED: a corrupt topology must abort boot. Panicking is
+            // wrong (crash loop) and treating it as missing would be far
+            // worse (re-initializing re-shards the whole keyspace).
+            return serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
+                store: "registry",
+                source: format!("corrupt topology object: {e}").into(),
+            });
         }
         Err(object_store::Error::NotFound { .. }) => {}
         Err(e) => return Err(e),
     }
     let bits = (initial_shards.max(1) as f64).log2() as usize;
-    assert_eq!(1 << bits, initial_shards.max(1), "initial shards must be a power of two");
+    assert_eq!(
+        1 << bits,
+        initial_shards.max(1),
+        "initial shards must be a power of two"
+    );
     let shards: Vec<String> = if bits == 0 {
         vec![String::new()]
     } else {
-        (0..initial_shards).map(|i| format!("{:0width$b}", i, width = bits)).collect()
+        (0..initial_shards)
+            .map(|i| format!("{:0width$b}", i, width = bits))
+            .collect()
     };
     let topo = Topology { version: 1, shards };
     let raw = serde_json::to_vec(&topo).expect("topology json");
     match store
-        .put_opts(&path, PutPayload::from(raw), PutOptions::from(PutMode::Create))
+        .put_opts(
+            &path,
+            PutPayload::from(raw),
+            PutOptions::from(PutMode::Create),
+        )
         .await
     {
         Ok(_) => Ok(topo),
         Err(object_store::Error::AlreadyExists { .. }) => {
             let r = store.get(&path).await?;
             let raw = r.bytes().await?;
-            Ok(serde_json::from_slice(&raw).expect("topology json"))
+            serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
+                store: "registry",
+                source: format!("corrupt topology object: {e}").into(),
+            })
         }
         Err(e) => Err(e),
     }
@@ -351,4 +437,111 @@ pub fn shard_for_hash(shards: &[String], hash: &[u8; 16]) -> String {
 /// Does `hash` fall inside the shard identified by bit-prefix `prefix`?
 pub fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
     hash_bits(hash).starts_with(prefix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::ObjectStoreExt;
+
+    fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {
+        StreamDesc {
+            name: name.into(),
+            stream_epoch: epoch.into(),
+            key_fingerprint: "fp".into(),
+            created_ms: 1,
+            expires_at_ms: None,
+            deleted,
+            profile: None,
+            content_type: "application/json".into(),
+            ttl_secs: None,
+            ordering: None,
+            segment_count: 0,
+            queue_max_deliveries: None,
+            touch_token_fingerprint: None,
+            touch_templates: Vec::new(),
+            touch_sig_key: None,
+        }
+    }
+
+    async fn put_raw(store: &Arc<dyn ObjectStore>, name: &str, body: &[u8]) {
+        store
+            .put(
+                &desc_path(name),
+                object_store::PutPayload::from(body.to_vec()),
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A corrupt descriptor must surface as an ERROR — treating it as
+    /// absent lets a create/recreate overwrite a live stream's identity.
+    #[tokio::test]
+    async fn corrupt_descriptor_fails_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(store.clone());
+        put_raw(&store, "s1", b"{ not json").await;
+        assert!(
+            reg.get("s1").await.is_err(),
+            "corrupt descriptor returned as absent/ok"
+        );
+        // update() must also refuse (was: Ok(None), i.e. missing).
+        assert!(reg.update("s1", |_| {}).await.is_err());
+    }
+
+    /// A corrupt topology must abort boot, never panic and NEVER be treated
+    /// as missing (re-initializing re-shards the whole keyspace).
+    #[tokio::test]
+    async fn corrupt_topology_fails_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        store
+            .put(
+                &ObjPath::from(TOPOLOGY_PATH),
+                object_store::PutPayload::from(b"garbage".to_vec()),
+            )
+            .await
+            .unwrap();
+        assert!(load_or_init_topology(&store, 4).await.is_err());
+        // The corrupt object must still be there — not replaced by a fresh
+        // initialization.
+        let raw = store
+            .get(&ObjPath::from(TOPOLOGY_PATH))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(&raw[..], b"garbage");
+    }
+
+    /// Racing recreators of a dead incarnation: exactly one winner; the
+    /// loser observes the winner's descriptor instead of overwriting it.
+    #[tokio::test]
+    async fn recreate_race_has_one_winner() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(store.clone());
+        let (created, _) = reg.create(desc("s", "dead", true)).await.unwrap();
+        assert!(created);
+
+        let alive = |d: &StreamDesc| !d.deleted;
+        let (won_a, got_a) = reg
+            .recreate("s", desc("s", "epoch-a", false), |d| !alive(d))
+            .await
+            .unwrap();
+        assert!(won_a, "first recreate must win");
+        assert_eq!(got_a.stream_epoch, "epoch-a");
+
+        // Second recreator raced and lost: descriptor is now alive, so the
+        // predicate fails and it must observe epoch-a, not install epoch-b.
+        let (won_b, got_b) = reg
+            .recreate("s", desc("s", "epoch-b", false), |d| !alive(d))
+            .await
+            .unwrap();
+        assert!(!won_b, "second recreate must lose");
+        assert_eq!(got_b.stream_epoch, "epoch-a");
+
+        reg.invalidate("s");
+        let stored = reg.get("s").await.unwrap().unwrap();
+        assert_eq!(stored.stream_epoch, "epoch-a", "loser overwrote the winner");
+    }
 }
