@@ -263,3 +263,20 @@ now the standing gate. Definition:
   currently strands in-flight appends until the platform kills them at
   30 s; admission should observe flush-pipeline health directly (§4 item
   alongside per-customer quotas).
+
+### 2026-07-22 addendum: final verification state
+
+- The wedge shed (429 on >2 s blocked commit) is verified by
+  `commit_blocked_detects_real_flush_stall` — real SlateDB byte
+  backpressure through a WAL-stalling store, detector crosses the
+  threshold. 13/13 tests green, clippy at baseline, cargo-deny clean.
+- Unplanned soak: the cand2 deployment (this branch minus only the wedge
+  shed, final envelope, live shed at 550) ran ~47 min of continuous
+  closed-loop saturation after its measured window — zero restarts,
+  RSS held at ~588 MB by 2,546 shed rejections, cumulative error rate
+  0.14% (all from the known pre-wedge-shed stall mode).
+- The final cloud leg (wedge-shed build under the §5 gate) is staged:
+  binary `bin/streams-ab-slate4-x64` is uploaded and the harness is
+  parameterized — it requires only a workspace-scoped platform token
+  (the pilot token was lost to tmp cleanup mid-session; the recovered
+  CLI credential is read-only and cannot deploy).
