@@ -8,11 +8,11 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use clap::Parser;
+use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use object_store::path::Path as ObjPath;
 use object_store::{
     CopyOptions, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
-use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
 use slatedb::admin::AdminBuilder;
 use slatedb::config::{Settings, WriteOptions};
 use slatedb::{CloneSourceSpec, Db};
@@ -21,7 +21,11 @@ use slatedb::{CloneSourceSpec, Db};
 struct Args {
     /// cas | fence | waloff | clone | idle | latency
     test: String,
-    #[arg(long, env = "SLATE_S3_ENDPOINT", default_value = "https://t3.storage.dev")]
+    #[arg(
+        long,
+        env = "SLATE_S3_ENDPOINT",
+        default_value = "https://t3.storage.dev"
+    )]
     s3_endpoint: String,
     #[arg(long, env = "SLATE_S3_BUCKET", default_value = "slate-sin")]
     bucket: String,
@@ -181,7 +185,10 @@ async fn cas(args: &Args) -> anyhow::Result<()> {
             PutOptions::from(PutMode::Create),
         )
         .await?;
-    println!("create fresh: OK etag={:?} version={:?}", r1.e_tag, r1.version);
+    println!(
+        "create fresh: OK etag={:?} version={:?}",
+        r1.e_tag, r1.version
+    );
 
     // 2) PutMode::Create again -> must fail AlreadyExists.
     let r2 = s
@@ -239,8 +246,16 @@ async fn cas(args: &Args) -> anyhow::Result<()> {
     // 5) CAS race: two concurrent Creates on one fresh key -> exactly one wins.
     let key2 = ObjPath::from(format!("{}/cas/race-{}", args.prefix, std::process::id()));
     let (a, b) = tokio::join!(
-        s.put_opts(&key2, PutPayload::from_static(b"A"), PutOptions::from(PutMode::Create)),
-        s.put_opts(&key2, PutPayload::from_static(b"B"), PutOptions::from(PutMode::Create)),
+        s.put_opts(
+            &key2,
+            PutPayload::from_static(b"A"),
+            PutOptions::from(PutMode::Create)
+        ),
+        s.put_opts(
+            &key2,
+            PutPayload::from_static(b"B"),
+            PutOptions::from(PutMode::Create)
+        ),
     );
     let winners = [a.is_ok(), b.is_ok()].iter().filter(|x| **x).count();
     println!("concurrent create race: {winners} winner(s) (want exactly 1)");
@@ -315,10 +330,16 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         b"fast",
         b"v",
         &Default::default(),
-        &WriteOptions { await_durable: false, ..Default::default() },
+        &WriteOptions {
+            await_durable: false,
+            ..Default::default()
+        },
     )
     .await?;
-    println!("wal-off non-durable put: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "wal-off non-durable put: {:.1}ms",
+        t.elapsed().as_secs_f64() * 1000.0
+    );
 
     // Finding: with WAL off, await_durable waits for a memtable→L0 flush,
     // which never happens for small memtables without an explicit flush().
@@ -327,7 +348,10 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         b"durable",
         b"v",
         &Default::default(),
-        &WriteOptions { await_durable: false, ..Default::default() },
+        &WriteOptions {
+            await_durable: false,
+            ..Default::default()
+        },
     )
     .await?;
     let t = Instant::now();
@@ -341,10 +365,17 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
 
     // Reopen: durable data must survive.
     let db2 = Db::builder(path.as_str(), s.clone())
-        .with_settings(Settings { wal_enabled: false, ..Default::default() })
+        .with_settings(Settings {
+            wal_enabled: false,
+            ..Default::default()
+        })
         .build()
         .await?;
-    println!("after reopen: fast={:?} durable={:?}", db2.get(b"fast").await?, db2.get(b"durable").await?);
+    println!(
+        "after reopen: fast={:?} durable={:?}",
+        db2.get(b"fast").await?,
+        db2.get(b"durable").await?
+    );
     db2.close().await?;
     Ok(())
 }
@@ -357,8 +388,10 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
     // Parent with keys in two hash halves: a* (low) and q* (high).
     let db = Db::builder(parent.as_str(), s.clone()).build().await?;
     for i in 0..500u32 {
-        db.put(format!("a{:04}", i).as_bytes(), vec![b'x'; 256]).await?;
-        db.put(format!("q{:04}", i).as_bytes(), vec![b'y'; 256]).await?;
+        db.put(format!("a{:04}", i).as_bytes(), vec![b'x'; 256])
+            .await?;
+        db.put(format!("q{:04}", i).as_bytes(), vec![b'y'; 256])
+            .await?;
     }
     db.flush().await?;
     db.close().await?;
@@ -390,7 +423,10 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
         .create_clone_builder_from_source(src_high)
         .build()
         .await?;
-    println!("split (2 clones) took {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
+    println!(
+        "split (2 clones) took {:.0}ms",
+        t.elapsed().as_secs_f64() * 1000.0
+    );
 
     let low_objs = count_objects(&s, &child_low).await?;
     let high_objs = count_objects(&s, &child_high).await?;
@@ -400,7 +436,11 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
     let dbl = Db::builder(child_low.as_str(), s.clone()).build().await?;
     let a = dbl.get(b"a0001").await?;
     let q = dbl.get(b"q0001").await?;
-    println!("low child: a0001={} q0001={} (want present/absent)", a.is_some(), q.is_some());
+    println!(
+        "low child: a0001={} q0001={} (want present/absent)",
+        a.is_some(),
+        q.is_some()
+    );
     dbl.put(b"a-new", b"child-write").await?;
     dbl.close().await?;
 
@@ -410,7 +450,9 @@ async fn clone_split(args: &Args) -> anyhow::Result<()> {
     let an = dbh.get(b"a-new").await?;
     println!(
         "high child: a0001={} q0001={} a-new={} (want absent/present/absent)",
-        a.is_some(), q.is_some(), an.is_some()
+        a.is_some(),
+        q.is_some(),
+        an.is_some()
     );
     dbh.close().await?;
 
@@ -454,7 +496,10 @@ async fn count_objects(s: &Arc<dyn ObjectStore>, prefix: &str) -> anyhow::Result
 
 async fn idle(args: &Args) -> anyhow::Result<()> {
     let inner = store(args)?;
-    let counting = Arc::new(Counting { inner, ops: AtomicU64::new(0) });
+    let counting = Arc::new(Counting {
+        inner,
+        ops: AtomicU64::new(0),
+    });
     let mut dbs = Vec::new();
     for i in 0..args.n {
         let path = format!("{}/idle-db-{}-{i}", args.prefix, std::process::id());
@@ -486,7 +531,9 @@ async fn idle(args: &Args) -> anyhow::Result<()> {
     let secs = t.elapsed().as_secs_f64();
     println!(
         "{} idle DBs, {:.0}s: {} object-store ops total = {:.2} ops/s/db",
-        args.n, secs, ops,
+        args.n,
+        secs,
+        ops,
         ops as f64 / secs / args.n as f64
     );
     for db in dbs {

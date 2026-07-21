@@ -79,23 +79,42 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::DeriveTouchToken { key, epoch } => {
             let k = crypto::StreamKey::from_b64(&key).map_err(anyhow::Error::msg)?;
-            println!("{}", crypto::hex(&crypto::touch_token(&k, &parse_epoch(&epoch)?)));
+            println!(
+                "{}",
+                crypto::hex(&crypto::touch_token(&k, &parse_epoch(&epoch)?))
+            );
         }
-        Cmd::DeriveSubkey { key, epoch, routing_key, key_version } => {
+        Cmd::DeriveSubkey {
+            key,
+            epoch,
+            routing_key,
+            key_version,
+        } => {
             let k = crypto::StreamKey::from_b64(&key).map_err(anyhow::Error::msg)?;
             let sub = crypto::derive_subkey(&k, &parse_epoch(&epoch)?, &routing_key, key_version);
             println!("{}", crypto::hex(&sub));
         }
-        Cmd::DecryptFrame { key, epoch, stream, frame_hex } => {
+        Cmd::DecryptFrame {
+            key,
+            epoch,
+            stream,
+            frame_hex,
+        } => {
             let k = crypto::StreamKey::from_b64(&key).map_err(anyhow::Error::msg)?;
             let epoch = parse_epoch(&epoch)?;
             let raw = crypto::unhex(frame_hex.trim())
                 .ok_or_else(|| anyhow::anyhow!("frame must be hex"))?;
-            let frame = crypto::decode_frame(&raw)
-                .ok_or_else(|| anyhow::anyhow!("invalid frame"))?;
+            let frame =
+                crypto::decode_frame(&raw).ok_or_else(|| anyhow::anyhow!("invalid frame"))?;
             let hash = crypto::stream_hash(&stream);
-            let sub = crypto::derive_subkey(&k, &epoch, &frame.header.routing_key, frame.header.key_version);
-            let pt = crypto::decrypt_frame(&sub, &hash, &frame, &raw).map_err(anyhow::Error::msg)?;
+            let sub = crypto::derive_subkey(
+                &k,
+                &epoch,
+                &frame.header.routing_key,
+                frame.header.key_version,
+            );
+            let pt =
+                crypto::decrypt_frame(&sub, &hash, &frame, &raw).map_err(anyhow::Error::msg)?;
             println!(
                 "offset={} ts_ms={} routing_key={:?} payload={}",
                 frame.header.offset,

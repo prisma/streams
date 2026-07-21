@@ -97,8 +97,13 @@ pub enum WaitOutcome {
         /// lagging client would walk the cached touch chain hop by hop.
         cacheable: bool,
     },
-    Timeout { cursor: String, end_offset: u64 },
-    Stale { cursor: String },
+    Timeout {
+        cursor: String,
+        end_offset: u64,
+    },
+    Stale {
+        cursor: String,
+    },
 }
 
 impl TouchJournal {
@@ -232,7 +237,10 @@ impl TouchJournal {
         };
         for id in candidates {
             if let Some(w) = remove_waiter(&mut inner, id) {
-                let _ = w.tx.send(WakeReason::Touched { generation, end_offset });
+                let _ = w.tx.send(WakeReason::Touched {
+                    generation,
+                    end_offset,
+                });
                 inner.wakeups += 1;
             }
         }
@@ -240,7 +248,12 @@ impl TouchJournal {
         let mut sorted: Vec<u32> = keys.into_iter().collect();
         sorted.sort_unstable();
         inner.history_keys += sorted.len();
-        inner.history.push_back(ClosedBucket { generation, keys: sorted, overflow, end_offset });
+        inner.history.push_back(ClosedBucket {
+            generation,
+            keys: sorted,
+            overflow,
+            end_offset,
+        });
         while inner.history.len() > HISTORY_BUCKETS || inner.history_keys > HISTORY_KEY_BUDGET {
             if let Some(evicted) = inner.history.pop_front() {
                 inner.history_keys -= evicted.keys.len();
@@ -284,12 +297,13 @@ impl TouchJournal {
         if let Some(tpls) = snapshot.get(entity) {
             for (tid, fields) in tpls {
                 for source in ["value", "old_value"] {
-                    let Some(obj) = record.get(source) else { continue };
+                    let Some(obj) = record.get(source) else {
+                        continue;
+                    };
                     if obj.is_null() {
                         continue;
                     }
-                    let args: Vec<String> =
-                        fields.iter().map(|f| arg_string(obj.get(f))).collect();
+                    let args: Vec<String> = fields.iter().map(|f| arg_string(obj.get(f))).collect();
                     out.push(key_id_of_u64(watch_key(*tid, &args)));
                 }
             }
@@ -310,7 +324,9 @@ impl TouchJournal {
         let from_gen = {
             let inner = self.inner.lock().unwrap();
             if inner.closed {
-                return WaitOutcome::Stale { cursor: self.cursor(inner.generation) };
+                return WaitOutcome::Stale {
+                    cursor: self.cursor(inner.generation),
+                };
             }
             if cursor == "now" {
                 inner.generation
@@ -327,7 +343,9 @@ impl TouchJournal {
                         }
                     }
                     _ => {
-                        return WaitOutcome::Stale { cursor: self.cursor(inner.generation) };
+                        return WaitOutcome::Stale {
+                            cursor: self.cursor(inner.generation),
+                        };
                     }
                 }
             }
@@ -384,7 +402,10 @@ impl TouchJournal {
         match tokio::time::timeout(timeout, rx).await {
             // A long-poll wake is by definition at the head: immutable for
             // this (key, cursor), safe to cache for late cohort members.
-            Ok(Ok(WakeReason::Touched { generation, end_offset })) => WaitOutcome::Touched {
+            Ok(Ok(WakeReason::Touched {
+                generation,
+                end_offset,
+            })) => WaitOutcome::Touched {
                 cursor: self.cursor(generation),
                 end_offset,
                 proven: true,
@@ -392,7 +413,9 @@ impl TouchJournal {
             },
             Ok(Ok(WakeReason::Closed)) => {
                 let g = self.inner.lock().unwrap().generation;
-                WaitOutcome::Stale { cursor: self.cursor(g) }
+                WaitOutcome::Stale {
+                    cursor: self.cursor(g),
+                }
             }
             _ => {
                 let inner = self.inner.lock().unwrap();
@@ -453,13 +476,11 @@ pub struct TouchRegistry {
 }
 
 impl TouchRegistry {
-    pub fn journal(
-        &self,
-        hash: [u8; 16],
-        pinned: &[(String, Vec<String>)],
-    ) -> Arc<TouchJournal> {
+    pub fn journal(&self, hash: [u8; 16], pinned: &[(String, Vec<String>)]) -> Arc<TouchJournal> {
         let mut map = self.map.lock().unwrap();
-        map.entry(hash).or_insert_with(|| TouchJournal::start(pinned)).clone()
+        map.entry(hash)
+            .or_insert_with(|| TouchJournal::start(pinned))
+            .clone()
     }
 
     /// Fence/move of a shard: close + drop every journal whose stream hash

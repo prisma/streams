@@ -22,8 +22,7 @@ use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart,
-    path::Path,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result, UploadPart, path::Path,
 };
 
 pub const OPS: [&str; 7] = ["put", "mpu", "get", "head", "delete", "list", "copy"];
@@ -76,7 +75,11 @@ fn sem() -> Option<&'static tokio::sync::Semaphore> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-        if n == 0 { None } else { Some(tokio::sync::Semaphore::new(n)) }
+        if n == 0 {
+            None
+        } else {
+            Some(tokio::sync::Semaphore::new(n))
+        }
     })
     .as_ref()
 }
@@ -134,7 +137,11 @@ fn push_drift(ring: &Mutex<VecDeque<(u64, u32)>>, drift_us: u32) {
 fn read_steal() -> Option<(u64, u64)> {
     let s = std::fs::read_to_string("/proc/stat").ok()?;
     let line = s.lines().next()?;
-    let f: Vec<u64> = line.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
+    let f: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse().ok())
+        .collect();
     if f.len() < 8 {
         return None;
     }
@@ -149,7 +156,11 @@ pub fn spawn_sentinels() {
             loop {
                 let t0 = Instant::now();
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                let over = t0.elapsed().as_micros().saturating_sub(10_000).min(u32::MAX as u128);
+                let over = t0
+                    .elapsed()
+                    .as_micros()
+                    .saturating_sub(10_000)
+                    .min(u32::MAX as u128);
                 push_drift(&drift().thread, over as u32);
             }
         })
@@ -160,7 +171,11 @@ pub fn spawn_sentinels() {
         loop {
             let t0 = Instant::now();
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            let over = t0.elapsed().as_micros().saturating_sub(10_000).min(u32::MAX as u128);
+            let over = t0
+                .elapsed()
+                .as_micros()
+                .saturating_sub(10_000)
+                .min(u32::MAX as u128);
             push_drift(&drift().tokio, over as u32);
             ticks += 1;
             if ticks % 100 == 0 {
@@ -180,11 +195,20 @@ pub fn spawn_sentinels() {
 }
 
 fn drift_stats(ring: &Mutex<VecDeque<(u64, u32)>>, cutoff: u64) -> serde_json::Value {
-    let mut v: Vec<u32> =
-        ring.lock().unwrap().iter().filter(|(ts, _)| *ts >= cutoff).map(|(_, d)| *d).collect();
+    let mut v: Vec<u32> = ring
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(ts, _)| *ts >= cutoff)
+        .map(|(_, d)| *d)
+        .collect();
     v.sort_unstable();
     let over50 = v.iter().filter(|d| **d >= 50_000).count();
-    let idx99 = if v.is_empty() { 0 } else { ((v.len() as f64 - 1.0) * 0.99).round() as usize };
+    let idx99 = if v.is_empty() {
+        0
+    } else {
+        ((v.len() as f64 - 1.0) * 0.99).round() as usize
+    };
     serde_json::json!({
         "n": v.len(),
         "p50_us": v.get(v.len() / 2).copied().unwrap_or(0),
@@ -195,7 +219,10 @@ fn drift_stats(ring: &Mutex<VecDeque<(u64, u32)>>, cutoff: u64) -> serde_json::V
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn classify(path: &str) -> u8 {
@@ -223,7 +250,13 @@ fn record(op: u8, class: u8, start: Instant, path: &str, ok: bool) {
         if ring.len() >= RING_CAP {
             ring.pop_front();
         }
-        ring.push_back(Ev { ts_ms, op, class, dur_us, ok });
+        ring.push_back(Ev {
+            ts_ms,
+            op,
+            class,
+            dur_us,
+            ok,
+        });
     }
     let dur_ms = (dur_us / 1000) as u64;
     // Slow ring is duration-only: routine NotFounds (GC boundary probes,
@@ -233,8 +266,22 @@ fn record(op: u8, class: u8, start: Instant, path: &str, ok: bool) {
         if slow.len() >= SLOW_CAP {
             slow.pop_front();
         }
-        let tail: String = path.chars().rev().take(48).collect::<Vec<_>>().into_iter().rev().collect();
-        slow.push_back(SlowOp { ts_ms, op, class, dur_ms, ok, path: tail });
+        let tail: String = path
+            .chars()
+            .rev()
+            .take(48)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        slow.push_back(SlowOp {
+            ts_ms,
+            op,
+            class,
+            dur_ms,
+            ok,
+            path: tail,
+        });
     }
 }
 
@@ -254,7 +301,13 @@ impl OpGuard {
         let now = s.inflight.fetch_add(1, Ordering::Relaxed) + 1;
         s.inflight_peak.fetch_max(now, Ordering::Relaxed);
         let p = path.as_ref().to_string();
-        OpGuard { op, class: classify(&p), start: Instant::now(), path: p, done: false }
+        OpGuard {
+            op,
+            class: classify(&p),
+            start: Instant::now(),
+            path: p,
+            done: false,
+        }
     }
     fn finish(mut self, ok: bool) {
         self.done = true;
@@ -316,7 +369,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         let _p = permit().await;
         let g = OpGuard::new(1, location);
         match self.inner.put_multipart_opts(location, opts).await {
-            Ok(up) => Ok(Box::new(TimedMpu { inner: up, guard: Some(g) })),
+            Ok(up) => Ok(Box::new(TimedMpu {
+                inner: up,
+                guard: Some(g),
+            })),
             Err(e) => {
                 g.finish(false);
                 Err(e)
@@ -354,13 +410,21 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         let s = stats();
         let now = s.inflight.fetch_add(1, Ordering::Relaxed) + 1;
         s.inflight_peak.fetch_max(now, Ordering::Relaxed);
-        TimedDeleteStream { inner: self.inner.delete_stream(locations), last: Instant::now(), open: true }
-            .boxed()
+        TimedDeleteStream {
+            inner: self.inner.delete_stream(locations),
+            last: Instant::now(),
+            open: true,
+        }
+        .boxed()
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
-        TimedStream { inner: self.inner.list(prefix), guard: Some(g) }.boxed()
+        TimedStream {
+            inner: self.inner.list(prefix),
+            guard: Some(g),
+        }
+        .boxed()
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {

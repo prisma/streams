@@ -145,7 +145,12 @@ async fn handle(State(state): State<Arc<AppState>>, method: Method, uri: Uri) ->
                 .unwrap_or("no-store")
                 .to_string();
             let body = r.bytes().await.unwrap_or_default();
-            CachedResp { status, content_type, cache_control, body }
+            CachedResp {
+                status,
+                content_type,
+                cache_control,
+                body,
+            }
         }
         Err(_) => CachedResp {
             status: 502,
@@ -156,13 +161,17 @@ async fn handle(State(state): State<Arc<AppState>>, method: Method, uri: Uri) ->
     };
     let ttl = max_age(&resp.cache_control);
     if resp.status == 200 && ttl > 0 {
-        state
-            .cache
-            .lock()
-            .unwrap()
-            .insert(url.clone(), (resp.clone(), Instant::now() + Duration::from_secs(ttl)));
+        state.cache.lock().unwrap().insert(
+            url.clone(),
+            (resp.clone(), Instant::now() + Duration::from_secs(ttl)),
+        );
     }
-    let waiters = state.in_flight.lock().unwrap().remove(&url).unwrap_or_default();
+    let waiters = state
+        .in_flight
+        .lock()
+        .unwrap()
+        .remove(&url)
+        .unwrap_or_default();
     for tx in waiters {
         let _ = tx.send(resp.clone());
     }

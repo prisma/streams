@@ -60,7 +60,8 @@ impl StreamKey {
 pub fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(stream_epoch), &key.0);
     let mut out = [0u8; 32];
-    hk.expand(b"touch-capability-v1", &mut out).expect("hkdf expand");
+    hk.expand(b"touch-capability-v1", &mut out)
+        .expect("hkdf expand");
     out
 }
 
@@ -169,7 +170,14 @@ pub fn encrypt_frame(
     h: &FrameHeader,
     plaintext: &[u8],
 ) -> Vec<u8> {
-    FrameCipher::new(subkey).encrypt(stream_hash, h.offset, h.ts_ms, h.key_version, &h.routing_key, plaintext)
+    FrameCipher::new(subkey).encrypt(
+        stream_hash,
+        h.offset,
+        h.ts_ms,
+        h.key_version,
+        &h.routing_key,
+        plaintext,
+    )
 }
 
 /// A reusable frame cipher: the AES key schedule is built ONCE and reused
@@ -182,7 +190,9 @@ pub struct FrameCipher {
 
 impl FrameCipher {
     pub fn new(subkey: &[u8; KEY_LEN]) -> FrameCipher {
-        FrameCipher { cipher: Aes256Gcm::new(subkey.into()) }
+        FrameCipher {
+            cipher: Aes256Gcm::new(subkey.into()),
+        }
     }
 
     /// Encrypt one record into its wire/storage frame without re-deriving
@@ -209,7 +219,10 @@ impl FrameCipher {
             .cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
-                Payload { msg: plaintext, aad: &aad(stream_hash, &header) },
+                Payload {
+                    msg: plaintext,
+                    aad: &aad(stream_hash, &header),
+                },
             )
             .expect("aes-gcm encrypt");
         let mut frame = header;
@@ -240,7 +253,12 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     let ct_len = u32::from_be_bytes(buf.get(header_len..header_len + 4)?.try_into().ok()?) as usize;
     let ciphertext = buf.get(header_len + 4..header_len + 4 + ct_len)?;
     Some(DecodedFrame {
-        header: FrameHeader { offset, ts_ms, key_version, routing_key },
+        header: FrameHeader {
+            offset,
+            ts_ms,
+            key_version,
+            routing_key,
+        },
         header_len,
         ciphertext,
     })

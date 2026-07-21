@@ -14,11 +14,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::Router;
 use bytes::Bytes;
 use clap::Parser;
 
@@ -72,7 +72,10 @@ struct AppState {
 
 impl AppState {
     fn next_etag(&self) -> String {
-        format!("\"e{:016x}\"", self.etag_counter.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "\"e{:016x}\"",
+            self.etag_counter.fetch_add(1, Ordering::Relaxed)
+        )
     }
 }
 
@@ -89,9 +92,7 @@ async fn main() -> anyhow::Result<()> {
         stats: Stats::default(),
     });
 
-    let app = Router::new()
-        .fallback(handle)
-        .with_state(state);
+    let app = Router::new().fallback(handle).with_state(state);
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     eprintln!(
         "s3lite listening on {} (latency {}ms per op)",
@@ -201,7 +202,10 @@ async fn handle(
         // ---- object-level ----
         (Method::POST, false) if query.contains_key("uploads") => {
             state.stats.multipart.fetch_add(1, Ordering::Relaxed);
-            let id = format!("u{:x}", state.upload_counter.fetch_add(1, Ordering::Relaxed));
+            let id = format!(
+                "u{:x}",
+                state.upload_counter.fetch_add(1, Ordering::Relaxed)
+            );
             state
                 .uploads
                 .lock()
@@ -263,12 +267,7 @@ fn s3_error(status: StatusCode, code: &str, message: &str) -> Response {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{}</Code><Message>{}</Message></Error>",
         code, message
     );
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/xml")],
-        xml,
-    )
-        .into_response()
+    (status, [(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
 
 async fn put_object(
@@ -355,7 +354,11 @@ fn get_object(
             "body was discarded by --discard-substr",
         );
     };
-    let total = if obj.discarded { obj.orig_len } else { obj.data.len() as u64 };
+    let total = if obj.discarded {
+        obj.orig_len
+    } else {
+        obj.data.len() as u64
+    };
     let range = headers
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
@@ -385,13 +388,19 @@ fn get_object(
         .header(header::ACCEPT_RANGES, "bytes")
         .header(
             header::LAST_MODIFIED,
-            obj.last_modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            obj.last_modified
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string(),
         )
         .header(header::CONTENT_LENGTH, slice.len());
     if let Some(cr) = content_range {
         builder = builder.header(header::CONTENT_RANGE, cr);
     }
-    let body = if head_only { Body::empty() } else { Body::from(slice) };
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::from(slice)
+    };
     builder.body(body).unwrap()
 }
 
@@ -424,11 +433,7 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
     Some((start, end))
 }
 
-fn list_objects(
-    state: &Arc<AppState>,
-    bucket: &str,
-    query: &HashMap<String, String>,
-) -> Response {
+fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, String>) -> Response {
     state.stats.list.fetch_add(1, Ordering::Relaxed);
     let prefix = query.get("prefix").cloned().unwrap_or_default();
     let delimiter = query.get("delimiter").cloned();
@@ -477,7 +482,12 @@ fn list_objects(
         }
         if contents.len() + common_prefixes.len() >= max_keys {
             truncated = true;
-            next_token = Some(contents.last().map(|(k, _)| k.clone()).unwrap_or_else(|| rel.to_string()));
+            next_token = Some(
+                contents
+                    .last()
+                    .map(|(k, _)| k.clone())
+                    .unwrap_or_else(|| rel.to_string()),
+            );
             break;
         }
         contents.push((rel.to_string(), obj));
@@ -487,7 +497,10 @@ fn list_objects(
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
     xml.push_str(&format!("<Name>{}</Name>", xml_escape(bucket)));
     xml.push_str(&format!("<Prefix>{}</Prefix>", xml_escape(&prefix)));
-    xml.push_str(&format!("<KeyCount>{}</KeyCount>", contents.len() + common_prefixes.len()));
+    xml.push_str(&format!(
+        "<KeyCount>{}</KeyCount>",
+        contents.len() + common_prefixes.len()
+    ));
     xml.push_str(&format!("<MaxKeys>{max_keys}</MaxKeys>"));
     xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
     if let Some(tok) = next_token {
@@ -526,7 +539,9 @@ async fn batch_delete(state: &Arc<AppState>, bucket: &str, body: Body) -> Respon
     let mut rest = text.as_ref();
     while let Some(start) = rest.find("<Key>") {
         let after = &rest[start + 5..];
-        let Some(end) = after.find("</Key>") else { break };
+        let Some(end) = after.find("</Key>") else {
+            break;
+        };
         let key = &after[..end];
         let key = key
             .replace("&lt;", "<")
@@ -587,7 +602,11 @@ async fn complete_multipart(
     state.objects.lock().unwrap().insert(
         full_key.to_string(),
         StoredObject {
-            data: if discard { Bytes::new() } else { Bytes::from(data) },
+            data: if discard {
+                Bytes::new()
+            } else {
+                Bytes::from(data)
+            },
             etag: etag.clone(),
             last_modified: chrono::Utc::now(),
             orig_len,
