@@ -234,3 +234,32 @@ now the standing gate. Definition:
 - 2026-07-21: document created; baseline run recorded (slate a402a3b:
   266 req/s median, winP50 111 ms, 0 errors, RSS ≤ 587 MB; codex 0c992de:
   OOM crash loop). Carry-forward implementation begins.
+- 2026-07-21 (evening): first gate run on the carry-forward build was RED —
+  4 OOM kills at ~701–725 MB. Attribution: a faster evening substrate let
+  the closed loop sustain 1.3–1.6k req/s (the morning baseline was paced to
+  ~266 by slower put:wal), and slate's documented ~700 MB envelope + a
+  flush-stall memtable pileup crossed the ~750 MB kill line — a
+  PRE-EXISTING slate weakness the gate was designed to catch, not specific
+  to the carried code. Two fixes: (1) the RSS-shed sampler ran only in
+  fleet mode, leaving the shed dead in standalone (admit_shed=0 at every
+  kill) — now unconditional; (2) the 1-GB envelope is retightened
+  (RUNBOOK §3.3: cache 128 MiB, unflushed 8 MiB/shard, shed 550). The §5
+  gate now runs as a PAIRED trial (old binary vs new binary, identical
+  tightened env, fresh bucket each) whenever a red run needs attribution.
+  The gate's speed-dependence is a feature: it must stay red until the
+  envelope survives the substrate's fastest day.
+- 2026-07-21 (late): the paired trial sharpened the diagnosis into two
+  distinct failure modes with two distinct defenses. (1) OOM: the control
+  (old binary, shed structurally dead) died once at saturation; the
+  candidate's live shed at 550 held RSS ≤ 537 with zero restarts —
+  degrade-don't-die works. (2) **Flush wedge**: halving `MAX_UNFLUSHED_BYTES`
+  to 8 MiB doubled the L0 mint rate, compaction lagged, `L0_MAX_SSTS=24`
+  engaged, and the flusher blocked — appends hung to the front-door kill
+  for ~8 minutes before compaction caught up. Wrong lever: memtable caps
+  trade OOM for wedge. Final envelope: unflushed 16 MiB, shared cache
+  128 MiB, `L0_MAX_SSTS` 32 (L0 count costs S3 objects, not RAM), shed 550.
+  Design note for the roadmap: **engine backpressure must surface as scoped
+  429/503 rejection, not an unbounded append hang** — a wedged flusher
+  currently strands in-flight appends until the platform kills them at
+  30 s; admission should observe flush-pipeline health directly (§4 item
+  alongside per-customer quotas).

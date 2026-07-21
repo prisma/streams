@@ -643,4 +643,170 @@ mod tests {
             .expect("absorber did not exit after its engine was fenced")
             .unwrap();
     }
+
+    /// Wedge detector: a stale in-progress db.write reads as blocked;
+    /// idle (0) and fresh writes do not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn commit_blocked_ms_tracks_stale_writes() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db = Db::builder("w/shard", store.clone()).build().await.unwrap();
+        let (absorb_tx, _absorb_rx) = absorber_channel();
+        let engine = ShardEngine::start(
+            "w".into(),
+            Arc::new(db),
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        assert_eq!(engine.commit_blocked_ms(), 0, "idle engine must read 0");
+        engine.set_commit_write_started_ms(crate::shard::now_ms() - 5_000);
+        assert!(
+            engine.commit_blocked_ms() >= 4_500,
+            "stale write must read blocked"
+        );
+        engine.set_commit_write_started_ms(crate::shard::now_ms());
+        assert!(
+            engine.commit_blocked_ms() < 2_000,
+            "fresh write must not trip the shed"
+        );
+        engine.set_commit_write_started_ms(0);
+        assert_eq!(engine.commit_blocked_ms(), 0);
+    }
+
+    /// End-to-end wedge detection under REAL SlateDB byte backpressure: a
+    /// store whose PUTs stall blocks the commit db.write once the unflushed
+    /// cap fills, and commit_blocked_ms() must cross the shed threshold.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn commit_blocked_detects_real_flush_stall() {
+        use object_store::{PutOptions, PutPayload, PutResult, path::Path as OPath};
+
+        #[derive(Debug)]
+        struct SlowPuts(Arc<dyn ObjectStore>);
+        impl std::fmt::Display for SlowPuts {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "SlowPuts")
+            }
+        }
+        #[async_trait::async_trait]
+        impl ObjectStore for SlowPuts {
+            async fn put_opts(
+                &self,
+                location: &OPath,
+                payload: PutPayload,
+                opts: PutOptions,
+            ) -> object_store::Result<PutResult> {
+                // Stall only WAL flushes: setup (manifest writes) stays fast,
+                // and the flusher wedges exactly like a slow-store day.
+                if location.as_ref().contains("wal") {
+                    tokio::time::sleep(Duration::from_secs(20)).await;
+                }
+                self.0.put_opts(location, payload, opts).await
+            }
+            async fn put_multipart_opts(
+                &self,
+                location: &OPath,
+                opts: object_store::PutMultipartOptions,
+            ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+                self.0.put_multipart_opts(location, opts).await
+            }
+            async fn get_opts(
+                &self,
+                location: &OPath,
+                options: object_store::GetOptions,
+            ) -> object_store::Result<object_store::GetResult> {
+                self.0.get_opts(location, options).await
+            }
+            fn delete_stream(
+                &self,
+                locations: futures_util::stream::BoxStream<'static, object_store::Result<OPath>>,
+            ) -> futures_util::stream::BoxStream<'static, object_store::Result<OPath>> {
+                self.0.delete_stream(locations)
+            }
+            fn list(
+                &self,
+                prefix: Option<&OPath>,
+            ) -> futures_util::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::ObjectMeta>,
+            > {
+                self.0.list(prefix)
+            }
+            async fn list_with_delimiter(
+                &self,
+                prefix: Option<&OPath>,
+            ) -> object_store::Result<object_store::ListResult> {
+                self.0.list_with_delimiter(prefix).await
+            }
+            async fn copy_opts(
+                &self,
+                from: &OPath,
+                to: &OPath,
+                options: object_store::CopyOptions,
+            ) -> object_store::Result<()> {
+                self.0.copy_opts(from, to, options).await
+            }
+        }
+
+        let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let slow: Arc<dyn ObjectStore> = Arc::new(SlowPuts(mem));
+        let db = Db::builder("s/shard", slow)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(Duration::from_millis(25)),
+                max_unflushed_bytes: 8 * 1024,
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let (absorb_tx, _absorb_rx) = absorber_channel();
+        let engine = ShardEngine::start(
+            "s".into(),
+            Arc::new(db),
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+
+        // Continuous feed: a LATER db.write must find the unflushed cap
+        // full (the first group is admitted regardless) and block there.
+        let feeder = engine.clone();
+        let feed = tokio::spawn(async move {
+            for i in 0..4096u64 {
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                let req = crate::shard::AppendReq {
+                    hash: [9u8; 16],
+                    enqueued_at: Instant::now(),
+                    entries: vec![bytes::Bytes::from(vec![b'x'; 1024])],
+                    routing_key: String::new(),
+                    key_version: 1,
+                    subkey: [0u8; 32],
+                    ts_hint_ms: Some(i as i64),
+                    seq: None,
+                    bytes: 1024,
+                    close: false,
+                    producer: None,
+                    deferred_error: None,
+                    touch: None,
+                    resp: tx,
+                };
+                let _ = feeder.try_enqueue(req);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut blocked = 0;
+        while Instant::now() < deadline {
+            blocked = engine.commit_blocked_ms();
+            if blocked > 2_000 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        feed.abort();
+        assert!(
+            blocked > 2_000,
+            "commit_blocked_ms never crossed the shed threshold (last {blocked})"
+        );
+    }
 }

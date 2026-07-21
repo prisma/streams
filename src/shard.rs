@@ -304,6 +304,12 @@ pub struct ShardEngine {
     /// committer, the absorber — must fail fast / exit instead of retrying
     /// against a dead db (the "zombie engine" fuel of the absorption war).
     closed: std::sync::atomic::AtomicBool,
+    /// Wall-clock ms when the current db.write began, 0 when idle. A
+    /// nonzero value that stays old means the commit pipeline is BLOCKED
+    /// (L0-full / unflushed-full while compaction lags) — admission must
+    /// shed instead of letting appends hang into the front door's 30 s
+    /// kill (the 2026-07-21 8-minute wedge).
+    commit_write_started_ms: std::sync::atomic::AtomicI64,
     pub stats_appended: AtomicU64,
     /// Last commit-group timings for /v1/debug/timings.
     pub timings: Mutex<std::collections::VecDeque<GroupTiming>>,
@@ -335,6 +341,7 @@ impl ShardEngine {
             absorb_tx,
             on_close,
             closed: std::sync::atomic::AtomicBool::new(false),
+            commit_write_started_ms: std::sync::atomic::AtomicI64::new(0),
             stats_appended: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
         });
@@ -384,6 +391,24 @@ impl ShardEngine {
     /// fatal storage error). Holders must stop using this engine.
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+    }
+
+    /// How long the current commit db.write has been blocked (0 = idle).
+    /// A sustained value means SlateDB backpressure (L0-full/unflushed-full
+    /// with lagging compaction): admission should shed 429 instead of
+    /// queueing appends into a hang.
+    pub fn commit_blocked_ms(&self) -> i64 {
+        let started = self.commit_write_started_ms.load(Ordering::SeqCst);
+        if started == 0 {
+            0
+        } else {
+            (now_ms() - started).max(0)
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_commit_write_started_ms(&self, v: i64) {
+        self.commit_write_started_ms.store(v, Ordering::SeqCst);
     }
 
     pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64) {
@@ -1047,6 +1072,12 @@ impl ShardEngine {
         let encode_us = group_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
         let group_bytes: u64 = locals.iter().map(|(_, l)| l.appended_bytes).sum();
         let write_t0 = std::time::Instant::now();
+        // Publish the write start so admission can observe a blocked commit
+        // pipeline (L0-full / unflushed-full backpressure blocks this await;
+        // 2026-07-21: an 8-minute block stranded every in-flight append into
+        // the platform front door's 30 s kill). Cleared on completion.
+        self.commit_write_started_ms
+            .store(now_ms(), Ordering::SeqCst);
         let res = self
             .db
             .write_with_options(
@@ -1057,6 +1088,7 @@ impl ShardEngine {
                 },
             )
             .await;
+        self.commit_write_started_ms.store(0, Ordering::SeqCst);
         let write_us = write_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
 
         match res {

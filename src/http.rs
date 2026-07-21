@@ -84,6 +84,8 @@ pub struct AppState {
     pub admit_max_inflight_per_stream: i64,
     pub stream_inflight: std::sync::Mutex<HashMap<[u8; 16], i64>>,
     pub stream_shed: std::sync::atomic::AtomicU64,
+    /// 429s issued because a shard's commit pipeline was blocked (wedge).
+    pub wedge_shed: std::sync::atomic::AtomicU64,
     /// Fleet-coordination store (heartbeats/desired.json) for the operator
     /// dashboard's cell view; None when running standalone.
     pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
@@ -378,6 +380,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
     }))
     .into_response()
@@ -1596,6 +1599,25 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         Ok(e) => e,
         Err(r) => return r,
     };
+    // Wedge shed: if the shard's commit pipeline has been BLOCKED on its
+    // db.write beyond the threshold (SlateDB L0-full/unflushed-full while
+    // compaction lags), reject with a retryable 429 instead of queueing.
+    // Without this, appends hang until the platform front door kills them
+    // at ~30 s — an 8-minute wedge stranded every slot on 2026-07-21.
+    let blocked = engine.commit_blocked_ms();
+    if blocked > 2_000 {
+        state
+            .wedge_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut r = err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "engine_backpressure",
+            "commit pipeline blocked (compaction lag); retry",
+        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("2"));
+        return r;
+    }
     if engine.try_enqueue(req).is_err() {
         return err_resp(
             StatusCode::TOO_MANY_REQUESTS,

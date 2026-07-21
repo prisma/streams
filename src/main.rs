@@ -515,6 +515,7 @@ async fn async_main() -> anyhow::Result<()> {
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
+        wedge_shed: std::sync::atomic::AtomicU64::new(0),
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         data_store,
@@ -542,21 +543,25 @@ async fn async_main() -> anyhow::Result<()> {
         ),
         _ => {}
     }
+    {
+        // RSS sampler for the shed check (500 ms; /proc read per request
+        // would be silly). Unconditional: this used to live inside the
+        // fleet-mode block, which left ADMIT_RSS_SHED_MB comparing against
+        // a frozen 0 in standalone mode — the shed was dead exactly where
+        // the 2026-07-21 single-instance gate needed it (OOM at ~725 MB
+        // with admit_shed=0).
+        let st = state.clone();
+        tokio::spawn(async move {
+            loop {
+                st.rss_mb_cached.store(
+                    crate::fleet::rss_bytes() / 1048576,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        });
+    }
     if let Some(fleet_store) = fleet_store_opt {
-        {
-            // RSS sampler for the shed check (500 ms; /proc read per
-            // request would be silly).
-            let st = state.clone();
-            tokio::spawn(async move {
-                loop {
-                    st.rss_mb_cached.store(
-                        crate::fleet::rss_bytes() / 1048576,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-            });
-        }
         crate::fleet::start(
             state.clone(),
             fleet_store,

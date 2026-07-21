@@ -112,10 +112,26 @@ with an empty pool rather than dead sockets.
 | `TOKIO_WORKERS` | max(2, cores) | **do not run one worker.** On 1-vCPU instances the old `#[tokio::main]` default was a single worker; inline blocking quanta (SST build/compress) froze every future including commit acks — the O14a saga. The floor of 2 is enforced in code; the pilot runs 3. Measured effect at identical load: ack-excursion windows 30 % → 10 %, median-window WAL-PUT p99 617 → 141 ms |
 | `STORE_MAX_CONCURRENT` | 0 (off) | global cap on concurrent object-store ops. Diagnostic knob — capping did NOT help O14a (proved the bottleneck wasn't outbound concurrency); leave off unless experimenting |
 
-Memory budget that survives on 1 GB under load (pilot-validated): shared
-cache 192 + history cache 32 + per-shard unflushed 16×16 + absorber pass 32
-+ HTTP buffers ≈ 700 MB envelope, RSS shed at 800, observed steady RSS
-190–300 MB with mimalloc.
+Memory budget on 1-GB/~750-MB-kill-line instances (revised 2026-07-21 after
+the saturation gate OOM'd the old envelope): the old numbers — shared cache
+192 + history cache 32 + unflushed 16×16 + absorber pass 32 + HTTP ≈ 700 MB
+with shed at 800 — left NO headroom below the platform's ~750 MB kernel
+kill line and put the shed above it. When a fast substrate let the closed
+loop sustain 1.3–1.6k req/s and a flush stall piled memtables up, the
+catch-up burst crossed the line (4 OOM kills in one 18-min run; the same
+morning's slower substrate had paced the identical binary to a survivable
+266 req/s). The envelope that gates green:
+
+- `SHARED_CACHE_BYTES` 128 MiB, `MAX_UNFLUSHED_BYTES` 16 MiB ×16 shards
+  (do NOT halve it: 8 MiB doubled the L0 mint rate and turned OOM risk
+  into an 8-minute L0-full flush wedge), `L0_MAX_SSTS` 32 for
+  compaction-lag headroom (L0 count costs S3 objects, not RAM), absorber
+  pass 32 MiB;
+- `ADMIT_RSS_SHED_MB` 550 — below the kill line with margin, so the shed
+  fires while the process can still serve;
+- note: before 2026-07-21 the RSS sampler only ran in fleet mode, so the
+  shed was silently DEAD in standalone deployments (compared against a
+  frozen 0). Fixed — the sampler is unconditional now.
 
 ### 3.4 Auth, crypto, metrics
 

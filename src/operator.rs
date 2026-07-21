@@ -105,6 +105,7 @@ pub async fn data(State(state): State<Arc<AppState>>) -> Response {
         "inflight_peak": state.inflight_peak.load(std::sync::atomic::Ordering::Relaxed),
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "admit_max_inflight": state.admit_max_inflight,
         "admit_max_inflight_per_stream": state.admit_max_inflight_per_stream,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
