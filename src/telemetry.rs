@@ -199,6 +199,14 @@ impl Telemetry {
         );
     }
 
+    /// Test observability: the absorber lifecycle regression test asserts
+    /// debt accounting drains when a fenced absorber exits.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn absorber_pending_bytes(&self) -> u64 {
+        self.absorber_pending_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn add_absorber_pending_bytes(&self, bytes: u64) {
         let _ = self.absorber_pending_bytes.fetch_update(
             Ordering::Relaxed,

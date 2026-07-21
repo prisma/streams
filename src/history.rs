@@ -410,6 +410,9 @@ struct PendingAbsorb {
     since: Instant,
     force: bool,
     retry_after: Instant,
+    /// Consecutive absorb failures for this stream; drives exponential
+    /// backoff so a persistent (non-fence) error cannot spin every tick.
+    failures: u32,
 }
 
 struct AbsorbOutcome {
@@ -437,6 +440,16 @@ pub struct Absorber {
     keys: Arc<KeyCache>,
     telemetry: Arc<crate::telemetry::Telemetry>,
     cfg: AbsorberConfig,
+}
+
+
+/// A fence-class absorb failure means another instance owns this stream's
+/// history: SlateDB reports the eviction as "detected newer DB client"
+/// (or a closed/fenced client on later ops). Retrying re-opens the history
+/// DB and evicts the new owner right back — the pilot17 mutual-eviction
+/// war (2026-07-20). Fence-class failures drop the local claim.
+fn absorb_error_is_fence(msg: &str) -> bool {
+    msg.contains("detected newer DB client") || msg.contains("Closed error") || msg.contains("Fenced")
 }
 
 pub struct AbsorberStartup {
@@ -482,6 +495,7 @@ impl Absorber {
                     since: Instant::now(),
                     force: true,
                     retry_after: Instant::now(),
+                    failures: 0,
                 });
                 entry.bytes = entry.bytes.saturating_add(sig.appended_bytes);
                 entry.force = true;
@@ -495,6 +509,25 @@ impl Absorber {
             let mut in_flight = HashSet::new();
             let mut work = futures_util::stream::FuturesUnordered::new();
             loop {
+                // A fenced/closed shard engine has durably lost ownership:
+                // its history-absorption debt now belongs to whichever
+                // instance owns the shard (debt markers are durable in the
+                // shard DB). Exiting here is what prevents zombie absorbers
+                // from warring with the new owner over history DBs
+                // (pilot17 fencing war, 2026-07-20).
+                if absorber.shard.is_closed() {
+                    let remaining = pending
+                        .values()
+                        .fold(0u64, |total, item| total.saturating_add(item.bytes));
+                    absorber.telemetry.remove_absorber_pending_bytes(remaining);
+                    task_health.clean_exit = true;
+                    tracing::info!(
+                        shard = %absorber.shard.prefix,
+                        streams = pending.len(),
+                        "absorber exiting: shard fenced/closed; debt hands off to the current owner"
+                    );
+                    return;
+                }
                 // `pass_bytes` is the documented resident-memory bound, so
                 // keep one pass in flight while independently draining the
                 // notification receiver.
@@ -536,6 +569,7 @@ impl Absorber {
                             since: Instant::now(),
                             force: false,
                             retry_after: Instant::now(),
+                            failures: 0,
                         });
                         e.bytes = e.bytes.saturating_add(sig.appended_bytes);
                         // A keyed append is also the event that may make a
@@ -548,6 +582,7 @@ impl Absorber {
                         match result {
                             Ok(Some(outcome)) => {
                                 if let Some(item) = pending.get_mut(&hash) {
+                                    item.failures = 0;
                                     let before = item.bytes;
                                     if outcome.complete {
                                         // Everything visible when this pass was scheduled is
@@ -571,10 +606,37 @@ impl Absorber {
                             // key missing: keep pending; retried when the
                             // next keyed request arrives or age stays due.
                             Err(e) => {
-                                tracing::warn!(
-                                    "absorb failed for {}: {e}",
-                                    hex(&hash)
-                                );
+                                let msg = e.to_string();
+                                // A fence means another instance owns this
+                                // stream's history now. Retrying re-opens
+                                // (and re-fences) the history DB in a
+                                // mutual-eviction loop; the durable debt
+                                // markers make dropping safe — the owner
+                                // reconstructs the work set.
+                                if absorb_error_is_fence(&msg) {
+                                    if let Some(item) = pending.remove(&hash) {
+                                        absorber
+                                            .telemetry
+                                            .remove_absorber_pending_bytes(item.bytes);
+                                    }
+                                    tracing::info!(
+                                        shard = %absorber.shard.prefix,
+                                        stream = %hex(&hash),
+                                        "absorb claim dropped: history fenced by newer owner"
+                                    );
+                                } else if let Some(item) = pending.get_mut(&hash) {
+                                    item.failures = item.failures.saturating_add(1);
+                                    let shift = item.failures.min(6);
+                                    item.retry_after = Instant::now()
+                                        + absorber.cfg.tick * 2u32.saturating_pow(shift);
+                                    if item.failures == 1 || item.failures.is_power_of_two() {
+                                        tracing::warn!(
+                                            "absorb failed for {} (attempt {}): {e}",
+                                            hex(&hash),
+                                            item.failures
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -827,6 +889,83 @@ pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fence_class_errors_are_recognized() {
+        assert!(absorb_error_is_fence("Closed error: detected newer DB client"));
+        assert!(absorb_error_is_fence("detected newer DB client"));
+        assert!(absorb_error_is_fence("Fenced by writer epoch 7"));
+        assert!(!absorb_error_is_fence("durable unabsorbed range returned no records"));
+        assert!(!absorb_error_is_fence("absorb decrypt: bad tag"));
+        assert!(!absorb_error_is_fence("timed out"));
+    }
+
+    /// The pilot17 fencing war (2026-07-20): a fenced shard owner's
+    /// absorber previously ran forever (it holds the engine Arc, so its
+    /// signal channel never closes) and re-fenced the new owner's history
+    /// DBs every tick. The absorber must exit when its engine is closed,
+    /// draining its pending-byte accounting.
+    #[tokio::test]
+    async fn absorber_exits_when_shard_engine_is_fenced() {
+        use crate::shard::{AbsorbSignal, ShardConfig, ShardEngine};
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db = Db::builder("absorber-exit-fenced", store.clone())
+            .build()
+            .await
+            .unwrap();
+        let (absorb_tx, absorb_rx) = absorber_channel();
+        let telemetry = Arc::new(crate::telemetry::Telemetry::default());
+        let engine = ShardEngine::start(
+            String::new(),
+            Arc::new(db),
+            ShardConfig::default(),
+            absorb_tx,
+            telemetry.clone(),
+            None,
+            None,
+        );
+        Absorber::start(
+            store.clone(),
+            store.clone(),
+            engine.clone(),
+            Arc::new(KeyCache::default()),
+            telemetry.clone(),
+            AbsorberConfig {
+                tick: Duration::from_millis(20),
+                ..Default::default()
+            },
+            AbsorberStartup {
+                receiver: absorb_rx,
+                recovered: vec![AbsorbSignal {
+                    hash: [1u8; 32],
+                    appended_bytes: 123,
+                }],
+            },
+        );
+        // recovered debt lands in the gauge once the task starts
+        for _ in 0..100 {
+            if telemetry.absorber_pending_bytes() == 123 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(telemetry.absorber_pending_bytes(), 123);
+
+        engine.mark_moved();
+
+        // the absorber must notice the fence and exit, draining its debt
+        // accounting (ownership hands off via the durable markers)
+        for _ in 0..200 {
+            if telemetry.absorber_pending_bytes() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "absorber still holds {} pending bytes after its engine was fenced",
+            telemetry.absorber_pending_bytes()
+        );
+    }
 
     #[tokio::test]
     async fn history_blocks_bind_new_writes_to_the_stream_incarnation() {

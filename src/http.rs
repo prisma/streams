@@ -37,7 +37,11 @@ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FORK_MATERIALIZE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ROUTING_KEY_BYTES: usize = 4 * 1024;
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_LONG_POLL: Duration = Duration::from_secs(30);
+/// Must conclude BELOW the platform front door's 30 s proxy timeout: at
+/// 30 s the edge kills the response as a 502 and the client sees a
+/// transport error instead of a clean empty poll (measured 2026-07-20:
+/// closed after 30.16 s http=502). 25 s restores the original margin.
+const MAX_LONG_POLL: Duration = Duration::from_secs(25);
 const OPERATOR_APPROVAL_HEADER: &str = "x-prisma-operator-approval";
 const REQUEST_ID_HEADER: &str = "x-prisma-request-id";
 

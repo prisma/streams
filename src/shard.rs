@@ -910,7 +910,7 @@ impl ShardEngine {
         }
     }
 
-    fn mark_moved(&self) {
+    pub(crate) fn mark_moved(&self) {
         let _gate = self.admission_gate.lock().unwrap();
         self.accepting.store(false, Ordering::Release);
         if self.closed.swap(true, Ordering::AcqRel) {

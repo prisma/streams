@@ -109,11 +109,15 @@ function renderFleet(d) {
   const now = d.ts_ms;
   let src = agg ? `aggregate (epoch ${agg.lease_epoch}, seq ${agg.sequence}, age ${fmtAge(now - agg.generated_at_ms)})`
                 : (f.heartbeats_fallback ? "raw heartbeats (aggregator unavailable)" : "unavailable");
-  const aggStale = agg && (now - agg.generated_at_ms > 15000);
+  const aggStale = agg && (now - agg.generated_at_ms > 30000);
+  // Age embedded heartbeats against the snapshot's own generation time —
+  // ageing them against browser-now double-counts snapshot transit and
+  // paints healthy instances red (same consumer bug fixed server-side).
+  const hbRef = agg ? agg.generated_at_ms : now;
   let sum = { rps:0, cores:0, infl:0, shards:0, live:0 };
   const rows = hbs.map(h => {
-    const age = now - (h.ts_ms || 0);
-    const live = age < 10000;
+    const age = hbRef - (h.ts_ms || 0);
+    const live = age < 10000 && !aggStale;
     if (live) { sum.rps += h.rps||0; sum.cores += (h.cpu_pct||0)/100; sum.infl += h.inflight||0; sum.live++; }
     sum.shards += (h.owned_shards||[]).length;
     return `<tr>
@@ -194,10 +198,11 @@ function evaluated(d) {
   if (agg && d.ts_ms - agg.generated_at_ms > 15000) out.push(["fleet aggregate stale", "warn"]);
   if (!agg && f.heartbeats_fallback) out.push(["fleet aggregator unavailable (fallback view)", "warn"]);
   const hbs = (agg && agg.heartbeats) || f.heartbeats_fallback || [];
+  const hbRef = agg ? agg.generated_at_ms : d.ts_ms;
   for (const h of hbs) {
-    if (d.ts_ms - (h.ts_ms||0) < 10000 && (h.ack_p50_ms||0) > 250)
+    if (hbRef - (h.ts_ms||0) < 10000 && (h.ack_p50_ms||0) > 250)
       out.push([`${h.instance}: ack p50 ${Math.round(h.ack_p50_ms)}ms > 250ms`, "warn"]);
-    if (d.ts_ms - (h.ts_ms||0) >= 10000) out.push([`${h.instance}: heartbeat stale`, "warn"]);
+    if (hbRef - (h.ts_ms||0) >= 10000) out.push([`${h.instance}: heartbeat stale`, "warn"]);
   }
   const tk = (d.local && d.local.store && d.local.store.timer_tokio) || {};
   if ((tk.p99_us||0) > 100000) out.push(["event-loop drift > 100ms (blocking-work regression)", "bad"]);
