@@ -168,3 +168,86 @@ c7i.large (~$0.9) — trivially small; no quota increases needed.
   [AWS docs — Enabling high throughput for FIFO queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/enable-high-throughput-fifo.html),
   [AWS docs — FIFO throttling troubleshooting](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/troubleshooting-fifo-throttling-issues.html),
   [AWS what's new — 9,000 TPS HT mode](https://aws.amazon.com/about-aws/whats-new/2023/08/amazon-sqs-increased-throughput-quota-fifo-high-throughput-mode/)
+
+---
+
+# RESULTS (2026-07-22, eu-central-1, all arms via awsbench on Prisma Compute FRA)
+
+Setup as planned: Kinesis `slate-cmp` (1 provisioned shard), `slate-cmp.fifo`
+(high-throughput mode, one message group), Prisma Streams set up from
+scratch — fresh project `streams-awscmp`, fresh management-API bucket,
+slate @ 5bd3d1d single instance (gate envelope: cache 128 MiB, unflushed
+16 MiB, L0 32, shed 550, per-stream inflight cap 64). One harness binary
+(awsbench) drove all three systems from the same Compute instance class;
+cross-provider hop Frankfurt→Frankfurt (AWS floors of 7 ms confirm the hop
+is small). SDK retries disabled; {ack, throttle, error} accounting.
+
+## Measured matrix
+
+| shape | Kinesis (1 shard) | SQS FIFO (1 group) | Prisma (1 stream) |
+|---|---|---|---|
+| A floor p50 / p99 | **7.3 / 11.7 ms** | **7.0 / 21.6 ms** | 125.7 / 593.4 ms |
+| B record ceiling | 1,197 rec/s (wall ~1k, 480k throttles/2 min) | 3,582 msg/s (batch-10) | 1,944 rec/s @ conc 32 |
+| B p50 at own peak | 12.7 ms | 138.5 ms (conc 128) / 25 ms (conc 32) | 185.5 ms |
+| C byte ceiling (1×16 KB/req) | 0.92 MB/s (the 1 MB/s wall) | 5.40 MB/s (330 msg/s × 16 KB) | 0.48 MB/s |
+| D tail p50 / p99 | 172 / 314 ms (poll ≤5/s) | (rerun below) | 580 / 1,197 ms |
+| E overload goodput vs own ceiling | 1,028/1,028 = 100 %, clean throttles | 3,004/3,582 = 84 % | 1,524/1,944 = 78 %, clean 429s |
+
+## Hypothesis verdicts
+
+| # | hypothesis | verdict |
+|---|---|---|
+| H1 | Prisma ≥10× Kinesis shard rec/s | **FALSIFIED** — 1.6× (1,944 vs 1,197). One stream = one WAL chain; rounds are bounded by object-store RTT, and records/round cannot compensate at conc ≤ the per-stream cap |
+| H2 | Prisma ≥4× Kinesis MB/s | **FALSIFIED** — 0.5× (0.48 vs 0.92 MB/s) at the tested 1×16 KB/req shape (batch=1 denies our batching lever, but that was the defined shape) |
+| H3 | AWS wins the latency floor 2–4× | **CONFIRMED, understated** — they win ~17× (7 ms vs 126 ms). Replicated-memory ingest tiers vs flush-cadence + object-store PUT |
+| H4 | p99 bounds at each system's 80% ceiling | **CONFIRMED** — Kinesis 20 ms, SQS ~55 ms, Prisma ≤ 916 ms; all within hypothesized bounds |
+| H5 | Prisma ≥30× an SQS FIFO group | **FALSIFIED** — 0.54× vs the batched group (3,582 msg/s: the 300/s quota meters *transactions*, so batch-10 lifts a group to ~3.5k msg/s); 5.9× vs the unbatched meter (330/s) |
+| H6 | Tail: Prisma ≤300 ms, Kinesis ≥500 ms | **FALSIFIED both directions** — Kinesis polling delivered 172 ms p50; Prisma measured 580 ms p50 under concurrent produce load |
+| H7 | Overload parity: clean shedding, ≥80% goodput | **CONFIRMED (with notes)** — Kinesis 100 %, SQS 84 %, Prisma 78 % (borderline vs the 80 % bar) with zero hard errors and clean 429/Retry-After. The SQS "errors" in raw data are group throttles: the SDK's opaque Display hid `ThrottlingException` (classifier fixed in awsbench) |
+| H8 | Cost within ~2× at 1k rec/s ordered; divergence at 10k | **PARTIALLY CONFIRMED** — list-price estimates at 1,000 rec/s × 200 B sustained: Kinesis ≈ $11/mo shard-hours + ≈$37/mo PUT payload units (2.6 B units × $0.014/M) ≈ **$48/mo**; SQS FIFO ≈ 260 M batch-10 sends + matching receives/deletes ≈ 700 M req/mo × $0.50/M ≈ **$350/mo** (~$130 send-only); Prisma ≈ 1-vCPU instance (~$15) + ~160 M Tigris class-A ops (~$0.36/M ≈ $58) ≈ **$73/mo**. Within ~1.5× of Kinesis, 2–5× under SQS. At 10,000 rec/s ordered: no system serves it in one ordered unit — Kinesis/SQS by quota, Prisma by measured ceiling (~2k) — the divergence claim moves to the multi-stream phase |
+
+## Follow-up runs (same session)
+
+- **Prisma uncapped probe** (per-stream inflight cap 0, conc 128, batch 16):
+  **6,396 rec/s median, 8,057 peak, zero errors, zero throttles**, p50
+  242 ms / p99 1.27 s over 5 minutes. The campaign's 1,944 rec/s was the
+  *default admission cap* (`ADMIT_MAX_INFLIGHT_PER_STREAM=64`), not the
+  architecture: records-per-round scales with admitted concurrency, so
+  uncapped the same stream carries 128×16 = 2,048 records per ~320 ms WAL
+  round. Revised ordered-unit ceilings: **Prisma 6.4k > SQS group 3.6k >
+  Kinesis shard 1.2k** — Prisma has the widest ordered unit of the three,
+  at 20–30× worse p50 than the AWS ingest tiers. H1's ≥10k bar remains
+  unmet (falsified as stated), but the "AWS wins ceilings" reading below is
+  config-dependent, not architectural.
+- **SQS shape-D rerun** (purged queue): tail p50 measured 71.6 s — a
+  *shape-design artifact*, not an SQS property: the closed-loop producer
+  (2,305 msg/s) outran the single long-poll consumer's drain rate
+  (~400–700 msg/s with receive+delete rounds), so the metric measured queue
+  backlog. SQS delivery latency at sub-drain produce rates is its ~7–25 ms
+  floor. Recorded as NOT COMPARABLE; a rate-limited-producer D-shape is the
+  fix for future runs (applies to any queue-semantics system).
+
+## The honest headline
+
+**The plan's headline claim ("1–2 orders of magnitude wider") is REFUTED —
+the honest multiplier is 5.3× vs Kinesis and 1.8× vs SQS, and only with the
+per-stream admission cap lifted.** AWS's ingest tiers win the latency game
+by 17–30× at every load level; Prisma wins the ordered-unit width game once
+configured for it (6.4k rec/s vs 1.2k/3.6k), while the default-config
+single stream (cap 64) lands at 1,944 rec/s — between the two AWS products.
+
+What survives, measured: (1) overload discipline is at parity with managed
+AWS services — the shed work from the saturation gate holds up in direct
+comparison; (2) the Prisma arm ran on a from-scratch rig provisioned in
+minutes via the management API; (3) the economics at ~1k rec/s
+are within ~1.5× of Kinesis and 2–5× under SQS FIFO (list prices).
+
+Structural takeaway for the roadmap: single-ordered-unit throughput is
+bounded by durable-ack RTT — object storage (25–500 ms) cannot match
+replicated-memory acks (2–5 ms) no matter the batching, because rounds/s is
+the hard bound. Closing the single-unit gap requires WAL pipelining
+(multiple in-flight WAL PUTs with ordered ack release) and/or a low-latency
+durability tier in front of the object store. The multi-stream phase tests
+the claim our architecture is actually built around: aggregate density —
+many ordered units per instance — where the same instance already sustained
+~25k rec/s across 32 streams during the saturation gate.

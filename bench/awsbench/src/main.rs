@@ -161,14 +161,20 @@ impl Client {
                         }
                     }
                     Err(e) => {
-                        let msg = e.to_string();
-                        if msg.contains("ProvisionedThroughputExceeded")
-                            || msg.contains("Throttl")
-                            || msg.contains("LimitExceeded")
+                        // The structured error code, not Display: SdkError's
+                        // Display for service errors is the opaque "service
+                        // error" (532k SQS throttles were misclassified as
+                        // errors in the first campaign run before this).
+                        let code = aws_sdk_kinesis::error::ProvideErrorMetadata::code(&e)
+                            .unwrap_or_default()
+                            .to_string();
+                        if code.contains("ProvisionedThroughputExceeded")
+                            || code.contains("Throttl")
+                            || code.contains("LimitExceeded")
                         {
                             Outcome::Throttle { delivered: 0 }
                         } else {
-                            Outcome::Err(msg)
+                            Outcome::Err(format!("{code}: {e}"))
                         }
                     }
                 }
@@ -208,11 +214,13 @@ impl Client {
                         }
                     }
                     Err(e) => {
-                        let msg = e.to_string();
-                        if msg.contains("Throttl") || msg.contains("RequestThrottled") {
+                        let code = aws_sdk_sqs::error::ProvideErrorMetadata::code(&e)
+                            .unwrap_or_default()
+                            .to_string();
+                        if code.contains("Throttl") || code.contains("RequestThrottled") {
                             Outcome::Throttle { delivered: 0 }
                         } else {
-                            Outcome::Err(msg)
+                            Outcome::Err(format!("{code}: {e}"))
                         }
                     }
                 }
