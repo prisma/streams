@@ -587,6 +587,73 @@ pub fn ts_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use object_store::{PutOptions, PutPayload, PutResult, path::Path as OPath};
+
+    #[derive(Debug)]
+    struct SlowPuts(Arc<dyn ObjectStore>);
+    impl std::fmt::Display for SlowPuts {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "SlowPuts")
+        }
+    }
+    #[async_trait::async_trait]
+    impl ObjectStore for SlowPuts {
+        async fn put_opts(
+            &self,
+            location: &OPath,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            // Stall only WAL flushes: setup (manifest writes) stays fast,
+            // and the flusher wedges exactly like a slow-store day.
+            if location.as_ref().contains("wal") {
+                tokio::time::sleep(Duration::from_secs(20)).await;
+            }
+            self.0.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &OPath,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.0.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &OPath,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.0.get_opts(location, options).await
+        }
+        fn delete_stream(
+            &self,
+            locations: futures_util::stream::BoxStream<'static, object_store::Result<OPath>>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<OPath>> {
+            self.0.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&OPath>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.0.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&OPath>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.0.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &OPath,
+            to: &OPath,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.0.copy_opts(from, to, options).await
+        }
+    }
+
     use crate::shard::{ShardConfig, ShardEngine};
     use slatedb::Db;
 
@@ -678,75 +745,6 @@ mod tests {
     /// cap fills, and commit_blocked_ms() must cross the shed threshold.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn commit_blocked_detects_real_flush_stall() {
-        use object_store::{PutOptions, PutPayload, PutResult, path::Path as OPath};
-
-        #[derive(Debug)]
-        struct SlowPuts(Arc<dyn ObjectStore>);
-        impl std::fmt::Display for SlowPuts {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "SlowPuts")
-            }
-        }
-        #[async_trait::async_trait]
-        impl ObjectStore for SlowPuts {
-            async fn put_opts(
-                &self,
-                location: &OPath,
-                payload: PutPayload,
-                opts: PutOptions,
-            ) -> object_store::Result<PutResult> {
-                // Stall only WAL flushes: setup (manifest writes) stays fast,
-                // and the flusher wedges exactly like a slow-store day.
-                if location.as_ref().contains("wal") {
-                    tokio::time::sleep(Duration::from_secs(20)).await;
-                }
-                self.0.put_opts(location, payload, opts).await
-            }
-            async fn put_multipart_opts(
-                &self,
-                location: &OPath,
-                opts: object_store::PutMultipartOptions,
-            ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-                self.0.put_multipart_opts(location, opts).await
-            }
-            async fn get_opts(
-                &self,
-                location: &OPath,
-                options: object_store::GetOptions,
-            ) -> object_store::Result<object_store::GetResult> {
-                self.0.get_opts(location, options).await
-            }
-            fn delete_stream(
-                &self,
-                locations: futures_util::stream::BoxStream<'static, object_store::Result<OPath>>,
-            ) -> futures_util::stream::BoxStream<'static, object_store::Result<OPath>> {
-                self.0.delete_stream(locations)
-            }
-            fn list(
-                &self,
-                prefix: Option<&OPath>,
-            ) -> futures_util::stream::BoxStream<
-                'static,
-                object_store::Result<object_store::ObjectMeta>,
-            > {
-                self.0.list(prefix)
-            }
-            async fn list_with_delimiter(
-                &self,
-                prefix: Option<&OPath>,
-            ) -> object_store::Result<object_store::ListResult> {
-                self.0.list_with_delimiter(prefix).await
-            }
-            async fn copy_opts(
-                &self,
-                from: &OPath,
-                to: &OPath,
-                options: object_store::CopyOptions,
-            ) -> object_store::Result<()> {
-                self.0.copy_opts(from, to, options).await
-            }
-        }
-
         let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let slow: Arc<dyn ObjectStore> = Arc::new(SlowPuts(mem));
         let db = Db::builder("s/shard", slow)
@@ -797,16 +795,81 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut blocked = 0;
         while Instant::now() < deadline {
-            blocked = engine.commit_blocked_ms();
-            if blocked > 2_000 {
+            blocked = engine.wedge_ms();
+            if blocked > 5_000 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         feed.abort();
         assert!(
-            blocked > 2_000,
-            "commit_blocked_ms never crossed the shed threshold (last {blocked})"
+            blocked > 5_000,
+            "wedge_ms never crossed the shed threshold (last {blocked})"
+        );
+    }
+
+    /// The stale-durability wedge mode: db.write keeps succeeding (default
+    /// unflushed cap is huge) while WAL flushes stall — committed groups
+    /// age in in_flight and oldest_inflight_ms must cross the threshold.
+    /// This is the mode the 2026-07-22 cloud gate proved commit_blocked_ms
+    /// alone cannot see.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wedge_detects_stale_durability() {
+        let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let slow: Arc<dyn ObjectStore> = Arc::new(SlowPuts(mem));
+        // Default (large) unflushed cap: writes are admitted, durability stalls.
+        let db = Db::builder("d/shard", slow)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(Duration::from_millis(25)),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .unwrap();
+        let (absorb_tx, _absorb_rx) = absorber_channel();
+        let engine = ShardEngine::start(
+            "d".into(),
+            Arc::new(db),
+            ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        for i in 0..8u64 {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            let req = crate::shard::AppendReq {
+                hash: [7u8; 16],
+                enqueued_at: Instant::now(),
+                entries: vec![bytes::Bytes::from(vec![b'y'; 512])],
+                routing_key: String::new(),
+                key_version: 1,
+                subkey: [0u8; 32],
+                ts_hint_ms: Some(i as i64),
+                seq: None,
+                bytes: 512,
+                close: false,
+                producer: None,
+                deferred_error: None,
+                touch: None,
+                resp: tx,
+            };
+            let _ = engine.try_enqueue(req);
+        }
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut wedge = 0;
+        while Instant::now() < deadline {
+            wedge = engine.wedge_ms();
+            if wedge > 5_000 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            wedge > 5_000,
+            "oldest_inflight_ms never crossed the shed threshold (last {wedge})"
+        );
+        assert!(
+            engine.oldest_inflight_ms() > 5_000,
+            "the stale-durability component specifically must be the signal"
         );
     }
 }

@@ -1599,13 +1599,17 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         Ok(e) => e,
         Err(r) => return r,
     };
-    // Wedge shed: if the shard's commit pipeline has been BLOCKED on its
-    // db.write beyond the threshold (SlateDB L0-full/unflushed-full while
-    // compaction lags), reject with a retryable 429 instead of queueing.
-    // Without this, appends hang until the platform front door kills them
-    // at ~30 s — an 8-minute wedge stranded every slot on 2026-07-21.
-    let blocked = engine.commit_blocked_ms();
-    if blocked > 2_000 {
+    // Wedge shed: if the shard's durability pipeline is stalled — either
+    // the commit db.write is blocked (unflushed-full) or committed groups
+    // have waited on the durable watermark beyond the threshold (WAL flush
+    // stalled behind L0-full) — reject with a retryable 429 instead of
+    // queueing. Without this, appends hang until the platform front door
+    // kills them at ~30 s (8-minute wedge, 2026-07-21; detector missed the
+    // stale-durability mode on 2026-07-22 when it watched db.write only).
+    // 5 s: healthy durable waits under load peak ~1.5 s; a real wedge
+    // climbs to 30 s+, so 5 s discriminates cleanly without false sheds.
+    let blocked = engine.wedge_ms();
+    if blocked > 5_000 {
         state
             .wedge_shed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

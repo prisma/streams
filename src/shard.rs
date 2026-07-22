@@ -411,6 +411,26 @@ impl ShardEngine {
         self.commit_write_started_ms.store(v, Ordering::SeqCst);
     }
 
+    /// Age of the oldest committed-but-not-durable group (0 = none). THE
+    /// wedge signal for the common stall mode: db.write keeps succeeding
+    /// (memtable has room) while the WAL-flush pipeline is stalled behind
+    /// L0-full, so groups pile up here waiting for the durable watermark.
+    /// The 2026-07-22 final gate run proved commit_blocked_ms alone misses
+    /// this mode entirely (wedge_shed=0 through a 10-minute wedge).
+    pub fn oldest_inflight_ms(&self) -> i64 {
+        self.in_flight
+            .lock()
+            .unwrap()
+            .first()
+            .map(|g| g.written_at.elapsed().as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0)
+    }
+
+    /// Combined wedge signal: blocked commit write OR stale durability.
+    pub fn wedge_ms(&self) -> i64 {
+        self.commit_blocked_ms().max(self.oldest_inflight_ms())
+    }
+
     pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64) {
         let _ = self.tx.send(CommitOp::Absorbed { hash, upto }).await;
     }
