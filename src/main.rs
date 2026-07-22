@@ -280,11 +280,21 @@ impl Args {
             // Idle pooled connections die silently across scale-to-zero
             // snapshot/restore; expiring them just under the platform's 5 s
             // idle threshold means a restored image wakes with an empty
-            // pool instead of dead sockets (EXPERIMENT-PILOT.md).
+            // pool instead of dead sockets (EXPERIMENT-PILOT.md). The pool
+            // is shared by every shard/stream on the instance, and manifest
+            // polling keeps it warm whenever any shard is open — the cold
+            // path only bites fully-idle instances. POOL_IDLE_SECS exists
+            // so production fleets can lift this once the platform stops
+            // killing idle flows (2026-07 plan); until then keep <5.
             .with_client_options(
                 object_store::ClientOptions::new()
                     .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
-                    .with_pool_idle_timeout(Duration::from_secs(4)),
+                    .with_pool_idle_timeout(Duration::from_secs(
+                        std::env::var("POOL_IDLE_SECS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(4),
+                    )),
             )
             .build()
             .context("build s3 object store")
