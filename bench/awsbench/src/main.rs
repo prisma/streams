@@ -566,6 +566,11 @@ async fn main() -> anyhow::Result<()> {
         "prisma" => {
             let http = reqwest::Client::builder()
                 .pool_max_idle_per_host(4096)
+                // <5 s: Compute kills flows idle past ~5 s (RUNBOOK §3.1).
+                // NOTE the AWS SDK clients below still use hyper's default
+                // pool idle (~90 s) — acceptable for bench shapes under
+                // continuous load, documented as a gap.
+                .pool_idle_timeout(Duration::from_secs(4))
                 .tcp_nodelay(true)
                 .timeout(Duration::from_secs(30))
                 .build()?;

@@ -144,7 +144,12 @@ fn client() -> reqwest::Client {
         // in-flight request and spreads across replicas.
         .http1_only()
         .pool_max_idle_per_host(8192)
-        .pool_idle_timeout(Duration::from_secs(20))
+        // <5 s: Compute suspends idle VMs after ~5 s and silently kills
+        // flows; a pooled socket idle past that is a corpse the next
+        // request eats. Same rule as the server's store client (RUNBOOK
+        // §3.1). The 60 s client rotation handles replica pinning; this
+        // handles dead sockets.
+        .pool_idle_timeout(Duration::from_secs(4))
         .tcp_nodelay(true)
         .timeout(Duration::from_secs(30))
         .build()
