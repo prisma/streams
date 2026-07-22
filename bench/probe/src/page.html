@@ -48,7 +48,7 @@ async function load() {
   document.getElementById("others").innerHTML =
     (d.others || []).map(o => `<a href="${o.url}">${o.name}</a>`).join("") || "(links pending)";
 
-  const key = (r) => `${r.op}|${r.mode}|${r.size}`;
+  const key = (r) => `${r.op}|${r.mode}|${r.size}|${r.variant || "global"}`;
   const series = {};
   for (const r of d.rows) {
     (series[key(r)] = series[key(r)] || Array(24).fill(null))[+r.hour] = r;
@@ -86,33 +86,35 @@ async function load() {
   }
   const KB = 1024, BIG = 262144;
   draw("put", [
-    { color: "#58a6ff", data: pick(`put|solo|${BIG}`, "p50"), width: 3 },
-    { color: "#58a6ff", data: pick(`put|solo|${BIG}`, "p99") },
-    { color: "#58a6ff", data: pick(`put|solo|${KB}`, "p50"), dash: [6, 6] },
-    { color: "#58a6ff", data: pick(`put|solo|${KB}`, "p99"), dash: [2, 6] },
-    { color: "#f85149", data: pick(`put|burst|${BIG}`, "p50"), width: 3 },
-    { color: "#f85149", data: pick(`put|burst|${BIG}`, "p99") },
+    { color: "#58a6ff", data: pick(`put|solo|${BIG}|global`, "p50"), width: 3 },
+    { color: "#58a6ff", data: pick(`put|solo|${BIG}|global`, "p99") },
+    { color: "#58a6ff", data: pick(`put|solo|${KB}|global`, "p50"), dash: [6, 6] },
+    { color: "#f85149", data: pick(`put|burst|${BIG}|global`, "p50"), width: 3 },
+    { color: "#e3b341", data: pick(`put|solo|${BIG}|pinned`, "p50"), width: 3 },
+    { color: "#e3b341", data: pick(`put|solo|${BIG}|pinned`, "p99") },
+    { color: "#e3b341", data: pick(`put|solo|${KB}|pinned`, "p50"), dash: [6, 6] },
   ]);
   draw("get", [
-    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}`, "p50"), width: 3 },
-    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}`, "p99") },
-    { color: "#3fb950", data: pick(`get_hot|solo|${KB}`, "p50"), dash: [6, 6] },
-    { color: "#d29922", data: pick(`get_cold|solo|${BIG}`, "p50"), dash: [2, 4] },
-    { color: "#d29922", data: pick(`get_cold|coldconn|${KB}`, "p50"), dash: [8, 4] },
+    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}|global`, "p50"), width: 3 },
+    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}|global`, "p99") },
+    { color: "#3fb950", data: pick(`get_hot|solo|${KB}|global`, "p50"), dash: [6, 6] },
+    { color: "#d29922", data: pick(`get_cold|coldconn|${KB}|global`, "p50"), dash: [8, 4] },
+    { color: "#e3b341", data: pick(`get_hot|solo|${BIG}|pinned`, "p50"), width: 3 },
   ]);
   document.getElementById("lg1").innerHTML =
-    `<span><i class="dot" style="background:#58a6ff"></i>solo</span>` +
+    `<span><i class="dot" style="background:#58a6ff"></i>global bucket</span>` +
+    `<span><i class="dot" style="background:#e3b341"></i>pinned bucket</span>` +
     `<span><i class="dot" style="background:#f85149"></i>burst (16-conc)</span>` +
-    `<span><i class="dot" style="background:#3fb950"></i>hot get</span>` +
-    `<span><i class="dot" style="background:#d29922"></i>cold / fresh-conn</span>`;
+    `<span><i class="dot" style="background:#d29922"></i>fresh-conn</span>`;
 
   const rowsByHour = {};
   for (const r of d.rows) (rowsByHour[r.hour] = rowsByHour[r.hour] || []).push(r);
-  let html = "<table><tr><th>hour</th><th>op</th><th>mode</th><th>size</th><th>n</th><th>errs</th><th>p50</th><th>p90</th><th>p99</th><th>max</th></tr>";
+  let html = "<table><tr><th>hour</th><th>variant</th><th>op</th><th>mode</th><th>size</th><th>n</th><th>errs</th><th>p50</th><th>p90</th><th>p99</th><th>max</th><th>tigris p50</th></tr>";
   for (const h of Object.keys(rowsByHour).sort()) {
     for (const r of rowsByHour[h]) {
-      html += `<tr><td>${h}</td><td>${r.op}</td><td>${r.mode}</td><td>${r.size >= 1024 ? (r.size / 1024) + "K" : r.size}</td>` +
-        `<td>${r.n}</td><td>${r.errs}</td><td>${r.p50.toFixed(1)}</td><td>${r.p90.toFixed(1)}</td><td>${r.p99.toFixed(1)}</td><td>${r.max.toFixed(0)}</td></tr>`;
+      html += `<tr><td>${h}</td><td>${r.variant || "global"}</td><td>${r.op}</td><td>${r.mode}</td><td>${r.size >= 1024 ? (r.size / 1024) + "K" : r.size}</td>` +
+        `<td>${r.n}</td><td>${r.errs}</td><td>${r.p50.toFixed(1)}</td><td>${r.p90.toFixed(1)}</td><td>${r.p99.toFixed(1)}</td><td>${r.max.toFixed(0)}</td>` +
+        `<td>${r.sp50 != null ? r.sp50.toFixed(1) : "–"}</td></tr>`;
     }
   }
   document.getElementById("tbl").innerHTML = html + "</table>";

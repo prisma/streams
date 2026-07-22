@@ -42,6 +42,9 @@ struct Sample {
     /// X-Tigris-Served-From / X-Tigris-Regions, when visible.
     served_from: Option<String>,
     regions: Option<String>,
+    /// Bucket variant under test: "global" (Prisma Bucket) or "pinned"
+    /// (region-restricted bucket) — the 2026-07-22 comparison dimension.
+    variant: &'static str,
 }
 
 fn s3_concrete() -> anyhow::Result<object_store::aws::AmazonS3> {
@@ -186,19 +189,19 @@ async fn probe_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
             let hot = format!("probe/current-{s}");
             let (ms, ok, err, server_ms, served_from, regions) =
                 signed_op(&s3, &http, reqwest::Method::PUT, &hot, Some(body_of(s))).await;
-            let _ = tx.send(Sample { ts: now, op: "put", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
+            let _ = tx.send(Sample { ts: now, op: "put", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions, variant: variant() }).await;
             let (ms, ok, err, server_ms, served_from, regions) =
                 signed_op(&s3, &http, reqwest::Method::GET, &hot, None).await;
-            let _ = tx.send(Sample { ts: now, op: "get_hot", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
+            let _ = tx.send(Sample { ts: now, op: "get_hot", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions, variant: variant() }).await;
             let (ms, ok, err, server_ms, served_from, regions) =
                 signed_op(&s3, &http, reqwest::Method::GET, &format!("probe/anchor-{s}"), None).await;
-            let _ = tx.send(Sample { ts: now, op: "get_cold", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
+            let _ = tx.send(Sample { ts: now, op: "get_cold", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions, variant: variant() }).await;
         }
         if n % 6 == 0 {
             if let Ok(fresh) = store_client() {
                 let (ms, ok, err) = timed_get(&fresh, "probe/anchor-1024").await;
                 let _ = tx
-                    .send(Sample { ts: chrono::Utc::now(), op: "get_cold", mode: "coldconn", size: KB as i32, ms, ok, err, server_ms: None, served_from: None, regions: None })
+                    .send(Sample { ts: chrono::Utc::now(), op: "get_cold", mode: "coldconn", size: KB as i32, ms, ok, err, server_ms: None, served_from: None, regions: None, variant: variant() })
                     .await;
             }
         }
@@ -225,7 +228,7 @@ async fn burst_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
                     let p = format!("probe/burst-{w}-{}", i % 4);
                     let (ms, ok, err) = timed_put(&store, &p, body_of(256 * 1024)).await;
                     let _ = tx
-                        .send(Sample { ts: chrono::Utc::now(), op: "put", mode: "burst", size: 256 * 1024, ms, ok, err, server_ms: None, served_from: None, regions: None })
+                        .send(Sample { ts: chrono::Utc::now(), op: "put", mode: "burst", size: 256 * 1024, ms, ok, err, server_ms: None, served_from: None, regions: None, variant: variant() })
                         .await;
                 }
             }));
@@ -269,6 +272,7 @@ CREATE INDEX IF NOT EXISTS probe_ts ON probe (ts);
 ALTER TABLE probe ADD COLUMN IF NOT EXISTS server_ms double precision;
 ALTER TABLE probe ADD COLUMN IF NOT EXISTS served_from text;
 ALTER TABLE probe ADD COLUMN IF NOT EXISTS regions text;
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS variant text NOT NULL DEFAULT 'global';
 ";
 
 async fn writer_loop(url: String, mut rx: mpsc::Receiver<Sample>) {
@@ -295,16 +299,17 @@ async fn writer_loop(url: String, mut rx: mpsc::Receiver<Sample>) {
                 }
                 let c = client.as_ref().unwrap();
                 // One multi-row INSERT per flush.
-                let mut q = String::from("INSERT INTO probe (ts, op, mode, size_bytes, ms, ok, err, server_ms, served_from, regions) VALUES ");
+                let mut q = String::from("INSERT INTO probe (ts, op, mode, size_bytes, ms, ok, err, server_ms, served_from, regions, variant) VALUES ");
                 let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
                 let rows: Vec<Sample> = buf.drain(..).collect();
                 for (i, s) in rows.iter().enumerate() {
                     if i > 0 { q.push(','); }
-                    let b = i * 10;
-                    q.push_str(&format!("(${},${},${},${},${},${},${},${},${},${})", b+1,b+2,b+3,b+4,b+5,b+6,b+7,b+8,b+9,b+10));
+                    let b = i * 11;
+                    q.push_str(&format!("(${},${},${},${},${},${},${},${},${},${},${})", b+1,b+2,b+3,b+4,b+5,b+6,b+7,b+8,b+9,b+10,b+11));
                     params.push(&s.ts); params.push(&s.op); params.push(&s.mode);
                     params.push(&s.size); params.push(&s.ms); params.push(&s.ok); params.push(&s.err);
                     params.push(&s.server_ms); params.push(&s.served_from); params.push(&s.regions);
+                    params.push(&s.variant);
                 }
                 if let Err(e) = c.execute(q.as_str(), &params).await {
                     eprintln!("insert failed ({} rows): {e}", rows.len());
@@ -333,7 +338,7 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
         Err(e) => return (axum::http::StatusCode::SERVICE_UNAVAILABLE, format!("pg: {e}")).into_response(),
     };
     let sql = "
-      SELECT date_trunc('hour', ts) AS h, op, mode, size_bytes,
+      SELECT date_trunc('hour', ts) AS h, op, mode, size_bytes, variant,
              count(*) AS n,
              count(*) FILTER (WHERE NOT ok) AS errs,
              percentile_cont(0.5)  WITHIN GROUP (ORDER BY ms) AS p50,
@@ -344,7 +349,7 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
              percentile_cont(0.99) WITHIN GROUP (ORDER BY server_ms) AS sp99
       FROM probe
       WHERE ts >= $1::text::date AND ts < $1::text::date + interval '1 day' AND ok
-      GROUP BY 1,2,3,4 ORDER BY 1,2,3,4";
+      GROUP BY 1,2,3,4,5 ORDER BY 1,2,3,4,5";
     let rows = match client.query(sql, &[&day]).await {
         Ok(r) => r,
         Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("query: {e}")).into_response(),
@@ -357,14 +362,15 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
             "op": r.get::<_, String>(1),
             "mode": r.get::<_, String>(2),
             "size": r.get::<_, i32>(3),
-            "n": r.get::<_, i64>(4),
-            "errs": r.get::<_, i64>(5),
-            "p50": r.get::<_, f64>(6),
-            "p90": r.get::<_, f64>(7),
-            "p99": r.get::<_, f64>(8),
-            "max": r.get::<_, f64>(9),
-            "sp50": r.get::<_, Option<f64>>(10),
-            "sp99": r.get::<_, Option<f64>>(11),
+            "variant": r.get::<_, String>(4),
+            "n": r.get::<_, i64>(5),
+            "errs": r.get::<_, i64>(6),
+            "p50": r.get::<_, f64>(7),
+            "p90": r.get::<_, f64>(8),
+            "p99": r.get::<_, f64>(9),
+            "max": r.get::<_, f64>(10),
+            "sp50": r.get::<_, Option<f64>>(11),
+            "sp99": r.get::<_, Option<f64>>(12),
         }));
     }
     axum::Json(serde_json::json!({
@@ -380,6 +386,18 @@ const PAGE: &str = include_str!("page.html");
 
 async fn page() -> Response {
     ([("content-type", "text/html; charset=utf-8"), ("cache-control", "no-store")], PAGE).into_response()
+}
+
+fn variant() -> &'static str {
+    // Leaked once at startup; constant for the process lifetime.
+    static V: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    V.get_or_init(|| {
+        Box::leak(
+            env("PROBE_VARIANT")
+                .unwrap_or_else(|| "global".into())
+                .into_boxed_str(),
+        )
+    })
 }
 
 #[tokio::main]
