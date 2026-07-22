@@ -505,3 +505,30 @@ Every substantive change runs, in order:
    ≤ 620 MB, throughput/latency within the recorded baseline band
    (`bench/fra-ab-baseline.md`). This exact harness is what exposed the
    slate-codex OOM crash loop — treat a red run as a hard stop.
+
+## 14. Tigris latency observatory
+
+Six always-on probes (one per Prisma region; `bench/probe/`), each with its
+own project, Prisma Postgres, and management-API bucket. Every 10 s: solo
+PUT + hot/cold GET at 1 KB and 256 KB; every 60 s a fresh-connection GET;
+at the top of each hour a 60 s 16-concurrent 256 KB PUT burst (separates
+time-of-day tails from load-correlated contention). Daily pages with
+UTC-day pagination, hourly p50/p90/p99/max charts and tables:
+
+| region | page |
+|---|---|
+| eu-central-1 | https://yezqz7cxdangclekp4yc6x6n.fra.prisma.build |
+| ap-southeast-1 | https://jsvsjfo6r2z6jmuijunbaty0.sin.prisma.build |
+| ap-northeast-1 | https://k8jze0k59mes4teujlu7yx4h.nrt.prisma.build |
+| us-east-1 | https://tzngb1lztglq1sbdl8e24s40.ewr.prisma.build |
+| us-west-1 | https://rtni7hd1ug3ecv8q6u5f4oc1.sjc.prisma.build |
+| eu-west-3 | https://kjzr1wu7dkfc0oks2f3620h3.cdg.prisma.build |
+
+First-hour reading (2026-07-22, p50/p99 ms): PUT latency varies 5–10× by
+region (SIN/NRT ~21–22 ms 1 KB PUTs; FRA 143, CDG 184, EWR 237) while 1 KB
+GETs sit at 3–20 ms everywhere — the published "14–18 ms median" read story
+holds, and the write story our WAL lives in is region-dependent with p99s
+already reaching 1.6–2.5 s in EU. Ops note: the compute CLI prints
+"Service URL" on deploy (no domain guessing), and `--env` values
+containing commas must be wrapped in inner quotes or the CLI splits them
+into separate variables.
