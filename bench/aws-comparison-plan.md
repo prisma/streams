@@ -251,3 +251,54 @@ durability tier in front of the object store. The multi-stream phase tests
 the claim our architecture is actually built around: aggregate density —
 many ordered units per instance — where the same instance already sustained
 ~25k rec/s across 32 streams during the saturation gate.
+
+## Batch-dimension sweep (2026-07-22, follow-up to the campaign)
+
+Question: how do the three systems react to request batching? Matrix:
+batch {1, 10, 100} × record {200 B, 16 KB}, conc=32, 3 min/leg, Prisma
+uncapped per-stream, all same-morning (substrate slower than the previous
+evening — cross-day absolutes carry drift; within-morning comparisons are
+clean). SQS caps batches at 10 entries / 256 KB by API design.
+
+| system, 200 B | batch 1 | batch 10 | batch 100 |
+|---|---|---|---|
+| Kinesis rec/s (p50) | 1,043 (9.7 ms) | 1,246 (12.9 ms) | 1,096 (22.8 ms) |
+| SQS msg/s (p50) | 300 (25.3 ms) | 3,000 (26.6 ms) | — API cap 10 |
+| Prisma rec/s (p50) | 70 (461 ms) | 961 (282 ms) | 4,340 (673 ms) |
+
+| system, 16 KB | batch 10 | batch 100 |
+|---|---|---|
+| Kinesis MB/s | 1.18 (its 1 MB/s wall) | 1.03 |
+| SQS MB/s | **49.2** (300 × 160 KB batches) | — API cap |
+| Prisma MB/s | 1.38 | 0.33, degraded (see note) |
+
+Findings:
+
+1. **Kinesis is batch-inert.** The shard meters records AND bytes; batching
+   only reduces request count (1,043 → 1,246 → 1,096 rec/s; 1.0–1.2 MB/s
+   at 16 KB). Per-request latency grows with batch size.
+2. **SQS multiplies both dimensions by exactly the batch factor**, because
+   the group meters 300 *transactions*/s: 300 → 3,000 msg/s, and 0.6 →
+   **49.2 MB/s** — the widest ordered-unit byte pipe measured in this whole
+   campaign, by 35×. (The raw files show these legs' rejections as "errors"
+   — they are group throttles; this sweep still ran the pre-fix classifier.)
+3. **Prisma multiplies records nearly linearly with batch** at small record
+   sizes (70 → 961 → 4,340 rec/s at ~constant request rate: rounds are
+   RTT-bound, records-per-round is nearly free), matching the architecture
+   (one WAL PUT carries the whole commit group).
+4. **Prisma's byte path is the weak flank and byte floods are unguarded**:
+   16 KB×10 reached only 1.38 MB/s, and 16 KB×100 (1.6 MB bodies, 32 conc ≈
+   51 MB admitted instantly) degraded to 0.33 MB/s with server restarts
+   (front-door 404/502 in-run): the RSS shed samples every 500 ms and
+   admission counts requests, not bytes, so a byte flood lands between
+   checks. This is direct evidence for the deferred per-byte admission item
+   (AWS-readyness §4; codex's `ADMIT_WRITE_BURST_BYTES` family).
+
+Answers to the standing questions: the campaign's 1,944 rec/s was batch-16
+HTTP requests (~121 req/s), not individual appends; individual-append
+(batch-1) throughput at conc 32 is ~70 req/s on this substrate — each
+request pays a full durable round. With batch 10 → ~1k rec/s; batch 100 →
+~4.3k rec/s (and 6.4k was measured the prior evening at batch 16 × conc
+128: records-per-ROUND ≈ conc × batch is the real lever, however split).
+Byte ceiling improves ~3× with batch 10 (0.48 → 1.38 MB/s) then inverts at
+batch 100 for the reasons above.
