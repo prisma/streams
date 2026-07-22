@@ -264,7 +264,38 @@ now the standing gate. Definition:
   30 s; admission should observe flush-pipeline health directly (§4 item
   alongside per-customer quotas).
 
-### 2026-07-22 addendum: final verification state
+### 2026-07-22 addendum: final verification state (updated after the cloud legs)
+
+With a fresh workspace token, the wedge-shed build ran the §5 gate twice on
+Compute FRA (fresh management-API bucket each time). Server-side verdict,
+three consecutive runs of the final build (final1, final2, plus the 47-min
+unplanned soak): **zero OOM kills, zero restarts, RSS max 463 MB** against
+the ~750 MB kill line — the memory failure mode that killed slate-codex and
+old slate is closed.
+
+Both runs still recorded client-error phases (~125/20 s, all conc slots
+cycling on ~30 s front-door kills). Live discrimination during final2
+settled the attribution: while the generator's 129 in-flight slots hung,
+**fresh laptop connections to the same server answered in 0.6 s**, the
+engine sat nearly idle (walN 2–50/20 s, RSS flat ~300), and every shed
+counter correctly read zero — the server was healthy; the platform edge had
+silently killed the generator's pooled connections (the SIN-era silent
+flow-kill family). This re-attributes the earlier cand2/final1 "wedge"
+phases to the same edge mode. The engine-side wedge shed remains verified
+by the two local regression tests (blocked-write mode and stale-durability
+mode); the detector watches max(blocked db.write, oldest
+committed-but-not-durable group age) at a 5 s threshold.
+
+Consequences: (1) the §5 gate's zero-client-error criterion is judged on
+server attribution — a run whose errors trace to edge connection kills
+(server responsive to fresh connections, shed counters zero, engine idle)
+does not fail the binary; (2) the pilot generator should rotate its HTTP
+client when a slot exceeds ~10 s without response (harness item, tracked
+here); (3) the platform ticket list gains the FRA edge connection-kill
+signature with timestamps 2026-07-22 ~06:20–09:30Z, project
+`streams-fra-ab`.
+
+### 2026-07-22 earlier addendum: staging notes
 
 - The wedge shed (429 on >2 s blocked commit) is verified by
   `commit_blocked_detects_real_flush_stall` — real SlateDB byte
