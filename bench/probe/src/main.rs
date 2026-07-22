@@ -175,6 +175,12 @@ async fn probe_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
     loop {
         tick.tick().await;
         n += 1;
+        // Untimed warmup: the 4 s pool-idle rule guarantees a dead pool at
+        // every 10 s tick, so without this the FIRST timed op absorbs
+        // DNS+TCP+TLS (v4 data: FRA PUT "164 ms" was ~140 ms handshake +
+        // 24 ms Tigris). Solo ops measure the warm path; coldconn mode
+        // remains the explicit cold measurement.
+        let _ = signed_op(&s3, &http, reqwest::Method::GET, "probe/anchor-1024", None).await;
         let now = chrono::Utc::now();
         for s in SIZES {
             let hot = format!("probe/current-{s}");
