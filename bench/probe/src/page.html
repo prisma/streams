@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tigris latency observatory</title>
+<style>
+  :root { --bg:#0b0e11; --panel:#141a21; --ink:#d7dee6; --dim:#7d8a96; --line:#232b33;
+          --put:#58a6ff; --get:#3fb950; --cold:#d29922; --burst:#f85149; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink); font:13px/1.5 ui-monospace,Menlo,monospace; padding:16px; }
+  h1 { font-size:16px; } .sub { color:var(--dim); margin:2px 0 12px; }
+  a { color:#58a6ff; text-decoration:none; margin-right:10px; }
+  .nav { margin-bottom:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:14px; overflow-x:auto; }
+  h2 { font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+  canvas { width:100%; height:230px; display:block; }
+  table { border-collapse:collapse; width:100%; white-space:nowrap; }
+  th,td { text-align:right; padding:2px 10px; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--dim); font-weight:normal; }
+  tr+tr td { border-top:1px solid var(--line); }
+  .legend span { margin-right:14px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:4px; margin-right:4px; }
+</style>
+</head>
+<body>
+<h1 id="title">tigris latency — <span id="region">…</span></h1>
+<div class="sub">UTC day <b id="day">…</b> · solo probes every 10 s (PUT + hot/cold GET at 1 KB & 256 KB) · fresh-connection GET each minute · 60 s × 16-conc 256 KB PUT burst at the top of each hour</div>
+<div class="nav">
+  <a href="#" id="prev">« prev day</a><a href="#" id="next">next day »</a>
+  &nbsp;|&nbsp; regions: <span id="others"></span>
+</div>
+<div class="panel"><h2>PUT p50 / p99 by hour (ms, log scale) — 256 KB solo <span style="color:var(--burst)">+ burst</span>, 1 KB dashed</h2><canvas id="put"></canvas><div class="legend" id="lg1"></div></div>
+<div class="panel"><h2>GET p50 / p99 by hour (ms, log scale) — hot solid, cold dotted, 1 KB dashed</h2><canvas id="get"></canvas></div>
+<div class="panel"><h2>hourly table</h2><div id="tbl"></div></div>
+<script>
+const qs = new URLSearchParams(location.search);
+async function load() {
+  const day = qs.get("day");
+  const d = await (await fetch("/data" + (day ? "?day=" + day : ""), {cache:"no-store"})).json();
+  document.getElementById("region").textContent = d.region;
+  document.getElementById("day").textContent = d.day;
+  const cur = new Date(d.day + "T00:00:00Z");
+  const fmt = (t) => t.toISOString().slice(0, 10);
+  document.getElementById("prev").href = "?day=" + fmt(new Date(cur.getTime() - 864e5));
+  document.getElementById("next").href = "?day=" + fmt(new Date(cur.getTime() + 864e5));
+  document.getElementById("others").innerHTML =
+    (d.others || []).map(o => `<a href="${o.url}">${o.name}</a>`).join("") || "(links pending)";
+
+  const key = (r) => `${r.op}|${r.mode}|${r.size}`;
+  const series = {};
+  for (const r of d.rows) {
+    (series[key(r)] = series[key(r)] || Array(24).fill(null))[+r.hour] = r;
+  }
+  const pick = (k, f) => (series[k] || Array(24).fill(null)).map(r => r && r[f]);
+
+  function draw(id, defs) {
+    const cv = document.getElementById(id);
+    const W = cv.width = cv.clientWidth * 2, H = cv.height = cv.clientHeight * 2;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    const all = defs.flatMap(s => s.data).filter(v => v != null && v > 0);
+    if (!all.length) { ctx.fillStyle = "#7d8a96"; ctx.font = "24px monospace"; ctx.fillText("no data for this day", 40, H/2); return; }
+    const lo = 1, hi = Math.max(...all) * 1.3;
+    const y = (v) => H - 30 - (Math.log10(Math.max(v, lo)) / Math.log10(hi)) * (H - 60);
+    const x = (h) => 50 + h * (W - 70) / 23;
+    ctx.strokeStyle = "#232b33"; ctx.fillStyle = "#7d8a96"; ctx.font = "20px monospace";
+    for (const g of [10, 100, 1000, 10000]) {
+      if (g > hi) break;
+      ctx.beginPath(); ctx.moveTo(50, y(g)); ctx.lineTo(W - 20, y(g)); ctx.stroke();
+      ctx.fillText(g + "ms", 4, y(g) + 6);
+    }
+    for (let h = 0; h < 24; h += 3) ctx.fillText(String(h).padStart(2, "0"), x(h) - 10, H - 8);
+    for (const s of defs) {
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2;
+      ctx.setLineDash(s.dash || []);
+      ctx.beginPath();
+      let started = false;
+      s.data.forEach((v, h) => {
+        if (v == null) { started = false; return; }
+        if (!started) { ctx.moveTo(x(h), y(v)); started = true; } else ctx.lineTo(x(h), y(v));
+      });
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  const KB = 1024, BIG = 262144;
+  draw("put", [
+    { color: "#58a6ff", data: pick(`put|solo|${BIG}`, "p50"), width: 3 },
+    { color: "#58a6ff", data: pick(`put|solo|${BIG}`, "p99") },
+    { color: "#58a6ff", data: pick(`put|solo|${KB}`, "p50"), dash: [6, 6] },
+    { color: "#58a6ff", data: pick(`put|solo|${KB}`, "p99"), dash: [2, 6] },
+    { color: "#f85149", data: pick(`put|burst|${BIG}`, "p50"), width: 3 },
+    { color: "#f85149", data: pick(`put|burst|${BIG}`, "p99") },
+  ]);
+  draw("get", [
+    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}`, "p50"), width: 3 },
+    { color: "#3fb950", data: pick(`get_hot|solo|${BIG}`, "p99") },
+    { color: "#3fb950", data: pick(`get_hot|solo|${KB}`, "p50"), dash: [6, 6] },
+    { color: "#d29922", data: pick(`get_cold|solo|${BIG}`, "p50"), dash: [2, 4] },
+    { color: "#d29922", data: pick(`get_cold|coldconn|${KB}`, "p50"), dash: [8, 4] },
+  ]);
+  document.getElementById("lg1").innerHTML =
+    `<span><i class="dot" style="background:#58a6ff"></i>solo</span>` +
+    `<span><i class="dot" style="background:#f85149"></i>burst (16-conc)</span>` +
+    `<span><i class="dot" style="background:#3fb950"></i>hot get</span>` +
+    `<span><i class="dot" style="background:#d29922"></i>cold / fresh-conn</span>`;
+
+  const rowsByHour = {};
+  for (const r of d.rows) (rowsByHour[r.hour] = rowsByHour[r.hour] || []).push(r);
+  let html = "<table><tr><th>hour</th><th>op</th><th>mode</th><th>size</th><th>n</th><th>errs</th><th>p50</th><th>p90</th><th>p99</th><th>max</th></tr>";
+  for (const h of Object.keys(rowsByHour).sort()) {
+    for (const r of rowsByHour[h]) {
+      html += `<tr><td>${h}</td><td>${r.op}</td><td>${r.mode}</td><td>${r.size >= 1024 ? (r.size / 1024) + "K" : r.size}</td>` +
+        `<td>${r.n}</td><td>${r.errs}</td><td>${r.p50.toFixed(1)}</td><td>${r.p90.toFixed(1)}</td><td>${r.p99.toFixed(1)}</td><td>${r.max.toFixed(0)}</td></tr>`;
+    }
+  }
+  document.getElementById("tbl").innerHTML = html + "</table>";
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
