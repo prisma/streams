@@ -20,6 +20,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use bytes::Bytes;
 use object_store::path::Path as ObjPath;
+use object_store::signer::Signer;
 use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::sync::mpsc;
 
@@ -36,6 +37,26 @@ struct Sample {
     ms: f64,
     ok: bool,
     err: Option<String>,
+    /// Tigris-internal time (Server-Timing: total;dur=...), when visible.
+    server_ms: Option<f64>,
+    /// X-Tigris-Served-From / X-Tigris-Regions, when visible.
+    served_from: Option<String>,
+    regions: Option<String>,
+}
+
+fn s3_concrete() -> anyhow::Result<object_store::aws::AmazonS3> {
+    Ok(object_store::aws::AmazonS3Builder::new()
+        .with_endpoint(env("SLATE_S3_ENDPOINT").context("SLATE_S3_ENDPOINT")?)
+        .with_bucket_name(env("SLATE_S3_BUCKET").context("SLATE_S3_BUCKET")?)
+        .with_region(env("SLATE_S3_REGION").unwrap_or_else(|| "auto".into()))
+        .with_access_key_id(env("SLATE_S3_ACCESS_KEY_ID").context("key id")?)
+        .with_secret_access_key(env("SLATE_S3_SECRET_ACCESS_KEY").context("secret")?)
+        .with_client_options(
+            object_store::ClientOptions::new()
+                .with_allow_http(true)
+                .with_pool_idle_timeout(Duration::from_secs(4)),
+        )
+        .build()?)
 }
 
 fn store_client() -> anyhow::Result<Arc<dyn ObjectStore>> {
@@ -78,14 +99,77 @@ fn body_of(size: usize) -> Bytes {
     Bytes::from(vec![b'x'; size])
 }
 
+fn parse_server_ms(headers: &reqwest::header::HeaderMap) -> Option<f64> {
+    let v = headers.get("server-timing")?.to_str().ok()?;
+    // "total;dur=247,cache;..." — take the first dur after "total;".
+    let idx = v.find("total;dur=")?;
+    v[idx + 10..]
+        .split(|c: char| c == ',' || c == ';')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn hdr(headers: &reqwest::header::HeaderMap, k: &str) -> Option<String> {
+    headers.get(k).and_then(|v| v.to_str().ok()).map(String::from)
+}
+
+async fn signed_op(
+    s3: &object_store::aws::AmazonS3,
+    http: &reqwest::Client,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Bytes>,
+) -> (f64, bool, Option<String>, Option<f64>, Option<String>, Option<String>) {
+    let sign_method = if method == reqwest::Method::PUT { http::Method::PUT } else { http::Method::GET };
+    let url = match s3.signed_url(sign_method, &ObjPath::from(path), Duration::from_secs(300)).await {
+        Ok(u) => u,
+        Err(e) => return (0.0, false, Some(format!("sign: {e}")), None, None, None),
+    };
+    let t0 = Instant::now();
+    let mut req = http.request(method, url);
+    if let Some(b) = body {
+        req = req.body(b);
+    }
+    match req.send().await {
+        Ok(r) => {
+            let server_ms = parse_server_ms(r.headers());
+            let served = hdr(r.headers(), "x-tigris-served-from");
+            let regions = hdr(r.headers(), "x-tigris-regions");
+            let status = r.status();
+            let body_ok = r.bytes().await.is_ok();
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            if status.is_success() && body_ok {
+                (ms, true, None, server_ms, served, regions)
+            } else {
+                (ms, false, Some(format!("status {status}")), server_ms, served, regions)
+            }
+        }
+        Err(e) => (t0.elapsed().as_secs_f64() * 1000.0, false, Some(e.to_string()), None, None, None),
+    }
+}
+
 async fn probe_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
     const KB: usize = 1024;
     const SIZES: [usize; 2] = [KB, 256 * KB];
-    // Anchor objects for cold reads (written once).
     for s in SIZES {
         let p = format!("probe/anchor-{s}");
         let _ = store.put(&ObjPath::from(p), body_of(s).into()).await;
     }
+    let s3 = match s3_concrete() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("signer client failed: {e}");
+            return;
+        }
+    };
+    let http = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(4))
+        .tcp_nodelay(true)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
     let mut tick = tokio::time::interval(Duration::from_secs(10));
     let mut n: u64 = 0;
     loop {
@@ -94,19 +178,21 @@ async fn probe_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
         let now = chrono::Utc::now();
         for s in SIZES {
             let hot = format!("probe/current-{s}");
-            let (ms, ok, err) = timed_put(&store, &hot, body_of(s)).await;
-            let _ = tx.send(Sample { ts: now, op: "put", mode: "solo", size: s as i32, ms, ok, err }).await;
-            let (ms, ok, err) = timed_get(&store, &hot).await;
-            let _ = tx.send(Sample { ts: now, op: "get_hot", mode: "solo", size: s as i32, ms, ok, err }).await;
-            let (ms, ok, err) = timed_get(&store, &format!("probe/anchor-{s}")).await;
-            let _ = tx.send(Sample { ts: now, op: "get_cold", mode: "solo", size: s as i32, ms, ok, err }).await;
+            let (ms, ok, err, server_ms, served_from, regions) =
+                signed_op(&s3, &http, reqwest::Method::PUT, &hot, Some(body_of(s))).await;
+            let _ = tx.send(Sample { ts: now, op: "put", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
+            let (ms, ok, err, server_ms, served_from, regions) =
+                signed_op(&s3, &http, reqwest::Method::GET, &hot, None).await;
+            let _ = tx.send(Sample { ts: now, op: "get_hot", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
+            let (ms, ok, err, server_ms, served_from, regions) =
+                signed_op(&s3, &http, reqwest::Method::GET, &format!("probe/anchor-{s}"), None).await;
+            let _ = tx.send(Sample { ts: now, op: "get_cold", mode: "solo", size: s as i32, ms, ok, err, server_ms, served_from, regions }).await;
         }
-        // Fresh-connection probe once per minute: new client = DNS+TCP+TLS.
         if n % 6 == 0 {
             if let Ok(fresh) = store_client() {
                 let (ms, ok, err) = timed_get(&fresh, "probe/anchor-1024").await;
                 let _ = tx
-                    .send(Sample { ts: chrono::Utc::now(), op: "get_cold", mode: "coldconn", size: KB as i32, ms, ok, err })
+                    .send(Sample { ts: chrono::Utc::now(), op: "get_cold", mode: "coldconn", size: KB as i32, ms, ok, err, server_ms: None, served_from: None, regions: None })
                     .await;
             }
         }
@@ -133,7 +219,7 @@ async fn burst_loop(store: Arc<dyn ObjectStore>, tx: mpsc::Sender<Sample>) {
                     let p = format!("probe/burst-{w}-{}", i % 4);
                     let (ms, ok, err) = timed_put(&store, &p, body_of(256 * 1024)).await;
                     let _ = tx
-                        .send(Sample { ts: chrono::Utc::now(), op: "put", mode: "burst", size: 256 * 1024, ms, ok, err })
+                        .send(Sample { ts: chrono::Utc::now(), op: "put", mode: "burst", size: 256 * 1024, ms, ok, err, server_ms: None, served_from: None, regions: None })
                         .await;
                 }
             }));
@@ -174,6 +260,9 @@ CREATE TABLE IF NOT EXISTS probe (
   err text
 );
 CREATE INDEX IF NOT EXISTS probe_ts ON probe (ts);
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS server_ms double precision;
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS served_from text;
+ALTER TABLE probe ADD COLUMN IF NOT EXISTS regions text;
 ";
 
 async fn writer_loop(url: String, mut rx: mpsc::Receiver<Sample>) {
@@ -200,15 +289,16 @@ async fn writer_loop(url: String, mut rx: mpsc::Receiver<Sample>) {
                 }
                 let c = client.as_ref().unwrap();
                 // One multi-row INSERT per flush.
-                let mut q = String::from("INSERT INTO probe (ts, op, mode, size_bytes, ms, ok, err) VALUES ");
+                let mut q = String::from("INSERT INTO probe (ts, op, mode, size_bytes, ms, ok, err, server_ms, served_from, regions) VALUES ");
                 let mut params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = Vec::new();
                 let rows: Vec<Sample> = buf.drain(..).collect();
                 for (i, s) in rows.iter().enumerate() {
                     if i > 0 { q.push(','); }
-                    let b = i * 7;
-                    q.push_str(&format!("(${},${},${},${},${},${},${})", b+1,b+2,b+3,b+4,b+5,b+6,b+7));
+                    let b = i * 10;
+                    q.push_str(&format!("(${},${},${},${},${},${},${},${},${},${})", b+1,b+2,b+3,b+4,b+5,b+6,b+7,b+8,b+9,b+10));
                     params.push(&s.ts); params.push(&s.op); params.push(&s.mode);
                     params.push(&s.size); params.push(&s.ms); params.push(&s.ok); params.push(&s.err);
+                    params.push(&s.server_ms); params.push(&s.served_from); params.push(&s.regions);
                 }
                 if let Err(e) = c.execute(q.as_str(), &params).await {
                     eprintln!("insert failed ({} rows): {e}", rows.len());
@@ -243,7 +333,9 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
              percentile_cont(0.5)  WITHIN GROUP (ORDER BY ms) AS p50,
              percentile_cont(0.9)  WITHIN GROUP (ORDER BY ms) AS p90,
              percentile_cont(0.99) WITHIN GROUP (ORDER BY ms) AS p99,
-             max(ms) AS mx
+             max(ms) AS mx,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY server_ms) AS sp50,
+             percentile_cont(0.99) WITHIN GROUP (ORDER BY server_ms) AS sp99
       FROM probe
       WHERE ts >= $1::text::date AND ts < $1::text::date + interval '1 day' AND ok
       GROUP BY 1,2,3,4 ORDER BY 1,2,3,4";
@@ -265,6 +357,8 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
             "p90": r.get::<_, f64>(7),
             "p99": r.get::<_, f64>(8),
             "max": r.get::<_, f64>(9),
+            "sp50": r.get::<_, Option<f64>>(10),
+            "sp99": r.get::<_, Option<f64>>(11),
         }));
     }
     axum::Json(serde_json::json!({
