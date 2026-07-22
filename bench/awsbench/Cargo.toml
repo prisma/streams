@@ -1,0 +1,18 @@
+[package]
+name = "awsbench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone crate (not part of the server build): the AWS SDK dependency
+# tree stays out of the service's cargo-deny surface. Gate runs build it
+# explicitly for the comparison campaign only.
+[dependencies]
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-sdk-kinesis = { version = "1", default-features = false, features = ["rustls"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["rustls"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+hdrhistogram = "7"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

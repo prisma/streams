@@ -1,0 +1,4 @@
+# awsbench only: the AWS SDK's MSRV moves faster than the service's pinned
+# toolchain. The server build stays on the repo default.
+[toolchain]
+channel = "1.94.1"

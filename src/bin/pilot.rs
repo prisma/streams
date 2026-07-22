@@ -648,6 +648,11 @@ async fn generator() {
     let conc_max: u64 = env("CONC_MAX").and_then(|v| v.parse().ok()).unwrap_or(4096);
     let ramp_secs: u64 = env("RAMP_SECS").and_then(|v| v.parse().ok()).unwrap_or(300);
     let batch: usize = env("BATCH").and_then(|v| v.parse().ok()).unwrap_or(1);
+    // AWS-comparison knobs (bench/aws-comparison-plan.md): RECORD_PAD sizes
+    // records (default 200 B); READ_EVERY mixes one read per N ops
+    // (default 10; 0 = pure write so shapes match the awsbench arms).
+    let read_every: u64 = env("READ_EVERY").and_then(|v| v.parse().ok()).unwrap_or(10);
+    let record_pad: usize = env("RECORD_PAD").and_then(|v| v.parse().ok()).unwrap_or(200);
     // Distinct per-generator stream namespaces: multiple generators over
     // the same streams muddies closed-loop accounting and attribution.
     let stream_prefix: String = env("STREAM_PREFIX").unwrap_or_else(|| "pilot".into());
@@ -747,6 +752,7 @@ async fn generator() {
                     let key = key.clone();
                     let seq = seq.clone();
                     let stream_prefix2 = stream_prefix2.clone();
+                    let (read_every, pad_n) = (read_every, record_pad);
                     tokio::spawn(async move {
                         loop {
                             let n = seq.fetch_add(1, Ordering::Relaxed);
@@ -763,7 +769,7 @@ async fn generator() {
                             };
                             let t0 = Instant::now();
                             let http = rc.get();
-                            let res = if n % 10 == 9 {
+                            let res = if read_every > 0 && n % read_every == read_every - 1 {
                                 http.get(format!("{}/v1/stream/{name}?offset=now", upstreams[i]))
                                     .header("authorization", format!("Bearer {auth}"))
                                     .header("stream-encryption-key", key.clone())
@@ -771,7 +777,7 @@ async fn generator() {
                                     .await
                             } else {
                                 let recs: Vec<serde_json::Value> = (0..batch)
-                                    .map(|b| serde_json::json!({"i": n, "b": b, "t": now_ms(), "pad": "x".repeat(200)}))
+                                    .map(|b| serde_json::json!({"i": n, "b": b, "t": now_ms(), "pad": "x".repeat(pad_n)}))
                                     .collect();
                                 http.post(format!("{}/v1/stream/{name}", upstreams[i]))
                                     .header("authorization", format!("Bearer {auth}"))
