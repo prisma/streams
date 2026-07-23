@@ -405,6 +405,12 @@ impl Absorber {
         let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
         let mut items: Vec<(u64, HistRecord)> = Vec::new();
         let mut pass_bytes = 0u64;
+        // `items` holds the DECRYPTED pass. With v3 (compressed) frames the
+        // raw byte budget alone is a memory landmine: 32 MB of frames can
+        // decompress to ~1 GB of plaintext, which OOM-killed 1 GB instances
+        // before the first history write (sinmax run 9, 2026-07-23). Bound
+        // the pass by plaintext bytes with the same budget.
+        let mut pt_bytes = 0u64;
         const WINDOW: u64 = 32_768;
         let mut window_reads = {
             use futures_util::StreamExt;
@@ -444,6 +450,7 @@ impl Absorber {
                     });
                 let pt = decrypt_frame(&sk, hash, &frame, raw)
                     .map_err(|e| anyhow::anyhow!("absorb decrypt: {e}"))?;
+                pt_bytes += pt.len() as u64;
                 items.push((
                     frame.header.offset,
                     HistRecord {
@@ -457,7 +464,7 @@ impl Absorber {
             // A byte-truncated window breaks offset contiguity past its
             // last frame: stop here; the boundary advances to what we have.
             let complete = chunk.last_offset.map(|l| l + 1 >= win_end).unwrap_or(false);
-            if !complete || pass_bytes >= self.cfg.pass_bytes {
+            if !complete || pass_bytes >= self.cfg.pass_bytes || pt_bytes >= self.cfg.pass_bytes {
                 break;
             }
         }
