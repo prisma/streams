@@ -350,6 +350,11 @@ impl Absorber {
                     }
                     _ = tick.tick() => {
                         let now = Instant::now();
+                        // Publish absorption lag (scale-out signal): age of
+                        // the oldest unabsorbed bytes per stream.
+                        for (h, p) in pending.iter() {
+                            crate::usage::set_absorb_lag(h, p.since.elapsed().as_secs());
+                        }
                         let due: Vec<[u8; 16]> = pending
                             .iter()
                             .filter(|(_, p)| {
@@ -367,6 +372,7 @@ impl Absorber {
                                 Ok(absorbed) => {
                                     if absorbed {
                                         pending.remove(&hash);
+                                        crate::usage::clear_absorb_lag(&hash);
                                     } else if let Some(p) = pending.get_mut(&hash) {
                                         // key missing: keep pending; retried
                                         // when the next keyed request arrives.

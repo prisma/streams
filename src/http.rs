@@ -382,6 +382,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
+        "absorb_lag_max_secs": crate::usage::absorb_lag_max(),
     }))
     .into_response()
 }
@@ -428,6 +429,7 @@ async fn debug_usage() -> Response {
                 "plaintext_bytes": pt,
                 "frame_bytes": fr,
                 "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
+                "absorb_lag_secs": crate::usage::absorb_lag(&h),
             })
         })
         .collect();

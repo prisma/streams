@@ -200,6 +200,30 @@ pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
     }
 }
 
+/// Absorption lag gauge (seconds behind), fed by the absorber's tick:
+/// per-stream age of the oldest unabsorbed bytes. THE scale-out signal
+/// (rebalance shards off a host when this exceeds ~60 s).
+fn lag_map() -> &'static Mutex<HashMap<[u8; 16], u64>> {
+    static M: OnceLock<Mutex<HashMap<[u8; 16], u64>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_absorb_lag(hash: &[u8; 16], secs: u64) {
+    lag_map().lock().unwrap().insert(*hash, secs);
+}
+
+pub fn clear_absorb_lag(hash: &[u8; 16]) {
+    lag_map().lock().unwrap().remove(hash);
+}
+
+pub fn absorb_lag(hash: &[u8; 16]) -> u64 {
+    lag_map().lock().unwrap().get(hash).copied().unwrap_or(0)
+}
+
+pub fn absorb_lag_max() -> u64 {
+    lag_map().lock().unwrap().values().copied().max().unwrap_or(0)
+}
+
 /// Snapshot every stream's cumulative counters (for /v1/debug/usage and
 /// the billing emitter).
 pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64)> {
