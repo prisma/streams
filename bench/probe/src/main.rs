@@ -384,6 +384,247 @@ async fn data(State(app): State<Arc<App>>, Query(q): Query<std::collections::Has
 
 const PAGE: &str = include_str!("page.html");
 
+// ---------------------------------------------------- v7: /diag ----------
+// Network-level decomposition for the Tigris routing question. microVMs
+// have no ICMP, so everything is TCP/TLS/HTTP: DNS answer set, raw TCP
+// connect and rustls handshake per resolved IP (3 rounds each), full
+// header echo (fly-request-id names the edge PoP; x-amz-request-id lets
+// Tigris find the request), egress IP (what their edge sees as source),
+// plus 24 h served_from / Server-Timing summaries straight from PG.
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn tls_probe_sync(host: &str) -> serde_json::Value {
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    let t0 = Instant::now();
+    let addrs: Vec<SocketAddr> = match (host, 443u16).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) => return serde_json::json!({"host": host, "dns_err": e.to_string()}),
+    };
+    let dns_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let mut ips: Vec<std::net::IpAddr> = addrs.iter().map(|a| a.ip()).collect();
+    ips.dedup();
+    ips.truncate(4);
+    let cfg = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.into(),
+            })
+            .with_no_client_auth(),
+    );
+    let mut per_ip = Vec::new();
+    for ip in &ips {
+        let mut tcp_ms = Vec::new();
+        let mut tls_ms = Vec::new();
+        let mut err: Option<String> = None;
+        for _ in 0..3 {
+            let t1 = Instant::now();
+            match TcpStream::connect_timeout(&SocketAddr::new(*ip, 443), Duration::from_secs(5)) {
+                Ok(mut s) => {
+                    tcp_ms.push(round1(t1.elapsed().as_secs_f64() * 1000.0));
+                    let _ = s.set_nodelay(true);
+                    let sn = match rustls::pki_types::ServerName::try_from(host.to_string()) {
+                        Ok(sn) => sn,
+                        Err(e) => {
+                            err = Some(e.to_string());
+                            continue;
+                        }
+                    };
+                    let t2 = Instant::now();
+                    match rustls::ClientConnection::new(cfg.clone(), sn) {
+                        Ok(mut conn) => {
+                            let mut ok = true;
+                            while conn.is_handshaking() {
+                                if let Err(e) = conn.complete_io(&mut s) {
+                                    err = Some(format!("tls: {e}"));
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if ok {
+                                tls_ms.push(round1(t2.elapsed().as_secs_f64() * 1000.0));
+                            }
+                        }
+                        Err(e) => err = Some(e.to_string()),
+                    }
+                }
+                Err(e) => err = Some(format!("tcp: {e}")),
+            }
+        }
+        per_ip.push(serde_json::json!({
+            "ip": ip.to_string(), "tcp_ms": tcp_ms, "tls_ms": tls_ms, "err": err,
+        }));
+    }
+    serde_json::json!({"host": host, "dns_ms": round1(dns_ms), "ips": per_ip})
+}
+
+const ECHO_HEADERS: [&str; 8] = [
+    "server",
+    "via",
+    "fly-request-id",
+    "x-amz-request-id",
+    "x-tigris-served-from",
+    "x-tigris-regions",
+    "server-timing",
+    "date",
+];
+
+async fn diag(State(app): State<Arc<App>>) -> Response {
+    let endpoint_host = env("SLATE_S3_ENDPOINT")
+        .unwrap_or_default()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let bucket = env("SLATE_S3_BUCKET").unwrap_or_default();
+    let bucket_host = format!("{bucket}.{endpoint_host}");
+
+    // What Tigris's edge sees as our source address.
+    let egress_ip = async {
+        let c = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .ok()?;
+        let t = c
+            .get("https://checkip.amazonaws.com")
+            .send()
+            .await
+            .ok()?
+            .text()
+            .await
+            .ok()?;
+        Some(t.trim().to_string())
+    }
+    .await;
+
+    // DNS/TCP/TLS per resolved IP, both hosts.
+    let eh = endpoint_host.clone();
+    let bh = bucket_host.clone();
+    let tcp_tls = tokio::task::spawn_blocking(move || {
+        serde_json::json!([tls_probe_sync(&eh), tls_probe_sync(&bh)])
+    })
+    .await
+    .unwrap_or_else(|e| serde_json::json!({"join_err": e.to_string()}));
+
+    // Three authenticated GETs of the 1 KB anchor on ONE fresh client:
+    // round 1 pays the full connection setup, rounds 2-3 ride the warm
+    // conn. Header echo on every round (request ids differ per round).
+    let mut http_rounds = Vec::new();
+    if let Ok(s3) = s3_concrete() {
+        if let Ok(url) = s3
+            .signed_url(
+                http::Method::GET,
+                &ObjPath::from("probe/anchor-1024"),
+                Duration::from_secs(300),
+            )
+            .await
+        {
+            if let Ok(client) = reqwest::Client::builder()
+                .tcp_nodelay(true)
+                .timeout(Duration::from_secs(15))
+                .build()
+            {
+                for round in 0..3u8 {
+                    let t0 = Instant::now();
+                    match client.get(url.clone()).send().await {
+                        Ok(r) => {
+                            let status = r.status().as_u16();
+                            let mut headers = serde_json::Map::new();
+                            for k in ECHO_HEADERS {
+                                if let Some(v) = hdr(r.headers(), k) {
+                                    headers.insert(k.into(), serde_json::json!(v));
+                                }
+                            }
+                            let _ = r.bytes().await;
+                            http_rounds.push(serde_json::json!({
+                                "round": round,
+                                "conn": if round == 0 { "cold" } else { "warm" },
+                                "total_ms": round1(t0.elapsed().as_secs_f64() * 1000.0),
+                                "status": status,
+                                "headers": headers,
+                            }));
+                        }
+                        Err(e) => http_rounds.push(serde_json::json!({
+                            "round": round, "err": e.to_string(),
+                        })),
+                    }
+                }
+            }
+        }
+    }
+
+    // 24 h summaries from PG: where GETs were served from, and Tigris's
+    // own per-op internal time, per variant.
+    let mut served_from = serde_json::json!(null);
+    let mut server_ms = serde_json::json!(null);
+    if let Ok(pg) = pg_connect(&app.db_url).await {
+        if let Ok(rows) = pg
+            .query(
+                "SELECT op, served_from, count(*) FROM probe \
+                 WHERE ts > now() - interval '24 hours' AND served_from IS NOT NULL \
+                 GROUP BY 1, 2 ORDER BY 1, 3 DESC",
+                &[],
+            )
+            .await
+        {
+            let v: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "op": r.get::<_, String>(0),
+                        "served_from": r.get::<_, String>(1),
+                        "n": r.get::<_, i64>(2),
+                    })
+                })
+                .collect();
+            served_from = serde_json::json!(v);
+        }
+        if let Ok(rows) = pg
+            .query(
+                "SELECT op, size_bytes, variant, count(*), \
+                        percentile_cont(0.5) WITHIN GROUP (ORDER BY server_ms), \
+                        percentile_cont(0.99) WITHIN GROUP (ORDER BY server_ms) \
+                 FROM probe \
+                 WHERE ts > now() - interval '24 hours' AND server_ms IS NOT NULL \
+                       AND mode = 'solo' AND ok \
+                 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
+                &[],
+            )
+            .await
+        {
+            let v: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "op": r.get::<_, String>(0),
+                        "size": r.get::<_, i32>(1),
+                        "variant": r.get::<_, String>(2),
+                        "n": r.get::<_, i64>(3),
+                        "sp50_ms": round1(r.get::<_, f64>(4)),
+                        "sp99_ms": round1(r.get::<_, f64>(5)),
+                    })
+                })
+                .collect();
+            server_ms = serde_json::json!(v);
+        }
+    }
+
+    axum::Json(serde_json::json!({
+        "region": app.region,
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "endpoint": endpoint_host,
+        "bucket_host": bucket_host,
+        "egress_ip": egress_ip,
+        "tcp_tls": tcp_tls,
+        "http_rounds": http_rounds,
+        "served_from_24h": served_from,
+        "server_ms_24h": server_ms,
+    }))
+    .into_response()
+}
+
 async fn page() -> Response {
     ([("content-type", "text/html; charset=utf-8"), ("cache-control", "no-store")], PAGE).into_response()
 }
@@ -424,6 +665,7 @@ async fn main() -> anyhow::Result<()> {
     let router = axum::Router::new()
         .route("/", get(page))
         .route("/data", get(data))
+        .route("/diag", get(diag))
         .with_state(app);
     let port = env("PORT").unwrap_or_else(|| "8080".into());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
