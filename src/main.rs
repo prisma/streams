@@ -296,6 +296,10 @@ impl Args {
                             .unwrap_or(4),
                     )),
             )
+            // Records Tigris's Server-Timing (their internal ms) and
+            // x-tigris-served-from per response → sp50/sp99 + served_from
+            // in /v1/debug/store. wall − server = network path.
+            .with_http_connector(store_timing::SniffConnector)
             .build()
             .context("build s3 object store")
     }

@@ -572,25 +572,53 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
             }
         }
     }
+    // Server-side (Tigris-internal) durations from the HTTP sniffer, same
+    // (op,class) keying. sp* ≈ their processing; p* − sp* ≈ network path.
+    let mut scells: std::collections::HashMap<(u8, u8), Vec<u32>> =
+        std::collections::HashMap::new();
+    {
+        let ring = http_stats().ring.lock().unwrap();
+        for ev in ring.iter() {
+            if ev.ts_ms >= cutoff {
+                scells
+                    .entry((ev.op, ev.class))
+                    .or_default()
+                    .push(ev.server_us);
+            }
+        }
+    }
     let mut ops = serde_json::Map::new();
-    let mut keys: Vec<_> = cells.keys().copied().collect();
+    let mut keys: Vec<_> = cells.keys().chain(scells.keys()).copied().collect();
     keys.sort();
+    keys.dedup();
     for k in keys {
-        let mut v = cells.remove(&k).unwrap();
+        let mut v = cells.remove(&k).unwrap_or_default();
         v.sort_unstable();
         let name = format!("{}:{}", OPS[k.0 as usize], CLASSES[k.1 as usize]);
-        ops.insert(
-            name,
-            serde_json::json!({
-                "n": v.len(),
-                "err": errs.get(&k).copied().unwrap_or(0),
-                "p50_ms": pct(&v, 0.50),
-                "p90_ms": pct(&v, 0.90),
-                "p99_ms": pct(&v, 0.99),
-                "max_ms": (v.last().copied().unwrap_or(0) / 1000) as u64,
-            }),
-        );
+        let mut cell = serde_json::json!({
+            "n": v.len(),
+            "err": errs.get(&k).copied().unwrap_or(0),
+            "p50_ms": pct(&v, 0.50),
+            "p90_ms": pct(&v, 0.90),
+            "p99_ms": pct(&v, 0.99),
+            "max_ms": (v.last().copied().unwrap_or(0) / 1000) as u64,
+        });
+        if let Some(mut sv) = scells.remove(&k) {
+            sv.sort_unstable();
+            let c = cell.as_object_mut().unwrap();
+            c.insert("sn".into(), serde_json::json!(sv.len()));
+            c.insert("sp50_ms".into(), serde_json::json!(pct(&sv, 0.50)));
+            c.insert("sp99_ms".into(), serde_json::json!(pct(&sv, 0.99)));
+        }
+        ops.insert(name, cell);
     }
+    let served_from: std::collections::BTreeMap<String, u64> = http_stats()
+        .served_from
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     let slow: Vec<_> = {
         let sl = s.slow.lock().unwrap();
         let now = now_ms();
@@ -635,9 +663,144 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "timer_thread": drift_stats(&drift().thread, cutoff),
         "timer_tokio": drift_stats(&drift().tokio, cutoff),
         "steal_pct": steal_pct,
+        "served_from": served_from,
         "ops": ops,
         "slow": slow,
     })
+}
+
+// ---- Server-Timing sniffer -------------------------------------------------
+// The rings above time the whole request from our side; Tigris also reports
+// its *internal* processing time per response (`Server-Timing: total;dur=N`)
+// plus which region served it (`x-tigris-served-from`). object_store never
+// surfaces response headers, so we interpose at its HttpService seam: a
+// connector wrapping the stock reqwest one. wall − server ≈ network path
+// (TLS, egress NAT, PoP routing) and finally splits provider-internal tail
+// from path tail in production, per op class.
+
+struct HttpEv {
+    ts_ms: u64,
+    op: u8,
+    class: u8,
+    server_us: u32,
+}
+
+struct HttpStats {
+    ring: Mutex<VecDeque<HttpEv>>,
+    served_from: Mutex<std::collections::HashMap<String, u64>>,
+}
+
+fn http_stats() -> &'static HttpStats {
+    static H: OnceLock<HttpStats> = OnceLock::new();
+    H.get_or_init(|| HttpStats {
+        ring: Mutex::new(VecDeque::with_capacity(RING_CAP)),
+        served_from: Mutex::new(std::collections::HashMap::new()),
+    })
+}
+
+/// `Server-Timing: total;dur=12.4` (possibly one metric among several) → µs.
+fn parse_server_timing_us(v: &str) -> Option<u32> {
+    for metric in v.split(',') {
+        let mut segs = metric.trim().split(';');
+        if segs.next().map(str::trim) != Some("total") {
+            continue;
+        }
+        for seg in segs {
+            if let Some(ms) = seg.trim().strip_prefix("dur=") {
+                if let Ok(ms) = ms.trim().parse::<f64>() {
+                    return Some((ms * 1000.0).clamp(0.0, u32::MAX as f64) as u32);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Map an HTTP request onto the OPS index. Class granularity is what
+/// matters (put:wal vs get:sst); op mapping is best-effort.
+fn http_op(method: &str, query: Option<&str>) -> u8 {
+    let q = query.unwrap_or("");
+    match method {
+        "PUT" if q.contains("partNumber") => 1,
+        "PUT" => 0,
+        "POST" => 1, // multipart create/complete
+        "GET" if q.contains("list-type") => 5,
+        "GET" => 2,
+        "HEAD" => 3,
+        "DELETE" => 4,
+        _ => 2,
+    }
+}
+
+#[derive(Debug)]
+struct SniffService {
+    inner: object_store::client::HttpClient,
+}
+
+#[async_trait]
+impl object_store::client::HttpService for SniffService {
+    async fn call(
+        &self,
+        req: object_store::client::HttpRequest,
+    ) -> std::result::Result<object_store::client::HttpResponse, object_store::client::HttpError>
+    {
+        let op = http_op(req.method().as_str(), req.uri().query());
+        // LIST carries its path in the query (?prefix=…), not the URL path.
+        let class = if op == 5 {
+            req.uri()
+                .query()
+                .and_then(|q| {
+                    q.split('&')
+                        .find_map(|kv| kv.strip_prefix("prefix="))
+                        .map(|p| classify(&p.replace("%2F", "/")))
+                })
+                .unwrap_or(4)
+        } else {
+            classify(req.uri().path())
+        };
+        let resp = self.inner.execute(req).await?;
+        let h = http_stats();
+        if let Some(us) = resp
+            .headers()
+            .get("server-timing")
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_server_timing_us)
+        {
+            let mut ring = h.ring.lock().unwrap();
+            if ring.len() >= RING_CAP {
+                ring.pop_front();
+            }
+            ring.push_back(HttpEv {
+                ts_ms: now_ms(),
+                op,
+                class,
+                server_us: us,
+            });
+        }
+        if let Some(region) = resp
+            .headers()
+            .get("x-tigris-served-from")
+            .and_then(|v| v.to_str().ok())
+        {
+            *h.served_from
+                .lock()
+                .unwrap()
+                .entry(region.to_string())
+                .or_default() += 1;
+        }
+        Ok(resp)
+    }
+}
+
+/// Install with `AmazonS3Builder::with_http_connector(SniffConnector)`.
+#[derive(Debug, Default)]
+pub struct SniffConnector;
+
+impl object_store::client::HttpConnector for SniffConnector {
+    fn connect(&self, options: &object_store::ClientOptions) -> Result<object_store::client::HttpClient> {
+        let inner = object_store::client::ReqwestConnector::default().connect(options)?;
+        Ok(object_store::client::HttpClient::new(SniffService { inner }))
+    }
 }
 
 /// Cheap scalar summary for heartbeats: WAL-PUT p50/p99 over the trailing
@@ -661,4 +824,30 @@ pub fn heartbeat_summary() -> (u64, u64, i64, i64) {
         s.inflight.load(Ordering::Relaxed),
         s.inflight_peak.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_timing_parse() {
+        assert_eq!(parse_server_timing_us("total;dur=12.4"), Some(12_400));
+        assert_eq!(
+            parse_server_timing_us("cache;desc=hit, total;dur=3"),
+            Some(3_000)
+        );
+        assert_eq!(parse_server_timing_us("total; dur=0.5"), Some(500));
+        assert_eq!(parse_server_timing_us("edge;dur=9"), None);
+        assert_eq!(parse_server_timing_us("garbage"), None);
+    }
+
+    #[test]
+    fn http_op_mapping() {
+        assert_eq!(http_op("PUT", None), 0);
+        assert_eq!(http_op("PUT", Some("partNumber=2&uploadId=x")), 1);
+        assert_eq!(http_op("GET", Some("list-type=2&prefix=a")), 5);
+        assert_eq!(http_op("GET", None), 2);
+        assert_eq!(http_op("DELETE", None), 4);
+    }
 }
