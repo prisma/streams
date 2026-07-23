@@ -174,7 +174,12 @@ fn history_settings() -> Settings {
         // fires (same finding as the shard tier, 2026-07-14; reproduced as
         // an OOM loop at 10 MB/s absorb on Compute, 2026-07-23). Bound it.
         max_unflushed_bytes: 32 * 1024 * 1024,
-        l0_sst_size_bytes: 16 * 1024 * 1024,
+        // 4 MB (was 16): each history SST build runs zstd + AES over the
+        // whole SST inside SlateDB's flush task ON OUR RUNTIME — 16 MB
+        // builds blocked the event loop in 100s-of-ms bursts (run 12
+        // timer evidence). Smaller SSTs = shorter bursts; the embedded
+        // compactor consolidates them.
+        l0_sst_size_bytes: 4 * 1024 * 1024,
         l0_max_ssts: if compactor_off { 1_000_000 } else { 64 },
         l0_max_ssts_per_key: if compactor_off { 1_000_000 } else { 64 },
         compactor_options: if compactor_off {
@@ -499,35 +504,61 @@ impl Absorber {
                 break;
             }
             pass_bytes += chunk.frames.iter().map(|f| f.len() as u64).sum::<u64>();
-            for raw in &chunk.frames {
-                let frame = decode_frame(raw)
-                    .ok_or_else(|| anyhow::anyhow!("undecodable frame during absorb"))?;
-                let sk = *subkeys
-                    .entry((frame.header.routing_key.clone(), frame.header.key_version))
-                    .or_insert_with(|| {
-                        derive_subkey(
-                            &key,
-                            &epoch,
-                            &frame.header.routing_key,
-                            frame.header.key_version,
-                        )
-                    });
-                let pt = decrypt_frame(&sk, hash, &frame, raw)
-                    .map_err(|e| anyhow::anyhow!("absorb decrypt: {e}"))?;
-                pt_bytes += pt.len() as u64;
-                items.push((
-                    frame.header.offset,
-                    HistRecord {
-                        ts: frame.header.ts_ms,
-                        key_version: frame.header.key_version,
-                        routing_key: frame.header.routing_key,
-                        payload: Bytes::from(pt),
-                    },
-                ));
+            let last_offset = chunk.last_offset;
+            // Decode+decrypt+decompress is CPU-bound (v3 frames expand up
+            // to ~30x). Run 12 measured the cost of doing it on the async
+            // runtime: tokio timer p99 848 ms vs 3.6 ms on a raw thread —
+            // the whole ack path starved behind these loops. The blocking
+            // pool gets OS preemption instead of cooperative starvation.
+            let key_b = key.clone();
+            let epoch_b = epoch;
+            let hash_b = *hash;
+            let frames = chunk.frames;
+            let subkeys_in = std::mem::take(&mut subkeys);
+            type SubkeyMap = HashMap<(String, u32), [u8; 32]>;
+            let joined = tokio::task::spawn_blocking(
+                move || -> Result<(Vec<(u64, HistRecord)>, SubkeyMap), String> {
+                    let mut subkeys = subkeys_in;
+                    let mut out = Vec::with_capacity(frames.len());
+                    for raw in &frames {
+                        let frame = decode_frame(raw)
+                            .ok_or_else(|| "undecodable frame during absorb".to_string())?;
+                        let sk = *subkeys
+                            .entry((frame.header.routing_key.clone(), frame.header.key_version))
+                            .or_insert_with(|| {
+                                derive_subkey(
+                                    &key_b,
+                                    &epoch_b,
+                                    &frame.header.routing_key,
+                                    frame.header.key_version,
+                                )
+                            });
+                        let pt = decrypt_frame(&sk, &hash_b, &frame, raw)
+                            .map_err(|e| format!("absorb decrypt: {e}"))?;
+                        out.push((
+                            frame.header.offset,
+                            HistRecord {
+                                ts: frame.header.ts_ms,
+                                key_version: frame.header.key_version,
+                                routing_key: frame.header.routing_key,
+                                payload: Bytes::from(pt),
+                            },
+                        ));
+                    }
+                    Ok((out, subkeys))
+                },
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("absorb decode join: {e}"))?;
+            let (decoded, subkeys_back) = joined.map_err(|e| anyhow::anyhow!(e))?;
+            subkeys = subkeys_back;
+            for (offset, rec) in decoded {
+                pt_bytes += rec.payload.len() as u64;
+                items.push((offset, rec));
             }
             // A byte-truncated window breaks offset contiguity past its
             // last frame: stop here; the boundary advances to what we have.
-            let complete = chunk.last_offset.map(|l| l + 1 >= win_end).unwrap_or(false);
+            let complete = last_offset.map(|l| l + 1 >= win_end).unwrap_or(false);
             if !complete || pass_bytes >= self.cfg.pass_bytes || pt_bytes >= self.cfg.pass_bytes {
                 break;
             }
