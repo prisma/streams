@@ -11,6 +11,7 @@ mod shard;
 mod store_timing;
 mod touch;
 mod touch_keys;
+mod usage;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -357,6 +358,46 @@ impl Args {
     }
 }
 
+/// Dedicated runtime for every SlateDB instance (shard logs, history DBs,
+/// readers). SlateDB spawns its flusher / compactor / batch-writer on the
+/// runtime that drives `build()`, and those tasks run CPU-bound SST builds
+/// (block encode + zstd + AES block transform) inline in their polls — on
+/// the request runtime a single 4-16 MB build holds a worker for 100s of
+/// ms and can stall the runtime's timer/IO driver outright (sinmax run 12:
+/// tokio timer p99 848 ms vs 3.6 ms for a raw OS thread on the same box).
+/// On their own OS threads the kernel preempts them at timeslice
+/// granularity instead, so the ack path pays milliseconds, not bursts.
+pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        let threads: usize = std::env::var("SLATEDB_RT_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(threads)
+            .thread_name("slatedb-rt")
+            .enable_all()
+            .build()
+            .expect("build slatedb runtime")
+    })
+}
+
+/// Run `fut` to completion on the SlateDB runtime. Used for every
+/// `Db::builder(...).build()` / `DbReader` open so all slatedb-internal
+/// tasks land on `slatedb_runtime()`'s threads.
+pub async fn on_slatedb_rt<F>(fut: F) -> F::Output
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    slatedb_runtime().spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.await.expect("slatedb-rt task dropped")
+}
+
 fn shard_settings(args: &Args) -> Settings {
     Settings {
         // With the group-commit pump on, SlateDB's internal timer is only
@@ -512,12 +553,18 @@ async fn async_main() -> anyhow::Result<()> {
                         format!("shards/{prefix}")
                     };
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
-                    let db = Db::builder(path.as_str(), shard_store)
-                        .with_settings(settings)
-                        .with_db_cache(shared_cache)
-                        .build()
+                    let db = {
+                        let p2 = path.clone();
+                        crate::on_slatedb_rt(async move {
+                            Db::builder(p2.as_str(), shard_store)
+                                .with_settings(settings)
+                                .with_db_cache(shared_cache)
+                                .build()
+                                .await
+                        })
                         .await
-                        .with_context(|| format!("open shard log {path}"))?;
+                        .with_context(|| format!("open shard log {path}"))?
+                    };
                     let (absorb_tx, absorb_rx) = absorber_channel();
                     let on_close = {
                         let touch = touch.clone();
@@ -649,6 +696,7 @@ async fn async_main() -> anyhow::Result<()> {
             args.scale_rps_capacity
         );
     }
+    http::spawn_billing(state.clone());
     let app = http::router(state);
 
     crate::store_timing::spawn_sentinels();

@@ -106,6 +106,30 @@ with an empty pool rather than dead sockets.
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
 | `ABSORB_PASS_BYTES` | 256 MiB | plaintext held in memory per pass — keep well under instance RAM; pilot used 32 MiB on 1-GB boxes |
 
+### 3.2b Service limits, usage telemetry, billing
+
+| env | default | notes |
+|---|---|---|
+| `LIMIT_BYTES_PER_SEC` | 5000000 (5 MB/s) | per-stream-shard ingest byte limit (token bucket; 0 disables) |
+| `LIMIT_REQS_PER_SEC` | 1000 | per-shard append-request limit |
+| `LIMIT_RECS_PER_SEC` | 5000 | per-shard record limit |
+| `LIMIT_BURST_SECS` | 2 | bucket capacity = rate x this |
+| `BILLING_STREAM_KEY` | — | base64url 32-byte key; unset = billing emitter disabled (warned) |
+| `BILLING_STREAM` | `_billing` | internal stream receiving usage records |
+| `BILLING_INTERVAL_SECS` | 60 | emission cadence |
+| `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
+
+Rejections are 429s with error codes `limit_bytes_per_sec` /
+`limit_requests_per_sec` / `limit_records_per_sec`, a human message naming
+the limit, and a `Retry-After` header. `/v1/debug/usage` (bearer) exposes
+per-stream cumulative requests, records, bytes_in, bytes_out,
+plaintext_bytes, frame_bytes, and the derived compression ratio. The
+billing emitter appends a JSON array per interval to the billing stream —
+one record per active stream with DELTA requests/records/bytes_in/bytes_out
+plus cumulative plaintext/frame byte totals (stored-volume-pre-compression
+and achieved compression rate are derivable; join hash->name via the
+registry's by-name objects). The billing stream's own usage is excluded.
+
 ### 3.3 Memory & runtime (1-GB instance discipline)
 
 | env | default | guidance |

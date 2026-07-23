@@ -160,6 +160,10 @@ pub struct AppendReq {
     pub producer: Option<ProducerReq>,
     pub deferred_error: Option<DeferredErr>,
     pub touch: Option<TouchFeed>,
+    /// Usage counters for the STREAM identity (http-side hash), so
+    /// committer-side byte accounting lands on the same row as the
+    /// request/record counters.
+    pub usage: std::sync::Arc<crate::usage::Counters>,
     pub resp: oneshot::Sender<Result<AppendAck, AppendErr>>,
 }
 
@@ -815,6 +819,8 @@ impl ShardEngine {
                     // One key schedule per request, reused across the batch
                     // (was: cipher init + routing-key clone PER RECORD).
                     let cipher = crate::crypto::FrameCipher::new(&req.subkey);
+                    let usage = req.usage.clone();
+                    let (mut pt_sum, mut frame_sum) = (0u64, 0u64);
                     for (i, payload) in req.entries.iter().enumerate() {
                         let offset = start + i as u64;
                         let frame = cipher.encrypt(
@@ -825,10 +831,18 @@ impl ShardEngine {
                             &req.routing_key,
                             payload,
                         );
+                        pt_sum += payload.len() as u64;
+                        frame_sum += frame.len() as u64;
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
                     }
+                    usage
+                        .plaintext_bytes
+                        .fetch_add(pt_sum, std::sync::atomic::Ordering::Relaxed);
+                    usage
+                        .frame_bytes
+                        .fetch_add(frame_sum, std::sync::atomic::Ordering::Relaxed);
                     records += req.entries.len() as u64;
                     local.fields.next = start + req.entries.len() as u64;
                     local.fields.ts = ts;

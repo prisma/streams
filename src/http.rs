@@ -411,6 +411,113 @@ async fn debug_store(
     axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
 }
 
+
+/// Per-stream usage counters + the active limits. Auth: same bearer as
+/// the other debug endpoints (enforced by the middleware layer).
+async fn debug_usage() -> Response {
+    let l = crate::usage::limits();
+    let streams: Vec<serde_json::Value> = crate::usage::snapshot()
+        .into_iter()
+        .map(|(h, req, rec, bi, bo, pt, fr)| {
+            serde_json::json!({
+                "stream": crate::crypto::hex(&h),
+                "requests": req,
+                "records": rec,
+                "bytes_in": bi,
+                "bytes_out": bo,
+                "plaintext_bytes": pt,
+                "frame_bytes": fr,
+                "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "limits": {
+            "bytes_per_sec": l.bytes_per_sec,
+            "requests_per_sec": l.reqs_per_sec,
+            "records_per_sec": l.recs_per_sec,
+            "burst_secs": l.burst_secs,
+        },
+        "streams": streams,
+    }))
+    .into_response()
+}
+
+/// Billing emitter: every BILLING_INTERVAL_SECS, append one JSON-array
+/// record batch to the internal billing stream (BILLING_STREAM, default
+/// "_billing") — one record per active stream with the DELTAS since the
+/// last emission: requests, records, bytes_in, bytes_out, plus cumulative
+/// plaintext_bytes/frame_bytes (stored volume pre-compression and the
+/// achieved compression rate are derivable from these). Disabled with a
+/// warning when BILLING_STREAM_KEY is unset. The billing stream's own
+/// usage is excluded to avoid self-feedback.
+pub fn spawn_billing(state: Arc<AppState>) {
+    let Ok(key) = std::env::var("BILLING_STREAM_KEY") else {
+        tracing::warn!("BILLING_STREAM_KEY unset; billing emitter disabled");
+        return;
+    };
+    let name = std::env::var("BILLING_STREAM").unwrap_or_else(|_| "_billing".into());
+    let interval = std::env::var("BILLING_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60u64);
+    tokio::spawn(async move {
+        let self_hash = crate::crypto::stream_hash(&name);
+        let mut hdrs = HeaderMap::new();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
+            hdrs.insert("stream-encryption-key", v);
+        }
+        hdrs.insert(
+            "content-type",
+            axum::http::HeaderValue::from_static("application/json"),
+        );
+        // Idempotent create (409/conflict is fine on an existing stream).
+        let _ = create_stream(state.clone(), name.clone(), hdrs.clone(), Bytes::new()).await;
+        let mut prev: std::collections::HashMap<[u8; 16], (u64, u64, u64, u64)> =
+            std::collections::HashMap::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            let now_ms = crate::shard::now_ms();
+            let mut recs: Vec<serde_json::Value> = Vec::new();
+            for (h, req, rec, bi, bo, pt, fr) in crate::usage::snapshot() {
+                if h == self_hash {
+                    continue;
+                }
+                let p = prev.entry(h).or_insert((0, 0, 0, 0));
+                let d = (req - p.0, rec - p.1, bi - p.2, bo - p.3);
+                *p = (req, rec, bi, bo);
+                if d == (0, 0, 0, 0) {
+                    continue;
+                }
+                recs.push(serde_json::json!({
+                    "ts": now_ms,
+                    "stream": crate::crypto::hex(&h),
+                    "requests": d.0,
+                    "records": d.1,
+                    "bytes_in": d.2,
+                    "bytes_out": d.3,
+                    "plaintext_bytes_total": pt,
+                    "frame_bytes_total": fr,
+                }));
+            }
+            if recs.is_empty() {
+                continue;
+            }
+            let body = serde_json::to_vec(&recs).unwrap_or_default();
+            let resp = append(
+                state.clone(),
+                name.clone(),
+                hdrs.clone(),
+                Body::from(body),
+            )
+            .await;
+            if !resp.status().is_success() {
+                tracing::warn!(status = %resp.status(), "billing emit failed");
+            }
+        }
+    });
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -418,6 +525,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
+        .route("/v1/debug/usage", get(debug_usage))
         .route("/v1/debug/sleep", get(debug_sleep))
         // Operator dashboard: UNSECURED by explicit product decision (on-call
         // must see the cell without credentials). The payload is therefore
@@ -1180,7 +1288,8 @@ async fn create_stream(
             producer: None,
             deferred_error: None,
             touch: None,
-            resp: tx,
+            usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
+        resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
             return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "queue full");
@@ -1532,6 +1641,27 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         }
     }
 
+    // Per-shard service limits (usage.rs): token buckets over request rate,
+    // record rate, and ingest bytes. Reject-whole with the limit named.
+    if !close_only && deferred.is_none() {
+        let h = crate::crypto::stream_hash(&desc.name);
+        if let Err(hit) = crate::usage::admit_append(&h, body.len() as u64, entries.len() as u64) {
+            let mut r = err_resp(StatusCode::TOO_MANY_REQUESTS, hit.code(), &hit.message());
+            if let Ok(v) =
+                axum::http::HeaderValue::from_str(&format!("{}", hit.retry_ms().div_ceil(1000).max(1)))
+            {
+                r.headers_mut().insert("retry-after", v);
+            }
+            return r;
+        }
+        let c = crate::usage::counters(&h);
+        c.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        c.records
+            .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        c.bytes_in
+            .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+
     let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
     let seg_ord: Option<u32> = if desc.is_per_key() {
         Some(desc.segment_for(&routing_key))
@@ -1580,6 +1710,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         enqueued_at: std::time::Instant::now(),
         hash,
         entries,
+        usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
         routing_key,
         key_version: kv,
         subkey,
@@ -2164,6 +2295,9 @@ async fn read(
             .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
             .header(header::CACHE_CONTROL, "no-store");
     }
+    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
+        .bytes_out
+        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
     r.body(Body::from(body)).unwrap()
 }
 
@@ -2217,6 +2351,7 @@ async fn sse_response(
     start: StartPos,
     params: ReadParams,
 ) -> Response {
+    let sse_hash = crate::crypto::stream_hash(&desc.name);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
     let binary = {
         let mt = crate::registry::media_type(&desc.content_type);
@@ -2299,7 +2434,18 @@ async fn sse_response(
         }
     });
 
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let sse_usage = crate::usage::counters(&sse_hash);
+    let stream = futures_util::StreamExt::map(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        move |item| {
+            if let Ok(b) = &item {
+                sse_usage
+                    .bytes_out
+                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            item
+        },
+    );
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -2656,6 +2802,9 @@ async fn read_per_key(
             r = r.header("Stream-Closed", "true");
         }
     }
+    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
+        .bytes_out
+        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
     r.body(Body::from(body)).unwrap()
 }
 
@@ -2714,6 +2863,9 @@ fn per_key_body(
             .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
             .header(header::CACHE_CONTROL, "no-store");
     }
+    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
+        .bytes_out
+        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
     r.body(Body::from(body)).unwrap()
 }
 

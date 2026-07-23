@@ -579,13 +579,19 @@ impl Absorber {
                 *last_used = Instant::now();
                 db.clone()
             } else {
+                let path = history_db_path(hash);
+                let store = self.data_store.clone();
+                let k = key.clone();
                 let db = Arc::new(
-                    Db::builder(history_db_path(hash).as_str(), self.data_store.clone())
-                        .with_settings(history_settings())
-                        .with_db_cache(history_cache())
-                        .with_block_transformer(Arc::new(AesBlockTransformer::new(&key)))
-                        .build()
-                        .await?,
+                    crate::on_slatedb_rt(async move {
+                        Db::builder(path.as_str(), store)
+                            .with_settings(history_settings())
+                            .with_db_cache(history_cache())
+                            .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
+                            .build()
+                            .await
+                    })
+                    .await?,
                 );
                 cache.insert(*hash, (db.clone(), Instant::now()));
                 db
@@ -647,10 +653,18 @@ pub async fn read_history(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> anyhow::Result<HistoryReadResult> {
-    let reader = DbReader::builder(history_db_path(hash).as_str(), data_store.clone())
-        .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
-        .build()
-        .await?;
+    let reader = {
+        let path = history_db_path(hash);
+        let store = data_store.clone();
+        let k = key.clone();
+        crate::on_slatedb_rt(async move {
+            DbReader::builder(path.as_str(), store)
+                .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
+                .build()
+                .await
+        })
+        .await?
+    };
     let mut out = HistoryReadResult {
         records: Vec::new(),
         last_offset: None,
@@ -893,6 +907,7 @@ mod tests {
             for i in 0..4096u64 {
                 let (tx, _rx) = tokio::sync::oneshot::channel();
                 let req = crate::shard::AppendReq {
+                    usage: Default::default(),
                     hash: [9u8; 16],
                     enqueued_at: Instant::now(),
                     entries: vec![bytes::Bytes::from(vec![b'x'; 1024])],
@@ -958,6 +973,7 @@ mod tests {
         for i in 0..8u64 {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             let req = crate::shard::AppendReq {
+                usage: Default::default(),
                 hash: [7u8; 16],
                 enqueued_at: Instant::now(),
                 entries: vec![bytes::Bytes::from(vec![b'y'; 512])],
