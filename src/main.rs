@@ -117,6 +117,17 @@ struct Args {
     /// per shard for GC to list and delete while sharing the same object
     /// store path as the ack-critical WAL PUTs. Tighter reaping keeps the
     /// WAL prefix small.
+    /// Compactor scheduling poll (ms). Upstream default is 5000 — at
+    /// double-digit MB/s a 5 s scheduling gap lets L0 pile toward the
+    /// dispatch gate; 500-1000 keeps the drain continuous.
+    #[arg(long, env = "COMPACTOR_POLL_MS", default_value_t = 5000)]
+    compactor_poll_ms: u64,
+
+    /// Concurrent compactions (upstream default 4). Merges are object-I/O
+    /// bound on Tigris, so extra concurrency overlaps GET/PUT latency.
+    #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 4)]
+    compactor_max_concurrent: usize,
+
     #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
     wal_gc_interval_secs: u64,
 
@@ -369,6 +380,12 @@ fn shard_settings(args: &Args) -> Settings {
         // engine's periodic explicit memtable->L0 flush (ShardEngine ticker).
         // D23: fencing correctness comes from CAS write failures, not polls.
         manifest_poll_interval: Duration::from_millis(args.manifest_poll_ms),
+        compactor_options: {
+            let mut co = slatedb::config::CompactorOptions::default();
+            co.poll_interval = Duration::from_millis(args.compactor_poll_ms);
+            co.max_concurrent_compactions = args.compactor_max_concurrent;
+            Some(co)
+        },
         garbage_collector_options: {
             let mut gc = Settings::default()
                 .garbage_collector_options

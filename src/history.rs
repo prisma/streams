@@ -169,6 +169,11 @@ fn history_settings() -> Settings {
         flush_interval: Some(Duration::from_millis(100)),
         manifest_poll_interval: Duration::from_secs(300),
         compression_codec: Some(CompressionCodec::Zstd),
+        // Upstream default is 512 MB — on a 1 GB instance the absorber sink
+        // buffers toward the kernel kill line long before backpressure
+        // fires (same finding as the shard tier, 2026-07-14; reproduced as
+        // an OOM loop at 10 MB/s absorb on Compute, 2026-07-23). Bound it.
+        max_unflushed_bytes: 32 * 1024 * 1024,
         l0_sst_size_bytes: 16 * 1024 * 1024,
         l0_max_ssts: if compactor_off { 1_000_000 } else { 64 },
         l0_max_ssts_per_key: if compactor_off { 1_000_000 } else { 64 },

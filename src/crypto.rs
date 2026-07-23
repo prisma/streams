@@ -9,8 +9,16 @@
 //! chunk responses are byte-immutable regardless of serving tier.
 //!
 //! Wire/storage frame (shard log value == wire bytes):
-//!   [ver u8 = 2][offset u64 BE][ts_ms i64 BE][key_version u32 BE]
+//!   [ver u8][offset u64 BE][ts_ms i64 BE][key_version u32 BE]
 //!   [rk_len u16 BE][routing key][ct_len u32 BE][ciphertext (payload+16B tag)]
+//!
+//! ver = 2: ciphertext decrypts to the record payload as-is.
+//! ver = 3: payload was zstd-compressed BEFORE encryption (ciphertext never
+//! compresses, so this is the only place compression can live — it shrinks
+//! every downstream copy: WAL, L0, compaction, absorber reads, history).
+//! The version byte sits in the AAD-bound header, so it cannot be flipped
+//! without failing the tag. Writers emit v3 only when FRAME_COMPRESS is on
+//! AND compression actually wins; readers accept both unconditionally.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -18,8 +26,26 @@ use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 
 pub const FRAME_VER: u8 = 2;
+/// Frame whose plaintext is zstd-compressed (compress-then-encrypt).
+pub const FRAME_VER_Z: u8 = 3;
 pub const KEY_LEN: usize = 32;
 pub const EPOCH_LEN: usize = 16;
+
+/// Payloads below this size skip the compression attempt (zstd overhead
+/// dominates, and the attempt itself costs CPU in the serial committer).
+const COMPRESS_MIN_BYTES: usize = 256;
+
+/// FRAME_COMPRESS=1 turns on compress-then-encrypt for newly written
+/// frames. Read-side support is unconditional, so this can be flipped per
+/// deployment without migration.
+pub fn frame_compress_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("FRAME_COMPRESS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
 
 #[derive(Clone)]
 pub struct StreamKey(pub [u8; KEY_LEN]);
@@ -206,9 +232,24 @@ impl FrameCipher {
         routing_key: &str,
         plaintext: &[u8],
     ) -> Vec<u8> {
+        // Compress-then-encrypt: attempted only when enabled and the
+        // payload is big enough; kept only when it actually shrinks.
+        // zstd at a fixed level is deterministic, preserving the
+        // byte-identical re-encryption property within a deployment.
+        let mut ver = FRAME_VER;
+        let mut compressed: Option<Vec<u8>> = None;
+        if frame_compress_enabled() && plaintext.len() >= COMPRESS_MIN_BYTES {
+            if let Ok(z) = zstd::bulk::compress(plaintext, 1) {
+                if z.len() < plaintext.len() {
+                    ver = FRAME_VER_Z;
+                    compressed = Some(z);
+                }
+            }
+        }
+        let msg: &[u8] = compressed.as_deref().unwrap_or(plaintext);
         let rk = routing_key.as_bytes();
         let mut header = Vec::with_capacity(23 + rk.len());
-        header.push(FRAME_VER);
+        header.push(ver);
         header.extend_from_slice(&offset.to_be_bytes());
         header.extend_from_slice(&ts_ms.to_be_bytes());
         header.extend_from_slice(&key_version.to_be_bytes());
@@ -220,7 +261,7 @@ impl FrameCipher {
             .encrypt(
                 Nonce::from_slice(&nonce),
                 Payload {
-                    msg: plaintext,
+                    msg,
                     aad: &aad(stream_hash, &header),
                 },
             )
@@ -237,11 +278,14 @@ pub struct DecodedFrame<'a> {
     pub header: FrameHeader,
     pub header_len: usize,
     pub ciphertext: &'a [u8],
+    /// Frame version byte (FRAME_VER or FRAME_VER_Z); decides whether the
+    /// decrypted payload needs zstd decompression.
+    pub ver: u8,
 }
 
 /// Parse a frame without decrypting (routing key and offsets are metadata).
 pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
-    if buf.len() < 27 || buf[0] != FRAME_VER {
+    if buf.len() < 27 || !(buf[0] == FRAME_VER || buf[0] == FRAME_VER_Z) {
         return None;
     }
     let offset = u64::from_be_bytes(buf[1..9].try_into().ok()?);
@@ -261,6 +305,7 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
         },
         header_len,
         ciphertext,
+        ver: buf[0],
     })
 }
 
@@ -272,7 +317,7 @@ pub fn decrypt_frame(
 ) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new(subkey.into());
     let nonce = nonce_for_offset(frame.header.offset);
-    cipher
+    let pt = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
             Payload {
@@ -280,7 +325,14 @@ pub fn decrypt_frame(
                 aad: &aad(stream_hash, &raw[..frame.header_len]),
             },
         )
-        .map_err(|_| "decryption failed (wrong key or tampered record)".to_string())
+        .map_err(|_| "decryption failed (wrong key or tampered record)".to_string())?;
+    if frame.ver == FRAME_VER_Z {
+        // Version byte is AAD-bound, so reaching here means the frame was
+        // genuinely written compressed.
+        return zstd::stream::decode_all(&pt[..])
+            .map_err(|e| format!("frame decompression failed: {e}"));
+    }
+    Ok(pt)
 }
 
 #[cfg(test)]
@@ -325,5 +377,89 @@ mod tests {
         let epoch = [3u8; 16];
         assert_eq!(key().fingerprint(&epoch), key().fingerprint(&epoch));
         assert_ne!(key().fingerprint(&epoch), key().fingerprint(&[4u8; 16]));
+    }
+}
+
+#[cfg(test)]
+mod compress_tests {
+    use super::*;
+
+    fn sub() -> [u8; KEY_LEN] {
+        [9u8; KEY_LEN]
+    }
+
+    fn hdr(offset: u64) -> FrameHeader {
+        FrameHeader {
+            offset,
+            ts_ms: 1_753_000_000_000,
+            key_version: 0,
+            routing_key: "rk".into(),
+        }
+    }
+
+    #[test]
+    fn v3_round_trip_compressible() {
+        // Force-on for the test regardless of env.
+        let payload = vec![b'x'; 4096];
+        let cipher = FrameCipher::new(&sub());
+        let hash = stream_hash("s");
+        // encrypt() consults the env flag; emulate by calling the parts:
+        // compress + encrypt via a v3-style frame produced with the flag on.
+        // Instead of mutating process env (racy across tests), assert the
+        // decode/decrypt path handles a hand-built v3 frame.
+        let z = zstd::bulk::compress(&payload, 1).unwrap();
+        assert!(z.len() < payload.len());
+        let h = hdr(7);
+        let rk = h.routing_key.as_bytes();
+        let mut header = Vec::new();
+        header.push(FRAME_VER_Z);
+        header.extend_from_slice(&h.offset.to_be_bytes());
+        header.extend_from_slice(&h.ts_ms.to_be_bytes());
+        header.extend_from_slice(&h.key_version.to_be_bytes());
+        header.extend_from_slice(&(rk.len() as u16).to_be_bytes());
+        header.extend_from_slice(rk);
+        let nonce = nonce_for_offset(h.offset);
+        let ct = cipher
+            .cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &z[..],
+                    aad: &aad(&hash, &header),
+                },
+            )
+            .unwrap();
+        let mut frame = header;
+        frame.extend_from_slice(&(ct.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&ct);
+
+        let dec = decode_frame(&frame).expect("v3 decodes");
+        assert_eq!(dec.ver, FRAME_VER_Z);
+        let pt = decrypt_frame(&sub(), &hash, &dec, &frame).expect("decrypts");
+        assert_eq!(pt, payload);
+    }
+
+    #[test]
+    fn v2_still_decodes_with_ver_field() {
+        let cipher = FrameCipher::new(&sub());
+        let hash = stream_hash("s");
+        let h = hdr(9);
+        let frame = cipher.encrypt(&hash, h.offset, h.ts_ms, h.key_version, &h.routing_key, b"tiny");
+        let dec = decode_frame(&frame).expect("v2 decodes");
+        assert_eq!(dec.ver, FRAME_VER);
+        assert_eq!(decrypt_frame(&sub(), &hash, &dec, &frame).unwrap(), b"tiny");
+    }
+
+    #[test]
+    fn unknown_version_rejected() {
+        let cipher = FrameCipher::new(&sub());
+        let hash = stream_hash("s");
+        let mut frame = cipher.encrypt(&hash, 1, 0, 0, "rk", b"data");
+        frame[0] = 9;
+        assert!(decode_frame(&frame).is_none());
+        // Flipping v2 -> v3 must fail the AAD tag, not decompress garbage.
+        frame[0] = FRAME_VER_Z;
+        let dec = decode_frame(&frame).unwrap();
+        assert!(decrypt_frame(&sub(), &hash, &dec, &frame).is_err());
     }
 }
