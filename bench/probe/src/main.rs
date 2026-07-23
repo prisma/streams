@@ -460,6 +460,103 @@ fn tls_probe_sync(host: &str) -> serde_json::Value {
     serde_json::json!({"host": host, "dns_ms": round1(dns_ms), "ips": per_ip})
 }
 
+// ---- v8: DNS identity (GeoDNS debugging with the Tigris team) ----------
+// Hand-rolled DNS TXT query (UDP, no new deps): o-o.myaddr.l.google.com
+// echoes the SOURCE IP Google's nameserver sees. Sent directly to
+// ns1.google.com it reveals this VM's public egress; sent to the local
+// resolv.conf nameserver it reveals the RECURSIVE RESOLVER's public IP —
+// the address GeoDNS databases actually geolocate.
+
+fn dns_txt_query(server: std::net::SocketAddr, name: &str) -> Result<Vec<String>, String> {
+    use std::net::UdpSocket;
+    let mut q = Vec::with_capacity(64);
+    q.extend_from_slice(&[0x13, 0x37, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in name.trim_end_matches('.').split('.') {
+        q.push(label.len() as u8);
+        q.extend_from_slice(label.as_bytes());
+    }
+    q.push(0);
+    q.extend_from_slice(&[0, 16, 0, 1]); // QTYPE TXT, QCLASS IN
+    let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    sock.set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    sock.send_to(&q, server).map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = sock.recv_from(&mut buf).map_err(|e| e.to_string())?;
+    let b = &buf[..n];
+    if n < 12 || b[0] != 0x13 || b[1] != 0x37 {
+        return Err("bad dns response".into());
+    }
+    let ancount = u16::from_be_bytes([b[6], b[7]]) as usize;
+    // skip question section
+    let mut i = 12;
+    while i < n && b[i] != 0 {
+        i += 1 + b[i] as usize;
+    }
+    i += 5; // null + qtype + qclass
+    let mut out = Vec::new();
+    for _ in 0..ancount {
+        if i + 12 > n {
+            break;
+        }
+        // NAME: either pointer (0xc0..) or labels
+        if b[i] & 0xc0 == 0xc0 {
+            i += 2;
+        } else {
+            while i < n && b[i] != 0 {
+                i += 1 + b[i] as usize;
+            }
+            i += 1;
+        }
+        if i + 10 > n {
+            break;
+        }
+        let rtype = u16::from_be_bytes([b[i], b[i + 1]]);
+        let rdlen = u16::from_be_bytes([b[i + 8], b[i + 9]]) as usize;
+        i += 10;
+        if rtype == 16 && i + rdlen <= n {
+            let mut j = i;
+            while j < i + rdlen {
+                let l = b[j] as usize;
+                j += 1;
+                if j + l <= n {
+                    out.push(String::from_utf8_lossy(&b[j..j + l]).to_string());
+                }
+                j += l;
+            }
+        }
+        i += rdlen;
+    }
+    Ok(out)
+}
+
+fn dns_identity() -> serde_json::Value {
+    let resolv = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    let local_ns: Option<std::net::IpAddr> = resolv
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("nameserver ").map(str::trim).and_then(|s| s.parse().ok()));
+    // Resolve ns1.google.com via the system resolver.
+    let google_ns: Option<std::net::SocketAddr> = {
+        use std::net::ToSocketAddrs;
+        ("ns1.google.com", 53u16)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.find(|s| s.is_ipv4()))
+    };
+    let direct = google_ns
+        .map(|s| dns_txt_query(s, "o-o.myaddr.l.google.com"))
+        .unwrap_or_else(|| Err("ns1.google.com unresolvable".into()));
+    let via_resolver = local_ns
+        .map(|ip| dns_txt_query(std::net::SocketAddr::new(ip, 53), "o-o.myaddr.l.google.com"))
+        .unwrap_or_else(|| Err("no nameserver in resolv.conf".into()));
+    serde_json::json!({
+        "resolv_conf": resolv,
+        "ns1_google": google_ns.map(|s| s.ip().to_string()),
+        "myaddr_direct_at_ns1_google": match direct { Ok(v) => serde_json::json!(v), Err(e) => serde_json::json!({"err": e}) },
+        "myaddr_via_local_resolver": match via_resolver { Ok(v) => serde_json::json!(v), Err(e) => serde_json::json!({"err": e}) },
+    })
+}
+
 const ECHO_HEADERS: [&str; 8] = [
     "server",
     "via",
@@ -555,11 +652,68 @@ async fn diag(State(app): State<Arc<App>>) -> Response {
         }
     }
 
+    // v8: DNS identity for the GeoDNS investigation (blocking: UDP + fs).
+    let dns = tokio::task::spawn_blocking(dns_identity)
+        .await
+        .unwrap_or_else(|e| serde_json::json!({"err": e.to_string()}));
+
+    // v8: in-region PUT sweep — Tigris-internal write time measured from
+    // THIS VM (presigned PUTs on a warm client), per size. This is the
+    // ground truth for "is <region> write latency still elevated".
+    let mut put_sweep = serde_json::Map::new();
+    if let Ok(s3) = s3_concrete() {
+        if let Ok(client) = reqwest::Client::builder()
+            .tcp_nodelay(true)
+            .timeout(Duration::from_secs(20))
+            .build()
+        {
+            // warm the connection
+            let _ = signed_op(&s3, &client, reqwest::Method::GET, "probe/anchor-1024", None).await;
+            for (label, size) in [("put_1k", 1024usize), ("put_256k", 262144)] {
+                let mut internal: Vec<f64> = Vec::new();
+                let mut wall: Vec<f64> = Vec::new();
+                for i in 0..10 {
+                    let p = format!("probe/diag-sweep-{}", i % 4);
+                    let (ms, ok, _e, server, _sf, _rg) = signed_op(
+                        &s3,
+                        &client,
+                        reqwest::Method::PUT,
+                        &p,
+                        Some(body_of(size)),
+                    )
+                    .await;
+                    if ok {
+                        wall.push(ms);
+                        if let Some(s) = server {
+                            internal.push(s);
+                        }
+                    }
+                }
+                internal.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                wall.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let med = |v: &Vec<f64>| v.get(v.len() / 2).copied().unwrap_or(-1.0);
+                put_sweep.insert(
+                    label.into(),
+                    serde_json::json!({
+                        "n": internal.len(),
+                        "internal_p50_ms": med(&internal),
+                        "internal_max_ms": internal.last().copied().unwrap_or(-1.0),
+                        "wall_p50_ms": med(&wall),
+                        "internal_all": internal,
+                    }),
+                );
+            }
+        }
+    }
+
     // 24 h summaries from PG: where GETs were served from, and Tigris's
     // own per-op internal time, per variant.
     let mut served_from = serde_json::json!(null);
     let mut server_ms = serde_json::json!(null);
-    if let Ok(pg) = pg_connect(&app.db_url).await {
+    let mut pg_err = serde_json::json!(null);
+    match pg_connect(&app.db_url).await {
+        Err(e) => pg_err = serde_json::json!(e.to_string()),
+        Ok(pg) => {
         if let Ok(rows) = pg
             .query(
                 "SELECT op, served_from, count(*) FROM probe \
@@ -609,6 +763,7 @@ async fn diag(State(app): State<Arc<App>>) -> Response {
                 .collect();
             server_ms = serde_json::json!(v);
         }
+        }
     }
 
     axum::Json(serde_json::json!({
@@ -621,6 +776,9 @@ async fn diag(State(app): State<Arc<App>>) -> Response {
         "http_rounds": http_rounds,
         "served_from_24h": served_from,
         "server_ms_24h": server_ms,
+        "pg_err": pg_err,
+        "dns": dns,
+        "put_sweep": put_sweep,
     }))
     .into_response()
 }
