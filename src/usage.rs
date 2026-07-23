@@ -226,19 +226,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buckets_enforce_and_refill() {
+    fn buckets_enforce_and_reject_whole() {
         let h = [1u8; 16];
-        // requests bucket: capacity = 1000*2; drain it
-        for _ in 0..(1000.0_f64 * 2.0) as usize {
-            let _ = admit_append(&h, 10, 1);
-        }
-        let e = admit_append(&h, 10, 1);
-        assert!(e.is_err());
+        // Deterministic: a single request over the records bucket CAPACITY
+        // (rate x burst) must fail regardless of refill timing...
+        let cap = (limits().recs_per_sec * limits().burst_secs) as u64;
+        let e = admit_append(&h, 10, cap + 1);
+        assert!(matches!(e, Err(LimitHit::Records { .. })));
         if let Err(hit) = e {
             assert!(hit.retry_ms() >= 1);
             assert!(!hit.code().is_empty());
             assert!(!hit.message().is_empty());
         }
+        // ...and reject-whole means nothing was consumed: a normal request
+        // still passes immediately.
+        assert!(admit_append(&h, 10, 1).is_ok());
     }
 
     #[test]

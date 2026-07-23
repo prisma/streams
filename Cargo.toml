@@ -67,3 +67,11 @@ path = "src/bin/pilot.rs"
 [[bin]]
 name = "cryptobench"
 path = "src/bin/cryptobench.rs"
+
+
+
+[patch.crates-io]
+# v0.14.1 + upstream PR slatedb/slatedb#1964 (yield points: fixes runtime
+# starvation from single-poll SST builds; sentinel p99 848ms -> 4.8ms).
+# Drop this patch when a release containing the PR ships.
+slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "e255cff3d14ae5176c60482f4a2701d9335b4e4d" }
