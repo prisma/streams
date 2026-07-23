@@ -10,6 +10,73 @@ region-restricted bucket in the nearest Tigris region (iad/sjc/ams/fra/nrt/sin).
 Data hygiene: rows before 22T13:30Z (pre-warm-up probe) excluded from solo-PUT
 comparisons; global-vs-pinned uses like-for-like hours only (22T15:00Z+).
 
+## Methodology
+
+**Topology.** One probe pair per Prisma Compute region — six regions:
+eu-central-1 (FRA), eu-west-3 (CDG), us-east-1 (EWR), us-west-1 (SJC),
+ap-northeast-1 (NRT), ap-southeast-1 (SIN). Each pair is two always-on
+1-vCPU Compute services running the same binary (`bench/probe/`,
+tigris-probe v6): one probing the region's **global** bucket (a Prisma
+Bucket provisioned via the management API), one probing a **pinned**
+bucket (Tigris single-region bucket in the nearest Tigris region:
+fra/ams/iad/sjc/nrt/sin). Both write to the same per-region Prisma
+Postgres with a `variant` column, so every comparison is same-VM-class,
+same-network, same-clock.
+
+**Operation mix.** Every 10 s (solo mode): PUT then hot GET (the object
+just written) then cold GET (a fixed anchor object), each at 1 KB and
+256 KB — six timed ops per tick, ~360 samples per series per hour. Every
+60 s: one fresh-client GET (coldconn mode) that pays DNS+TCP+TLS on
+purpose. At the top of each hour: 60 s of 16-concurrent 256 KB PUTs
+(burst mode, global variant) to separate load-correlated behavior from
+time-correlated behavior. 256 KB was chosen to match our WAL SST shape;
+1 KB matches the published small-object benchmarks.
+
+**What a sample measures.** Ops execute over presigned URLs with a plain
+HTTP client so response headers are visible. Wall time = request issue to
+response body fully read, measured with a monotonic clock inside the VM —
+deliberately including the platform egress path, since that is what a
+customer workload experiences. Each sample also records Tigris's own
+`Server-Timing: total` value (reported here as sp50/sp99 — time inside
+Tigris by the provider's own accounting) and the `X-Tigris-Served-From` /
+`X-Tigris-Regions` headers, so wall time decomposes into
+network-to-PoP + Tigris-internal, and placement claims are
+header-verified rather than inferred.
+
+**Connection discipline.** The pooled client uses a 4 s idle timeout
+(production parity: the platform silently kills flows idle ≳5 s). Because
+that guarantees a dead pool at each 10 s tick, every tick begins with one
+untimed warm-up GET; solo samples therefore measure the warm path, and
+coldconn is the only mode that measures connection setup. Before this
+warm-up existed (probe ≤v4), the first timed op of each tick absorbed the
+TLS handshake — see hygiene below.
+
+**Storage and aggregation.** Every sample is one Postgres row
+(ts, op, mode, size, variant, wall ms, ok, error text, server_ms,
+served_from, regions). Hourly aggregates use `percentile_cont` over
+successful ops only; failures are counted separately and never enter the
+latency distributions. With ~360 samples per series-hour, an hourly p99 is
+approximately the 4th-slowest sample — tail figures are indicative, and
+multi-hour persistence (as in the iad finding) is required before we treat
+a tail as a claim.
+
+**Data hygiene applied in this report.** Solo PUT rows before
+2026-07-22T13:30Z are TLS-contaminated (pre-warm-up probe) and excluded;
+pinned collection begins ~14:45Z, so global-vs-pinned uses like-for-like
+hours from 15:00Z; hour 14 carries our own deployment churn and is
+excluded from claims. Instrument version timeline: v4 13:0x Z (header
+capture), v5 ~13:30 Z (warm-up), v6 ~14:45 Z (variant dimension).
+
+**Known limitations.** One instance per region (no instance-to-instance
+variance); the 0.1 Hz solo cadence is intentionally sparse — which turned
+out to be a finding (Verdict 4) rather than a flaw, but means solo numbers
+should not be read as under-load numbers; bursts run only against the
+global variant; the observatory measures Tigris via `t3.storage.dev`
+anycast from inside Prisma Compute, so network-side findings are about
+that combined path, not Tigris's network alone. Source, page code, and the
+/data API used for all tables in this report: `bench/probe/` on the
+`slate` branch; each region page serves `/data?day=YYYY-MM-DD`.
+
 ## Verdict 1 — Global buckets are exonerated
 
 Across all six regions, all four op/size combinations, global ≈ pinned within
