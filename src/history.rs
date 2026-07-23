@@ -281,7 +281,19 @@ pub struct Absorber {
     shard: Arc<ShardEngine>,
     keys: Arc<KeyCache>,
     cfg: AbsorberConfig,
+    /// History DB handles kept open across passes. The original F2 design
+    /// opened and closed per pass ("maintenance-free"), but each open is
+    /// 1-2 s of manifest round-trips — at a 32 MB pass that caps absorb
+    /// throughput near ~5-8k rec/s, below a loaded stream's ingest, and
+    /// the backlog compounds into the OOM spiral (sinmax run 11 marathon).
+    /// Small LRU (4) + idle eviction keeps V4's idle-per-DB-overhead
+    /// concern bounded; entries are dropped on fence-class errors and on
+    /// absorber exit.
+    open_dbs: tokio::sync::Mutex<HashMap<[u8; 16], (Arc<Db>, Instant)>>,
 }
+
+const HISTORY_DB_LRU: usize = 4;
+const HISTORY_DB_IDLE: Duration = Duration::from_secs(120);
 
 impl Absorber {
     pub fn start(
@@ -296,6 +308,7 @@ impl Absorber {
             shard,
             keys,
             cfg,
+            open_dbs: tokio::sync::Mutex::new(HashMap::new()),
         };
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
@@ -312,6 +325,11 @@ impl Absorber {
                         pending_bytes = dropped,
                         "absorber exiting: shard fenced/closed"
                     );
+                    let handles: Vec<[u8; 16]> =
+                        absorber.open_dbs.lock().await.keys().copied().collect();
+                    for h in handles {
+                        absorber.close_db(&h).await;
+                    }
                     return;
                 }
                 tokio::select! {
@@ -359,6 +377,7 @@ impl Absorber {
                                             hex(&hash)
                                         );
                                         pending.remove(&hash);
+                                        absorber.close_db(&hash).await;
                                     } else if let Some(p) = pending.get_mut(&hash) {
                                         p.failures = p.failures.saturating_add(1);
                                         let shift = p.failures.min(6);
@@ -380,6 +399,51 @@ impl Absorber {
                 }
             }
         })
+    }
+
+    /// Close a cached history handle (fence-class failure or eviction).
+    async fn close_db(&self, hash: &[u8; 16]) {
+        let entry = self.open_dbs.lock().await.remove(hash);
+        if let Some((db, _)) = entry {
+            let _ = db.close().await;
+        }
+    }
+
+    /// LRU + idle eviction: bound resident history DBs to HISTORY_DB_LRU,
+    /// and drop any handle unused for HISTORY_DB_IDLE.
+    async fn evict_idle_dbs(&self) {
+        let mut victims: Vec<(Arc<Db>, [u8; 16])> = Vec::new();
+        {
+            let mut cache = self.open_dbs.lock().await;
+            let now = Instant::now();
+            let idle: Vec<[u8; 16]> = cache
+                .iter()
+                .filter(|(_, (_, last))| now.duration_since(*last) >= HISTORY_DB_IDLE)
+                .map(|(h, _)| *h)
+                .collect();
+            for h in idle {
+                if let Some((db, _)) = cache.remove(&h) {
+                    victims.push((db, h));
+                }
+            }
+            while cache.len() > HISTORY_DB_LRU {
+                let oldest = cache
+                    .iter()
+                    .min_by_key(|(_, (_, last))| *last)
+                    .map(|(h, _)| *h);
+                match oldest {
+                    Some(h) => {
+                        if let Some((db, _)) = cache.remove(&h) {
+                            victims.push((db, h));
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+        for (db, _) in victims {
+            let _ = db.close().await;
+        }
     }
 
     /// Returns Ok(false) if the stream key isn't available.
@@ -474,14 +538,28 @@ impl Absorber {
         }
         let absorbed_upto = items.last().map(|(o, _)| o + 1).unwrap_or(upto);
 
-        // Open the history DB maintenance-free, bulk write, explicit flush
-        // (F2), close.
-        let db = Db::builder(history_db_path(hash).as_str(), self.data_store.clone())
-            .with_settings(history_settings())
-            .with_db_cache(history_cache())
-            .with_block_transformer(Arc::new(AesBlockTransformer::new(&key)))
-            .build()
-            .await?;
+        // Bulk write through a cached handle (open once, reuse across
+        // passes), explicit flush per pass so the boundary only advances
+        // over durable data. See open_dbs field note for why not
+        // open/close per pass.
+        let db = {
+            let mut cache = self.open_dbs.lock().await;
+            if let Some((db, last_used)) = cache.get_mut(hash) {
+                *last_used = Instant::now();
+                db.clone()
+            } else {
+                let db = Arc::new(
+                    Db::builder(history_db_path(hash).as_str(), self.data_store.clone())
+                        .with_settings(history_settings())
+                        .with_db_cache(history_cache())
+                        .with_block_transformer(Arc::new(AesBlockTransformer::new(&key)))
+                        .build()
+                        .await?,
+                );
+                cache.insert(*hash, (db.clone(), Instant::now()));
+                db
+            }
+        };
         let mut i = 0;
         while i < items.len() {
             let mut wb = WriteBatch::new();
@@ -503,7 +581,7 @@ impl Absorber {
             i = end;
         }
         db.flush().await?; // wal off => memtable -> L0 (durable)
-        db.close().await?;
+        self.evict_idle_dbs().await;
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
         self.shard.submit_absorbed(*hash, absorbed_upto).await;
