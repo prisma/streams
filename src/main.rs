@@ -72,6 +72,23 @@ struct Args {
     #[arg(long, env = "FLUSH_INTERVAL_MS", default_value_t = 25)]
     flush_interval_ms: u64,
 
+    /// Group-commit WAL flushing (1 = on). A per-shard pump flushes the
+    /// WAL the moment the previous flush completes when commits are
+    /// waiting, so under load the flush cadence self-clocks to the WAL
+    /// PUT RTT instead of adding tick alignment (avg tick/2) on top of
+    /// the serial-PUT queue. flush_interval_ms then only acts as the
+    /// idle mint-rate floor (see --wal-flush-gap-ms) and SlateDB's own
+    /// timer is stretched to a 1 s failsafe.
+    #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 0)]
+    wal_group_commit: u8,
+
+    /// Minimum start-to-start gap between pump flushes, ms. Bounds the
+    /// WAL SST mint rate exactly like the old tick did (churn ceiling
+    /// unchanged); irrelevant whenever the PUT RTT exceeds it. 0 = use
+    /// flush_interval_ms.
+    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 0)]
+    wal_flush_gap_ms: u64,
+
     #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 32 * 1024 * 1024)]
     l0_sst_size_bytes: usize,
 
@@ -331,7 +348,14 @@ impl Args {
 
 fn shard_settings(args: &Args) -> Settings {
     Settings {
-        flush_interval: Some(Duration::from_millis(args.flush_interval_ms)),
+        // With the group-commit pump on, SlateDB's internal timer is only
+        // a failsafe for anything the pump misses (it should never fire
+        // on a healthy shard) — stretch it well past the pump cadence.
+        flush_interval: Some(Duration::from_millis(if args.wal_group_commit != 0 {
+            args.flush_interval_ms.max(1000)
+        } else {
+            args.flush_interval_ms
+        })),
         l0_sst_size_bytes: args.l0_sst_size_bytes,
         max_unflushed_bytes: args.max_unflushed_bytes,
         l0_max_ssts: args.l0_max_ssts,
@@ -435,6 +459,12 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_age = args.absorb_age_secs;
         let absorb_pass_bytes = args.absorb_pass_bytes;
         let trim_per_op = args.trim_per_op;
+        let wal_group_commit = args.wal_group_commit != 0;
+        let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
+            args.flush_interval_ms
+        } else {
+            args.wal_flush_gap_ms
+        });
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
             open: Box::new(move |prefix: String| {
@@ -488,6 +518,8 @@ async fn async_main() -> anyhow::Result<()> {
                         Arc::new(db),
                         ShardConfig {
                             max_trim_per_op: trim_per_op,
+                            wal_group_commit,
+                            wal_flush_gap,
                             ..Default::default()
                         },
                         absorb_tx,

@@ -92,7 +92,9 @@ with an empty pool rather than dead sockets.
 | env | default | guidance |
 |---|---|---|
 | `INITIAL_SHARDS` | 1 | power of two; pilot fleet used 16. Set at keyspace creation; topology is stored |
-| `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25 |
+| `FLUSH_INTERVAL_MS` | 25 | WAL flush cadence = the ack floor (flush + one PUT ≈ 40 ms on Tigris at 25 ms). 50 ms halves WAL-object churn for ~10 ms of ack; 5 ms mints WAL SSTs faster than GC reaps them and degrades the watermark to ~0.3–1 s — do not go below 25. With `WAL_GROUP_COMMIT=1` this becomes SlateDB's failsafe only (stretched to ≥1 s) |
+| `WAL_GROUP_COMMIT` | 0 | 1 = per-shard pump flushes the WAL the moment the previous flush completes when commits are waiting, instead of on the fixed tick. Sparse/moderate appends stop paying tick alignment (local A/B vs 25 ms s3lite: sequential append p50 55→28 ms, durable_wait 47→27 ms); at saturation both modes self-clock to the PUT RTT (equal). Skips entirely when nothing awaits durability, so idle churn is zero |
+| `WAL_FLUSH_GAP_MS` | 0 (= `FLUSH_INTERVAL_MS`) | pump-mode floor on start-to-start flush spacing — bounds the WAL SST mint rate to the same ceiling the old tick had. Only binds when the PUT RTT is faster than the gap |
 | `L0_SST_SIZE_BYTES` | 32 MiB | pilot used 8 MiB on 1-GB instances |
 | `MAX_UNFLUSHED_BYTES` | 16 MiB | per-shard byte backpressure. SlateDB's default is 512 MB — a byte flood OOMs a 1-GB box before backpressure fires; keep this small |
 | `L0_MAX_SSTS` | 8 | L0 count that triggers write backpressure; pilot used 24 for burst headroom |

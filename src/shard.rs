@@ -233,6 +233,15 @@ pub struct ShardConfig {
     /// one flush cycle ships one big WAL SST instead of many tiny ones.
     pub pace_min_reqs: usize,
     pub gather_window: std::time::Duration,
+    /// Group-commit WAL flushing: instead of waiting for SlateDB's fixed
+    /// flush tick, a pump task flushes the WAL the moment the previous
+    /// flush completes if commits are waiting. Under load the cadence
+    /// self-clocks to the WAL PUT RTT (the in-flight PUT is the batching
+    /// window); `wal_flush_gap` only bounds the SST mint rate when the
+    /// PUT RTT is shorter than the gap — the object-churn ceiling stays
+    /// exactly where the old tick put it.
+    pub wal_group_commit: bool,
+    pub wal_flush_gap: std::time::Duration,
 }
 
 impl Default for ShardConfig {
@@ -244,6 +253,8 @@ impl Default for ShardConfig {
             max_trim_per_op: 8_192,
             pace_min_reqs: 32,
             gather_window: std::time::Duration::from_millis(15),
+            wal_group_commit: false,
+            wal_flush_gap: std::time::Duration::from_millis(25),
         }
     }
 }
@@ -294,6 +305,10 @@ pub struct ShardEngine {
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
     flush_wake: Notify,
+    /// Group-commit pump wake: one permit means "commits landed since the
+    /// pump last looked". Distinct from flush_wake, whose permit the acker
+    /// loop consumes.
+    pump_wake: Notify,
     absorb_tx: mpsc::Sender<AbsorbSignal>,
     /// Invoked when the shard db closes (fenced by a new owner / fatal):
     /// wired to TouchRegistry::close_shard so hanging /touch/wait clients
@@ -338,6 +353,7 @@ impl ShardEngine {
             tx,
             in_flight: Mutex::new(Vec::new()),
             flush_wake: Notify::new(),
+            pump_wake: Notify::new(),
             absorb_tx,
             on_close,
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -345,6 +361,62 @@ impl ShardEngine {
             stats_appended: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
         });
+        // Group-commit flush pump: waits for a committed group, flushes the
+        // WAL, and immediately flushes again if more groups arrived while
+        // the PUT was in flight — the ack path stops paying the tick
+        // alignment (avg tick/2) on top of the serial-PUT queue. The gap
+        // check runs start-to-start, so when the PUT RTT exceeds the gap
+        // (the normal Tigris case) it adds zero wait, and when the store is
+        // faster than the gap it enforces the same max SST mint rate as the
+        // old tick. SlateDB's own flush_interval stays on as a long
+        // failsafe (shard_settings stretches it when the pump is enabled).
+        if cfg.wal_group_commit {
+            let pump = engine.clone();
+            let gap = cfg.wal_flush_gap;
+            tracing::info!(shard = %pump.prefix, gap_ms = gap.as_millis() as u64, "WAL group-commit pump on");
+            tokio::spawn(async move {
+                use slatedb::config::{FlushOptions, FlushType};
+                let mut last_start: Option<std::time::Instant> = None;
+                loop {
+                    pump.pump_wake.notified().await;
+                    if pump.is_closed() {
+                        return;
+                    }
+                    // Only flush when a commit is actually awaiting
+                    // durability. Without this, an ack-triggered client
+                    // herd arrives just after a speculative empty flush
+                    // froze the buffer and waits a full extra PUT behind
+                    // it (closed-loop A/B measured 52 ms vs 29 ms
+                    // durable_wait on identical load).
+                    if pump.in_flight.lock().unwrap().is_empty() {
+                        continue;
+                    }
+                    if let Some(t0) = last_start {
+                        let since = t0.elapsed();
+                        if since < gap {
+                            tokio::time::sleep(gap - since).await;
+                            if pump.is_closed() {
+                                return;
+                            }
+                        }
+                    }
+                    last_start = Some(std::time::Instant::now());
+                    if let Err(e) = pump
+                        .db
+                        .flush_with_options(FlushOptions {
+                            flush_type: FlushType::Wal,
+                        })
+                        .await
+                    {
+                        if pump.is_closed() {
+                            return;
+                        }
+                        tracing::warn!(shard = %pump.prefix, "group-commit WAL flush failed: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            });
+        }
         let committer = engine.clone();
         tokio::spawn(async move { committer.committer_loop(rx, cfg).await });
         let acker = engine.clone();
@@ -1137,6 +1209,7 @@ impl ShardEngine {
                     touches,
                 });
                 self.flush_wake.notify_one();
+                self.pump_wake.notify_one();
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -1163,6 +1236,9 @@ impl ShardEngine {
                     // may never drop). Touch waiters wake with stale.
                     tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}");
                     self.closed.store(true, Ordering::SeqCst);
+                    // Wake the group-commit pump so it observes closed and
+                    // exits instead of parking on its Notify forever.
+                    self.pump_wake.notify_one();
                     let stranded: Vec<InFlightGroup> =
                         self.in_flight.lock().unwrap().drain(..).collect();
                     for group in stranded {
