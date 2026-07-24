@@ -469,6 +469,30 @@ impl ShardEngine {
         self.closed.load(Ordering::SeqCst)
     }
 
+    /// Proactive close (rebalancer moved this shard away): mark closed,
+    /// wake the pump, fail everything in flight NOW. Without this,
+    /// requests already queued here hang until the new owner's fence
+    /// propagates — clients sat out their full timeout (ladder D3:
+    /// exactly one in-flight batch per worker lost at the move moment).
+    pub fn begin_close(&self) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return; // already closing
+        }
+        self.pump_wake.notify_one();
+        let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
+        for group in stranded {
+            for (resp, _) in group.acks {
+                let _ = resp.send(Err(AppendErr::Moved));
+            }
+            for (resp, _) in group.queue_acks {
+                let _ = resp.send(Err("shard fenced/moved; retry".into()));
+            }
+        }
+        if let Some(cb) = &self.on_close {
+            cb();
+        }
+    }
+
     /// How long the current commit db.write has been blocked (0 = idle).
     /// A sustained value means SlateDB backpressure (L0-full/unflushed-full
     /// with lagging compaction): admission should shed 429 instead of

@@ -578,9 +578,14 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                                     .write()
                                     .unwrap()
                                     .insert(prefix.clone(), to.clone());
-                                // Stop serving immediately; the new owner
-                                // fences the log on first routed request.
-                                state.shards.write().unwrap().remove(&prefix);
+                                // Stop serving immediately and fail all
+                                // in-flight work fast (retryable) — the new
+                                // owner fences the log on first routed
+                                // request.
+                                let eng = state.shards.write().unwrap().remove(&prefix);
+                                if let Some(e) = eng {
+                                    e.begin_close();
+                                }
                                 last_move = Some(Instant::now());
                                 lag_hot_ticks = 0;
                             }
