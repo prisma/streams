@@ -217,3 +217,31 @@ ambiguous retries, resync on gap, a seq is never reused for different
 content). Remaining seal-coincident window documented in SCALING.md
 known-limitations with production fix candidates. Pass 3 runs the full
 ladder with the idempotent driver.
+
+## Pass 3 — D1 GREEN; D2/D3 caught a genuine data-loss defect (zombie GC)
+
+- D1 (p3) GREEN with the idempotent producer: 1,548,800/1,548,800, zero
+  errors, and 32 clean `producer_seq_gap` resyncs at the split boundary
+  — the producer session handoff works live.
+- D2 (p3) drive: 5,051,600 ok at 7.7 k rec/s, only 1,400 abandoned
+  (idempotent retries absorbed the ambiguity that broke p2b). But the
+  order check could not complete: reads on shard 000 return 500 —
+  **referenced compacted SSTs are gone from the store** (dir empty).
+- Root cause (log forensics): `begin_close` never closed the slatedb Db.
+  After the 11:42 lag-move of shard 000, streams-1 ran a **zombie
+  owner for 92 minutes** (lazy opening meant streams-2 only fenced it
+  when a read arrived at 13:14); the zombie's compactor/GC raced the
+  handoff and referenced SSTs were deleted. Unabsorbed rows in them are
+  unrecoverable on this world — real data loss, exactly the class of
+  defect the ladder exists to catch before Compute.
+- Compounding policy gaps seen in the same run: saturation ping-pong
+  (7 moves in 10 min — every instance lagged, moves just handed the
+  backlog around) and sticky-override drain (streams-2 owned nothing by
+  D3, so the D3 rung could not even start).
+
+Fixes (commit ab735a8): begin_close now db.close()es (no zombies);
+eager handoff (override target opens the shard next fleet tick, fencing
+the loser immediately); healthy-target gate (no move to a peer with
+lag ≥ REBALANCE_LAG/2); return-home (overrides drop once the rendezvous
+owner is healthy again; REBALANCE_RETURN_SECS). Checker hardened
+(page retries; except-order bug fixed). Pass 4 runs the full ladder.
