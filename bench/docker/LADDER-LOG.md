@@ -163,3 +163,15 @@ without `Stream-Scaling: auto`).
 **Ladder pass 1: D1 ✓ D2 ✓ D3 ✓ D4 ✓ D5 ✓.** Fixes landed mid-pass
 (fleet mode, FLEET_MIN, begin_close, lag-gauge hygiene, /segments,
 patient driver); pass 2 runs the whole ladder again on the final image.
+
+## SIN re-validation of the 1 s P2C guarantee on the new binary
+
+Run rv1 (conc 56, batch 5, **2 KB** records, closed loop, 12 min):
+accepted settled at ~2,300–2,500 rec/s — the **5 MB/s byte limit**
+binding exactly as designed (5 MB/s ÷ 2 KB), zero errors, heavy clean
+429 pacing. P2C p99 windows ran 1.1–2.8 s: expected — the guarantee
+applies to traffic within limits, not to a client sustained at 2× the
+byte cap (throttle queueing dominates). Run 22 used ~1 KB records
+(4.97 MB/s ≈ at-limit), so rv1 is not its comparison.
+
+Run rv2 (identical but **1 KB** records = run-22 parity): results below.
