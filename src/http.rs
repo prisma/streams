@@ -539,10 +539,18 @@ pub fn spawn_scaler(state: Arc<AppState>) {
                     },
                     // Act only on segments whose shard this instance
                     // serves — its counters are authoritative for exactly
-                    // those, and it can seal them locally.
+                    // those, and it can seal them locally. POSSESSION is
+                    // the truth, not the ring: engine_for grandfathers a
+                    // shard it opened before the ring said otherwise
+                    // (fencing arbitrates real conflicts), and a
+                    // ring-only check here leaves such shards evaluated
+                    // by NOBODY (p5: no split for a whole pass).
                     move |seg_name: &str| {
                         let hash = crate::crypto::stream_hash(seg_name);
                         let prefix = shard_for_hash(&owner_st.shard_prefixes, &hash);
+                        if owner_st.shards.read().unwrap().contains_key(&prefix) {
+                            return true;
+                        }
                         owner_st
                             .effective_owner(&prefix)
                             .map(|o| o == owner_st.instance_name)
