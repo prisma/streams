@@ -50,3 +50,20 @@ Incidents this session (all environmental, none data-integrity):
 | host disk full (489 MB free) | 22 GB cargo target + 21 GB docker VM | cleaned both (~46 GB freed) |
 | OrbStack down | killed by the ENOSPC episode | restarted; zombie fleet from restart policies stopped |
 | s3lite OOM (exit 137) | 1 GB limit on an in-memory store holding 2 runs | 4 GB; servers stay at 1 GB |
+
+## D2 rerun (`d2t`) — recursive splits under 2.8× offered load
+
+Drive: 14 k rec/s offered against a 5 k rec/s per-segment limit, 420 s.
+
+- Driver: **5,507,000/5,507,000 records, zero errors**; 10,453 requests
+  drew 429 + Retry-After and were retried cleanly (that is the limiter
+  working as designed, not failure).
+- Accepted-rate staircase (M4): ~**10 k rec/s plateau at 2 segments**
+  (2 × 5 k caps, heavy 429s) → split cascade → **~14 k+ rec/s at 4+
+  segments** — the offered load fully accepted once enough segments
+  exist. Effective driver rate 13.1 k rec/s including the throttled
+  phase.
+- Splits went recursive past 4 (7+ live segments on the busiest
+  instance): catch-up bursts at the bucket boundary kept children above
+  the 75 % trip. Behavior is per policy (MAX_SEGMENTS guard far away);
+  production's 120 s EWMA window would damp the cascade.
