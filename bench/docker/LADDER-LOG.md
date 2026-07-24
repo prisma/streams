@@ -175,3 +175,18 @@ byte cap (throttle queueing dominates). Run 22 used ~1 KB records
 (4.97 MB/s ≈ at-limit), so rv1 is not its comparison.
 
 Run rv2 (identical but **1 KB** records = run-22 parity): results below.
+
+## Pass 2 first attempt (p2) — aborted mid-pass, harness fault
+
+D1 (p2) GREEN with the true ring: 1,548,800/1,548,800, zero errors, 64
+enforced-ownership redirects, ORDER CHECK PASS. During D2 (p2) the
+**4 GB emulator hit its ceiling** (the bucket had accumulated ~11 M
+records across pass 1, interim reruns, and D5): server 500s during the
+drive, emulator dead by the merge watch, world lost. D3 (p2) then ran
+green on the auto-recreated fresh emulator — including the begin_close
+validation: **zero abandoned batches through the shard move** (pass 1:
+3,200).
+
+Harness fixes: emulator 6 GB; `ladder.sh` now recreates the world at
+the start of every pass (a pass is self-contained and comparable).
+Full rerun as pass 2b.
