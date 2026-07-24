@@ -1,0 +1,9 @@
+# Ladder D3 overlay: pause absorption on streams-2 only, so any shard it
+# serves accumulates absorb lag under load and the rebalancer must move
+# it. Apply/revert:
+#   docker compose -f compose.yml -f compose.d3.yml up -d streams-2
+#   docker compose up -d streams-2
+services:
+  streams-2:
+    environment:
+      ABSORB_PAUSE: "1"
