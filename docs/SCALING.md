@@ -212,3 +212,35 @@ Compute):
 
 Only after D1–D5 are green twice consecutively: the 4-instance Compute
 cluster repeat of D1/D3/D5.
+
+## 9. Validation results (2026-07-24)
+
+Full run journal: [bench/docker/LADDER-LOG.md](../bench/docker/LADDER-LOG.md).
+
+Pass 1 (fixes landed mid-pass): **D1–D5 all green.**
+
+- D1: 1,548,800 records at 4,299.7 rec/s through a live split — zero
+  client errors/retries/redirects; all 32 keys gapless across the
+  boundary.
+- D2: 14 k rec/s offered vs 5 k/segment limit — accepted-rate staircase
+  ~10 k (2 segments, clean 429s) → 14 k+ (4+ segments); recursive
+  splits then merges converged (map v10, 4 live / 12 sealed);
+  5,507,000/5,507,000 verified across the 16-segment lineage.
+- D3: absorb-lag rebalancer moved the paused instance's shard at 64 s
+  lag; 598,400/598,400 verified through the live move (zero loss, zero
+  dupes). Exposed + fixed: phantom lag after fence, fail-fast for
+  in-flight work on move (`begin_close`).
+- D4: `SCALE_FAULT_POINT=after_seal` on every server — injected crash
+  in the seal→save window healed by `resume_split` in **527 ms**;
+  1,292,800/1,292,800, zero client errors.
+- D5: 30-min soak at 3 k rec/s with 8 random server restarts —
+  5,401,600/5,401,600, zero errors, RSS inside the 1 GB envelope.
+
+Production measurement on real Tigris (SIN, warm sinmax rig): history
+reads (consumer catch-up) went **84 rec/s → 3,528 rec/s (42×)** with
+the scan-readahead fix; the pre-fix 504 failure mode is gone. Routing
+overhead for scaled streams: p50 +0.4 ms, p99 +53 ms (segmap cache
+refresh; see known limitations).
+
+Pass 2 (final image, true 3-instance ring throughout): in progress —
+results appended to the run journal.
