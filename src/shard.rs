@@ -491,6 +491,18 @@ impl ShardEngine {
         if let Some(cb) = &self.on_close {
             cb();
         }
+        // Actually close the slatedb Db. Without this the moved-away
+        // shard keeps a ZOMBIE db: its compactor/GC/flusher run until the
+        // new owner fences it on first routed request — which lazy opening
+        // can delay indefinitely (ladder p3: 92 minutes of unowned zombie
+        // on shard 000, GC racing the eventual open).
+        let db = self.db.clone();
+        let prefix = self.prefix.clone();
+        tokio::spawn(async move {
+            if let Err(e) = db.close().await {
+                tracing::warn!(shard = %prefix, "db close after move-away: {e}");
+            }
+        });
     }
 
     /// How long the current commit db.write has been blocked (0 = idle).

@@ -287,8 +287,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let mut max_loaded_cpu = 0.0f64;
             let mut hb_age_ms: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
-            // Fresh peers' load, for rebalance target choice.
-            let mut peer_cpu: std::collections::HashMap<String, f64> =
+            // Fresh peers' load (cpu, absorb lag), for rebalance targets.
+            let mut peer_load: std::collections::HashMap<String, (f64, u64)> =
                 std::collections::HashMap::new();
             let mut listing = store.list(Some(&ObjPath::from("fleet")));
             use futures_util::StreamExt;
@@ -310,7 +310,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 };
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
-                    peer_cpu.insert(other.instance.clone(), other.cpu_pct);
+                    peer_load
+                        .insert(other.instance.clone(), (other.cpu_pct, other.absorb_lag_max_secs));
                     live += 1;
                     total_rps += other.rps;
                     total_cores_used += other.cpu_pct / 100.0;
@@ -513,6 +514,94 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     *state.ring_overrides.write().unwrap() = map;
                 }
 
+                // Eager handoff: open any shard newly assigned to ME right
+                // now instead of waiting for the first routed request —
+                // the open fences the loser's db immediately (ladder p3:
+                // lazy opening left a moved shard unowned for 92 minutes
+                // while the loser's zombie compactor/GC kept running).
+                {
+                    let mine: Vec<String> = ov
+                        .entries
+                        .iter()
+                        .filter(|(_, e)| e.to == cfg.instance)
+                        .map(|(p, _)| p.clone())
+                        .collect();
+                    for prefix in mine {
+                        let have = state.shards.read().unwrap().contains_key(&prefix);
+                        if !have {
+                            match (state.opener.open)(prefix.clone()).await {
+                                Ok(engine) => {
+                                    tracing::info!(
+                                        "rebalancer: eagerly opened moved-in shard {prefix}"
+                                    );
+                                    state.shards.write().unwrap().insert(prefix, engine);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("eager open of {prefix} failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Return-home: drop an override once the rendezvous owner
+                // is fresh and healthy again and the entry has aged past
+                // the hysteresis window — otherwise moves are sticky and
+                // an instance that lagged once is drained forever
+                // (ladder p3: streams-2 owned nothing by D3).
+                {
+                    let return_secs: i64 = std::env::var("REBALANCE_RETURN_SECS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(300);
+                    let active = state.ring_active.read().unwrap().clone();
+                    let mut drop_keys: Vec<String> = Vec::new();
+                    for (prefix, e) in ov.entries.iter() {
+                        if now_ms() - e.ms < return_secs * 1000 {
+                            continue;
+                        }
+                        if active.is_empty() {
+                            continue;
+                        }
+                        let home = active[crate::http::ring_pick(prefix, &active)].clone();
+                        if home == e.to {
+                            drop_keys.push(prefix.clone()); // override is a no-op
+                            continue;
+                        }
+                        let healthy = peer_load
+                            .get(&home)
+                            .map(|(_, lag)| *lag == 0)
+                            .unwrap_or(home == cfg.instance
+                                && crate::usage::absorb_lag_max() == 0);
+                        if healthy {
+                            drop_keys.push(prefix.clone());
+                        }
+                    }
+                    if !drop_keys.is_empty() {
+                        let mut next = ov.clone();
+                        for k in &drop_keys {
+                            next.entries.remove(k);
+                        }
+                        let payload = PutPayload::from(serde_json::to_vec(&next).unwrap());
+                        let mode = match ov_ver.clone() {
+                            Some(v) => PutMode::Update(v),
+                            None => PutMode::Create,
+                        };
+                        if store
+                            .put_opts(&opath, payload, PutOptions::from(mode))
+                            .await
+                            .is_ok()
+                        {
+                            tracing::info!(
+                                "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
+                                drop_keys.len(),
+                                drop_keys
+                            );
+                            ov = next;
+                        }
+                    }
+                }
+
                 let my_lag = hb.absorb_lag_max_secs;
                 lag_hot_ticks = if my_lag > rebalance_lag_secs {
                     lag_hot_ticks + 1
@@ -523,12 +612,24 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .map(|t| t.elapsed().as_secs() >= rebalance_cooldown)
                     .unwrap_or(true);
                 if lag_hot_ticks >= 2 && cooled {
-                    // Move my laggiest shard to the coolest fresh peer.
-                    let target = peer_cpu
+                    // Move my laggiest shard to the coolest HEALTHY peer.
+                    // A peer that is itself lagging must not receive more
+                    // work: under global backlog every instance breaches
+                    // the threshold and unguarded moves just hand the
+                    // backlog around (ladder p3: 7 moves in 10 min, shard
+                    // ping-pong, zero net absorption gained).
+                    let target = peer_load
                         .iter()
-                        .filter(|(n, _)| **n != cfg.instance)
-                        .min_by(|a, b| a.1.total_cmp(b.1))
+                        .filter(|(n, (_, lag))| {
+                            **n != cfg.instance && *lag < rebalance_lag_secs / 2
+                        })
+                        .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
                         .map(|(n, _)| n.clone());
+                    if target.is_none() {
+                        tracing::info!(
+                            "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
+                        );
+                    }
                     let victim = {
                         let mut per_shard: std::collections::HashMap<String, u64> =
                             std::collections::HashMap::new();
