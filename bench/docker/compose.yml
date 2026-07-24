@@ -19,6 +19,10 @@ services:
       FRAME_COMPRESS: "1"
       WAL_GROUP_COMMIT: "1"
       SCALE_RATE_WINDOW_SECS: "60"
+      # Ladder pace: cooldown/cold-evals shrunk so split+merge cycles fit
+      # a test run (production defaults: 600 s / 180 evals).
+      SCALE_COOLDOWN_SECS: "60"
+      SCALE_COLD_EVALS: "12"
       SCALE_IN_SECS: "100000"
       RUST_LOG: info
     ports: ["127.0.0.1:8101:8080"]

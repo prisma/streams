@@ -637,6 +637,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/usage", get(debug_usage))
+        .route("/v1/debug/scaler", get(|| async {
+            axum::Json(crate::scaler::debug_snapshot())
+        }))
         .route("/v1/debug/sleep", get(debug_sleep))
         // Operator dashboard: UNSECURED by explicit product decision (on-call
         // must see the cell without credentials). The payload is therefore

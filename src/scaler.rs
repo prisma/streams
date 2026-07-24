@@ -134,12 +134,38 @@ pub async fn route(
 // ---- scaler loop ---------------------------------------------------------
 
 pub struct SegEwma {
-    bytes_rate: f64,
-    reqs_rate: f64,
-    recs_rate: f64,
-    prev: (u64, u64, u64), // cumulative (bytes_in, requests, records)
-    hot_streak: u32,
-    cold_streak: u32,
+    pub bytes_rate: f64,
+    pub reqs_rate: f64,
+    pub recs_rate: f64,
+    pub prev: (u64, u64, u64), // cumulative (bytes_in, requests, records)
+    pub hot_streak: u32,
+    pub cold_streak: u32,
+}
+
+/// Debug snapshot of the scaler's view (for /v1/debug/scaler).
+pub fn debug_snapshot() -> serde_json::Value {
+    let parents: Vec<String> = known_scaled().lock().unwrap().values().cloned().collect();
+    let ew = ewma_state().lock().unwrap();
+    let per: Vec<serde_json::Value> = ew
+        .iter()
+        .map(|(parent, segs)| {
+            let segs: Vec<serde_json::Value> = segs
+                .iter()
+                .map(|(id, e)| {
+                    serde_json::json!({
+                        "seg": id,
+                        "bytes_rate": e.bytes_rate.round(),
+                        "reqs_rate": e.reqs_rate.round(),
+                        "recs_rate": e.recs_rate.round(),
+                        "hot_streak": e.hot_streak,
+                        "cold_streak": e.cold_streak,
+                    })
+                })
+                .collect();
+            serde_json::json!({"parent": parent, "segments": segs})
+        })
+        .collect();
+    serde_json::json!({"registered": parents, "ewmas": per})
 }
 
 /// Complete a split whose scaler died between seal and map-save: the
