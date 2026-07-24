@@ -97,6 +97,10 @@ pub struct AppState {
     /// Empty = check disabled (fleet mode off or bootstrapping).
     pub instance_name: String,
     pub ring_active: std::sync::RwLock<Vec<String>>,
+    /// Rebalancer shard-move overrides (fleet/overrides.json, CAS'd):
+    /// shard prefix -> instance. Consulted before the rendezvous pick; an
+    /// override whose target is not in the active set is ignored.
+    pub ring_overrides: std::sync::RwLock<std::collections::HashMap<String, String>>,
     pub data_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
     pub touch: Arc<crate::touch::TouchRegistry>,
@@ -149,9 +153,7 @@ impl AppState {
         // R2/R3: only the ring owner may claim a shard. A stale router can
         // still send us one — answer 409 + Streams-Replay-To so the router
         // corrects itself, instead of fencing the rightful owner.
-        let active = self.ring_active.read().unwrap().clone();
-        if !active.is_empty() && !self.instance_name.is_empty() {
-            let owner = active[ring_pick(&prefix, &active)].clone();
+        if let Some(owner) = self.effective_owner(&prefix) {
             if owner != self.instance_name {
                 let mut r = err_resp(
                     StatusCode::CONFLICT,
@@ -176,6 +178,22 @@ impl AppState {
                 &format!("open shard {prefix}: {e}"),
             )),
         }
+    }
+
+    /// Ring ownership for a shard prefix: the rebalancer override if its
+    /// target is active, else the rendezvous pick. None when no ring is
+    /// configured (single instance) — then everyone may serve everything.
+    pub fn effective_owner(&self, prefix: &str) -> Option<String> {
+        let active = self.ring_active.read().unwrap().clone();
+        if active.is_empty() || self.instance_name.is_empty() {
+            return None;
+        }
+        if let Some(t) = self.ring_overrides.read().unwrap().get(prefix) {
+            if active.iter().any(|a| a == t) {
+                return Some(t.clone());
+            }
+        }
+        Some(active[ring_pick(prefix, &active)].clone())
     }
 
     /// Called when a shard db closes (fenced by a new owner): drop it from
@@ -510,6 +528,7 @@ pub fn spawn_scaler(state: Arc<AppState>) {
                         .unwrap_or_default()
                 };
                 let st = state.clone();
+                let owner_st = state.clone();
                 let outcome = crate::scaler::evaluate_stream(
                     &store,
                     &parent,
@@ -517,6 +536,17 @@ pub fn spawn_scaler(state: Arc<AppState>) {
                     |seg_name: String| {
                         let st = st.clone();
                         async move { internal_close(st, seg_name).await }
+                    },
+                    // Act only on segments whose shard this instance
+                    // serves — its counters are authoritative for exactly
+                    // those, and it can seal them locally.
+                    move |seg_name: &str| {
+                        let hash = crate::crypto::stream_hash(seg_name);
+                        let prefix = shard_for_hash(&owner_st.shard_prefixes, &hash);
+                        owner_st
+                            .effective_owner(&prefix)
+                            .map(|o| o == owner_st.instance_name)
+                            .unwrap_or(true)
                     },
                 )
                 .await;
@@ -1688,7 +1718,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             let target = crate::scaler::route(&store, &name, &rk).await;
             let r = Box::pin(append(
                 state.clone(),
-                target,
+                target.clone(),
                 headers.clone(),
                 Body::from(body_bytes.clone()),
             ))
@@ -1696,6 +1726,20 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             // Sealed child mid-transition: refresh the map and follow.
             if r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed") {
                 crate::scaler::invalidate(&crate::crypto::stream_hash(&name));
+                if attempt >= 1 {
+                    // Still routed to a sealed child after a fresh map
+                    // read: a scaler died between seal and map-save.
+                    // Re-seal (idempotent, returns the frozen offset) and
+                    // publish the missing transition ourselves.
+                    if let Some((_, sid)) = target.rsplit_once('#') {
+                        if let (Ok(seg_id), Some(next)) = (
+                            sid.parse::<u32>(),
+                            internal_close(state.clone(), target.clone()).await,
+                        ) {
+                            crate::scaler::resume_split(&store, &name, seg_id, next).await;
+                        }
+                    }
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(25 * (attempt as u64 + 1)))
                     .await;
                 continue;

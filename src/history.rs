@@ -368,6 +368,11 @@ impl Absorber {
                         for (h, p) in pending.iter() {
                             crate::usage::set_absorb_lag(h, p.since.elapsed().as_secs());
                         }
+                        // Test hook (SCALING.md D3): pause absorption so
+                        // lag grows while the tick keeps publishing it.
+                        if std::env::var("ABSORB_PAUSE").ok().as_deref() == Some("1") {
+                            continue;
+                        }
                         let due: Vec<[u8; 16]> = pending
                             .iter()
                             .filter(|(_, p)| {

@@ -142,17 +142,57 @@ pub struct SegEwma {
     cold_streak: u32,
 }
 
+/// Complete a split whose scaler died between seal and map-save: the
+/// segment's stream is closed on its shard but the map still shows it
+/// live, so routed appends bounce off `stream_closed` forever. Any valid
+/// completion is correct (the crashed transition was never published) —
+/// we split at the range midpoint. Returns true if this call published.
+pub async fn resume_split(
+    store: &std::sync::Arc<dyn object_store::ObjectStore>,
+    parent: &str,
+    seg_id: u32,
+    sealed_next_offset: u64,
+) -> bool {
+    let hash = crate::crypto::stream_hash(parent);
+    let Ok(Some((mut map, etag))) = segmap::load(store, &hash).await else {
+        return false;
+    };
+    let Some(seg) = map.get(seg_id) else {
+        invalidate(&hash);
+        return false;
+    };
+    if seg.sealed_ms.is_some() {
+        // Transition already recorded (we merely had a stale cache).
+        invalidate(&hash);
+        return false;
+    }
+    let (lo, hi) = (seg.lo, seg.hi);
+    let mid = lo + (hi - lo) / 2;
+    let now = crate::shard::now_ms();
+    let ok = map.split(seg_id, mid, sealed_next_offset, "", "", now).is_ok()
+        && segmap::save(store, &hash, &map, etag).await.is_ok();
+    invalidate(&hash);
+    if ok {
+        tracing::info!("scaler: resumed crashed split of {parent} seg{seg_id} at {mid:#x}");
+    }
+    ok
+}
+
 /// One scaler evaluation for one parent stream. Returns Some(description)
-/// when a transition was committed (for logs/tests).
-pub async fn evaluate_stream<F, Fut>(
+/// when a transition was committed (for logs/tests). `owns` gates which
+/// segments this instance may act on (its usage counters are only
+/// authoritative for shards it serves).
+pub async fn evaluate_stream<F, Fut, O>(
     store: &std::sync::Arc<dyn object_store::ObjectStore>,
     parent: &str,
     ewmas: &mut HashMap<u32, SegEwma>,
     seal: F,
+    owns: O,
 ) -> Option<String>
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = Option<u64>>,
+    O: Fn(&str) -> bool,
 {
     let p = policy();
     let hash = crate::crypto::stream_hash(parent);
@@ -178,8 +218,18 @@ where
         .collect();
     let now = crate::shard::now_ms();
 
-    // Update EWMAs from the usage counters of each segment stream.
-    for (seg_id, _, _) in &live {
+    // Update EWMAs from the usage counters of each segment stream — but
+    // only for segments whose shard THIS instance serves: the counters
+    // are in-process, so only the serving instance sees real rates. Each
+    // owner independently evaluates its own segments; the segmap CAS
+    // arbitrates concurrent transitions.
+    let owned: Vec<(u32, u64, u64)> = live
+        .iter()
+        .filter(|(id, _, _)| owns(&seg_stream_name(parent, *id)))
+        .copied()
+        .collect();
+    ewmas.retain(|id, _| owned.iter().any(|(oid, _, _)| oid == id));
+    for (seg_id, _, _) in &owned {
         let seg_hash = crate::crypto::stream_hash(&seg_stream_name(parent, *seg_id));
         let c = crate::usage::counters(&seg_hash);
         let cur = (
@@ -216,8 +266,8 @@ where
         e.cold_streak = if cold { e.cold_streak + 1 } else { 0 };
     }
 
-    // Split: hottest eligible segment.
-    let split_candidate = live
+    // Split: hottest eligible segment (owned only — see above).
+    let split_candidate = owned
         .iter()
         .filter(|(id, _, _)| {
             let seg = map.get(*id).unwrap();
@@ -243,6 +293,13 @@ where
         let Some(next) = seal(name.clone()).await else {
             return None;
         };
+        // D4 fault point: simulate a scaler crash in the seal->save window
+        // (the only non-atomic step; resume_split heals it on next touch).
+        if std::env::var("SCALE_FAULT_POINT").ok().as_deref() == Some("after_seal") {
+            return Some(format!(
+                "FAULT INJECTED: crashed after sealing {name} (map not saved)"
+            ));
+        }
         let mid = lo + (hi - lo) / 2;
         if map.split(seg_id, mid, next, "", "", now).is_ok()
             && segmap::save(store, &hash, &map, etag).await.is_ok()
@@ -256,8 +313,10 @@ where
     }
 
     // Merge: coldest adjacent live pair, both past cooldown+streak.
-    if live.len() >= 2 {
-        let mut sorted = live.clone();
+    // Both must be locally owned — a remote segment's local EWMA is
+    // vacuously zero and would look cold when it is not.
+    if owned.len() >= 2 {
+        let mut sorted = owned.clone();
         sorted.sort_by_key(|(_, lo, _)| *lo);
         for w in sorted.windows(2) {
             let (a, b) = (w[0].0, w[1].0);

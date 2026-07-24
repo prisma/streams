@@ -144,12 +144,37 @@ freshly-moved shard isn't double-treated.
 | env | default | |
 |---|---|---|
 | `SCALE_EVAL_SECS` | 10 | scaler tick |
+| `SCALE_RATE_WINDOW_SECS` | 120 | EWMA window for segment rates |
 | `SCALE_HOT_PCT` / `SCALE_COLD_PCT` | 75 / 15 | of per-segment limits |
 | `SCALE_HOT_EVALS` / `SCALE_COLD_EVALS` | 2 / 180 | consecutive evals |
 | `SCALE_COOLDOWN_SECS` | 600 | min segment age before re-scale |
 | `MAX_SEGMENTS_PER_STREAM` | 64 | |
-| `REBALANCE_LAG_SECS` | 60 | absorb-lag threshold |
-| `REBALANCE_BUDGET` | 1/min/host | shard-move churn guard |
+| `REBALANCE_LAG_SECS` | 60 | absorb-lag threshold (sustained 2 fleet ticks) |
+| `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | churn guard: min gap between moves per host |
+| `SCALE_FAULT_POINT` | unset | test-only: `after_seal` aborts a split in the seal→save window (D4) |
+| `ABSORB_PAUSE` | unset | test-only: `1` pauses absorption so lag grows (D3) |
+
+### Crash resumability (implemented)
+
+The only non-atomic transition is split = seal, then CAS map-save. A
+scaler that dies between the two leaves a sealed segment that the map
+still shows live; routed appends bounce off `stream_closed`. The append
+wrapper self-heals: after one failed map refresh it re-seals the child
+(idempotent — `Closed` returns the frozen offset) and publishes the
+missing transition itself (`scaler::resume_split`, CAS-raced safely).
+The crashed transition was never published, so completing it with a
+fresh midpoint is correct regardless of what the dead scaler intended.
+
+### Rebalancer (implemented)
+
+Self-initiated: the laggard instance knows its own per-shard absorb lag,
+so it initiates the move (no leader). When `absorb_lag_max > 
+REBALANCE_LAG_SECS` for 2 fleet ticks and the move cooldown passed, it
+CAS-appends `{shard -> coolest fresh peer}` to `fleet/overrides.json`
+and drops the shard from its serving map. Everyone mirrors
+overrides.json into routing each fleet tick; `effective_owner()` =
+override (if target live) else rendezvous. The gaining instance fences
+the shard log on first routed request — existing R2/R3 machinery.
 
 ## 8. Validation plan
 

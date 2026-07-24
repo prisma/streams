@@ -630,6 +630,7 @@ async fn async_main() -> anyhow::Result<()> {
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
+        ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store,
         keys,
         touch,

@@ -224,6 +224,17 @@ pub fn absorb_lag_max() -> u64 {
     lag_map().lock().unwrap().values().copied().max().unwrap_or(0)
 }
 
+/// Every stream with unabsorbed bytes and its lag — the rebalancer maps
+/// these to shard prefixes to choose which shard to move off a laggard.
+pub fn absorb_lag_all() -> Vec<([u8; 16], u64)> {
+    lag_map()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(h, s)| (*h, *s))
+        .collect()
+}
+
 /// Snapshot every stream's cumulative counters (for /v1/debug/usage and
 /// the billing emitter).
 pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64)> {

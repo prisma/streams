@@ -1,0 +1,35 @@
+# SCALING.md docker ladder: 1 GB instances mirroring Prisma Compute.
+name: slate-ladder
+services:
+  s3lite:
+    image: slate-ladder:latest
+    command: ["s3lite", "--listen", "0.0.0.0:9500", "--latency-ms", "25"]
+    ports: ["127.0.0.1:9500:9500"]
+    mem_limit: 1g
+  streams-1: &server
+    image: slate-ladder:latest
+    command: ["streams-slate", "--listen", "0.0.0.0:8080"]
+    environment: &senv
+      INSTANCE_NAME: streams-1
+      SLATE_S3_ENDPOINT: http://s3lite:9500
+      SLATE_S3_BUCKET: ladder
+      SLATE_S3_REGION: local
+      PATH_PREFIX: d1
+      INITIAL_SHARDS: "8"
+      FRAME_COMPRESS: "1"
+      WAL_GROUP_COMMIT: "1"
+      SCALE_RATE_WINDOW_SECS: "60"
+      SCALE_IN_SECS: "100000"
+      RUST_LOG: info
+    ports: ["127.0.0.1:8101:8080"]
+    mem_limit: 1g
+    cpus: 2
+    depends_on: [s3lite]
+  streams-2:
+    <<: *server
+    environment: { <<: *senv, INSTANCE_NAME: streams-2 }
+    ports: ["127.0.0.1:8102:8080"]
+  streams-3:
+    <<: *server
+    environment: { <<: *senv, INSTANCE_NAME: streams-3 }
+    ports: ["127.0.0.1:8103:8080"]

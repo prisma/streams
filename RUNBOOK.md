@@ -199,6 +199,32 @@ hot instance, ack latency, router-observed edge latency), clamped to
 the reason string is logged on every change. The model is generalized in
 [AUTOSCALING-DESIGN.md](./AUTOSCALING-DESIGN.md).
 
+### 3.5b Stream auto-scaling (segments) & shard rebalancing
+
+Per-stream Pravega-style segment splits/merges and absorb-lag-driven
+shard moves — design and validation ladder in
+[docs/SCALING.md](./docs/SCALING.md). Opt a stream in with
+`Stream-Scaling: auto` at create; appends then require a `Stream-Key`
+routing key and are routed server-side to internal child streams
+(`<name>#<seg>`; invisible to readers of the segment map API).
+
+| env | default | meaning |
+|---|---|---|
+| `SCALE_EVAL_SECS` | 10 | scaler evaluation cadence |
+| `SCALE_RATE_WINDOW_SECS` | 120 | EWMA window for per-segment rates (Pravega's two-minute rate) |
+| `SCALE_HOT_PCT` / `SCALE_COLD_PCT` | 75 / 15 | split above / merge below, % of per-segment service limits |
+| `SCALE_HOT_EVALS` / `SCALE_COLD_EVALS` | 2 / 180 | consecutive evaluations before acting |
+| `SCALE_COOLDOWN_SECS` | 600 | min segment age before it may re-scale |
+| `MAX_SEGMENTS_PER_STREAM` | 64 | split guard |
+| `REBALANCE_LAG_SECS` | 60 | absorb-lag (s) beyond which the laggard moves a shard to a peer |
+| `REBALANCE_MOVE_COOLDOWN_SECS` | 60 | min gap between moves per host |
+
+Shard moves are published to `fleet/overrides.json` (CAS) and win over
+the rendezvous ring while the target is live. Splits survive scaler
+crashes: the append path re-seals and publishes the missing transition
+itself (`resume_split`). `SCALE_FAULT_POINT=after_seal` and
+`ABSORB_PAUSE=1` are test-only fault hooks (docker ladder D3/D4).
+
 ### 3.6 Admission control (run with these ON in production)
 
 | env | default | pilot value | behavior |

@@ -68,6 +68,26 @@ pub struct Heartbeat {
     pub out_inflight_peak: i64,
     pub owned_shards: Vec<String>,
     pub draining: bool,
+    /// Age of the oldest unabsorbed bytes across owned shards (s). The
+    /// rebalance signal: sustained > REBALANCE_LAG_SECS means this host
+    /// cannot keep up with its shards' internal machinery and one should
+    /// move (SCALING.md §4).
+    #[serde(default)]
+    pub absorb_lag_max_secs: u64,
+}
+
+/// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
+/// initiating (laggard) instance, read by everyone each fleet tick.
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+pub struct Overrides {
+    #[serde(default)]
+    pub entries: std::collections::HashMap<String, OverrideEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct OverrideEntry {
+    pub to: String,
+    pub ms: i64,
 }
 
 /// Current RSS in bytes. Linux (musl cloud build): /proc/self/statm.
@@ -170,6 +190,18 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         let mut below_since: Option<Instant> = None;
         let mut lat_breach_since: Option<Instant> = None;
         let mut cpu_breach_since: Option<Instant> = None;
+        // Rebalancer (SCALING.md §4): consecutive ticks with absorb lag
+        // over threshold, and the churn guard on shard moves.
+        let mut lag_hot_ticks: u32 = 0;
+        let mut last_move: Option<Instant> = None;
+        let rebalance_lag_secs: u64 = std::env::var("REBALANCE_LAG_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        let rebalance_cooldown: u64 = std::env::var("REBALANCE_MOVE_COOLDOWN_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
         let mut last_cpu = cpu_time_secs();
         let mut ewma_cpu = 0.0f64;
         loop {
@@ -235,6 +267,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 out_inflight_peak,
                 owned_shards: owned,
                 draining: false,
+                absorb_lag_max_secs: crate::usage::absorb_lag_max(),
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
             if let Err(e) = store
@@ -254,6 +287,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let mut max_loaded_cpu = 0.0f64;
             let mut hb_age_ms: std::collections::HashMap<String, i64> =
                 std::collections::HashMap::new();
+            // Fresh peers' load, for rebalance target choice.
+            let mut peer_cpu: std::collections::HashMap<String, f64> =
+                std::collections::HashMap::new();
             let mut listing = store.list(Some(&ObjPath::from("fleet")));
             use futures_util::StreamExt;
             let mut hb_paths = Vec::new();
@@ -261,6 +297,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 let Ok(meta) = meta else { continue };
                 if meta.location.as_ref().ends_with(".json")
                     && !meta.location.as_ref().ends_with("desired.json")
+                    && !meta.location.as_ref().ends_with("overrides.json")
                 {
                     hb_paths.push(meta.location);
                 }
@@ -273,6 +310,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 };
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
+                    peer_cpu.insert(other.instance.clone(), other.cpu_pct);
                     live += 1;
                     total_rps += other.rps;
                     total_cores_used += other.cpu_pct / 100.0;
@@ -434,6 +472,115 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     active = ordinal;
                 }
                 *state.ring_active.write().unwrap() = active;
+            }
+
+            // R4 rebalancer (SCALING.md §4). Every instance mirrors
+            // fleet/overrides.json into routing state; the laggard itself
+            // initiates a move (it alone knows per-shard lag), CAS-guarded.
+            {
+                let opath = ObjPath::from("fleet/overrides.json");
+                let (mut ov, ov_ver): (Overrides, Option<UpdateVersion>) =
+                    match store.get(&opath).await {
+                        Ok(r) => {
+                            let v = UpdateVersion {
+                                e_tag: r.meta.e_tag.clone(),
+                                version: r.meta.version.clone(),
+                            };
+                            let raw = r.bytes().await.unwrap_or_default();
+                            (serde_json::from_slice(&raw).unwrap_or_default(), Some(v))
+                        }
+                        Err(object_store::Error::NotFound { .. }) => (Overrides::default(), None),
+                        Err(e) => {
+                            tracing::warn!("overrides.json get failed: {e}");
+                            (Overrides::default(), None)
+                        }
+                    };
+                {
+                    let map: std::collections::HashMap<String, String> = ov
+                        .entries
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.to.clone()))
+                        .collect();
+                    *state.ring_overrides.write().unwrap() = map;
+                }
+
+                let my_lag = hb.absorb_lag_max_secs;
+                lag_hot_ticks = if my_lag > rebalance_lag_secs {
+                    lag_hot_ticks + 1
+                } else {
+                    0
+                };
+                let cooled = last_move
+                    .map(|t| t.elapsed().as_secs() >= rebalance_cooldown)
+                    .unwrap_or(true);
+                if lag_hot_ticks >= 2 && cooled {
+                    // Move my laggiest shard to the coolest fresh peer.
+                    let target = peer_cpu
+                        .iter()
+                        .filter(|(n, _)| **n != cfg.instance)
+                        .min_by(|a, b| a.1.total_cmp(b.1))
+                        .map(|(n, _)| n.clone());
+                    let victim = {
+                        let mut per_shard: std::collections::HashMap<String, u64> =
+                            std::collections::HashMap::new();
+                        for (h, lag) in crate::usage::absorb_lag_all() {
+                            let p = crate::registry::shard_for_hash(&state.shard_prefixes, &h);
+                            let e = per_shard.entry(p).or_insert(0);
+                            *e = (*e).max(lag);
+                        }
+                        per_shard
+                            .into_iter()
+                            .filter(|(p, _)| {
+                                state
+                                    .effective_owner(p)
+                                    .map(|o| o == cfg.instance)
+                                    .unwrap_or(false)
+                            })
+                            .max_by_key(|(_, lag)| *lag)
+                            .map(|(p, _)| p)
+                    };
+                    if let (Some(to), Some(prefix)) = (target, victim) {
+                        ov.entries.insert(
+                            prefix.clone(),
+                            OverrideEntry {
+                                to: to.clone(),
+                                ms: now_ms(),
+                            },
+                        );
+                        let payload = PutPayload::from(serde_json::to_vec(&ov).unwrap());
+                        let mode = match ov_ver {
+                            Some(v) => PutMode::Update(v),
+                            None => PutMode::Create,
+                        };
+                        let res = store
+                            .put_opts(
+                                &opath,
+                                payload,
+                                PutOptions::from(mode),
+                            )
+                            .await;
+                        match res {
+                            Ok(_) => {
+                                tracing::info!(
+                                    "rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)"
+                                );
+                                state
+                                    .ring_overrides
+                                    .write()
+                                    .unwrap()
+                                    .insert(prefix.clone(), to.clone());
+                                // Stop serving immediately; the new owner
+                                // fences the log on first routed request.
+                                state.shards.write().unwrap().remove(&prefix);
+                                last_move = Some(Instant::now());
+                                lag_hot_ticks = 0;
+                            }
+                            Err(e) => {
+                                tracing::info!("rebalancer: overrides CAS lost ({e}); retry next tick");
+                            }
+                        }
+                    }
+                }
             }
 
             // Scale-out publishes `need` immediately; scale-in publishes
