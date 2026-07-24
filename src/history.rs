@@ -343,6 +343,13 @@ impl Absorber {
                         pending_bytes = dropped,
                         "absorber exiting: shard fenced/closed"
                     );
+                    // The new owner absorbs this backlog; leaving the lag
+                    // entries frozen here reads as phantom absorb-lag on
+                    // the heartbeat forever (and would re-trigger the
+                    // rebalancer's alarm view after the move).
+                    for h in pending.keys() {
+                        crate::usage::clear_absorb_lag(h);
+                    }
                     let handles: Vec<[u8; 16]> =
                         absorber.open_dbs.lock().await.keys().copied().collect();
                     for h in handles {

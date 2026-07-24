@@ -843,6 +843,52 @@ async fn stream_entry_inner(
         )
         .await;
     }
+    // Segment map (SCALING.md §5): GET /v1/stream/<name>/segments returns
+    // the map + lineage for SDKs and tooling. Requires the stream key
+    // (same proof-of-authorization as reads).
+    if let Some(stream) = name.strip_suffix("/segments") {
+        if method != Method::GET {
+            return err_resp(
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "GET only",
+            );
+        }
+        let desc = match state.registry.get(stream).await {
+            Ok(Some(d)) if desc_alive(&d) => d,
+            Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+            Err(e) => {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+            }
+        };
+        match check_key(raw_key(&headers, &state), &desc) {
+            KeyCheck::Ok(..) => {}
+            KeyCheck::Missing => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "missing_key",
+                    "Stream-Encryption-Key required",
+                );
+            }
+            _ => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        }
+        if !desc.scaling {
+            return err_resp(
+                StatusCode::CONFLICT,
+                "not_scaled",
+                "stream does not have scaling enabled",
+            );
+        }
+        let hash = crate::crypto::stream_hash(&desc.name);
+        let store = state.registry.store();
+        let map = crate::scaler::load_map(&store, &hash).await;
+        return axum::Json(serde_json::json!({
+            "stream": desc.name,
+            "version": map.version,
+            "segments": map.segments,
+        }))
+        .into_response();
+    }
     // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
     if let Some((stream, route)) = name.split_once("/touch/") {
         return touch_entry(
