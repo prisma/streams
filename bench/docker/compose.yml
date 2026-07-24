@@ -18,6 +18,7 @@ services:
       SLATE_S3_REGION: local
       PATH_PREFIX: d1
       FLEET_PREFIX: ladder-fleet
+      FLEET_MIN: "3"
       INITIAL_SHARDS: "8"
       FRAME_COMPRESS: "1"
       WAL_GROUP_COMMIT: "1"

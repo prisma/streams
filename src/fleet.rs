@@ -450,6 +450,15 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     }
                 };
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
+            // FLEET_MIN: hard floor on the fleet size (HA / pinned test
+            // rings). All dimensions and the shrink target respect it.
+            let fleet_min: u64 = std::env::var("FLEET_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1)
+                .max(1);
+            let need = need.max(fleet_min);
+            let need_shrink = need_shrink.max(fleet_min);
             // Publish the ring's ACTIVE set for the R2 ownership check:
             // the first `desired` ordinal instances, dropping any that have
             // been heartbeat-dark >30 s (wedged — requests would have woken
