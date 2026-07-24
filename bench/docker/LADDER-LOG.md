@@ -72,3 +72,38 @@ Drive: 14 k rec/s offered against a 5 k rec/s per-segment limit, 420 s.
   pairs stay split — documented v1 limitation).
 - Order check across the FULL 16-segment lineage: **5,507,000 /
   5,507,000 drained, all 32 keys gapless — PASS**. D2 GREEN (pass 1).
+
+## Fleet-mode correction (affects all later runs)
+
+`FLEET_PREFIX` was unset in the compose — the ring, heartbeats, and
+rebalancer were dormant, so D1/D2 (pass 1) ran effectively
+single-instance: their scaler/segmap/order results stand, but ring
+enforcement does not apply to them. Fixed (`FLEET_PREFIX=ladder-fleet`)
+plus a new `FLEET_MIN` floor (an idle fleet otherwise shrinks desired
+to 1 and the ring collapses — FLEET_MIN=3 pins the test ring; in
+production it doubles as an HA floor). Pass 2 of the ladder runs with
+the true 3-instance ring — redirect counts in driver stats prove it.
+
+## D3 — absorb-lag rebalancer (first run: move fired; two fixes)
+
+streams-2 ran with ABSORB_PAUSE=1; stream f3g owned by it; 2 k rec/s.
+
+- Lag climbed 1 s/s; at **64 s** streams-2 published the move:
+  `rebalancer: moving shard 000 -> streams-3 (absorb lag 64s)` and
+  streams-3 fenced the log 3 s later (`opening shard log shards/000
+  (lazy; fences prior owner)`). Post-move: streams-3 lag 6 s and
+  draining, streams-2 serving nothing. d2t replay backlog legitimately
+  triggered additional moves from other instances (each initiates for
+  its own lag; cooldown is per-instance).
+- Driver: 598,400 ok, 295 replay-to redirects followed, 25× 429 — but
+  **3,200 records abandoned**: the test driver's ~3.6 s max patience is
+  shorter than the ~10 s fencing handoff. Fixed the harness (patient
+  backoff, as a production SDK would). The handoff window itself is the
+  known 3 s anti-flap holdoff + lazy open, availability dip confined to
+  the moved shard.
+- Fixed a real gauge leak the run exposed: a fenced-away shard's
+  absorb-lag entries froze at their last value (phantom 74 s lag on an
+  instance serving nothing). The absorber now clears its pending
+  streams' lag entries on exit.
+- Added `GET /v1/stream/{name}/segments` (SCALING.md §5) — the checker
+  now reads the map from the API instead of guessing at bucket objects.
