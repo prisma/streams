@@ -74,6 +74,13 @@ pub struct Heartbeat {
     /// move (SCALING.md §4).
     #[serde(default)]
     pub absorb_lag_max_secs: u64,
+    /// Worst wedge across owned shards (ms): blocked commit write or
+    /// stale durability. Complements absorb lag as the rebalance signal —
+    /// a backpressured shard sheds appends BEFORE they commit, so lag
+    /// (age of committed-but-unabsorbed bytes) never grows on a wedged
+    /// instance (ladder p4b D3: zero-flow vacuous run).
+    #[serde(default)]
+    pub wedge_max_ms: i64,
 }
 
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
@@ -226,9 +233,14 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             };
 
             // 1. Heartbeat (single writer per object: plain PUT).
-            let (owned, ack_p50_ms) = {
+            let (owned, ack_p50_ms, wedge_prefix, wedge_max_ms) = {
                 let shards = state.shards.read().unwrap();
                 let owned: Vec<String> = shards.keys().cloned().collect();
+                let (wedge_prefix, wedge_max_ms) = shards
+                    .iter()
+                    .map(|(p, e)| (p.clone(), e.wedge_ms()))
+                    .max_by_key(|(_, w)| *w)
+                    .unwrap_or((String::new(), 0));
                 let cutoff = now_ms() - 15_000;
                 let mut waits: Vec<u32> = Vec::new();
                 for eng in shards.values() {
@@ -246,7 +258,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .get(waits.len() / 2)
                     .map(|us| *us as f64 / 1000.0)
                     .unwrap_or(0.0);
-                (owned, (p50 * 10.0).round() / 10.0)
+                (owned, (p50 * 10.0).round() / 10.0, wedge_prefix, wedge_max_ms)
             };
             let inflight_now = state.inflight.load(Ordering::Relaxed);
             let inflight_peak = state.inflight_peak.swap(inflight_now, Ordering::Relaxed);
@@ -268,6 +280,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 owned_shards: owned,
                 draining: false,
                 absorb_lag_max_secs: crate::usage::absorb_lag_max(),
+                wedge_max_ms,
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
             if let Err(e) = store
@@ -290,6 +303,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             // Fresh peers' load (cpu, absorb lag), for rebalance targets.
             let mut peer_load: std::collections::HashMap<String, (f64, u64)> =
                 std::collections::HashMap::new();
+            // (cpu, effective lag secs incl. wedge)
             let mut listing = store.list(Some(&ObjPath::from("fleet")));
             use futures_util::StreamExt;
             let mut hb_paths = Vec::new();
@@ -310,8 +324,10 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 };
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
-                    peer_load
-                        .insert(other.instance.clone(), (other.cpu_pct, other.absorb_lag_max_secs));
+                    let eff_lag = other
+                        .absorb_lag_max_secs
+                        .max((other.wedge_max_ms / 1000).max(0) as u64);
+                    peer_load.insert(other.instance.clone(), (other.cpu_pct, eff_lag));
                     live += 1;
                     total_rps += other.rps;
                     total_cores_used += other.cpu_pct / 100.0;
@@ -602,7 +618,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     }
                 }
 
-                let my_lag = hb.absorb_lag_max_secs;
+                let my_lag = hb.absorb_lag_max_secs.max((hb.wedge_max_ms / 1000).max(0) as u64);
                 lag_hot_ticks = if my_lag > rebalance_lag_secs {
                     lag_hot_ticks + 1
                 } else {
@@ -648,6 +664,15 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             })
                             .max_by_key(|(_, lag)| *lag)
                             .map(|(p, _)| p)
+                            // No committed backlog anywhere (shed-before-
+                            // commit): move the WEDGED shard itself.
+                            .or_else(|| {
+                                if wedge_max_ms > 0 && !wedge_prefix.is_empty() {
+                                    Some(wedge_prefix.clone())
+                                } else {
+                                    None
+                                }
+                            })
                     };
                     if let (Some(to), Some(prefix)) = (target, victim) {
                         ov.entries.insert(
