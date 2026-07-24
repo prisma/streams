@@ -107,3 +107,27 @@ streams-2 ran with ABSORB_PAUSE=1; stream f3g owned by it; 2 k rec/s.
   streams' lag entries on exit.
 - Added `GET /v1/stream/{name}/segments` (SCALING.md §5) — the checker
   now reads the map from the API instead of guessing at bucket objects.
+
+## D3 rerun (`g3a`, true ring) — GREEN
+
+Move fired again (`101 -> streams-1`), **598,400/598,400 drained, ORDER
+CHECK PASS** — zero loss, zero duplicates through a live shard move; 396
+replay-to redirects followed. Remaining client-visible cost: requests
+already in flight to the losing instance at the drop moment hung to
+client timeout (one batch per worker). Fixed in code: the rebalancer now
+`begin_close()`es the engine (immediate retryable `Moved` for everything
+queued) — validated in pass 2.
+
+## D4 — crash-resume (fault-injected splits) — GREEN
+
+All three servers ran `SCALE_FAULT_POINT=after_seal`: every split
+attempt "died" in the seal→map-save window (the only non-atomic step).
+
+- `FAULT INJECTED: crashed after sealing d4s#0 (map not saved)` →
+  **527 ms later** the append path healed it: `scaler: resumed crashed
+  split of d4s seg0 at 0x7fff…` (re-seal is idempotent, missing
+  transition published by the wrapper, CAS-raced safely).
+- Driver: **1,292,800/1,292,800 at 4,299.7 rec/s, zero errors, zero
+  retries** — the injected crash was invisible to clients (15 internal
+  stream-closed refreshes, all absorbed inside the routing wrapper).
+- Map converged v2 live=[1,2] sealed=[0]; ORDER CHECK PASS.
