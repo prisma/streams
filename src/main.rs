@@ -9,6 +9,7 @@ mod queue;
 mod registry;
 mod shard;
 mod store_timing;
+mod segmap;
 mod touch;
 mod touch_keys;
 mod usage;
