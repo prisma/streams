@@ -245,3 +245,25 @@ the loser immediately); healthy-target gate (no move to a peer with
 lag ≥ REBALANCE_LAG/2); return-home (overrides drop once the rendezvous
 owner is healthy again; REBALANCE_RETURN_SECS). Checker hardened
 (page retries; except-order bug fixed). Pass 4 runs the full ladder.
+
+## Pass 4b (final image: idempotent driver + etag refresh + all hardening)
+
+- **D1 GREEN**: 1,548,800/1,548,800, zero errors, 32 producer resyncs.
+- **D2 GREEN — the p2b conditions defeated**: 3,167,800 ok at 5.6 k
+  rec/s with 42× 408-ambiguous appends and 8,800 abandoned records —
+  and the order check PASSED: producer idempotence + the safe give-up
+  ledger held under exactly the load that corrupted p2b. Aggregate is
+  lower than p3's 7.7 k because the healthy-target gate now HOLDS
+  shards under global backlog instead of ping-ponging them (correct
+  trade).
+- **D3 VACUOUS (not counted)**: the paused instance still carried D2's
+  unabsorbed backlog; L0 backpressure shed every append at admission,
+  so the lag signal (committed pending bytes) never grew and the
+  rebalancer never fired; the checker "passed" 0==0. Two fixes: the
+  rebalance signal is now max(absorb-lag, per-shard wedge_ms) with the
+  wedged shard as fallback victim, and the checker fails vacuous runs.
+- **D4 GREEN**: fault-injected split healed; 1,292,800/1,292,800.
+- **D5 GREEN**: 30-min soak, 8 chaos restarts, 5,401,600/5,401,600.
+
+Pass 5 runs the wedge-aware build; two consecutive full greens (with a
+REAL D3) remain the Compute gate.
