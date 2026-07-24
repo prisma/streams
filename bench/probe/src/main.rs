@@ -467,7 +467,11 @@ fn tls_probe_sync(host: &str) -> serde_json::Value {
 // resolv.conf nameserver it reveals the RECURSIVE RESOLVER's public IP —
 // the address GeoDNS databases actually geolocate.
 
-fn dns_txt_query(server: std::net::SocketAddr, name: &str) -> Result<Vec<String>, String> {
+fn dns_query(
+    server: std::net::SocketAddr,
+    name: &str,
+    qtype: u16,
+) -> Result<Vec<String>, String> {
     use std::net::UdpSocket;
     let mut q = Vec::with_capacity(64);
     q.extend_from_slice(&[0x13, 0x37, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]);
@@ -476,7 +480,8 @@ fn dns_txt_query(server: std::net::SocketAddr, name: &str) -> Result<Vec<String>
         q.extend_from_slice(label.as_bytes());
     }
     q.push(0);
-    q.extend_from_slice(&[0, 16, 0, 1]); // QTYPE TXT, QCLASS IN
+    q.extend_from_slice(&qtype.to_be_bytes());
+    q.extend_from_slice(&[0, 1]); // QCLASS IN
     let sock = UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
     sock.set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
@@ -524,6 +529,8 @@ fn dns_txt_query(server: std::net::SocketAddr, name: &str) -> Result<Vec<String>
                 }
                 j += l;
             }
+        } else if rtype == 1 && rdlen == 4 && i + 4 <= n {
+            out.push(format!("{}.{}.{}.{}", b[i], b[i + 1], b[i + 2], b[i + 3]));
         }
         i += rdlen;
     }
@@ -544,16 +551,47 @@ fn dns_identity() -> serde_json::Value {
             .and_then(|mut a| a.find(|s| s.is_ipv4()))
     };
     let direct = google_ns
-        .map(|s| dns_txt_query(s, "o-o.myaddr.l.google.com"))
+        .map(|s| dns_query(s, "o-o.myaddr.l.google.com", 16))
         .unwrap_or_else(|| Err("ns1.google.com unresolvable".into()));
     let via_resolver = local_ns
-        .map(|ip| dns_txt_query(std::net::SocketAddr::new(ip, 53), "o-o.myaddr.l.google.com"))
+        .map(|ip| dns_query(std::net::SocketAddr::new(ip, 53), "o-o.myaddr.l.google.com", 16))
         .unwrap_or_else(|| Err("no nameserver in resolv.conf".into()));
+    // Authoritative-vs-recursive comparison (Bo's discriminator): query
+    // t3.storage.dev A records directly against NS1's authoritative
+    // servers — NS1 then geolocates THIS VM's egress instead of the
+    // recursive resolver's. A clean direct set + polluted recursive set
+    // pins the fault to resolver-egress geolocation.
+    let via_resolver_a = local_ns
+        .map(|ip| dns_query(std::net::SocketAddr::new(ip, 53), "t3.storage.dev", 1))
+        .unwrap_or_else(|| Err("no nameserver".into()));
+    let mut authoritative = serde_json::Map::new();
+    for ns in [
+        "dns1.p05.nsone.net",
+        "dns2.p05.nsone.net",
+        "dns3.p05.nsone.net",
+        "dns4.p05.nsone.net",
+    ] {
+        use std::net::ToSocketAddrs;
+        let addr = (ns, 53u16)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.find(|s| s.is_ipv4()));
+        let entry = match addr {
+            Some(a) => match dns_query(a, "t3.storage.dev", 1) {
+                Ok(v) => serde_json::json!({"ns_ip": a.ip().to_string(), "answers": v}),
+                Err(e) => serde_json::json!({"ns_ip": a.ip().to_string(), "err": e}),
+            },
+            None => serde_json::json!({"err": "unresolvable"}),
+        };
+        authoritative.insert(ns.into(), entry);
+    }
     serde_json::json!({
         "resolv_conf": resolv,
         "ns1_google": google_ns.map(|s| s.ip().to_string()),
         "myaddr_direct_at_ns1_google": match direct { Ok(v) => serde_json::json!(v), Err(e) => serde_json::json!({"err": e}) },
         "myaddr_via_local_resolver": match via_resolver { Ok(v) => serde_json::json!(v), Err(e) => serde_json::json!({"err": e}) },
+        "t3_a_via_local_resolver": match via_resolver_a { Ok(v) => serde_json::json!(v), Err(e) => serde_json::json!({"err": e}) },
+        "t3_a_authoritative_direct": authoritative,
     })
 }
 
