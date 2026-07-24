@@ -190,3 +190,11 @@ validation: **zero abandoned batches through the shard move** (pass 1:
 Harness fixes: emulator 6 GB; `ladder.sh` now recreates the world at
 the start of every pass (a pass is self-contained and comparable).
 Full rerun as pass 2b.
+
+Run rv3 (1 KB records, run-22 parity, 12 min closed loop on the new
+binary): **35/36 windows with P2C p99 < 1 s, median P2C p99 256 ms**
+(p50 115 ms), 735 req/s / 3,676 rec/s sustained, zero errors, zero
+throttles. The 1 s producer→consumer guarantee holds on the deployed
+scaling-era binary (run 22 for comparison: 20/21 windows, median
+596 ms). rv2's 404 wall was harness, not server: the generator never
+creates streams; p2c-rv2 was created manually for rv3.
