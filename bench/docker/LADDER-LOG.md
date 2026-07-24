@@ -198,3 +198,22 @@ throttles. The 1 s producer→consumer guarantee holds on the deployed
 scaling-era binary (run 22 for comparison: 20/21 windows, median
 596 ms). rv2's 404 wall was harness, not server: the generator never
 creates streams; p2c-rv2 was created manually for rv3.
+
+## Pass 2b — D2 ORDER CHECK FAIL: the ladder catches at-least-once ambiguity
+
+D1/D3/D4 (p2b) green (D3 with **zero** abandoned batches — begin_close
+validated). D2 (p2b) FAILED the order check: keys 0 and 3 each show
+exactly **one duplicated 200-record batch** (len 183,800/183,600). Root
+cause is protocol, not the scaler: under ring-spread 2.8× overload the
+drive drew 28× 408 append-timeouts; a 408 is an AMBIGUOUS outcome, the
+test driver abandoned those batches and reused their payload seqs, and
+two of the timed-out appends had in fact committed. Classic
+at-least-once duplication — the exact failure class producer
+idempotence exists for, and the server already implements it
+(Producer-Id/Epoch/Seq, dup → 204, gap → 409 + Producer-Expected-Seq).
+
+Fix: the ladder driver is now an idempotent producer (same seq on
+ambiguous retries, resync on gap, a seq is never reused for different
+content). Remaining seal-coincident window documented in SCALING.md
+known-limitations with production fix candidates. Pass 3 runs the full
+ladder with the idempotent driver.

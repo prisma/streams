@@ -179,6 +179,22 @@ fresh midpoint is correct regardless of what the dead scaler intended.
 - **Segmap cache refresh is synchronous**: one request per stream per
   2 s TTL pays a ~25–50 ms store GET (measured: p99 +53 ms on a 25 ms
   store, p50 +0.4 ms). Stale-while-revalidate would erase it.
+- **Producer sessions do not survive a split.** Producer idempotence
+  state (Producer-Id → epoch/seq) is per SEGMENT: after a split the
+  fresh child expects seq 0, so a producer must resync on
+  `producer_seq_gap` (`Producer-Expected-Seq` header carries the
+  target). Consequence: a batch whose outcome was ambiguous (e.g. 408)
+  exactly when its segment sealed can commit on the parent AND, after
+  resync, again on the child — the dedup window reopens at the
+  boundary. Ladder D2 (pass 2b) demonstrated the underlying failure
+  without producer headers at all: two 408-ambiguous batches were
+  retried as new content and duplicated per-key sequences. The ladder
+  driver is now an idempotent producer (retry same seq until
+  unambiguous, resync on gap), which closes everything except the
+  seal-coincident window. Production fix candidates: seed the child's
+  producer table from the parent at split (map-save already knows the
+  sealed offset), or reader-side (producer-id, seq) dedup across the
+  lineage.
 
 ### Rebalancer (implemented)
 
