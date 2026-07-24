@@ -165,6 +165,21 @@ missing transition itself (`scaler::resume_split`, CAS-raced safely).
 The crashed transition was never published, so completing it with a
 fresh midpoint is correct regardless of what the dead scaler intended.
 
+### Known v1 limitations
+
+- **Merges require co-located pairs.** A merge seals BOTH parents, and
+  seals run through the local engine; each instance only evaluates
+  segments whose shards it serves. An adjacent cold pair split across
+  two instances is never merged (correct, just not compacted). With
+  production `SCALE_COLD_EVALS=180` merges are rare slow events; the
+  fix, if it earns its keep, is seal-by-owner over instance-to-instance
+  HTTP (heartbeats would carry a `self_url`) or explicit child placement
+  via the segmap's `shard_prefix` field (schema already carries it —
+  placement is hash-random today).
+- **Segmap cache refresh is synchronous**: one request per stream per
+  2 s TTL pays a ~25–50 ms store GET (measured: p99 +53 ms on a 25 ms
+  store, p50 +0.4 ms). Stale-while-revalidate would erase it.
+
 ### Rebalancer (implemented)
 
 Self-initiated: the laggard instance knows its own per-shard absorb lag,
