@@ -67,3 +67,8 @@ Drive: 14 k rec/s offered against a 5 k rec/s per-segment limit, 420 s.
   instance): catch-up bursts at the bucket boundary kept children above
   the 75 % trip. Behavior is per policy (MAX_SEGMENTS guard far away);
   production's 120 s EWMA window would damp the cascade.
+- Merge phase: segments went cold on schedule; map converged to
+  **v10, 4 live / 12 sealed** (co-located pairs merged; cross-instance
+  pairs stay split — documented v1 limitation).
+- Order check across the FULL 16-segment lineage: **5,507,000 /
+  5,507,000 drained, all 32 keys gapless — PASS**. D2 GREEN (pass 1).
