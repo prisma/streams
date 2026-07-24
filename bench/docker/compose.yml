@@ -7,7 +7,7 @@ services:
     ports: ["127.0.0.1:9500:9500"]
     # The SERVERS mirror 1 GB Compute instances; the emulator is stand-in
     # cloud storage and must not be the thing that OOMs (D2 lesson).
-    mem_limit: 6g
+    mem_limit: 10g
   streams-1: &server
     image: slate-ladder:latest
     command: ["streams-slate", "--listen", "0.0.0.0:8080"]
