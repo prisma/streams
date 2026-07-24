@@ -131,3 +131,20 @@ attempt "died" in the seal→map-save window (the only non-atomic step).
   retries** — the injected crash was invisible to clients (15 internal
   stream-closed refreshes, all absorbed inside the routing wrapper).
 - Map converged v2 live=[1,2] sealed=[0]; ORDER CHECK PASS.
+
+## Production measurement: history-read fix on real Tigris (SIN)
+
+A/B on the warm sinmax rig (`max-22`, 1.6 M absorbed records, ~2 KB
+each), identical paged reads from offset start:
+
+| binary | first page | steady rate | failure mode |
+|---|---|---|---|
+| pre-fix | 39.9 s / 8,441 recs | **84 rec/s** | 504 on page 2 (front-door 60 s kill) |
+| post-fix | 4.3 s cold, ~2 s after | **3,528 rec/s** (~8 MB/s egress) | none (12 pages clean) |
+
+**42× faster; catch-up on this stream: ~5.3 h → ~7.6 min.** The fix is
+`hist_scan_opts()` (2 MB readahead / 2 fetch tasks / block cache) on the
+history scan — slatedb's default `ScanOptions` fetches ONE ~200-byte
+compressed block per sequential GET. New SIN deploy: version
+`cpv_m4es5otj7ukw458fqdmk58bg` (adds the scaling machinery, inert
+without `Stream-Scaling: auto`).
