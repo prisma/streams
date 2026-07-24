@@ -92,9 +92,31 @@ pub async fn load_map(
     store: &std::sync::Arc<dyn object_store::ObjectStore>,
     hash: &[u8; 16],
 ) -> SegmentMap {
-    if let Some(c) = cache().lock().unwrap().get(hash) {
-        if c.at.elapsed() < CACHE_TTL {
-            return c.map.clone();
+    let stale = {
+        let c = cache().lock().unwrap();
+        match c.get(hash) {
+            Some(c) if c.at.elapsed() < CACHE_TTL => return c.map.clone(),
+            Some(c) => Some((c.map.clone(), c.etag.clone())),
+            None => None,
+        }
+    };
+    // TTL refresh: revalidate by etag first — a 304 costs a header
+    // round-trip and no parse, so map SIZE never taxes the append path
+    // (the map retains sealed lineage and only grows).
+    if let Some((map, Some(etag))) = &stale {
+        let opts = object_store::GetOptions {
+            if_none_match: Some(etag.clone()),
+            ..Default::default()
+        };
+        match store.get_opts(&segmap::path(hash), opts).await {
+            Err(object_store::Error::NotModified { .. }) => {
+                let mut c = cache().lock().unwrap();
+                if let Some(e) = c.get_mut(hash) {
+                    e.at = Instant::now();
+                }
+                return map.clone();
+            }
+            _ => {} // changed, missing, or store hiccup: full load below
         }
     }
     let (map, etag) = match segmap::load(store, hash).await {

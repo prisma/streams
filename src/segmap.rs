@@ -329,6 +329,10 @@ use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use std::sync::Arc;
 
+pub fn path(stream_hash: &[u8; 16]) -> ObjPath {
+    segmap_path(stream_hash)
+}
+
 fn segmap_path(stream_hash: &[u8; 16]) -> ObjPath {
     ObjPath::from(format!("segmaps/{}.json", crate::crypto::hex(stream_hash)))
 }

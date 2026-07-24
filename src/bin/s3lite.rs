@@ -354,6 +354,17 @@ fn get_object(
             "body was discarded by --discard-substr",
         );
     };
+    // Conditional GET: If-None-Match -> 304 (real S3 semantics; the
+    // segmap TTL refresh depends on this being cheap).
+    if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+        if inm == obj.etag || inm.split(',').any(|t| t.trim() == obj.etag) {
+            return Response::builder()
+                .status(StatusCode::NOT_MODIFIED)
+                .header(header::ETAG, obj.etag.clone())
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
     let total = if obj.discarded {
         obj.orig_len
     } else {

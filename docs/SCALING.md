@@ -179,6 +179,17 @@ fresh midpoint is correct regardless of what the dead scaler intended.
 - **Segmap cache refresh is synchronous**: one request per stream per
   2 s TTL pays a ~25–50 ms store GET (measured: p99 +53 ms on a 25 ms
   store, p50 +0.4 ms). Stale-while-revalidate would erase it.
+- **The segment map retains sealed lineage and only grows** (~200 B
+  JSON per transition; production cooldowns bound growth to ~KB/day,
+  but it is unbounded in principle). Mitigations: the append-path TTL
+  refresh revalidates by etag (`If-None-Match` → 304), so map SIZE
+  never taxes routing — only actual transitions pay a full download;
+  `SegmentMap::prune()` exists and removes drained sealed entries, but
+  its trigger is retention semantics (an entry must outlive its
+  segment's READABLE data, which today is retained indefinitely). Wire
+  prune when stream retention lands; revisit encoding (binary/zstd or
+  an archive chain for cold lineage) only if transition volume ever
+  outpaces pruning.
 - **Producer sessions do not survive a split.** Producer idempotence
   state (Producer-Id → epoch/seq) is per SEGMENT: after a split the
   fresh child expects seq 0, so a producer must resync on
