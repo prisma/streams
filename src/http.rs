@@ -453,6 +453,85 @@ async fn debug_usage() -> Response {
 /// achieved compression rate are derivable from these). Disabled with a
 /// warning when BILLING_STREAM_KEY is unset. The billing stream's own
 /// usage is excluded to avoid self-feedback.
+/// Server-internal segment seal: enqueue a close-only commit (no key
+/// material needed — close writes tail state only) and return the frozen
+/// next_offset. None when the stream/engine is unavailable.
+async fn internal_close(state: Arc<AppState>, name: String) -> Option<u64> {
+    let desc = state.registry.get(&name).await.ok().flatten()?;
+    // Mirror the append path exactly: records are keyed by storage_hash,
+    // but the ENGINE is selected by stream_hash(name) (mismatching them
+    // closed a phantom keyspace on another shard - e2e run 4, next=0).
+    let hash = desc.storage_hash();
+    let engine = state
+        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .await
+        .ok()?;
+    let (tx, rx) = oneshot::channel();
+    let req = AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash,
+        entries: vec![],
+        usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
+        routing_key: String::new(),
+        key_version: 0,
+        subkey: [0u8; 32],
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 0,
+        close: true,
+        producer: None,
+        deferred_error: None,
+        touch: None,
+        resp: tx,
+    };
+    engine.try_enqueue(req).ok()?;
+    match rx.await {
+        Ok(Ok(ack)) => Some(ack.next_offset),
+        Ok(Err(crate::shard::AppendErr::Closed { next_offset })) => Some(next_offset),
+        _ => None,
+    }
+}
+
+/// The scaler loop (SCALING.md §2): evaluates every scaled stream this
+/// instance has routed for, on SCALE_EVAL_SECS cadence. CAS on the
+/// segment map arbitrates between instances.
+pub fn spawn_scaler(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let secs = crate::scaler::policy().eval_secs;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            let store = state.registry.store();
+            for parent in crate::scaler::scaled_streams() {
+                let mut ewmas = {
+                    crate::scaler::ewma_state()
+                        .lock()
+                        .unwrap()
+                        .remove(&parent)
+                        .unwrap_or_default()
+                };
+                let st = state.clone();
+                let outcome = crate::scaler::evaluate_stream(
+                    &store,
+                    &parent,
+                    &mut ewmas,
+                    |seg_name: String| {
+                        let st = st.clone();
+                        async move { internal_close(st, seg_name).await }
+                    },
+                )
+                .await;
+                if let Some(desc) = outcome {
+                    tracing::info!("scaler: {desc}");
+                }
+                crate::scaler::ewma_state()
+                    .lock()
+                    .unwrap()
+                    .insert(parent, ewmas);
+            }
+        }
+    });
+}
+
 pub fn spawn_billing(state: Arc<AppState>) {
     let Ok(key) = std::env::var("BILLING_STREAM_KEY") else {
         tracing::warn!("BILLING_STREAM_KEY unset; billing emitter disabled");
@@ -970,6 +1049,7 @@ fn fresh_desc(
         touch_token_fingerprint: tt_fpr,
         touch_templates,
         touch_sig_key: sig_key,
+        scaling: false,
     }
 }
 
@@ -1173,6 +1253,8 @@ async fn create_stream(
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            fresh.scaling = hdr(&headers, "stream-scaling").as_deref() == Some("auto")
+                && !name.contains('#');
             match state
                 .registry
                 .recreate(&name, fresh, |d| !desc_alive(d))
@@ -1207,6 +1289,8 @@ async fn create_stream(
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
+            fresh.scaling = hdr(&headers, "stream-scaling").as_deref() == Some("auto")
+                && !name.contains('#');
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -1311,6 +1395,20 @@ async fn create_stream(
         }
     } else if !created && close {
         closed_now = true; // preserved on idempotent PUT of a closed stream
+    }
+
+    // Scaled stream: persist the initial single-segment map at creation so
+    // segment ages (cooldowns) are real. Idempotent: Create-mode CAS loses
+    // harmlessly if the map already exists.
+    if created && desc.scaling {
+        let m = crate::segmap::SegmentMap::initial("", crate::shard::now_ms());
+        let _ = crate::segmap::save(
+            &state.registry.store(),
+            &crate::crypto::stream_hash(&desc.name),
+            &m,
+            None,
+        )
+        .await;
     }
 
     let status = if created {
@@ -1535,9 +1633,35 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 }
 
 async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Body) -> Response {
+    // Scaled-stream routing (SCALING.md): a parent stream with scaling on
+    // never takes appends itself — the routing key maps through the
+    // segment map to an internal child stream "<parent>#<seg_id>". The
+    // child is sealed (closed) during a split/merge transition; the retry
+    // loop refreshes the map and follows the successor, so clients never
+    // observe the transition beyond a few ms of latency.
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Ok(other) => {
+            // Lazy child creation: "<parent>#<n>" appears when the scaler
+            // opens a segment; the first append (which carries the stream
+            // key) creates it inheriting the parent's config.
+            if let Some((parent, _)) = name.split_once('#') {
+                if let Ok(Some(pd)) = state.registry.get(parent).await {
+                    if pd.scaling && desc_alive(&pd) && other.is_none() {
+                        let mut ch = headers.clone();
+                        if let Ok(v) = axum::http::HeaderValue::from_str(&pd.content_type) {
+                            ch.insert("content-type", v);
+                        }
+                        let r = create_stream(state.clone(), name.clone(), ch, Bytes::new()).await;
+                        if r.status().is_success() || r.status() == StatusCode::CONFLICT {
+                            return Box::pin(append(state, name, headers, body)).await;
+                        }
+                        return r;
+                    }
+                }
+            }
+            return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found");
+        }
         Err(e) => {
             return err_resp(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1546,6 +1670,44 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
             );
         }
     };
+    if desc.scaling && !name.contains('#') {
+        let rk = hdr(&headers, "stream-key").unwrap_or_default();
+        if rk.is_empty() {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "routing_key_required",
+                "scaled streams require a Stream-Key routing key on appends",
+            );
+        }
+        let store = state.registry.store();
+        let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+            Ok(b) => b,
+            Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+        };
+        for attempt in 0..4u32 {
+            let target = crate::scaler::route(&store, &name, &rk).await;
+            let r = Box::pin(append(
+                state.clone(),
+                target,
+                headers.clone(),
+                Body::from(body_bytes.clone()),
+            ))
+            .await;
+            // Sealed child mid-transition: refresh the map and follow.
+            if r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed") {
+                crate::scaler::invalidate(&crate::crypto::stream_hash(&name));
+                tokio::time::sleep(std::time::Duration::from_millis(25 * (attempt as u64 + 1)))
+                    .await;
+                continue;
+            }
+            return r;
+        }
+        return err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "segment_transition",
+            "segment map transition did not converge; retry",
+        );
+    }
     let _stream_slot = match acquire_stream_slot(&state, crate::crypto::stream_hash(&desc.name)) {
         Ok(s) => s,
         Err(r) => return r,

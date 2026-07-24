@@ -9,6 +9,7 @@ mod queue;
 mod registry;
 mod shard;
 mod store_timing;
+mod scaler;
 mod segmap;
 mod touch;
 mod touch_keys;
@@ -698,6 +699,7 @@ async fn async_main() -> anyhow::Result<()> {
         );
     }
     http::spawn_billing(state.clone());
+    http::spawn_scaler(state.clone());
     let app = http::router(state);
 
     crate::store_timing::spawn_sentinels();

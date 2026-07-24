@@ -58,6 +58,12 @@ pub struct StreamDesc {
     /// the touch token (observation-forging at worst, never decryption).
     #[serde(default)]
     pub touch_sig_key: Option<String>,
+    /// Pravega-style auto-scaling (SCALING.md): per-key streams only.
+    /// When true, routing keys map through a dynamic segment map to
+    /// internal segment streams ("name#segN"); the scaler splits/merges
+    /// segments against the per-segment service limits.
+    #[serde(default)]
+    pub scaling: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +138,11 @@ fn desc_path(name: &str) -> ObjPath {
 }
 
 impl Registry {
+    /// Ops-bucket handle (segment maps live beside stream descriptors).
+    pub fn store(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
+    }
+
     pub fn new(store: Arc<dyn ObjectStore>) -> Registry {
         Registry {
             store,
@@ -461,6 +472,7 @@ mod tests {
             touch_token_fingerprint: None,
             touch_templates: Vec::new(),
             touch_sig_key: None,
+            scaling: false,
         }
     }
 

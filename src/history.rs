@@ -79,6 +79,19 @@ fn block_err(msg: &str) -> slatedb::Error {
 
 // ---- history record codec ----
 
+
+/// Scan options for history reads: without readahead, slatedb fetches one
+/// (compressed, ~200B) block per sequential GET — thousands of round-trips
+/// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
+fn hist_scan_opts() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        read_ahead_bytes: 2 * 1024 * 1024,
+        max_fetch_tasks: 2,
+        cache_blocks: true,
+        ..Default::default()
+    }
+}
+
 pub fn hist_record_key(offset: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(10);
     k.extend_from_slice(b"r!");
@@ -659,18 +672,10 @@ pub async fn read_history(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> anyhow::Result<HistoryReadResult> {
-    let reader = {
-        let path = history_db_path(hash);
-        let store = data_store.clone();
-        let k = key.clone();
-        crate::on_slatedb_rt(async move {
-            DbReader::builder(path.as_str(), store)
-                .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
-                .build()
-                .await
-        })
-        .await?
-    };
+    let reader = DbReader::builder(history_db_path(hash).as_str(), data_store.clone())
+        .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
+        .build()
+        .await?;
     let mut out = HistoryReadResult {
         records: Vec::new(),
         last_offset: None,
@@ -680,7 +685,7 @@ pub async fn read_history(
     match key_filter {
         None => {
             let mut iter = reader
-                .scan(hist_record_key(from)..hist_record_key(upto))
+                .scan_with_options(hist_record_key(from)..hist_record_key(upto), &hist_scan_opts())
                 .await?;
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
@@ -697,7 +702,7 @@ pub async fn read_history(
         }
         Some(rk) => {
             let range = hist_key_index_key(rk, from)..hist_key_index_key(rk, upto);
-            let mut iter = reader.scan(range).await?;
+            let mut iter = reader.scan_with_options(range, &hist_scan_opts()).await?;
             while let Some(kv) = iter.next().await? {
                 let klen = kv.key.len();
                 let off = u64::from_be_bytes(kv.key[klen - 8..].try_into().expect("k! key"));
