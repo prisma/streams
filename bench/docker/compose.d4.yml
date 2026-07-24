@@ -1,0 +1,12 @@
+# Ladder D4 overlay: every split "crashes" between seal and map-save
+# (SCALE_FAULT_POINT=after_seal). The append path must self-heal via
+# resume_split with zero client errors. Apply/revert:
+#   docker compose -f compose.yml -f compose.d4.yml up -d
+#   docker compose up -d --force-recreate streams-1 streams-2 streams-3
+services:
+  streams-1:
+    environment: { SCALE_FAULT_POINT: after_seal }
+  streams-2:
+    environment: { SCALE_FAULT_POINT: after_seal }
+  streams-3:
+    environment: { SCALE_FAULT_POINT: after_seal }
