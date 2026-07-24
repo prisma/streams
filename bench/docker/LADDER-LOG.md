@@ -148,3 +148,18 @@ history scan — slatedb's default `ScanOptions` fetches ONE ~200-byte
 compressed block per sequential GET. New SIN deploy: version
 `cpv_m4es5otj7ukw458fqdmk58bg` (adds the scaling machinery, inert
 without `Stream-Scaling: auto`).
+
+## D5 — 30-minute chaos soak — GREEN (pass 1 complete)
+
+3,000 rec/s mixed load, **8 random server restarts** over 30 min.
+
+- Driver: **5,401,600/5,401,600, zero errors** (96 retries, 32 × 429 —
+  all absorbed by normal backoff).
+- ORDER CHECK PASS: all 32 keys gapless 0..168,799.
+- RSS stayed inside the 1 GB envelope on all three servers throughout.
+- Zero redirects even under chaos: a restarted container reclaims its
+  own name's shards (self-fencing), so client affinity stays valid.
+
+**Ladder pass 1: D1 ✓ D2 ✓ D3 ✓ D4 ✓ D5 ✓.** Fixes landed mid-pass
+(fleet mode, FLEET_MIN, begin_close, lag-gauge hygiene, /segments,
+patient driver); pass 2 runs the whole ladder again on the final image.
