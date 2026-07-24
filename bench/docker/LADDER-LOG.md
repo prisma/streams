@@ -267,3 +267,22 @@ owner is healthy again; REBALANCE_RETURN_SECS). Checker hardened
 
 Pass 5 runs the wedge-aware build; two consecutive full greens (with a
 REAL D3) remain the Compute gate.
+
+## Pass 5 — no-split found a structural ownership gap (possession vs ring)
+
+D1 (p5) drove cleanly but never split, and D2 sat at exactly the
+single-segment 5 k rec/s cap: the scaler evaluated NOTHING for those
+streams. Root cause: `engine_for` grandfathers a shard opened before
+the ring formed (ownership checked only at open; fencing arbitrates
+real conflicts), while the scaler's `owns()` gate checked CURRENT
+rendezvous — so the serving instance refused to evaluate and the ring
+owner never had the stream registered. Fixed (f5f387b): possession
+first — any shard in the local serving map is evaluable.
+
+Silver lining, validated live in the same pass: the wedge-aware
+rebalance trigger fired at 63–184 s effective lag under D2
+backpressure, eager handoff opened the moved-in shards within a tick,
+and return-home drained every override (final overrides.json: empty).
+
+Pass 6 runs the possession-first build; two consecutive full greens
+still gate Compute.
