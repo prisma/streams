@@ -322,3 +322,88 @@ mod tests {
         assert_eq!(a, key_point("user-1"));
     }
 }
+
+// ---- persistence: CAS-guarded segmap objects in the ops bucket ----------
+
+use object_store::path::Path as ObjPath;
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use std::sync::Arc;
+
+fn segmap_path(stream_hash: &[u8; 16]) -> ObjPath {
+    ObjPath::from(format!("segmaps/{}.json", crate::crypto::hex(stream_hash)))
+}
+
+/// Load a stream's segment map plus the store etag needed to CAS the next
+/// write. Ok(None) = no map yet (single-segment implicit).
+pub async fn load(
+    store: &Arc<dyn ObjectStore>,
+    stream_hash: &[u8; 16],
+) -> anyhow::Result<Option<(SegmentMap, Option<String>)>> {
+    match store.get(&segmap_path(stream_hash)).await {
+        Ok(got) => {
+            let etag = got.meta.e_tag.clone();
+            let bytes = got.bytes().await?;
+            let map: SegmentMap = serde_json::from_slice(&bytes)?;
+            Ok(Some((map, etag)))
+        }
+        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// CAS-write a segment map: Create when `etag` is None (first write),
+/// If-Match update otherwise. Err on CAS conflict — the caller (scaler)
+/// must reload and re-decide; this is the single-writer safety net under
+/// a lost/split lease.
+pub async fn save(
+    store: &Arc<dyn ObjectStore>,
+    stream_hash: &[u8; 16],
+    map: &SegmentMap,
+    etag: Option<String>,
+) -> anyhow::Result<()> {
+    let body = serde_json::to_vec(map)?;
+    let mode = match etag {
+        None => PutMode::Create,
+        Some(e_tag) => PutMode::Update(UpdateVersion {
+            e_tag: Some(e_tag),
+            version: None,
+        }),
+    };
+    store
+        .put_opts(
+            &segmap_path(stream_hash),
+            PutPayload::from(body),
+            PutOptions::from(mode),
+        )
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cas_round_trip_and_conflict() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let hash = [7u8; 16];
+        assert!(load(&store, &hash).await.unwrap().is_none());
+
+        let mut m = SegmentMap::initial("root", 1);
+        save(&store, &hash, &m, None).await.unwrap();
+        let (loaded, etag) = load(&store, &hash).await.unwrap().unwrap();
+        assert_eq!(loaded, m);
+        assert!(etag.is_some());
+
+        // CAS update succeeds with the fresh etag...
+        m.split(0, KEYSPACE_END / 2, 9, "a", "b", 2).unwrap();
+        save(&store, &hash, &m, etag.clone()).await.unwrap();
+        // ...and the STALE etag now conflicts (lost-lease safety net).
+        assert!(save(&store, &hash, &m, etag).await.is_err());
+        // Create-on-existing also conflicts.
+        assert!(save(&store, &hash, &m, None).await.is_err());
+
+        let (final_map, _) = load(&store, &hash).await.unwrap().unwrap();
+        assert_eq!(final_map.live().count(), 2);
+    }
+}
