@@ -19,3 +19,5 @@ durable-streams.zip
 .turbo/
 experiments/reports/
 target/
+
+bench/docker/compose.d3.gen.yml
