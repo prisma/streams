@@ -490,3 +490,35 @@ Pass 14 launched immediately as gate pass 2, with BOTH integrity
 assertions armed: D3 must observe a rebalance move, D4 must observe an
 injected fault AND a crash-resume. A rung can no longer pass its order
 check while doing nothing.
+
+## Pass 14 — FULLY GREEN (gate pass 2 of 2) — DOCKER LADDER COMPLETE
+
+| rung | records | rate | errors | proof of purpose |
+|---|---|---|---|---|
+| D1 | 1,548,800 | 4,299.8 rec/s | 0 | split + 32 producer resyncs |
+| D2 | 5,546,000 | 13,189.5 rec/s | 200 of 5.5 M | recursive splits; maps converged |
+| D3 | 601,600 | 1,999.9 rec/s | 0 | **1 rebalance move** (assertion) |
+| D4 | 1,292,800 | 4,299.7 rec/s | 0 | **1 fault injected, 1 crash-resume** (assertion) |
+| D5 | 5,401,600 | 3,000 rec/s, 8 restarts | 0 | soak survived |
+
+**Two consecutive fully green passes (p13, p14) — the Compute gate is
+met.** Unlike every earlier pass, p14's rungs are proven to have done
+their work, not merely to have returned clean order checks.
+
+D3 additionally validated the anti-churn guard under fleet-wide backlog:
+with all three instances at 270–300 s lag, every instance repeatedly
+logged `lag NNNs but no healthy peer; holding shards` for ~35 s rather
+than passing the backlog around (pass 3, unguarded, did 7 moves in 10
+minutes). A move fired only once return-home released an override and a
+peer became genuinely healthy — then the target eagerly opened the
+shard 1 s later. Trigger, churn guard, eager handoff, and return-home
+all correct in one rung.
+
+Campaign total: 14 passes. Roughly half the reds were harness defects
+(fleet mode unset, ring collapse, poisoned world, emulator OOM, hunt
+assumptions, a polluting probe, a buffering monitor, a mid-run script
+edit); the other half were real product defects, every one of which is
+fixed and listed in docs/SCALING.md §9.
+
+Next: 4-instance Prisma Compute cluster (C1/C3/C5) on the binary built
+from the exact tree these passes certified.
