@@ -441,3 +441,24 @@ A second lesson from the same rung: D4 recreates the containers for its
 overlay, which discards docker logs — the D3 move evidence was only a
 count by the time I looked. The assertion now writes the actual
 `rebalancer:` lines into the run log before D4 runs.
+
+## Passes 10–12 — three aborted attempts at my own safety mechanism
+
+After a mid-run edit killed p9, passes now execute from an immutable
+snapshot of the harness. Getting that right took three tries, all
+harness-only, no product code involved:
+
+| attempt | failure | cause |
+|---|---|---|
+| p10 | `setup.sh: No such file or directory` | snapshotted only `ladder.sh`; it resolves its helpers via `dirname $0`, which now pointed at the snapshot dir |
+| p11 | `tee: Permission denied`, died in the preamble | snapshotted the whole dir but made the DIRECTORY read-only — the run log is written inside it |
+| p12 | `setup.sh: Permission denied` | `chmod 444` stripped the execute bit from a script the ladder invokes directly |
+
+Correct configuration (p13 onward): scripts `555` (read + execute, not
+writable), directory writable for the run log, and the guard verified by
+attempting a write and confirming it fails. My `pgrep` liveness checks
+were also matching the monitor's own command line — reporting a pass
+ALIVE after it had died — now anchored (`^bash /private.*snap-<tag>/`).
+
+Lesson recorded because it cost ~40 minutes: a safety mechanism deserves
+a short smoke run before a 90-minute pass is placed behind it.
