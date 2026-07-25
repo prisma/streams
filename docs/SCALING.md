@@ -295,4 +295,46 @@ cache refresh — now etag-revalidated, so map size stays off the append
 path).
 
 Gate for the 4-instance Compute cluster: two consecutive fully green
-passes. Progress is tracked in the run journal.
+passes — **met** (passes 13 and 14).
+
+## 10. Prisma Compute cluster results (2026-07-25)
+
+Four 1 GB instances in ap-southeast-1 against real Tigris, on the binary
+built from the exact tree the docker gate certified.
+
+| rung | transition | result |
+|---|---|---|
+| C1 | segment split under load | **PASS** 1,548,800 / 1,548,800 |
+| C3 | one shard move (controlled) | **PASS** 601,600 / 601,600 |
+| C5 | none — 30-minute soak | **PASS** 5,401,600 / 5,401,600 |
+
+**~7.5 M records verified with zero loss**, including a real split, a
+real rebalance (lag → move → eager open → drain → return-home) and a
+half-hour soak at 3,000 rec/s with zero errors.
+
+### Operational requirement: do not route traffic during ring convergence
+
+Compute cold-starts instances one at a time. The ring is derived from
+live heartbeats, so while the fleet is still coming up the ownership map
+changes under load and shards move repeatedly mid-write. Load applied
+~4 minutes after deploy (with `desired.json` still reporting `live=1`)
+lost 371,900 acknowledged records; the identical workload on a stable
+ring was clean:
+
+| | converging ring | stable ring |
+|---|---|---|
+| accepted | 1,531,200 | 1,548,800 |
+| abandoned | 17,600 | 0 |
+| redirects | 3,107 | 47 |
+| cold-start 404s | 148 | 0 |
+| order check | FAIL | **PASS** |
+
+Deploy procedure must wait for all N instances live and the ring
+unchanged before routing traffic (the harness gates on 60 s of
+stability). Related: Compute scales idle instances to zero and the
+platform answers 404 while one wakes — clients must reach the fleet
+through the LB, which wakes instances out-of-band.
+
+Known cosmetic issue: `PUT /v1/stream/{name}` answers `409
+not_ring_owner` instead of following `Streams-Replay-To`; the registry
+descriptor is written first, so the stream is created regardless.
