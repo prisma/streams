@@ -414,3 +414,30 @@ Test-only, same as the env hook it replaces.
 This is the assertion (added after p6b) paying for itself: without it,
 p8 would have recorded a clean sweep of order checks while the
 rebalancer sat idle.
+
+## Pass 9 — D1/D2/D3 green (first valid D3), killed by a mid-run edit
+
+- D1 PASS, D2 PASS.
+- **D3 PASS — the first fully valid rebalancer rung in the campaign.**
+  The runtime pause held: `absorb_paused: true` while the owner
+  RETAINED all five of its shards (no restart, no ownership loss), so
+  lag accumulated exactly where the rung intended. **2 rebalancer
+  moves**, 601,600/601,600 records, zero errors, ORDER CHECK PASS.
+- D4's driver completed clean (1,292,800, zero errors) — then the pass
+  died: `ladder.sh: line 88: syntax error near unexpected token '('`.
+
+Cause: **I edited `ladder.sh` while pass 9 was executing it.** Bash
+reads a script incrementally from a byte offset, so an edit shifts the
+file underneath the running process and it resumes mid-token. The file
+itself was valid the whole time (`bash -n` passes); only the live run
+was corrupted. D4's order check and D5 never ran, so p9 cannot count
+toward the gate despite three green rungs.
+
+Preventive: passes now run from a **read-only snapshot**
+(`snap/ladder-<tag>.sh`, mode 444), so editing the working copy can
+never disturb a live run.
+
+A second lesson from the same rung: D4 recreates the containers for its
+overlay, which discards docker logs — the D3 move evidence was only a
+count by the time I looked. The assertion now writes the actual
+`rebalancer:` lines into the run log before D4 runs.
