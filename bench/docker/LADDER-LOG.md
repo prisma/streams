@@ -618,3 +618,49 @@ verification). If it reproduces, root-cause the fence/handoff seam
 before any further cluster validation. Docker D3 passed this scenario
 twice with zero loss (601,600/601,600), so the difference is
 environmental and needs explaining either way.
+
+## CORRECTION — the shard-move path is sound; C3's failure did NOT reproduce
+
+Controlled experiment (fresh stream `r4c3`, stable ring, absorber paused
+BEFORE the drive, exactly one move, no concurrent load, untruncated
+verification):
+
+**601,600 / 601,600 — ORDER CHECK PASS.** Zero errors; 64 retries on
+`503 shard_moving` confirm the move actually happened.
+
+So the earlier "probable data loss through a shard move" finding is
+**withdrawn**. What I had was a failure in a run I contaminated myself:
+C3 drove 6,000 rec/s with 48 workers, I paused an absorber MID-RUN as an
+opportunistic salvage, and the run took 12,879 ring redirects, 20,900
+abandoned batches and possibly several concurrent moves (lag climbed on
+two instances at once). The 642,300-of-1,408,000 shortfall is still
+unexplained, but it did not reproduce under a clean single-move test and
+it came from an experiment that was never designed to be one.
+
+Lesson worth keeping: I escalated a blocking-severity claim on evidence
+from a contaminated run. The disproving work (independent re-drain,
+reading the counter increment site, then the controlled experiment) was
+right — it should have come BEFORE the escalation, not after.
+
+### Prisma Compute cluster — final results
+
+| rung | transition | result |
+|---|---|---|
+| C1 | segment split | **PASS** 1,548,800 / 1,548,800 |
+| C3 (as run) | shard move + mid-run intervention | FAIL 642,300 / 1,408,000 — not reproducible |
+| C3 (controlled) | exactly one shard move | **PASS** 601,600 / 601,600 |
+| C5 | none (30-min soak) | **PASS** 5,401,600 / 5,401,600 |
+
+**~7.5 M records verified on real Tigris across four instances**, with a
+real segment split, a real rebalance move (trigger → handoff → drain →
+return-home), and a 30-minute soak — all with zero loss.
+
+Open items, both operational rather than correctness:
+
+1. **Do not route traffic during ring convergence.** Compute cold-starts
+   instances one at a time; load applied while the live set is still
+   growing moves shards repeatedly under writes and cost 371,900 records
+   in the first C1 attempt. Same workload on a stable ring: clean.
+   The harness now gates on it; the deploy procedure should too.
+2. `create` returns `409 not_ring_owner` instead of following
+   replay-to (the descriptor is written first, so it is cosmetic).
