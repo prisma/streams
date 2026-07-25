@@ -87,7 +87,16 @@ sleep 5
 rm -f "/tmp/ladder-seqs-d4$P.json"
 BATCH=100 python3 -u "$S/driver.py" "d4$P" "$S/key.txt" 4300 300 100 32 | tee -a "$LOG"
 python3 "$S/showmap.py" | tee -a "$LOG"
-python3 "$S/checker.py" "d4$P" "$S/key.txt" --expect-segments 2 | tail -3 | tee -a "$LOG"
+# Capture fault/resume evidence BEFORE the cleanup recreates the
+    # containers and discards their logs (p13 D4: only provable
+    # indirectly, from the segmap having advanced past a split).
+    for i in 1 2 3; do docker logs --since 10m "slate-ladder-streams-$i-1" 2>&1; done \
+      | grep -E "FAULT INJECTED|resumed crashed split" | sed 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG"
+    FAULTS=$(for i in 1 2 3; do docker logs --since 10m "slate-ladder-streams-$i-1" 2>&1; done | grep -c "FAULT INJECTED" || true)
+    RESUMES=$(for i in 1 2 3; do docker logs --since 10m "slate-ladder-streams-$i-1" 2>&1; done | grep -c "resumed crashed split" || true)
+    say "D4 faults injected: $FAULTS, crash-resumes: $RESUMES"
+    if [ "$FAULTS" -lt 1 ] || [ "$RESUMES" -lt 1 ]; then say "D4 FAIL: fault path not exercised (rung vacuous)"; exit 1; fi
+    python3 "$S/checker.py" "d4$P" "$S/key.txt" --expect-segments 2 | tail -3 | tee -a "$LOG"
 (cd "$CD" && docker compose up -d --force-recreate streams-1 streams-2 streams-3) >>"$LOG" 2>&1
 sleep 8
 
