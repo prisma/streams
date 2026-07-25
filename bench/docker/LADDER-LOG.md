@@ -286,3 +286,17 @@ and return-home drained every override (final overrides.json: empty).
 
 Pass 6 runs the possession-first build; two consecutive full greens
 still gate Compute.
+
+## Pass 6 — poisoned world (harness race), not a code failure
+
+Pass 6 ran overnight and failed from the first rung: D1 crawled at 674
+rec/s in a 429/503/408 soup, D2 got zero requests through (3,840 × 500).
+Forensics: one minute into D1 a compaction job was 404ing on a
+**pass-5-era SST** (`shards/110/compacted/01KYA9YS…`) — the "fresh"
+world wasn't fresh. The preamble recreated the emulator BEFORE the
+servers, and in that window the still-live old servers wrote manifests
+into the new empty bucket referencing wiped SSTs. Poisoned manifests →
+compaction 404 loops → wedged engines. Passes 4b/5 won the same race by
+timing. Fixed: the preamble stops all servers before wiping the world.
+The possession-first fix (f5f387b) was never actually exercised —
+pass 6b reruns it on the corrected harness.
