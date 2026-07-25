@@ -462,3 +462,31 @@ ALIVE after it had died — now anchored (`^bash /private.*snap-<tag>/`).
 
 Lesson recorded because it cost ~40 minutes: a safety mechanism deserves
 a short smoke run before a 90-minute pass is placed behind it.
+
+## Pass 13 — FULLY GREEN (gate pass 1 of 2)
+
+First complete, uninterrupted pass on the final build. **~14.4 M
+records, zero client errors across every rung.**
+
+| rung | records | rate | errors | verdict |
+|---|---|---|---|---|
+| D1 split under load | 1,548,800 | 4,299.8 rec/s | 0 | PASS (32 producer resyncs at the seal) |
+| D2 recursive splits + merges | 5,584,400 | 13,262.7 rec/s | 0 | PASS (10,483 clean 429s; maps converged) |
+| D3 rebalance | 601,600 | 1,999.9 rec/s | 0 | PASS — `moving shard 100 -> streams-2 (absorb lag 62s)` |
+| D4 crash-resume | 1,292,800 | 4,299.7 rec/s | 0 | PASS (segmap advanced to v2 — only resume_split can do that with the fault armed) |
+| D5 chaos soak | 5,401,600 | 3,000 rec/s, 8 restarts | 0 | PASS |
+
+D2 accepted 13.3 k rec/s against a 5 k/segment limit — the splits doing
+exactly what they exist for — while every one of 32 routing keys stayed
+gapless across the full segment lineage.
+
+D4's fault evidence was destroyed by the cleanup recreate before it
+could be read; the rung is provable indirectly (with
+`SCALE_FAULT_POINT=after_seal` armed the scaler returns before saving
+the map, so a map at v2 with a sealed parent can only have come from
+`resume_split`). Pass 14 onward asserts it directly.
+
+Pass 14 launched immediately as gate pass 2, with BOTH integrity
+assertions armed: D3 must observe a rebalance move, D4 must observe an
+injected fault AND a crash-resume. A rung can no longer pass its order
+check while doing nothing.
