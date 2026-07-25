@@ -95,6 +95,19 @@ def worker(keys, per_key_rate, stop_at):
                         time.sleep(min(ra, 2.0))
                         with lock: stats["retries"] += 1
                         continue
+                    if code == 404 and CLUSTER_URLS:
+                        # Compute scales instances to zero; the platform
+                        # serves 404 while one wakes. Production clients
+                        # reach instances through the LB, which wakes them
+                        # out-of-band -- here we wake it ourselves and retry.
+                        try:
+                            base = CLUSTER_URLS.get(entry) or sorted(CLUSTER_URLS.values())[0]
+                            urllib.request.urlopen(base + "/health", timeout=20).read()
+                        except Exception:
+                            pass
+                        time.sleep(min(2.0 * (attempt + 1), 8.0))
+                        with lock: stats["wakes"] = stats.get("wakes", 0) + 1
+                        continue
                     if code in (408, 409, 503, 500, 502):
                         time.sleep(min(1.5 * (attempt + 1), 4.0))
                         with lock: stats["retries"] += 1
