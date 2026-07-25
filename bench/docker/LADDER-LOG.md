@@ -337,3 +337,29 @@ streams-2 (absorb lag 64s)`, eager open on the target 1 s later,
 handoff, and return-home all correct.
 
 Pass 7 runs the shard-keyed build with the D3 assertion armed.
+
+## Pass 7 — D1/D2 green; D3 hunt failed on an ownership settling race
+
+D1 (p7): 1,548,800/1,548,800, zero errors, PASS. D2 (p7): 5,120,400 at
+12.2 k rec/s, 400 abandoned of 5.1 M, PASS. D3 then aborted at the
+candidate hunt ("no streams-2-owned candidate found").
+
+Not a shortage of streams-2-owned shards — it owned 011 and 111 with a
+healthy ring and empty overrides. The hunt probes ONE port (8101) and
+reads `Streams-Replay-To`, but it ran ~26 s after the pause overlay
+RESTARTED streams-2. In that window streams-1 still POSSESSED shards
+the ring had already reassigned: `engine_for` returns a locally-held
+engine before consulting the ring (fencing arbitrates real conflicts),
+so streams-1 answered instead of redirecting, and every candidate
+looked locally owned. Verified after settling: the same stream now
+returns `409 not_ring_owner → streams-2` from 8101 and 204 from 8102.
+
+Fix (harness): D3 no longer hunts. It creates its stream, resolves the
+TRUE owner by probing all three ports (the one that ACKs owns it, with
+retries while possession settles), generates a compose overlay pausing
+THAT instance's absorber, and only then drives. Combined with the
+move assertion added after p6b, D3 can now neither pick the wrong
+victim nor pass without firing a move.
+
+Also fixed: the run monitor piped through `head`, which block-buffers
+on a pipe and swallowed every event (30-min check-ins never surfaced).
