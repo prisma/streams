@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use bytes::{Bytes, BytesMut};
 use object_store::ObjectStore;
 use serde::Deserialize;
@@ -645,6 +645,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/usage", get(debug_usage))
+        .route(
+            "/v1/debug/absorb-pause",
+            post(|Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                let on = q.get("on").map(|v| v == "1").unwrap_or(false);
+                crate::history::absorb_pause_flag()
+                    .store(on, std::sync::atomic::Ordering::Relaxed);
+                axum::Json(serde_json::json!({"absorb_paused": on}))
+            }),
+        )
         .route("/v1/debug/scaler", get(|| async {
             axum::Json(crate::scaler::debug_snapshot())
         }))

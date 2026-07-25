@@ -73,6 +73,22 @@ impl BlockTransformer for AesBlockTransformer {
     }
 }
 
+/// Test-only absorber pause (D3). Initialized from ABSORB_PAUSE, then
+/// flipped at runtime via /v1/debug/absorb-pause so the ladder can pause
+/// an instance WITHOUT restarting it (a restart moves its shards away).
+pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
+    static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
+    F.get_or_init(|| {
+        std::sync::atomic::AtomicBool::new(
+            std::env::var("ABSORB_PAUSE").ok().as_deref() == Some("1"),
+        )
+    })
+}
+
+pub fn absorb_paused() -> bool {
+    absorb_pause_flag().load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn block_err(msg: &str) -> slatedb::Error {
     slatedb::Error::data(msg.to_string())
 }
@@ -388,7 +404,11 @@ impl Absorber {
                         );
                         // Test hook (SCALING.md D3): pause absorption so
                         // lag grows while the tick keeps publishing it.
-                        if std::env::var("ABSORB_PAUSE").ok().as_deref() == Some("1") {
+                        // RUNTIME-togglable: pausing via env needs a
+                        // restart, and a restart hands the instance's
+                        // shards to its peers — the paused instance then
+                        // has no absorber to lag (ladder p8 D3).
+                        if absorb_paused() {
                             continue;
                         }
                         let due: Vec<[u8; 16]> = pending
