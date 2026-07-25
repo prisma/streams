@@ -522,3 +522,55 @@ fixed and listed in docs/SCALING.md §9.
 
 Next: 4-instance Prisma Compute cluster (C1/C3/C5) on the binary built
 from the exact tree these passes certified.
+
+## Prisma Compute cluster (4 instances, real Tigris) — C1 PASS
+
+Cluster: `scale-cluster-1..4`, ap-southeast-1, 1 GB each, prefix
+`cluster1` / fleet `cluster1-fleet`, binary built from the exact tree
+the docker gate certified.
+
+**C1 (split under load): 1,548,800 / 1,548,800 — ORDER CHECK PASS.**
+Zero errors, zero 404s, 47 ring redirects, 32 producer resyncs (one per
+key at the split boundary). A real segment split on production
+infrastructure with every routing key gapless across it.
+
+### The finding: do not serve traffic during ring convergence
+
+The FIRST C1 attempt lost **371,900 acknowledged records**. Diagnosis:
+
+- Keys on one child verified perfectly; all 15 keys on the sibling
+  child lost ~half their post-split records (confirmed by paging the
+  segment directly, independent of the checker).
+- Usage counters showed ONE segment's records accepted by THREE
+  instances (160,400 / 298,900 / 156,200) — ownership churned mid-write.
+- Cause: load started ~4 min after deploy while `desired.json` still
+  read `live=1`. Compute cold-starts instances one at a time, so the
+  live set — and therefore the ring — kept changing under 4,250 rec/s.
+  Shards moved repeatedly while being written.
+
+Same workload on a stable ring, same build:
+
+| | converging ring | stable ring |
+|---|---|---|
+| accepted | 1,531,200 | **1,548,800** |
+| abandoned | 17,600 | **0** |
+| redirects | 3,107 | **47** |
+| cold-start 404s | 148 | **0** |
+| order check | FAIL (371,900 lost) | **PASS** |
+
+No fencing durability bug. The rule is operational: **routing must not
+begin until the fleet is stable.** The harness now gates on all N
+instances live and the ring unchanged for 60 s; the deploy procedure
+should carry the same guard.
+
+### Cloud-only harness defects found (all fixed)
+
+- driver treated scale-to-zero 404s as fatal (Compute sleeps idle
+  instances; production clients wake them via the LB)
+- checker could not follow `Streams-Replay-To` across four service URLs
+  — it retried one fixed URL and spun 14 minutes reading nothing
+- `cluster-run.sh` created tagged streams but drove bare names, so a
+  "clean" rerun appended into the damaged stream and verified that
+- `create` does not follow replay-to (returns 409 `not_ring_owner`
+  after the registry descriptor is already written — cosmetic, but it
+  should redirect)
