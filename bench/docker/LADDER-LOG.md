@@ -574,3 +574,47 @@ should carry the same guard.
 - `create` does not follow replay-to (returns 409 `not_ring_owner`
   after the registry descriptor is already written — cosmetic, but it
   should redirect)
+
+## Compute C3 — PROBABLE DATA LOSS THROUGH A SHARD MOVE (open, blocking)
+
+C3 drove 6,000 rec/s at `r3c3`. The cluster was far from stressed (CPU
+5 %, lag 3 s), so no rebalance would have fired; I paused streams-1's
+absorber mid-run via `/v1/debug/absorb-pause` to induce one.
+
+**The rebalancer itself worked on real Tigris** — lag climbed
+12→32→52 s, shard `011` moved to streams-3, streams-3 drained the
+backlog, and return-home released the override.
+
+**But the order check failed: 642,300 readable of 1,408,000 acked.**
+The stream never split (segmap v1, one segment), so a shard MOVE was
+the only transition.
+
+Evidence quality:
+
+- Two independent readers agree on 642,300 (the checker, and a
+  deliberately tolerant re-drain that accepted 3 consecutive empty
+  pages before stopping). Not a premature-termination artifact.
+- Usage counters CANNOT be used here: `records.fetch_add` fires at the
+  top of the append handler, before the duplicate check and before
+  commit, so it counts admitted attempts (incl. duplicates, retries,
+  later-fenced appends) — streams-1's 645,100 proves nothing.
+- The driver counts `ok` once per batch returning 2xx, and appends
+  return 204 only after the durable watermark. Abandoned batches roll
+  their sequences back, whose failure mode would be duplicates, not
+  absences.
+
+**Hypothesis — the dual-writer window.** `engine_for` returns a
+locally-held engine BEFORE consulting the ring (possession-first;
+fencing is meant to arbitrate). After an override is published the old
+owner keeps accepting and acking until the new owner's open actually
+fences it. Those acks are durable *in the old owner's view*. Docker
+hides this: local store, handoff in ~1-2 s. On Compute each store op
+costs 8-185 ms, widening the window; at 3,350 rec/s that is a large
+number of acknowledged records.
+
+NOT yet proven. Next: controlled C3 (fresh stream, absorber paused
+BEFORE the drive, exactly one move, no concurrent load, untruncated
+verification). If it reproduces, root-cause the fence/handoff seam
+before any further cluster validation. Docker D3 passed this scenario
+twice with zero loss (601,600/601,600), so the difference is
+environmental and needs explaining either way.
