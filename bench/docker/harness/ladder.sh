@@ -69,7 +69,11 @@ curl -s -m 10 -X POST "http://127.0.0.1:$OWNPORT/v1/debug/absorb-pause?on=1" | t
 rm -f "/tmp/ladder-seqs-$D3STREAM.json"
 BATCH=100 python3 -u "$S/driver.py" "$D3STREAM" "$S/key.txt" 2000 300 100 32 | tee -a "$LOG"
 say "overrides at end:"; curl -s "http://127.0.0.1:9500/ladder/ladder-fleet/fleet/overrides.json" | tee -a "$LOG"; echo | tee -a "$LOG"
-MOVES=$(for i in 1 2 3; do docker logs --since 12m "slate-ladder-streams-$i-1" 2>&1; done | grep -c "rebalancer: moving shard" || true)
+# Capture the evidence into the run log NOW: D4 recreates the
+    # containers for its overlay, which discards their docker logs.
+    for i in 1 2 3; do docker logs --since 12m "slate-ladder-streams-$i-1" 2>&1; done \
+      | grep -E "rebalancer:|eagerly opened moved-in" | sed 's/\x1b\[[0-9;]*m//g' | tee -a "$LOG"
+    MOVES=$(for i in 1 2 3; do docker logs --since 12m "slate-ladder-streams-$i-1" 2>&1; done | grep -c "rebalancer: moving shard" || true)
 say "D3 rebalancer moves observed: $MOVES"
 if [ "$MOVES" -lt 1 ]; then say "D3 FAIL: no rebalance move fired (rung vacuous)"; exit 1; fi
 python3 "$S/checker.py" "$D3STREAM" "$S/key.txt" | tail -3 | tee -a "$LOG"
