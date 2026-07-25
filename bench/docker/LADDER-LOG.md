@@ -390,3 +390,27 @@ Fixed: ownership now resolves with a **read** probe
 which writes nothing. Verified live against d3p7b before relaunching.
 p7b aborted mid-D4 (its D3 was already failed, and p8 re-covers D4/D5
 on the identical build); pass 8 running clean.
+
+## Pass 8 — D1/D2 green; the D3 assertion caught its own rung being hollow
+
+D1 (p8) and D2 (p8) both PASS. D3 then failed **by design**:
+`D3 rebalancer moves observed: 0 → D3 FAIL: no rebalance move fired`.
+
+Diagnosis mid-run, with the rung still live: `ABSORB_PAUSE=1` was
+correctly set on the resolved owner (streams-1), but streams-1 reported
+`owned=[]` — it owned nothing at all. Applying the pause requires
+restarting the container, and during that restart its peers opened and
+fenced its shards; the paused instance came back with an empty serving
+map, so no absorber existed to accumulate lag and no move could fire.
+p7b only fired a move because its restart happened to let streams-1
+reacquire a shard first — the rung was passing on timing, not design.
+
+Fix: the pause is now a **runtime toggle**
+(`POST /v1/debug/absorb-pause?on=1`) backed by an AtomicBool seeded from
+the env var. The ladder pauses the resolved owner in place, so
+ownership is preserved and the lag grows exactly where the rung intends.
+Test-only, same as the env hook it replaces.
+
+This is the assertion (added after p6b) paying for itself: without it,
+p8 would have recorded a clean sweep of order checks while the
+rebalancer sat idle.
