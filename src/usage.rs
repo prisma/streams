@@ -224,6 +224,34 @@ pub fn absorb_lag_max() -> u64 {
     lag_map().lock().unwrap().values().copied().max().unwrap_or(0)
 }
 
+/// Per-SHARD absorb lag, published by each shard's absorber (which knows
+/// its own prefix). The rebalancer must not re-derive a shard from a
+/// stream hash: records are keyed by storage_hash while the shard is
+/// chosen by stream_hash(name), so that mapping is simply wrong (ladder
+/// p6b D3: victim selection never matched, no move ever fired).
+fn shard_lag_map() -> &'static Mutex<HashMap<String, u64>> {
+    static M: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn set_shard_lag(prefix: &str, secs: u64) {
+    shard_lag_map().lock().unwrap().insert(prefix.to_string(), secs);
+}
+
+pub fn clear_shard_lag(prefix: &str) {
+    shard_lag_map().lock().unwrap().remove(prefix);
+}
+
+/// (shard_prefix, lag_secs) for every shard with unabsorbed bytes.
+pub fn shard_lag_all() -> Vec<(String, u64)> {
+    shard_lag_map()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(p, s)| (p.clone(), *s))
+        .collect()
+}
+
 /// Every stream with unabsorbed bytes and its lag — the rebalancer maps
 /// these to shard prefixes to choose which shard to move off a laggard.
 pub fn absorb_lag_all() -> Vec<([u8; 16], u64)> {

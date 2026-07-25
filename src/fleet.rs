@@ -647,21 +647,12 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         );
                     }
                     let victim = {
-                        let mut per_shard: std::collections::HashMap<String, u64> =
-                            std::collections::HashMap::new();
-                        for (h, lag) in crate::usage::absorb_lag_all() {
-                            let p = crate::registry::shard_for_hash(&state.shard_prefixes, &h);
-                            let e = per_shard.entry(p).or_insert(0);
-                            *e = (*e).max(lag);
-                        }
-                        per_shard
+                        // Possession-first, keyed by the shard the absorber
+                        // actually serves (never re-derived from a stream
+                        // hash — see usage::shard_lag_map).
+                        crate::usage::shard_lag_all()
                             .into_iter()
-                            .filter(|(p, _)| {
-                                state
-                                    .effective_owner(p)
-                                    .map(|o| o == cfg.instance)
-                                    .unwrap_or(false)
-                            })
+                            .filter(|(p, _)| state.shards.read().unwrap().contains_key(p))
                             .max_by_key(|(_, lag)| *lag)
                             .map(|(p, _)| p)
                             // No committed backlog anywhere (shed-before-

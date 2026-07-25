@@ -350,6 +350,7 @@ impl Absorber {
                     for h in pending.keys() {
                         crate::usage::clear_absorb_lag(h);
                     }
+                    crate::usage::clear_shard_lag(&absorber.shard.prefix);
                     let handles: Vec<[u8; 16]> =
                         absorber.open_dbs.lock().await.keys().copied().collect();
                     for h in handles {
@@ -375,6 +376,16 @@ impl Absorber {
                         for (h, p) in pending.iter() {
                             crate::usage::set_absorb_lag(h, p.since.elapsed().as_secs());
                         }
+                        // Per-shard lag: the rebalancer picks its victim
+                        // from THIS, keyed by the shard we actually serve.
+                        crate::usage::set_shard_lag(
+                            &absorber.shard.prefix,
+                            pending
+                                .values()
+                                .map(|p| p.since.elapsed().as_secs())
+                                .max()
+                                .unwrap_or(0),
+                        );
                         // Test hook (SCALING.md D3): pause absorption so
                         // lag grows while the tick keeps publishing it.
                         if std::env::var("ABSORB_PAUSE").ok().as_deref() == Some("1") {
