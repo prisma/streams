@@ -20,7 +20,7 @@ for i in 1 2 3 4; do
   [ -f "$SVCFILE" ] && SVCARG=(--service $(cat $SVCFILE))
   cd $S/app-cbench-server
   OUT=$(bunx --bun @prisma/compute-cli deploy --project $P ${SVCARG[@]} --region $R --path . --http-port 8080 \
-    --name "scale-cluster-$i" \
+    --service-name "scale-cluster-$i" \
     --env SERVER_BINARY_S3_KEY=bin/streams-cluster-x64 \
     --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
     --env BIN_S3_ACCESS_KEY_ID=$BINID --env BIN_S3_SECRET_ACCESS_KEY="$BINSEC" \
