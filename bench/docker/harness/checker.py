@@ -64,9 +64,12 @@ if expect_min_segs and len(ids) < expect_min_segs:
 drain_retries = {}
 def drain(name):
     recs, off, pages = [], None, 0
-    entry = PORTS["streams-1"]
+    entry = "streams-1" if CLUSTER_URLS else PORTS["streams-1"]
     while True:
-        if CLUSTER_URL:
+        if CLUSTER_URLS:
+            base = CLUSTER_URLS.get(entry) or sorted(CLUSTER_URLS.values())[0]
+            url = f"{base}/v1/stream/{urllib.parse.quote(name, safe='')}?limit=1000"
+        elif CLUSTER_URL:
             url = f"{CLUSTER_URL}/v1/stream/{urllib.parse.quote(name, safe='')}?limit=1000"
         else:
             url = f"http://127.0.0.1:{entry}/v1/stream/{urllib.parse.quote(name, safe='')}?limit=1000"
@@ -81,9 +84,19 @@ def drain(name):
                 upd = r.headers.get("stream-up-to-date")
         except urllib.error.HTTPError as e:
             tgt = e.headers.get("streams-replay-to")
-            if e.code in (409, 503) and (tgt in PORTS or CLUSTER_URL):
-                if not CLUSTER_URL: entry = PORTS[tgt]
+            if e.code in (409, 503) and tgt:
+                if CLUSTER_URLS and tgt in CLUSTER_URLS:
+                    entry = tgt          # instance NAME in cluster mode
+                elif not CLUSTER_URLS and tgt in PORTS:
+                    entry = PORTS[tgt]
                 continue
+            if e.code == 404 and CLUSTER_URLS:
+                # instance waking (scale-to-zero): ping health and retry
+                try:
+                    b = CLUSTER_URLS.get(entry) or sorted(CLUSTER_URLS.values())[0]
+                    urllib.request.urlopen(b + "/health", timeout=20).read()
+                except Exception: pass
+                time.sleep(3); continue
             if e.code == 404:
                 return []  # segment stream never created (no records routed)
             if e.code == 503:
