@@ -240,34 +240,59 @@ Compute):
 Only after D1–D5 are green twice consecutively: the 4-instance Compute
 cluster repeat of D1/D3/D5.
 
-## 9. Validation results (2026-07-24)
+## 9. Validation results (2026-07-24 / 25)
 
 Full run journal: [bench/docker/LADDER-LOG.md](../bench/docker/LADDER-LOG.md).
 
-Pass 1 (fixes landed mid-pass): **D1–D5 all green.**
+The docker ladder ran eight passes. Every red rung converted into a
+real fix; the harness itself needed as much hardening as the code.
 
-- D1: 1,548,800 records at 4,299.7 rec/s through a live split — zero
-  client errors/retries/redirects; all 32 keys gapless across the
-  boundary.
-- D2: 14 k rec/s offered vs 5 k/segment limit — accepted-rate staircase
-  ~10 k (2 segments, clean 429s) → 14 k+ (4+ segments); recursive
-  splits then merges converged (map v10, 4 live / 12 sealed);
-  5,507,000/5,507,000 verified across the 16-segment lineage.
-- D3: absorb-lag rebalancer moved the paused instance's shard at 64 s
-  lag; 598,400/598,400 verified through the live move (zero loss, zero
-  dupes). Exposed + fixed: phantom lag after fence, fail-fast for
-  in-flight work on move (`begin_close`).
-- D4: `SCALE_FAULT_POINT=after_seal` on every server — injected crash
-  in the seal→save window healed by `resume_split` in **527 ms**;
-  1,292,800/1,292,800, zero client errors.
-- D5: 30-min soak at 3 k rec/s with 8 random server restarts —
-  5,401,600/5,401,600, zero errors, RSS inside the 1 GB envelope.
+**Product defects the ladder caught (all fixed):**
 
-Production measurement on real Tigris (SIN, warm sinmax rig): history
-reads (consumer catch-up) went **84 rec/s → 3,528 rec/s (42×)** with
-the scan-readahead fix; the pre-fix 504 failure mode is gone. Routing
-overhead for scaled streams: p50 +0.4 ms, p99 +53 ms (segmap cache
-refresh; see known limitations).
+| defect | rung | consequence if shipped |
+|---|---|---|
+| zombie Db after a shard move (`begin_close` never closed slatedb) | p3 D2 | GC of a fenced owner deleted live SSTs — **data loss** |
+| scaler `owns()` was ring-only; possession is the truth | p5 D1 | grandfathered shards evaluated by nobody — no stream ever split |
+| absorb lag re-derived a shard from the WRONG hash (storage vs stream) | p6b D3 | rebalancer had no victim — shard moves never fired |
+| in-flight work hung on a move | p1 D3 | one client batch lost per worker at each move |
+| absorb-lag gauge froze after fencing | p1 D3 | phantom lag on an instance serving nothing |
+| split crash between seal and map-save | design | sealed-but-live segment; appends bounce forever |
+| backpressure starves the lag signal (sheds before commit) | p4b D3 | a wedged instance never rebalances |
 
-Pass 2 (final image, true 3-instance ring throughout): in progress —
-results appended to the run journal.
+**Harness defects (results-invalidating, all fixed):** fleet mode was
+never enabled (`FLEET_PREFIX` unset) so early passes ran effectively
+single-instance; an idle fleet shrank `desired` to 1 and collapsed the
+ring (`FLEET_MIN`); the fresh-world preamble wiped the bucket while old
+servers were still writing manifests into it (poisoned world); the
+emulator OOM'd twice under cumulative load; the D3 stream hunt assumed
+a fixed owner and sampled one port during the ownership settling
+window; the D3 ownership probe polluted the stream it measured; and the
+run monitor piped through `head`, which block-buffers and swallowed
+every progress event.
+
+**Rung evidence at its best (pass 7b/8, current build):**
+
+- D1: 1,548,800/1,548,800 at 4,300 rec/s through a live split, zero
+  errors, producer sessions resynced across the seal boundary.
+- D2: 5.1–5.7 M records at 12–13.5 k rec/s against a 5 k/segment limit
+  — recursive splits, then merges converging (map v10, 4 live/12
+  sealed), full-lineage order verified.
+- D3: `moving shard 010 -> streams-3 (absorb lag 64s)` → **eager open
+  2 s later** → `returned 1 shard(s) to rendezvous owners` 62 s later.
+  Trigger, handoff, and return-home in one rung.
+- D4: injected crash in the seal→save window healed by `resume_split`
+  in 527 ms; 1,292,800/1,292,800, zero client errors.
+- D5: 30-min soak, 8 chaos restarts, 5,401,600/5,401,600, RSS inside
+  the 1 GB envelope.
+
+Production measurement on real Tigris (SIN): history reads (consumer
+catch-up) **84 → 3,528 rec/s (42×)** with the scan-readahead fix, and
+the 1 s producer→consumer guarantee re-validated on the scaling-era
+binary (35/36 windows < 1 s, median p99 256 ms at 735 req/s).
+
+Routing overhead for scaled streams: p50 +0.4 ms, p99 +53 ms (segmap
+cache refresh — now etag-revalidated, so map size stays off the append
+path).
+
+Gate for the 4-instance Compute cluster: two consecutive fully green
+passes. Progress is tracked in the run journal.
