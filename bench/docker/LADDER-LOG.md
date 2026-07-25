@@ -300,3 +300,40 @@ compaction 404 loops → wedged engines. Passes 4b/5 won the same race by
 timing. Fixed: the preamble stops all servers before wiping the world.
 The possession-first fix (f5f387b) was never actually exercised —
 pass 6b reruns it on the corrected harness.
+
+## Pass 6b — 5/5 order checks PASS, but D3 was vacuous (rebalancer bug)
+
+Ran on the fixed harness; every rung's order check passed:
+
+| rung | records | errors | verdict |
+|---|---|---|---|
+| D1 | 1,548,800 | 0 | PASS (split + 32 producer resyncs) |
+| D2 | 5,662,600 @ 13.5 k rec/s | 0 | PASS (recursive splits; maps v3 & v10, 4 live/12 sealed) |
+| D3 | 601,600 | 0 | **vacuous** — see below |
+| D4 | 1,292,800 | 0 | PASS (fault-injected split healed) |
+| D5 | 5,401,600, 7 chaos restarts | 0 | PASS |
+
+**D3 did not fire a single rebalance move** in its 5-minute window
+(01:52–01:58 UTC) despite 601,600 committed records through the
+ABSORB_PAUSE'd instance — the order check passed on traffic alone, so
+the rung "passed" without exercising its purpose. Root cause: victim
+selection called `shard_for_hash(lag_map_key)`, but the lag map is
+keyed by the committer's **storage_hash** while a shard is chosen by
+**stream_hash(name)** — unrelated hashes, so the derived prefix almost
+never matched a locally-served shard. The heartbeat lag signal was
+correct; only the victim lookup was broken, so the rebalancer had
+nothing to move.
+
+Fixed: the absorber publishes lag keyed by the shard it actually serves
+(`usage::set_shard_lag`), and victim selection reads that map filtered
+by POSSESSION — the same correction f5f387b made to the scaler. The
+ladder now ASSERTS at least one `rebalancer: moving shard` during D3,
+so a vacuous D3 fails instead of passing.
+
+Corroboration that the rest of the stack works: at 02:34 UTC (during
+D5) a real backlog produced a textbook sequence — `moving shard 010 ->
+streams-2 (absorb lag 64s)`, eager open on the target 1 s later,
+`returned 1 shard(s) to rendezvous owners` 4 min after. Trigger, eager
+handoff, and return-home all correct.
+
+Pass 7 runs the shard-keyed build with the D3 assertion armed.
