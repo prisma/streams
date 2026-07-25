@@ -363,3 +363,30 @@ victim nor pass without firing a move.
 
 Also fixed: the run monitor piped through `head`, which block-buffers
 on a pipe and swallowed every event (30-min check-ins never surfaced).
+
+## Pass 7b — D1/D2 green, D3 fired a REAL move, failed on a self-inflicted record
+
+First pass where D3 genuinely exercised the rebalancer, thanks to the
+deterministic owner resolution (it picked **streams-1** — the old hunt's
+hard-coded streams-2 assumption was simply wrong, which is why D3 had
+never fired):
+
+- `12:49:50` streams-1 at 64 s absorb lag → `moving shard 010 -> streams-3`
+- `12:49:52` streams-3 **eagerly opened** it — 2 s handoff (the lazy path
+  once left a shard unowned for 92 minutes)
+- `12:50:52` `returned 1 shard(s) to rendezvous owners: ["010"]`
+
+Trigger → fast handoff → return-home, end to end, with the shard-keyed
+victim lookup selecting correctly.
+
+D3's order check nonetheless FAILED: **601,601 drained vs 601,600 sent**
+— exactly one extra record, with every per-key sequence intact. The
+culprit was the new owner-resolution probe itself, which appended one
+record (`Stream-Key: own-probe`) to the stream under test. No loss, no
+duplication, no ordering violation: a measurement artifact.
+
+Fixed: ownership now resolves with a **read** probe
+(`GET ?limit=1` — 200 from the owner, 409 + replay-to elsewhere),
+which writes nothing. Verified live against d3p7b before relaunching.
+p7b aborted mid-D4 (its D3 was already failed, and p8 re-covers D4/D5
+on the identical build); pass 8 running clean.
