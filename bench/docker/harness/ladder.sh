@@ -61,15 +61,11 @@ for attempt in 1 2 3 4 5; do
   sleep 10
 done
 [ -n "$OWNER" ] || { say "D3 FAIL: could not resolve owner of $D3STREAM"; exit 1; }
-say "D3 stream: $D3STREAM owned by $OWNER — pausing its absorber"
-cat > "$CD/compose.d3.gen.yml" <<YML
-services:
-  $OWNER:
-    environment:
-      ABSORB_PAUSE: "1"
-YML
-(cd "$CD" && docker compose -f compose.yml -f compose.d3.gen.yml up -d "$OWNER") >>"$LOG" 2>&1
-sleep 20
+say "D3 stream: $D3STREAM owned by $OWNER — pausing its absorber (runtime, no restart)"
+# Pause WITHOUT restarting: restarting the owner hands its shards to the
+# peers, leaving the paused instance with no absorber to lag (p8 D3).
+OWNPORT=$((8100 + ${OWNER##*-}))
+curl -s -m 10 -X POST "http://127.0.0.1:$OWNPORT/v1/debug/absorb-pause?on=1" | tee -a "$LOG"; echo | tee -a "$LOG"
 rm -f "/tmp/ladder-seqs-$D3STREAM.json"
 BATCH=100 python3 -u "$S/driver.py" "$D3STREAM" "$S/key.txt" 2000 300 100 32 | tee -a "$LOG"
 say "overrides at end:"; curl -s "http://127.0.0.1:9500/ladder/ladder-fleet/fleet/overrides.json" | tee -a "$LOG"; echo | tee -a "$LOG"
@@ -77,8 +73,8 @@ MOVES=$(for i in 1 2 3; do docker logs --since 12m "slate-ladder-streams-$i-1" 2
 say "D3 rebalancer moves observed: $MOVES"
 if [ "$MOVES" -lt 1 ]; then say "D3 FAIL: no rebalance move fired (rung vacuous)"; exit 1; fi
 python3 "$S/checker.py" "$D3STREAM" "$S/key.txt" | tail -3 | tee -a "$LOG"
-(cd "$CD" && docker compose up -d "$OWNER") >>"$LOG" 2>&1
-sleep 10
+curl -s -m 10 -X POST "http://127.0.0.1:$OWNPORT/v1/debug/absorb-pause?on=0" >>"$LOG" 2>&1
+sleep 5
 
 say "=== D4 ($P): fault-injected splits ==="
 (cd "$CD" && docker compose -f compose.yml -f compose.d4.yml up -d) >>"$LOG" 2>&1
