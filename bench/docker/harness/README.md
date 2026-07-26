@@ -27,3 +27,33 @@ Two invariants the harness enforces, both learned the hard way:
 - **A pass starts from a stopped fleet.** Servers are stopped before the
   emulator is recreated; otherwise live servers write manifests into the
   fresh bucket referencing wiped SSTs.
+
+## Harness invariants (each one cost a wasted run)
+
+1. **Never edit a script a pass is executing.** Bash reads scripts
+   incrementally from a byte offset; an edit shifts the file underneath
+   the running process and it resumes mid-token. Passes therefore run
+   from an immutable snapshot: copy the harness to `snap-<tag>/`,
+   `chmod 555` the scripts (read + execute, NOT writable), leave the
+   directory writable for the run log.
+2. **A rung that cannot fail proves nothing.** D3 and D4 both passed
+   their order checks for several passes while never exercising their
+   mechanism. Both now assert: D3 requires a `rebalancer: moving shard`
+   line, D4 requires both `FAULT INJECTED` and `resumed crashed split`.
+3. **Capture evidence before cleanup destroys it.** D4 recreates the
+   containers for its overlay, which discards docker logs — the move and
+   fault lines are written into the run log first.
+4. **Stop the servers before wiping the world.** Recreating the emulator
+   under live servers lets them write manifests into the fresh bucket
+   referencing wiped SSTs (poisoned world, compaction 404 loops).
+5. **Do not pipe a monitor through `head`.** It block-buffers when
+   stdout is a pipe and swallows every event.
+6. **Anchor `pgrep` patterns** (`^bash /private.*snap-<tag>/`) or they
+   match the monitoring command itself and report a dead run as alive.
+7. **Probes must not perturb what they measure.** The D3 owner probe
+   appends nothing (a `GET ?limit=1` resolves ownership just as well);
+   an append probe left one extra record and failed the order check.
+8. **Cloud only:** instances scale to zero (404 while waking — health-
+   ping and retry), four services means four URLs (follow
+   `Streams-Replay-To` to the owner; a single fixed URL spins forever),
+   and no traffic until the ring is stable for 60 s.
