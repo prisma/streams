@@ -338,3 +338,73 @@ through the LB, which wakes instances out-of-band.
 Known cosmetic issue: `PUT /v1/stream/{name}` answers `409
 not_ring_owner` instead of following `Streams-Replay-To`; the registry
 descriptor is written first, so the stream is created regardless.
+
+## 11. Future work (designed, not implemented)
+
+### 11.1 Demand-proportional splitting
+
+Today a hot segment splits in TWO, and one split per stream per scaler
+tick. Reaching 1 GB/s from 1 MB/s therefore needs ~8 doublings, each
+gated by `SCALE_COOLDOWN_SECS` (600), plus per-tick serialization of the
+individual CAS transitions — **roughly 1.5–2 hours**, during which the
+stream accepts a doubling staircase and 429-throttles the rest. (It also
+needs `MAX_SEGMENTS_PER_STREAM` raised: 64 segments caps at 320 MB/s.)
+
+Pravega instead derives a split FACTOR from `rate / target`. We can do
+the same, and the missing input already exists: the usage counters track
+throttled requests, so demand is observable even while acceptance is
+capped. Two changes:
+
+- `split_factor ≈ ceil((accepted + throttled_estimate) / per-segment
+  target)`, capped per round, splitting a segment into *k* children in
+  one map transition (segmap already supports arbitrary split points).
+- Lift the one-split-per-tick rule: split every eligible hot segment in
+  a single map write, removing the serialization tail.
+
+A pegged 1 MB/s → 1 GB/s stream then reaches 200+ segments in 2–3
+rounds — **~10–20 minutes**, cooldown-dominated instead of
+doubling-dominated. Note this is a policy-layer change over machinery
+the ladder already validated (multi-way transitions use the same
+seal → save → route path).
+
+Why it matters: the throttle blinds the current signal. The scaler's
+EWMA sees *accepted* bytes, and acceptance is capped at segment count ×
+limit, so a 1 GB/s producer looks exactly like a 5 MB/s producer plus a
+mountain of 429s. Kinesis has the same doubling behaviour, so this would
+be a genuine differentiator rather than parity work.
+
+### 11.2 Opt-in server-side request forwarding
+
+Ring misses today return `409 + Streams-Replay-To`, so every client must
+know how to reach each instance. That is deployment-specific (Compute
+service IDs, k8s pod DNS, …) and leaks fleet topology into every SDK —
+the cluster validation needed an explicit instance→URL map for exactly
+this reason.
+
+Proposal: keep replay-to as the default (fast, self-correcting, no
+resource amplification) and add forwarding behind a request header or
+server flag, so clients that cannot route still work. Requirements:
+
+- hop counter; refuse to forward twice (ring transitions can briefly
+  disagree — see the possession-vs-ring settling windows in §9)
+- pass producer headers through verbatim: a forwarded-then-timed-out
+  append is the same at-least-once ambiguity that corrupted ladder pass
+  2b, now with two hops
+- separate admission budget so proxied traffic cannot starve local
+  commits
+- still return the replay-to hint, so smart clients converge to direct
+  routing
+- **appends and point reads only.** Forwarding a long-poll or SSE read
+  would pin a slot on two instances for the poll's full duration, and
+  the platform edge admits only ~48–50 concurrent requests per instance
+
+Costs to weigh: a forwarded request consumes an admission slot on both
+instances (worst case halves effective fleet capacity), competes with
+the ~50-concurrent outbound object-store budget that gates the WAL PUT
+path, and turns a fast local failure into a cross-instance dependency —
+a wedged instance could then consume slots fleet-wide. The current 409
+keeps backpressure local.
+
+Note the architecture already assumes a router tier (`routers/*.json`,
+`SCALE_EDGE_LATENCY_MS`), so this is about collapsing an existing
+component, not adding a concept.
