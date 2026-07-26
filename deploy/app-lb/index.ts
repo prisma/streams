@@ -13,7 +13,6 @@ const { downloadBinary } = await import("./downloader");
 await downloadBinary(process.env.LB_BINARY_S3_KEY ?? "", bin, console.log);
 await chmod(bin, 0o755);
 console.log(`starting pilot MODE=lb on :${process.env.PORT ?? "8080"}`);
-const proc = Bun.spawn([bin], {
-  env: { ...process.env, MODE: "lb" }, stdout: "inherit", stderr: "inherit",
-});
-process.exit(await proc.exited);
+// See app-server/index.ts: a dead binary serves its own diagnostic.
+const { superviseBinary } = await import("./supervise");
+await superviseBinary(bin, [], { ...process.env, MODE: "lb" });

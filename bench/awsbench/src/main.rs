@@ -28,7 +28,12 @@ struct Args {
     #[arg(long, env = "BENCH_SYSTEM")]
     system: String,
     /// a=latency-floor, b=record-ceiling sweep, c=byte-ceiling, d=tail, e=overload
-    #[arg(long, env = "BENCH_SHAPE")]
+    /// Shape selector. Has a default because it is a REQUIRED clap arg
+    /// otherwise: a deploy that forgets BENCH_SHAPE makes the binary exit
+    /// instantly at startup, and Compute still reports the version
+    /// "running" while its domain 404s — which looks exactly like a boot
+    /// failure and cost a soak window to diagnose (2026-07-26).
+    #[arg(long, env = "BENCH_SHAPE", default_value = "a")]
     shape: String,
     /// Kinesis stream name | SQS queue URL | Prisma base URL
     #[arg(long, env = "BENCH_TARGET")]
@@ -608,6 +613,41 @@ async fn main() -> anyhow::Result<()> {
     } else {
         None
     };
+
+    // Explicit tier ramp: BENCH_TIERS="1,2,4,..." runs each concurrency
+    // for BENCH_SECS. The "b" sweep only doubles 2..=128 (7 tiers); a
+    // regional comparison wants a chosen ladder of arbitrary length.
+    if let Ok(tiers) = std::env::var("BENCH_TIERS") {
+        let list: Vec<usize> = tiers
+            .split(',')
+            .filter_map(|t| t.trim().parse().ok())
+            .filter(|c| *c > 0)
+            .collect();
+        eprintln!("tier ramp: {list:?} x {}s each", args.secs);
+        for (i, conc) in list.iter().enumerate() {
+            run_load(
+                client.clone(),
+                stats.clone(),
+                *conc,
+                args.batch,
+                args.record_bytes,
+                args.secs,
+                &format!("t{:02}-conc{conc}", i + 1),
+                &mut out,
+            )
+            .await?;
+        }
+        consumer_stop.store(1, Ordering::Relaxed);
+        if let Some(c) = consumer {
+            let _ = tokio::time::timeout(Duration::from_secs(25), c).await;
+        }
+        if std::env::var("BENCH_HOLD").as_deref() == Ok("1") {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        }
+        return Ok(());
+    }
 
     match args.shape.as_str() {
         "b" => {

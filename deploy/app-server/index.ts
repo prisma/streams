@@ -13,7 +13,8 @@ const { downloadBinary } = await import("./downloader");
 await chmod(bin, 0o755);
 const port = process.env.PORT ?? "8080";
 console.log(`starting streams-slate on :${port}`);
-const proc = Bun.spawn([bin, "--listen", `0.0.0.0:${port}`], {
-  env: process.env, stdout: "inherit", stderr: "inherit",
-});
-process.exit(await proc.exited);
+// superviseBinary never returns: if the binary exits it binds $PORT and
+// serves the exit code + stderr tail, so a dead service is diagnosable
+// over HTTP instead of looking like a platform 404 (deploy/README.md).
+const { superviseBinary } = await import("./supervise");
+await superviseBinary(bin, ["--listen", `0.0.0.0:${port}`]);
