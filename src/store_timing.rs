@@ -225,7 +225,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn classify(path: &str) -> u8 {
+pub(crate) fn classify(path: &str) -> u8 {
     // Paths arrive fully prefixed (we wrap beneath PrefixStore), e.g.
     // pilot12/shards/root-3/wal/00000042.sst — substrings are reliable.
     if path.contains("/wal/") || path.starts_with("wal/") {

@@ -1,124 +1,500 @@
 # Deterministic Simulation Testing
 
-## What DST is, and why it is worth the trouble
+## The model we are working towards
 
-Deterministic Simulation Testing runs the system inside a simulator where
+Deterministic Simulation Testing runs a system inside a simulator where
 **every source of nondeterminism is controlled by a seed** — clocks,
-randomness, task scheduling, I/O latency, and fault placement. Given the
-same seed you get bit-for-bit the same execution. That buys two things
-ordinary testing cannot: you can explore *thousands* of rare
-interleavings quickly, and when one fails you can **replay it exactly**
-instead of hoping it recurs.
+randomness, task scheduling, I/O latency and fault placement. The same
+seed replays the same execution, so a rare interleaving that fails once
+can be reproduced forever.
 
 The canonical treatment is TigerBeetle's, and it is worth reading before
 touching this code:
 
 - **[TigerBeetle: Deterministic Simulation Testing](https://docs.tigerbeetle.com/concepts/safety/#deterministic-simulation-testing)**
-  — their VOPR ("Viewstamped Operation Replicator") simulates an entire
-  cluster with faulty disks, partitioned networks and crashing replicas,
-  accelerating time so a simulated run covers far more than wall clock
-  would allow.
-- **[TigerBeetle: "A Friendly Abstraction Over io_uring and kqueue"](https://tigerbeetle.com/blog/)**
-  and their [SimTigerBeetle talk](https://www.youtube.com/watch?v=Vch4BWUVzMM)
-  make the central argument: if the system is deterministic given a seed,
-  a bug found once is a bug you can reproduce *forever*, and the
-  simulator becomes a machine for manufacturing rare failures on demand.
+  — their VOPR simulates an entire cluster with faulty disks, partitioned
+  networks and crashing replicas, accelerating time so one run covers far
+  more than wall clock would allow. They run a continuously updated fleet
+  of them.
+- **[Simulation Testing For Liveness](https://tigerbeetle.com/blog/2023-07-06-simulation-testing-for-liveness)**
+  — a fault-heavy run can prove safety and miss a livelock entirely. The
+  fix is an explicit second phase: stop injecting faults, heal a viable
+  core, and *require* convergence.
+- **[A Tale Of Four Fuzzers](https://tigerbeetle.com/blog/2025-11-28-tale-of-four-fuzzers/)**
+  and **[Fuzzer Blind Spots (Meet Jepsen!)](https://tigerbeetle.com/blog/2025-06-06-fuzzer-blind-spots-meet-jepsen/)**
+  — one whole-system fuzzer is not enough, and several fuzzers can share a
+  blind spot. Assume yours do.
+- **[A Descent Into the Vörtex](https://tigerbeetle.com/blog/2025-02-13-a-descent-into-the-vortex)**
+  — simulation substitutes the network and storage adapters, so a second,
+  nondeterministic harness is needed to test the real ones.
 - The wider ecosystem is catalogued at
-  [awesome-deterministic-simulation-testing](https://github.com/ivanyu/awesome-deterministic-simulation-testing).
-  FoundationDB pioneered the approach; Antithesis commercialises it.
+  [awesome-deterministic-simulation-testing](https://github.com/ivanyu/awesome-deterministic-simulation-testing);
+  FoundationDB pioneered the approach and Antithesis commercialises it.
 
-The insight that matters for us: **distributed-systems bugs are usually
+The insight that matters for us: **distributed-systems bugs are mostly
 races and crash windows, not logic errors.** A logic error fails every
-time and a unit test catches it. A race fails one run in fifty, at 3am,
-under load — which is exactly the profile of the defects that cost this
-project the most.
+time and a unit test catches it. A race fails one run in fifty, under
+load — which is the profile of every defect that has cost this project
+real time.
 
-## Why we adopted it: what the integration ladder cost us
+## 1. Current status — and what it is not
 
-Task #53 (auto-scaling) was validated by a docker "ladder" of five rungs
-run to two consecutive green passes, then a 4-instance Prisma Compute
-cluster. It worked — but it took **14 passes, roughly 21 hours of wall
-clock**, plus continuous supervision. Of seven product defects found:
+`src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
+over the real single-node data plane**. Twenty scenarios, ~9 seconds:
 
-| defect | class | unit-testable? | DST-catchable? |
-|---|---|---|---|
-| zombie `Db` after a shard move; its GC deleted live SSTs (**data loss**) | race | no | **yes** |
-| in-flight work hung on a move | lifecycle race | no | **yes** |
-| absorb-lag gauge froze after fencing | lifecycle | no | **yes** |
-| split crashed between seal and map-save | crash window | no | **yes** |
-| backpressure starved the lag signal | emergent under load | no | likely |
-| scaler `owns()` checked the ring, not possession | logic | **yes** | — |
-| absorb lag keyed by the wrong hash | logic | **yes** | — |
+```bash
+cargo test --release dst
+```
 
-The two logic bugs now have unit tests (`src/fleet.rs`, `src/usage.rs`).
-Everything else is timing-dependent, and several **hid for multiple
-passes** because the race simply did not fire that run. That is the
-argument for DST in one sentence: a 90-minute pass samples the
-interleaving space once, badly.
+It is **not** whole-system deterministic simulation, and an earlier
+version of this document overstated what had been built. Precisely:
 
-## What we built
-
-`src/dst.rs` — a self-contained harness that runs our **real**
-`ShardEngine` against a seeded fault-injecting object store. No cfg
-flags, no separate binary: it runs in `cargo test`.
-
-### Components
-
-**`FaultStore`** — an `ObjectStore` decorator wrapping any inner store
-(tests use `InMemory`). Per operation it consults a seeded `StdRng` and
-either passes through, injects latency, or fails with a retryable error.
-Latency values model what we measured against real Tigris: 8–185 ms per
-op across regions, with iad1 at 139–185 ms. Reads are never faulted — it
-models a flaky network, not a lying disk.
-
-It exposes `injected_latency` / `injected_errors` / `ops` counters so a
-scenario can **assert that faults actually fired**. A fault store that
-never injects is the DST form of a vacuous test, and this project learned
-that lesson expensively (see `bench/docker/harness/README.md`).
-
-**`AckLedger`** — the oracle. Records the payload sequence numbers a
-workload received *durable acks* for, per routing key, then audits them
-against what a reader actually drained:
-
-| invariant | meaning |
+| property | status |
 |---|---|
-| **I1** | no acknowledged record is unreadable |
-| **I2** | per-key order is preserved (acks appear as an in-order subsequence) |
-| **I3** | no duplicates |
-| **I4** | at most one writer commits per shard — fencing is honoured |
+| fault placement is a pure function of the seed | **yes**, and tested |
+| injected latency is realistic (8–185 ms) and costs no wall clock | **yes** — scenarios run with paused virtual time |
+| scenarios drive the real `ShardEngine`, absorber and merged reader | **yes** |
+| task scheduling is seed-controlled | **no** — it is Tokio's |
+| whole-scenario replay yields an identical trace | **no** |
+| multiple nodes, router, ring, topology | **no** |
 
-I1 is precisely the property the Compute C3 investigation was about; I3
-is the shape of the pass-2b at-least-once duplication.
+**Multi-node whole-system simulation is the target architecture, not an
+optional final step.** Early milestones may enable a single node or a
+single subsystem, but they must run inside the same world, scheduler,
+store registry, task-lifecycle model, reference model and tracing system
+that will eventually run the whole service. The alternative — growing
+`src/dst.rs` into a larger pile of seeded `#[tokio::test]` functions —
+builds a second testing architecture that has to be discarded later.
 
-**`drive_appends` / `drain_observed`** — the workload and reader. Appends
-go through the real commit path and are recorded in the ledger **only
-after a durable ack**, so the ledger is ground truth. The reader decodes
-frames exactly as the absorber does (per-`(epoch, routing_key,
-key_version)` subkey derivation).
+## 2. The determinism contract
 
-### Scenarios
+What the seed controls **today**:
 
-| test | what it establishes |
+- which object-store operation is delayed, and by how much;
+- which fails before dispatch (definitely did not apply);
+- which succeeds and then loses its response (may have applied).
+
+Fault decisions are derived from `(seed, path, op, occurrence)` through an
+explicit, toolchain-stable mixing function — **not** drawn in sequence
+from one shared RNG. That distinction is load-bearing. With a shared
+stream, the *identity* of the operation consuming each random number
+depends on which task reaches the mutex first, so under concurrency the
+same seed does not reproduce the same fault placement.
+`fault_placement_is_a_pure_function_of_the_seed` proves the fix by issuing
+the same paths in two different orders and requiring identical decisions.
+
+(`DefaultHasher` is deliberately avoided: its output is not stable across
+Rust releases, and a replay that changes with the toolchain is not a
+replay.)
+
+What the seed does **not** control: task scheduling, and therefore the
+order concurrent engine work interleaves in. Scenarios run on a
+**current-thread runtime with paused, auto-advancing time**, which makes
+ordering single-threaded and makes realistic latency free — the whole
+suite runs 8–185 ms operations and finishes in seconds. That is a large
+improvement on a two-worker runtime with real sleeps. It is not replay.
+
+### The concrete blocker
+
+Production deliberately runs SlateDB on a **separate, process-global,
+multi-threaded runtime** (`main::slatedb_runtime`, reached through
+`on_slatedb_rt`), because SlateDB's encode/compress work stalls the timer
+and IO driver when it shares a runtime (sinmax run 12: tokio timer p99
+848 ms against 3.6 ms on a raw OS thread). The absorber additionally uses
+`spawn_blocking`.
+
+So the determinism goal and the two-runtime architecture are in direct
+tension: a scenario that drives the absorber escapes the test runtime's
+clock and scheduler entirely. `acked_records_survive_absorption_into_history`
+therefore runs multi-threaded and is explicitly **not** replayable.
+
+This is not something to work around later. It is why milestone M1 is an
+injected `TaskRuntime`/`CpuExecutor`, and why that step cannot be skipped.
+
+## 3. Target simulator architecture
+
+```
+World
+  logical clock + deterministic event scheduler
+  clients (positive-space and negative-space)
+  edge / router
+  N Streams nodes, each with an owned task group
+  platform autoscaler
+  ops store | shard store | data store
+  reference model
+  online auditor
+  mechanism coverage
+  event trace
+```
+
+Each node owns its tasks explicitly — heartbeat, ring refresh, shard
+opener, engine committer/acker/maintenance, absorber, scaler, usage
+publisher, tail sessions. A simulated crash aborts every task owned by
+that node, drops its caches and keys, abandons in-flight requests, and
+does **not** close databases gracefully. A pause freezes it without
+destroying memory; a restart rebuilds it from object-store state alone.
+That is how a simulator finds a leaked zombie task, rather than merely
+checking that a public method returns a fencing error.
+
+The primary simulator need not serialise HTTP. Requests can cross a typed
+service interface wrapped in a simulated transport that models request and
+response delay and loss, duplicate dispatch, stale routing,
+`409 Streams-Replay-To`, replay loops and limits, cold starts and node
+unavailability. Real Axum, TLS, SDK behaviour and real providers belong to
+the outer-loop harness (§13).
+
+### Reusing `slatedb-dst`
+
+Our pinned SlateDB (`e255cff`, v0.14.1 + [PR #1964](https://github.com/slatedb/slatedb/pull/1964))
+ships **`slatedb-dst`**, an **upstream** crate — adopting it does not
+deepen our fork, and it survives dropping the patch.
+
+| slatedb-dst | maps onto |
 |---|---|
-| `fault_schedule_is_reproducible_from_the_seed` | same seed replays identically; different seeds diverge — without this nothing else is DST |
-| `faults_actually_fire` | the harness is not vacuous |
-| `survives_injected_faults_without_losing_written_data` | the fault store corrupts nothing it claims to have written |
-| `acked_records_survive_store_faults` | I1+I2+I3 for a single writer under injected faults, across seeds |
-| **`acked_records_survive_a_fencing_handoff`** | **I1+I4 across a shard move.** Opening a second engine on the same prefix fences the first — exactly what the rebalancer does. Records acked by the old owner must remain readable through the new one. This is the class that produced the pass-3 zombie-GC data loss |
-| `oracle_accepts_a_faithful_read` / `oracle_catches_loss` / `oracle_catches_duplicates` / `oracle_catches_reordering` | the oracle itself can fail — negative controls built from the real failure shapes we hit |
+| seeded deterministic current-thread runtime | replayable scheduling |
+| `MockSystemClock`, `Harness::advance_time()` | injected clock |
+| `FailPointRegistry` (fail-parallel) | named crash points |
+| `FailingObjectStore` / `ToxicKind` | a richer fault store |
+| `DbFencerActor`, `AuditorActor` | our fencing scenario and oracle |
 
-The oracle's negative controls are not ceremony. They are mutation tests
-in spirit: we verified that disabling I1 detection makes
-`oracle_catches_loss` fail, and restoring it makes all nine pass.
+Its top-level harness owns **one** installed `Arc<Db>`, and `swap_db()`
+replaces that single database. We need many at once — ops, one per shard
+prefix, one per `(stream, epoch)` history DB — and a shard handoff is not
+a swap: the new node opens the same prefix, the old engine must observe
+fencing, its committer, acker and absorber must terminate, its history
+handles must close, its serving-map entry must clear, and the router may
+stay stale meanwhile. So the plan is to build `streams-sim` above
+slatedb-dst's clock, randomness, failpoint and object-store primitives
+while owning a separate multi-DB registry, rather than adopting its world
+model.
 
-### It already earned its keep
+## 4. The production-code boundary
 
-The first run of `acked_records_survive_a_fencing_handoff` failed with
-`I3 violated: key x has 20 duplicate record(s)`. The cause was a bug in
-the *harness* — both phases wrote the same payload sequence range, so the
-"duplicates" were self-inflicted. The oracle caught a mistake in the test
-that a less strict harness would have silently accepted. Phases now write
-disjoint sequence ranges (`seq_base`).
+The core must not know whether time comes from the OS or the simulator.
+The boundary is *deterministic state-machine logic* versus
+*nondeterministic environment adapters* — not "production versus tests".
+
+Capabilities to inject: `Clock` (monotonic, wall, sleep), `Entropy`
+(scoped, per-actor substreams), `TaskRuntime` (spawn with an owner, cancel
+by owner), `CpuExecutor` (replacing `spawn_blocking`), `ProcessMetrics`
+(CPU, RSS).
+
+The current core reaches directly for all of them — counted across `src/`
+excluding the harness itself: 45 `Instant::now()`, 40 `now_ms()`, 28
+`sleep`/`interval`/`tick`, 3 `rand::rng()` sites (history block nonces,
+touch, http), one `spawn_blocking`, the global SlateDB runtime, and
+environment variables. A `clippy.toml` disallowed-method list should
+enforce the boundary once it exists, with the production adapter as the
+only exception.
+
+Two structural steps precede that: add `src/lib.rs` so the core is a
+library rather than an assembly of binaries, and eventually split
+`streams-core` / `streams-server` / `streams-sim` into a workspace.
+
+## 5. The reference model
+
+The oracle tracks **operations and attempts**, not payloads.
+
+A client retrying an ambiguous append resends the same bytes, so payload
+equality cannot distinguish "the system duplicated my write" from "I
+deliberately wrote it twice". Every attempt carries `(op, attempt)`: `op`
+is the logical operation, `attempt` the try. A non-idempotent retry is a
+second attempt of the same operation — legitimately storable twice — while
+an idempotent one must be suppressed. The suite asserts both directions,
+including one test whose entire job is to confirm the oracle **permits** a
+non-idempotent double-write; an oracle that flagged it would be tuned
+until it stopped testing ambiguity at all.
+
+Outcomes are three-valued, matching the spec's append contract:
+
+| outcome | meaning |
+|---|---|
+| `Acked` | durably acknowledged, with the reported offset |
+| `Rejected` | the server decided against it before committing anything |
+| `Unknown` | it may or may not have committed — no response, or an ambiguous fencing error |
+
+`Unknown` is what the producer-idempotence contract exists to resolve, and
+the state the eu-central-1 soak wedge put every client into for twenty
+minutes (docs/SOAK-REGIONS.md).
+
+## 6. Safety invariants
+
+Implemented today, over one shard:
+
+| id | invariant |
+|---|---|
+| **I1** | every acknowledged append is readable |
+| **I2** | per routing key, acknowledged order is preserved |
+| **I3** | no attempt is stored twice |
+| **I4** | a fenced owner acknowledges nothing |
+| **I5** | a definitively rejected append never appears |
+| **I6** | an idempotent producer's retry commits at most once |
+
+I4 deserves its own note. The previous version of the fencing test built a
+ledger of writes attempted through the fenced owner and then **never
+asserted on it** — an old owner that acknowledged every one of them would
+still have passed, so the test that claimed to establish I4 could not fail
+on I4. It now asserts both that the ghost ledger is empty and that the old
+engine observed its own closure. The zero is meaningful because the same
+workload is shown to acknowledge writes through the same engine
+immediately beforehand.
+
+Families still to build, in rough priority order:
+
+- **Tiering** — history is an exact prefix of the durable log and the
+  shard tail an exact suffix; the merge covers every offset exactly once;
+  the trim boundary never passes data not durably in history; absorber
+  retries are idempotent; nothing reachable from a live manifest, clone,
+  union, parent or child is ever deleted; a fenced DB cannot mutate live
+  state.
+- **Ownership, routing, topology** — at most one owner epoch acknowledges
+  per shard; a stale route costs latency but never a record; replay-to
+  terminates; the segment map is always a complete non-overlapping
+  partition; a crash between seal, clone, map CAS and parent retirement
+  leaves a recoverable intent, never a hole; the serving map reflects
+  possession, not ring preference.
+- **Profiles and lifecycle** — registry epochs across create/delete/
+  recreate; key versions and fingerprints; wrong keys never yield
+  plaintext; crypto-erasure; queue lease uniqueness, visibility deadlines,
+  retries and DLQ transitions; touches emitted only after durability;
+  missed touch history forces an explicit resync.
+- **Resources** — bounded open DB handles, spawned tasks, pending absorber
+  entries, retry timers; nothing owned by a crashed or fenced node stays
+  alive; no operation spins without advancing logical time.
+
+## 7. Liveness
+
+Not yet implemented, and after determinism it is the largest gap: every
+scenario here asserts safety, and a system that wedges forever satisfies
+all six invariants trivially. That is not hypothetical for us — the
+eu-central-1 soak wedge lost no data and violated no ordering. It simply
+stopped making progress.
+
+The protocol, following TigerBeetle: run a **safety phase** with faults,
+then a **liveness phase** that stops injecting them, selects a viable core
+of nodes with store access, heals their connectivity, restarts them,
+leaves everything else down, and advances logical time until the system
+converges or exhausts a deterministic event budget. Convergence means
+every request reaches a terminal state, every acknowledged append is
+readable, ownership stabilises, fenced engines and absorbers exit, history
+catches up, trim and GC settle, split/merge intents resolve, and desired
+capacity converges.
+
+A failure must name the stalled measure, not report a timeout:
+
+```
+liveness failure:
+  seed=... scenario=...
+  node_2 absorber unchanged for 75,000 events
+  stream=... absorbed=912 durable_next=1148
+  engine_closed=false pending_store_ops=0
+```
+
+## 8. Fault model
+
+Implemented:
+
+| fault | why it matters |
+|---|---|
+| latency (8–185 ms, the measured Tigris range) | timing windows; free under paused time |
+| failure before dispatch | definitely not committed |
+| success then lost response | **append ambiguity** — the only fault that manufactures it |
+| explicit hold on a class | parks an operation mid-flight so a handoff can happen underneath it |
+
+Faults are selectable per `(verb, object class)` using the **same
+classifier as production telemetry** (`store_timing::classify`), so a
+scenario that targets "the WAL" targets what `/v1/debug/store` calls the
+WAL. Puts, gets, deletes, lists and copies are all faultable — deletes
+notably, since GC removing live SSTs under a zombie DB is the shape of the
+worst defect this project has had, and the first version of this harness
+left that verb unfaulted.
+
+Reads are faulted for **availability only**, never for content: a store
+that returns wrong bytes is outside the object-store contract, and
+simulating one would test a system we neither have nor ship against.
+
+Still to add: reset and truncated bodies, bandwidth limits and slow close,
+CAS/precondition conflicts, per-node store partitions, and — importantly —
+**systematic crash boundaries** rather than random ones: `before_wal_write`,
+`after_durable_watermark`, `before_ack_send`, `after_history_flush`,
+`before_absorbed_marker`, `before_tail_trim`, `after_shard_seal`,
+`after_child_clone`, `before_topology_cas`, `before_parent_gc`,
+`before_fence`, `after_engine_close` — each enumerable as "crash after the
+Nth durable action". Random percentages almost never hit a narrow window;
+enumeration always does. The two ad-hoc env hooks left over from the
+ladder (`SCALE_FAULT_POINT`, `ABSORB_PAUSE`) should fold into that
+registry, which also removes test-only env vars from the production
+binary.
+
+### A finding the fault model produced
+
+**Object-store faults do not reach the client as failures.** SlateDB
+retries them, so a store that is flaky but eventually available makes
+appends *slow* — never failed, never ambiguous. Measured directly: at a
+95 % injected WAL error rate, with 2,329 injected errors, **20 of 20
+appends were still acknowledged**.
+
+This is pinned as `store_errors_surface_as_latency_not_as_failed_appends`
+because it defines the ambiguity surface. If it ever fails, retries have
+stopped somewhere and clients can suddenly see unknown outcomes from
+ordinary flakiness, which changes what producer idempotence has to cover.
+
+It is also, independently, the mechanism behind the eu-central-1 soak
+wedge: nothing failed, everything simply took longer than any client would
+wait. Simulation reproduced the shape of a production incident from first
+principles.
+
+The practical consequence is that ambiguity in this system comes from
+**fencing**, not from storage — so the idempotence scenario is built on a
+handoff: a shard moves mid-sequence, the append returns `Moved`, and the
+client retries the same producer sequence against the new owner exactly as
+a `Streams-Replay-To` client would. It passes, which establishes that
+producer state survives a handoff.
+
+## 9. Swarm and focused modes
+
+Not yet built. The shape: a serialised `Scenario` (schema version, seed,
+event budget, node/client/stream ranges, workload, per-category fault
+configuration, profile distribution, release matrix) driving named modes —
+`swarm` (randomise settings *and* fault distributions), `focused-fencing`,
+`focused-tiering`, `focused-topology`, `focused-queue`, `liveness`,
+`performance`, `compatibility`, `canary`.
+
+Generation should be biased hard toward boundaries: 1, 2, maximum, empty,
+exactly-full, one either side of every threshold. Uniform random numbers
+are poor at finding boundary defects.
+
+Workloads should include negative-space clients that send stale offsets,
+repeated sequences, wrong epochs, malformed frames and out-of-order queue
+acknowledgements — not only well-behaved ones.
+
+## 10. Coverage and mutation
+
+Every scenario carries **mechanism coverage counters** and declares which
+must be non-zero. A fencing scenario in which nothing was fenced is not a
+passing run, it is an invalid one — the ladder's hardest-won lesson (*"a
+rung that cannot fail proves nothing"*: D3 and D4 passed their order
+checks for several passes while never once triggering their mechanism).
+
+Counters today: injected error / lost response / latency; append acked /
+rejected / unknown / retried; producer duplicate suppressed; old owner
+fenced; append in flight at fence; read served from history.
+
+Lifecycle gets the same treatment. `a_fenced_owners_absorber_exits`
+asserts the old owner's absorber **task actually finishes** after a
+handoff, not merely that the engine reports itself closed — those are
+different claims, and only the second one catches a zombie that will fight
+the new owner for its history DB ("the absorption war", 2026-07-20).
+
+The oracle's negative controls are built from failure shapes this project
+actually hit: loss (the C3 shape), duplication, reordering, a rejected
+write that committed, an idempotent operation stored twice — plus the
+permissive control described in §5, and one that catches a
+self-contradictory ledger so a harness bug cannot silently weaken every
+other check.
+
+Still to add: **canary mutations** — deliberately broken builds (ack
+before the durable watermark, ignore a fencing error, advance `absorbed`
+before history durability, trim to the current instead of the previously
+safe boundary, delete parent SSTs immediately after a split, use ring
+ownership without possession, publish a touch before durability) that the
+suite must catch within a fixed seed budget. That tests the test system,
+which is the only way to know the suite has not quietly become decorative.
+
+## 11. Reproduction and shrinking
+
+Not yet built, and a bare seed is not enough: code changes alter both
+random consumption and event structure. A failure artifact needs the
+commit SHA, simulator schema version, serialised scenario, root seed,
+choice trace, final state hash, failure fingerprint and coverage counters
+— reproduced by one command, with a hierarchical shrinker that strips
+operations, clients, nodes, faults and simulated time before simplifying
+configuration. Minimised escapes become permanent corpus entries.
+
+## 12. CI
+
+Today CI runs `cargo check`, the release test suite (which includes these
+twenty scenarios) and one s3lite HTTP smoke test. The intended tiers:
+
+- **Pull request** — fixed regression corpus, a bounded seed sweep,
+  replay-hash comparison, canary/mutation tests, and the focused fencing,
+  tiering and topology scenarios; budgets counted in simulated events, not
+  wall clock.
+- **Nightly** — broad swarm, focused campaigns, liveness runs,
+  deterministic performance scenarios, mixed-version scenarios, automatic
+  shrinking of new failures.
+- **Continuous fleet** — workers running against main and selected PRs,
+  implemented in this repository rather than hidden in infrastructure.
+
+## 13. Performance, external testing, and non-goals
+
+DST cannot measure wall-clock latency against a real provider. It *can*
+assert **protocol-cost budgets**, and should: object-store GETs per 1,000
+records, bytes fetched versus returned, manifest GETs per operation, WAL
+and SST PUT counts, router hops and replays, open/close cycles, logical
+ticks to absorb a fixed backlog, peak task and handle counts.
+
+That corrects an earlier claim here. The 42× history-read regression
+(84 → 3,528 rec/s) was described as un-findable by simulation, on the
+grounds that synthetic latency would not flag one-block-per-GET as wrong.
+Only half true: it would have violated a GET-count budget with no network
+at all. What simulation genuinely cannot do is predict the wall-clock cost.
+
+Keep real benchmarks for CPU, compression and encryption throughput,
+allocator behaviour and RSS, real provider latency, HTTP and TLS overhead,
+and Compute cold starts and edge-slot limits. Keep the docker ladder for
+resource ceilings and the cloud rung for platform behaviour. And keep a
+nondeterministic **outer-loop harness** running compiled binaries, real
+Axum, official clients, real process kills and rolling deploys — because
+simulation substitutes exactly the adapters that harness exists to test.
+
+Two of this project's most valuable findings could not have come from
+simulation as it stands: the ring-convergence data loss (371,900 records,
+found by deploying to real Compute, where instances cold-start one at a
+time over minutes while the ring re-forms under load) and the eu-central-1
+WAL read storm (found under 30 minutes of real regional load). The first
+is squarely in scope for M3 below — but only because we now know to look.
+
+## 14. Delivery milestones
+
+Each milestone has an acceptance criterion that can be checked, not a
+feeling of completeness.
+
+**M0 — correct the foundations.** *Done.* Scope claims corrected; I4
+asserted; the handoff exercised with a request genuinely in flight; engine
+scenarios inject errors and lost responses rather than latency alone; the
+latency range matches measurement; records identified by attempt rather
+than payload; reads go through the production merged reader; deletes
+faulted; retries real; every claim in the code matches the code.
+
+**M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
+task ownership, CPU execution and process metrics; a seeded current-thread
+runtime everywhere *including* the absorber path; named per-actor random
+substreams; event traces and state hashes.
+*Acceptance: replaying one serialised scenario 100 times on one commit
+yields an identical event-trace hash and final-state hash.*
+
+**M2 — complete single-node data plane.** Registry, create/delete/
+recreate, absorber, history, trim, GC, restarts, tails, key rotation,
+profile behaviour.
+*Acceptance: I1–I6 and the tiering invariants hold under process crashes
+and every supported object-store fault class.*
+
+**M3 — multi-node control plane.** Several `AppState` instances, router
+and replay-to, heartbeat membership, possession versus ring, desired
+capacity, crash/pause/restart, in-flight fencing handoffs, liveness mode.
+*Acceptance: the known ladder failure classes exist as deterministic
+regression scenarios, and the system converges after healing any viable
+node/store core.*
+
+**M4 — topology, profiles, compatibility.** Split/merge, clone/union and
+parent retention, detached compactor and GC, queue/state/touch semantics,
+deletion and expiry, rolling releases and mixed persisted formats,
+deterministic performance budgets.
+
+**M5 — operationalise.** Failure corpus, shrinker, mutation suite,
+PR/nightly/continuous runners, failure deduplication, and the external
+whole-binary harness.
 
 ## Running
 
@@ -126,96 +502,9 @@ disjoint sequence ranges (`seq_base`).
 cargo test --release dst
 ```
 
-Nine tests, a few seconds. To widen a sweep, add seeds to the arrays in
-the scenario tests — each seed is an independent execution.
+To widen a sweep, add seeds to the arrays in the scenario tests; each seed
+is an independent execution with an independent fault schedule.
 
-When a seed fails, it fails **reproducibly**: rerun with just that seed
-and you get the identical interleaving, which is the entire point.
-
-## Roadmap
-
-Implemented above is step 1. The remaining steps are ordered by value,
-and each is useful alone.
-
-### Step 2 — make our own time and randomness injectable
-
-The blocker for simulating *our* control loops is that we call the clock
-directly: **73 `Instant::now()`, 46 `now_ms()`, 50 `sleep`/`interval`,
-8 `rand`** across `src/`. Thread a clock handle (or adopt slatedb's
-`SystemClock`) through `fleet.rs`, `scaler.rs` and `history.rs`.
-
-The payoff is large. Our control loops are gated on a 60 s rebalance
-threshold, a 3 s anti-flap holdoff, 600 s cooldowns and 2 s heartbeats —
-that is *why* a ladder pass takes 90 minutes. With a mock clock a
-30-minute soak becomes milliseconds and the threshold/cooldown
-interactions become exhaustively explorable rather than sampled once.
-
-### Step 3 — generalise fault points
-
-We have two ad-hoc env hooks left over from the ladder:
-`SCALE_FAULT_POINT=after_seal` (scaler.rs) and `ABSORB_PAUSE`
-(history.rs). Replace them with named fail points — `after_seal`,
-`before_map_save`, `after_map_save`, `during_fence`, `during_absorb`,
-`before_ack` — selected by seed. `fail-parallel` is already in the
-dependency tree via slatedb. This also removes test-only env vars from
-the production binary.
-
-### Step 4 — multi-instance simulation
-
-Run N `AppState` instances in one process against one simulated store to
-exercise ring formation, ownership handoff, and the possession-vs-ring
-settling windows deterministically. This is the step that could have
-caught the ring-convergence data loss without a cloud deploy.
-
-## Reusing slatedb-dst
-
-Our pinned SlateDB (`e255cff`, v0.14.1 + [PR #1964](https://github.com/slatedb/slatedb/pull/1964))
-ships **`slatedb-dst`**, an upstream crate — not something we maintain,
-so **adopting it does not deepen our fork**; when #1964 lands upstream
-and we drop the patch, it remains available.
-
-It offers, behind `#![cfg(dst)]`:
-
-| slatedb-dst | maps onto |
-|---|---|
-| seeded deterministic current-thread runtime | replayable scheduling, not just replayable faults |
-| `MockSystemClock`, `Harness::advance_time()` | step 2 above |
-| `FailPointRegistry` (fail-parallel) | step 3 above |
-| `FailingObjectStore` / `ToxicKind` (latency, bandwidth, reset-peer, slow-close, synthetic HTTP errors) | a richer `FaultStore` |
-| `Harness::swap_db()` | a shard handoff, directly |
-| `DbFencerActor`, `AuditorActor` (`tests/bank.rs`) | our fencing scenario and oracle |
-
-We deliberately built `FaultStore` first rather than starting there: it
-is dependency-free, needs no cfg gating, and proves the invariants are
-expressible. Adopting slatedb-dst is the natural way to deliver steps
-2 and 3 rather than reimplementing a mock clock and fail-point registry.
-
-## What DST does **not** replace
-
-Be honest about the boundary. Two of this campaign's most valuable
-findings could not have come from simulation:
-
-- **Ring-convergence data loss** (371,900 acknowledged records) was found
-  by deploying to real Compute, where instances cold-start one at a time
-  over minutes while the ring re-forms under load. Step 4 would model it
-  — but only because we now know to look.
-- **The 42× history-read regression** (84 → 3,528 rec/s) was a
-  *performance* property of real network round-trips. A simulator with
-  synthetic latency would not flag one-block-per-GET as wrong.
-- Resource ceilings — 1 GB RSS, the ~48–50 concurrent platform edge
-  slots, egress budgets — need the docker and cloud rungs.
-
-So: DST replaces most of the integration ladder's value **for
-correctness under concurrency and faults**, far faster and replayably.
-Keep the docker rung for resource limits, and the cloud rung for platform
-behaviour and performance.
-
-## Related discipline
-
-The ladder's hardest-won lesson — **"a rung that cannot fail proves
-nothing"** — *is* the DST discipline of asserting invariants rather than
-outcomes. D3 and D4 both passed their order checks for several passes
-while never exercising their mechanism, until explicit assertions were
-added. Every scenario here carries the same guard: the fault counters and
-the oracle's negative controls exist so the suite cannot quietly become
-decorative.
+When a seed fails, the **fault schedule** replays exactly. The task
+interleaving does not — see §2, and do not claim otherwise in a commit
+message.

@@ -2164,22 +2164,51 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
 }
 
 /// A decrypted record ready for response assembly.
-struct PlainRec {
-    off: u64,
-    payload: Bytes,
+pub(crate) struct PlainRec {
+    pub(crate) off: u64,
+    pub(crate) payload: Bytes,
 }
 
-struct ReadOut {
-    recs: Vec<PlainRec>,
-    last: Option<u64>,
-    end: u64,
-    completed: bool,
+pub(crate) struct ReadOut {
+    pub(crate) recs: Vec<PlainRec>,
+    pub(crate) last: Option<u64>,
+    pub(crate) end: u64,
+    pub(crate) completed: bool,
 }
 
 /// Merged two-tier read returning plaintext records.
 async fn read_records(
     state: &AppState,
-    desc: &StreamDesc,
+    _desc: &StreamDesc,
+    key: &StreamKey,
+    epoch: &[u8; 16],
+    handle: &Arc<crate::shard::StreamHandle>,
+    engine: &Arc<ShardEngine>,
+    scan_from: u64,
+    key_filter: Option<&str>,
+    max_bytes: usize,
+) -> Result<ReadOut, String> {
+    read_merged(
+        &state.data_store,
+        key,
+        epoch,
+        handle,
+        engine,
+        scan_from,
+        key_filter,
+        max_bytes,
+    )
+    .await
+}
+
+/// The merge itself, free of `AppState` so the simulation harness can call
+/// the production reader instead of reimplementing the history/tail split
+/// (`src/dst.rs`). A second copy of this boundary logic would be a copy
+/// that can drift, and drift here means the oracle stops testing what
+/// production does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_merged(
+    data_store: &Arc<dyn object_store::ObjectStore>,
     key: &StreamKey,
     epoch: &[u8; 16],
     handle: &Arc<crate::shard::StreamHandle>,
@@ -2207,7 +2236,7 @@ async fn read_records(
     let mut history_completed = true;
     if scan_from < absorbed && budget > 0 {
         let hist = read_history(
-            &state.data_store,
+            data_store,
             &hash,
             key,
             scan_from,
