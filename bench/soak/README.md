@@ -88,5 +88,11 @@ that look fine and mean nothing.
    records must equal server-durable records. A soak that only reports
    percentiles cannot distinguish "fast" from "fast because it dropped
    your writes".
-8. **Tear down afterwards.** Six projects, six buckets and twelve services
-   is real money and they do not expire on their own.
+8. **Tear down afterwards, and verify it.** Six projects, six buckets and
+   twelve services is real money and none of it expires on its own. Use
+   `services destroy`, not `services delete` — delete refuses while
+   versions are running, and the project then refuses to delete because
+   "active deployments exist". Check the result rather than trusting the
+   exit code: the first version of `teardown.sh` piped everything to
+   `/dev/null` and cheerfully reported a clean teardown that had removed
+   the buckets and nothing else.

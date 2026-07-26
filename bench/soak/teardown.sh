@@ -35,7 +35,12 @@ for r in $REGIONS; do
     SV=$(cat "$S/svc-$role-$r.txt" 2>/dev/null || true)
     [ -z "$SV" ] && continue
     say "  service $role: $SV"
-    run "bunx --bun @prisma/compute-cli services delete --project '$P' --service '$SV' --yes >/dev/null 2>&1 || true"
+    # `services delete` refuses while versions are running, and the project
+    # then refuses to delete because "active deployments exist". `destroy`
+    # stops and deletes the versions first. Do not swallow its output: the
+    # first version of this script hid the failure behind >/dev/null and
+    # reported a clean teardown that had deleted nothing.
+    run "bunx --bun @prisma/compute-cli services destroy '$SV' --project '$P' 2>&1 | grep -viE 'resolving|resolved|saved lockfile'"
   done
 
   # bkey-<r>.json holds the *key* id, not the bucket id -- resolve the
@@ -45,12 +50,12 @@ for r in $REGIONS; do
         | python3 -c "import json,sys;print(' '.join(b['id'] for b in json.load(sys.stdin).get('data',[])))" 2>/dev/null || true)
   for b in $BKT; do
     say "  bucket: $b"
-    run "curl -s -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/buckets/$b' >/dev/null"
+    run "curl -s -o /dev/null -w '    bucket delete: %{http_code}\\n' -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/buckets/$b'"
   done
   [ -z "$BKT" ] && say "  bucket: none found for this project"
 
   say "  project: $P"
-  run "curl -s -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/projects/$P' >/dev/null"
+  run "curl -s -w '\\n    project delete: %{http_code}\\n' -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/projects/$P'"
 done
 
 [ "$GO" = "--yes" ] || say "
