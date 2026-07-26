@@ -570,6 +570,12 @@ Full identity/custody/audit design: [OPERATIONS.md §3](./OPERATIONS.md).
 Never commit tokens, keys, or presigned URLs; the deploy scripts keep them
 in a local scratch directory outside the repo.
 
+## 12b. Staging deployment
+
+A long-lived, production-shaped staging cell (Compute + Prisma Buckets)
+for wider testing: topology, the canonical environment, blockers, phased
+rollout and exit criteria live in [docs/STAGING.md](./docs/STAGING.md).
+
 ## 13. The release gate
 
 Every substantive change runs, in order:
