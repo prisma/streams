@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Harvest the 6-region soak: per-tier client metrics + server-side store telemetry.
+
+Writes results.json (raw) and prints markdown tables.
+
+Client metric semantics (bench/awsbench/src/main.rs):
+  winP50Ms / winP99Ms  -- append request -> durable ack, 20s window
+  tailP50Ms / tailP99Ms -- producer-embedded ts -> consumer observation
+                           (FULL producer->consumer roundtrip), 20s window
+  ok / errs / throttled -- cumulative counters
+"""
+import json, subprocess, os, sys, statistics
+
+S = os.environ.get("SOAK_HOME") or os.path.dirname(os.path.abspath(__file__))
+REGIONS = ["us-east-1", "us-west-1", "eu-central-1", "eu-west-3",
+           "ap-southeast-1", "ap-northeast-1"]
+POP = {"us-east-1": "ewr/iad", "us-west-1": "sjc", "eu-central-1": "fra",
+       "eu-west-3": "cdg", "ap-southeast-1": "sin", "ap-northeast-1": "nrt"}
+
+
+def get(url, timeout=40):
+    try:
+        r = subprocess.run(["curl", "-s", "--max-time", str(timeout), url],
+                           capture_output=True, text=True, timeout=timeout + 15)
+        return r.stdout
+    except Exception:
+        return ""
+
+
+def url(role, r):
+    with open(f"{S}/url-{role}-{r}.txt") as f:
+        return f.read().strip()
+
+
+def pct(vals, q):
+    if not vals:
+        return None
+    v = sorted(vals)
+    i = min(len(v) - 1, int(q * len(v)))
+    return v[i]
+
+
+out = {"regions": {}}
+
+for r in REGIONS:
+    entry = {"pop": POP[r]}
+
+    # ---- client-side (generator) ----
+    body = get(url("gen", r))
+    samples = []
+    try:
+        samples = json.loads(body)
+    except Exception:
+        entry["gen_error"] = body[:200]
+
+    tiers = {}
+    for s in samples:
+        tiers.setdefault(s["label"], []).append(s)
+
+    tier_rows = []
+    for label in sorted(tiers):
+        ss = tiers[label]
+        # drop the first window of each tier: it straddles the concurrency
+        # step-up and mixes the previous tier's in-flight requests.
+        body_ss = ss[1:] if len(ss) > 2 else ss
+        appends_p50 = [x["winP50Ms"] for x in body_ss if x.get("winP50Ms")]
+        appends_p99 = [x["winP99Ms"] for x in body_ss if x.get("winP99Ms")]
+        rt_p50 = [x["tailP50Ms"] for x in body_ss if x.get("tailP50Ms")]
+        rt_p99 = [x["tailP99Ms"] for x in body_ss if x.get("tailP99Ms")]
+        rps = [x["achievedPerSec"] for x in body_ss]
+        recs = [x["recordsPerSec"] for x in body_ss]
+        tier_rows.append({
+            "tier": label,
+            "conc": ss[0]["conc"],
+            "windows": len(ss),
+            "appendP50": round(statistics.median(appends_p50), 1) if appends_p50 else None,
+            "appendP99": round(max(appends_p99), 1) if appends_p99 else None,
+            "rtP50": round(statistics.median(rt_p50), 1) if rt_p50 else None,
+            "rtP99": round(max(rt_p99), 1) if rt_p99 else None,
+            "reqPerSec": round(statistics.median(rps)) if rps else 0,
+            "recPerSec": round(statistics.median(recs)) if recs else 0,
+            "okCum": ss[-1]["ok"],
+            "errsCum": ss[-1]["errs"],
+            "throttledCum": ss[-1]["throttled"],
+            "lastErr": ss[-1].get("lastErr", ""),
+        })
+    entry["tiers"] = tier_rows
+    if samples:
+        entry["totals"] = {
+            "ok": samples[-1]["ok"],
+            "errs": samples[-1]["errs"],
+            "throttled": samples[-1]["throttled"],
+            "records": samples[-1]["ok"] * samples[-1]["batch"],
+        }
+
+    # ---- server-side telemetry ----
+    su = url("server", r)
+    with open(f"{S}/auth.txt") as f:
+        tok = f.read().strip()
+    for path, key in (("/v1/debug/store", "store"),
+                      ("/v1/debug/usage", "usage"),
+                      ("/v1/debug/scaler", "scaler")):
+        raw = subprocess.run(["curl", "-s", "--max-time", "40",
+                              "-H", f"authorization: Bearer {tok}", su + path],
+                             capture_output=True, text=True).stdout
+        try:
+            entry[key] = json.loads(raw)
+        except Exception:
+            entry[key + "_error"] = raw[:200]
+
+    out["regions"][r] = entry
+    print(f"harvested {r}: {len(tier_rows)} tiers", file=sys.stderr)
+
+with open(f"{S}/results.json", "w") as f:
+    json.dump(out, f, indent=2)
+print(f"wrote {S}/results.json", file=sys.stderr)
