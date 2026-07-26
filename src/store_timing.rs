@@ -655,6 +655,13 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
             _ => -1.0,
         }
     };
+    let st = wal_read_storm(window_secs);
+    let storm = serde_json::json!({
+        "wal_gets": st.wal_gets,
+        "sst_puts": st.sst_puts,
+        "wal_deletes": st.wal_deletes,
+        "stalled": st.stalled,
+    });
     serde_json::json!({
         "ts_ms": now_ms(),
         "window_secs": window_secs,
@@ -664,6 +671,7 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "timer_tokio": drift_stats(&drift().tokio, cutoff),
         "steal_pct": steal_pct,
         "served_from": served_from,
+        "wal_read_storm": storm,
         "ops": ops,
         "slow": slow,
     })
@@ -803,6 +811,61 @@ impl object_store::client::HttpConnector for SniffConnector {
     }
 }
 
+/// Counts behind the compaction-stall signal, over a trailing window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WalReadStorm {
+    pub wal_gets: u64,
+    pub sst_puts: u64,
+    pub wal_deletes: u64,
+    /// Readers are hammering the WAL while nothing compacts or trims it.
+    pub stalled: bool,
+}
+
+/// Minimum WAL GETs in the window before the shape means anything. Below
+/// this an idle instance (no compaction because there is nothing to
+/// compact) looks identical to a stalled one.
+const STORM_MIN_WAL_GETS: u64 = 500;
+
+/// Detect the failure that took eu-central-1 out of the 2026-07-26 soak
+/// (docs/SOAK-REGIONS.md): compaction stops, so the WAL is never trimmed;
+/// readers then scan an ever-growing set of WAL SSTs directly; those reads
+/// consume the outbound budget and starve the appends that would have
+/// advanced the WAL. It is self-reinforcing, and by the time throughput
+/// dies it has been visible in these counters for minutes.
+///
+/// The shape is unmistakable and cheap to spot: thousands of `get:wal`
+/// against zero `put:sst` and zero `delete:wal`.
+pub fn wal_read_storm(window_secs: u64) -> WalReadStorm {
+    let s = stats();
+    let cutoff = now_ms().saturating_sub(window_secs * 1000);
+    let ring = s.ring.lock().unwrap();
+    tally_storm(
+        ring.iter()
+            .filter(|ev| ev.ts_ms >= cutoff)
+            .map(|ev| (ev.op, ev.class)),
+    )
+}
+
+/// The decision, split out from the ring so it is testable without touching
+/// the process-wide stats singleton.
+fn tally_storm(ops: impl Iterator<Item = (u8, u8)>) -> WalReadStorm {
+    let (mut wal_gets, mut sst_puts, mut wal_deletes) = (0u64, 0u64, 0u64);
+    for oc in ops {
+        match oc {
+            (2, 0) => wal_gets += 1,    // get:wal
+            (0, 2) => sst_puts += 1,    // put:sst
+            (4, 0) => wal_deletes += 1, // delete:wal
+            _ => {}
+        }
+    }
+    WalReadStorm {
+        wal_gets,
+        sst_puts,
+        wal_deletes,
+        stalled: wal_gets >= STORM_MIN_WAL_GETS && sst_puts == 0 && wal_deletes == 0,
+    }
+}
+
 /// Cheap scalar summary for heartbeats: WAL-PUT p50/p99 over the trailing
 /// 15 s plus the outbound gauge (non-destructive peak read).
 pub fn heartbeat_summary() -> (u64, u64, i64, i64) {
@@ -829,6 +892,59 @@ pub fn heartbeat_summary() -> (u64, u64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a window: `n` copies of `(op, class)`.
+    fn ops(spec: &[((u8, u8), usize)]) -> Vec<(u8, u8)> {
+        spec.iter()
+            .flat_map(|(oc, n)| std::iter::repeat(*oc).take(*n))
+            .collect()
+    }
+
+    const GET_WAL: (u8, u8) = (2, 0);
+    const PUT_SST: (u8, u8) = (0, 2);
+    const DEL_WAL: (u8, u8) = (4, 0);
+    const PUT_WAL: (u8, u8) = (0, 0);
+
+    #[test]
+    fn wal_read_storm_fires_on_the_eu_central_shape() {
+        // The real 60 s window that took eu-central-1 out of the soak:
+        // 12,666 get:wal, no put:sst, no delete:wal (docs/SOAK-REGIONS.md).
+        let w = tally_storm(ops(&[(GET_WAL, 12_666), (PUT_WAL, 5)]).into_iter());
+        assert!(w.stalled, "{w:?}");
+        assert_eq!(w.wal_gets, 12_666);
+        assert_eq!((w.sst_puts, w.wal_deletes), (0, 0));
+    }
+
+    #[test]
+    fn wal_read_storm_stays_quiet_on_a_healthy_window() {
+        // ap-northeast-1's window in the same run: reads come from SSTs and
+        // the WAL is being trimmed.
+        let w = tally_storm(
+            ops(&[
+                (PUT_WAL, 1_242),
+                (PUT_SST, 132),
+                (DEL_WAL, 1_255),
+                (GET_WAL, 40),
+            ])
+            .into_iter(),
+        );
+        assert!(!w.stalled, "{w:?}");
+    }
+
+    #[test]
+    fn wal_read_storm_ignores_an_idle_instance() {
+        // No compaction and no trimming, because there is nothing to do.
+        // Without the floor this reads identically to a stall.
+        let w = tally_storm(ops(&[(GET_WAL, 12)]).into_iter());
+        assert!(!w.stalled, "{w:?}");
+    }
+
+    #[test]
+    fn wal_read_storm_clears_as_soon_as_trimming_resumes() {
+        // A single delete:wal in the window is enough: the loop is turning.
+        let w = tally_storm(ops(&[(GET_WAL, 12_666), (DEL_WAL, 1)]).into_iter());
+        assert!(!w.stalled, "{w:?}");
+    }
 
     #[test]
     fn server_timing_parse() {
