@@ -285,6 +285,43 @@ pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64)> {
 }
 
 #[cfg(test)]
+mod shard_lag_tests {
+    use super::*;
+
+    // Regression: the rebalancer used to derive a shard prefix from a
+    // stream hash. Lag must be published BY the shard that owns it.
+    #[test]
+    fn shard_lag_roundtrips_and_clears() {
+        set_shard_lag("101", 42);
+        set_shard_lag("110", 7);
+        let all: std::collections::HashMap<String, u64> =
+            shard_lag_all().into_iter().collect();
+        assert_eq!(all.get("101"), Some(&42));
+        assert_eq!(all.get("110"), Some(&7));
+
+        // a fenced-away shard must stop reporting, or it shows as
+        // phantom lag on an instance serving nothing (ladder pass 1 D3)
+        clear_shard_lag("101");
+        let all: std::collections::HashMap<String, u64> =
+            shard_lag_all().into_iter().collect();
+        assert!(!all.contains_key("101"));
+        assert_eq!(all.get("110"), Some(&7));
+        clear_shard_lag("110");
+    }
+
+    #[test]
+    fn absorb_lag_max_is_the_worst_stream() {
+        let a = [1u8; 16];
+        let b = [2u8; 16];
+        set_absorb_lag(&a, 5);
+        set_absorb_lag(&b, 61);
+        assert_eq!(absorb_lag_max(), 61);
+        clear_absorb_lag(&a);
+        clear_absorb_lag(&b);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

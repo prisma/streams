@@ -97,6 +97,37 @@ pub struct OverrideEntry {
     pub ms: i64,
 }
 
+/// Rebalance target: the coolest peer that is itself HEALTHY. Under
+/// fleet-wide backlog every instance breaches the lag threshold, and
+/// unguarded moves just hand the backlog around (ladder pass 3: 7 moves
+/// in 10 minutes of ping-pong). `peers` maps instance -> (cpu_pct,
+/// effective_lag_secs) and must exclude nobody; self is filtered here.
+pub fn pick_move_target(
+    peers: &std::collections::HashMap<String, (f64, u64)>,
+    me: &str,
+    lag_threshold_secs: u64,
+) -> Option<String> {
+    peers
+        .iter()
+        .filter(|(n, (_, lag))| n.as_str() != me && *lag < lag_threshold_secs / 2)
+        .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+        .map(|(n, _)| n.clone())
+}
+
+/// Rebalance victim: the laggiest shard THIS instance actually serves.
+/// Possession, not the ring, is the truth here — and the lag must be
+/// keyed by shard prefix, never re-derived from a stream hash (records
+/// are keyed by storage_hash while the shard is chosen by
+/// stream_hash(name); the two are unrelated, so the derived prefix
+/// almost never matched and no move ever fired — ladder pass 6b D3).
+pub fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String]) -> Option<String> {
+    shard_lags
+        .iter()
+        .filter(|(p, _)| served.iter().any(|s| s == p))
+        .max_by_key(|(_, lag)| *lag)
+        .map(|(p, _)| p.clone())
+}
+
 /// Current RSS in bytes. Linux (musl cloud build): /proc/self/statm.
 /// macOS dev box: getrusage peak RSS as an approximation.
 pub fn rss_bytes() -> u64 {
@@ -634,13 +665,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     // the threshold and unguarded moves just hand the
                     // backlog around (ladder p3: 7 moves in 10 min, shard
                     // ping-pong, zero net absorption gained).
-                    let target = peer_load
-                        .iter()
-                        .filter(|(n, (_, lag))| {
-                            **n != cfg.instance && *lag < rebalance_lag_secs / 2
-                        })
-                        .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
-                        .map(|(n, _)| n.clone());
+                    let target =
+                        pick_move_target(&peer_load, &cfg.instance, rebalance_lag_secs);
                     if target.is_none() {
                         tracing::info!(
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
@@ -650,11 +676,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         // Possession-first, keyed by the shard the absorber
                         // actually serves (never re-derived from a stream
                         // hash — see usage::shard_lag_map).
-                        crate::usage::shard_lag_all()
-                            .into_iter()
-                            .filter(|(p, _)| state.shards.read().unwrap().contains_key(p))
-                            .max_by_key(|(_, lag)| *lag)
-                            .map(|(p, _)| p)
+                        let served: Vec<String> =
+                            state.shards.read().unwrap().keys().cloned().collect();
+                        pick_victim_shard(&crate::usage::shard_lag_all(), &served)
                             // No committed backlog anywhere (shed-before-
                             // commit): move the WEDGED shard itself.
                             .or_else(|| {
@@ -769,4 +793,70 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn peers(v: &[(&str, f64, u64)]) -> HashMap<String, (f64, u64)> {
+        v.iter().map(|(n, c, l)| (n.to_string(), (*c, *l))).collect()
+    }
+
+    // Regression: ladder pass 3 did 7 moves in 10 minutes because moves
+    // were allowed to peers that were themselves behind.
+    #[test]
+    fn target_is_the_coolest_healthy_peer() {
+        let p = peers(&[("a", 90.0, 0), ("b", 10.0, 0), ("c", 50.0, 0)]);
+        assert_eq!(pick_move_target(&p, "a", 60).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn target_excludes_self() {
+        let p = peers(&[("a", 1.0, 0), ("b", 80.0, 0)]);
+        assert_eq!(pick_move_target(&p, "a", 60).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn no_target_when_every_peer_is_also_lagging() {
+        // fleet-wide backlog: hold shards rather than pass them around
+        let p = peers(&[("a", 5.0, 90), ("b", 5.0, 80), ("c", 5.0, 70)]);
+        assert_eq!(pick_move_target(&p, "a", 60), None);
+    }
+
+    #[test]
+    fn target_must_be_well_under_the_threshold_not_merely_under_it() {
+        // threshold/2 gate: a peer at 40s with a 60s threshold is not healthy
+        let p = peers(&[("a", 5.0, 0), ("b", 5.0, 40)]);
+        assert_eq!(pick_move_target(&p, "a", 60), None);
+    }
+
+    // Regression: victim was derived via shard_for_hash(lag_map_key), but
+    // the lag map is keyed by storage_hash while shards are chosen by
+    // stream_hash(name) - so it almost never matched and D3 never moved.
+    #[test]
+    fn victim_is_the_laggiest_shard_we_actually_serve() {
+        let lags = vec![
+            ("000".to_string(), 10),
+            ("011".to_string(), 90),
+            ("111".to_string(), 40),
+        ];
+        let served = vec!["000".to_string(), "111".to_string()];
+        // 011 is laggier but we do not serve it
+        assert_eq!(pick_victim_shard(&lags, &served).as_deref(), Some("111"));
+    }
+
+    #[test]
+    fn no_victim_when_we_serve_nothing_with_lag() {
+        let lags = vec![("011".to_string(), 90)];
+        let served = vec!["000".to_string()];
+        assert_eq!(pick_victim_shard(&lags, &served), None);
+    }
+
+    #[test]
+    fn no_victim_when_nothing_lags() {
+        let served = vec!["000".to_string()];
+        assert_eq!(pick_victim_shard(&[], &served), None);
+    }
 }

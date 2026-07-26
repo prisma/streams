@@ -426,6 +426,34 @@ them into bogus keys (`RUST_LOG="info,slatedb=info"`).
 6. After load tests: destroy generator versions, redeploy servers/LBs
    *without* `KEEP_AWAKE` so the fleet scales to zero.
 
+### 7.4b Multi-instance deploys: wait for the ring before routing
+
+**Do not send traffic until the fleet is stable.** Compute cold-starts
+instances one at a time, and shard ownership is derived from live
+heartbeats — so while the fleet is still coming up, the ownership map
+changes under load and shards move repeatedly mid-write. Measured on the
+4-instance cluster (2026-07-25): load applied ~4 min after deploy, with
+`desired.json` still reporting `live=1`, lost **371,900 acknowledged
+records**; the identical workload on a stable ring was clean.
+
+| | converging ring | stable ring |
+|---|---|---|
+| accepted | 1,531,200 | 1,548,800 |
+| abandoned | 17,600 | 0 |
+| ring redirects | 3,107 | 47 |
+| cold-start 404s | 148 | 0 |
+| order check | FAIL | PASS |
+
+Gate: **all N instances live AND `ring_active` unchanged for 60 s**
+(poll `/operator/data.json`). `bench/docker/harness/cluster-run.sh` has
+a reference implementation.
+
+**Instances scale to zero and the platform answers 404 while one wakes.**
+Routing must never be the wake mechanism — the LB sends out-of-band
+`/health` pings (§6). Any client that talks to instances directly must
+treat 404 as retryable and health-ping to wake the target, or it will
+drop writes that would have succeeded.
+
 ### 7.5 Platform failure modes you will meet
 
 | symptom | meaning | action |
