@@ -30,7 +30,7 @@ this region", which is what a regional deployment actually offers.
 |---|---|
 | `deploy-region.sh <region> server\|gen` | deploy one half of one region's pair |
 | `resolve-urls.sh [region] [role]` | re-resolve preview domains from the **running** version |
-| `poll.py` | one-shot progress line per region while a run is in flight |
+| `poll.py` | progress line per region **and** a timestamped `/v1/debug/store` snapshot — run on a loop for the whole soak |
 | `harvest.py` | collect per-tier client metrics + `/v1/debug/{store,usage,scaler}` → `results.json` |
 | `mkreport.py` | render `results.json` as the markdown tables of the report |
 
@@ -51,7 +51,7 @@ done
 for r in us-east-1 us-west-1 eu-central-1 eu-west-3 ap-southeast-1 ap-northeast-1; do
   ./deploy-region.sh "$r" gen
 done
-python3 poll.py                    # watch
+while true; do python3 poll.py; sleep 45; done   # watch AND snapshot storage
 python3 harvest.py && python3 mkreport.py > report-tables.md
 ```
 
@@ -75,12 +75,18 @@ that look fine and mean nothing.
    anyway.)
 4. **Discard the first window of each tier.** It straddles the concurrency
    step-up and mixes the previous tier's in-flight requests.
-5. **Every region gets its own bucket and its own project.** Compute env
+5. **Sample `/v1/debug/store` DURING the run, not after.** It is a
+   trailing 60 s window, so a post-run harvest returns an empty window and
+   every storage cell comes back as a dash. Run `poll.py` on a loop for
+   the duration — it writes `store-snaps/<region>-<hhmmss>.json` on every
+   pass. The first run of this harness lost its object-store telemetry to
+   exactly this and had to fall back on snapshots taken by hand mid-ramp.
+6. **Every region gets its own bucket and its own project.** Compute env
    vars are project-scoped and merged; sharing a project across regions
    silently cross-contaminates configuration (RUNBOOK §7.3).
-6. **Report the integrity check, not just latency.** Client-accepted
+7. **Report the integrity check, not just latency.** Client-accepted
    records must equal server-durable records. A soak that only reports
    percentiles cannot distinguish "fast" from "fast because it dropped
    your writes".
-7. **Tear down afterwards.** Six projects, six buckets and twelve services
+8. **Tear down afterwards.** Six projects, six buckets and twelve services
    is real money and they do not expire on their own.

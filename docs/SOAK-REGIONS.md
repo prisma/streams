@@ -1,0 +1,436 @@
+# Six-region soak: how far apart are the regions?
+
+**Run**: 2026-07-26, 07:06–07:41 UTC. Six Prisma Compute regions, one
+Streams server and one **co-located** load generator each, one dedicated
+Prisma Bucket each. Ten concurrency tiers, 180 s per tier, 1 KiB records,
+batches of 10, producer and consumer both running.
+
+Harness: [`bench/soak/`](../bench/soak/). Raw data: `results.json` from
+`harvest.py`.
+
+## What this measures, and what it does not
+
+The generator runs **inside the region under test**. A generator on the
+operator's laptop measures the operator's distance to the region — a real
+number, but not Streams'. At 1 KiB records an append costs 30–200 ms
+depending on region, and a transpacific round trip is the same order, so
+an external client would have buried the signal under its own geography.
+
+So every latency below answers: *what does Streams cost a caller that is
+already in this region?* That is the question a regional deployment
+actually has to answer.
+
+Two client-side metrics, both windowed over 20 s:
+
+| metric | meaning |
+|---|---|
+| **append p50/p99** | request → durable ack. The write path, end to end, including the WAL PUT to Tigris. |
+| **roundtrip p50/p99** | producer's embedded timestamp → the moment a consumer observed the record. The full publish-to-subscribe latency. |
+
+Server-side, `/v1/debug/store` reports per-operation object-store latency
+and — from Tigris's own `x-tigris-served-from` response header — which
+Tigris PoP actually served each request.
+
+## Headline
+
+The regions are **not** within a factor of two of each other. On the write
+path they span roughly 5×, and the spread is dominated by one variable:
+how fast the local Tigris PoP completes a small WAL PUT.
+
+- **ap-northeast-1 (nrt) and us-west-1 (sjc) are the fast pair.**
+- **us-east-1 (ewr, storage in iad1) is the slow outlier** — its `put:wal`
+  p50 is 4–6× every other region's. This is the same iad1 degradation
+  already reported to Tigris, now confirmed from inside Compute rather
+  than from a probe, on the exact operation our durability depends on.
+- **eu-central-1 collapsed mid-run** and its numbers past tier 6 are not
+  comparable. The cause is documented below; it is the most interesting
+  finding of the run and it is not a latency number.
+
+**13.21 million records acknowledged** across the six regions (13.55 M
+durable server-side), with **zero acknowledged records lost anywhere**.
+
+### Per-region summary
+
+| region | PoP | records | requests | errors | throttled | append p50 | append p99 | roundtrip p50 | roundtrip p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| us-east-1 | ewr/iad | 788,250 | 78,825 | 0 | 0 | 455.8 | 3,029.0 | 539.1 | 5,107.7 |
+| us-west-1 | sjc | 3,321,240 | 332,124 | 0 | 273,433 | 101.1 | 456.7 | 129.5 | 1,279.0 |
+| eu-central-1 | fra | 221,160 | 22,116 | 1,090 | 103,057 | 99.8 | 26,378.2 | 181.1 | 65,896.4 |
+| eu-west-3 | cdg | 2,912,730 | 291,273 | 0 | 19,998 | 118.6 | 393.2 | 164.1 | 1,214.5 |
+| ap-southeast-1 | sin | 2,252,230 | 225,223 | 0 | 25,444 | 124.3 | 1,499.1 | 328.6 | 2,670.6 |
+| ap-northeast-1 | nrt | 3,717,900 | 371,790 | 0 | 481,464 | 77.9 | 821.8 | 110.6 | 841.2 |
+
+Reading the summary: `append p50` is the median of the ten per-tier
+medians, `append p99` is the worst per-tier p99 across the ramp. The
+throttle counts are the per-shard limits doing their job — see
+"Throttling" below. Everything is one stream on one shard on one instance;
+the fleet and the auto-scaler were **off** for this run (no `FLEET_PREFIX`,
+so no heartbeat loop and no segment splitting). This measures a single
+region's baseline, not the scaling behaviour validated in
+[SCALING.md](./SCALING.md).
+
+## Region ranking
+
+On the write path, taking each region's flat middle tiers:
+
+| rank | region | PoP | append p50 | roundtrip p50 | notes |
+|---|---|---|---|---|---|
+| 1 | ap-northeast-1 | nrt | **78 ms** | **111 ms** | fastest and the only region 100 % served locally |
+| 2 | us-west-1 | sjc | 101 ms | 130 ms | flat across the whole ramp |
+| 3 | ap-southeast-1 | sin | 124 ms | 329 ms | noisier; 13 % of storage traffic left the region |
+| 4 | eu-west-3 | cdg | 119 ms | 164 ms | the most consistent region in the run |
+| 5 | eu-central-1 | fra | 100 ms → wedged | 181 ms → wedged | healthy until tier 6, then collapsed |
+| 6 | us-east-1 | ewr | **456 ms** | 539 ms | 4–6× the others; storage-bound |
+
+The spread on the write path is roughly **5×** between the best and worst
+healthy region — this is not a set of interchangeable deployment targets.
+The read path is far more uniform: the roundtrip is consistently the
+append plus 30–60 ms, except in SIN where it is append plus ~200 ms.
+
+## us-east-1 is storage-bound, and it is the same iad1 problem
+
+us-east-1's append latency barely moves across the ramp — 212 ms at
+concurrency 1, 493 ms at concurrency 64. A latency that is flat in
+concurrency and high at concurrency 1 is not queueing; it is the cost of a
+single round trip. The storage telemetry says exactly where it goes.
+
+Sampled mid-ramp (tier 5, concurrency 12, 60 s windows) — the WAL PUT is
+the operation every durable ack waits on:
+
+| region | PoP | `put:wal` n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| ap-northeast-1 | nrt | 1,372 | **34 ms** | 66 | 164 | 734 |
+| eu-central-1 | fra | 1,060 | 44 ms | 87 | 245 | 338 |
+| us-west-1 | sjc | 1,092 | 46 ms | 83 | 159 | 313 |
+| ap-southeast-1 | sin | 501 | 51 ms | 228 | 314 | 660 |
+| eu-west-3 | cdg | 902 | 56 ms | 97 | 229 | 299 |
+| **us-east-1** | **iad1** | **259** | **214 ms** | **334** | **537** | **645** |
+
+us-east-1 completed a quarter as many WAL PUTs in the same window as
+ap-northeast-1, because each one cost 6× as much.
+
+The post-drain snapshot, taken with no load at all, isolates it further —
+these are uncontended single operations:
+
+| op | us-east-1 (iad1) | us-west-1 (sjc) | eu-west-3 (cdg) | ap-southeast-1 (sin) | ap-northeast-1 (nrt) |
+|---|---|---|---|---|---|
+| `delete:wal` p50/p99 | **181 / 388** | 30 / 83 | 28 / 41 | 16 / 26 | 14 / 24 |
+| `delete:manifest` p50/p99 | **195 / 500** | 32 / 102 | 30 / 60 | 16 / 35 | 15 / 33 |
+| `put:manifest` p50/p99 | **151 / 267** | 34 / 66 | 60 / 74 | 28 / 42 | 29 / 63 |
+| `get:manifest` p50/p99 | 33 / 135 | 11 / 61 | 21 / 118 | 11 / 92 | 12 / 106 |
+
+Every **mutating** operation in iad1 costs 5–12× its equivalent elsewhere,
+while GETs are only 2–3× worse. That asymmetry matters: our durability
+path is all PUTs and DELETEs, so it lands squarely on the degraded side.
+
+This is the same iad1 degradation already reported to Tigris from the
+observatory probes (RUNBOOK §14), now reproduced from **inside** Compute,
+against a Prisma Bucket, under real Streams traffic, on the exact
+operations the ack path depends on. `served_from` confirms 97 % of these
+requests were served by iad1 itself, so this is a slow local PoP and not a
+routing artefact.
+
+Practical consequence: **us-east-1 cannot meet the 250 ms durable-ack SLO
+today.** Not because of anything in our pipeline — its `timer_tokio`
+drift, `steal_pct` and error counts were all clean — but because a single
+WAL PUT costs 214 ms there.
+
+## Throttling: the per-shard limits held
+
+Four regions hit the per-shard admission limits in the last tiers, and the
+counts are large — 481,464 throttled requests in ap-northeast-1, 273,433
+in us-west-1. That is the intended behaviour, not a fault.
+
+Each region ran **one stream**, which hashes to **one shard**, and a shard
+is capped at 1,000 requests/s and 5,000 records/s
+(`LIMIT_REQS_PER_SEC` / `LIMIT_RECS_PER_SEC`, RUNBOOK §3.2b). At batch 10
+those two bind together at ~500 requests/s. Look at where the ramp
+flattens:
+
+| region | tier 9 (conc 48) | tier 10 (conc 64) |
+|---|---|---|
+| ap-northeast-1 | 489 req/s, 4,893 rec/s | 490 req/s, 4,908 rec/s |
+| us-west-1 | 432 req/s, 4,331 rec/s | 490 req/s, 4,912 rec/s |
+| eu-west-3 | 366 req/s, 3,663 rec/s | 482 req/s, 4,824 rec/s |
+
+Every healthy region converges on ~490 req/s and ~4,900 rec/s and stops —
+the limiter pinning throughput within 2 % of its configured ceiling, with
+**zero errors** and latency that does not degrade at the ceiling
+(ap-northeast-1's append p50 is 79.6 ms at tier 9 and 75.4 ms at tier 10).
+Excess load is rejected cleanly rather than queued into latency. That is
+the reject-vs-queue contract working as designed.
+
+us-east-1 never reached the limit — it topped out at 124 req/s, storage-
+bound long before admission control had anything to say.
+
+## Integrity
+
+| region | client-acknowledged records | server-durable records | delta |
+|---|---|---|---|
+| us-east-1 | 788,250 | 788,891 | +641 |
+| us-west-1 | 3,321,240 | 3,321,780 | +540 |
+| eu-west-3 | 2,912,730 | 2,913,680 | +950 |
+| ap-southeast-1 | 2,252,230 | 2,252,870 | +640 |
+| ap-northeast-1 | 3,717,900 | 3,718,570 | +670 |
+| **eu-central-1** | **221,160** | **549,690** | **+328,530** |
+
+**No acknowledged record went missing in any region.** The server count is
+never below the client count.
+
+The +540…+950 deltas in the healthy regions are sampling skew, not drift:
+the client's counter comes from its last 20 s window sample, so writes
+that completed after that sample are durable but uncounted. The magnitude
+is right for one window at those rates.
+
+eu-central-1's +328,530 is a different thing entirely, and it is the
+subject of the next section.
+
+Compression held at **10.6×** in every region (1 KiB records, zstd-1
+before encryption, `FRAME_COMPRESS=1`) — identical across all six, which
+is what you would expect from a fixed payload shape and a useful
+confirmation that the frame path behaves the same everywhere.
+
+## The eu-central-1 wedge
+
+Somewhere between 07:20 and 07:24 UTC, at tier 6 (concurrency 16),
+eu-central-1 stopped making progress. The generator's success counter
+froze at 22,116 requests and its achieved rate went to zero for the rest
+of the run. Its errors kept climbing at a steady ~16 per 20 s window.
+
+The server was **not** down. It answered `/v1/debug/*` in under a second
+throughout, from outside the region.
+
+### What the server was doing
+
+`/v1/debug/store`, 60 s window, at 07:27 — eu-central-1 next to a healthy
+region for contrast:
+
+| operation | eu-central-1 (fra) | ap-northeast-1 (nrt) |
+|---|---|---|
+| `get:wal` | **12,666** | — (none) |
+| `head:wal` | **3,351** | — (none) |
+| `get:sst` | — (none) | 3,818 |
+| `put:wal` | **5** | 1,242 |
+| `put:sst` | — (none) | 132 |
+| `delete:wal` | **2** | 1,255 |
+| `put:manifest` | 16 (5 err) | 92 (5 err) |
+| outbound in flight | **41** (peak 88) | 19 (peak 42) |
+
+The write path had essentially stopped — 5 WAL PUTs in a minute — while
+the read path issued 16,000 WAL operations in the same minute. There was
+no SST activity at all: nothing being compacted, nothing being trimmed.
+
+That is a **read-amplification runaway**. Compaction stalled, so the WAL
+kept growing; readers scan WAL SSTs directly when the data has not been
+compacted, so each pass had more files to read than the last; those reads
+consumed the outbound connection budget (41 in flight against a peak of
+88), which starved the appends that would have advanced the WAL. Each
+turn of the loop makes the next turn worse.
+
+### Every "failed" write actually succeeded
+
+This is the part that matters for correctness.
+
+While the client counted only errors, the server's durable record count
+kept advancing — from 539,280 at 07:24 to 541,040 at 07:28, about
+9.8 records/s. The generator runs 24 workers with a **30 s HTTP timeout**
+(`bench/awsbench/src/main.rs:580`); 24 workers each completing one
+10-record batch per ~30 s is 8 records/s. The rates match.
+
+So the appends were not failing. They were completing **after the client
+had already given up on them**. At the end of the run the server held
+54,969 append requests and 549,690 durable records against the 22,116 the
+client had seen succeed — **2.5× more durable writes than acknowledged
+ones**, and 1,090 errors reported for writes that had in fact landed.
+
+From the client's side this is indistinguishable from failure, and a
+client that retries on timeout would have written every one of those
+records twice. This is exactly the regime that producer idempotence
+exists for (`Producer-Id` / `Producer-Epoch` / `Producer-Seq`, duplicate
+→ 204). The soak generator does not use it, which is why the discrepancy
+is visible here at all.
+
+**The system did not lose data and did not corrupt order. It failed to
+shed load, and it failed to tell the client the truth about latency.**
+
+### The correlating anomaly: cross-PoP routing
+
+eu-central-1 is the only region where Tigris served a large fraction of
+requests from a **remote** PoP. From Tigris's own `x-tigris-served-from`
+header, cumulative over the run:
+
+| region | local PoP share | notable remote |
+|---|---|---|
+| ap-northeast-1 | nrt 100% | — |
+| us-west-1 | sjc1 98% | syd 1% |
+| eu-west-3 | fra 99% | jnb 1% |
+| us-east-1 | iad1 97% | ord 1% |
+| ap-southeast-1 | sin 87% | nrt 8%, fra 5% |
+| **eu-central-1** | **fra 72%** | **ord1 26%**, jnb 1% |
+
+A quarter of eu-central-1's object-store traffic crossed the Atlantic to
+Chicago. It is also the only region that wedged.
+
+Be careful with this: the `served_from` counters are cumulative from boot,
+so they establish that heavy cross-routing and the wedge **coincided in
+the same region**, not that one preceded the other. The mechanism is
+plausible and the correlation is the strongest in the dataset, but this is
+one region in one run. It is a lead to give Tigris, not a proven cause.
+
+### What we are changing
+
+The failure is ours regardless of what triggered it. A storage backend
+getting slower must degrade throughput, not collapse into a read storm
+that starves writes and hands clients timeouts on requests that succeed.
+
+Concretely:
+
+1. **Bound the read path's share of the outbound budget.** Appends and
+   reads compete for the same connections with no reservation. Reads
+   should not be able to take the last slot a durability write needs.
+2. **Alarm on the WAL-to-SST ratio.** `get:wal` climbing while `put:sst`
+   and `delete:wal` sit at zero is a compaction stall, and it is visible
+   in telemetry we already collect, minutes before throughput dies.
+3. **Make slow appends fail fast rather than complete late.** An append
+   that will take longer than any sane client timeout should be rejected
+   with backpressure so the caller can retry deliberately, instead of
+   landing after the caller gave up.
+
+None of these are implemented in this run; they are the follow-up work
+this soak bought.
+
+## What this run changed in the codebase
+
+Every item below is landed, not proposed.
+
+| learning | change |
+|---|---|
+| A compaction stall is visible in telemetry we already collect, minutes before throughput dies | `wal_read_storm` detector in `src/store_timing.rs`, surfaced in `/v1/debug/store`, with four unit tests built from this run's real windows (the eu-central shape, the nrt shape, an idle instance, and recovery) |
+| A missing required env var makes a binary exit at startup, and Compute reports the version `running` while its domain 404s — indistinguishable from a boot failure | `deploy/*/supervise.ts`: if the child exits, the wrapper binds `$PORT` and serves the exit code plus the stderr tail. Plus `BENCH_SHAPE` now has a `default_value` (`bench/awsbench/src/main.rs`) |
+| Preview domains belong to a *version*; a redeploy silently retires the old URL | `bench/soak/resolve-urls.sh`, called at the end of every deploy; RUNBOOK §7.5 row |
+| The soak harness existed only in a scratch directory | versioned at `bench/soak/` with a README of invariants, plus `deploy/app-gen/` in the repo |
+| A dry-run that echoes commands leaks the platform token | `bench/soak/teardown.sh` redacts it |
+| `/v1/debug/store` is a trailing 60 s window, so harvesting it after the run returns an empty window — this run's first harvest produced a dash in every storage cell | `bench/soak/poll.py` now writes a timestamped store snapshot on every pass; invariant 5 in the harness README |
+| Region selection for staging was based on stale assumptions | `docs/STAGING.md` §2 revisited; two new alarms in §8 |
+
+Deploy footguns met this run are catalogued in
+[deploy/README.md](../deploy/README.md#deploy-footguns) and RUNBOOK §7.5:
+Compute's region codes are not Tigris PoP codes (`us-east-1` → `ewr`,
+storage in `iad1`), `deploy` prints a version id and not a service id,
+parallel `bunx` races the package cache, fresh app dirs need
+`bun install`, and a failed deploy leaves a version-less service shell.
+
+## Reproducing this
+
+```bash
+export SOAK_HOME=/scratch/soak     # secrets live here, outside the repo
+cd bench/soak
+for r in us-east-1 us-west-1 eu-central-1 eu-west-3 ap-southeast-1 ap-northeast-1; do
+  ./deploy-region.sh "$r" server
+done
+for r in us-east-1 us-west-1 eu-central-1 eu-west-3 ap-southeast-1 ap-northeast-1; do
+  ./deploy-region.sh "$r" gen
+done
+python3 harvest.py && python3 mkreport.py
+./teardown.sh --yes
+```
+
+## Appendix: full tier ramp
+
+Ten tiers, 180 s each, 1 KiB records in batches of 10, producer and
+consumer both running. `append` is request → durable ack; `roundtrip` is
+producer timestamp → consumer observation. Per-tier p50 is the median of
+that tier's 20 s windows, p99 the worst; the first window of each tier is
+dropped because it straddles the concurrency step-up. `errs` and
+`throttled` are cumulative.
+
+**us-east-1** (ewr/iad)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 4 | 42 | 211.6 | 1,471.5 | 264.6 | 2,852.9 | 0 | 0 |
+| t02-conc2 | 2 | 4 | 42 | 462.2 | 1,089.5 | 539.1 | 3,125.2 | 0 | 0 |
+| t03-conc4 | 4 | 8 | 88 | 425.5 | 1,141.8 | 533.8 | 4,050.9 | 0 | 0 |
+| t04-conc8 | 8 | 17 | 172 | 455.8 | 983.0 | 523.3 | 2,969.6 | 0 | 0 |
+| t05-conc12 | 12 | 26 | 258 | 424.6 | 3,029.0 | 507.6 | 5,107.7 | 0 | 0 |
+| t06-conc16 | 16 | 32 | 331 | 441.3 | 2,248.7 | 541.7 | 3,182.6 | 0 | 0 |
+| t07-conc24 | 24 | 53 | 534 | 427.6 | 1,039.4 | 508.7 | 1,160.2 | 0 | 0 |
+| t08-conc32 | 32 | 66 | 661 | 470.4 | 2,119.7 | 585.2 | 2,246.7 | 0 | 0 |
+| t09-conc48 | 48 | 101 | 1,012 | 465.8 | 1,737.7 | 577.3 | 3,059.7 | 0 | 0 |
+| t10-conc64 | 64 | 124 | 1,240 | 492.8 | 1,120.3 | 609.0 | 3,844.1 | 0 | 0 |
+
+**us-west-1** (sjc)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 17 | 178 | 49.8 | 179.7 | 67.0 | 1,279.0 | 0 | 0 |
+| t02-conc2 | 2 | 18 | 190 | 97.9 | 297.5 | 121.0 | 618.5 | 0 | 0 |
+| t03-conc4 | 4 | 38 | 379 | 100.1 | 319.2 | 121.5 | 481.0 | 0 | 0 |
+| t04-conc8 | 8 | 72 | 727 | 101.1 | 456.7 | 123.6 | 470.0 | 0 | 0 |
+| t05-conc12 | 12 | 112 | 1,123 | 99.6 | 368.1 | 123.5 | 390.1 | 0 | 0 |
+| t06-conc16 | 16 | 144 | 1,446 | 103.1 | 370.7 | 130.0 | 571.4 | 0 | 0 |
+| t07-conc24 | 24 | 218 | 2,185 | 101.5 | 389.9 | 133.6 | 648.2 | 0 | 0 |
+| t08-conc32 | 32 | 294 | 2,944 | 102.7 | 223.2 | 129.5 | 745.5 | 0 | 0 |
+| t09-conc48 | 48 | 432 | 4,331 | 102.1 | 359.4 | 145.6 | 701.4 | 0 | 0 |
+| t10-conc64 | 64 | 490 | 4,912 | 91.2 | 295.2 | 140.0 | 747.0 | 0 | 273433 |
+
+**eu-central-1** (fra)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 17 | 176 | 48.2 | 303.6 | 71.5 | 397.1 | 0 | 0 |
+| t02-conc2 | 2 | 12 | 121 | 99.8 | 779.8 | 142.6 | 5,140.5 | 4 | 5107 |
+| t03-conc4 | 4 | 30 | 296 | 95.8 | 2,803.7 | 181.1 | 65,896.4 | 14 | 8255 |
+| t04-conc8 | 8 | 20 | 210 | 100.7 | 22,872.1 | 472.6 | 26,804.2 | 21 | 46489 |
+| t05-conc12 | 12 | 20 | 200 | 105.7 | 26,378.2 | 392.2 | 27,066.4 | 37 | 91102 |
+| t06-conc16 | 16 | 0 | 0 | — | — | — | — | 129 | 91102 |
+| t07-conc24 | 24 | 0 | 0 | — | — | — | — | 265 | 94250 |
+| t08-conc32 | 32 | 0 | 0 | — | — | — | — | 449 | 94250 |
+| t09-conc48 | 48 | 0 | 0 | — | — | — | — | 721 | 103057 |
+| t10-conc64 | 64 | 0 | 0 | — | — | — | — | 1090 | 103057 |
+
+**eu-west-3** (cdg)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 15 | 152 | 57.1 | 266.8 | 89.5 | 318.2 | 0 | 0 |
+| t02-conc2 | 2 | 16 | 163 | 110.0 | 338.4 | 150.6 | 546.3 | 0 | 0 |
+| t03-conc4 | 4 | 30 | 303 | 116.9 | 366.3 | 167.6 | 490.2 | 0 | 0 |
+| t04-conc8 | 8 | 62 | 624 | 115.9 | 340.2 | 164.1 | 439.0 | 0 | 0 |
+| t05-conc12 | 12 | 96 | 964 | 118.6 | 336.1 | 163.6 | 545.3 | 0 | 0 |
+| t06-conc16 | 16 | 126 | 1,258 | 115.3 | 393.2 | 163.1 | 453.1 | 0 | 0 |
+| t07-conc24 | 24 | 186 | 1,858 | 118.7 | 359.7 | 164.0 | 510.2 | 0 | 0 |
+| t08-conc32 | 32 | 247 | 2,474 | 121.2 | 332.5 | 166.6 | 1,214.5 | 0 | 0 |
+| t09-conc48 | 48 | 366 | 3,663 | 119.7 | 356.9 | 172.0 | 662.0 | 0 | 0 |
+| t10-conc64 | 64 | 482 | 4,824 | 120.9 | 357.6 | 208.6 | 441.1 | 0 | 19998 |
+
+**ap-southeast-1** (sin)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 7 | 76 | 125.8 | 704.0 | 252.2 | 1,769.5 | 0 | 0 |
+| t02-conc2 | 2 | 8 | 82 | 221.2 | 841.7 | 243.5 | 679.4 | 0 | 0 |
+| t03-conc4 | 4 | 8 | 84 | 423.9 | 1,265.7 | 1,024.3 | 2,670.6 | 0 | 0 |
+| t04-conc8 | 8 | 54 | 539 | 84.4 | 811.0 | 588.3 | 1,524.7 | 0 | 0 |
+| t05-conc12 | 12 | 99 | 993 | 75.0 | 807.4 | 328.6 | 1,137.7 | 0 | 0 |
+| t06-conc16 | 16 | 106 | 1,060 | 124.3 | 622.1 | 321.2 | 954.4 | 0 | 0 |
+| t07-conc24 | 24 | 160 | 1,606 | 122.1 | 463.4 | 225.5 | 702.5 | 0 | 0 |
+| t08-conc32 | 32 | 229 | 2,296 | 114.3 | 1,190.9 | 320.1 | 1,410.0 | 0 | 0 |
+| t09-conc48 | 48 | 219 | 2,194 | 267.1 | 1,499.1 | 567.7 | 2,084.9 | 0 | 0 |
+| t10-conc64 | 64 | 438 | 4,377 | 102.0 | 954.9 | 454.1 | 1,985.5 | 0 | 25444 |
+
+**ap-northeast-1** (nrt)
+
+| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |
+|---|---|---|---|---|---|---|---|---|---|
+| t01-conc1 | 1 | 15 | 158 | 47.0 | 402.4 | 72.5 | 650.2 | 0 | 0 |
+| t02-conc2 | 2 | 21 | 210 | 80.4 | 517.1 | 108.0 | 591.4 | 0 | 0 |
+| t03-conc4 | 4 | 45 | 454 | 76.5 | 821.8 | 103.0 | 841.2 | 0 | 0 |
+| t04-conc8 | 8 | 92 | 926 | 73.2 | 394.0 | 100.0 | 686.1 | 0 | 0 |
+| t05-conc12 | 12 | 134 | 1,337 | 77.9 | 413.4 | 106.5 | 434.2 | 0 | 0 |
+| t06-conc16 | 16 | 178 | 1,788 | 77.9 | 356.6 | 110.6 | 569.3 | 0 | 0 |
+| t07-conc24 | 24 | 252 | 2,534 | 80.9 | 490.5 | 114.0 | 623.1 | 0 | 0 |
+| t08-conc32 | 32 | 338 | 3,380 | 81.6 | 442.1 | 128.6 | 731.1 | 0 | 0 |
+| t09-conc48 | 48 | 489 | 4,893 | 79.6 | 387.3 | 137.5 | 509.2 | 0 | 68285 |
+| t10-conc64 | 64 | 490 | 4,908 | 75.4 | 473.9 | 143.0 | 715.3 | 0 | 481464 |
+

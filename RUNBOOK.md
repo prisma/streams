@@ -312,6 +312,15 @@ was death (§3.6).
   contention: platform conversation.
 - Timers tight, classes flat, but acks slow in `/v1/debug/timings`
   (`durable_wait_us` ≫ `write_us`) → our pipeline; file an engine bug.
+- `wal_read_storm.stalled` true — thousands of `get:wal` with **zero**
+  `put:sst` and **zero** `delete:wal` → compaction has stopped, the WAL is
+  never trimmed, and readers are scanning it directly. Self-reinforcing:
+  the reads eat the outbound budget and starve the appends that would
+  advance the WAL. Took eu-central-1 out of the 2026-07-26 soak
+  ([docs/SOAK-REGIONS.md](./docs/SOAK-REGIONS.md)). Page on it.
+- `served_from` shows a large share from a **remote** PoP (>10 % non-local)
+  → the provider is routing this bucket's traffic out of region. Every op
+  carries the extra RTT; correlate before blaming our pipeline.
 
 ## 6. Fleet mode: how it actually works
 
@@ -462,6 +471,14 @@ drop writes that would have succeeded.
 | single instance dies (OOM/exit/wedge), even under traffic | plaform reprovisions transparently in seconds | nothing — this genuinely works (verified legs 1–5 of the repro) |
 | deploy CLI throws `styleText` import error | Node < 20 resolving the CLI | run `bunx --bun @prisma/compute-cli …` |
 | first requests after idle are slow | scale-to-zero wake + connection-pool warmup | expected; the 4 s pool idle timeout (§3.1) exists for exactly this |
+| a URL that worked before now 503s, service looks healthy | **preview domains are per-version**: a redeploy mints a new one and retires the old | re-resolve after every deploy: `compute versions list --project P --service S \| awk '$2=="running"{print $3}'` |
+| domain returns a JSON `binary_exited` body | the wrapper's supervisor caught the child dying | read `exitCode` + `stderrTail` in the body — usually a missing required env var or wrong arch |
+| parallel deploys fail with `EEXIST` | concurrent `bunx` invocations race on the shared package cache | fan out regions **sequentially**, or pre-warm with one call |
+| `--service` calls all fail after a scripted deploy | the script captured the **version** id (`cpv_…`) that `deploy` prints, not the **service** id (`cps_…`) | take service ids from `services list` only |
+
+Deploy-time footguns (region-code mismatches, version-less service shells,
+`bun install` on fresh app dirs) are catalogued in
+[deploy/README.md](./deploy/README.md#deploy-footguns).
 
 ## 8. Monitoring
 
@@ -542,6 +559,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |
 | `--env KEY=` rejected / RUST_LOG splits into bogus keys | CLI env parsing | `--unset-env` for removals; quote comma values |
+| throughput → 0, clients see connection timeouts, but stored record count keeps rising | **WAL read storm**: compaction stalled, readers scanning an untrimmed WAL, appends starved; they complete *after* the client's timeout | `/v1/debug/store` → `wal_read_storm.stalled`; restart the instance to clear, then check `served_from` for out-of-region routing. Clients must use producer idempotence or these become duplicates |
 
 ## 11. Data operations
 

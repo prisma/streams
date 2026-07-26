@@ -44,6 +44,24 @@ Client entry point is the **LB domain only**. Server instance domains are
 internal; publishing them would leak topology into clients and re-create
 the routing problem §5 describes.
 
+**Region choice, revisited after the six-region soak**
+([docs/SOAK-REGIONS.md](./SOAK-REGIONS.md)). SIN remains the right pick —
+it is where every prior result was measured, and re-measuring staging
+against a new baseline would waste the comparison. But the soak showed it
+is not the fastest region and not the most local: Tigris served 87 % of
+SIN's object-store requests from `sin` and routed 8 % to `nrt` and 5 % to
+`fra`. `ap-northeast-1` was 100 % local and had the lowest `put:wal`
+latency of the six.
+
+Two consequences for staging:
+
+- Do not read staging latency as the platform's best case. NRT is faster,
+  and `us-east-1` is far worse (its `put:wal` p50 is 4–6× SIN's).
+- Watch `served_from` on the staging cell. The one region that wedged
+  during the soak was the one with heavy out-of-region routing, and the
+  failure mode it produced — compaction stall into a WAL read storm —
+  is now alarmed (§8).
+
 ## 3. Prisma Buckets
 
 Buckets are provisioned through the management API — the same flow
@@ -237,6 +255,8 @@ and OPERATIONS.md §5 SLOs):
 | fence events | rate ≫ shard-move rate | routing flap |
 | bucket size | week-over-week growth > forecast | GC/retention not working |
 | cost | daily spend > budget | `KEEP_AWAKE` left on is the classic cause |
+| **WAL read storm** | `/v1/debug/store` → `wal_read_storm.stalled` true | compaction stopped, WAL never trimmed, readers scanning it directly; starves appends until throughput hits zero while writes still land after the client's timeout. Took a region out of the six-region soak ([SOAK-REGIONS.md](./SOAK-REGIONS.md)) |
+| out-of-region storage | `served_from` non-local share > 10 % over 15 min | the provider is routing this bucket out of region; every op pays the extra RTT and it correlated with the only wedge we have seen |
 
 **Daily human check** for the first two weeks: dashboard, bucket sizes,
 error-code histogram, and the observatory pages for the region (the iad1
