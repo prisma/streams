@@ -15,10 +15,21 @@ CLUSTER_URL=$(python3 -c "import json,os;print(sorted(json.loads(os.environ['CLU
 K=$(cat "$S/key.txt")
 TAG=${TAG:-r2}
 
-create() {  # create a scaled stream through the front door
-  curl -s -o /dev/null -w "create $1: %{http_code}\n" -X PUT "$CLUSTER_URL/v1/stream/$1" \
-    -H "Authorization: Bearer $CLUSTER_AUTH" -H "Stream-Encryption-Key: $K" \
-    -H "Stream-Scaling: auto" -H "Content-Type: application/json" | tee -a "$LOG"
+create() {  # create a scaled stream, following the ring redirect
+  local name=$1 base code tgt
+  base=$(python3 -c "import json,os;print(sorted(json.loads(os.environ['CLUSTER_URLS']).values())[0])")
+  for _ in 1 2 3 4; do
+    code=$(curl -s -o /dev/null -D /tmp/crh -w '%{http_code}' -X PUT "$base/v1/stream/$name" \
+      -H "Authorization: Bearer $CLUSTER_AUTH" -H "Stream-Encryption-Key: $K" \
+      -H "Stream-Scaling: auto" -H "Content-Type: application/json")
+    tgt=$(grep -i streams-replay-to /tmp/crh | tr -d '\r' | awk '{print $2}')
+    if [ "$code" = "409" ] && [ -n "$tgt" ]; then
+      base=$(python3 -c "import json,os;print(json.loads(os.environ['CLUSTER_URLS']).get('$tgt',''))")
+      [ -n "$base" ] && continue
+    fi
+    break
+  done
+  echo "create $name: $code" | tee -a "$LOG"
 }
 
 # Ring-stability gate: Compute cold-starts instances one at a time, so

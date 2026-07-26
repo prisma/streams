@@ -1166,6 +1166,28 @@ async fn create_stream(
         Ok(k) => k,
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_key", &m),
     };
+    // Ring ownership is checked HERE, before any registry mutation.
+    // engine_for would catch it further down, but by then the descriptor
+    // has been written — so a non-owner answered 409 for a stream it had
+    // already created, which is both inconsistent and the first thing a
+    // new user hits. Answer the same 409 + Streams-Replay-To contract the
+    // append and read paths use, and let the client re-issue at the owner.
+    {
+        let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(&name));
+        if let Some(owner) = state.effective_owner(&prefix) {
+            if owner != state.instance_name {
+                let mut r = err_resp(
+                    StatusCode::CONFLICT,
+                    "not_ring_owner",
+                    &format!("shard {prefix} belongs to {owner}"),
+                );
+                if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+                    r.headers_mut().insert("streams-replay-to", v);
+                }
+                return r;
+            }
+        }
+    }
     let content_type =
         hdr(&headers, "content-type").unwrap_or_else(|| "application/octet-stream".to_string());
     let ttl_hdr = hdr(&headers, "stream-ttl");
