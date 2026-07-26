@@ -373,6 +373,16 @@ limit, so a 1 GB/s producer looks exactly like a 5 MB/s producer plus a
 mountain of 429s. Kinesis has the same doubling behaviour, so this would
 be a genuine differentiator rather than parity work.
 
+### 11.3 Deterministic simulation testing
+
+Most defects this campaign found were races and crash windows, which a
+90-minute integration pass explores badly (several hid for multiple
+passes because the race did not happen to fire). Our pinned SlateDB fork
+already ships a DST harness (`slatedb-dst`: seeded runtime, mock clock,
+fail-point registry, fault-injecting object store, and a `swap_db` that
+models a shard handoff). Adoption plan and the honest limits of what
+simulation replaces: [DST.md](./DST.md).
+
 ### 11.2 Opt-in server-side request forwarding
 
 Ring misses today return `409 + Streams-Replay-To`, so every client must
