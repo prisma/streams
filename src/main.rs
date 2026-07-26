@@ -1,4 +1,6 @@
 mod crypto;
+#[cfg(test)]
+mod dst;
 mod fleet;
 mod history;
 mod http;
