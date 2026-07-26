@@ -15,8 +15,6 @@
 //!   I3  no duplicates
 //!   I4  at most one writer commits per shard (fencing is honoured)
 
-#![cfg(test)]
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -266,9 +264,10 @@ pub async fn drive_appends(
             if engine.try_enqueue(req).is_err() {
                 continue; // queue full: client would retry; not an ack
             }
-            match rx.await {
-                Ok(Ok(_ack)) => ledger.record(rk, seq),
-                _ => {} // error or fenced: NOT acked, so not in the ledger
+            // only a durable ack counts; an error or a fenced write is
+            // NOT recorded, which is what makes the ledger ground truth
+            if let Ok(Ok(_ack)) = rx.await {
+                ledger.record(rk, seq);
             }
         }
     }
