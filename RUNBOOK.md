@@ -563,6 +563,15 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | flusher stalls though L0 count is low | per-key L0 overlap gate (meta row) | `L0_MAX_SSTS_PER_KEY` (0 = follow `L0_MAX_SSTS`, which we raise to 24) |
 | WAL prefix grows unboundedly; watermark lags | flush cadence outrunning WAL GC | keep `FLUSH_INTERVAL_MS ≥ 25` and the 30/60 GC settings |
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
+### Latency knobs (2026-07-27, colleague-review implementation)
+
+| env | default | what it does |
+|---|---|---|
+| `WAL_POST_ACK_GATHER_MS` | 0 (off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. |
+| `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable frames to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. |
+| `TAIL_MAX_BYTES` | 1 MiB | Budget for reads WOKEN by a long-poll wait (a fresh commit group, not a backlog). Bulk reads keep 8 MiB. |
+
+
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |
 | client reports a timeout but the record is in the stream | storage slowness outlived the client's deadline — the append committed late (no fencing needed) | expected under a degraded store; clients MUST use producer idempotence (`Producer-Id`/`Epoch`/`Seq`) so the retry is deduped at the original offset |
 | `--env KEY=` rejected / RUST_LOG splits into bogus keys | CLI env parsing | `--unset-env` for removals; quote comma values |
