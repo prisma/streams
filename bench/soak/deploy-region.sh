@@ -50,6 +50,12 @@ if [ -s "$S/platform-token.txt" ]; then
   export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
 fi
 P=$(cat "$S/proj-$R.txt")
+# Campaign-scope guard (the destroyed-specimen lesson): every deploy
+# stamps the project file with this campaign's RUN_ID. teardown.sh
+# refuses projects whose stamp does not match, and refuses anything
+# listed in $SOAK_HOME/preserve.txt regardless.
+RUN_ID=${SOAK_RUN_ID:?set SOAK_RUN_ID (campaign.sh generates one)}
+echo "$RUN_ID" > "$S/proj-$R.txt.campaign"
 AUTH=$(cat "$S/auth.txt"); KEY=$(cat "$S/skey.txt")
 BINID=$(cat "$S/binid.txt"); BINSEC=$(cat "$S/binsec.txt")
 j() { python3 -c "import json;print(json.load(open('$S/bkey-$R.json'))['data']['$1'])"; }

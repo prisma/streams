@@ -601,6 +601,31 @@ composite review #3 asked for: durable commit, response lost to a client
 deadline, handoff, identical-bytes retry → duplicate at the recovered
 original offset, exactly one copy across both owners' tenures.
 
+**M0.4 — the performance review's exact invariants, as scenarios.** The
+gather barrier is post-ACK by construction (the pump itself dispatches,
+gate-serialized) — and now by proof: `the_gather_window_waits_for_ack_
+dispatch` holds the dispatch gate (the deterministic "acker paused after
+durability, before responses") and shows no gather decision until the
+held ack reaches its client. `commits_during_a_flush_do_not_extend_its_
+barrier` pins the capture-before-flush rule that prevents the barrier
+from waiting on the generation it would itself have to flush. The gather
+went adaptive (skip when the next WAL is already big), and
+`a_busy_next_generation_skips_the_gather_window` proves the knob is the
+difference — with a construction note worth keeping: a synchronized herd
+at saturation produces no drift, so the drift key already suppresses the
+window there; busy-skip matters exactly when drift and volume coincide,
+which the scenario builds deterministically via the gate. Ring ordering
+is pinned at the reviewer's stricter boundary (publish-before-NOTIFY: a
+woken waiter's very first ring_read must hit), plus mid-batch reads,
+duplicate-publishes-nothing, and budget-1 oversized-record progress on
+both ring and DB paths. The DST engine harness now mirrors production's
+flush-timer stretch when the pump is on — its 5 ms internal timer was
+flushing mid-PUT commits itself and silently neutering busy-generation
+scenarios. The benchmark consumer gained split committed/speculative
+cursors and a raw-TCP fault server proving a truncated body forces a
+retry from the committed cursor with every record decoded exactly once
+(the speculative canary must never be accepted).
+
 **M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
 task ownership, CPU execution and process metrics; a seeded current-thread
 runtime everywhere *including* the absorber path; named per-actor random

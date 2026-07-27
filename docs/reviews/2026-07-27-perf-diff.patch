@@ -1,0 +1,1184 @@
+diff --git a/bench/awsbench/src/main.rs b/bench/awsbench/src/main.rs
+index 4679490..75b3077 100644
+--- a/bench/awsbench/src/main.rs
++++ b/bench/awsbench/src/main.rs
+@@ -77,6 +77,14 @@ struct Stats {
+     hist: Mutex<Histogram<u64>>,
+     hist_win: Mutex<Histogram<u64>>,
+     tail_win: Mutex<Histogram<u64>>,
++    /// producer -> record DECODED at the consumer (the honest roundtrip;
++    /// tail_win keeps the historical producer -> response-headers metric
++    /// for comparability with earlier soaks, which understates by body
++    /// download + parse time).
++    tail_dec_win: Mutex<Histogram<u64>>,
++    /// headers -> next long-poll issued (the rearm gap; ~0 when the
++    /// pipelined consumer is doing its job).
++    rearm_win: Mutex<Histogram<u64>>,
+     last_err: Mutex<String>,
+     lines: Mutex<Vec<String>>,
+ }
+@@ -93,6 +101,8 @@ impl Stats {
+             hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+             hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+             tail_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
++            tail_dec_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
++            rearm_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+             last_err: Mutex::new(String::new()),
+             lines: Mutex::new(Vec::new()),
+         })
+@@ -328,6 +338,32 @@ async fn run_load(
+             tw.reset();
+             r
+         };
++        let tail_dec = {
++            let mut tw = stats.tail_dec_win.lock().unwrap();
++            let r = if tw.is_empty() {
++                None
++            } else {
++                Some((
++                    tw.value_at_quantile(0.5) as f64 / 1000.0,
++                    tw.value_at_quantile(0.99) as f64 / 1000.0,
++                ))
++            };
++            tw.reset();
++            r
++        };
++        let rearm = {
++            let mut tw = stats.rearm_win.lock().unwrap();
++            let r = if tw.is_empty() {
++                None
++            } else {
++                Some((
++                    tw.value_at_quantile(0.5) as f64 / 1000.0,
++                    tw.value_at_quantile(0.99) as f64 / 1000.0,
++                ))
++            };
++            tw.reset();
++            r
++        };
+         let line = serde_json::json!({
+             "ts": now_ms() / 1000,
+             "label": label,
+@@ -344,6 +380,10 @@ async fn run_load(
+             "throttled": stats.throttled.load(Ordering::Relaxed),
+             "tailP50Ms": tail.map(|t| t.0),
+             "tailP99Ms": tail.map(|t| t.1),
++            "tailDecP50Ms": tail_dec.map(|t| t.0),
++            "tailDecP99Ms": tail_dec.map(|t| t.1),
++            "rearmP50Ms": rearm.map(|t| t.0),
++            "rearmP99Ms": rearm.map(|t| t.1),
+             "lastErr": stats.last_err.lock().unwrap().clone(),
+         })
+         .to_string();
+@@ -458,9 +498,50 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
+         }
+         Client::Prisma(http, base, stream, auth, key) => {
+             // Long-poll from `now`, chasing the tail via opaque
+-            // Stream-Next-Offset tokens. Arrival time is the metric:
+-            // JSON reads return an ARRAY of record payloads, each carrying
+-            // {"t": producer_ms}.
++            // Stream-Next-Offset tokens.
++            //
++            // Two consumer defects fixed here (2026-07-27 review):
++            //
++            // 1. The observation timestamp was captured after response
++            //    HEADERS but records were only decoded after a full
++            //    text() + untyped serde_json::Value parse — reporting
++            //    "producer -> headers" while claiming "consumer observed".
++            //    Now: tail_win keeps the headers-based metric (comparable
++            //    with earlier soaks), tail_dec_win records the honest
++            //    producer -> per-record-decoded latency from bytes().
++            //
++            // 2. The loop was serial: download + parse completed before
++            //    the next poll was issued, so records produced meanwhile
++            //    waited out the rearm gap. Now the next poll is issued as
++            //    soon as Stream-Next-Offset is read from headers; the
++            //    response body is handed to a parser task over a BOUNDED
++            //    channel (cap 4 — if parsing ever falls behind, the send
++            //    blocks and the rearm honestly slows instead of memory
++            //    growing). rearm_win records headers -> next-poll-issued.
++            #[derive(serde::Deserialize)]
++            struct TailRec {
++                t: Option<u64>,
++            }
++            let (parse_tx, mut parse_rx) =
++                tokio::sync::mpsc::channel::<(reqwest::Response, u64)>(4);
++            let pstats = stats.clone();
++            let parser = tokio::spawn(async move {
++                while let Some((resp, hdr_ms)) = parse_rx.recv().await {
++                    let Ok(body) = resp.bytes().await else { continue };
++                    let Ok(vals) = serde_json::from_slice::<Vec<TailRec>>(&body) else {
++                        continue;
++                    };
++                    let dec_ms = now_ms();
++                    let mut tw = pstats.tail_win.lock().unwrap();
++                    let mut dw = pstats.tail_dec_win.lock().unwrap();
++                    for v in vals {
++                        if let Some(ts) = v.t {
++                            let _ = tw.record((hdr_ms.saturating_sub(ts) * 1000).max(1));
++                            let _ = dw.record((dec_ms.saturating_sub(ts) * 1000).max(1));
++                        }
++                    }
++                }
++            });
+             let mut offset: Option<String> = None;
+             while stop.load(Ordering::Relaxed) == 0 {
+                 let url = match &offset {
+@@ -477,28 +558,22 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
+                     .await
+                 {
+                     Ok(r) if r.status().is_success() => {
++                        let hdr_ms = now_ms();
+                         let next = r
+                             .headers()
+                             .get("stream-next-offset")
+                             .and_then(|v| v.to_str().ok())
+                             .map(String::from);
+-                        let now = now_ms();
+                         if offset.is_some() {
+-                            if let Ok(body) = r.text().await {
+-                                if let Ok(vals) =
+-                                    serde_json::from_str::<Vec<serde_json::Value>>(&body)
+-                                {
+-                                    for v in vals {
+-                                        if let Some(ts) = v.get("t").and_then(|t| t.as_u64()) {
+-                                            let _ = stats
+-                                                .tail_win
+-                                                .lock()
+-                                                .unwrap()
+-                                                .record((now.saturating_sub(ts) * 1000).max(1));
+-                                        }
+-                                    }
+-                                }
++                            // Hand off for decode; the loop rearms now.
++                            if parse_tx.send((r, hdr_ms)).await.is_err() {
++                                break;
+                             }
++                            let _ = stats
++                                .rearm_win
++                                .lock()
++                                .unwrap()
++                                .record(((now_ms().saturating_sub(hdr_ms)) * 1000).max(1));
+                         }
+                         if next.is_some() {
+                             offset = next;
+@@ -507,6 +582,8 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
+                     _ => tokio::time::sleep(Duration::from_millis(500)).await,
+                 }
+             }
++            drop(parse_tx);
++            let _ = parser.await;
+         }
+     }
+ }
+diff --git a/src/dst/dst_tests.rs b/src/dst/dst_tests.rs
+index 03ac782..122db3b 100644
+--- a/src/dst/dst_tests.rs
++++ b/src/dst/dst_tests.rs
+@@ -208,6 +208,14 @@ fn object_classes_match_production_telemetry() {
+ /// Open the engine WITHOUT an absorber: reads come from the shard log
+ /// only. Used by scenarios that are about the commit path.
+ async fn open_engine(store: Arc<dyn ObjectStore>, prefix: &str) -> Arc<crate::shard::ShardEngine> {
++    open_engine_cfg(store, prefix, crate::shard::ShardConfig::default()).await
++}
++
++async fn open_engine_cfg(
++    store: Arc<dyn ObjectStore>,
++    prefix: &str,
++    cfg: crate::shard::ShardConfig,
++) -> Arc<crate::shard::ShardEngine> {
+     let db = slatedb::Db::builder(prefix, store)
+         .with_settings(slatedb::config::Settings {
+             flush_interval: Some(std::time::Duration::from_millis(5)),
+@@ -218,13 +226,7 @@ async fn open_engine(store: Arc<dyn ObjectStore>, prefix: &str) -> Arc<crate::sh
+         .await
+         .expect("open db");
+     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+-    crate::shard::ShardEngine::start(
+-        prefix.to_string(),
+-        Arc::new(db),
+-        crate::shard::ShardConfig::default(),
+-        absorb_tx,
+-        None,
+-    )
++    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), cfg, absorb_tx, None)
+ }
+ 
+ /// I1+I2+I3 for a single writer under the full fault set — errors, lost
+@@ -906,6 +908,200 @@ async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
+ }
+ 
+ 
++
++/// **The group-commit pump with the post-ACK barrier and gather window,
++/// under faults.** The gather path moves ack dispatch from the acker task
++/// into the pump (an ordering change on the hottest path in the system),
++/// so it gets the full treatment: WAL errors, lost responses, latency,
++/// concurrent producers, retries, and the complete I1–I7 audit through
++/// the production merged reader. The acker stays live as the failsafe —
++/// this scenario must pass with BOTH dispatchers running, proving the
++/// dispatch_gate keeps them from interleaving tail-state updates.
++///
++/// Also pins the idle contract: after quiet, a single append must not
++/// wait a gather window it has no herd to gather (regression guard for
++/// "gather only after a flush that dispatched work").
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn gather_pump_preserves_invariants_under_faults() {
++    let mut total_gathers = 0u64;
++    for seed in [3u64, 17, 41] {
++        let inner = mem();
++        let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 40))
++            .with_class(ObjClass::Wal, FaultPlan::new(8, 6, 40));
++        let store = FaultStore::new(inner.clone(), seed, profile);
++        let cov = store.coverage();
++        let key = skey();
++        let hash = [29u8; 16];
++        let cfg = crate::shard::ShardConfig {
++            wal_group_commit: true,
++            wal_flush_gap: std::time::Duration::from_millis(2),
++            wal_post_ack_gather: std::time::Duration::from_millis(3),
++            ..Default::default()
++        };
++        let engine = open_engine_cfg(store.clone(), &format!("dst-gather-{seed}"), cfg).await;
++
++        let mut log = OpLog::default();
++        let mut w = Workload::new(cov.clone());
++        // Two closed-loop waves with concurrent keys — the shape the
++        // gather window exists for.
++        for _ in 0..4 {
++            w.run(&engine, hash, &key, &["g1", "g2", "g3"], 10, false, &mut log)
++                .await;
++        }
++
++        // The pump must be flushing, and across the seeds the drift
++        // path (gather windows) must have been exercised. Per-seed
++        // barrier_acked would flake: the acker fires on the same watch
++        // change and legitimately wins most dispatch races — that is by
++        // design, not a defect.
++        let flushes = engine.pump_flushes.load(Ordering::Relaxed);
++        assert!(flushes > 0, "seed {seed}: the pump never flushed");
++        total_gathers += engine.pump_gathers.load(Ordering::Relaxed)
++            + engine.pump_barrier_acked.load(Ordering::Relaxed);
++
++        let ds: Arc<dyn ObjectStore> = store.clone();
++        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
++        if let Err(e) = log.audit(&observed) {
++            panic!("seed {seed}: {e}");
++        }
++
++        // Idle contract: no herd, no gather tax. One append after quiet
++        // completes in well under (gather + PUT + margin) of virtual/real
++        // time; mainly this asserts it completes at all without waiting
++        // for a second flush cycle.
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++        let t0 = std::time::Instant::now();
++        let o = w
++            .attempt_with_deadline(&engine, hash, &key, "idle", "idle-probe", None, None)
++            .await;
++        assert!(
++            matches!(o, Outcome::Acked { .. }),
++            "seed {seed}: idle append must ack, got {o:?}"
++        );
++        let took = t0.elapsed();
++        assert!(
++            took < std::time::Duration::from_secs(5),
++            "seed {seed}: idle append took {took:?} — the gather window is \
++             taxing the idle path"
++        );
++
++        engine.begin_close();
++        engine
++            .await_terminated(std::time::Duration::from_secs(30))
++            .await
++            .expect("pump + committer + acker + ticker all terminate");
++    }
++    assert!(
++        total_gathers > 0,
++        "no seed ever exercised the gather/barrier path — the scenario \
++         has degraded to re-testing the acker"
++    );
++}
++
++
++/// **Durable-tail ring: correct under load, evictions, and fallback.**
++///
++/// Small budget forces evictions mid-run, so reads exercise all three
++/// paths — ring hit, ring miss -> DB scan, and mixed ranges — and the
++/// full I1–I7 audit runs over the production merged reader. Anti-vacuity:
++/// the run must have produced hits AND evictions, or the scenario proves
++/// nothing about the ring.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn tail_ring_serves_live_reads_and_survives_eviction() {
++    for seed in [9u64, 33] {
++        let inner = mem();
++        let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 25));
++        let cov = store.coverage();
++        let key = skey();
++        let hash = [30u8; 16];
++        let cfg = crate::shard::ShardConfig {
++            // Tiny: a couple of groups' worth, so eviction is constant.
++            tail_ring_bytes: 2 * 1024,
++            ..Default::default()
++        };
++        let engine = open_engine_cfg(store.clone(), &format!("dst-ring-{seed}"), cfg).await;
++
++        let mut log = OpLog::default();
++        let mut w = Workload::new(cov.clone());
++        for _ in 0..4 {
++            w.run(&engine, hash, &key, &["r1", "r2"], 12, false, &mut log).await;
++        }
++
++        let hits = engine.ring_hits.load(Ordering::Relaxed);
++        let evicted = engine.ring_evicted.load(Ordering::Relaxed);
++        assert!(
++            engine.ring_published.load(Ordering::Relaxed) > 0,
++            "seed {seed}: nothing was ever published to the ring"
++        );
++        assert!(evicted > 0, "seed {seed}: budget never forced an eviction");
++
++        let ds: Arc<dyn ObjectStore> = store.clone();
++        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
++        if let Err(e) = log.audit(&observed) {
++            panic!("seed {seed}: ring-backed reads broke the canon: {e}");
++        }
++        let _ = hits; // hit-path asserted in the equivalence scenario below
++    }
++}
++
++/// **Ring/DB equivalence, and a restart starts cold.**
++///
++/// The same offset range read through the ring (fresh engine, everything
++/// resident) and through the canonical DB scan (reopened engine, ring
++/// necessarily empty) must be byte-identical — the ring is a cache, not
++/// a second source of truth. Also pins publish-before-ack: immediately
++/// after an ack returns, the ring already covers the acked offset.
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
++    let inner = mem();
++    let store = FaultStore::uniform(inner.clone(), 13, FaultPlan::CLEAN);
++    let cov = store.coverage();
++    let key = skey();
++    let hash = [31u8; 16];
++    let cfg = crate::shard::ShardConfig {
++        tail_ring_bytes: 32 * 1024 * 1024,
++        ..Default::default()
++    };
++    let a = open_engine_cfg(store.clone(), "dst-ring-eq", cfg.clone()).await;
++    let w = Workload::new(cov.clone());
++
++    for i in 0..20u64 {
++        let o = w
++            .attempt_with_deadline(&a, hash, &key, "eq", &format!("rec{i}"), None, None)
++            .await;
++        assert!(matches!(o, Outcome::Acked { .. }));
++    }
++    let handle_a = a.stream_handle(hash).await.expect("handle");
++    let next = handle_a.state.lock().unwrap().durable.next;
++
++    // Publish-before-ack: the last acked offset is ring-resident NOW.
++    let tail1 = a
++        .ring_read(&handle_a, next - 1, next, 1 << 20)
++        .expect("the ring must cover an offset the ack already exposed");
++    assert_eq!(tail1.frames.len(), 1);
++
++    let hits_before = a.ring_hits.load(Ordering::Relaxed);
++    let via_ring = crate::shard::read_frames_range(&a, &handle_a, 0, next, 8 << 20)
++        .await
++        .expect("ring-backed read");
++    assert!(
++        a.ring_hits.load(Ordering::Relaxed) > hits_before,
++        "full-range read on the fresh engine must be a ring hit"
++    );
++
++    // Reopen: cold ring, same range must come from the DB, byte-equal.
++    let b = open_engine_cfg(store.clone(), "dst-ring-eq", cfg).await;
++    let handle_b = b.stream_handle(hash).await.expect("handle");
++    let via_db = crate::shard::read_frames_range(&b, &handle_b, 0, next, 8 << 20)
++        .await
++        .expect("db read");
++    assert_eq!(b.ring_hits.load(Ordering::Relaxed), 0, "cold ring cannot hit");
++    assert_eq!(via_ring.frames.len(), via_db.frames.len(), "frame count");
++    for (i, (ra, rb)) in via_ring.frames.iter().zip(via_db.frames.iter()).enumerate() {
++        assert_eq!(ra, rb, "frame {i} differs between ring and DB");
++    }
++}
++
+ /// **The tiering invariant, not just "the absorber ran".**
+ ///
+ /// The absorption scenario waits for `absorbed > 0`, which proves records
+diff --git a/src/http.rs b/src/http.rs
+index 857738a..2c0f73e 100644
+--- a/src/http.rs
++++ b/src/http.rs
+@@ -29,6 +29,21 @@ use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
+ 
+ const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
++
++/// Budget for a read that was WOKEN by a long-poll wait — the live-tail
++/// case, where response size is latency: materialize + transfer + client
++/// parse + the client's rearm gap all scale with it. Catch-up reads keep
++/// the full MAX_READ_BYTES for throughput. Env TAIL_MAX_BYTES.
++fn tail_max_bytes() -> usize {
++    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
++    *V.get_or_init(|| {
++        std::env::var("TAIL_MAX_BYTES")
++            .ok()
++            .and_then(|v| v.parse().ok())
++            .filter(|v| *v > 0)
++            .unwrap_or(1024 * 1024)
++    })
++}
+ const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
+ // The platform front door kills any request at ~30 s with a 502 (measured
+ // 30.16 s on Prisma Compute). Every server-side wait must conclude below it
+@@ -749,7 +764,29 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
+                 })
+             })
+             .collect();
+-        shards.insert(prefix.clone(), json!(samples));
++        let flushes = eng.pump_flushes.load(std::sync::atomic::Ordering::Relaxed);
++        let barrier_acked = eng
++            .pump_barrier_acked
++            .load(std::sync::atomic::Ordering::Relaxed);
++        shards.insert(
++            prefix.clone(),
++            json!({
++                "groups": samples,
++                // requests-per-WAL is the judge of flush scheduling:
++                // barrier_acked / flushes, delta'd across two scrapes.
++                "pump": {
++                    "flushes": flushes,
++                    "barrier_acked": barrier_acked,
++                    "gathers": eng.pump_gathers.load(std::sync::atomic::Ordering::Relaxed),
++                },
++                "tail_ring": {
++                    "published": eng.ring_published.load(std::sync::atomic::Ordering::Relaxed),
++                    "hits": eng.ring_hits.load(std::sync::atomic::Ordering::Relaxed),
++                    "misses": eng.ring_misses.load(std::sync::atomic::Ordering::Relaxed),
++                    "evicted": eng.ring_evicted.load(std::sync::atomic::Ordering::Relaxed),
++                },
++            }),
++        );
+     }
+     (
+         [(header::CONTENT_TYPE, "application/json")],
+@@ -2471,6 +2508,7 @@ async fn read(
+     };
+ 
+     let is_long_poll = live == Some("long-poll");
++    let mut live_wake = false;
+     if is_long_poll && scan_from >= end {
+         if !closed {
+             let wait = params
+@@ -2489,6 +2527,7 @@ async fn read(
+                 end = e2;
+                 closed = c2;
+                 if end > scan_from || closed {
++                    live_wake = end > scan_from;
+                     break;
+                 }
+                 tokio::select! {
+@@ -2525,7 +2564,9 @@ async fn read(
+         &engine,
+         scan_from,
+         params.key.as_deref(),
+-        MAX_READ_BYTES,
++        // Woken live reads carry a fresh commit group, not a backlog:
++        // keep the response (and the client's rearm) proportional to it.
++        if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
+     )
+     .await
+     {
+@@ -2931,6 +2972,7 @@ async fn read_per_key(
+                 p
+             }
+         };
++        let mut live_wake = false;
+         if live == Some("long-poll") && scan_from >= end {
+             if !closed {
+                 let wait = params
+@@ -2944,6 +2986,7 @@ async fn read_per_key(
+                     let notified = handle.notify.notified();
+                     end = handle.state.lock().unwrap().durable.next;
+                     if end > scan_from {
++                        live_wake = true;
+                         break;
+                     }
+                     tokio::select! {
+@@ -2982,7 +3025,10 @@ async fn read_per_key(
+             &engine,
+             scan_from,
+             Some(rk),
+-            MAX_READ_BYTES,
++            // A woken live read returns a fresh commit group, not a
++            // backlog: the small budget keeps the response — and the
++            // consumer's next-poll rearm — proportional to it.
++            if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
+         )
+         .await
+         {
+diff --git a/src/main.rs b/src/main.rs
+index 87309be..ccb0422 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -95,6 +95,25 @@ struct Args {
+     #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 0)]
+     wal_flush_gap_ms: u64,
+ 
++    /// Post-ACK gather window, ms (0 = off). After a busy WAL flush the
++    /// pump releases that flush's acknowledgements itself (explicit
++    /// barrier), then waits this long before freezing the next WAL, so
++    /// closed-loop producers' ack-triggered follow-ups join the next WAL
++    /// instead of missing its freeze and paying a full extra PUT. Without
++    /// it, append p50 at concurrency 2 measures ~2x concurrency 1.
++    /// Suggested 4-8. Adds at most this many ms to a busy flush cycle;
++    /// never delays an idle shard's first write.
++    #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
++    wal_post_ack_gather_ms: u64,
++
++    /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
++    /// tail reads (long-poll/SSE wakes, catch-up near the head) serve
++    /// from an in-memory ring of recently-durable frames published at
++    /// ack time, instead of scanning SlateDB. Suggested: 33554432 (32
++    /// MiB) — several seconds of a maxed shard's traffic.
++    #[arg(long, env = "TAIL_RING_BYTES", default_value_t = 0)]
++    tail_ring_bytes: usize,
++
+     #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 32 * 1024 * 1024)]
+     l0_sst_size_bytes: usize,
+ 
+@@ -549,6 +568,8 @@ async fn async_main() -> anyhow::Result<()> {
+         } else {
+             args.wal_flush_gap_ms
+         });
++        let wal_post_ack_gather = Duration::from_millis(args.wal_post_ack_gather_ms);
++        let tail_ring_bytes = args.tail_ring_bytes;
+         let state_slot = state_slot.clone();
+         crate::http::ShardOpener {
+             open: Box::new(move |prefix: String| {
+@@ -610,6 +631,8 @@ async fn async_main() -> anyhow::Result<()> {
+                             max_trim_per_op: trim_per_op,
+                             wal_group_commit,
+                             wal_flush_gap,
++                            wal_post_ack_gather,
++                            tail_ring_bytes,
+                             ..Default::default()
+                         },
+                         absorb_tx,
+diff --git a/src/shard.rs b/src/shard.rs
+index 8b76032..abfef00 100644
+--- a/src/shard.rs
++++ b/src/shard.rs
+@@ -122,6 +122,38 @@ pub struct StreamHandle {
+     pub hash: [u8; 16],
+     pub state: Mutex<StreamState>,
+     pub notify: Notify,
++    /// Durable-tail ring: recently-durable frames, published by
++    /// dispatch_durable BEFORE acks go out, so a reader woken by an ack
++    /// (or by tail notify) finds the record here without a DB scan.
++    /// Empty unless ShardConfig.tail_ring_bytes > 0.
++    pub ring: Mutex<TailRing>,
++}
++
++/// One durably-committed group's frames for one stream: a contiguous
++/// offset range [first, next) in publish order.
++pub struct RingBatch {
++    pub first: u64,
++    pub next: u64,
++    pub frames: Vec<(u64, Bytes)>,
++    pub bytes: usize,
++}
++
++#[derive(Default)]
++pub struct TailRing {
++    /// Contiguous in coverage: back.next of batch k == front.first of
++    /// batch k+1 for consecutive batches (all publishes come through the
++    /// same committer in offset order; eviction only pops the front).
++    pub batches: std::collections::VecDeque<RingBatch>,
++    pub bytes: usize,
++}
++
++impl TailRing {
++    fn floor(&self) -> Option<u64> {
++        self.batches.front().map(|b| b.first)
++    }
++    fn ceil(&self) -> Option<u64> {
++        self.batches.back().map(|b| b.next)
++    }
+ }
+ 
+ /// state-protocol feed: key IDs derived at append time, delivered to the
+@@ -232,6 +264,7 @@ pub struct AbsorbSignal {
+     pub appended_bytes: u64,
+ }
+ 
++#[derive(Clone)]
+ pub struct ShardConfig {
+     pub queue_reqs: usize,
+     pub max_batch_reqs: usize,
+@@ -251,6 +284,27 @@ pub struct ShardConfig {
+     /// exactly where the old tick put it.
+     pub wal_group_commit: bool,
+     pub wal_flush_gap: std::time::Duration,
++    /// Post-ACK gather window. After a busy flush completes, the pump
++    /// itself releases the acknowledgements for everything that flush made
++    /// durable (an explicit barrier — not a scheduler race with the
++    /// acker), then waits this long before freezing the next WAL. The
++    /// point: closed-loop producers' next requests, issued in reaction to
++    /// those acks, arrive DURING the window and join the next WAL instead
++    /// of missing its freeze by a millisecond and waiting a full extra
++    /// PUT behind it. Zero disables the barrier and the window (acks
++    /// release only via the acker; the next freeze races the ack herd —
++    /// measured to cost c2 ≈ 2×c1 append p50). Never delays an idle
++    /// shard's first write: the pump only gathers after a flush that
++    /// dispatched work.
++    pub wal_post_ack_gather: std::time::Duration,
++    /// Durable-tail ring budget in bytes for THIS engine (0 = off). When
++    /// on, dispatch_durable publishes each group's freshly-durable frames
++    /// into a per-stream in-memory ring before releasing acks, and live
++    /// tail reads are served from that ring instead of a SlateDB scan.
++    /// The canonical read path (scan -> history) remains the source of
++    /// truth for anything the ring no longer covers: restart, eviction,
++    /// lagging consumers.
++    pub tail_ring_bytes: usize,
+ }
+ 
+ impl Default for ShardConfig {
+@@ -264,6 +318,8 @@ impl Default for ShardConfig {
+             gather_window: std::time::Duration::from_millis(15),
+             wal_group_commit: false,
+             wal_flush_gap: std::time::Duration::from_millis(25),
++            wal_post_ack_gather: std::time::Duration::ZERO,
++            tail_ring_bytes: 0,
+         }
+     }
+ }
+@@ -303,6 +359,9 @@ struct InFlightGroup {
+         crate::queue::QueueOut,
+     )>,
+     tails: Vec<(Arc<StreamHandle>, TailFields)>,
++    /// Frames to publish into the durable-tail ring at dispatch time,
++    /// BEFORE tail state moves and acks are sent.
++    ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)>,
+     signals: Vec<AbsorbSignal>,
+     touches: Vec<TouchFeed>,
+ }
+@@ -313,6 +372,29 @@ pub struct ShardEngine {
+     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
+     tx: mpsc::Sender<CommitOp>,
+     in_flight: Mutex<Vec<InFlightGroup>>,
++    /// Serializes durable-dispatch between the pump (post-flush barrier)
++    /// and the acker (failsafe + fencing path). Group drains are already
++    /// exclusive via the in_flight lock; this additionally keeps tail
++    /// state updates applying in seq order across the two callers.
++    dispatch_gate: Mutex<()>,
++    /// Pump telemetry: flushes issued, requests acked at the pump's own
++    /// barrier, gather windows taken. acked/flushes is the requests-per-
++    /// WAL figure the flush-scheduling change is judged by.
++    pub pump_flushes: AtomicU64,
++    pub pump_barrier_acked: AtomicU64,
++    pub pump_gathers: AtomicU64,
++    /// Durable-tail ring accounting. `ring_budget` is the remaining global
++    /// byte allowance (config minus resident bytes; goes negative
++    /// transiently during a publish, restored by eviction). `ring_fifo`
++    /// mirrors publish order engine-wide: one entry per published batch,
++    /// so popping its front always evicts the globally oldest batch.
++    ring_enabled: bool,
++    ring_budget: std::sync::atomic::AtomicI64,
++    ring_fifo: Mutex<std::collections::VecDeque<Arc<StreamHandle>>>,
++    pub ring_published: AtomicU64,
++    pub ring_hits: AtomicU64,
++    pub ring_misses: AtomicU64,
++    pub ring_evicted: AtomicU64,
+     /// Level-triggered close signal for background tasks (see start()).
+     close_tx: tokio::sync::watch::Sender<bool>,
+     /// Handles for every task this engine spawned, so termination is a
+@@ -372,6 +454,17 @@ impl ShardEngine {
+             streams: Mutex::new(HashMap::new()),
+             tx,
+             in_flight: Mutex::new(Vec::new()),
++            dispatch_gate: Mutex::new(()),
++            pump_flushes: AtomicU64::new(0),
++            pump_barrier_acked: AtomicU64::new(0),
++            pump_gathers: AtomicU64::new(0),
++            ring_enabled: cfg.tail_ring_bytes > 0,
++            ring_budget: std::sync::atomic::AtomicI64::new(cfg.tail_ring_bytes as i64),
++            ring_fifo: Mutex::new(std::collections::VecDeque::new()),
++            ring_published: AtomicU64::new(0),
++            ring_hits: AtomicU64::new(0),
++            ring_misses: AtomicU64::new(0),
++            ring_evicted: AtomicU64::new(0),
+             flush_wake: Notify::new(),
+             pump_wake: Notify::new(),
+             absorb_tx,
+@@ -396,9 +489,16 @@ impl ShardEngine {
+         if cfg.wal_group_commit {
+             let pump = engine.clone();
+             let gap = cfg.wal_flush_gap;
+-            tracing::info!(shard = %pump.prefix, gap_ms = gap.as_millis() as u64, "WAL group-commit pump on");
++            let gather = cfg.wal_post_ack_gather;
++            tracing::info!(
++                shard = %pump.prefix,
++                gap_ms = gap.as_millis() as u64,
++                gather_ms = gather.as_millis() as u64,
++                "WAL group-commit pump on"
++            );
+             let h = tokio::spawn(async move {
+                 use slatedb::config::{FlushOptions, FlushType};
++                let mut status_rx = pump.db.subscribe();
+                 let mut last_start: Option<std::time::Instant> = None;
+                 loop {
+                     pump.pump_wake.notified().await;
+@@ -423,19 +523,120 @@ impl ShardEngine {
+                             }
+                         }
+                     }
++                    // Herd-settle: a synced herd's requests arrive within
++                    // microseconds of each other, and the wake->freeze
++                    // path is tight enough to split them into two WALs.
++                    // 1 ms is far above their spread and far below the
++                    // PUT RTT, so a solo producer pays ~1 ms and a herd
++                    // stays one WAL.
++                    if !gather.is_zero() {
++                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
++                        if pump.is_closed() {
++                            return;
++                        }
++                    }
+                     last_start = Some(std::time::Instant::now());
+-                    if let Err(e) = pump
++                    // The seqs this flush is about to make durable: every
++                    // group written before the freeze. Captured BEFORE the
++                    // flush call, because the barrier below must wait for
++                    // the watermark to cover them — `flush()` resolves
++                    // before the status watch publishes the new durable
++                    // seq (measured: at c2 the post-flush borrow saw a
++                    // stale watermark on 1612 of 1626 flushes, silently
++                    // reducing the barrier to the old acker race).
++                    let target_seq = pump.in_flight.lock().unwrap().last().map(|g| g.seq);
++                    match pump
+                         .db
+                         .flush_with_options(FlushOptions {
+                             flush_type: FlushType::Wal,
+                         })
+                         .await
+                     {
+-                        if pump.is_closed() {
+-                            return;
++                        Err(e) => {
++                            if pump.is_closed() {
++                                return;
++                            }
++                            tracing::warn!(shard = %pump.prefix, "group-commit WAL flush failed: {e}");
++                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++                        }
++                        Ok(()) => {
++                            pump.pump_flushes.fetch_add(1, Ordering::Relaxed);
++                            if gather.is_zero() {
++                                continue;
++                            }
++                            let Some(target) = target_seq else {
++                                continue;
++                            };
++                            // Explicit barrier: wait for the durable
++                            // watermark to actually cover what we froze,
++                            // then release those acks HERE, synchronously.
++                            // When dispatch_durable returns, every response
++                            // this flush unblocked is on its way to a
++                            // socket. The 250 ms ceiling is a failsafe
++                            // (fencing, store stall): the acker still owns
++                            // dispatch if we bail.
++                            // The watch Ref is !Send, so copy out of it
++                            // inside this block — nothing Ref-typed may
++                            // survive to the gather sleep below.
++                            // Ok(seq) = dispatch; Err(true) = watch gone
++                            // (db closed, exit); Err(false) = skip
++                            // (fenced, or failsafe timeout: the acker
++                            // still owns dispatch).
++                            let seen: Result<u64, bool> = {
++                                match tokio::time::timeout(
++                                    std::time::Duration::from_millis(250),
++                                    status_rx.wait_for(|s| {
++                                        s.durable_seq >= target || s.close_reason.is_some()
++                                    }),
++                                )
++                                .await
++                                {
++                                    Ok(Ok(sref)) if sref.close_reason.is_some() => Err(false),
++                                    Ok(Ok(sref)) => Ok(sref.durable_seq),
++                                    Ok(Err(_)) => Err(true),
++                                    Err(_) => Err(false),
++                                }
++                            };
++                            let durable_seq = match seen {
++                                Ok(seq) => seq,
++                                Err(true) => return,
++                                Err(false) => continue,
++                            };
++                            // Drain whatever the acker has not already
++                            // taken. Who wins that race is irrelevant to
++                            // the barrier: the acker fires on the same
++                            // watch change, and this call blocks on the
++                            // dispatch_gate until any concurrent acker
++                            // dispatch has finished sending. Either way,
++                            // when this returns, every ack this flush
++                            // unblocked is on the wire.
++                            let acked = pump.dispatch_durable(durable_seq);
++                            pump.pump_barrier_acked
++                                .fetch_add(acked as u64, Ordering::Relaxed);
++                            // Gather ONLY when this completion proves
++                            // concurrency: someone is already waiting in
++                            // in_flight (they arrived mid-PUT — the herd
++                            // has drifted across two WAL generations).
++                            // The window lets the just-acked clients'
++                            // follow-ups land in the same WAL as the
++                            // waiter, re-syncing the herd. When nobody is
++                            // waiting the shard is solo or the herd is in
++                            // sync — either way a window would tax c1 by
++                            // its full length for nothing (measured:
++                            // +7 ms on c1 p50). NOT keyed on `acked > 0`:
++                            // the acker fires on the same watch change
++                            // and wins the dispatch race on >99 % of
++                            // flushes; keying on it skipped the window on
++                            // 1636 of 1651 c2 flushes.
++                            let drifted = !pump.in_flight.lock().unwrap().is_empty();
++                            if drifted {
++                                pump.pump_gathers.fetch_add(1, Ordering::Relaxed);
++                                tokio::time::sleep(gather).await;
++                                if pump.is_closed() {
++                                    return;
++                                }
++                            }
+                         }
+-                        tracing::warn!(shard = %pump.prefix, "group-commit WAL flush failed: {e}");
+-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                     }
+                 }
+             });
+@@ -646,6 +847,7 @@ impl ShardEngine {
+                 queue: crate::queue::QueueState::default(),
+             }),
+             notify: Notify::new(),
++            ring: Mutex::new(TailRing::default()),
+         });
+         let mut map = self.streams.lock().unwrap();
+         Ok(map.entry(hash).or_insert(handle).clone())
+@@ -789,6 +991,10 @@ impl ShardEngine {
+             base: TailFields,
+             producers: HashMap<String, (u64, u64, u64)>,
+             appended_bytes: u64,
++            /// Frames written by this group, retained for the durable-tail
++            /// ring (empty when the ring is off). Offsets are contiguous
++            /// per stream: every append path assigns at fields.next.
++            ring_recs: Vec<(u64, Bytes)>,
+         }
+ 
+         let mut wb = WriteBatch::new();
+@@ -821,6 +1027,7 @@ impl ShardEngine {
+                                 base: applied,
+                                 producers: HashMap::new(),
+                                 appended_bytes: 0,
++                                ring_recs: Vec::new(),
+                             },
+                         );
+                     }
+@@ -1023,6 +1230,10 @@ impl ShardEngine {
+                         );
+                         pt_sum += payload.len() as u64;
+                         frame_sum += frame.len() as u64;
++                        let frame = Bytes::from(frame);
++                        if self.ring_enabled {
++                            local.ring_recs.push((offset, frame.clone()));
++                        }
+                         wb.put(record_key(&hash, offset), frame);
+                         local.fields.logical += payload.len() as u64;
+                         local.appended_bytes += payload.len() as u64;
+@@ -1317,6 +1528,10 @@ impl ShardEngine {
+                             },
+                             payload.as_bytes(),
+                         );
++                        let frame = Bytes::from(frame);
++                        if self.ring_enabled {
++                            local.ring_recs.push((offset, frame.clone()));
++                        }
+                         wb.put(record_key(&hash, offset), frame);
+                         local.fields.next += 1;
+                         local.fields.logical += payload.len() as u64;
+@@ -1328,9 +1543,13 @@ impl ShardEngine {
+         }
+ 
+         let mut tails = Vec::with_capacity(locals.len());
++        let mut ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)> = Vec::new();
+         let mut signals = Vec::new();
+         let mut changed = false;
+         for (hash, local) in &locals {
++            if !local.ring_recs.is_empty() {
++                ring_pub.push((local.handle.clone(), local.ring_recs.clone()));
++            }
+             let f = &local.fields;
+             let b = &local.base;
+             if f.next != b.next
+@@ -1409,6 +1628,7 @@ impl ShardEngine {
+                     acks: pending,
+                     queue_acks: queue_pending,
+                     tails,
++                    ring_pub,
+                     signals,
+                     touches,
+                 });
+@@ -1427,6 +1647,175 @@ impl ShardEngine {
+         }
+     }
+ 
++    /// Publish one group's frames for one stream into its ring, then
++    /// evict globally-oldest batches until the engine-wide budget is
++    /// non-negative. FIFO mirrors publish order across streams, so its
++    /// front IS the globally oldest batch.
++    fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &[(u64, Bytes)]) {
++        let bytes: usize = recs.iter().map(|(_, f)| f.len()).sum();
++        let (first, next) = (recs[0].0, recs[recs.len() - 1].0 + 1);
++        {
++            let mut ring = handle.ring.lock().unwrap();
++            // A shard handoff replays through a fresh engine, so within
++            // one engine offsets only grow. If a gap somehow appears
++            // (defensive: absorber trim races ahead), reset rather than
++            // serve a hole.
++            if ring.ceil().is_some_and(|c| c != first) {
++                let dropped = ring.bytes;
++                ring.batches.clear();
++                ring.bytes = 0;
++                self.ring_budget
++                    .fetch_add(dropped as i64, Ordering::Relaxed);
++                let mut fifo = self.ring_fifo.lock().unwrap();
++                fifo.retain(|h| !Arc::ptr_eq(h, handle));
++            }
++            ring.batches.push_back(RingBatch {
++                first,
++                next,
++                frames: recs.to_vec(),
++                bytes,
++            });
++            ring.bytes += bytes;
++        }
++        self.ring_fifo.lock().unwrap().push_back(handle.clone());
++        self.ring_published.fetch_add(1, Ordering::Relaxed);
++        self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed);
++        while self.ring_budget.load(Ordering::Relaxed) < 0 {
++            let Some(victim) = self.ring_fifo.lock().unwrap().pop_front() else {
++                break;
++            };
++            let mut ring = victim.ring.lock().unwrap();
++            if let Some(b) = ring.batches.pop_front() {
++                ring.bytes -= b.bytes;
++                self.ring_budget.fetch_add(b.bytes as i64, Ordering::Relaxed);
++                self.ring_evicted.fetch_add(1, Ordering::Relaxed);
++            }
++        }
++    }
++
++    /// Serve [scan_from, scan_to) from the stream's ring if the ring
++    /// covers scan_from. Returns None when it does not (caller falls back
++    /// to the canonical scan). Mirrors the DB path's contract exactly:
++    /// stop at max_bytes, end = scan_to, last_offset = progress.
++    pub fn ring_read(
++        &self,
++        handle: &StreamHandle,
++        scan_from: u64,
++        scan_to: u64,
++        max_bytes: usize,
++    ) -> Option<FrameReadResult> {
++        if !self.ring_enabled || scan_from >= scan_to {
++            return None;
++        }
++        let ring = handle.ring.lock().unwrap();
++        let floor = ring.floor()?;
++        let ceil = ring.ceil()?;
++        // The ring can serve only what it contiguously holds. scan_to
++        // beyond the ceiling means the caller knows about data the ring
++        // has not been handed yet (possible mid-dispatch): DB path.
++        if scan_from < floor || scan_to > ceil {
++            self.ring_misses.fetch_add(1, Ordering::Relaxed);
++            return None;
++        }
++        let mut out = FrameReadResult {
++            frames: Vec::new(),
++            last_offset: None,
++            end: scan_to,
++        };
++        let mut total = 0usize;
++        for b in ring.batches.iter() {
++            if b.next <= scan_from {
++                continue;
++            }
++            if b.first >= scan_to {
++                break;
++            }
++            for (off, f) in &b.frames {
++                if *off < scan_from {
++                    continue;
++                }
++                if *off >= scan_to {
++                    break;
++                }
++                total += f.len();
++                out.frames.push(f.clone());
++                out.last_offset = Some(*off);
++                if total >= max_bytes {
++                    self.ring_hits.fetch_add(1, Ordering::Relaxed);
++                    return Some(out);
++                }
++            }
++        }
++        self.ring_hits.fetch_add(1, Ordering::Relaxed);
++        Some(out)
++    }
++
++    /// Release everything the durable watermark now covers: record
++    /// timings, publish tail state, send producer/queue acks, feed the
++    /// absorber and touch journals. Entirely synchronous, so the caller
++    /// can rely on "when this returns, the acks are on their way" — the
++    /// property the pump's gather window is built on. Returns requests
++    /// dispatched. Called from the acker (watch-driven failsafe + the
++    /// only path when the pump is off) and from the pump (explicit
++    /// barrier right after its flush returns).
++    fn dispatch_durable(&self, durable_seq: u64) -> u32 {
++        let _order = self.dispatch_gate.lock().unwrap();
++        let ready: Vec<InFlightGroup> = {
++            let mut q = self.in_flight.lock().unwrap();
++            let split = q.partition_point(|g| g.seq <= durable_seq);
++            q.drain(..split).collect()
++        };
++        let mut dispatched = 0u32;
++        for group in ready {
++            dispatched += group.reqs;
++            // Publish to the durable-tail ring FIRST: the ring ceiling
++            // must already cover an offset by the time tail state (and
++            // then an ack) makes that offset visible, or a reader woken
++            // by the ack would miss the fast path — or worse, serve a
++            // truncated range.
++            for (handle, recs) in &group.ring_pub {
++                self.ring_publish(handle, recs);
++            }
++            {
++                let wait_us =
++                    group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
++                let mut t = self.timings.lock().unwrap();
++                t.push_back(GroupTiming {
++                    ts_ms: now_ms(),
++                    queue_wait_us: group.queue_wait_us,
++                    encode_us: group.encode_us,
++                    write_us: group.write_us,
++                    durable_wait_us: wait_us,
++                    reqs: group.reqs,
++                    records: group.records_n,
++                    bytes: group.bytes,
++                });
++                if t.len() > 128 {
++                    t.pop_front();
++                }
++            }
++            for (handle, fields) in &group.tails {
++                handle.state.lock().unwrap().durable = fields.clone();
++                handle.notify.notify_waiters();
++            }
++            for (resp, ack) in group.acks {
++                let _ = resp.send(Ok(ack));
++            }
++            for (resp, out) in group.queue_acks {
++                let _ = resp.send(Ok(out));
++            }
++            for s in group.signals {
++                let _ = self.absorb_tx.try_send(s);
++            }
++            // H2: feed touch journals only after the data is durable and
++            // reader-visible, so an invalidation always finds fresh data.
++            for t in group.touches {
++                t.journal.ingest(&t.key_ids, t.next_offset);
++            }
++        }
++        dispatched
++    }
++
+     async fn acker_loop(self: Arc<Self>) {
+         let mut status_rx = self.db.subscribe();
+         loop {
+@@ -1461,49 +1850,7 @@ impl ShardEngine {
+                 }
+                 status.durable_seq
+             };
+-            let ready: Vec<InFlightGroup> = {
+-                let mut q = self.in_flight.lock().unwrap();
+-                let split = q.partition_point(|g| g.seq <= durable_seq);
+-                q.drain(..split).collect()
+-            };
+-            for group in ready {
+-                {
+-                    let wait_us =
+-                        group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
+-                    let mut t = self.timings.lock().unwrap();
+-                    t.push_back(GroupTiming {
+-                        ts_ms: now_ms(),
+-                        queue_wait_us: group.queue_wait_us,
+-                        encode_us: group.encode_us,
+-                        write_us: group.write_us,
+-                        durable_wait_us: wait_us,
+-                        reqs: group.reqs,
+-                        records: group.records_n,
+-                        bytes: group.bytes,
+-                    });
+-                    if t.len() > 128 {
+-                        t.pop_front();
+-                    }
+-                }
+-                for (handle, fields) in &group.tails {
+-                    handle.state.lock().unwrap().durable = fields.clone();
+-                    handle.notify.notify_waiters();
+-                }
+-                for (resp, ack) in group.acks {
+-                    let _ = resp.send(Ok(ack));
+-                }
+-                for (resp, out) in group.queue_acks {
+-                    let _ = resp.send(Ok(out));
+-                }
+-                for s in group.signals {
+-                    let _ = self.absorb_tx.try_send(s);
+-                }
+-                // H2: feed touch journals only after the data is durable and
+-                // reader-visible, so an invalidation always finds fresh data.
+-                for t in group.touches {
+-                    t.journal.ingest(&t.key_ids, t.next_offset);
+-                }
+-            }
++            self.dispatch_durable(durable_seq);
+             tokio::select! {
+                 changed = status_rx.changed() => {
+                     if changed.is_err() {
+@@ -1545,6 +1892,12 @@ pub async fn read_frames_range(
+     if scan_from >= scan_to {
+         return Ok(out);
+     }
++    // Durable-tail fast path: live readers chase offsets the ring still
++    // holds; the scan below is the canonical fallback (restart, eviction,
++    // lagging consumers, ring off).
++    if let Some(hit) = engine.ring_read(handle, scan_from, scan_to, max_bytes) {
++        return Ok(hit);
++    }
+     let range = record_key(&hash, scan_from)..record_key(&hash, scan_to);
+     let mut iter = engine
+         .db
+@@ -1590,6 +1943,14 @@ pub async fn read_frames(
+     if scan_from >= end {
+         return Ok(out);
+     }
++    // Durable-tail fast path (see read_frames_range). Only for unfiltered
++    // reads: a key_filter changes which frames belong in the result, and
++    // the DB path applies it during the scan.
++    if key_filter.is_none() {
++        if let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes) {
++            return Ok(hit);
++        }
++    }
+     let range = record_key(&hash, scan_from)..record_key(&hash, end);
+     let mut iter = engine
+         .db

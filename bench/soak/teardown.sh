@@ -26,10 +26,23 @@ run() {
   fi
 }
 
+RUN_ID=${SOAK_RUN_ID:?set SOAK_RUN_ID to the campaign id being torn down}
 for r in $REGIONS; do
   say "== $r"
   P=$(cat "$S/proj-$r.txt" 2>/dev/null || true)
   [ -z "$P" ] && { say "  no project file, skipping"; continue; }
+  # Refuse projects this campaign did not deploy (stamp mismatch), and
+  # anything explicitly preserved. Inherited project files from earlier
+  # campaigns destroyed the SIN 404 specimen (2026-07-27); never again.
+  STAMP=$(cat "$S/proj-$r.txt.campaign" 2>/dev/null || true)
+  if [ "$STAMP" != "$RUN_ID" ]; then
+    say "  REFUSING: project $P stamped '$STAMP' != campaign '$RUN_ID'"
+    continue
+  fi
+  if grep -q "$P" "$S/preserve.txt" 2>/dev/null; then
+    say "  REFUSING: project $P is in preserve.txt"
+    continue
+  fi
 
   for role in gen server; do
     SV=$(cat "$S/svc-$role-$r.txt" 2>/dev/null || true)

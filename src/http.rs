@@ -34,6 +34,15 @@ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 /// case, where response size is latency: materialize + transfer + client
 /// parse + the client's rearm gap all scale with it. Catch-up reads keep
 /// the full MAX_READ_BYTES for throughput. Env TAIL_MAX_BYTES.
+/// Benchmark-only stage timing on live reads (env STREAMS_DEBUG_TIMING=1):
+/// woken long-poll responses carry `Streams-Debug-Wait: waited=<0|1>
+/// arm_us=<arm->wake> read_us=<wake->records-built>`, splitting the
+/// remaining roundtrip-minus-append interval into its server-side stages.
+fn debug_timing() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("STREAMS_DEBUG_TIMING").as_deref() == Ok("1"))
+}
+
 fn tail_max_bytes() -> usize {
     static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
@@ -790,9 +799,18 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
                 "pump": {
                     "flushes": flushes,
                     "barrier_acked": barrier_acked,
-                    "gathers": eng.pump_gathers.load(std::sync::atomic::Ordering::Relaxed),
+                    "gathers_applied": eng.pump_gathers.load(std::sync::atomic::Ordering::Relaxed),
+                    "gathers_skipped_busy": eng.pump_gathers_skipped_busy.load(std::sync::atomic::Ordering::Relaxed),
+                    "gathered_reqs": eng.pump_gathered_reqs.load(std::sync::atomic::Ordering::Relaxed),
+                    "flushed_reqs": eng.pump_flushed_reqs.load(std::sync::atomic::Ordering::Relaxed),
+                    "flushed_records": eng.pump_flushed_records.load(std::sync::atomic::Ordering::Relaxed),
+                    "flushed_bytes": eng.pump_flushed_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                    "ack_to_enqueue_sum_us": eng.ack_to_enqueue_sum_us.load(std::sync::atomic::Ordering::Relaxed),
+                    "ack_to_enqueue_count": eng.ack_to_enqueue_count.load(std::sync::atomic::Ordering::Relaxed),
                 },
                 "tail_ring": {
+                    "resident_bytes": eng.ring_resident_bytes(),
+                    "peak_bytes": eng.ring_peak_bytes.load(std::sync::atomic::Ordering::Relaxed),
                     "published": eng.ring_published.load(std::sync::atomic::Ordering::Relaxed),
                     "hits": eng.ring_hits.load(std::sync::atomic::Ordering::Relaxed),
                     "misses": eng.ring_misses.load(std::sync::atomic::Ordering::Relaxed),
@@ -2522,6 +2540,8 @@ async fn read(
 
     let is_long_poll = live == Some("long-poll");
     let mut live_wake = false;
+    let t_arm = std::time::Instant::now();
+    let mut wake_us: u64 = 0;
     if is_long_poll && scan_from >= end {
         if !closed {
             let wait = params
@@ -2541,6 +2561,7 @@ async fn read(
                 closed = c2;
                 if end > scan_from || closed {
                     live_wake = end > scan_from;
+                    wake_us = t_arm.elapsed().as_micros() as u64;
                     break;
                 }
                 tokio::select! {
@@ -2568,6 +2589,7 @@ async fn read(
     }
 
     let frames_format = params.format.as_deref() == Some("frames");
+    let t_read = std::time::Instant::now();
     let out = match read_records(
         &state,
         &desc,
@@ -2586,6 +2608,7 @@ async fn read(
         Ok(o) => o,
         Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     };
+    let read_us = t_read.elapsed().as_micros() as u64;
     let next_token = out
         .last
         .map(|o| Offset(Some(o)).encode())
@@ -2673,6 +2696,15 @@ async fn read(
         r = r
             .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
             .header(header::CACHE_CONTROL, "no-store");
+    }
+    if debug_timing() {
+        r = r.header(
+            "Streams-Debug-Wait",
+            format!(
+                "waited={} arm_us={} read_us={}",
+                live_wake as u8, wake_us, read_us
+            ),
+        );
     }
     crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
         .bytes_out

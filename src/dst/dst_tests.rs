@@ -220,9 +220,17 @@ async fn open_engine_cfg(
     prefix: &str,
     cfg: crate::shard::ShardConfig,
 ) -> Arc<crate::shard::ShardEngine> {
+    // Mirror production: with the pump on, SlateDB's own flush timer is a
+    // long failsafe (else it flushes mid-PUT commits itself and the pump's
+    // gather/skip machinery never sees a busy generation).
+    let flush_interval = if cfg.wal_group_commit {
+        std::time::Duration::from_secs(1)
+    } else {
+        std::time::Duration::from_millis(5)
+    };
     let db = slatedb::Db::builder(prefix, store)
         .with_settings(slatedb::config::Settings {
-            flush_interval: Some(std::time::Duration::from_millis(5)),
+            flush_interval: Some(flush_interval),
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
         })
@@ -1017,6 +1025,231 @@ async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
 
 
 
+
+/// **Review #2's barrier test, exact form: the gather must not start
+/// until this flush's acks are ON THE WIRE.** The dispatch gate is held
+/// (the deterministic stand-in for "the acker is paused after durability,
+/// before response dispatch"); while held, the client's ack must not
+/// arrive AND the pump must not enter a gather window; on release, ack
+/// then gather. This is the property that makes "post-ACK" true rather
+/// than merely "post-flush".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_gather_window_waits_for_ack_dispatch() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 87, FaultPlan::new(0, 0, 30));
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [40u8; 16];
+    let cfg = crate::shard::ShardConfig {
+        wal_group_commit: true,
+        wal_flush_gap: std::time::Duration::from_millis(2),
+        wal_post_ack_gather: std::time::Duration::from_millis(4),
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(store.clone(), "dst-barrier", cfg).await;
+    let w = Workload::new(cov.clone());
+
+    // Warm one append so the pipeline is established.
+    let o = w
+        .attempt_with_deadline(&engine, hash, &key, "b", "warm", None, None)
+        .await;
+    assert!(matches!(o, Outcome::Acked { .. }));
+
+    // Hold dispatch, then fire an append. Its flush may complete, but its
+    // ack CANNOT be dispatched and no gather may begin.
+    let guard = engine.test_hold_dispatch();
+    let e2 = engine.clone();
+    let k2 = key.clone();
+    let c2 = cov.clone();
+    let waiter = tokio::spawn(async move {
+        let w2 = Workload::new(c2);
+        w2.attempt_with_deadline(&e2, hash, &k2, "b", "held", None, None)
+            .await
+    });
+    // Give the commit + flush ample real time while dispatch stays held.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let gathers_held = engine.pump_gathers.load(Ordering::Relaxed)
+        + engine.pump_gathers_skipped_busy.load(Ordering::Relaxed);
+    assert!(
+        !waiter.is_finished(),
+        "the ack must not reach the client while dispatch is held"
+    );
+    drop(guard);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), waiter)
+        .await
+        .expect("ack after release")
+        .expect("join");
+    assert!(matches!(out, Outcome::Acked { .. }), "got {out:?}");
+    // The gather decision for that flush happened AFTER release — i.e.
+    // after dispatch — so the counter moves only once the ack was out.
+    for _ in 0..100 {
+        let now = engine.pump_gathers.load(Ordering::Relaxed)
+            + engine.pump_gathers_skipped_busy.load(Ordering::Relaxed);
+        if now > gathers_held {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(30))
+        .await
+        .expect("terminate");
+}
+
+/// **Review #2's deadlock probe: commits landing DURING a flush must not
+/// extend what that flush's barrier waits for.** The target is captured
+/// before the flush; groups committed while the PUT is in flight belong
+/// to the next generation. Under 200-400 ms WAL latency, appends fired
+/// mid-flight must all ack promptly across >= 2 flushes — a pump waiting
+/// on the wrong generation would need ITSELF to flush again and would
+/// stall until the 250 ms failsafe (visible here as a hang).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn commits_during_a_flush_do_not_extend_its_barrier() {
+    let inner = mem();
+    let slow_wal = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (200, 400),
+    };
+    let store = FaultStore::new(
+        inner.clone(),
+        89,
+        FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow_wal),
+    );
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [41u8; 16];
+    let cfg = crate::shard::ShardConfig {
+        wal_group_commit: true,
+        wal_flush_gap: std::time::Duration::from_millis(2),
+        wal_post_ack_gather: std::time::Duration::from_millis(4),
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(store.clone(), "dst-midflight", cfg).await;
+
+    let mut waves = Vec::new();
+    for i in 0..12u64 {
+        let e = engine.clone();
+        let k = key.clone();
+        let c = cov.clone();
+        waves.push(tokio::spawn(async move {
+            let w = Workload::new(c);
+            // Staggered so several land while earlier flushes are in
+            // flight.
+            tokio::time::sleep(std::time::Duration::from_millis(i * 60)).await;
+            w.attempt_with_deadline(&e, hash, &k, "m", &format!("mid{i}"), None, None)
+                .await
+        }));
+    }
+    for t in waves {
+        let out = tokio::time::timeout(std::time::Duration::from_secs(30), t)
+            .await
+            .expect("no barrier stall")
+            .expect("join");
+        assert!(matches!(out, Outcome::Acked { .. }), "got {out:?}");
+    }
+    assert!(
+        engine.pump_flushes.load(Ordering::Relaxed) >= 2,
+        "the scenario must span multiple generations"
+    );
+    engine.begin_close();
+    engine
+        .await_terminated(std::time::Duration::from_secs(30))
+        .await
+        .expect("terminate");
+}
+
+/// **Adaptive gather: a busy next generation skips the window.**
+///
+/// Construction note (itself a finding): a fully SYNCHRONIZED herd at
+/// saturation produces no drift — everyone re-enters during the settle
+/// and the drift key already suppresses the window — so the busy-skip
+/// only matters when drift and volume coincide. That coincidence is
+/// built deterministically here: dispatch is held, batch A flushes,
+/// batch B commits behind it, and on release the pump dispatches A and
+/// finds B (large) already pending. Threshold 4 must record a busy-skip;
+/// threshold-disabled must gather instead. The knob is the only
+/// difference, so the counters prove the mechanism, not scheduling luck.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_next_generation_skips_the_gather_window() {
+    for (skip_reqs, expect_skips) in [(4u32, true), (u32::MAX, false)] {
+        let inner = mem();
+        let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 20));
+        let cov = store.coverage();
+        let key = skey();
+        let hash = [42u8; 16];
+        let cfg = crate::shard::ShardConfig {
+            wal_group_commit: true,
+            wal_flush_gap: std::time::Duration::from_millis(2),
+            wal_post_ack_gather: std::time::Duration::from_millis(4),
+            wal_gather_skip_reqs: skip_reqs,
+            wal_gather_skip_bytes: u64::MAX,
+            ..Default::default()
+        };
+        let engine =
+            open_engine_cfg(store.clone(), &format!("dst-busy-{skip_reqs}"), cfg).await;
+        let w = Workload::new(cov.clone());
+        let o = w
+            .attempt_with_deadline(&engine, hash, &key, "s", "warm", None, None)
+            .await;
+        assert!(matches!(o, Outcome::Acked { .. }));
+
+        // Hold dispatch; batch A (4 appends) commits and flushes but its
+        // acks are stuck; batch B (8 appends) commits BEHIND it.
+        let guard = engine.test_hold_dispatch();
+        let mut all = Vec::new();
+        for i in 0..12u64 {
+            let e = engine.clone();
+            let k = key.clone();
+            let c = cov.clone();
+            all.push(tokio::spawn(async move {
+                let w2 = Workload::new(c);
+                w2.attempt_with_deadline(&e, hash, &k, "s", &format!("b{i}"), None, None)
+                    .await
+            }));
+            if i == 3 {
+                // Let batch A reach its flush before B starts committing.
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let skips_before = engine.pump_gathers_skipped_busy.load(Ordering::Relaxed);
+        let applied_before = engine.pump_gathers.load(Ordering::Relaxed);
+        drop(guard);
+        for t in all {
+            let out = tokio::time::timeout(std::time::Duration::from_secs(30), t)
+                .await
+                .expect("ack")
+                .expect("join");
+            assert!(matches!(out, Outcome::Acked { .. }), "got {out:?}");
+        }
+        let skips = engine.pump_gathers_skipped_busy.load(Ordering::Relaxed) - skips_before;
+        let applied = engine.pump_gathers.load(Ordering::Relaxed) - applied_before;
+        if expect_skips {
+            assert!(
+                skips > 0,
+                "drift+volume with threshold 4 must busy-skip (skips={skips}, applied={applied})"
+            );
+        } else {
+            assert_eq!(
+                skips, 0,
+                "threshold disabled must never skip (applied={applied})"
+            );
+            assert!(
+                applied > 0,
+                "the same drift+volume must GATHER when skipping is off"
+            );
+        }
+        engine.begin_close();
+        engine
+            .await_terminated(std::time::Duration::from_secs(30))
+            .await
+            .expect("terminate");
+    }
+}
+
 /// **The group-commit pump with the post-ACK barrier and gather window,
 /// under faults.** The gather path moves ack dispatch from the acker task
 /// into the pump (an ordering change on the hottest path in the system),
@@ -1106,6 +1339,122 @@ async fn gather_pump_preserves_invariants_under_faults() {
     );
 }
 
+
+
+/// **Review #2's ring ordering + paging asks, pinned at offset level.**
+///
+/// 1. Publish-before-NOTIFY: a waiter woken by the tail notify must find
+///    the ring already covering the new offset — publish-before-ACK is
+///    not enough, because the woken reader races the ack path.
+/// 2. A read starting MID-batch returns exactly the tail of that batch.
+/// 3. A producer-idempotence duplicate publishes nothing (no offset was
+///    consumed, so ring ceiling must not move).
+/// 4. Budget progress: max_bytes=1 still returns the first record and
+///    advances — an oversized record can never wedge a cursor, on the
+///    ring path or the DB path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ring_ordering_paging_and_duplicates_at_offset_level() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [43u8; 16];
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes: 32 * 1024 * 1024,
+        ..Default::default()
+    };
+    let engine = open_engine_cfg(store.clone(), "dst-ring-ord", cfg).await;
+    let w = Workload::new(cov.clone());
+
+    // (1) Arm a notify waiter BEFORE the append; on wake, the ring must
+    // already cover the appended offset.
+    let o = w
+        .attempt_with_deadline(&engine, hash, &key, "o", "first", None, None)
+        .await;
+    assert!(matches!(o, Outcome::Acked { .. }));
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let notified = handle.notify.notified();
+    let before_next = handle.state.lock().unwrap().durable.next;
+    let e2 = engine.clone();
+    let k2 = key.clone();
+    let c2 = cov.clone();
+    let appender = tokio::spawn(async move {
+        let w2 = Workload::new(c2);
+        w2.attempt_with_deadline(&e2, hash, &k2, "o", "second", None, None)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(20), notified)
+        .await
+        .expect("waiter must be woken");
+    // The instant of wake: ring must already hold [before_next, next).
+    let next = handle.state.lock().unwrap().durable.next;
+    assert!(next > before_next);
+    let hit = engine
+        .ring_read(&handle, before_next, next, 1 << 20)
+        .expect("a woken reader must hit the ring, not fall to the DB");
+    assert_eq!(hit.frames.len(), (next - before_next) as usize);
+    assert!(matches!(appender.await.expect("join"), Outcome::Acked { .. }));
+
+    // (2) Mid-batch: append a 4-record batch (one commit group), read
+    // starting inside it.
+    let mut log = OpLog::default();
+    let mut w2 = Workload::new(cov.clone());
+    w2.run(&engine, hash, &key, &["o"], 4, false, &mut log).await;
+    let end = handle.state.lock().unwrap().durable.next;
+    let mid = end - 2;
+    let part = engine
+        .ring_read(&handle, mid, end, 1 << 20)
+        .expect("mid-batch start must be servable from the ring");
+    assert_eq!(part.frames.len(), 2, "exactly the batch tail");
+    assert_eq!(part.last_offset, Some(end - 1));
+
+    // (3) Duplicate publishes nothing.
+    let pr = crate::shard::ProducerReq { id: "ring-dup".into(), epoch: 1, seq: 0 };
+    let first = w
+        .attempt_with_deadline(&engine, hash, &key, "o", "dup-body", Some(pr.clone()), None)
+        .await;
+    assert!(matches!(first, Outcome::Acked { duplicate: false, .. }));
+    let ceil_before = {
+        let r = handle.ring.lock().unwrap();
+        r.batches.back().map(|b| b.next)
+    };
+    let published_before = engine.ring_published.load(Ordering::Relaxed);
+    let retry = w
+        .attempt_with_deadline(&engine, hash, &key, "o", "dup-body", Some(pr), None)
+        .await;
+    assert!(matches!(retry, Outcome::Acked { duplicate: true, .. }));
+    let ceil_after = {
+        let r = handle.ring.lock().unwrap();
+        r.batches.back().map(|b| b.next)
+    };
+    assert_eq!(ceil_before, ceil_after, "a duplicate must not move the ring ceiling");
+    assert_eq!(
+        engine.ring_published.load(Ordering::Relaxed),
+        published_before,
+        "a duplicate must not publish a batch"
+    );
+
+    // (4) Oversized-record progress, ring and DB path alike.
+    let tail_end = handle.state.lock().unwrap().durable.next;
+    let one = crate::shard::read_frames_range(&engine, &handle, 0, tail_end, 1)
+        .await
+        .expect("budget-1 read");
+    assert_eq!(one.frames.len(), 1, "the first record always fits");
+    assert!(one.last_offset.is_some(), "and the cursor advances");
+    // Same via a cold engine (DB path).
+    let b = open_engine_cfg(
+        store.clone(),
+        "dst-ring-ord",
+        crate::shard::ShardConfig { tail_ring_bytes: 32 * 1024 * 1024, ..Default::default() },
+    )
+    .await;
+    let hb = b.stream_handle(hash).await.expect("handle");
+    let one_db = crate::shard::read_frames_range(&b, &hb, 0, tail_end, 1)
+        .await
+        .expect("db budget-1 read");
+    assert_eq!(one_db.frames.len(), 1);
+    assert_eq!(one.frames[0], one_db.frames[0], "same first frame either path");
+}
 
 /// **Durable-tail ring: correct under load, evictions, and fallback.**
 ///

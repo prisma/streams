@@ -106,6 +106,16 @@ struct Args {
     #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
     wal_post_ack_gather_ms: u64,
 
+    /// Skip the gather window when the next WAL already holds at least
+    /// this many requests (the window exists for SMALL next generations;
+    /// at saturation it is a tax). 0 = never skip.
+    #[arg(long, env = "WAL_GATHER_SKIP_REQS", default_value_t = 32)]
+    wal_gather_skip_reqs: u32,
+
+    /// Byte-count sibling of --wal-gather-skip-reqs. 0 = never skip.
+    #[arg(long, env = "WAL_GATHER_SKIP_BYTES", default_value_t = 1048576)]
+    wal_gather_skip_bytes: u64,
+
     /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
     /// tail reads (long-poll/SSE wakes, catch-up near the head) serve
     /// from an in-memory ring of recently-durable frames published at
@@ -569,6 +579,16 @@ async fn async_main() -> anyhow::Result<()> {
             args.wal_flush_gap_ms
         });
         let wal_post_ack_gather = Duration::from_millis(args.wal_post_ack_gather_ms);
+        let wal_gather_skip_reqs = if args.wal_gather_skip_reqs == 0 {
+            u32::MAX
+        } else {
+            args.wal_gather_skip_reqs
+        };
+        let wal_gather_skip_bytes = if args.wal_gather_skip_bytes == 0 {
+            u64::MAX
+        } else {
+            args.wal_gather_skip_bytes
+        };
         let tail_ring_bytes = args.tail_ring_bytes;
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
@@ -632,6 +652,8 @@ async fn async_main() -> anyhow::Result<()> {
                             wal_group_commit,
                             wal_flush_gap,
                             wal_post_ack_gather,
+                            wal_gather_skip_reqs,
+                            wal_gather_skip_bytes,
                             tail_ring_bytes,
                             ..Default::default()
                         },

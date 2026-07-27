@@ -72,6 +72,8 @@ for r in REGIONS:
         rtd_p50 = [x["tailDecP50Ms"] for x in body_ss if x.get("tailDecP50Ms")]
         rtd_p99 = [x["tailDecP99Ms"] for x in body_ss if x.get("tailDecP99Ms")]
         rearm_p50 = [x["rearmP50Ms"] for x in body_ss if x.get("rearmP50Ms")]
+        dbg_wake = [x["dbgWakeP50Us"] for x in body_ss if x.get("dbgWakeP50Us")]
+        dbg_read = [x["dbgReadP50Us"] for x in body_ss if x.get("dbgReadP50Us")]
         rps = [x["achievedPerSec"] for x in body_ss]
         recs = [x["recordsPerSec"] for x in body_ss]
         tier_rows.append({
@@ -84,6 +86,8 @@ for r in REGIONS:
             "rtDecP50": round(statistics.median(rtd_p50), 1) if rtd_p50 else None,
             "rtDecP99": round(statistics.median(rtd_p99), 1) if rtd_p99 else None,
             "rearmP50": round(statistics.median(rearm_p50), 2) if rearm_p50 else None,
+            "dbgWakeP50Us": round(statistics.median(dbg_wake)) if dbg_wake else None,
+            "dbgReadP50Us": round(statistics.median(dbg_read)) if dbg_read else None,
             "rtP99": round(max(rt_p99), 1) if rt_p99 else None,
             "reqPerSec": round(statistics.median(rps)) if rps else 0,
             "recPerSec": round(statistics.median(recs)) if recs else 0,

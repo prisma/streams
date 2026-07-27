@@ -297,6 +297,13 @@ pub struct ShardConfig {
     /// shard's first write: the pump only gathers after a flush that
     /// dispatched work.
     pub wal_post_ack_gather: std::time::Duration,
+    /// Skip the gather when the NEXT WAL is already busy: a window only
+    /// pays off when the coming generation is small (it exists to let an
+    /// ack-triggered herd join); at saturation it is a pure latency and
+    /// throughput tax. Thresholds are checked after ack dispatch, against
+    /// what is already committed-but-unflushed.
+    pub wal_gather_skip_reqs: u32,
+    pub wal_gather_skip_bytes: u64,
     /// Durable-tail ring budget in bytes for THIS engine (0 = off). When
     /// on, dispatch_durable publishes each group's freshly-durable frames
     /// into a per-stream in-memory ring before releasing acks, and live
@@ -319,6 +326,8 @@ impl Default for ShardConfig {
             wal_group_commit: false,
             wal_flush_gap: std::time::Duration::from_millis(25),
             wal_post_ack_gather: std::time::Duration::ZERO,
+            wal_gather_skip_reqs: 32,
+            wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
         }
     }
@@ -383,6 +392,24 @@ pub struct ShardEngine {
     pub pump_flushes: AtomicU64,
     pub pump_barrier_acked: AtomicU64,
     pub pump_gathers: AtomicU64,
+    /// Windows skipped because the next generation was already busy
+    /// (adaptive gather), and requests observed to arrive DURING applied
+    /// windows (the herd the window exists to catch).
+    pub pump_gathers_skipped_busy: AtomicU64,
+    pub pump_gathered_reqs: AtomicU64,
+    /// Per-flush ledger: what each pump flush actually shipped.
+    /// requests_per_wal = flushed_reqs / flushes, delta'd by the harness.
+    pub pump_flushed_reqs: AtomicU64,
+    pub pump_flushed_records: AtomicU64,
+    pub pump_flushed_bytes: AtomicU64,
+    /// Ack-to-next-enqueue: µs from an ack dispatch to the FIRST client
+    /// request that follows it — direct evidence the ack-triggered herd
+    /// arrives within the gather window (sum/count; armed at dispatch).
+    pub ack_to_enqueue_sum_us: AtomicU64,
+    pub ack_to_enqueue_count: AtomicU64,
+    ack_armed_at_us: AtomicU64,
+    /// Monotonic epoch for cheap µs stamps.
+    epoch: std::time::Instant,
     /// Durable-tail ring accounting. `ring_budget` is the remaining global
     /// byte allowance (config minus resident bytes; goes negative
     /// transiently during a publish, restored by eviction). `ring_fifo`
@@ -395,6 +422,10 @@ pub struct ShardEngine {
     pub ring_hits: AtomicU64,
     pub ring_misses: AtomicU64,
     pub ring_evicted: AtomicU64,
+    /// Resident bytes high-water mark; current residency is
+    /// (config budget - ring_budget), exposed alongside it.
+    pub ring_peak_bytes: AtomicU64,
+    ring_cfg_bytes: u64,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -458,6 +489,15 @@ impl ShardEngine {
             pump_flushes: AtomicU64::new(0),
             pump_barrier_acked: AtomicU64::new(0),
             pump_gathers: AtomicU64::new(0),
+            pump_gathers_skipped_busy: AtomicU64::new(0),
+            pump_gathered_reqs: AtomicU64::new(0),
+            pump_flushed_reqs: AtomicU64::new(0),
+            pump_flushed_records: AtomicU64::new(0),
+            pump_flushed_bytes: AtomicU64::new(0),
+            ack_to_enqueue_sum_us: AtomicU64::new(0),
+            ack_to_enqueue_count: AtomicU64::new(0),
+            ack_armed_at_us: AtomicU64::new(0),
+            epoch: std::time::Instant::now(),
             ring_enabled: cfg.tail_ring_bytes > 0,
             ring_budget: std::sync::atomic::AtomicI64::new(cfg.tail_ring_bytes as i64),
             ring_fifo: Mutex::new(std::collections::VecDeque::new()),
@@ -465,6 +505,8 @@ impl ShardEngine {
             ring_hits: AtomicU64::new(0),
             ring_misses: AtomicU64::new(0),
             ring_evicted: AtomicU64::new(0),
+            ring_peak_bytes: AtomicU64::new(0),
+            ring_cfg_bytes: cfg.tail_ring_bytes as u64,
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -490,6 +532,8 @@ impl ShardEngine {
             let pump = engine.clone();
             let gap = cfg.wal_flush_gap;
             let gather = cfg.wal_post_ack_gather;
+            let skip_reqs = cfg.wal_gather_skip_reqs;
+            let skip_bytes = cfg.wal_gather_skip_bytes;
             tracing::info!(
                 shard = %pump.prefix,
                 gap_ms = gap.as_millis() as u64,
@@ -544,7 +588,18 @@ impl ShardEngine {
                     // seq (measured: at c2 the post-flush borrow saw a
                     // stale watermark on 1612 of 1626 flushes, silently
                     // reducing the barrier to the old acker race).
-                    let target_seq = pump.in_flight.lock().unwrap().last().map(|g| g.seq);
+                    // Per-flush ledger + barrier target, captured together
+                    // BEFORE the flush (capturing after could include — and
+                    // wait on — the NEXT generation: deadlock shape).
+                    let (target_seq, fl_reqs, fl_records, fl_bytes) = {
+                        let q = pump.in_flight.lock().unwrap();
+                        (
+                            q.last().map(|g| g.seq),
+                            q.iter().map(|g| g.reqs as u64).sum::<u64>(),
+                            q.iter().map(|g| g.records_n as u64).sum::<u64>(),
+                            q.iter().map(|g| g.bytes).sum::<u64>(),
+                        )
+                    };
                     match pump
                         .db
                         .flush_with_options(FlushOptions {
@@ -561,6 +616,10 @@ impl ShardEngine {
                         }
                         Ok(()) => {
                             pump.pump_flushes.fetch_add(1, Ordering::Relaxed);
+                            pump.pump_flushed_reqs.fetch_add(fl_reqs, Ordering::Relaxed);
+                            pump.pump_flushed_records
+                                .fetch_add(fl_records, Ordering::Relaxed);
+                            pump.pump_flushed_bytes.fetch_add(fl_bytes, Ordering::Relaxed);
                             if gather.is_zero() {
                                 continue;
                             }
@@ -613,6 +672,12 @@ impl ShardEngine {
                             let acked = pump.dispatch_durable(durable_seq);
                             pump.pump_barrier_acked
                                 .fetch_add(acked as u64, Ordering::Relaxed);
+                            // Arm the ack->next-enqueue probe: the next
+                            // try_enqueue stamps the herd's reaction time.
+                            pump.ack_armed_at_us.store(
+                                pump.epoch.elapsed().as_micros().max(1) as u64,
+                                Ordering::Relaxed,
+                            );
                             // Gather ONLY when this completion proves
                             // concurrency: someone is already waiting in
                             // in_flight (they arrived mid-PUT — the herd
@@ -628,13 +693,44 @@ impl ShardEngine {
                             // and wins the dispatch race on >99 % of
                             // flushes; keying on it skipped the window on
                             // 1636 of 1651 c2 flushes.
-                            let drifted = !pump.in_flight.lock().unwrap().is_empty();
-                            if drifted {
+                            // Adaptive: gather only when (a) the herd has
+                            // drifted (someone already waits) AND (b) the
+                            // next generation is still SMALL — a window in
+                            // front of an already-big WAL is a pure tax
+                            // (review #2's throughput concern at CDG's top
+                            // tiers).
+                            let (drifted, pend_reqs, pend_bytes) = {
+                                let q = pump.in_flight.lock().unwrap();
+                                (
+                                    !q.is_empty(),
+                                    q.iter().map(|g| g.reqs).sum::<u32>(),
+                                    q.iter().map(|g| g.bytes).sum::<u64>(),
+                                )
+                            };
+                            if drifted
+                                && (pend_reqs >= skip_reqs || pend_bytes >= skip_bytes)
+                            {
+                                pump.pump_gathers_skipped_busy
+                                    .fetch_add(1, Ordering::Relaxed);
+                            } else if drifted {
                                 pump.pump_gathers.fetch_add(1, Ordering::Relaxed);
                                 tokio::time::sleep(gather).await;
                                 if pump.is_closed() {
                                     return;
                                 }
+                                // What the window caught: requests present
+                                // now that were not pending when it opened.
+                                let after: u32 = pump
+                                    .in_flight
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .map(|g| g.reqs)
+                                    .sum();
+                                pump.pump_gathered_reqs.fetch_add(
+                                    after.saturating_sub(pend_reqs) as u64,
+                                    Ordering::Relaxed,
+                                );
                             }
                         }
                     }
@@ -722,6 +818,16 @@ impl ShardEngine {
     }
 
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
+        // Ack->next-enqueue probe (armed by the pump at ack dispatch): the
+        // first request after an ack wave stamps how fast the closed-loop
+        // herd reacts — the number the gather window is sized against.
+        let armed = self.ack_armed_at_us.swap(0, Ordering::Relaxed);
+        if armed != 0 {
+            let now = self.epoch.elapsed().as_micros() as u64;
+            self.ack_to_enqueue_sum_us
+                .fetch_add(now.saturating_sub(armed), Ordering::Relaxed);
+            self.ack_to_enqueue_count.fetch_add(1, Ordering::Relaxed);
+        }
         self.tx
             .try_send(CommitOp::Append(req))
             .map_err(|e| match e {
@@ -1679,7 +1785,9 @@ impl ShardEngine {
         }
         self.ring_fifo.lock().unwrap().push_back(handle.clone());
         self.ring_published.fetch_add(1, Ordering::Relaxed);
-        self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed);
+        let after = self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed) - bytes as i64;
+        let resident = (self.ring_cfg_bytes as i64 - after).max(0) as u64;
+        self.ring_peak_bytes.fetch_max(resident, Ordering::Relaxed);
         while self.ring_budget.load(Ordering::Relaxed) < 0 {
             let Some(victim) = self.ring_fifo.lock().unwrap().pop_front() else {
                 break;
@@ -1691,6 +1799,10 @@ impl ShardEngine {
                 self.ring_evicted.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    pub fn ring_resident_bytes(&self) -> u64 {
+        (self.ring_cfg_bytes as i64 - self.ring_budget.load(Ordering::Relaxed)).max(0) as u64
     }
 
     /// Serve [scan_from, scan_to) from the stream's ring if the ring
@@ -1748,6 +1860,14 @@ impl ShardEngine {
         }
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
+    }
+
+    /// Test hook: hold the dispatch gate. While held, NEITHER the acker
+    /// nor the pump can dispatch acks — the deterministic stand-in for
+    /// "the acker is paused after durability, before response dispatch".
+    #[cfg(test)]
+    pub fn test_hold_dispatch(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.dispatch_gate.lock().unwrap()
     }
 
     /// Release everything the durable watermark now covers: record

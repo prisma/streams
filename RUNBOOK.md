@@ -572,6 +572,13 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | `TAIL_MAX_BYTES` | 1 MiB | Budget for reads WOKEN by a long-poll wait (a fresh commit group, not a backlog). Bulk reads keep 8 MiB. |
 | `HIST_READER_CAP` | 8 | Cached history DbReaders per process. **Size it ≥ the number of streams concurrently reading history**: LRU with a rotating working set of cap+1 reopens on ~every read (the DST thrash test pins this behavior). Each cached reader costs one manifest poll (5 s) + one checkpoint. |
 | `HIST_READER_IDLE_SECS` | 120 | Idle eviction for cached history readers. |
+| `WAL_GATHER_SKIP_REQS` / `WAL_GATHER_SKIP_BYTES` | 32 / 1 MiB | Adaptive gather: skip the post-ACK window when the NEXT WAL already holds this much — the window exists for a small next generation; at drift+saturation it is a tax (review #2's CDG throughput question). 0 = never skip. `/v1/debug/timings` pump block: gathers_applied vs gathers_skipped_busy, gathered_reqs, flushed_{reqs,records,bytes} (requests-per-WAL), ack_to_enqueue_{sum_us,count}. |
+| `STREAMS_DEBUG_TIMING` | off | Benchmark-only: woken long-poll responses carry `Streams-Debug-Wait: waited arm_us read_us`, splitting the roundtrip-minus-append interval into wait-wake vs read-build stages. Do not enable outside benches. |
+
+**Campaign hygiene (destroyed-specimen lesson):** every soak deploy now
+requires `SOAK_RUN_ID` and stamps `proj-<r>.txt.campaign`; `teardown.sh`
+refuses projects whose stamp mismatches its own `SOAK_RUN_ID` and
+anything listed in `$SOAK_HOME/preserve.txt`.
 
 
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |

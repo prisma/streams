@@ -77,6 +77,15 @@ struct Stats {
     hist: Mutex<Histogram<u64>>,
     hist_win: Mutex<Histogram<u64>>,
     tail_win: Mutex<Histogram<u64>>,
+    /// Exactly-once ledger for the tail chaser: records decoded, and
+    /// bodies that failed mid-download/decode (each forcing a retry from
+    /// the committed cursor).
+    records_decoded: AtomicU64,
+    body_failures: AtomicU64,
+    /// Server-reported live-read stages (STREAMS_DEBUG_TIMING): arm->wake
+    /// (waited responses only) and wake->records-built, in µs.
+    dbg_wake_win: Mutex<Histogram<u64>>,
+    dbg_read_win: Mutex<Histogram<u64>>,
     /// producer -> record DECODED at the consumer (the honest roundtrip;
     /// tail_win keeps the historical producer -> response-headers metric
     /// for comparability with earlier soaks, which understates by body
@@ -101,6 +110,10 @@ impl Stats {
             hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             tail_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+            records_decoded: AtomicU64::new(0),
+            body_failures: AtomicU64::new(0),
+            dbg_wake_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+            dbg_read_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             tail_dec_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             rearm_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             last_err: Mutex::new(String::new()),
@@ -364,6 +377,18 @@ async fn run_load(
             tw.reset();
             r
         };
+        let dbg_wake_p50 = {
+            let mut w = stats.dbg_wake_win.lock().unwrap();
+            let v = if w.is_empty() { None } else { Some(w.value_at_quantile(0.5)) };
+            w.reset();
+            v
+        };
+        let dbg_read_p50 = {
+            let mut w = stats.dbg_read_win.lock().unwrap();
+            let v = if w.is_empty() { None } else { Some(w.value_at_quantile(0.5)) };
+            w.reset();
+            v
+        };
         let line = serde_json::json!({
             "ts": now_ms() / 1000,
             "label": label,
@@ -384,6 +409,10 @@ async fn run_load(
             "tailDecP99Ms": tail_dec.map(|t| t.1),
             "rearmP50Ms": rearm.map(|t| t.0),
             "rearmP99Ms": rearm.map(|t| t.1),
+            "recordsDecoded": stats.records_decoded.load(Ordering::Relaxed),
+            "bodyFailures": stats.body_failures.load(Ordering::Relaxed),
+            "dbgWakeP50Us": dbg_wake_p50,
+            "dbgReadP50Us": dbg_read_p50,
             "lastErr": stats.last_err.lock().unwrap().clone(),
         })
         .to_string();
@@ -497,94 +526,152 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
             }
         }
         Client::Prisma(http, base, stream, auth, key) => {
-            // Long-poll from `now`, chasing the tail via opaque
-            // Stream-Next-Offset tokens.
-            //
-            // Two consumer defects fixed here (2026-07-27 review):
-            //
-            // 1. The observation timestamp was captured after response
-            //    HEADERS but records were only decoded after a full
-            //    text() + untyped serde_json::Value parse — reporting
-            //    "producer -> headers" while claiming "consumer observed".
-            //    Now: tail_win keeps the headers-based metric (comparable
-            //    with earlier soaks), tail_dec_win records the honest
-            //    producer -> per-record-decoded latency from bytes().
-            //
-            // 2. The loop was serial: download + parse completed before
-            //    the next poll was issued, so records produced meanwhile
-            //    waited out the rearm gap. Now the next poll is issued as
-            //    soon as Stream-Next-Offset is read from headers; the
-            //    response body is handed to a parser task over a BOUNDED
-            //    channel (cap 4 — if parsing ever falls behind, the send
-            //    blocks and the rearm honestly slows instead of memory
-            //    growing). rearm_win records headers -> next-poll-issued.
-            #[derive(serde::Deserialize)]
-            struct TailRec {
-                t: Option<u64>,
-            }
-            let (parse_tx, mut parse_rx) =
-                tokio::sync::mpsc::channel::<(reqwest::Response, u64)>(4);
-            let pstats = stats.clone();
-            let parser = tokio::spawn(async move {
-                while let Some((resp, hdr_ms)) = parse_rx.recv().await {
-                    let Ok(body) = resp.bytes().await else { continue };
-                    let Ok(vals) = serde_json::from_slice::<Vec<TailRec>>(&body) else {
-                        continue;
-                    };
-                    let dec_ms = now_ms();
-                    let mut tw = pstats.tail_win.lock().unwrap();
-                    let mut dw = pstats.tail_dec_win.lock().unwrap();
-                    for v in vals {
-                        if let Some(ts) = v.t {
-                            let _ = tw.record((hdr_ms.saturating_sub(ts) * 1000).max(1));
-                            let _ = dw.record((dec_ms.saturating_sub(ts) * 1000).max(1));
-                        }
-                    }
-                }
-            });
-            let mut offset: Option<String> = None;
-            while stop.load(Ordering::Relaxed) == 0 {
-                let url = match &offset {
-                    None => format!("{base}/v1/stream/{stream}?offset=now"),
-                    Some(tok) => format!(
-                        "{base}/v1/stream/{stream}?offset={tok}&live=long-poll&timeout=20s"
-                    ),
-                };
-                match http
-                    .get(&url)
-                    .header("authorization", format!("Bearer {auth}"))
-                    .header("stream-encryption-key", key.clone())
-                    .send()
-                    .await
-                {
-                    Ok(r) if r.status().is_success() => {
-                        let hdr_ms = now_ms();
-                        let next = r
-                            .headers()
-                            .get("stream-next-offset")
-                            .and_then(|v| v.to_str().ok())
-                            .map(String::from);
-                        if offset.is_some() {
-                            // Hand off for decode; the loop rearms now.
-                            if parse_tx.send((r, hdr_ms)).await.is_err() {
-                                break;
-                            }
-                            let _ = stats
-                                .rearm_win
-                                .lock()
-                                .unwrap()
-                                .record(((now_ms().saturating_sub(hdr_ms)) * 1000).max(1));
-                        }
-                        if next.is_some() {
-                            offset = next;
-                        }
-                    }
-                    _ => tokio::time::sleep(Duration::from_millis(500)).await,
-                }
-            }
-            drop(parse_tx);
-            let _ = parser.await;
+            prisma_tail_loop(&http, &base, &stream, &auth, &key, &stats, &stop).await;
         }
+    }
+}
+
+/// Long-poll tail chaser with SPLIT cursors (2026-07-27 review #2):
+///
+/// `committed` — the offset token whose preceding response body has been
+/// fully read AND decoded; the only safe restart point. One speculative
+/// request may run ahead using the last response's Stream-Next-Offset,
+/// and the previous body's decode is overlapped into that request's RTT.
+/// If a body fails mid-stream (reset, truncation, bad JSON), the
+/// speculative response is drained and DISCARDED and the loop re-polls
+/// from `committed` — accepting it would silently skip the failed
+/// response's records, an integrity bug no HTTP status ever surfaces.
+async fn prisma_tail_loop(
+    http: &reqwest::Client,
+    base: &str,
+    stream: &str,
+    auth: &str,
+    key: &str,
+    stats: &Arc<Stats>,
+    stop: &AtomicU64,
+) {
+    #[derive(serde::Deserialize)]
+    struct TailRec {
+        t: Option<u64>,
+    }
+    async fn decode(resp: reqwest::Response, hdr_ms: u64, stats: &Arc<Stats>) -> Result<(), ()> {
+        let body = resp.bytes().await.map_err(|_| ())?;
+        let vals = serde_json::from_slice::<Vec<TailRec>>(&body).map_err(|_| ())?;
+        let dec_ms = now_ms();
+        let mut tw = stats.tail_win.lock().unwrap();
+        let mut dw = stats.tail_dec_win.lock().unwrap();
+        for v in vals {
+            if let Some(ts) = v.t {
+                stats.records_decoded.fetch_add(1, Ordering::Relaxed);
+                let _ = tw.record((hdr_ms.saturating_sub(ts) * 1000).max(1));
+                let _ = dw.record((dec_ms.saturating_sub(ts) * 1000).max(1));
+            }
+        }
+        Ok(())
+    }
+
+    let mut committed: Option<String> = None;
+    let mut inflight: Option<(reqwest::Response, u64, Option<String>)> = None;
+    while stop.load(Ordering::Relaxed) == 0 {
+        let from = inflight
+            .as_ref()
+            .and_then(|(_, _, next)| next.clone())
+            .or_else(|| committed.clone());
+        let url = match &from {
+            None => format!("{base}/v1/stream/{stream}?offset=now"),
+            Some(tok) => {
+                format!("{base}/v1/stream/{stream}?offset={tok}&live=long-poll&timeout=20s")
+            }
+        };
+        let fut = http
+            .get(&url)
+            .header("authorization", format!("Bearer {auth}"))
+            .header("stream-encryption-key", key.to_string())
+            .send();
+        tokio::pin!(fut);
+
+        // Overlap the previous body's decode into this request's RTT.
+        if let Some((prev, prev_hdr_ms, prev_next)) = inflight.take() {
+            match decode(prev, prev_hdr_ms, stats).await {
+                Ok(()) => {
+                    if prev_next.is_some() {
+                        committed = prev_next;
+                    }
+                }
+                Err(()) => {
+                    stats.body_failures.fetch_add(1, Ordering::Relaxed);
+                    // The speculative request ran past a failed body:
+                    // drain and discard it, retry from committed.
+                    if let Ok(r) = fut.await {
+                        let _ = r.bytes().await;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        match fut.await {
+            Ok(r) if r.status().as_u16() == 204 => {
+                let next = r
+                    .headers()
+                    .get("stream-next-offset")
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+                if next.is_some() {
+                    committed = next;
+                }
+            }
+            Ok(r) if r.status().is_success() => {
+                let hdr_ms = now_ms();
+                if let Some(dbg) = r
+                    .headers()
+                    .get("streams-debug-wait")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    // "waited=1 arm_us=N read_us=M" (STREAMS_DEBUG_TIMING).
+                    let mut arm = None;
+                    let mut read = None;
+                    let mut waited = false;
+                    for part in dbg.split_whitespace() {
+                        if let Some(v) = part.strip_prefix("arm_us=") {
+                            arm = v.parse::<u64>().ok();
+                        } else if let Some(v) = part.strip_prefix("read_us=") {
+                            read = v.parse::<u64>().ok();
+                        } else if part == "waited=1" {
+                            waited = true;
+                        }
+                    }
+                    if waited {
+                        if let Some(a) = arm {
+                            let _ = stats.dbg_wake_win.lock().unwrap().record(a.max(1));
+                        }
+                    }
+                    if let Some(rd) = read {
+                        let _ = stats.dbg_read_win.lock().unwrap().record(rd.max(1));
+                    }
+                }
+                let next = r
+                    .headers()
+                    .get("stream-next-offset")
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+                if from.is_none() {
+                    // offset=now bootstrap: no records in this response.
+                    committed = next;
+                    continue;
+                }
+                let _ = stats
+                    .rearm_win
+                    .lock()
+                    .unwrap()
+                    .record(((now_ms().saturating_sub(hdr_ms)) * 1000).max(1));
+                inflight = Some((r, hdr_ms, next));
+            }
+            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+    if let Some((prev, prev_hdr_ms, _)) = inflight.take() {
+        let _ = decode(prev, prev_hdr_ms, stats).await;
     }
 }
 
@@ -802,4 +889,151 @@ async fn main() -> anyhow::Result<()> {
     }
     eprintln!("BENCH_DONE");
     Ok(())
+}
+
+#[cfg(test)]
+mod tail_cursor_tests {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+
+    /// Review #2's required integrity test: a response whose HEADERS
+    /// succeed (carrying a valid next offset) but whose BODY dies
+    /// mid-stream must NOT advance the cursor. The consumer must discard
+    /// its speculative lookahead, retry from the committed cursor, and
+    /// decode every record exactly once.
+    ///
+    /// Server script (offset -> behavior):
+    ///   now  -> 200, next=A, body []
+    ///   A #1 -> 200, next=B, body "[{\"t\":1},{\"t\":2}" TRUNCATED
+    ///          (Content-Length lies; connection closed early)
+    ///   B #1 -> the speculative lookahead the consumer must DISCARD:
+    ///          200, next=C, body [{"t":99}]  <- the canary: if 99 is
+    ///          ever decoded, the consumer accepted a lookahead past a
+    ///          failed body (the skip bug)
+    ///   A #2 -> 200, next=B, body [{"t":1},{"t":2}]   (the retry)
+    ///   B #2 -> 200, next=C, body [{"t":3}]
+    ///   C    -> 204, next=C (idle; loop parks until stop)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_body_retries_from_the_committed_cursor() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().unwrap();
+        let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let slog = log.clone();
+
+        std::thread::spawn(move || {
+            let mut a_count = 0;
+            let mut b_count = 0;
+            for conn in listener.incoming() {
+                let Ok(mut sock) = conn else { break };
+                loop {
+                    let mut buf = [0u8; 4096];
+                    let mut req = Vec::new();
+                    // read until end of headers
+                    let ok = loop {
+                        match sock.read(&mut buf) {
+                            Ok(0) => break false,
+                            Ok(n) => {
+                                req.extend_from_slice(&buf[..n]);
+                                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                                    break true;
+                                }
+                            }
+                            Err(_) => break false,
+                        }
+                    };
+                    if !ok {
+                        break;
+                    }
+                    let line = String::from_utf8_lossy(&req);
+                    let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let offset = path
+                        .split("offset=")
+                        .nth(1)
+                        .map(|t| t.split('&').next().unwrap_or("").to_string())
+                        .unwrap_or_default();
+                    slog.lock().unwrap().push(offset.clone());
+                    let respond = |sock: &mut std::net::TcpStream,
+                                   status: &str,
+                                   next: &str,
+                                   body: &[u8],
+                                   lie_len: Option<usize>| {
+                        let len = lie_len.unwrap_or(body.len());
+                        let head = format!(
+                            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nstream-next-offset: {next}\r\ncontent-length: {len}\r\n\r\n"
+                        );
+                        let _ = sock.write_all(head.as_bytes());
+                        let _ = sock.write_all(body);
+                    };
+                    match offset.as_str() {
+                        "now" => respond(&mut sock, "200 OK", "A", b"[]", None),
+                        "A" => {
+                            a_count += 1;
+                            if a_count == 1 {
+                                // Truncated: promise 40 bytes, send 16, kill.
+                                respond(
+                                    &mut sock,
+                                    "200 OK",
+                                    "B",
+                                    b"[{\"t\":1},{\"t\":2}",
+                                    Some(40),
+                                );
+                                let _ = sock.shutdown(std::net::Shutdown::Both);
+                                break;
+                            }
+                            respond(&mut sock, "200 OK", "B", b"[{\"t\":1},{\"t\":2}]", None);
+                        }
+                        "B" => {
+                            b_count += 1;
+                            if b_count == 1 {
+                                // The speculative canary.
+                                respond(&mut sock, "200 OK", "C", b"[{\"t\":99}]", None);
+                            } else {
+                                respond(&mut sock, "200 OK", "C", b"[{\"t\":3}]", None);
+                            }
+                        }
+                        _ => respond(&mut sock, "204 No Content", "C", b"", None),
+                    }
+                }
+            }
+        });
+
+        let stats = Stats::new();
+        let stop = Arc::new(AtomicU64::new(0));
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let s2 = stats.clone();
+        let st2 = stop.clone();
+        let base = format!("http://{addr}");
+        let run = tokio::spawn(async move {
+            prisma_tail_loop(&http, &base, "t", "tok", "key", &s2, &st2).await;
+        });
+        // Let the script play out, then stop.
+        for _ in 0..100 {
+            if stats.records_decoded.load(Ordering::Relaxed) >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        stop.store(1, Ordering::Relaxed);
+        let _ = tokio::time::timeout(Duration::from_secs(10), run).await;
+
+        assert_eq!(
+            stats.records_decoded.load(Ordering::Relaxed),
+            3,
+            "records 1,2,3 exactly once — a 99 or a count of 5 means the \
+             speculative response was accepted past a failed body"
+        );
+        assert!(
+            stats.body_failures.load(Ordering::Relaxed) >= 1,
+            "the truncated body must have been detected"
+        );
+        let seen = log.lock().unwrap().clone();
+        let a_polls = seen.iter().filter(|o| o.as_str() == "A").count();
+        assert!(
+            a_polls >= 2,
+            "the consumer must have re-polled A from the committed cursor (log: {seen:?})"
+        );
+    }
 }
