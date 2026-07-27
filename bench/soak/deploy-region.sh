@@ -36,6 +36,9 @@ BIN_TAG=${BIN_TAG:-soak}
 # Keyspace prefix: override per run (soak2r1, soak2r2, ...) so repeated
 # runs start from a fresh keyspace without re-provisioning buckets.
 SOAK_PREFIX=${SOAK_PREFIX:-soak}
+# Optional DNS override written by the wrapper before exec (soak3 finding:
+# the platform forwarder mis-steers Tigris's geo-DNS). Literal \n escapes.
+RESOLV_OVERRIDE=${RESOLV_OVERRIDE:-}
 BINEP=${ARTIFACT_ENDPOINT:-https://t3.storage.dev}
 BINBKT=${ARTIFACT_BUCKET:-prisma-streams-slatedb-sin}
 
@@ -67,6 +70,8 @@ fi
 # ${arr[@]+...} form: macOS bash 3.2 treats an empty array as unbound
 # under `set -u`, so a plain expansion aborts the whole deploy.
 SVCARG=(); [ -f "$SVCFILE" ] && SVCARG=(--service "$(cat "$SVCFILE")")
+# Empty --env values are rejected by the CLI; only pass when set.
+RESOLVARG=(); [ -n "$RESOLV_OVERRIDE" ] && RESOLVARG=(--env "RESOLV_OVERRIDE=$RESOLV_OVERRIDE")
 
 if [ "$ROLE" = server ]; then
   cd "$S/app-server-$R"
@@ -93,6 +98,7 @@ if [ "$ROLE" = server ]; then
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
     --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
     --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 \
+    ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
     2>&1 | grep -viE 'resolving|resolved|saved')
 else
   TARGET=$(cat "$S/url-server-$R.txt")
@@ -108,6 +114,7 @@ else
     --env BENCH_TIERS="$BENCH_TIERS" --env BENCH_SECS="$BENCH_SECS" \
     --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES=1024 --env BENCH_CONSUME=true \
     --env BENCH_HOLD=1 --env KEEP_AWAKE=1 \
+    ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
     2>&1 | grep -viE 'resolving|resolved|saved')
 fi
 
