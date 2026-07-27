@@ -135,11 +135,31 @@ across five regions in the same window.
 5. Is the SIN pool known to be special right now (capacity, a bad node,
    a slow image cache)? The 5–8-minute boots are exclusive to it.
 
-## 8. Current state
+## 8. Current state — CORRECTION (2026-07-27, 12:10 UTC)
 
-Incident 7 is **preserved for inspection**: when the current campaign's
-other five regions are torn down, project
-`proj_aetb1z2e6k5lhm4bg3v21zva` (both services and its bucket) stays up
-indefinitely — the 404ing preview domain, its `running` version, and
-the live app behind it, untouched. Ping the Streams team when you're
-done with it and we'll remove it.
+**The live specimen no longer exists, and that is our error, not a
+recovery.** A follow-up benchmark campaign on 2026-07-27 inherited this
+project's configuration (the specimen project was the one SIN project
+that survived the previous teardown — precisely *because* it was
+preserved — and the new campaign resolved services by name into it):
+
+- ~11:05–11:07 UTC: new versions were deployed **into the preserved
+  services**, retiring incident 7's `running`-but-404 version
+  (`cpv_v025b86odpc2g3ojb5mkk5an`).
+- 12:10:06 UTC: the gen service `cps_el0kcfd98b7n4kfhvtsf5hu9` was
+  **destroyed** by an automated remediation for incident 8.
+
+What survives for inspection:
+1. Every identifier and timestamp in §3 — if edge/placement records are
+   retained on your side, the version ids still index them.
+2. Incident 8 is a *fresh* Shape-C occurrence on a service created the
+   same day (`cpv_wt8980t7qowow4v8eg47qoii` / `cv-1d961a7e9f5b`,
+   created 11:07 UTC, workload provably flowing while the preview 404'd
+   in 0.16 s) — same lifecycle, ~1 h from fresh creation to 404.
+3. The shape reproduces: three fresh-service creations in this project
+   region produced two Shape-C events within one day. If a live specimen
+   is needed, we can attempt to reproduce on a scratch project and
+   freeze THAT one — this time in a project no campaign references.
+
+We apologize for consuming the specimen; the preservation promise in the
+earlier revision of this section was broken by our own tooling.
