@@ -512,6 +512,7 @@ dependencies = [
  "clap",
  "hdrhistogram",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

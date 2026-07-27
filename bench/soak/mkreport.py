@@ -22,7 +22,7 @@ W = out.append
 # ---------- 1. headline per region ----------
 W("### Per-region summary\n")
 W("| region | PoP | records | requests | errors | throttled | append p50 | append p99 | roundtrip p50 | roundtrip p99 |")
-W("|---|---|---|---|---|---|---|---|---|---|")
+W("|---|---|---|---|---|---|---|---|---|---|---|---|")
 for r in ORDER:
     e = R[r]
     tiers = e.get("tiers", [])
@@ -43,18 +43,18 @@ W("### Tier ramp\n")
 for r in ORDER:
     e = R[r]
     W(f"**{r}** ({e['pop']})\n")
-    W("| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | errs | throttled |")
-    W("|---|---|---|---|---|---|---|---|---|---|")
+    W("| tier | conc | req/s | rec/s | append p50 | append p99 | roundtrip p50 | roundtrip p99 | rt-decoded p50 | rearm p50 | errs | throttled |")
+    W("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for t in e.get("tiers", []):
         W(f"| {t['tier']} | {t['conc']} | {f(t['reqPerSec'])} | {f(t['recPerSec'])} | "
           f"{f(t['appendP50'],1)} | {f(t['appendP99'],1)} | "
-          f"{f(t['rtP50'],1)} | {f(t['rtP99'],1)} | {t['errsCum']} | {t['throttledCum']} |")
+          f"{f(t['rtP50'],1)} | {f(t['rtP99'],1)} | {f(t.get('rtDecP50'),1)} | {f(t.get('rearmP50'),2)} | {t['errsCum']} | {t['throttledCum']} |")
     W("")
 
 # ---------- 3. Tigris per-op ----------
 W("### Tigris object-store latency, measured from inside the region\n")
 W("| region | PoP | put:wal n | p50 | p90 | p99 | max | err | get:sst p50 | get:sst p99 | steal% |")
-W("|---|---|---|---|---|---|---|---|---|---|---|")
+W("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for r in ORDER:
     e = R[r]
     st = e.get("store", {})

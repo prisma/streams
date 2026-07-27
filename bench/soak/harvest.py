@@ -67,6 +67,11 @@ for r in REGIONS:
         appends_p99 = [x["winP99Ms"] for x in body_ss if x.get("winP99Ms")]
         rt_p50 = [x["tailP50Ms"] for x in body_ss if x.get("tailP50Ms")]
         rt_p99 = [x["tailP99Ms"] for x in body_ss if x.get("tailP99Ms")]
+        # Honest roundtrip (producer -> record decoded) + consumer rearm
+        # gap; absent in pre-2026-07-27 generators.
+        rtd_p50 = [x["tailDecP50Ms"] for x in body_ss if x.get("tailDecP50Ms")]
+        rtd_p99 = [x["tailDecP99Ms"] for x in body_ss if x.get("tailDecP99Ms")]
+        rearm_p50 = [x["rearmP50Ms"] for x in body_ss if x.get("rearmP50Ms")]
         rps = [x["achievedPerSec"] for x in body_ss]
         recs = [x["recordsPerSec"] for x in body_ss]
         tier_rows.append({
@@ -76,6 +81,9 @@ for r in REGIONS:
             "appendP50": round(statistics.median(appends_p50), 1) if appends_p50 else None,
             "appendP99": round(max(appends_p99), 1) if appends_p99 else None,
             "rtP50": round(statistics.median(rt_p50), 1) if rt_p50 else None,
+            "rtDecP50": round(statistics.median(rtd_p50), 1) if rtd_p50 else None,
+            "rtDecP99": round(statistics.median(rtd_p99), 1) if rtd_p99 else None,
+            "rearmP50": round(statistics.median(rearm_p50), 2) if rearm_p50 else None,
             "rtP99": round(max(rt_p99), 1) if rt_p99 else None,
             "reqPerSec": round(statistics.median(rps)) if rps else 0,
             "recPerSec": round(statistics.median(recs)) if recs else 0,

@@ -77,6 +77,14 @@ struct Stats {
     hist: Mutex<Histogram<u64>>,
     hist_win: Mutex<Histogram<u64>>,
     tail_win: Mutex<Histogram<u64>>,
+    /// producer -> record DECODED at the consumer (the honest roundtrip;
+    /// tail_win keeps the historical producer -> response-headers metric
+    /// for comparability with earlier soaks, which understates by body
+    /// download + parse time).
+    tail_dec_win: Mutex<Histogram<u64>>,
+    /// headers -> next long-poll issued (the rearm gap; ~0 when the
+    /// pipelined consumer is doing its job).
+    rearm_win: Mutex<Histogram<u64>>,
     last_err: Mutex<String>,
     lines: Mutex<Vec<String>>,
 }
@@ -93,6 +101,8 @@ impl Stats {
             hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             tail_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+            tail_dec_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
+            rearm_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             last_err: Mutex::new(String::new()),
             lines: Mutex::new(Vec::new()),
         })
@@ -328,6 +338,32 @@ async fn run_load(
             tw.reset();
             r
         };
+        let tail_dec = {
+            let mut tw = stats.tail_dec_win.lock().unwrap();
+            let r = if tw.is_empty() {
+                None
+            } else {
+                Some((
+                    tw.value_at_quantile(0.5) as f64 / 1000.0,
+                    tw.value_at_quantile(0.99) as f64 / 1000.0,
+                ))
+            };
+            tw.reset();
+            r
+        };
+        let rearm = {
+            let mut tw = stats.rearm_win.lock().unwrap();
+            let r = if tw.is_empty() {
+                None
+            } else {
+                Some((
+                    tw.value_at_quantile(0.5) as f64 / 1000.0,
+                    tw.value_at_quantile(0.99) as f64 / 1000.0,
+                ))
+            };
+            tw.reset();
+            r
+        };
         let line = serde_json::json!({
             "ts": now_ms() / 1000,
             "label": label,
@@ -344,6 +380,10 @@ async fn run_load(
             "throttled": stats.throttled.load(Ordering::Relaxed),
             "tailP50Ms": tail.map(|t| t.0),
             "tailP99Ms": tail.map(|t| t.1),
+            "tailDecP50Ms": tail_dec.map(|t| t.0),
+            "tailDecP99Ms": tail_dec.map(|t| t.1),
+            "rearmP50Ms": rearm.map(|t| t.0),
+            "rearmP99Ms": rearm.map(|t| t.1),
             "lastErr": stats.last_err.lock().unwrap().clone(),
         })
         .to_string();
@@ -458,9 +498,50 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
         }
         Client::Prisma(http, base, stream, auth, key) => {
             // Long-poll from `now`, chasing the tail via opaque
-            // Stream-Next-Offset tokens. Arrival time is the metric:
-            // JSON reads return an ARRAY of record payloads, each carrying
-            // {"t": producer_ms}.
+            // Stream-Next-Offset tokens.
+            //
+            // Two consumer defects fixed here (2026-07-27 review):
+            //
+            // 1. The observation timestamp was captured after response
+            //    HEADERS but records were only decoded after a full
+            //    text() + untyped serde_json::Value parse — reporting
+            //    "producer -> headers" while claiming "consumer observed".
+            //    Now: tail_win keeps the headers-based metric (comparable
+            //    with earlier soaks), tail_dec_win records the honest
+            //    producer -> per-record-decoded latency from bytes().
+            //
+            // 2. The loop was serial: download + parse completed before
+            //    the next poll was issued, so records produced meanwhile
+            //    waited out the rearm gap. Now the next poll is issued as
+            //    soon as Stream-Next-Offset is read from headers; the
+            //    response body is handed to a parser task over a BOUNDED
+            //    channel (cap 4 — if parsing ever falls behind, the send
+            //    blocks and the rearm honestly slows instead of memory
+            //    growing). rearm_win records headers -> next-poll-issued.
+            #[derive(serde::Deserialize)]
+            struct TailRec {
+                t: Option<u64>,
+            }
+            let (parse_tx, mut parse_rx) =
+                tokio::sync::mpsc::channel::<(reqwest::Response, u64)>(4);
+            let pstats = stats.clone();
+            let parser = tokio::spawn(async move {
+                while let Some((resp, hdr_ms)) = parse_rx.recv().await {
+                    let Ok(body) = resp.bytes().await else { continue };
+                    let Ok(vals) = serde_json::from_slice::<Vec<TailRec>>(&body) else {
+                        continue;
+                    };
+                    let dec_ms = now_ms();
+                    let mut tw = pstats.tail_win.lock().unwrap();
+                    let mut dw = pstats.tail_dec_win.lock().unwrap();
+                    for v in vals {
+                        if let Some(ts) = v.t {
+                            let _ = tw.record((hdr_ms.saturating_sub(ts) * 1000).max(1));
+                            let _ = dw.record((dec_ms.saturating_sub(ts) * 1000).max(1));
+                        }
+                    }
+                }
+            });
             let mut offset: Option<String> = None;
             while stop.load(Ordering::Relaxed) == 0 {
                 let url = match &offset {
@@ -477,28 +558,22 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
                     .await
                 {
                     Ok(r) if r.status().is_success() => {
+                        let hdr_ms = now_ms();
                         let next = r
                             .headers()
                             .get("stream-next-offset")
                             .and_then(|v| v.to_str().ok())
                             .map(String::from);
-                        let now = now_ms();
                         if offset.is_some() {
-                            if let Ok(body) = r.text().await {
-                                if let Ok(vals) =
-                                    serde_json::from_str::<Vec<serde_json::Value>>(&body)
-                                {
-                                    for v in vals {
-                                        if let Some(ts) = v.get("t").and_then(|t| t.as_u64()) {
-                                            let _ = stats
-                                                .tail_win
-                                                .lock()
-                                                .unwrap()
-                                                .record((now.saturating_sub(ts) * 1000).max(1));
-                                        }
-                                    }
-                                }
+                            // Hand off for decode; the loop rearms now.
+                            if parse_tx.send((r, hdr_ms)).await.is_err() {
+                                break;
                             }
+                            let _ = stats
+                                .rearm_win
+                                .lock()
+                                .unwrap()
+                                .record(((now_ms().saturating_sub(hdr_ms)) * 1000).max(1));
                         }
                         if next.is_some() {
                             offset = next;
@@ -507,6 +582,8 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
                     _ => tokio::time::sleep(Duration::from_millis(500)).await,
                 }
             }
+            drop(parse_tx);
+            let _ = parser.await;
         }
     }
 }
