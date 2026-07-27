@@ -561,6 +561,18 @@ faulted; mechanism counters fire only on applied behaviour. Tiering
 proven by trim, not just absorption. Oracle gained I7 (issued-set
 membership) and records acked offsets.
 
+**M0.2 — the performance changes came with their invariants.** The
+2026-07-27 latency work (post-ACK gather pump, durable-tail ring,
+TAIL_MAX_BYTES) landed with DST coverage in the same commits:
+`gather_pump_preserves_invariants_under_faults` (the pump's barrier +
+gather under WAL errors/lost responses/latency, full audit, task
+termination), `tail_ring_serves_live_reads_and_survives_eviction`
+(2 KiB budget forces constant eviction; the audit runs over ring-backed
+reads), and `tail_ring_matches_the_db_scan_and_restarts_cold` (ring/DB
+byte-equality across a reopen; publish-before-ack). The ring is a cache
+whose only fallback is the canonical scan — those scenarios are what
+license calling it that.
+
 **M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
 task ownership, CPU execution and process metrics; a seeded current-thread
 runtime everywhere *including* the absorber path; named per-actor random
