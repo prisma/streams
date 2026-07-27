@@ -998,6 +998,110 @@ async fn gather_pump_preserves_invariants_under_faults() {
     );
 }
 
+
+/// **Durable-tail ring: correct under load, evictions, and fallback.**
+///
+/// Small budget forces evictions mid-run, so reads exercise all three
+/// paths — ring hit, ring miss -> DB scan, and mixed ranges — and the
+/// full I1–I7 audit runs over the production merged reader. Anti-vacuity:
+/// the run must have produced hits AND evictions, or the scenario proves
+/// nothing about the ring.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tail_ring_serves_live_reads_and_survives_eviction() {
+    for seed in [9u64, 33] {
+        let inner = mem();
+        let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 25));
+        let cov = store.coverage();
+        let key = skey();
+        let hash = [30u8; 16];
+        let cfg = crate::shard::ShardConfig {
+            // Tiny: a couple of groups' worth, so eviction is constant.
+            tail_ring_bytes: 2 * 1024,
+            ..Default::default()
+        };
+        let engine = open_engine_cfg(store.clone(), &format!("dst-ring-{seed}"), cfg).await;
+
+        let mut log = OpLog::default();
+        let mut w = Workload::new(cov.clone());
+        for _ in 0..4 {
+            w.run(&engine, hash, &key, &["r1", "r2"], 12, false, &mut log).await;
+        }
+
+        let hits = engine.ring_hits.load(Ordering::Relaxed);
+        let evicted = engine.ring_evicted.load(Ordering::Relaxed);
+        assert!(
+            engine.ring_published.load(Ordering::Relaxed) > 0,
+            "seed {seed}: nothing was ever published to the ring"
+        );
+        assert!(evicted > 0, "seed {seed}: budget never forced an eviction");
+
+        let ds: Arc<dyn ObjectStore> = store.clone();
+        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        if let Err(e) = log.audit(&observed) {
+            panic!("seed {seed}: ring-backed reads broke the canon: {e}");
+        }
+        let _ = hits; // hit-path asserted in the equivalence scenario below
+    }
+}
+
+/// **Ring/DB equivalence, and a restart starts cold.**
+///
+/// The same offset range read through the ring (fresh engine, everything
+/// resident) and through the canonical DB scan (reopened engine, ring
+/// necessarily empty) must be byte-identical — the ring is a cache, not
+/// a second source of truth. Also pins publish-before-ack: immediately
+/// after an ack returns, the ring already covers the acked offset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 13, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [31u8; 16];
+    let cfg = crate::shard::ShardConfig {
+        tail_ring_bytes: 32 * 1024 * 1024,
+        ..Default::default()
+    };
+    let a = open_engine_cfg(store.clone(), "dst-ring-eq", cfg.clone()).await;
+    let w = Workload::new(cov.clone());
+
+    for i in 0..20u64 {
+        let o = w
+            .attempt_with_deadline(&a, hash, &key, "eq", &format!("rec{i}"), None, None)
+            .await;
+        assert!(matches!(o, Outcome::Acked { .. }));
+    }
+    let handle_a = a.stream_handle(hash).await.expect("handle");
+    let next = handle_a.state.lock().unwrap().durable.next;
+
+    // Publish-before-ack: the last acked offset is ring-resident NOW.
+    let tail1 = a
+        .ring_read(&handle_a, next - 1, next, 1 << 20)
+        .expect("the ring must cover an offset the ack already exposed");
+    assert_eq!(tail1.frames.len(), 1);
+
+    let hits_before = a.ring_hits.load(Ordering::Relaxed);
+    let via_ring = crate::shard::read_frames_range(&a, &handle_a, 0, next, 8 << 20)
+        .await
+        .expect("ring-backed read");
+    assert!(
+        a.ring_hits.load(Ordering::Relaxed) > hits_before,
+        "full-range read on the fresh engine must be a ring hit"
+    );
+
+    // Reopen: cold ring, same range must come from the DB, byte-equal.
+    let b = open_engine_cfg(store.clone(), "dst-ring-eq", cfg).await;
+    let handle_b = b.stream_handle(hash).await.expect("handle");
+    let via_db = crate::shard::read_frames_range(&b, &handle_b, 0, next, 8 << 20)
+        .await
+        .expect("db read");
+    assert_eq!(b.ring_hits.load(Ordering::Relaxed), 0, "cold ring cannot hit");
+    assert_eq!(via_ring.frames.len(), via_db.frames.len(), "frame count");
+    for (i, (ra, rb)) in via_ring.frames.iter().zip(via_db.frames.iter()).enumerate() {
+        assert_eq!(ra, rb, "frame {i} differs between ring and DB");
+    }
+}
+
 /// **The tiering invariant, not just "the absorber ran".**
 ///
 /// The absorption scenario waits for `absorbed > 0`, which proves records

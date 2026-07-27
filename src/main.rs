@@ -106,6 +106,14 @@ struct Args {
     #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
     wal_post_ack_gather_ms: u64,
 
+    /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
+    /// tail reads (long-poll/SSE wakes, catch-up near the head) serve
+    /// from an in-memory ring of recently-durable frames published at
+    /// ack time, instead of scanning SlateDB. Suggested: 33554432 (32
+    /// MiB) — several seconds of a maxed shard's traffic.
+    #[arg(long, env = "TAIL_RING_BYTES", default_value_t = 0)]
+    tail_ring_bytes: usize,
+
     #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 32 * 1024 * 1024)]
     l0_sst_size_bytes: usize,
 
@@ -561,6 +569,7 @@ async fn async_main() -> anyhow::Result<()> {
             args.wal_flush_gap_ms
         });
         let wal_post_ack_gather = Duration::from_millis(args.wal_post_ack_gather_ms);
+        let tail_ring_bytes = args.tail_ring_bytes;
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
             open: Box::new(move |prefix: String| {
@@ -623,6 +632,7 @@ async fn async_main() -> anyhow::Result<()> {
                             wal_group_commit,
                             wal_flush_gap,
                             wal_post_ack_gather,
+                            tail_ring_bytes,
                             ..Default::default()
                         },
                         absorb_tx,

@@ -764,6 +764,12 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
                     "barrier_acked": barrier_acked,
                     "gathers": eng.pump_gathers.load(std::sync::atomic::Ordering::Relaxed),
                 },
+                "tail_ring": {
+                    "published": eng.ring_published.load(std::sync::atomic::Ordering::Relaxed),
+                    "hits": eng.ring_hits.load(std::sync::atomic::Ordering::Relaxed),
+                    "misses": eng.ring_misses.load(std::sync::atomic::Ordering::Relaxed),
+                    "evicted": eng.ring_evicted.load(std::sync::atomic::Ordering::Relaxed),
+                },
             }),
         );
     }

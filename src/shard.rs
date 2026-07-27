@@ -122,6 +122,38 @@ pub struct StreamHandle {
     pub hash: [u8; 16],
     pub state: Mutex<StreamState>,
     pub notify: Notify,
+    /// Durable-tail ring: recently-durable frames, published by
+    /// dispatch_durable BEFORE acks go out, so a reader woken by an ack
+    /// (or by tail notify) finds the record here without a DB scan.
+    /// Empty unless ShardConfig.tail_ring_bytes > 0.
+    pub ring: Mutex<TailRing>,
+}
+
+/// One durably-committed group's frames for one stream: a contiguous
+/// offset range [first, next) in publish order.
+pub struct RingBatch {
+    pub first: u64,
+    pub next: u64,
+    pub frames: Vec<(u64, Bytes)>,
+    pub bytes: usize,
+}
+
+#[derive(Default)]
+pub struct TailRing {
+    /// Contiguous in coverage: back.next of batch k == front.first of
+    /// batch k+1 for consecutive batches (all publishes come through the
+    /// same committer in offset order; eviction only pops the front).
+    pub batches: std::collections::VecDeque<RingBatch>,
+    pub bytes: usize,
+}
+
+impl TailRing {
+    fn floor(&self) -> Option<u64> {
+        self.batches.front().map(|b| b.first)
+    }
+    fn ceil(&self) -> Option<u64> {
+        self.batches.back().map(|b| b.next)
+    }
 }
 
 /// state-protocol feed: key IDs derived at append time, delivered to the
@@ -232,6 +264,7 @@ pub struct AbsorbSignal {
     pub appended_bytes: u64,
 }
 
+#[derive(Clone)]
 pub struct ShardConfig {
     pub queue_reqs: usize,
     pub max_batch_reqs: usize,
@@ -264,6 +297,14 @@ pub struct ShardConfig {
     /// shard's first write: the pump only gathers after a flush that
     /// dispatched work.
     pub wal_post_ack_gather: std::time::Duration,
+    /// Durable-tail ring budget in bytes for THIS engine (0 = off). When
+    /// on, dispatch_durable publishes each group's freshly-durable frames
+    /// into a per-stream in-memory ring before releasing acks, and live
+    /// tail reads are served from that ring instead of a SlateDB scan.
+    /// The canonical read path (scan -> history) remains the source of
+    /// truth for anything the ring no longer covers: restart, eviction,
+    /// lagging consumers.
+    pub tail_ring_bytes: usize,
 }
 
 impl Default for ShardConfig {
@@ -278,6 +319,7 @@ impl Default for ShardConfig {
             wal_group_commit: false,
             wal_flush_gap: std::time::Duration::from_millis(25),
             wal_post_ack_gather: std::time::Duration::ZERO,
+            tail_ring_bytes: 0,
         }
     }
 }
@@ -317,6 +359,9 @@ struct InFlightGroup {
         crate::queue::QueueOut,
     )>,
     tails: Vec<(Arc<StreamHandle>, TailFields)>,
+    /// Frames to publish into the durable-tail ring at dispatch time,
+    /// BEFORE tail state moves and acks are sent.
+    ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)>,
     signals: Vec<AbsorbSignal>,
     touches: Vec<TouchFeed>,
 }
@@ -338,6 +383,18 @@ pub struct ShardEngine {
     pub pump_flushes: AtomicU64,
     pub pump_barrier_acked: AtomicU64,
     pub pump_gathers: AtomicU64,
+    /// Durable-tail ring accounting. `ring_budget` is the remaining global
+    /// byte allowance (config minus resident bytes; goes negative
+    /// transiently during a publish, restored by eviction). `ring_fifo`
+    /// mirrors publish order engine-wide: one entry per published batch,
+    /// so popping its front always evicts the globally oldest batch.
+    ring_enabled: bool,
+    ring_budget: std::sync::atomic::AtomicI64,
+    ring_fifo: Mutex<std::collections::VecDeque<Arc<StreamHandle>>>,
+    pub ring_published: AtomicU64,
+    pub ring_hits: AtomicU64,
+    pub ring_misses: AtomicU64,
+    pub ring_evicted: AtomicU64,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -401,6 +458,13 @@ impl ShardEngine {
             pump_flushes: AtomicU64::new(0),
             pump_barrier_acked: AtomicU64::new(0),
             pump_gathers: AtomicU64::new(0),
+            ring_enabled: cfg.tail_ring_bytes > 0,
+            ring_budget: std::sync::atomic::AtomicI64::new(cfg.tail_ring_bytes as i64),
+            ring_fifo: Mutex::new(std::collections::VecDeque::new()),
+            ring_published: AtomicU64::new(0),
+            ring_hits: AtomicU64::new(0),
+            ring_misses: AtomicU64::new(0),
+            ring_evicted: AtomicU64::new(0),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -783,6 +847,7 @@ impl ShardEngine {
                 queue: crate::queue::QueueState::default(),
             }),
             notify: Notify::new(),
+            ring: Mutex::new(TailRing::default()),
         });
         let mut map = self.streams.lock().unwrap();
         Ok(map.entry(hash).or_insert(handle).clone())
@@ -926,6 +991,10 @@ impl ShardEngine {
             base: TailFields,
             producers: HashMap<String, (u64, u64, u64)>,
             appended_bytes: u64,
+            /// Frames written by this group, retained for the durable-tail
+            /// ring (empty when the ring is off). Offsets are contiguous
+            /// per stream: every append path assigns at fields.next.
+            ring_recs: Vec<(u64, Bytes)>,
         }
 
         let mut wb = WriteBatch::new();
@@ -958,6 +1027,7 @@ impl ShardEngine {
                                 base: applied,
                                 producers: HashMap::new(),
                                 appended_bytes: 0,
+                                ring_recs: Vec::new(),
                             },
                         );
                     }
@@ -1160,6 +1230,10 @@ impl ShardEngine {
                         );
                         pt_sum += payload.len() as u64;
                         frame_sum += frame.len() as u64;
+                        let frame = Bytes::from(frame);
+                        if self.ring_enabled {
+                            local.ring_recs.push((offset, frame.clone()));
+                        }
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
@@ -1454,6 +1528,10 @@ impl ShardEngine {
                             },
                             payload.as_bytes(),
                         );
+                        let frame = Bytes::from(frame);
+                        if self.ring_enabled {
+                            local.ring_recs.push((offset, frame.clone()));
+                        }
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.next += 1;
                         local.fields.logical += payload.len() as u64;
@@ -1465,9 +1543,13 @@ impl ShardEngine {
         }
 
         let mut tails = Vec::with_capacity(locals.len());
+        let mut ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)> = Vec::new();
         let mut signals = Vec::new();
         let mut changed = false;
         for (hash, local) in &locals {
+            if !local.ring_recs.is_empty() {
+                ring_pub.push((local.handle.clone(), local.ring_recs.clone()));
+            }
             let f = &local.fields;
             let b = &local.base;
             if f.next != b.next
@@ -1546,6 +1628,7 @@ impl ShardEngine {
                     acks: pending,
                     queue_acks: queue_pending,
                     tails,
+                    ring_pub,
                     signals,
                     touches,
                 });
@@ -1562,6 +1645,109 @@ impl ShardEngine {
                 }
             }
         }
+    }
+
+    /// Publish one group's frames for one stream into its ring, then
+    /// evict globally-oldest batches until the engine-wide budget is
+    /// non-negative. FIFO mirrors publish order across streams, so its
+    /// front IS the globally oldest batch.
+    fn ring_publish(&self, handle: &Arc<StreamHandle>, recs: &[(u64, Bytes)]) {
+        let bytes: usize = recs.iter().map(|(_, f)| f.len()).sum();
+        let (first, next) = (recs[0].0, recs[recs.len() - 1].0 + 1);
+        {
+            let mut ring = handle.ring.lock().unwrap();
+            // A shard handoff replays through a fresh engine, so within
+            // one engine offsets only grow. If a gap somehow appears
+            // (defensive: absorber trim races ahead), reset rather than
+            // serve a hole.
+            if ring.ceil().is_some_and(|c| c != first) {
+                let dropped = ring.bytes;
+                ring.batches.clear();
+                ring.bytes = 0;
+                self.ring_budget
+                    .fetch_add(dropped as i64, Ordering::Relaxed);
+                let mut fifo = self.ring_fifo.lock().unwrap();
+                fifo.retain(|h| !Arc::ptr_eq(h, handle));
+            }
+            ring.batches.push_back(RingBatch {
+                first,
+                next,
+                frames: recs.to_vec(),
+                bytes,
+            });
+            ring.bytes += bytes;
+        }
+        self.ring_fifo.lock().unwrap().push_back(handle.clone());
+        self.ring_published.fetch_add(1, Ordering::Relaxed);
+        self.ring_budget.fetch_sub(bytes as i64, Ordering::Relaxed);
+        while self.ring_budget.load(Ordering::Relaxed) < 0 {
+            let Some(victim) = self.ring_fifo.lock().unwrap().pop_front() else {
+                break;
+            };
+            let mut ring = victim.ring.lock().unwrap();
+            if let Some(b) = ring.batches.pop_front() {
+                ring.bytes -= b.bytes;
+                self.ring_budget.fetch_add(b.bytes as i64, Ordering::Relaxed);
+                self.ring_evicted.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Serve [scan_from, scan_to) from the stream's ring if the ring
+    /// covers scan_from. Returns None when it does not (caller falls back
+    /// to the canonical scan). Mirrors the DB path's contract exactly:
+    /// stop at max_bytes, end = scan_to, last_offset = progress.
+    pub fn ring_read(
+        &self,
+        handle: &StreamHandle,
+        scan_from: u64,
+        scan_to: u64,
+        max_bytes: usize,
+    ) -> Option<FrameReadResult> {
+        if !self.ring_enabled || scan_from >= scan_to {
+            return None;
+        }
+        let ring = handle.ring.lock().unwrap();
+        let floor = ring.floor()?;
+        let ceil = ring.ceil()?;
+        // The ring can serve only what it contiguously holds. scan_to
+        // beyond the ceiling means the caller knows about data the ring
+        // has not been handed yet (possible mid-dispatch): DB path.
+        if scan_from < floor || scan_to > ceil {
+            self.ring_misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let mut out = FrameReadResult {
+            frames: Vec::new(),
+            last_offset: None,
+            end: scan_to,
+        };
+        let mut total = 0usize;
+        for b in ring.batches.iter() {
+            if b.next <= scan_from {
+                continue;
+            }
+            if b.first >= scan_to {
+                break;
+            }
+            for (off, f) in &b.frames {
+                if *off < scan_from {
+                    continue;
+                }
+                if *off >= scan_to {
+                    break;
+                }
+                total += f.len();
+                out.frames.push(f.clone());
+                out.last_offset = Some(*off);
+                if total >= max_bytes {
+                    self.ring_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(out);
+                }
+            }
+        }
+        self.ring_hits.fetch_add(1, Ordering::Relaxed);
+        Some(out)
     }
 
     /// Release everything the durable watermark now covers: record
@@ -1582,6 +1768,14 @@ impl ShardEngine {
         let mut dispatched = 0u32;
         for group in ready {
             dispatched += group.reqs;
+            // Publish to the durable-tail ring FIRST: the ring ceiling
+            // must already cover an offset by the time tail state (and
+            // then an ack) makes that offset visible, or a reader woken
+            // by the ack would miss the fast path — or worse, serve a
+            // truncated range.
+            for (handle, recs) in &group.ring_pub {
+                self.ring_publish(handle, recs);
+            }
             {
                 let wait_us =
                     group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
@@ -1698,6 +1892,12 @@ pub async fn read_frames_range(
     if scan_from >= scan_to {
         return Ok(out);
     }
+    // Durable-tail fast path: live readers chase offsets the ring still
+    // holds; the scan below is the canonical fallback (restart, eviction,
+    // lagging consumers, ring off).
+    if let Some(hit) = engine.ring_read(handle, scan_from, scan_to, max_bytes) {
+        return Ok(hit);
+    }
     let range = record_key(&hash, scan_from)..record_key(&hash, scan_to);
     let mut iter = engine
         .db
@@ -1742,6 +1942,14 @@ pub async fn read_frames(
     };
     if scan_from >= end {
         return Ok(out);
+    }
+    // Durable-tail fast path (see read_frames_range). Only for unfiltered
+    // reads: a key_filter changes which frames belong in the result, and
+    // the DB path applies it during the scan.
+    if key_filter.is_none() {
+        if let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes) {
+            return Ok(hit);
+        }
     }
     let range = record_key(&hash, scan_from)..record_key(&hash, end);
     let mut iter = engine
