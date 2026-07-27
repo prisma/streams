@@ -550,3 +550,62 @@ Two leads for upstream/slatedb follow-up, not blockers: compactions-log
 recovery cost scales with the number of `.compactions` files and is paid
 serially at open (450 files ≈ minutes at 100 ms+ per op), and our
 `COMPACTOR_POLL_MS=500` mints those files aggressively.
+
+---
+
+## 2026-07-27 (later): soak3 — the cross-region mystery, solved
+
+One more 30-minute run, with two additions: `served_from` broken down by
+op-class on every server, and a **differential DNS probe** running beside
+the fleet in all six regions — resolving `t3.storage.dev` every 30 s via
+the system path, the platform's DC-local forwarder, explicit 1.1.1.1,
+Vultr's recursor, Google, and NS1's authoritative directly (which sees
+the instance's own IP: ground truth). `t3.storage.dev` is geo-DNS on NS1
+with a 60 s TTL, so whoever answers the lookup decides which frontend
+pool takes the traffic.
+
+**The platform's DNS forwarder is the culprit.** In eu-central-1, at
+07:21:22–07:25:22 UTC, the system path and the forwarder returned
+`137.174.147.59` while the authority's answer for the instance was the
+OCI-Frankfurt pool — and `/v1/debug/store` shows the correlated windows
+exactly: **60 % of object-store ops served from ord1 in the
+07:21–07:22 window**, 10 % the next, 19 % at 07:25. Explicit Vultr and
+Google stayed correct throughout. ap-southeast-1 showed the same fault
+shape independently: at 07:09:00 its forwarder handed the **NRT pool**
+instead of the SIN pool, seeding the 7 % whole-mix nrt leakage that
+region has shown in every soak.
+
+Two amplifiers turn 30-second DNS blips into long serving windows:
+
+- **Busy connections don't re-resolve.** Under sustained load the pool
+  never goes idle, so a connection opened against a wrong-pool frontend
+  keeps carrying traffic long after DNS heals — SIN kept serving from
+  nrt through windows where every resolver column was clean.
+- **Reconnect churn during an incident re-rolls the dice constantly.**
+  The original wedge (2026-07-26) churned connections at exactly the
+  moment the forwarder was bad, which is how eu-central-1 got to 26 %
+  ord1 — and the added 300–500 ms per op is plausibly what pushed the
+  open replay past client patience in the first place.
+
+Steady-state context from the per-class breakdown: every region shows a
+separate ~1–1.5 % remote trickle that is almost purely
+`get:other`/`get:manifest` (us-east→ord/iad, eu→jnb, us-west→syd/hkg) —
+metadata reads served from central PoPs, present everywhere, latency-flat,
+and consistent with Tigris's metadata topology rather than a fault. It is
+the *whole-mix* remote windows that are DNS-shaped.
+
+Run quality: ~1.30 M acknowledged requests, 32 errors total (all in
+eu-central-1, where the gate absorbed one failed open — 7/6/1 — during
+the DNS window), zero storms, latency in line with all prior runs
+(eu-central p50 84.4 ms, nrt 84.2, us-east 464.5). The SIN generator's
+client-side JSONL was lost to a platform instance migration mid-run
+(two replicas alternated behind one preview URL); its server-side
+counters are complete.
+
+**Fixes this points at:** (1) bypass the forwarder in our wrappers —
+`/etc/resolv.conf` is proven writable in the microVM and Vultr's
+recursor (1–9 ms, zero missteers all run) plus Google as fallback ran
+clean in every region; (2) report the forwarder fault to the platform
+team with the timestamps above (per-node 172.16.x.x resolvers); (3) the
+probe fleet (`bench/probe/dnsprobe`, project `streams-dnsprobe`) stays
+up as the permanent tripwire.
