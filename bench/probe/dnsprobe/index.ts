@@ -163,6 +163,16 @@ async function tick() {
     cloudflare: resolveVia("1.1.1.1", TARGET),
     vultr: resolveVia("108.61.10.10", TARGET),
     google: resolveVia("8.8.8.8", TARGET),
+    // Quad9 runs three services on different IPs. Verified 2026-07-27
+    // against Google's ECS reflector and by forcing client subnets:
+    //   9.9.9.11  secure + DNSSEC + ECS   -> steers on client subnet
+    //   9.9.9.9   secure + DNSSEC, no ECS -> ignores client subnet
+    //   9.9.9.10  unsecured, no ECS       -> ignores client subnet
+    // Both are probed so the ECS/non-ECS difference is measured in-region
+    // rather than assumed, and so a Quad9 blocklist event on the filtered
+    // service would be visible as an answer divergence.
+    quad9_ecs: resolveVia("9.9.9.11", TARGET),
+    quad9_plain: resolveVia("9.9.9.9", TARGET),
   };
   // The platform's own DC-local forwarder (found in the microVM's
   // original resolv.conf: 172.16.11.178). Queried explicitly so the

@@ -668,3 +668,59 @@ shrank on our side (commit pending, DST-covered):
   vs upstream 60/300), bounding how many `.compactions` versions a shard
   open must page through. The open-side retry/fencing behavior itself is
   upstream: [slatedb#1970](https://github.com/slatedb/slatedb/issues/1970).
+
+### Quad9 evaluation (2026-07-27)
+
+Quad9 runs three services on separate addresses, and only one of them is
+usable for our geo-steering problem. Verified two independent ways rather
+than from documentation:
+
+**1. ECS reflector** (`o-o.myaddr.l.google.com` TXT reports the client
+subnet the authoritative actually received):
+
+| resolver | service | reflector saw |
+|---|---|---|
+| `9.9.9.9` / `149.112.112.9` | secure + DNSSEC | resolver IP only — **no ECS** |
+| `9.9.9.10` / `149.112.112.10` | unsecured (no filter, no DNSSEC) | resolver IP only — **no ECS** |
+| `9.9.9.11` / `149.112.112.11` | secure + DNSSEC + ECS | `edns0-client-subnet <our>/24` — **ECS forwarded** |
+| `8.8.8.8` (control) | — | ECS forwarded |
+| `1.1.1.1` (control) | — | no ECS |
+
+**2. Steering effect** — forcing client subnets through each resolver and
+watching NS1's answer for `t3.storage.dev`:
+
+| resolver | FRA subnet | ORD subnet | steers? |
+|---|---|---|---|
+| `9.9.9.11`, `149.112.112.11` | `137.174.147.59` | `137.174.138.43` | **yes** |
+| `9.9.9.9`, `9.9.9.10` | identical | identical | no |
+| `8.8.8.8` | `137.174.147.59` | `137.174.138.43` | yes |
+| `1.1.1.1` | identical | identical | no |
+
+So `9.9.9.9` and `9.9.9.10` fail for the same reason Cloudflare does:
+without ECS, NS1 steers on the *resolver's* egress location. Only
+`9.9.9.11` is a candidate.
+
+**Why we still prefer Vultr + Google.** All three probe columns are now
+measured in-region by the probe fleet, and `9.9.9.11` steers correctly
+everywhere — but:
+
+- **Latency**: Vultr's DC-local recursor answers in 1–2 ms from every
+  region; Quad9 ECS measured 1–27 ms, Google 4–33 ms. Not decisive on
+  its own (lookups happen at connection setup), but free.
+- **Correctness is structural, not probabilistic, with a DC-local
+  resolver.** Vultr egresses in the same datacentre, so NS1 geolocates it
+  correctly *without needing ECS at all*. `9.9.9.11` gets the right
+  answer by carrying our subnet across the internet to NS1 — one more
+  moving part, and one that silently degrades to the Cloudflare failure
+  mode if ECS is ever stripped, truncated, or disabled.
+- **Filtering dependency.** `9.9.9.9`/`9.9.9.11` apply Quad9's malware
+  blocklist. A false positive on a storage endpoint is an outage with no
+  local remedy. `9.9.9.10` avoids it but has no ECS, so it is unusable.
+  Vultr's plain recursor and `8.8.8.8` carry no such dependency.
+
+**Verdict:** keep `RESOLV_OVERRIDE="nameserver 108.61.10.10\nnameserver
+8.8.8.8"`. `9.9.9.11` is a valid third option and the correct choice if
+Vultr's recursor is ever unavailable — but `9.9.9.9` and `9.9.9.10` must
+never be used, since they reproduce the exact defect we just fixed. The
+probe fleet now measures both Quad9 variants continuously, so the
+non-ECS mis-steer rate is observed rather than assumed.
