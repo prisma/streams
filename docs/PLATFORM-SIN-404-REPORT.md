@@ -8,7 +8,7 @@
 
 Across two days of multi-region benchmark campaigns (~60 deploys total,
 six regions in parallel, identical Bun wrapper apps everywhere), we hit
-**seven distinct incidents where a Compute version in `ap-southeast-1`
+**eight distinct incidents where a Compute version in `ap-southeast-1`
 reported `running` while its preview domain served the platform's
 "Service not found" 404 page** — in several cases while the app process
 was *demonstrably executing* (its outbound workload visible on our
@@ -67,6 +67,7 @@ The URL was re-resolved from `versions list` immediately before the curl
 | 5 | 06:47 | dnsprobe project / `cps_alelhc1rhjomkjx819ohh5g4` / `cpv_z4j6bx3z8w1as3g9mehzczxk` (`cv-c6e43b080426`) | A | 404 ≥13 min → destroyed; fresh service (`cpv_cnlj6smh45kx4wnqh2tv5dux`, `cv-237a51dc8957`) booted in ~7 min (B), then fine |
 | 6 | ~07:36 | `proj_dr16bcgqxrutjbdiknw9eytf` / `cps_eksjhkslul5jkuoqdm18togo` | D | serving fine (ok=1,972 at 07:08), then a fresh replica with empty state alternated with the old one behind one domain; the process's accumulated results were lost at harvest |
 | 7 | 08:08 → ongoing | `proj_aetb1z2e6k5lhm4bg3v21zva` / `cps_el0kcfd98b7n4kfhvtsf5hu9` / `cpv_v025b86odpc2g3ojb5mkk5an` (`cv-15c922e43b5d`) | C | §2 — live |
+| 8 | 11:07 create → 11:5x observed | soak5 campaign, service `soak-gen-ap-southeast-1` (created FRESH at 11:07 per the destroy+recreate playbook), version `cpv_wt8980t7qowow4v8eg47qoii` (`cv-1d961a7e9f5b`) | C | gen workload flowing (server-side ops advancing); inbound preview 404 in 0.16 s; client-side benchmark metrics unrecoverable → SIN leg rerun on another fresh service |
 
 For contrast, the same wrapper app deployed the same way is answering
 HTTP 200 right now in `us-east-1` (`cv-…ewr`), `eu-central-1`
