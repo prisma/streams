@@ -9,7 +9,7 @@ Client metric semantics (bench/awsbench/src/main.rs):
                            (FULL producer->consumer roundtrip), 20s window
   ok / errs / throttled -- cumulative counters
 """
-import json, subprocess, os, sys, statistics
+import json, sys, subprocess, os, sys, statistics
 
 S = os.environ.get("SOAK_HOME") or os.path.dirname(os.path.abspath(__file__))
 REGIONS = ["us-east-1", "us-west-1", "eu-central-1", "eu-west-3",
@@ -43,6 +43,13 @@ def pct(vals, q):
 out = {"regions": {}}
 
 for r in REGIONS:
+    # A region can be deliberately absent from a campaign (e.g. SIN
+    # skipped per platform issue): no url file = not deployed = skip,
+    # never crash the whole harvest.
+    import os as _os
+    if not _os.path.exists(f"{S}/url-gen-{r}.txt"):
+        print(f"skipping {r}: no generator url (not deployed this run)", file=sys.stderr)
+        continue
     entry = {"pop": POP[r]}
 
     # ---- client-side (generator) ----
