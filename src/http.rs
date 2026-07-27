@@ -63,6 +63,9 @@ pub struct ShardOpener {
 
 pub struct AppState {
     pub registry: Registry,
+    /// Single-flight, cancellation-proof history DbReader service — one
+    /// per process/store (history.rs).
+    pub hist_readers: Arc<crate::history::HistReaders>,
     pub shard_prefixes: Vec<String>,
     /// Serving map, shared with the fleet loop and the OpenGate's spawned
     /// open tasks (which insert into it directly — see sharddir.rs).
@@ -442,7 +445,17 @@ async fn debug_store(
         .unwrap_or(60)
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
-    axum::Json(crate::store_timing::snapshot(window, swap)).into_response()
+    let mut snap = crate::store_timing::snapshot(window, swap);
+    if let Some(obj) = snap.as_object_mut() {
+        // History DbReader service: hits vs misses shows how much
+        // per-request manifest traffic the cache absorbs; stale_reopens
+        // is bounded by absorb cadence; coalesced proves single-flight.
+        obj.insert(
+            "history_readers".into(),
+            state.hist_readers.stats_json(),
+        );
+    }
+    axum::Json(snap).into_response()
 }
 
 
@@ -2226,7 +2239,7 @@ async fn read_records(
     max_bytes: usize,
 ) -> Result<ReadOut, String> {
     read_merged(
-        &state.data_store,
+        &state.hist_readers,
         key,
         epoch,
         handle,
@@ -2245,7 +2258,7 @@ async fn read_records(
 /// production does.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_merged(
-    data_store: &Arc<dyn object_store::ObjectStore>,
+    hist: &Arc<crate::history::HistReaders>,
     key: &StreamKey,
     epoch: &[u8; 16],
     handle: &Arc<crate::shard::StreamHandle>,
@@ -2273,7 +2286,7 @@ pub(crate) async fn read_merged(
     let mut history_completed = true;
     if scan_from < absorbed && budget > 0 {
         let hist = read_history(
-            data_store,
+            hist,
             &hash,
             key,
             scan_from,

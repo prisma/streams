@@ -16,6 +16,10 @@ fn skey() -> crate::crypto::StreamKey {
     crate::crypto::StreamKey([7u8; 32])
 }
 
+fn skey2() -> crate::crypto::StreamKey {
+    crate::crypto::StreamKey([8u8; 32])
+}
+
 // ---- the fault substrate --------------------------------------------
 
 /// The claim that makes replay possible: an operation's fate depends on
@@ -252,7 +256,7 @@ async fn acked_records_survive_store_faults() {
         assert!(log.total_acked() > 0, "seed {seed}: nothing acked");
 
         let ds: Arc<dyn ObjectStore> = store.clone();
-        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: {e}\ncoverage={:?}", cov.snapshot());
         }
@@ -310,7 +314,7 @@ async fn store_errors_surface_as_latency_not_as_failed_appends() {
         log.rejected.len()
     );
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
     log.audit(&observed).expect("audit");
 }
 
@@ -415,7 +419,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         let ds: Arc<dyn ObjectStore> = store.clone();
         let handle = b.stream_handle(hash).await.expect("handle");
         let before_next = handle.state.lock().unwrap().durable.next;
-        let res = crate::http::read_merged(&ds, &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024)
+        let res = crate::http::read_merged(&fresh_hist(&ds), &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024)
             .await
             .expect("read back");
         let copies = res
@@ -453,6 +457,110 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         ]) {
             panic!("seed {seed}: {e}");
         }
+    }
+}
+
+
+/// **I6, the undeniable composite** (review #3's closing ask): the append
+/// COMMITS durably but its response never reaches the client (deadline
+/// expires under WAL latency — genuine ambiguity, not a rejected write),
+/// THEN ownership moves, THEN the client retries the identical bytes
+/// against the new owner. The retry must dedupe at the original offset —
+/// which the client never learned, so the test recovers it from the
+/// stream itself, exactly as a reconciling client would.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn ambiguous_commit_survives_handoff_and_dedupes() {
+    let inner = mem();
+    let slow_wal = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (2_000, 4_000),
+    };
+    let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 15)).with_class(ObjClass::Wal, slow_wal);
+    let store = FaultStore::new(inner.clone(), 77, profile);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [37u8; 16];
+    let prefix = "dst-ambig-handoff";
+    let body = "{\"op\":\"ambig\"}".to_string();
+    let pid = "ambig-producer".to_string();
+
+    let a = open_engine(store.clone(), prefix).await;
+    let w = Workload::new(cov.clone());
+
+    // Tail context so "original offset" is not the trivial 0.
+    for i in 0..3u64 {
+        let o = w
+            .attempt_with_deadline(&a, hash, &key, "x", &format!("pre{i}"), None, None)
+            .await;
+        assert!(matches!(o, Outcome::Acked { .. }));
+    }
+
+    // The ambiguous commit: client deadline expires mid-WAL-flush; the
+    // server finishes on its own. The client records Unknown and NEVER
+    // sees an offset.
+    let first = w
+        .attempt_with_deadline(
+            &a, hash, &key, "x", &body,
+            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            Some(std::time::Duration::from_millis(300)),
+        )
+        .await;
+    assert_eq!(first, Outcome::Unknown, "the ambiguity must be real");
+    tokio::time::sleep(std::time::Duration::from_secs(20)).await; // server completes
+
+    // Handoff: B fences A.
+    let b = open_engine(store.clone(), prefix).await;
+    cov.hit(mech::OLD_OWNER_FENCED);
+
+    // The retry: identical bytes, identical producer identity, new owner.
+    let retry = w
+        .attempt_with_deadline(
+            &b, hash, &key, "x", &body,
+            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            None,
+        )
+        .await;
+    let (retry_off, dup) = match retry {
+        Outcome::Acked { last_offset, duplicate } => (last_offset, duplicate),
+        other => panic!("retry must ack, got {other:?}"),
+    };
+    assert!(
+        dup,
+        "the durably-committed-but-unacked append must be recognised as a \
+         duplicate by the NEW owner"
+    );
+
+    // Recover the original offset from the stream (the client never got
+    // it) and check the dedupe pointed there — and that exactly one copy
+    // exists across both owners' tenures.
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let handle = b.stream_handle(hash).await.expect("handle");
+    let res = crate::http::read_merged(
+        &fresh_hist(&ds), &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024,
+    )
+    .await
+    .expect("read back");
+    let copies: Vec<u64> = res
+        .recs
+        .iter()
+        .filter(|r| r.payload.as_ref() == body.as_bytes())
+        .map(|r| r.off)
+        .collect();
+    assert_eq!(copies.len(), 1, "exactly one copy of the ambiguous op");
+    assert_eq!(
+        copies[0], retry_off,
+        "the duplicate ack must carry the offset the commit actually landed at"
+    );
+
+    if let Err(e) = cov.require(&[
+        mech::CLIENT_DEADLINE_EXPIRED,
+        mech::PRODUCER_DUPLICATE,
+        mech::OLD_OWNER_FENCED,
+        mech::STORE_LATENCY,
+    ]) {
+        panic!("{e}");
     }
 }
 
@@ -525,7 +633,7 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let handle = engine.stream_handle(hash).await.expect("handle");
-    let res = crate::http::read_merged(&ds, &key, &hash, &handle, &engine, 0, None, 1 << 20)
+    let res = crate::http::read_merged(&fresh_hist(&ds), &key, &hash, &handle, &engine, 0, None, 1 << 20)
         .await
         .expect("read back");
     let copies = res
@@ -592,7 +700,7 @@ async fn a_fenced_owner_acknowledges_nothing() {
         // I1 across the move: what A acked is still readable through B.
         w.run(&b, hash, &key, &["x", "y"], 8, false, &mut log).await;
         let ds: Arc<dyn ObjectStore> = store.clone();
-        let observed = drain_observed(&ds, &b, hash, &key, &cov).await;
+        let observed = drain_observed(&fresh_hist(&ds), &b, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: after handoff (pre-handoff acks={before}): {e}");
         }
@@ -660,7 +768,7 @@ async fn a_handoff_with_an_append_in_flight_resolves_safely() {
 
     // Whatever happened, it must not be "acknowledged but unreadable".
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let observed = drain_observed(&ds, &b, hash, &key, &cov).await;
+    let observed = drain_observed(&fresh_hist(&ds), &b, hash, &key, &cov).await;
     for (rk, attempts) in &inflight_log.acked {
         log.acked.entry(rk.clone()).or_default().extend(attempts);
     }
@@ -765,7 +873,7 @@ async fn acked_records_survive_absorption_into_history() {
     );
 
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("absorbed={absorbed}: {e}\ncoverage={:?}", cov.snapshot());
     }
@@ -960,7 +1068,7 @@ async fn gather_pump_preserves_invariants_under_faults() {
             + engine.pump_barrier_acked.load(Ordering::Relaxed);
 
         let ds: Arc<dyn ObjectStore> = store.clone();
-        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: {e}");
         }
@@ -1036,7 +1144,7 @@ async fn tail_ring_serves_live_reads_and_survives_eviction() {
         assert!(evicted > 0, "seed {seed}: budget never forced an eviction");
 
         let ds: Arc<dyn ObjectStore> = store.clone();
-        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: ring-backed reads broke the canon: {e}");
         }
@@ -1173,7 +1281,7 @@ async fn history_and_tail_partition_the_stream_after_trim() {
 
     // 2. History serves [0, absorbed).
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let hist = crate::history::read_history(&ds, &hash, &key, 0, absorbed, None, 8 << 20)
+    let hist = crate::history::read_history(&fresh_hist(&ds), &hash, &key, 0, absorbed, None, 8 << 20)
         .await
         .expect("history read");
     assert!(
@@ -1196,7 +1304,7 @@ async fn history_and_tail_partition_the_stream_after_trim() {
 
     // 4. The merged read is exactly the canonical stream: every acked
     //    record, once, in order — across the boundary.
-    let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("merged read is not the canonical stream (trimmed={trimmed}, absorbed={absorbed}, next={next}): {e}");
     }
@@ -1767,28 +1875,25 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
 
 
 // The history reader cache and its counters are process-global, so the
-// tests below serialize on one lock (they pass solo but race each other
-// under the parallel test harness), and poll-pinning uses an RAII guard
-// so a panicking test cannot leave the hour-long poll behind for others.
-fn hrc_lock() -> &'static tokio::sync::Mutex<()> {
-    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    L.get_or_init(|| tokio::sync::Mutex::new(()))
+// The reader service is per-instance now (one per store), so these
+// scenarios need no cross-test serialization and no global poll pin:
+// each constructs its own service with the poll it wants. `hist_hour`
+// pins the manifest poll to an hour, making staleness deterministic —
+// the boundary probe must do the work, polling cannot rescue the test.
+fn hist_hour(store: &Arc<dyn ObjectStore>, cap: usize) -> Arc<crate::history::HistReaders> {
+    crate::history::HistReaders::new(
+        store.clone(),
+        cap,
+        std::time::Duration::from_secs(120),
+        3_600_000,
+    )
 }
 
-struct PollPin;
-impl PollPin {
-    fn hour() -> Self {
-        crate::history::set_reader_poll_ms_for_tests(3_600_000);
-        PollPin
-    }
-}
-impl Drop for PollPin {
-    fn drop(&mut self) {
-        crate::history::set_reader_poll_ms_for_tests(5_000);
-    }
+fn m(v: &std::sync::atomic::AtomicU64) -> u64 {
+    v.load(Ordering::Relaxed)
 }
 
-/// Protocol-cost budget: after the first read warms the cache, repeated
+/// Protocol-cost budget: after the first read warms the service, repeated
 /// history reads must not open new DbReaders — the per-request manifest
 /// GETs and checkpoint writes are exactly the small-metadata operations
 /// Tigris sometimes serves from a remote region (the "metadata trickle",
@@ -1796,7 +1901,6 @@ impl Drop for PollPin {
 /// transcontinental round trip on the user-visible read path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn history_reads_reuse_a_cached_reader() {
-    let _serial = hrc_lock().lock().await;
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 41, FaultPlan::CLEAN);
     let cov = store.coverage();
@@ -1821,41 +1925,35 @@ async fn history_reads_reuse_a_cached_reader() {
     assert!(absorbed > 0, "absorber never advanced — nothing to read from history");
 
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let (h0, m0, _p0, s0, _e0) = crate::history::reader_cache_counters();
+    // ONE service held across all drains — the reuse under test.
+    let hr = fresh_hist(&ds);
 
-    // First drain: opens (or reuses a prior test's) reader.
-    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
     log.audit(&obs).expect("first drain audit");
     let manifest_gets_after_warm = store.count(StoreOp::Get, ObjClass::Manifest);
 
-    // Nineteen more drains: all served by the cached reader.
     for _ in 0..19 {
-        let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
         log.audit(&obs).expect("cached drain audit");
     }
 
-    let (h1, m1, _p1, s1, _e1) = crate::history::reader_cache_counters();
     assert!(
-        m1 - m0 <= 1,
+        m(&hr.metrics.misses) <= 1,
         "at most one cache miss across 20 drains (got {})",
-        m1 - m0
+        m(&hr.metrics.misses)
     );
     assert!(
-        h1 - h0 >= 19,
+        m(&hr.metrics.hits) >= 19,
         "the cached reader must serve the repeat drains (hits {})",
-        h1 - h0
+        m(&hr.metrics.hits)
     );
     // The absorber may advance between drains; each advance is allowed one
-    // stale reopen — but reopens must be bounded by absorb cadence, never
-    // by request count.
+    // stale reopen — bounded by absorb cadence, never by request count.
     assert!(
-        s1 - s0 <= 3,
+        m(&hr.metrics.stale_reopens) <= 3,
         "stale reopens must track absorb cadence, not request rate (got {})",
-        s1 - s0
+        m(&hr.metrics.stale_reopens)
     );
-    // Store-level corroboration: 19 cached drains must not multiply the
-    // manifest traffic the warm-up produced. Uncached, every drain paid
-    // the open cost again.
     let manifest_gets_final = store.count(StoreOp::Get, ObjClass::Manifest);
     let cached_drain_cost = manifest_gets_final - manifest_gets_after_warm;
     assert!(
@@ -1868,13 +1966,9 @@ async fn history_reads_reuse_a_cached_reader() {
 
 /// The correctness edge the cache must not soften: the absorbed boundary
 /// advances, and a read arrives BEFORE the cached reader's own poll has
-/// caught up. The poll interval is pinned absurdly high so the staleness
-/// is deterministic, not a race: the cache must detect non-coverage via
-/// its one-row probe, reopen fresh, and return every acknowledged record.
+/// caught up (poll pinned to an hour: only the probe can save it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_cached_reader_is_detected_and_replaced() {
-    let _serial = hrc_lock().lock().await;
-    let _poll = PollPin::hour();
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 43, FaultPlan::CLEAN);
     let cov = store.coverage();
@@ -1884,6 +1978,7 @@ async fn a_stale_cached_reader_is_detected_and_replaced() {
         open_engine_with_absorber(store.clone(), "dst-hrc-stale", hash, &key).await;
 
     let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = hist_hour(&ds, 8);
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
 
@@ -1903,37 +1998,35 @@ async fn a_stale_cached_reader_is_detected_and_replaced() {
         }
     };
 
-    // Batch 1 → absorb → drain (cache now holds a reader whose view ends
-    // at the first boundary).
     w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
     let a1 = wait_absorbed_past(0).await;
-    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
     log.audit(&obs).expect("drain 1");
 
-    // Batch 2 → absorb further. The cached reader CANNOT know (its poll
-    // is an hour away); only the probe-and-reopen path can serve this.
     w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
     let a2 = wait_absorbed_past(a1).await;
     assert!(a2 > a1);
 
-    let (_, _, _, s0, _) = crate::history::reader_cache_counters();
-    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let s0 = m(&hr.metrics.stale_reopens);
+    let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&obs) {
         panic!("stale-reader drain lost records: {e}");
     }
-    let (_, _, _, s1, _) = crate::history::reader_cache_counters();
+    let s1 = m(&hr.metrics.stale_reopens);
     assert!(
         s1 > s0,
         "the stale reader was never detected — the scenario is vacuous \
          (poll should have been pinned too high for it to self-heal)"
     );
 
-    // And the replacement is itself cached: one more drain, no reopen.
-    let (_, _, _, s2a, _) = crate::history::reader_cache_counters();
-    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    let s2a = m(&hr.metrics.stale_reopens);
+    let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
     log.audit(&obs).expect("drain 3");
-    let (_, _, _, s2b, _) = crate::history::reader_cache_counters();
-    assert_eq!(s2b, s2a, "the fresh reader must be cached, not reopened again");
+    assert_eq!(
+        m(&hr.metrics.stale_reopens),
+        s2a,
+        "the fresh reader must be cached, not reopened again"
+    );
 
     absorber.abort();
 }
@@ -1943,8 +2036,6 @@ async fn a_stale_cached_reader_is_detected_and_replaced() {
 /// probe. Same staleness setup, filtered read path directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn filtered_history_reads_survive_a_stale_reader() {
-    let _serial = hrc_lock().lock().await;
-    let _poll = PollPin::hour();
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 47, FaultPlan::CLEAN);
     let cov = store.coverage();
@@ -1954,6 +2045,7 @@ async fn filtered_history_reads_survive_a_stale_reader() {
         open_engine_with_absorber(store.clone(), "dst-hrc-filt", hash, &key).await;
 
     let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = hist_hour(&ds, 8);
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
@@ -1968,12 +2060,10 @@ async fn filtered_history_reads_survive_a_stale_reader() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     assert!(a1 > 0);
-    // Warm the cache at boundary a1.
-    let _ = crate::history::read_history(&ds, &hash, &key, 0, a1, Some("fa"), 1 << 20)
+    let _ = crate::history::read_history(&hr, &hash, &key, 0, a1, Some("fa"), 1 << 20)
         .await
         .expect("warm filtered read");
 
-    // Advance the boundary past the cached view.
     w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
     let mut a2 = a1;
     for _ in 0..400 {
@@ -1987,14 +2077,13 @@ async fn filtered_history_reads_survive_a_stale_reader() {
     }
     assert!(a2 > a1, "second absorb never landed");
 
-    let res = crate::history::read_history(&ds, &hash, &key, 0, a2, Some("fa"), 1 << 20)
+    let res = crate::history::read_history(&hr, &hash, &key, 0, a2, Some("fa"), 1 << 20)
         .await
         .expect("filtered read at new boundary");
     assert!(
         res.completed,
         "filtered read must be coverage-proven complete after the fallback"
     );
-    // Every "fa" record acked into [0, a2) must be present.
     let acked_fa = log.acked.get("fa").map(|v| v.len()).unwrap_or(0);
     let in_history = res.records.len();
     assert!(
@@ -2005,44 +2094,459 @@ async fn filtered_history_reads_survive_a_stale_reader() {
     absorber.abort();
 }
 
-/// The cache is bounded: streams beyond the cap evict the oldest reader.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn history_reader_cache_evicts_beyond_its_cap() {
-    let _serial = hrc_lock().lock().await;
-    let inner = mem();
-    let store = FaultStore::uniform(inner.clone(), 53, FaultPlan::CLEAN);
-    let key = skey();
-    let ds: Arc<dyn ObjectStore> = store.clone();
-    let (_, _, _, _, e0) = crate::history::reader_cache_counters();
-
-    // Twelve distinct minimal history DBs. A DbReader cannot open a
-    // nonexistent prefix (production never asks it to: reads only happen
-    // once the absorber has created the db), so seed each with one row.
-    for i in 0..12u8 {
-        let mut hash = [30u8; 16];
+/// Seed `n` minimal history DBs (a DbReader cannot open a nonexistent
+/// prefix; production never asks it to). Written WITH the key's block
+/// transformer, exactly as the absorber writes them — a reader for `key`
+/// must be able to read what it finds.
+async fn seed_history_dbs(
+    ds: &Arc<dyn ObjectStore>,
+    key: &crate::crypto::StreamKey,
+    base: u8,
+    n: u8,
+) -> Vec<[u8; 16]> {
+    let mut hashes = Vec::new();
+    for i in 0..n {
+        let mut hash = [base; 16];
         hash[15] = i;
         let path = crate::history::history_db_path(&hash);
         let db = slatedb::Db::builder(path.as_str(), ds.clone())
+            .with_block_transformer(Arc::new(crate::history::AesBlockTransformer::new(key)))
             .build()
             .await
             .expect("seed history db");
         db.put(b"seed", b"1").await.expect("seed row");
         db.close().await.expect("close seed db");
-        let _ = crate::history::reader_cache()
-            .acquire(&ds, &hash, &key, 0)
-            .await
-            .expect("acquire");
+        hashes.push(hash);
     }
-    let (_, _, _, _, e1) = crate::history::reader_cache_counters();
+    hashes
+}
+
+/// The cache is bounded, and eviction has a provable lifecycle: closes
+/// are counted, run to completion, and live_readers returns to cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_reader_cache_evicts_beyond_its_cap() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 53, FaultPlan::CLEAN);
+    let key = skey();
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = fresh_hist(&ds);
+
+    for hash in seed_history_dbs(&ds, &key, 30, 12).await {
+        let _ = hr.acquire(&hash, &key, 0).await.expect("acquire");
+    }
     assert!(
-        e1 - e0 >= 3,
+        m(&hr.metrics.evictions) >= 3,
         "12 streams past a cap of 8 must evict (evictions {})",
-        e1 - e0
+        m(&hr.metrics.evictions)
+    );
+    assert!(hr.len_for_tests() <= 9, "cache size must stay near its cap");
+
+    // Eviction lifecycle: every eviction started a close, and every close
+    // completes (on the SlateDB runtime), so evicted checkpoints do not
+    // linger behind a dropped-but-never-closed reader.
+    assert_eq!(
+        m(&hr.metrics.closes_started),
+        m(&hr.metrics.evictions),
+        "each eviction must start exactly one close"
+    );
+    for _ in 0..200 {
+        if m(&hr.metrics.closes_completed) + m(&hr.metrics.close_failures)
+            >= m(&hr.metrics.closes_started)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        m(&hr.metrics.closes_completed),
+        m(&hr.metrics.closes_started),
+        "every eviction close must complete (failures: {})",
+        m(&hr.metrics.close_failures)
+    );
+}
+
+/// **P0 regression guard: the cold-miss stampede.** 64 concurrent readers
+/// of the same never-opened history must produce exactly ONE reader open;
+/// everyone else coalesces onto it. Before single-flight, this was 64
+/// opens — the metadata storm the cache exists to prevent, recreated in
+/// proportion to request concurrency.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sixty_four_cold_readers_cause_exactly_one_open() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 59, FaultPlan::CLEAN);
+    let key = skey();
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = fresh_hist(&ds);
+    let hash = seed_history_dbs(&ds, &key, 31, 1).await[0];
+
+    let mut tasks = Vec::new();
+    for _ in 0..64 {
+        let hr = hr.clone();
+        let key = key.clone();
+        tasks.push(tokio::spawn(async move {
+            hr.acquire(&hash, &key, 0).await.map(|(_, c)| c)
+        }));
+    }
+    for t in tasks {
+        let covered = t.await.expect("join").expect("acquire");
+        assert!(covered, "upto=0 is trivially covered");
+    }
+    assert_eq!(m(&hr.metrics.opens_started), 1, "exactly one open started");
+    assert_eq!(m(&hr.metrics.opens_completed), 1, "exactly one open completed");
+    assert_eq!(m(&hr.metrics.misses), 1, "exactly one cold miss");
+    assert!(
+        m(&hr.metrics.coalesced) >= 63,
+        "the other 63 must coalesce (got {})",
+        m(&hr.metrics.coalesced)
+    );
+}
+
+/// **P0 regression guard: the stale-boundary stampede.** The absorber
+/// advances once; 64 subscribers wake and read to the new boundary
+/// simultaneously. One probe, one stale reopen, one open — not 64 of
+/// each. This is the exact "64 long-poll consumers wake after an absorb"
+/// shape from the review.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sixty_four_stale_readers_cause_one_probe_and_one_reopen() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 61, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [32u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-hrc-stampede", hash, &key).await;
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = hist_hour(&ds, 8);
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+
+    // Warm at boundary a1.
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    let mut a1 = 0;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            a1 = h.state.lock().unwrap().durable.absorbed;
+            if a1 > 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(a1 > 0);
+    let _ = crate::history::read_history(&hr, &hash, &key, 0, a1, None, 1 << 20)
+        .await
+        .expect("warm");
+
+    // Advance the boundary past the cached (hour-poll) view.
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    let mut a2 = a1;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            a2 = h.state.lock().unwrap().durable.absorbed;
+            if a2 > a1 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(a2 > a1);
+
+    let probes0 = m(&hr.metrics.probes);
+    let stale0 = m(&hr.metrics.stale_reopens);
+    let opens0 = m(&hr.metrics.opens_started);
+    let mut tasks = Vec::new();
+    for _ in 0..64 {
+        let hr = hr.clone();
+        let key = key.clone();
+        tasks.push(tokio::spawn(async move {
+            crate::history::read_history(&hr, &hash, &key, 0, a2, None, 1 << 20).await
+        }));
+    }
+    for t in tasks {
+        let res = t.await.expect("join").expect("read");
+        assert!(res.completed, "every stampede read must cover the new boundary");
+    }
+    assert_eq!(
+        m(&hr.metrics.probes) - probes0,
+        1,
+        "one probe for one boundary advance, regardless of concurrency"
+    );
+    assert_eq!(
+        m(&hr.metrics.stale_reopens) - stale0,
+        1,
+        "one stale reopen for one boundary advance"
+    );
+    assert_eq!(
+        m(&hr.metrics.opens_started) - opens0,
+        1,
+        "one fresh open for one boundary advance"
+    );
+    absorber.abort();
+}
+
+/// **P0 regression guard: cancellation cannot detach the open.** Slow the
+/// manifest reads so the open takes ~seconds; give every caller a short
+/// deadline so all of them give up; the cache-owned worker must still
+/// finish, insert the reader, and the next (patient) read must be a hit
+/// with no second open. This is the read-only cousin of the shard
+/// detached-reopen storm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn all_callers_cancel_but_the_open_still_lands_in_the_cache() {
+    let inner = mem();
+    // Manifest GETs are slow (1.2-1.8 s); everything else clean.
+    let profile = FaultProfile::uniform(FaultPlan::CLEAN).with_class(
+        ObjClass::Manifest,
+        FaultPlan {
+            error_pct: 0,
+            lost_response_pct: 0,
+            latency_pct: 100,
+            latency_ms: (1_200, 1_800),
+        },
+    );
+    let store = FaultStore::new(inner.clone(), 67, profile);
+    let key = skey();
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = fresh_hist(&ds);
+    let hash = seed_history_dbs(&ds, &key, 33, 1).await[0];
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let hr = hr.clone();
+        let key = key.clone();
+        tasks.push(tokio::spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                hr.acquire(&hash, &key, 0),
+            )
+            .await
+        }));
+    }
+    let mut cancelled = 0;
+    for t in tasks {
+        if t.await.expect("join").is_err() {
+            cancelled += 1;
+        }
+    }
+    assert!(
+        cancelled >= 15,
+        "the deadlines must actually cancel the callers (only {cancelled} timed out)"
+    );
+
+    // The worker outlives its callers: wait for the open to finish.
+    for _ in 0..600 {
+        if m(&hr.metrics.opens_completed) >= 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        m(&hr.metrics.opens_started),
+        1,
+        "sixteen cancelled callers must not have started sixteen opens"
+    );
+    assert_eq!(
+        m(&hr.metrics.opens_completed),
+        1,
+        "the open must complete despite zero surviving callers"
+    );
+
+    // And it landed: the next read is a pure hit.
+    let opens_before = m(&hr.metrics.opens_started);
+    let (_r, covered) = hr.acquire(&hash, &key, 0).await.expect("post-cancel read");
+    assert!(covered);
+    assert_eq!(
+        m(&hr.metrics.opens_started),
+        opens_before,
+        "the post-cancellation read must be served by the cached reader"
+    );
+    assert!(m(&hr.metrics.hits) >= 1);
+}
+
+/// **P1 regression guard: a probe ERROR is an error, not staleness.**
+///
+/// A finding worth pinning first: a transient STORE outage cannot surface
+/// here at all — SlateDB retries reads internally, so storage flakiness
+/// makes a probe slow, never `Err` (the same absorption measured on the
+/// append path). The reachable probe-error class is DATA errors — a block
+/// that fails its transform (wrong key, corruption). So that is what this
+/// scenario injects: a reader whose key cannot transform the history db's
+/// blocks probes and gets `Err`, and the service must (a) hand the caller
+/// the error, (b) keep the reader cached, (c) count probe_errors, and
+/// (d) start NO fresh open — one bad row must not amplify into eviction,
+/// close, and fresh manifest/checkpoint traffic. Before this fix, `Err`
+/// and `Ok(None)` shared the staleness branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_probe_error_does_not_evict_the_reader() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 71, FaultPlan::CLEAN);
+    let key = skey();     // the key the history db is actually written with
+    let wrong = skey2();  // a reader under this key gets transform errors
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hr = hist_hour(&ds, 8);
+    let hash = seed_history_dbs(&ds, &key, 34, 1).await[0];
+    // The probe targets hist_record_key(upto-1); it must EXIST, or the
+    // get short-circuits to Ok(None) via index/bloom without ever reading
+    // a transformed data block — and Ok(None) is (correctly) staleness,
+    // not an error. Write the probe row under the RIGHT key.
+    {
+        let path = crate::history::history_db_path(&hash);
+        let db = slatedb::Db::builder(path.as_str(), ds.clone())
+            .with_block_transformer(Arc::new(crate::history::AesBlockTransformer::new(&key)))
+            .build()
+            .await
+            .expect("open for probe row");
+        db.put(crate::history::hist_record_key(0), b"row0")
+            .await
+            .expect("probe row");
+        db.close().await.expect("close");
+    }
+
+    // Cache a reader under the WRONG key: the cold open itself succeeds
+    // (manifest metadata is not block-transformed), and its fresh-probe
+    // returns covered=false via the conservative Err path.
+    let (_r, covered) = hr.acquire(&hash, &wrong, 1).await.expect("cold acquire");
+    assert!(!covered, "a wrong-key fresh probe must be conservative");
+    let opens0 = m(&hr.metrics.opens_started);
+    let stale0 = m(&hr.metrics.stale_reopens);
+    let live0 = hr.len_for_tests();
+
+    // Now the cached-probe path: seen_upto=0 forces a probe, the probe
+    // errors (transform), and the classification under test runs.
+    let res = hr.acquire(&hash, &wrong, 1).await;
+    assert!(res.is_err(), "the probe error must surface to the caller");
+    assert!(
+        m(&hr.metrics.probe_errors) >= 1,
+        "the error must be counted as a probe error"
+    );
+    assert_eq!(
+        m(&hr.metrics.stale_reopens),
+        stale0,
+        "an errored probe must NOT be classified as staleness"
+    );
+    assert_eq!(
+        m(&hr.metrics.opens_started),
+        opens0,
+        "an errored probe must NOT trigger a fresh open"
+    );
+    assert_eq!(
+        hr.len_for_tests(),
+        live0,
+        "the reader must stay cached through the error"
+    );
+
+    // The RIGHT key reads the same stream fine through its own reader —
+    // the error was confined to the one caller with the bad key.
+    let (r, covered) = hr.acquire(&hash, &key, 1).await.expect("right-key acquire");
+    assert!(covered, "the right key's probe reads the row and proves coverage");
+    let v = r
+        .get(crate::history::hist_record_key(0))
+        .await
+        .expect("get");
+    assert!(v.is_some(), "probe row readable under the right key");
+}
+
+/// **P1: the working-set budget is measured, not assumed.** With a hot
+/// set that FITS (cap 8, 5 streams), steady-state reads cost zero opens.
+/// With a rotating hot set that does NOT fit (cap 4, 5 streams, LRU +
+/// round-robin = pathological), opens are bounded by reads — the
+/// documented worst case — and the service survives it. Both bounds are
+/// asserted, so capacity planning has real numbers to point at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hot_set_versus_capacity_has_measured_bounds() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 73, FaultPlan::CLEAN);
+    let key = skey();
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hashes = seed_history_dbs(&ds, &key, 35, 5).await;
+
+    // Fits: 3 round-robin passes over 5 streams, cap 8.
+    let fits = crate::history::HistReaders::new(
+        ds.clone(),
+        8,
+        std::time::Duration::from_secs(120),
+        5_000,
+    );
+    for _ in 0..3 {
+        for h in &hashes {
+            let _ = fits.acquire(h, &key, 0).await.expect("fit acquire");
+        }
+    }
+    assert_eq!(
+        m(&fits.metrics.opens_started),
+        5,
+        "a fitting hot set opens each reader exactly once"
+    );
+    assert_eq!(m(&fits.metrics.evictions), 0);
+
+    // Does not fit: cap 4, same 5 streams round-robin — LRU's worst case.
+    let thrash = crate::history::HistReaders::new(
+        ds.clone(),
+        4,
+        std::time::Duration::from_secs(120),
+        5_000,
+    );
+    let mut reads = 0u64;
+    for _ in 0..3 {
+        for h in &hashes {
+            let _ = thrash.acquire(h, &key, 0).await.expect("thrash acquire");
+            reads += 1;
+        }
+    }
+    let opens = m(&thrash.metrics.opens_started);
+    assert!(
+        opens <= reads,
+        "even the pathological set is bounded by one open per read"
     );
     assert!(
-        crate::history::reader_cache().len_for_tests().await <= 9,
-        "cache size must stay near its cap"
+        opens > 5,
+        "cap 4 with 5 rotating streams MUST thrash (opens {opens}) — if this \
+         starts passing with opens=5, the eviction policy changed; update \
+         the capacity guidance in RUNBOOK.md"
     );
+    assert!(thrash.len_for_tests() <= 5);
+}
+
+/// **Two simulated nodes are actually independent.** Same stream hash,
+/// same key, two distinct stores and services: each opens its own reader
+/// against its own store and counts its own metrics. The old process-
+/// global cache made this impossible (and could serve node B's read
+/// through node A's reader — a wrong-store read).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_nodes_have_independent_reader_caches() {
+    let key = skey();
+    let mut readers = Vec::new();
+    for seed in [81u64, 82] {
+        let inner = mem();
+        let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::CLEAN);
+        let ds: Arc<dyn ObjectStore> = store.clone();
+        // Same hash in BOTH stores, but different seeded content marker.
+        let mut hash = [36u8; 16];
+        hash[0] = 36;
+        let path = crate::history::history_db_path(&hash);
+        let db = slatedb::Db::builder(path.as_str(), ds.clone())
+            .with_block_transformer(Arc::new(crate::history::AesBlockTransformer::new(&key)))
+            .build()
+            .await
+            .expect("seed");
+        db.put(b"seed", format!("node-{seed}").as_bytes())
+            .await
+            .expect("seed row");
+        db.close().await.expect("close");
+        let hr = fresh_hist(&ds);
+        let (r, _) = hr.acquire(&hash, &key, 0).await.expect("acquire");
+        readers.push((hr, r, seed));
+    }
+    for (hr, r, seed) in &readers {
+        assert_eq!(m(&hr.metrics.opens_started), 1, "node {seed}: its own open");
+        assert_eq!(m(&hr.metrics.misses), 1);
+        let v = r.get(bytes::Bytes::from_static(b"seed")).await.expect("get");
+        let v = v.expect("seed present");
+        assert_eq!(
+            v.as_ref(),
+            format!("node-{seed}").as_bytes(),
+            "each node's reader must read ITS OWN store"
+        );
+    }
 }
 
 /// Reopen cost after compactor churn is a protocol budget: the

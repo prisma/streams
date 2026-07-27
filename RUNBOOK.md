@@ -570,6 +570,8 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | `WAL_POST_ACK_GATHER_MS` | 0 (off) | Pump releases each flush's acks itself (explicit barrier on the durable watch), then waits this long before the next freeze — closed-loop herds join one WAL instead of straddling two. Local A/B (25 ms store): c2 append p50 1.97x -> 1.01x of c1; c32 throughput +70 %, WAL PUT/s down. Soaked at 6. Gathers only when the completed flush left work in flight (drift), so a solo producer pays ~1 ms (herd-settle), not the window. |
 | `TAIL_RING_BYTES` | 0 (off) | Per-engine durable-tail ring: dispatch publishes freshly-durable frames to memory BEFORE acks; woken live reads serve from it instead of scanning SlateDB. Canonical scan remains the fallback (restart/eviction/lag/filters). 32 MiB suggested. `/v1/debug/timings` -> `tail_ring{published,hits,misses,evicted}`. |
 | `TAIL_MAX_BYTES` | 1 MiB | Budget for reads WOKEN by a long-poll wait (a fresh commit group, not a backlog). Bulk reads keep 8 MiB. |
+| `HIST_READER_CAP` | 8 | Cached history DbReaders per process. **Size it ≥ the number of streams concurrently reading history**: LRU with a rotating working set of cap+1 reopens on ~every read (the DST thrash test pins this behavior). Each cached reader costs one manifest poll (5 s) + one checkpoint. |
+| `HIST_READER_IDLE_SECS` | 120 | Idle eviction for cached history readers. |
 
 
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |

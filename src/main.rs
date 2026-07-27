@@ -661,8 +661,17 @@ async fn async_main() -> anyhow::Result<()> {
         std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
     > = std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
     let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener.open);
+    let hist_readers = crate::history::HistReaders::new(
+        data_store.clone(),
+        std::env::var("HIST_READER_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+        Duration::from_secs(
+            std::env::var("HIST_READER_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+        ),
+        5_000,
+    );
     let state = Arc::new(AppState {
         registry,
+        hist_readers,
         shard_prefixes: topology.shards.clone(),
         shards: shards_map,
         fleet_store: fleet_store_opt.clone(),

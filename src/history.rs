@@ -731,44 +731,75 @@ pub struct HistoryReadResult {
 // Readers are read-only: no fencing concerns. Entries are LRU-capped and
 // idle-evicted like the absorber's writer handles.
 
-const HIST_READER_CAP: usize = 8;
-const HIST_READER_IDLE: Duration = Duration::from_secs(120);
-
-static HR_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HR_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HR_PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HR_STALE_REOPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HR_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Reader manifest-poll interval, ms. A static (not a constant) so DST can
-/// pin it high and make staleness deterministic instead of a race.
-static HR_POLL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5_000);
-
-pub fn reader_cache_stats_json() -> serde_json::Value {
-    use std::sync::atomic::Ordering::Relaxed;
-    serde_json::json!({
-        "hits": HR_HITS.load(Relaxed),
-        "misses": HR_MISSES.load(Relaxed),
-        "probes": HR_PROBES.load(Relaxed),
-        "stale_reopens": HR_STALE_REOPENS.load(Relaxed),
-        "evictions": HR_EVICTIONS.load(Relaxed),
-    })
+/// Per-instance history-reader service. One per object store (production:
+/// one, owned by AppState; DST: one per simulated node/store), which is
+/// what keys readers correctly — the old process-global cache keyed only
+/// (stream, key-disc), so two stores with the same stream hash in one
+/// process would have shared a reader, and simulated nodes could not have
+/// independent open/eviction behavior.
+///
+/// Concurrency contract (the 2026-07-27 review's P0): **all probe and
+/// open work is per-key single-flight and cache-owned.** A caller never
+/// performs the probe/open in its own future; it subscribes to the slot's
+/// watch and a spawned worker does the work, inserts the result into the
+/// map, and only then notifies. Consequences, each load-bearing:
+///
+///   - 64 concurrent cold readers = 1 open, 63 coalesced waiters
+///     (was: 64 opens — the metadata storm the cache exists to prevent,
+///     recreated at request concurrency);
+///   - caller cancellation cannot detach the open: the worker is not the
+///     caller's future, so the reader still lands in the cache with zero
+///     surviving callers (the read-only cousin of the shard
+///     detached-reopen storm, closed the same way as OpenGate);
+///   - a transient probe ERROR is an error, not staleness: the healthy
+///     reader stays cached and the caller sees the error — one flaky GET
+///     must not amplify into eviction + checkpoint cleanup + fresh
+///     manifest/checkpoint traffic (was: `Ok(Some)` vs everything-else);
+///   - replaced and evicted readers are closed explicitly on the SlateDB
+///     runtime, with closes counted, so checkpoint cleanup neither races
+///     the request runtime nor silently leaks.
+pub struct HistReaders {
+    store: Arc<dyn ObjectStore>,
+    map: std::sync::Mutex<HashMap<([u8; 16], u64), Slot>>,
+    cap: usize,
+    idle: Duration,
+    /// Reader manifest-poll interval, ms. Per-instance so DST can pin it
+    /// to an hour and make staleness deterministic without a process-wide
+    /// static (which forced test serialization).
+    poll_ms: u64,
+    pub metrics: HistReaderMetrics,
 }
 
-#[cfg(test)]
-pub fn reader_cache_counters() -> (u64, u64, u64, u64, u64) {
-    use std::sync::atomic::Ordering::Relaxed;
-    (
-        HR_HITS.load(Relaxed),
-        HR_MISSES.load(Relaxed),
-        HR_PROBES.load(Relaxed),
-        HR_STALE_REOPENS.load(Relaxed),
-        HR_EVICTIONS.load(Relaxed),
-    )
+#[derive(Default)]
+pub struct HistReaderMetrics {
+    pub hits: AtomicU64,
+    pub misses: AtomicU64,
+    pub probes: AtomicU64,
+    pub probe_errors: AtomicU64,
+    pub stale_reopens: AtomicU64,
+    pub opens_started: AtomicU64,
+    pub opens_completed: AtomicU64,
+    pub opens_failed: AtomicU64,
+    pub coalesced: AtomicU64,
+    pub evictions: AtomicU64,
+    pub closes_started: AtomicU64,
+    pub closes_completed: AtomicU64,
+    pub close_failures: AtomicU64,
 }
 
-#[cfg(test)]
-pub fn set_reader_poll_ms_for_tests(ms: u64) {
-    HR_POLL_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+use std::sync::atomic::AtomicU64;
+
+type SlotResult = Result<(Arc<DbReader>, bool), String>;
+
+enum Slot {
+    Ready(CachedReader),
+    /// A cache-owned worker is probing/refreshing/opening toward
+    /// `target_upto`. Callers subscribe; the worker publishes exactly
+    /// once, AFTER updating the map.
+    Pending {
+        rx: tokio::sync::watch::Receiver<Option<SlotResult>>,
+        target_upto: u64,
+    },
 }
 
 struct CachedReader {
@@ -776,17 +807,6 @@ struct CachedReader {
     last_used: Instant,
     /// Offsets `[0, seen_upto)` are proven visible through this reader.
     seen_upto: u64,
-}
-
-pub struct HistReaderCache {
-    map: tokio::sync::Mutex<HashMap<([u8; 16], u64), CachedReader>>,
-}
-
-pub fn reader_cache() -> &'static HistReaderCache {
-    static C: std::sync::OnceLock<HistReaderCache> = std::sync::OnceLock::new();
-    C.get_or_init(|| HistReaderCache {
-        map: tokio::sync::Mutex::new(HashMap::new()),
-    })
 }
 
 /// Non-cryptographic key discriminator: two requests for the same stream
@@ -801,22 +821,335 @@ fn key_disc(key: &StreamKey) -> u64 {
     h
 }
 
+impl HistReaders {
+    pub fn new(store: Arc<dyn ObjectStore>, cap: usize, idle: Duration, poll_ms: u64) -> Arc<Self> {
+        Arc::new(HistReaders {
+            store,
+            map: std::sync::Mutex::new(HashMap::new()),
+            cap: cap.max(1),
+            idle,
+            poll_ms,
+            metrics: HistReaderMetrics::default(),
+        })
+    }
+
+    /// Production defaults; cap/idle env-tunable in main.
+    pub fn with_defaults(store: Arc<dyn ObjectStore>) -> Arc<Self> {
+        HistReaders::new(store, 8, Duration::from_secs(120), 5_000)
+    }
+
+    pub fn stats_json(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        let m = &self.metrics;
+        serde_json::json!({
+            "hits": m.hits.load(Relaxed),
+            "misses": m.misses.load(Relaxed),
+            "probes": m.probes.load(Relaxed),
+            "probe_errors": m.probe_errors.load(Relaxed),
+            "stale_reopens": m.stale_reopens.load(Relaxed),
+            "opens_started": m.opens_started.load(Relaxed),
+            "opens_completed": m.opens_completed.load(Relaxed),
+            "opens_failed": m.opens_failed.load(Relaxed),
+            "coalesced": m.coalesced.load(Relaxed),
+            "evictions": m.evictions.load(Relaxed),
+            "closes_started": m.closes_started.load(Relaxed),
+            "closes_completed": m.closes_completed.load(Relaxed),
+            "close_failures": m.close_failures.load(Relaxed),
+            "live_readers": self.map.lock().unwrap().len(),
+        })
+    }
+
+    /// A reader proven to cover `[0, upto)`. Returns `(reader, covered)`;
+    /// `covered = false` means even a freshly opened reader cannot see
+    /// `upto - 1` yet, and the caller must report an honest partial read
+    /// rather than skipping ahead.
+    pub async fn acquire(
+        self: &Arc<Self>,
+        hash: &[u8; 16],
+        key: &StreamKey,
+        upto: u64,
+    ) -> anyhow::Result<(Arc<DbReader>, bool)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ck = (*hash, key_disc(key));
+        // Bounded re-checks: each pass either returns, subscribes to a
+        // worker, or starts one. Two workers back-to-back (a refresh
+        // toward a lower upto finishing just as we need a higher one) is
+        // the realistic worst case; five is unreachable without a bug.
+        for _ in 0..5 {
+            let mut wait_rx = {
+                let mut map = self.map.lock().unwrap();
+                match map.get_mut(&ck) {
+                    Some(Slot::Ready(e)) if e.seen_upto >= upto => {
+                        e.last_used = Instant::now();
+                        self.metrics.hits.fetch_add(1, Relaxed);
+                        return Ok((e.reader.clone(), true));
+                    }
+                    Some(Slot::Ready(e)) => {
+                        // Cached but not proven for this boundary: hand
+                        // the probe (and possible reopen) to a worker.
+                        let probe = e.reader.clone();
+                        let (tx, rx) = tokio::sync::watch::channel(None);
+                        map.insert(
+                            ck,
+                            Slot::Pending {
+                                rx: rx.clone(),
+                                target_upto: upto,
+                            },
+                        );
+                        self.spawn_worker(ck, *hash, key.clone(), upto, Some(probe), tx);
+                        rx
+                    }
+                    Some(Slot::Pending { rx, target_upto }) => {
+                        // Someone is already working. If their target
+                        // covers ours, their result is ours; if not, we
+                        // still wait (upto only moves at absorb cadence —
+                        // re-check on the next pass).
+                        let _ = target_upto;
+                        self.metrics.coalesced.fetch_add(1, Relaxed);
+                        rx.clone()
+                    }
+                    None => {
+                        self.metrics.misses.fetch_add(1, Relaxed);
+                        let (tx, rx) = tokio::sync::watch::channel(None);
+                        map.insert(
+                            ck,
+                            Slot::Pending {
+                                rx: rx.clone(),
+                                target_upto: upto,
+                            },
+                        );
+                        self.spawn_worker(ck, *hash, key.clone(), upto, None, tx);
+                        rx
+                    }
+                }
+            };
+            // Await the worker's single publication. If the worker (or
+            // its channel) vanished, loop and re-evaluate.
+            if wait_rx.borrow().is_none() && wait_rx.changed().await.is_err() {
+                continue;
+            }
+            let published = wait_rx.borrow().clone();
+            match published {
+                Some(Ok((reader, covered_target))) => {
+                    // Covering [0, target) covers [0, upto) whenever
+                    // target >= upto; the worker recorded seen_upto, so
+                    // when in doubt one more pass re-checks the map.
+                    let proven = {
+                        let map = self.map.lock().unwrap();
+                        matches!(map.get(&ck), Some(Slot::Ready(e)) if e.seen_upto >= upto)
+                    };
+                    if proven {
+                        return Ok((reader, true));
+                    }
+                    if covered_target {
+                        continue; // their target < ours: go probe for ours
+                    }
+                    return Ok((reader, false));
+                }
+                Some(Err(e)) => return Err(anyhow::anyhow!(e)),
+                None => continue,
+            }
+        }
+        anyhow::bail!("history reader acquire: no stable slot after 5 passes")
+    }
+
+    /// The cache-owned worker: probes the candidate (if any), reopens on
+    /// proven staleness, publishes into the map, THEN notifies. Runs as
+    /// its own task so caller cancellation cannot detach it.
+    fn spawn_worker(
+        self: &Arc<Self>,
+        ck: ([u8; 16], u64),
+        hash: [u8; 16],
+        key: StreamKey,
+        upto: u64,
+        probe_candidate: Option<Arc<DbReader>>,
+        tx: tokio::sync::watch::Sender<Option<SlotResult>>,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let probe_key = hist_record_key(upto.saturating_sub(1));
+
+            if let Some(reader) = probe_candidate {
+                svc.metrics.probes.fetch_add(1, Relaxed);
+                match reader.get(probe_key.clone()).await {
+                    Ok(Some(_)) => {
+                        let mut map = svc.map.lock().unwrap();
+                        map.insert(
+                            ck,
+                            Slot::Ready(CachedReader {
+                                reader: reader.clone(),
+                                last_used: Instant::now(),
+                                seen_upto: upto,
+                            }),
+                        );
+                        drop(map);
+                        svc.metrics.hits.fetch_add(1, Relaxed);
+                        let _ = tx.send(Some(Ok((reader, true))));
+                        return;
+                    }
+                    Ok(None) => {
+                        // Genuinely stale: its manifest view predates the
+                        // absorbed boundary. Replace it.
+                        svc.metrics.stale_reopens.fetch_add(1, Relaxed);
+                        svc.close_reader(reader);
+                    }
+                    Err(e) => {
+                        // Transient storage trouble is NOT staleness: keep
+                        // the healthy reader cached (unproven for this
+                        // boundary — a later probe will retry) and hand
+                        // the caller the error.
+                        svc.metrics.probe_errors.fetch_add(1, Relaxed);
+                        let mut map = svc.map.lock().unwrap();
+                        map.insert(
+                            ck,
+                            Slot::Ready(CachedReader {
+                                reader,
+                                last_used: Instant::now(),
+                                seen_upto: 0,
+                            }),
+                        );
+                        drop(map);
+                        let _ = tx.send(Some(Err(format!("history probe: {e}"))));
+                        return;
+                    }
+                }
+            }
+
+            // Fresh open (cold miss, or stale replacement).
+            svc.metrics.opens_started.fetch_add(1, Relaxed);
+            let opened = open_history_reader(&svc.store, &hash, &key, svc.poll_ms).await;
+            match opened {
+                Ok(reader) => {
+                    svc.metrics.opens_completed.fetch_add(1, Relaxed);
+                    // A fresh reader must see the boundary (the absorber
+                    // publishes history before advancing it). A probe
+                    // ERROR here is conservative non-coverage: the read
+                    // reports completed=false and the caller re-polls.
+                    let covered =
+                        upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
+                    let mut evicted: Vec<Arc<DbReader>> = Vec::new();
+                    {
+                        let mut map = svc.map.lock().unwrap();
+                        map.insert(
+                            ck,
+                            Slot::Ready(CachedReader {
+                                reader: reader.clone(),
+                                last_used: Instant::now(),
+                                seen_upto: if covered { upto } else { 0 },
+                            }),
+                        );
+                        // LRU + idle eviction. Pending slots are never
+                        // victims: evicting a slot someone is awaiting
+                        // would strand its waiters.
+                        let now = Instant::now();
+                        let mut victims: Vec<([u8; 16], u64)> = map
+                            .iter()
+                            .filter(|(k2, s)| {
+                                **k2 != ck
+                                    && matches!(s, Slot::Ready(e) if now - e.last_used > svc.idle)
+                            })
+                            .map(|(k2, _)| *k2)
+                            .collect();
+                        loop {
+                            let ready_left = map
+                                .iter()
+                                .filter(|(k2, s)| {
+                                    matches!(s, Slot::Ready(_)) && !victims.contains(k2)
+                                })
+                                .count();
+                            if ready_left <= svc.cap {
+                                break;
+                            }
+                            match map
+                                .iter()
+                                .filter(|(k2, s)| {
+                                    **k2 != ck
+                                        && matches!(s, Slot::Ready(_))
+                                        && !victims.contains(k2)
+                                })
+                                .min_by_key(|(_, s)| match s {
+                                    Slot::Ready(e) => e.last_used,
+                                    _ => now,
+                                })
+                                .map(|(k2, _)| *k2)
+                            {
+                                Some(oldest) => victims.push(oldest),
+                                None => break,
+                            }
+                        }
+                        for v in victims {
+                            if let Some(Slot::Ready(e)) = map.remove(&v) {
+                                svc.metrics.evictions.fetch_add(1, Relaxed);
+                                evicted.push(e.reader);
+                            }
+                        }
+                    }
+                    for r in evicted {
+                        svc.close_reader(r);
+                    }
+                    let _ = tx.send(Some(Ok((reader, covered))));
+                }
+                Err(e) => {
+                    svc.metrics.opens_failed.fetch_add(1, Relaxed);
+                    let mut map = svc.map.lock().unwrap();
+                    // Leave no Pending tombstone: the next caller retries.
+                    if matches!(map.get(&ck), Some(Slot::Pending { .. })) {
+                        map.remove(&ck);
+                    }
+                    drop(map);
+                    let _ = tx.send(Some(Err(format!("history reader open: {e}"))));
+                }
+            }
+        });
+    }
+
+    /// Close on the SlateDB runtime (checkpoint cleanup does store I/O and
+    /// must not take quanta on the request runtime), counted so eviction
+    /// lifecycle is provable.
+    fn close_reader(self: &Arc<Self>, reader: Arc<DbReader>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics.closes_started.fetch_add(1, Relaxed);
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let r = crate::on_slatedb_rt(async move {
+                match Arc::try_unwrap(reader) {
+                    Ok(r) => r.close().await.map_err(|e| e.to_string()),
+                    // Another holder still reads through it; its Drop
+                    // handles cleanup when they finish.
+                    Err(_still_shared) => Ok(()),
+                }
+            })
+            .await;
+            match r {
+                Ok(()) => svc.metrics.closes_completed.fetch_add(1, Relaxed),
+                Err(_) => svc.metrics.close_failures.fetch_add(1, Relaxed),
+            };
+        });
+    }
+
+    #[cfg(test)]
+    pub fn len_for_tests(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
+}
+
 async fn open_history_reader(
     data_store: &Arc<dyn ObjectStore>,
     hash: &[u8; 16],
     key: &StreamKey,
+    poll_ms: u64,
 ) -> anyhow::Result<Arc<DbReader>> {
     let path = history_db_path(hash);
     let store = data_store.clone();
     let k = key.clone();
-    let poll = HR_POLL_MS.load(std::sync::atomic::Ordering::Relaxed);
     let reader = crate::on_slatedb_rt(async move {
         DbReader::builder(path.as_str(), store)
             .with_options(slatedb::config::DbReaderOptions {
-                manifest_poll_interval: Duration::from_millis(poll),
+                manifest_poll_interval: Duration::from_millis(poll_ms),
                 // must exceed 2x poll; also bounds how long an evicted
                 // reader's checkpoint can pin history objects
-                checkpoint_lifetime: Duration::from_millis((poll * 4).max(60_000)),
+                checkpoint_lifetime: Duration::from_millis((poll_ms * 4).max(60_000)),
                 // The absorber flushes (memtable -> L0) before the
                 // absorbed boundary advances, so everything a reader is
                 // allowed to need is already in L0 — skipping WAL replay
@@ -832,119 +1165,8 @@ async fn open_history_reader(
     Ok(Arc::new(reader))
 }
 
-impl HistReaderCache {
-    /// A reader proven to cover `[0, upto)`, opening or refreshing as
-    /// needed. Returns `(reader, covered)`; `covered = false` means even a
-    /// freshly opened reader cannot see `upto - 1` yet, and the caller
-    /// must report an honest partial read rather than skipping ahead.
-    pub async fn acquire(
-        &self,
-        data_store: &Arc<dyn ObjectStore>,
-        hash: &[u8; 16],
-        key: &StreamKey,
-        upto: u64,
-    ) -> anyhow::Result<(Arc<DbReader>, bool)> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let ck = (*hash, key_disc(key));
-        let probe_key = hist_record_key(upto.saturating_sub(1));
-
-        // Fast path under the lock: proven-covered cache hit.
-        {
-            let mut map = self.map.lock().await;
-            if let Some(e) = map.get_mut(&ck) {
-                e.last_used = Instant::now();
-                if e.seen_upto >= upto {
-                    HR_HITS.fetch_add(1, Relaxed);
-                    return Ok((e.reader.clone(), true));
-                }
-            }
-        }
-
-        // Cached but not proven: probe one row through it (outside the
-        // lock — a probe is a real store read on a cold block cache).
-        let cached = {
-            let map = self.map.lock().await;
-            map.get(&ck).map(|e| e.reader.clone())
-        };
-        if let Some(reader) = cached {
-            HR_PROBES.fetch_add(1, Relaxed);
-            if let Ok(Some(_)) = reader.get(probe_key.clone()).await {
-                let mut map = self.map.lock().await;
-                if let Some(e) = map.get_mut(&ck) {
-                    e.seen_upto = e.seen_upto.max(upto);
-                    e.last_used = Instant::now();
-                }
-                HR_HITS.fetch_add(1, Relaxed);
-                return Ok((reader, true));
-            }
-            // Stale (or errored): this reader's view predates the
-            // boundary. Replace it with a fresh open.
-            HR_STALE_REOPENS.fetch_add(1, Relaxed);
-            let old = {
-                let mut map = self.map.lock().await;
-                map.remove(&ck)
-            };
-            if let Some(e) = old {
-                tokio::spawn(async move {
-                    let _ = e.reader.close().await;
-                });
-            }
-        } else {
-            HR_MISSES.fetch_add(1, Relaxed);
-        }
-
-        // Fresh open; must see the boundary (see module comment).
-        let reader = open_history_reader(data_store, hash, key).await?;
-        let covered = upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
-        {
-            let mut map = self.map.lock().await;
-            map.insert(
-                ck,
-                CachedReader {
-                    reader: reader.clone(),
-                    last_used: Instant::now(),
-                    seen_upto: if covered { upto } else { 0 },
-                },
-            );
-            // LRU + idle eviction, spawned closes.
-            let now = Instant::now();
-            let mut victims: Vec<([u8; 16], u64)> = map
-                .iter()
-                .filter(|(k2, e)| **k2 != ck && now - e.last_used > HIST_READER_IDLE)
-                .map(|(k2, _)| *k2)
-                .collect();
-            while map.len() - victims.len() > HIST_READER_CAP {
-                if let Some(oldest) = map
-                    .iter()
-                    .filter(|(k2, _)| **k2 != ck && !victims.contains(k2))
-                    .min_by_key(|(_, e)| e.last_used)
-                    .map(|(k2, _)| *k2)
-                {
-                    victims.push(oldest);
-                } else {
-                    break;
-                }
-            }
-            for v in victims {
-                if let Some(e) = map.remove(&v) {
-                    HR_EVICTIONS.fetch_add(1, Relaxed);
-                    tokio::spawn(async move {
-                        let _ = e.reader.close().await;
-                    });
-                }
-            }
-        }
-        Ok((reader, covered))
-    }
-
-    #[cfg(test)]
-    pub async fn len_for_tests(&self) -> usize {
-        self.map.lock().await.len()
-    }
-}
-
 pub async fn read_history(
-    data_store: &Arc<dyn ObjectStore>,
+    readers: &Arc<HistReaders>,
     hash: &[u8; 16],
     key: &StreamKey,
     from: u64,
@@ -952,13 +1174,11 @@ pub async fn read_history(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> anyhow::Result<HistoryReadResult> {
-    // Cached, coverage-proven reader (see HistReaderCache). `covered =
+    // Coverage-proven reader via the single-flight service. `covered =
     // false` means even a fresh reader cannot see `upto - 1` yet; the read
     // still runs, but reports completed = false so the caller re-polls
     // instead of skipping the missing tail (which would be a silent gap).
-    let (reader, covered) = reader_cache()
-        .acquire(data_store, hash, key, upto)
-        .await?;
+    let (reader, covered) = readers.acquire(hash, key, upto).await?;
     let mut out = HistoryReadResult {
         records: Vec::new(),
         last_offset: None,
@@ -1001,7 +1221,7 @@ pub async fn read_history(
             }
         }
     }
-    // The reader is cached and stays open; the cache owns its lifecycle.
+    // The reader is cached and stays open; the service owns its lifecycle.
     Ok(out)
 }
 

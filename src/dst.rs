@@ -1112,8 +1112,20 @@ impl Workload {
 ///
 /// Reimplementing that boundary here would mean the oracle tests a copy of
 /// the read path rather than the read path, and a copy is free to drift.
+/// One history-reader service per store, defaults suitable for
+/// correctness scenarios. Budget scenarios construct their own (pinned
+/// poll, chosen cap) and hold it across reads.
+pub fn fresh_hist(store: &Arc<dyn ObjectStore>) -> Arc<crate::history::HistReaders> {
+    crate::history::HistReaders::new(
+        store.clone(),
+        8,
+        std::time::Duration::from_secs(120),
+        5_000,
+    )
+}
+
 pub async fn drain_observed(
-    data_store: &Arc<dyn ObjectStore>,
+    hist: &Arc<crate::history::HistReaders>,
     engine: &Arc<crate::shard::ShardEngine>,
     hash: [u8; 16],
     key: &crate::crypto::StreamKey,
@@ -1131,7 +1143,7 @@ pub async fn drain_observed(
     // time it cannot.
     for _ in 0..1024 {
         let res = match crate::http::read_merged(
-            data_store,
+            hist,
             key,
             &hash,
             &handle,

@@ -573,6 +573,34 @@ byte-equality across a reopen; publish-before-ack). The ring is a cache
 whose only fallback is the canonical scan — those scenarios are what
 license calling it that.
 
+**M0.3 — the reader cache became a service, and its concurrency became
+provable.** Review #3's P0 was correct and production-relevant:
+`acquire()` was check→probe→open→insert with no per-key single-flight, so
+cold and stale stampedes scaled reader opens with request concurrency —
+the metadata storm the cache exists to prevent, recreated at the moment
+64 subscribers wake after an absorb. The cache is now `HistReaders`: one
+instance per store (AppState-owned in production; per simulated node in
+DST — the process-global OnceLock both blocked multi-node modeling and
+could have served a wrong-store read), per-key single-flight slots whose
+probe/open runs in a cache-owned task (caller cancellation cannot detach
+it — the read-only cousin of the shard reopen storm, closed the same way
+as OpenGate), three-way probe classification (`Ok(None)` is staleness;
+`Err` is an error that must NOT evict the healthy reader), explicit
+closes on the SlateDB runtime with a counted lifecycle, and configurable
+capacity. Scenarios: 64-cold→1 open (≥63 coalesced); 64-stale→1 probe,
+1 reopen, 1 open; all-callers-cancel→the open still lands and the next
+read hits; probe-error retention; measured hot-set bounds (fits: N opens
+total; thrash at cap<set: bounded by reads, asserted to actually thrash
+so the eviction policy can't drift silently); two independent nodes over
+two stores (same hash) each reading their OWN store; eviction closes run
+to completion. A finding pinned along the way: a transient STORE outage
+cannot surface as a probe `Err` at all — SlateDB retries reads
+internally — so the reachable probe-error class is data/transform
+errors, and that is what the scenario injects. Also added the I6
+composite review #3 asked for: durable commit, response lost to a client
+deadline, handoff, identical-bytes retry → duplicate at the recovered
+original offset, exactly one copy across both owners' tenures.
+
 **M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
 task ownership, CPU execution and process metrics; a seeded current-thread
 runtime everywhere *including* the absorber path; named per-actor random
