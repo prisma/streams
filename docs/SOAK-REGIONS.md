@@ -609,3 +609,42 @@ clean in every region; (2) report the forwarder fault to the platform
 team with the timestamps above (per-node 172.16.x.x resolvers); (3) the
 probe fleet (`bench/probe/dnsprobe`, project `streams-dnsprobe`) stays
 up as the permanent tripwire.
+
+---
+
+## 2026-07-27 (soak4): the fix, proven — resolv.conf hardcode A/B
+
+Identical run to soak3, one variable changed: every wrapper wrote
+`nameserver 108.61.10.10` + `nameserver 8.8.8.8` to `/etc/resolv.conf`
+before exec (`RESOLV_OVERRIDE`, commit 84e2a5d), bypassing the platform
+forwarder. All three predictions, stated before the run, held:
+
+1. **The whole-mix remote windows vanished.** Zero snapshot windows in
+   any region with >10 % remote share (soak3 had eleven, peaking at
+   fra→ord1 60 % and sin→nrt 100 %). ap-southeast-1 — which leaked
+   7–13 % to nrt in *every* previous run — served **100.0 % sin-local**
+   (123,260 ops, not one from nrt). eu-central-1: 98.7 % fra, **zero
+   ord1** (2,069 in soak3).
+2. **The metadata trickle remained.** ~1–1.5 % per region, still purely
+   `get:other`/`get:manifest` to jnb/ord/syd/hkg — confirming it as a
+   separate, benign property of Tigris's metadata topology.
+3. **The probes kept catching the forwarder misbehaving — with no
+   effect on the fleet.** eu-central-1's probe logged **16 mis-steer
+   ticks during this very run** (system+platform columns disjoint from
+   authority, last at 08:32:22Z), twice soak3's count. The fault was
+   live; the fleet, resolving via Vultr/Google, no longer cared. That is
+   the experimental control that closes the case.
+
+Run quality: the cleanest yet — **zero client errors in every reporting
+region** (a first), latency identical to all five prior runs
+(eu-central p50 82.7 ms — its 369,035 acked requests the highest of any
+run — nrt 79.2, us-east 462.8), `opens 1/1/0` everywhere, no storms.
+ap-southeast-1's client JSONL was again unreachable at harvest (the
+preserved platform-404 specimen, docs/PLATFORM-SIN-404-REPORT.md), but
+one campaign tick caught its live replica's terminal state: t10-conc64,
+269,751 acked, **zero errors**, append p50 70.3 ms — SIN's best.
+
+**Conclusion:** the cross-region serving problem was the platform DNS
+forwarder end to end. `RESOLV_OVERRIDE` ships in all three wrappers,
+env-gated; the staging plan should set it until the platform resolver is
+fixed, and the probe fleet stays up to tell us when that happens.

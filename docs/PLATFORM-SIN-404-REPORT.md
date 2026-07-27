@@ -85,7 +85,10 @@ across five regions in the same window.
    deployed in the same loop minutes apart.
 3. **Shape C is dispositive:** the process is executing its workload
    (outbound HTTPS at ~70 ops/s, measured on the receiving side) while
-   its inbound domain 404s.
+   its inbound domain 404s. The route also **flaps**: at 08:39Z one of
+   our automated polls received the app's full JSON state through the
+   same domain that returned the platform 404 to manual curls at 08:23Z
+   and 08:41Z — some edge paths reach the instance, most don't.
 4. Scale-to-zero is excluded: `KEEP_AWAKE=1` on every affected service,
    and the affected versions never served a first byte to wake-worthy
    traffic anyway — we polled continuously from deploy time.
