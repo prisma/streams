@@ -26,10 +26,16 @@
 set -euo pipefail
 
 R=${1:?region}; ROLE=${2:?role: server|gen}
+# Absolute script dir: the deploy cd's into the app directory, which
+# breaks any later $(dirname "$0") relative lookup.
+HERE=$(cd "$(dirname "$0")" && pwd)
 S=${SOAK_HOME:?set SOAK_HOME to a scratch dir outside the repo}
 BENCH_TIERS=${BENCH_TIERS:-1,2,4,8,12,16,24,32,48,64}
 BENCH_SECS=${BENCH_SECS:-180}
 BIN_TAG=${BIN_TAG:-soak}
+# Keyspace prefix: override per run (soak2r1, soak2r2, ...) so repeated
+# runs start from a fresh keyspace without re-provisioning buckets.
+SOAK_PREFIX=${SOAK_PREFIX:-soak}
 BINEP=${ARTIFACT_ENDPOINT:-https://t3.storage.dev}
 BINBKT=${ARTIFACT_BUCKET:-prisma-streams-slatedb-sin}
 
@@ -43,11 +49,22 @@ j() { python3 -c "import json;print(json.load(open('$S/bkey-$R.json'))['data']['
 # id must come from `services list` or a previous run of this script --
 # `deploy` prints a VERSION id (cpv_), not a service id (cps_).
 SVCFILE=$S/svc-$ROLE-$R.txt
+# Resolve the service id BEFORE deploying when we don't have it cached:
+# `deploy` prints a VERSION id (cpv_), never a service id, and deploying
+# by --service-name a second time fails with "already exists". `services
+# list` is the only source of truth (deploy/README.md footgun).
+if [ ! -f "$SVCFILE" ]; then
+  EXISTING=$(bunx --bun @prisma/compute-cli services list --project "$P" 2>/dev/null \
+             | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}') || true
+  [ -n "$EXISTING" ] && echo "$EXISTING" > "$SVCFILE"
+fi
+# ${arr[@]+...} form: macOS bash 3.2 treats an empty array as unbound
+# under `set -u`, so a plain expansion aborts the whole deploy.
 SVCARG=(); [ -f "$SVCFILE" ] && SVCARG=(--service "$(cat "$SVCFILE")")
 
 if [ "$ROLE" = server ]; then
   cd "$S/app-server-$R"
-  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" "${SVCARG[@]}" \
+  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
     --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
@@ -57,7 +74,7 @@ if [ "$ROLE" = server ]; then
     --env SLATE_S3_ACCESS_KEY_ID="$(j accessKeyId)" \
     --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
     --env AUTH_TOKEN="$AUTH" \
-    --env PATH_PREFIX=soak --env INSTANCE_NAME=streams-1 \
+    --env PATH_PREFIX="$SOAK_PREFIX" --env INSTANCE_NAME=streams-1 \
     --env INITIAL_SHARDS=4 \
     --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=10 --env FLUSH_INTERVAL_MS=25 \
     --env FRAME_COMPRESS=1 \
@@ -74,7 +91,7 @@ if [ "$ROLE" = server ]; then
 else
   TARGET=$(cat "$S/url-server-$R.txt")
   cd "$S/app-gen-$R"
-  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" "${SVCARG[@]}" \
+  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
     --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
@@ -88,11 +105,15 @@ else
     2>&1 | grep -viE 'resolving|resolved|saved')
 fi
 
-echo "$OUT" | grep -E 'New version|error' | sed "s/^/$ROLE-$R: /"
-SVC=$(echo "$OUT" | grep -oE 'cps_[a-z0-9]+' | head -1)
-[ -n "$SVC" ] && echo "$SVC" > "$SVCFILE"
+echo "$OUT" | grep -E 'New version|error' | sed "s/^/$ROLE-$R: /" || true
+# `deploy` prints a VERSION id (cpv_), not a service id — the id we need
+# comes from `services list`, matched by name (deploy/README.md footgun).
+if [ ! -f "$SVCFILE" ]; then
+  SVC=$(bunx --bun @prisma/compute-cli services list --project "$P" 2>/dev/null         | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}')
+  [ -n "$SVC" ] && echo "$SVC" > "$SVCFILE"
+fi
 
 # Preview domains belong to a VERSION, not a service: a redeploy retires the
 # old domain (it then answers 503, which reads like a boot failure). Always
 # re-resolve from the running version instead of caching the deploy output.
-"$(dirname "$0")/resolve-urls.sh" "$R" "$ROLE"
+"$HERE/resolve-urls.sh" "$R" "$ROLE"
