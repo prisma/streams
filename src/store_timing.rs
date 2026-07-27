@@ -612,6 +612,16 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         }
         ops.insert(name, cell);
     }
+    let served_from_by_class = {
+        let m = http_stats().served_from_class.lock().unwrap();
+        let mut out: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u64>> =
+            Default::default();
+        for ((region, op, class), n) in m.iter() {
+            let cell = format!("{}:{}", OPS[*op as usize], CLASSES[*class as usize]);
+            *out.entry(region.clone()).or_default().entry(cell).or_default() += n;
+        }
+        serde_json::to_value(out).unwrap_or(serde_json::Value::Null)
+    };
     let served_from: std::collections::BTreeMap<String, u64> = http_stats()
         .served_from
         .lock()
@@ -671,6 +681,7 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "timer_tokio": drift_stats(&drift().tokio, cutoff),
         "steal_pct": steal_pct,
         "served_from": served_from,
+        "served_from_by_class": served_from_by_class,
         "wal_read_storm": storm,
         // Reopen-storm visibility (sharddir.rs): started climbing while
         // completed stays flat = the eu-central-1 wedge shape.
@@ -699,6 +710,12 @@ struct HttpEv {
 struct HttpStats {
     ring: Mutex<VecDeque<HttpEv>>,
     served_from: Mutex<std::collections::HashMap<String, u64>>,
+    /// (region, op, class) → count. The flat map above answers "how much
+    /// went where"; this one answers "WHAT went where" — during the
+    /// eu-central-1 ord1 window we could not tell whether the remote PoP
+    /// was serving everything (a routing/DNS problem) or only the
+    /// CAS/manifest subset (a metadata-placement problem).
+    served_from_class: Mutex<std::collections::HashMap<(String, u8, u8), u64>>,
 }
 
 fn http_stats() -> &'static HttpStats {
@@ -706,6 +723,7 @@ fn http_stats() -> &'static HttpStats {
     H.get_or_init(|| HttpStats {
         ring: Mutex::new(VecDeque::with_capacity(RING_CAP)),
         served_from: Mutex::new(std::collections::HashMap::new()),
+        served_from_class: Mutex::new(std::collections::HashMap::new()),
     })
 }
 
@@ -797,6 +815,11 @@ impl object_store::client::HttpService for SniffService {
                 .lock()
                 .unwrap()
                 .entry(region.to_string())
+                .or_default() += 1;
+            *h.served_from_class
+                .lock()
+                .unwrap()
+                .entry((region.to_string(), op, class))
                 .or_default() += 1;
         }
         Ok(resp)
