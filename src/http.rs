@@ -29,6 +29,21 @@ use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
+
+/// Budget for a read that was WOKEN by a long-poll wait — the live-tail
+/// case, where response size is latency: materialize + transfer + client
+/// parse + the client's rearm gap all scale with it. Catch-up reads keep
+/// the full MAX_READ_BYTES for throughput. Env TAIL_MAX_BYTES.
+fn tail_max_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("TAIL_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(1024 * 1024)
+    })
+}
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 // The platform front door kills any request at ~30 s with a 502 (measured
 // 30.16 s on Prisma Compute). Every server-side wait must conclude below it
@@ -2493,6 +2508,7 @@ async fn read(
     };
 
     let is_long_poll = live == Some("long-poll");
+    let mut live_wake = false;
     if is_long_poll && scan_from >= end {
         if !closed {
             let wait = params
@@ -2511,6 +2527,7 @@ async fn read(
                 end = e2;
                 closed = c2;
                 if end > scan_from || closed {
+                    live_wake = end > scan_from;
                     break;
                 }
                 tokio::select! {
@@ -2547,7 +2564,9 @@ async fn read(
         &engine,
         scan_from,
         params.key.as_deref(),
-        MAX_READ_BYTES,
+        // Woken live reads carry a fresh commit group, not a backlog:
+        // keep the response (and the client's rearm) proportional to it.
+        if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
     )
     .await
     {
@@ -2953,6 +2972,7 @@ async fn read_per_key(
                 p
             }
         };
+        let mut live_wake = false;
         if live == Some("long-poll") && scan_from >= end {
             if !closed {
                 let wait = params
@@ -2966,6 +2986,7 @@ async fn read_per_key(
                     let notified = handle.notify.notified();
                     end = handle.state.lock().unwrap().durable.next;
                     if end > scan_from {
+                        live_wake = true;
                         break;
                     }
                     tokio::select! {
@@ -3004,7 +3025,10 @@ async fn read_per_key(
             &engine,
             scan_from,
             Some(rk),
-            MAX_READ_BYTES,
+            // A woken live read returns a fresh commit group, not a
+            // backlog: the small budget keeps the response — and the
+            // consumer's next-poll rearm — proportional to it.
+            if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
         )
         .await
         {
