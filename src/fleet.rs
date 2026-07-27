@@ -576,14 +576,24 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     for prefix in mine {
                         let have = state.shards.read().unwrap().contains_key(&prefix);
                         if !have {
-                            match (state.opener.open)(prefix.clone()).await {
-                                Ok(engine) => {
+                            // Through the gate: single-flight with the
+                            // request path, honoring the same holdoffs.
+                            match state
+                                .gate
+                                .get_or_open(&prefix, std::time::Duration::from_secs(300))
+                                .await
+                            {
+                                crate::sharddir::OpenOutcome::Ready(_) => {
                                     tracing::info!(
                                         "rebalancer: eagerly opened moved-in shard {prefix}"
                                     );
-                                    state.shards.write().unwrap().insert(prefix, engine);
                                 }
-                                Err(e) => {
+                                crate::sharddir::OpenOutcome::Wait { code, .. } => {
+                                    tracing::info!(
+                                        "eager open of {prefix} deferred ({code})"
+                                    );
+                                }
+                                crate::sharddir::OpenOutcome::Failed(e) => {
                                     tracing::warn!("eager open of {prefix} failed: {e}");
                                 }
                             }

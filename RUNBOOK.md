@@ -559,7 +559,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |
 | `--env KEY=` rejected / RUST_LOG splits into bogus keys | CLI env parsing | `--unset-env` for removals; quote comma values |
-| throughput → 0, clients see connection timeouts, but stored record count keeps rising | **WAL read storm**: compaction stalled, readers scanning an untrimmed WAL, appends starved; they complete *after* the client's timeout | `/v1/debug/store` → `wal_read_storm.stalled`; restart the instance to clear, then check `served_from` for out-of-region routing. Clients must use producer idempotence or these become duplicates |
+| throughput → 0, clients see connection timeouts, but stored record count keeps rising | **WAL read storm**: detached shard-open replays piling up after an engine death (each client timeout used to spawn another full-WAL replay; the zombies fence each other and the serving map never fills) | fixed by single-flight opens (sharddir.rs, 2026-07-27); `/v1/debug/store` → `wal_read_storm.stalled` detects the shape, `shard_opens` shows the loop (started ≫ completed). If it ever recurs: restart the instance, check `served_from` for out-of-region routing. Clients must use producer idempotence or late-landing writes become duplicates on retry |
 
 ## 11. Data operations
 

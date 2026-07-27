@@ -49,10 +49,12 @@ pub struct ShardOpener {
 pub struct AppState {
     pub registry: Registry,
     pub shard_prefixes: Vec<String>,
-    pub shards: std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>,
-    pub opener: ShardOpener,
-    /// Serializes shard opens; also carries anti-flap state.
-    pub open_lock: tokio::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// Serving map, shared with the fleet loop and the OpenGate's spawned
+    /// open tasks (which insert into it directly — see sharddir.rs).
+    pub shards: std::sync::Arc<std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>>,
+    /// Single-flight, cancellation-proof shard opens with escalating
+    /// holdoff — the eu-central-1 reopen-storm fix (sharddir.rs).
+    pub gate: crate::sharddir::OpenGate,
     /// Counts /v1/stream/* requests for the fleet load vector (§4.2).
     pub fleet_ops: std::sync::atomic::AtomicU64,
     /// Concurrently in-flight HTTP requests (all routes) + windowed peak.
@@ -137,19 +139,6 @@ impl AppState {
         if let Some(e) = self.shards.read().unwrap().get(&prefix) {
             return Ok(e.clone());
         }
-        let mut lock = self.open_lock.lock().await;
-        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
-            return Ok(e.clone()); // raced: someone opened it while we waited
-        }
-        if let Some(closed_at) = lock.get(&prefix) {
-            if closed_at.elapsed() < std::time::Duration::from_secs(3) {
-                return Err(err_resp(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "shard_moving",
-                    "shard recently fenced away; retry",
-                ));
-            }
-        }
         // R2/R3: only the ring owner may claim a shard. A stale router can
         // still send us one — answer 409 + Streams-Replay-To so the router
         // corrects itself, instead of fencing the rightful owner.
@@ -166,13 +155,35 @@ impl AppState {
                 return Err(r);
             }
         }
-        match (self.opener.open)(prefix.clone()).await {
-            Ok(engine) => {
-                lock.remove(&prefix);
-                self.shards.write().unwrap().insert(prefix, engine.clone());
-                Ok(engine)
+        // Single-flight open with a bounded wait. A slow WAL replay
+        // continues in its own task regardless of what this request does —
+        // the caller only ever gets a retryable 503, never the power to
+        // abandon or duplicate an open (the eu-central-1 storm).
+        let wait = std::time::Duration::from_millis(
+            std::env::var("SHARD_OPEN_WAIT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
+        );
+        match self.gate.get_or_open(&prefix, wait).await {
+            crate::sharddir::OpenOutcome::Ready(engine) => Ok(engine),
+            crate::sharddir::OpenOutcome::Wait {
+                code,
+                retry_after_secs,
+            } => {
+                let mut r = err_resp(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    code,
+                    "shard not currently serving here; retry",
+                );
+                if let Ok(v) =
+                    axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
+                {
+                    r.headers_mut().insert("retry-after", v);
+                }
+                Err(r)
             }
-            Err(e) => Err(err_resp(
+            crate::sharddir::OpenOutcome::Failed(e) => Err(err_resp(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "shard_open",
                 &format!("open shard {prefix}: {e}"),
@@ -199,20 +210,9 @@ impl AppState {
     /// Called when a shard db closes (fenced by a new owner): drop it from
     /// the serving map and start the anti-flap holdoff.
     pub fn shard_closed(self: &Arc<Self>, prefix: &str) {
-        self.shards.write().unwrap().remove(prefix);
-        if let Ok(mut l) = self.open_lock.try_lock() {
-            l.insert(prefix.to_string(), std::time::Instant::now());
-        } else {
-            let state = self.clone();
-            let prefix = prefix.to_string();
-            tokio::spawn(async move {
-                state
-                    .open_lock
-                    .lock()
-                    .await
-                    .insert(prefix, std::time::Instant::now());
-            });
-        }
+        // Eviction + holdoff live in the gate; an engine that died young
+        // escalates the holdoff (rapid open→die cycles are the storm).
+        self.gate.notify_closed(prefix);
     }
 }
 

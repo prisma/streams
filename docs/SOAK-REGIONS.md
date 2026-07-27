@@ -220,12 +220,40 @@ The write path had essentially stopped — 5 WAL PUTs in a minute — while
 the read path issued 16,000 WAL operations in the same minute. There was
 no SST activity at all: nothing being compacted, nothing being trimmed.
 
-That is a **read-amplification runaway**. Compaction stalled, so the WAL
-kept growing; readers scan WAL SSTs directly when the data has not been
-compacted, so each pass had more files to read than the last; those reads
-consumed the outbound connection budget (41 in flight against a peak of
-88), which starved the appends that would have advanced the WAL. Each
-turn of the loop makes the next turn worse.
+At the time we called this a **read-amplification runaway** and blamed
+tail readers scanning an untrimmed WAL. The follow-up root-cause work
+(2026-07-27) disproved that mechanism and found the real one, which was
+then reproduced deterministically in DST
+(`reopen_storm_reproduces_the_eu_central_wedge`, 7,503 WAL GETs for a
+120-SST WAL, 11 of 12 opens fenced):
+
+**It was a detached-reopen storm.** A live-Db scan never reads WAL SSTs
+from the store at all — durable-but-unflushed data is served from
+in-memory memtables, so tail readers could not have produced those GETs.
+What does read WAL SSTs is **open replay**. The engine died once (fra was
+already throwing 502s at tier 2–3), and the reopen had to replay hundreds
+of WAL files at 300–500 ms each — far longer than the generator's 30 s
+timeout. When the client disconnected, axum dropped the handler future
+and released the open lock, but the inner Db open had been *spawned* onto
+the SlateDB runtime (`on_slatedb_rt`), so it kept replaying, detached,
+its result destined for a oneshot nobody held. The next request started
+another full replay. Detached replays piled up until they owned the
+outbound connection budget (the 41–88 in flight); each one that completed
+bumped the writer epoch and fenced the previous zombie — a writer-epoch
+war of one process against itself, visible as the far-future `head:wal`
+probes (zero-byte WAL fence objects). No result was ever inserted into
+the serving map, and no writer survived long enough to flush L0, so
+`replay_after_wal_id` never advanced and every new replay did the full
+range again.
+
+Fixed by `src/sharddir.rs` (`OpenGate`): opens are single-flight per
+prefix, run in a task that owns its own completion and inserts into the
+serving map itself, callers get bounded-wait retryable 503s instead of
+the power to abandon an open, and engines that die young meet an
+exponentially escalating holdoff. Under DST the same sick store and the
+same impatient clients cost 616 WAL GETs — one replay — instead of
+7,503, and the engine lands in the serving map even though every client
+that asked for it had already given up.
 
 ### Every "failed" write actually succeeded
 
@@ -285,19 +313,18 @@ that starves writes and hands clients timeouts on requests that succeed.
 
 Concretely:
 
-1. **Bound the read path's share of the outbound budget.** Appends and
-   reads compete for the same connections with no reservation. Reads
-   should not be able to take the last slot a durability write needs.
-2. **Alarm on the WAL-to-SST ratio.** `get:wal` climbing while `put:sst`
-   and `delete:wal` sit at zero is a compaction stall, and it is visible
-   in telemetry we already collect, minutes before throughput dies.
-3. **Make slow appends fail fast rather than complete late.** An append
-   that will take longer than any sane client timeout should be rejected
-   with backpressure so the caller can retry deliberately, instead of
-   landing after the caller gave up.
-
-None of these are implemented in this run; they are the follow-up work
-this soak bought.
+1. ~~Bound the read path's share of the outbound budget~~ — superseded:
+   the reads were not the tail path but detached open replays, and the
+   `OpenGate` fix removes them at the source rather than rationing them.
+2. **Alarm on the WAL-to-SST ratio** — done in this run
+   (`wal_read_storm` in `/v1/debug/store`); the shape detects the storm
+   regardless of which mechanism produces it, plus `shard_opens` counters
+   now expose the reopen loop directly (started climbing while completed
+   stays flat).
+3. **Make slow appends fail fast rather than complete late** — still
+   open. During the storm the few surviving appends landed after the
+   client's timeout; producer idempotence remains the client-side answer,
+   and server-side fail-fast is future work.
 
 ## What this run changed in the codebase
 

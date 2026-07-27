@@ -40,7 +40,7 @@ real time.
 ## 1. Current status — and what it is not
 
 `src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
-over the real single-node data plane**. Twenty scenarios, ~9 seconds:
+over the real single-node data plane**. Twenty-three scenarios, ~30 seconds:
 
 ```bash
 cargo test --release dst
@@ -351,6 +351,23 @@ client retries the same producer sequence against the new owner exactly as
 a `Streams-Replay-To` client would. It passes, which establishes that
 producer state survives a handoff.
 
+### A production incident, reproduced then fixed here
+
+The eu-central-1 soak wedge (docs/SOAK-REGIONS.md) was root-caused with
+this harness. `reopen_storm_reproduces_the_eu_central_wedge` recreates
+the exact loop — a WAL too big to replay inside a client's patience,
+clients that disconnect, and the old open path that turned every
+disconnection into a fresh, detached, full-WAL replay: 7,503 WAL GETs
+for a 120-SST WAL, 11 of 12 opens fenced by their successors, serving
+map still empty at the end. The fix (`sharddir::OpenGate`) is validated
+by the same scenario shape: identical sick store, identical impatient
+clients, 616 GETs (one replay), one open started, engine served.
+
+Two things made the reproduction possible, both from this file's design:
+per-(op, class) protocol-cost counters (the storm IS a budget violation),
+and paused virtual time (a storm that takes twenty minutes of wall clock
+in production takes half a second here at the real simulated latencies).
+
 ## 9. Swarm and focused modes
 
 Not yet built. The shape: a serialised `Scenario` (schema version, seed,
@@ -414,7 +431,7 @@ configuration. Minimised escapes become permanent corpus entries.
 ## 12. CI
 
 Today CI runs `cargo check`, the release test suite (which includes these
-twenty scenarios) and one s3lite HTTP smoke test. The intended tiers:
+twenty-three scenarios) and one s3lite HTTP smoke test. The intended tiers:
 
 - **Pull request** — fixed regression corpus, a bounded seed sweep,
   replay-hash comparison, canary/mutation tests, and the focused fencing,

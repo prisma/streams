@@ -13,6 +13,7 @@ mod shard;
 mod store_timing;
 mod scaler;
 mod segmap;
+mod sharddir;
 mod touch;
 mod touch_keys;
 mod usage;
@@ -612,13 +613,16 @@ async fn async_main() -> anyhow::Result<()> {
     };
 
     let fleet_store_opt = args.fleet_store()?;
+    let shards_map: std::sync::Arc<
+        std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
+    > = std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
+    let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener.open);
     let state = Arc::new(AppState {
         registry,
         shard_prefixes: topology.shards.clone(),
-        shards: std::sync::RwLock::new(HashMap::new()),
+        shards: shards_map,
         fleet_store: fleet_store_opt.clone(),
-        opener,
-        open_lock: tokio::sync::Mutex::new(HashMap::new()),
+        gate,
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
         inflight: std::sync::atomic::AtomicI64::new(0),
         inflight_peak: std::sync::atomic::AtomicI64::new(0),

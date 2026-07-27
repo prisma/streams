@@ -288,6 +288,10 @@ struct FaultState {
     /// key, so a retry of the same PUT is a different draw and can
     /// therefore succeed.
     occurrences: Mutex<HashMap<(String, u8), u64>>,
+    /// Per-(op, class) operation counts — the protocol-cost ledger.
+    /// Budgets like "a reopen may cost at most one WAL replay" are
+    /// assertions over these.
+    op_counts: Mutex<HashMap<(StoreOp, ObjClass), u64>>,
     hold: Mutex<Option<Hold>>,
     coverage: Arc<Coverage>,
     injected_latency: AtomicU64,
@@ -342,6 +346,12 @@ impl FaultState {
     async fn gate(&self, op: StoreOp, path: &str) -> OsResult<bool> {
         self.ops.fetch_add(1, Ordering::Relaxed);
         let class = ObjClass::of(path);
+        *self
+            .op_counts
+            .lock()
+            .unwrap()
+            .entry((op, class))
+            .or_insert(0) += 1;
 
         let held = {
             let h = self.hold.lock().unwrap();
@@ -414,6 +424,7 @@ impl FaultStore {
                 seed,
                 profile,
                 occurrences: Mutex::new(HashMap::new()),
+                op_counts: Mutex::new(HashMap::new()),
                 hold: Mutex::new(None),
                 coverage: Arc::new(Coverage::default()),
                 injected_latency: AtomicU64::new(0),
@@ -443,6 +454,17 @@ impl FaultStore {
     }
     pub fn ops(&self) -> u64 {
         self.st.ops.load(Ordering::Relaxed)
+    }
+
+    /// Operations of one (verb, class) so far — the protocol-cost ledger.
+    pub fn count(&self, op: StoreOp, class: ObjClass) -> u64 {
+        self.st
+            .op_counts
+            .lock()
+            .unwrap()
+            .get(&(op, class))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Park the first `max_parked` matching operations until

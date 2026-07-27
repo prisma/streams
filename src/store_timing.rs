@@ -672,6 +672,9 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "steal_pct": steal_pct,
         "served_from": served_from,
         "wal_read_storm": storm,
+        // Reopen-storm visibility (sharddir.rs): started climbing while
+        // completed stays flat = the eu-central-1 wedge shape.
+        "shard_opens": crate::sharddir::stats_json(),
         "ops": ops,
         "slow": slow,
     })

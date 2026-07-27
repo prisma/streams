@@ -699,3 +699,326 @@ fn oracle_catches_a_self_contradictory_ledger() {
     let err = log.audit(&obs(&[("k", &[(1, 0)])])).unwrap_err();
     assert!(err.starts_with("harness bug"), "got: {err}");
 }
+
+// ---- the eu-central-1 reopen storm ----------------------------------
+
+/// Seed a shard prefix with many WAL SSTs and no L0 flush, so every open
+/// must replay all of them from the store. This is the state eu-central-1
+/// was in when its engine first died: a WAL the boundary had not caught up
+/// with, behind a slow, partially cross-routed store.
+async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: u64) {
+    let db = slatedb::Db::builder(prefix, store)
+        .with_settings(slatedb::config::Settings {
+            // Mint a WAL SST per write...
+            flush_interval: Some(std::time::Duration::from_millis(1)),
+            // ...and never flush the memtable to L0, so replay_after_wal_id
+            // stays at zero and every subsequent open replays everything.
+            l0_sst_size_bytes: 1 << 30,
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("seed db");
+    for i in 0..records {
+        db.put_with_options(
+            format!("k{i:06}").as_bytes(),
+            vec![7u8; 256].as_slice(),
+            &slatedb::config::PutOptions::default(),
+            &slatedb::config::WriteOptions {
+                await_durable: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed put");
+    }
+    // Drop WITHOUT close: close() would flush the memtable to L0 and
+    // advance the replay boundary, which is exactly what must not happen.
+    drop(db);
+}
+
+/// The OLD `engine_for` semantics, verbatim in miniature: hold a lock,
+/// await the open inline in the caller's task, insert into the map from
+/// the caller's task. The inner Db open is spawned (as `on_slatedb_rt`
+/// does in production), so abandoning the await detaches it.
+async fn naive_get_or_open(
+    lock: &tokio::sync::Mutex<()>,
+    shards: &std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    fenced_opens: &Arc<std::sync::atomic::AtomicU64>,
+) -> Option<Arc<crate::shard::ShardEngine>> {
+    if let Some(e) = shards.read().unwrap().get(prefix) {
+        return Some(e.clone());
+    }
+    let _g = lock.lock().await;
+    if let Some(e) = shards.read().unwrap().get(prefix) {
+        return Some(e.clone());
+    }
+    // Mimic on_slatedb_rt: the REAL open runs in a spawned task; the
+    // caller awaits a oneshot. Dropping this future abandons the rx but
+    // not the open.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let st = store.clone();
+    let p = prefix.to_string();
+    let fenced = fenced_opens.clone();
+    tokio::spawn(async move {
+        // Non-panicking open: a detached replay that loses the epoch war
+        // gets `Fenced` from the winner — count those, they are the
+        // zombies of the real incident.
+        let db = slatedb::Db::builder(p.as_str(), st)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(std::time::Duration::from_millis(5)),
+                manifest_poll_interval: std::time::Duration::from_millis(50),
+                ..Default::default()
+            })
+            .build()
+            .await;
+        match db {
+            Ok(db) => {
+                let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+                let eng = crate::shard::ShardEngine::start(
+                    p,
+                    Arc::new(db),
+                    crate::shard::ShardConfig::default(),
+                    absorb_tx,
+                    None,
+                );
+                let _ = tx.send(eng);
+            }
+            Err(e) => {
+                if format!("{e}").contains("newer DB client") {
+                    fenced.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+    let engine = rx.await.ok()?;
+    shards
+        .write()
+        .unwrap()
+        .insert(prefix.to_string(), engine.clone());
+    Some(engine)
+}
+
+/// **The eu-central-1 wedge, reproduced.**
+///
+/// WAL replay on open is slower than the callers' patience (slow store,
+/// paused time), callers time out and disconnect exactly as the soak
+/// clients did at 30 s, and the old open path turns each disconnection
+/// into a fresh, detached, full-WAL replay. The assertions are the
+/// storm's signature from docs/SOAK-REGIONS.md, scaled down: WAL read
+/// amplification ≥ 3× the WAL itself, multiple writers opened and fenced,
+/// and — the wedge — the serving map STILL empty when the dust settles.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn reopen_storm_reproduces_the_eu_central_wedge() {
+    let inner = mem();
+    seed_untrimmed_wal(inner.clone(), "dst-storm", 120).await;
+
+    // Every store op costs 40–80 ms simulated — the fra profile with a
+    // quarter of requests cross-routed. 120 WAL SSTs × ~50 ms ≫ the 1 s
+    // caller patience below, which is the 30 s client timeout scaled to
+    // the test's magnitudes.
+    let plan = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (40, 80),
+    };
+    let store = FaultStore::uniform(inner.clone(), 61, plan);
+
+    let lock = tokio::sync::Mutex::new(());
+    let shards: std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>> =
+        Default::default();
+    let fenced_opens = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // Twelve successive clients, each timing out and disconnecting —
+    // dropping the future, exactly what axum does — then the next arrives.
+    for _ in 0..12 {
+        let fut = naive_get_or_open(&lock, &shards, store.clone(), "dst-storm", &fenced_opens);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), fut).await;
+    }
+    // Let the detached replays grind to completion so the storm's full
+    // cost is on the ledger.
+    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+
+    // Measured on this exact setup: 7,503 GETs for a 120-SST WAL — a 62×
+    // amplification, 11 of 12 opens fenced. The floor leaves a wide margin
+    // while staying an order of magnitude above any legitimate cost.
+    let wal_gets = store.count(StoreOp::Get, ObjClass::Wal);
+    assert!(
+        wal_gets >= 2_000,
+        "expected a WAL read storm (measured 7,503 on this setup; floor 2,000), \
+         got {wal_gets} — the reproduction has gone vacuous"
+    );
+    assert!(
+        shards.read().unwrap().is_empty(),
+        "the naive path actually populated the map — the wedge did not reproduce"
+    );
+    assert!(
+        fenced_opens.load(Ordering::SeqCst) >= 1,
+        "no detached open was fenced by a later one — the writer-epoch war \
+         did not reproduce"
+    );
+}
+
+/// **The fix.** Same sick store, same impatient clients, through
+/// `OpenGate`: one open, started once, owning its own completion. Clients
+/// get retryable 503s while it runs; the engine lands in the serving map
+/// even though every client that asked for it had already given up; WAL
+/// read amplification is ~1×.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn open_gate_survives_impatient_clients_without_a_storm() {
+    use crate::sharddir::{OpenGate, OpenOutcome};
+    let inner = mem();
+    seed_untrimmed_wal(inner.clone(), "dst-gate", 120).await;
+
+    let plan = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (40, 80),
+    };
+    let store = FaultStore::uniform(inner.clone(), 61, plan);
+
+    OpenGate::reset_counters_for_tests();
+    let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
+    let st = store.clone();
+    let gate = OpenGate::new(
+        shards.clone(),
+        Box::new(move |prefix: String| {
+            let st = st.clone();
+            Box::pin(async move {
+                let s: Arc<dyn ObjectStore> = st;
+                Ok(open_engine(s, &prefix).await)
+            })
+        }),
+    );
+
+    // The same twelve impatient clients. Each gets a Wait (503) — and
+    // their timeouts must NOT abandon or restart the open.
+    let mut waits = 0;
+    for _ in 0..12 {
+        match gate
+            .get_or_open("dst-gate", std::time::Duration::from_secs(1))
+            .await
+        {
+            OpenOutcome::Wait { .. } => waits += 1,
+            OpenOutcome::Ready(_) => {}
+            OpenOutcome::Failed(e) => panic!("open failed: {e}"),
+        }
+    }
+    assert!(waits > 0, "callers were never made to wait — vacuous");
+
+    // The single open finishes on its own and inserts itself.
+    for _ in 0..600 {
+        if !shards.read().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    assert!(
+        !shards.read().unwrap().is_empty(),
+        "the open never completed into the serving map"
+    );
+
+    let (started, completed, failed, coalesced) = OpenGate::counters_for_tests();
+    assert_eq!(started, 1, "exactly one open may start (got {started})");
+    assert_eq!(completed, 1);
+    assert_eq!(failed, 0);
+    assert!(coalesced >= 10, "later callers must join the first open");
+
+    // One replay costs ~5 store ops per WAL SST (existence probes arrive
+    // as HEAD-flavoured GETs, plus content reads, plus noise from the
+    // fenced seeding db's background tasks) — measured 616 here against
+    // the naive path's 7,503. The ceiling is 8/SST: an order of magnitude
+    // under the storm, comfortably above one honest replay.
+    let wal_gets = store.count(StoreOp::Get, ObjClass::Wal);
+    assert!(
+        wal_gets <= 8 * 120,
+        "reopen budget violated: {wal_gets} WAL GETs for a 120-SST WAL (≤{} allowed; \
+         one replay measures ~616, the storm measures ~7,503)",
+        8 * 120
+    );
+
+    // And the engine works: appends through it are acknowledged.
+    let engine = match gate
+        .get_or_open("dst-gate", std::time::Duration::from_secs(5))
+        .await
+    {
+        OpenOutcome::Ready(e) => e,
+        other => panic!(
+            "expected Ready after completion, got {}",
+            match other {
+                OpenOutcome::Wait { code, .. } => code,
+                OpenOutcome::Failed(_) => "failed",
+                OpenOutcome::Ready(_) => unreachable!(),
+            }
+        ),
+    };
+    let cov = store.coverage();
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov);
+    w.append(&engine, [9u8; 16], &skey(), "k", false, &mut log)
+        .await;
+    assert_eq!(log.total_acked(), 1, "append through the opened engine");
+}
+
+/// An engine that keeps dying young must meet an escalating holdoff, not
+/// an eager reopen: rapid open→die cycles against a sick store ARE the
+/// storm, whatever kills the engine.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
+    use crate::sharddir::{OpenGate, OpenOutcome};
+    let inner = mem();
+    OpenGate::reset_counters_for_tests();
+    let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
+    let st = inner.clone();
+    let gate = OpenGate::new(
+        shards.clone(),
+        Box::new(move |prefix: String| {
+            let st = st.clone();
+            Box::pin(async move {
+                let s: Arc<dyn ObjectStore> = st.clone();
+                Ok(open_engine(s, &prefix).await)
+            })
+        }),
+    );
+
+    // Open, die young, repeat. Holdoffs must grow: 3s, 6s, 12s.
+    let mut observed = Vec::new();
+    for _ in 0..3 {
+        let eng = loop {
+            match gate
+                .get_or_open("dst-flap", std::time::Duration::from_secs(30))
+                .await
+            {
+                OpenOutcome::Ready(e) => break e,
+                OpenOutcome::Wait {
+                    retry_after_secs, ..
+                } => {
+                    tokio::time::sleep(std::time::Duration::from_secs(retry_after_secs)).await;
+                }
+                OpenOutcome::Failed(e) => panic!("open failed: {e}"),
+            }
+        };
+        drop(eng);
+        gate.notify_closed("dst-flap"); // died young (lifetime ≈ 0)
+        match gate
+            .get_or_open("dst-flap", std::time::Duration::from_secs(1))
+            .await
+        {
+            OpenOutcome::Wait {
+                retry_after_secs, ..
+            } => observed.push(retry_after_secs),
+            OpenOutcome::Ready(_) => panic!("reopened with no holdoff after dying young"),
+            OpenOutcome::Failed(e) => panic!("open failed: {e}"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(70)).await; // clear holdoff
+    }
+    assert!(
+        observed.windows(2).all(|w| w[1] > w[0]),
+        "holdoff must escalate for engines that die young, got {observed:?}"
+    );
+}
