@@ -95,6 +95,17 @@ struct Args {
     #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 0)]
     wal_flush_gap_ms: u64,
 
+    /// Post-ACK gather window, ms (0 = off). After a busy WAL flush the
+    /// pump releases that flush's acknowledgements itself (explicit
+    /// barrier), then waits this long before freezing the next WAL, so
+    /// closed-loop producers' ack-triggered follow-ups join the next WAL
+    /// instead of missing its freeze and paying a full extra PUT. Without
+    /// it, append p50 at concurrency 2 measures ~2x concurrency 1.
+    /// Suggested 4-8. Adds at most this many ms to a busy flush cycle;
+    /// never delays an idle shard's first write.
+    #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
+    wal_post_ack_gather_ms: u64,
+
     #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 32 * 1024 * 1024)]
     l0_sst_size_bytes: usize,
 
@@ -549,6 +560,7 @@ async fn async_main() -> anyhow::Result<()> {
         } else {
             args.wal_flush_gap_ms
         });
+        let wal_post_ack_gather = Duration::from_millis(args.wal_post_ack_gather_ms);
         let state_slot = state_slot.clone();
         crate::http::ShardOpener {
             open: Box::new(move |prefix: String| {
@@ -610,6 +622,7 @@ async fn async_main() -> anyhow::Result<()> {
                             max_trim_per_op: trim_per_op,
                             wal_group_commit,
                             wal_flush_gap,
+                            wal_post_ack_gather,
                             ..Default::default()
                         },
                         absorb_tx,

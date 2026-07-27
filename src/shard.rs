@@ -251,6 +251,19 @@ pub struct ShardConfig {
     /// exactly where the old tick put it.
     pub wal_group_commit: bool,
     pub wal_flush_gap: std::time::Duration,
+    /// Post-ACK gather window. After a busy flush completes, the pump
+    /// itself releases the acknowledgements for everything that flush made
+    /// durable (an explicit barrier — not a scheduler race with the
+    /// acker), then waits this long before freezing the next WAL. The
+    /// point: closed-loop producers' next requests, issued in reaction to
+    /// those acks, arrive DURING the window and join the next WAL instead
+    /// of missing its freeze by a millisecond and waiting a full extra
+    /// PUT behind it. Zero disables the barrier and the window (acks
+    /// release only via the acker; the next freeze races the ack herd —
+    /// measured to cost c2 ≈ 2×c1 append p50). Never delays an idle
+    /// shard's first write: the pump only gathers after a flush that
+    /// dispatched work.
+    pub wal_post_ack_gather: std::time::Duration,
 }
 
 impl Default for ShardConfig {
@@ -264,6 +277,7 @@ impl Default for ShardConfig {
             gather_window: std::time::Duration::from_millis(15),
             wal_group_commit: false,
             wal_flush_gap: std::time::Duration::from_millis(25),
+            wal_post_ack_gather: std::time::Duration::ZERO,
         }
     }
 }
@@ -313,6 +327,17 @@ pub struct ShardEngine {
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
+    /// Serializes durable-dispatch between the pump (post-flush barrier)
+    /// and the acker (failsafe + fencing path). Group drains are already
+    /// exclusive via the in_flight lock; this additionally keeps tail
+    /// state updates applying in seq order across the two callers.
+    dispatch_gate: Mutex<()>,
+    /// Pump telemetry: flushes issued, requests acked at the pump's own
+    /// barrier, gather windows taken. acked/flushes is the requests-per-
+    /// WAL figure the flush-scheduling change is judged by.
+    pub pump_flushes: AtomicU64,
+    pub pump_barrier_acked: AtomicU64,
+    pub pump_gathers: AtomicU64,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -372,6 +397,10 @@ impl ShardEngine {
             streams: Mutex::new(HashMap::new()),
             tx,
             in_flight: Mutex::new(Vec::new()),
+            dispatch_gate: Mutex::new(()),
+            pump_flushes: AtomicU64::new(0),
+            pump_barrier_acked: AtomicU64::new(0),
+            pump_gathers: AtomicU64::new(0),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -396,9 +425,16 @@ impl ShardEngine {
         if cfg.wal_group_commit {
             let pump = engine.clone();
             let gap = cfg.wal_flush_gap;
-            tracing::info!(shard = %pump.prefix, gap_ms = gap.as_millis() as u64, "WAL group-commit pump on");
+            let gather = cfg.wal_post_ack_gather;
+            tracing::info!(
+                shard = %pump.prefix,
+                gap_ms = gap.as_millis() as u64,
+                gather_ms = gather.as_millis() as u64,
+                "WAL group-commit pump on"
+            );
             let h = tokio::spawn(async move {
                 use slatedb::config::{FlushOptions, FlushType};
+                let mut status_rx = pump.db.subscribe();
                 let mut last_start: Option<std::time::Instant> = None;
                 loop {
                     pump.pump_wake.notified().await;
@@ -423,19 +459,120 @@ impl ShardEngine {
                             }
                         }
                     }
+                    // Herd-settle: a synced herd's requests arrive within
+                    // microseconds of each other, and the wake->freeze
+                    // path is tight enough to split them into two WALs.
+                    // 1 ms is far above their spread and far below the
+                    // PUT RTT, so a solo producer pays ~1 ms and a herd
+                    // stays one WAL.
+                    if !gather.is_zero() {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        if pump.is_closed() {
+                            return;
+                        }
+                    }
                     last_start = Some(std::time::Instant::now());
-                    if let Err(e) = pump
+                    // The seqs this flush is about to make durable: every
+                    // group written before the freeze. Captured BEFORE the
+                    // flush call, because the barrier below must wait for
+                    // the watermark to cover them — `flush()` resolves
+                    // before the status watch publishes the new durable
+                    // seq (measured: at c2 the post-flush borrow saw a
+                    // stale watermark on 1612 of 1626 flushes, silently
+                    // reducing the barrier to the old acker race).
+                    let target_seq = pump.in_flight.lock().unwrap().last().map(|g| g.seq);
+                    match pump
                         .db
                         .flush_with_options(FlushOptions {
                             flush_type: FlushType::Wal,
                         })
                         .await
                     {
-                        if pump.is_closed() {
-                            return;
+                        Err(e) => {
+                            if pump.is_closed() {
+                                return;
+                            }
+                            tracing::warn!(shard = %pump.prefix, "group-commit WAL flush failed: {e}");
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
-                        tracing::warn!(shard = %pump.prefix, "group-commit WAL flush failed: {e}");
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        Ok(()) => {
+                            pump.pump_flushes.fetch_add(1, Ordering::Relaxed);
+                            if gather.is_zero() {
+                                continue;
+                            }
+                            let Some(target) = target_seq else {
+                                continue;
+                            };
+                            // Explicit barrier: wait for the durable
+                            // watermark to actually cover what we froze,
+                            // then release those acks HERE, synchronously.
+                            // When dispatch_durable returns, every response
+                            // this flush unblocked is on its way to a
+                            // socket. The 250 ms ceiling is a failsafe
+                            // (fencing, store stall): the acker still owns
+                            // dispatch if we bail.
+                            // The watch Ref is !Send, so copy out of it
+                            // inside this block — nothing Ref-typed may
+                            // survive to the gather sleep below.
+                            // Ok(seq) = dispatch; Err(true) = watch gone
+                            // (db closed, exit); Err(false) = skip
+                            // (fenced, or failsafe timeout: the acker
+                            // still owns dispatch).
+                            let seen: Result<u64, bool> = {
+                                match tokio::time::timeout(
+                                    std::time::Duration::from_millis(250),
+                                    status_rx.wait_for(|s| {
+                                        s.durable_seq >= target || s.close_reason.is_some()
+                                    }),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(sref)) if sref.close_reason.is_some() => Err(false),
+                                    Ok(Ok(sref)) => Ok(sref.durable_seq),
+                                    Ok(Err(_)) => Err(true),
+                                    Err(_) => Err(false),
+                                }
+                            };
+                            let durable_seq = match seen {
+                                Ok(seq) => seq,
+                                Err(true) => return,
+                                Err(false) => continue,
+                            };
+                            // Drain whatever the acker has not already
+                            // taken. Who wins that race is irrelevant to
+                            // the barrier: the acker fires on the same
+                            // watch change, and this call blocks on the
+                            // dispatch_gate until any concurrent acker
+                            // dispatch has finished sending. Either way,
+                            // when this returns, every ack this flush
+                            // unblocked is on the wire.
+                            let acked = pump.dispatch_durable(durable_seq);
+                            pump.pump_barrier_acked
+                                .fetch_add(acked as u64, Ordering::Relaxed);
+                            // Gather ONLY when this completion proves
+                            // concurrency: someone is already waiting in
+                            // in_flight (they arrived mid-PUT — the herd
+                            // has drifted across two WAL generations).
+                            // The window lets the just-acked clients'
+                            // follow-ups land in the same WAL as the
+                            // waiter, re-syncing the herd. When nobody is
+                            // waiting the shard is solo or the herd is in
+                            // sync — either way a window would tax c1 by
+                            // its full length for nothing (measured:
+                            // +7 ms on c1 p50). NOT keyed on `acked > 0`:
+                            // the acker fires on the same watch change
+                            // and wins the dispatch race on >99 % of
+                            // flushes; keying on it skipped the window on
+                            // 1636 of 1651 c2 flushes.
+                            let drifted = !pump.in_flight.lock().unwrap().is_empty();
+                            if drifted {
+                                pump.pump_gathers.fetch_add(1, Ordering::Relaxed);
+                                tokio::time::sleep(gather).await;
+                                if pump.is_closed() {
+                                    return;
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -1427,6 +1564,64 @@ impl ShardEngine {
         }
     }
 
+    /// Release everything the durable watermark now covers: record
+    /// timings, publish tail state, send producer/queue acks, feed the
+    /// absorber and touch journals. Entirely synchronous, so the caller
+    /// can rely on "when this returns, the acks are on their way" — the
+    /// property the pump's gather window is built on. Returns requests
+    /// dispatched. Called from the acker (watch-driven failsafe + the
+    /// only path when the pump is off) and from the pump (explicit
+    /// barrier right after its flush returns).
+    fn dispatch_durable(&self, durable_seq: u64) -> u32 {
+        let _order = self.dispatch_gate.lock().unwrap();
+        let ready: Vec<InFlightGroup> = {
+            let mut q = self.in_flight.lock().unwrap();
+            let split = q.partition_point(|g| g.seq <= durable_seq);
+            q.drain(..split).collect()
+        };
+        let mut dispatched = 0u32;
+        for group in ready {
+            dispatched += group.reqs;
+            {
+                let wait_us =
+                    group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                let mut t = self.timings.lock().unwrap();
+                t.push_back(GroupTiming {
+                    ts_ms: now_ms(),
+                    queue_wait_us: group.queue_wait_us,
+                    encode_us: group.encode_us,
+                    write_us: group.write_us,
+                    durable_wait_us: wait_us,
+                    reqs: group.reqs,
+                    records: group.records_n,
+                    bytes: group.bytes,
+                });
+                if t.len() > 128 {
+                    t.pop_front();
+                }
+            }
+            for (handle, fields) in &group.tails {
+                handle.state.lock().unwrap().durable = fields.clone();
+                handle.notify.notify_waiters();
+            }
+            for (resp, ack) in group.acks {
+                let _ = resp.send(Ok(ack));
+            }
+            for (resp, out) in group.queue_acks {
+                let _ = resp.send(Ok(out));
+            }
+            for s in group.signals {
+                let _ = self.absorb_tx.try_send(s);
+            }
+            // H2: feed touch journals only after the data is durable and
+            // reader-visible, so an invalidation always finds fresh data.
+            for t in group.touches {
+                t.journal.ingest(&t.key_ids, t.next_offset);
+            }
+        }
+        dispatched
+    }
+
     async fn acker_loop(self: Arc<Self>) {
         let mut status_rx = self.db.subscribe();
         loop {
@@ -1461,49 +1656,7 @@ impl ShardEngine {
                 }
                 status.durable_seq
             };
-            let ready: Vec<InFlightGroup> = {
-                let mut q = self.in_flight.lock().unwrap();
-                let split = q.partition_point(|g| g.seq <= durable_seq);
-                q.drain(..split).collect()
-            };
-            for group in ready {
-                {
-                    let wait_us =
-                        group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
-                    let mut t = self.timings.lock().unwrap();
-                    t.push_back(GroupTiming {
-                        ts_ms: now_ms(),
-                        queue_wait_us: group.queue_wait_us,
-                        encode_us: group.encode_us,
-                        write_us: group.write_us,
-                        durable_wait_us: wait_us,
-                        reqs: group.reqs,
-                        records: group.records_n,
-                        bytes: group.bytes,
-                    });
-                    if t.len() > 128 {
-                        t.pop_front();
-                    }
-                }
-                for (handle, fields) in &group.tails {
-                    handle.state.lock().unwrap().durable = fields.clone();
-                    handle.notify.notify_waiters();
-                }
-                for (resp, ack) in group.acks {
-                    let _ = resp.send(Ok(ack));
-                }
-                for (resp, out) in group.queue_acks {
-                    let _ = resp.send(Ok(out));
-                }
-                for s in group.signals {
-                    let _ = self.absorb_tx.try_send(s);
-                }
-                // H2: feed touch journals only after the data is durable and
-                // reader-visible, so an invalidation always finds fresh data.
-                for t in group.touches {
-                    t.journal.ingest(&t.key_ids, t.next_offset);
-                }
-            }
+            self.dispatch_durable(durable_seq);
             tokio::select! {
                 changed = status_rx.changed() => {
                     if changed.is_err() {

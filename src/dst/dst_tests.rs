@@ -208,6 +208,14 @@ fn object_classes_match_production_telemetry() {
 /// Open the engine WITHOUT an absorber: reads come from the shard log
 /// only. Used by scenarios that are about the commit path.
 async fn open_engine(store: Arc<dyn ObjectStore>, prefix: &str) -> Arc<crate::shard::ShardEngine> {
+    open_engine_cfg(store, prefix, crate::shard::ShardConfig::default()).await
+}
+
+async fn open_engine_cfg(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    cfg: crate::shard::ShardConfig,
+) -> Arc<crate::shard::ShardEngine> {
     let db = slatedb::Db::builder(prefix, store)
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
@@ -218,13 +226,7 @@ async fn open_engine(store: Arc<dyn ObjectStore>, prefix: &str) -> Arc<crate::sh
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    crate::shard::ShardEngine::start(
-        prefix.to_string(),
-        Arc::new(db),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-    )
+    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), cfg, absorb_tx, None)
 }
 
 /// I1+I2+I3 for a single writer under the full fault set — errors, lost
@@ -905,6 +907,96 @@ async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
         .expect("all engine tasks must terminate after close");
 }
 
+
+
+/// **The group-commit pump with the post-ACK barrier and gather window,
+/// under faults.** The gather path moves ack dispatch from the acker task
+/// into the pump (an ordering change on the hottest path in the system),
+/// so it gets the full treatment: WAL errors, lost responses, latency,
+/// concurrent producers, retries, and the complete I1–I7 audit through
+/// the production merged reader. The acker stays live as the failsafe —
+/// this scenario must pass with BOTH dispatchers running, proving the
+/// dispatch_gate keeps them from interleaving tail-state updates.
+///
+/// Also pins the idle contract: after quiet, a single append must not
+/// wait a gather window it has no herd to gather (regression guard for
+/// "gather only after a flush that dispatched work").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gather_pump_preserves_invariants_under_faults() {
+    let mut total_gathers = 0u64;
+    for seed in [3u64, 17, 41] {
+        let inner = mem();
+        let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 40))
+            .with_class(ObjClass::Wal, FaultPlan::new(8, 6, 40));
+        let store = FaultStore::new(inner.clone(), seed, profile);
+        let cov = store.coverage();
+        let key = skey();
+        let hash = [29u8; 16];
+        let cfg = crate::shard::ShardConfig {
+            wal_group_commit: true,
+            wal_flush_gap: std::time::Duration::from_millis(2),
+            wal_post_ack_gather: std::time::Duration::from_millis(3),
+            ..Default::default()
+        };
+        let engine = open_engine_cfg(store.clone(), &format!("dst-gather-{seed}"), cfg).await;
+
+        let mut log = OpLog::default();
+        let mut w = Workload::new(cov.clone());
+        // Two closed-loop waves with concurrent keys — the shape the
+        // gather window exists for.
+        for _ in 0..4 {
+            w.run(&engine, hash, &key, &["g1", "g2", "g3"], 10, false, &mut log)
+                .await;
+        }
+
+        // The pump must be flushing, and across the seeds the drift
+        // path (gather windows) must have been exercised. Per-seed
+        // barrier_acked would flake: the acker fires on the same watch
+        // change and legitimately wins most dispatch races — that is by
+        // design, not a defect.
+        let flushes = engine.pump_flushes.load(Ordering::Relaxed);
+        assert!(flushes > 0, "seed {seed}: the pump never flushed");
+        total_gathers += engine.pump_gathers.load(Ordering::Relaxed)
+            + engine.pump_barrier_acked.load(Ordering::Relaxed);
+
+        let ds: Arc<dyn ObjectStore> = store.clone();
+        let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        if let Err(e) = log.audit(&observed) {
+            panic!("seed {seed}: {e}");
+        }
+
+        // Idle contract: no herd, no gather tax. One append after quiet
+        // completes in well under (gather + PUT + margin) of virtual/real
+        // time; mainly this asserts it completes at all without waiting
+        // for a second flush cycle.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let t0 = std::time::Instant::now();
+        let o = w
+            .attempt_with_deadline(&engine, hash, &key, "idle", "idle-probe", None, None)
+            .await;
+        assert!(
+            matches!(o, Outcome::Acked { .. }),
+            "seed {seed}: idle append must ack, got {o:?}"
+        );
+        let took = t0.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "seed {seed}: idle append took {took:?} — the gather window is \
+             taxing the idle path"
+        );
+
+        engine.begin_close();
+        engine
+            .await_terminated(std::time::Duration::from_secs(30))
+            .await
+            .expect("pump + committer + acker + ticker all terminate");
+    }
+    assert!(
+        total_gathers > 0,
+        "no seed ever exercised the gather/barrier path — the scenario \
+         has degraded to re-testing the acker"
+    );
+}
 
 /// **The tiering invariant, not just "the absorber ran".**
 ///

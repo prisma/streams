@@ -749,7 +749,23 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
                 })
             })
             .collect();
-        shards.insert(prefix.clone(), json!(samples));
+        let flushes = eng.pump_flushes.load(std::sync::atomic::Ordering::Relaxed);
+        let barrier_acked = eng
+            .pump_barrier_acked
+            .load(std::sync::atomic::Ordering::Relaxed);
+        shards.insert(
+            prefix.clone(),
+            json!({
+                "groups": samples,
+                // requests-per-WAL is the judge of flush scheduling:
+                // barrier_acked / flushes, delta'd across two scrapes.
+                "pump": {
+                    "flushes": flushes,
+                    "barrier_acked": barrier_acked,
+                    "gathers": eng.pump_gathers.load(std::sync::atomic::Ordering::Relaxed),
+                },
+            }),
+        );
     }
     (
         [(header::CONTENT_TYPE, "application/json")],
