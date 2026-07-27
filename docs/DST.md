@@ -40,7 +40,7 @@ real time.
 ## 1. Current status — and what it is not
 
 `src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
-over the real single-node data plane**. Twenty-nine scenarios, ~35 seconds:
+over the real single-node data plane**. Thirty-four scenarios, ~40 seconds:
 
 ```bash
 cargo test --release dst
@@ -86,6 +86,16 @@ the same paths in two different orders and requiring identical decisions.
 (`DefaultHasher` is deliberately avoided: its output is not stable across
 Rust releases, and a replay that changes with the toolchain is not a
 replay.)
+
+**The precise claim, and its limit.** For a fixed sequence of
+`(path, op, occurrence)` tuples, fault decisions are toolchain-stable and
+reproducible — that is what the order-independence test establishes, by
+issuing *distinct* paths in two orders. It is **not** yet "concurrent
+fault placement is independent of task scheduling": the occurrence index
+is assigned when an operation reaches the fault store, so two concurrent
+operations *on the same path* can still swap occurrence numbers if
+scheduling changes. Closing that needs either a deterministic scheduler
+or a semantic operation id assigned before dispatch — M1, not today.
 
 What the seed does **not** control: task scheduling, and therefore the
 order concurrent engine work interleaves in. Scenarios run on a
@@ -228,7 +238,8 @@ Implemented today, over one shard:
 | **I3** | no attempt is stored twice |
 | **I4** | a fenced owner acknowledges nothing |
 | **I5** | a definitively rejected append never appears |
-| **I6** | an idempotent producer's retry commits at most once |
+| **I6** | an idempotent producer's retry commits at most once — verified across a handoff, at the original offset, consuming no new offset |
+| **I7** | every readable record belongs to an attempt the workload issued |
 
 I4 deserves its own note. The previous version of the fencing test built a
 ledger of writes attempted through the fenced owner and then **never
@@ -304,10 +315,27 @@ Implemented:
 Faults are selectable per `(verb, object class)` using the **same
 classifier as production telemetry** (`store_timing::classify`), so a
 scenario that targets "the WAL" targets what `/v1/debug/store` calls the
-WAL. Puts, gets, deletes, lists and copies are all faultable — deletes
-notably, since GC removing live SSTs under a zombie DB is the shape of the
-worst defect this project has had, and the first version of this harness
-left that verb unfaulted.
+WAL.
+
+Exact coverage, since "everything is faulted" was an overclaim:
+
+| operation | latency | error before dispatch | lost response |
+|---|---|---|---|
+| `put_opts` | yes | yes | yes |
+| `get_opts` (incl. `head`) | yes | yes | yes |
+| `delete_stream` (per item) | yes | yes | yes |
+| `list_with_delimiter` | yes | yes | yes |
+| `list` (streaming) | yes | yes | yes — as truncation after partial results plus a terminal error |
+| `copy_opts` | yes | yes | yes |
+| `put_multipart_opts` | yes | yes | **no** — a lost response would leak an undrivable upload; per-part and completion faults need a wrapped `MultipartUpload` (not built) |
+
+Two rules keep the counters honest. **A mechanism counter increments only
+when the behaviour was actually applied and became caller-visible** — the
+decision is no longer counted at roll time, because that let a scenario
+satisfy `require(STORE_LOST_RESPONSE)` on a verb that ignored the
+decision. And streaming `list` is genuinely gated: it used to delegate
+straight through, so a scenario could believe it was faulting listings
+while GC and recovery walked an untouched store.
 
 Reads are faulted for **availability only**, never for content: a store
 that returns wrong bytes is outside the object-store contract, and
@@ -326,30 +354,52 @@ ladder (`SCALE_FAULT_POINT`, `ABSORB_PAUSE`) should fold into that
 registry, which also removes test-only env vars from the production
 binary.
 
-### A finding the fault model produced
+### A finding the fault model produced — and its correction
 
-**Object-store faults do not reach the client as failures.** SlateDB
-retries them, so a store that is flaky but eventually available makes
-appends *slow* — never failed, never ambiguous. Measured directly: at a
-95 % injected WAL error rate, with 2,329 injected errors, **20 of 20
-appends were still acknowledged**.
+**Object-store faults are absorbed by SlateDB's internal retry loop.**
+Measured directly: at a 95 % injected WAL error rate, with 2,329 injected
+errors, **20 of 20 appends were still acknowledged**. Pinned as
+`store_errors_surface_as_latency_not_as_failed_appends`.
 
-This is pinned as `store_errors_surface_as_latency_not_as_failed_appends`
-because it defines the ambiguity surface. If it ever fails, retries have
-stopped somewhere and clients can suddenly see unknown outcomes from
-ordinary flakiness, which changes what producer idempotence has to cover.
+An earlier version of this document over-generalised that into "storage
+faults cannot produce client-visible ambiguity — only fencing can". That
+was wrong, and the reason is instructive: the measurement used a caller
+with **no deadline**. What it actually establishes is *given an
+indefinitely patient caller, appends eventually succeed*. Real callers
+have deadlines, and under heavy store latency the append outlives them —
+the client records `Unknown` while the server commits anyway, with no
+fencing event anywhere.
 
-It is also, independently, the mechanism behind the eu-central-1 soak
-wedge: nothing failed, everything simply took longer than any client would
-wait. Simulation reproduced the shape of a production incident from first
-principles.
+`storage_latency_creates_client_ambiguity_resolved_by_idempotence` now
+covers that path explicitly: 3–6 s simulated WAL writes, a 1 s client
+deadline, storage healing afterwards, an idempotent retry, and exactly one
+committed operation. The two layers are worth keeping distinct:
 
-The practical consequence is that ambiguity in this system comes from
-**fencing**, not from storage — so the idempotence scenario is built on a
-handoff: a shard moves mid-sequence, the append returns `Moved`, and the
-client retries the same producer sequence against the new owner exactly as
-a `Streams-Replay-To` client would. It passes, which establishes that
-producer state survives a handoff.
+| layer | who retries | client-visible? |
+|---|---|---|
+| object-store response lost | SlateDB, internally | no |
+| **append response lost / deadline expired** | the client | **yes — this is the public ambiguity** |
+
+So ambiguity has (at least) three sources: **client deadlines under
+storage slowness**, **fencing**, and a dropped response channel. The
+eu-central-1 wedge was the first of those — nothing failed, everything
+took longer than any client would wait.
+
+Idempotence is tested against the hardest of them.
+`producer_state_survives_a_handoff_and_suppresses_duplicates` commits
+producer sequence N through owner A at a known offset, fences A by opening
+B, and replays **the identical request bytes and producer identity**
+against B. B must answer `duplicate = true` **at the original offset**;
+the stream must contain the operation exactly once; the duplicate must
+consume no offset; and sequence N+1 must then commit. Producer state lives
+in the shard log, so surviving the handoff means the new owner reading it
+back from storage — and the duplicate response is the only way to observe
+that.
+
+An earlier version of this scenario could have passed without any of that
+(the fenced owner could reject everything and the new owner commit each
+retry fresh); it also embedded the attempt number in the payload, so a
+"retry" did not resend identical bytes. Both are fixed.
 
 ### A production incident, reproduced then fixed here
 
@@ -441,7 +491,7 @@ configuration. Minimised escapes become permanent corpus entries.
 ## 12. CI
 
 Today CI runs `cargo check`, the release test suite (which includes these
-twenty-nine scenarios) and one s3lite HTTP smoke test. The intended tiers:
+thirty-four scenarios) and one s3lite HTTP smoke test. The intended tiers:
 
 - **Pull request** — fixed regression corpus, a bounded seed sweep,
   replay-hash comparison, canary/mutation tests, and the focused fencing,
@@ -494,6 +544,23 @@ latency range matches measurement; records identified by attempt rather
 than payload; reads go through the production merged reader; deletes
 faulted; retries real; every claim in the code matches the code.
 
+**M0.1 — the second review's correctness pass.** *Done.* I6 rebuilt as
+real duplicate suppression across a handoff (identical bytes, original
+offset, no offset consumed, N+1 continues) — which required the engine to
+persist the commit offset alongside producer state, so a duplicate ack no
+longer answers with whatever the tail happens to be. Client-deadline
+ambiguity covered, correcting the over-broad "only fencing causes
+ambiguity" claim. **Every engine-owned task now terminates provably**:
+a level-triggered close signal broke the committer's retain cycle (it
+held the engine, the engine held its channel sender, so its channel could
+never close — one resident committer and engine allocation per shard move,
+forever), queued appends are answered on close instead of hanging, and
+`await_terminated` joins every handle rather than trusting
+`is_finished()`, which is also true after a panic. Streaming `list`
+faulted; mechanism counters fire only on applied behaviour. Tiering
+proven by trim, not just absorption. Oracle gained I7 (issued-set
+membership) and records acked offsets.
+
 **M1 — deterministic substrate.** `src/lib.rs`; injected clock, entropy,
 task ownership, CPU execution and process metrics; a seeded current-thread
 runtime everywhere *including* the absorber path; named per-actor random
@@ -504,7 +571,7 @@ yields an identical event-trace hash and final-state hash.*
 **M2 — complete single-node data plane.** Registry, create/delete/
 recreate, absorber, history, trim, GC, restarts, tails, key rotation,
 profile behaviour.
-*Acceptance: I1–I6 and the tiering invariants hold under process crashes
+*Acceptance: I1–I7 and the tiering invariants hold under process crashes
 and every supported object-store fault class.*
 
 **M3 — multi-node control plane.** Several `AppState` instances, router

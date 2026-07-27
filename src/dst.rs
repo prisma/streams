@@ -236,6 +236,8 @@ pub mod mech {
     pub const APPEND_RETRIED: &str = "append_retried";
     pub const PRODUCER_DUPLICATE: &str = "producer_duplicate_suppressed";
     pub const OLD_OWNER_FENCED: &str = "old_owner_fenced";
+    pub const AFTER_DURABLE_BEFORE_ACK: &str = "after_durable_before_ack";
+    pub const CLIENT_DEADLINE_EXPIRED: &str = "client_deadline_expired";
     pub const IN_FLIGHT_AT_FENCE: &str = "append_in_flight_at_fence";
     pub const READ_FROM_HISTORY: &str = "read_served_from_history";
 }
@@ -388,11 +390,21 @@ impl FaultState {
                 })
             }
             Toxic::LostResponse => {
-                self.injected_lost.fetch_add(1, Ordering::Relaxed);
-                self.coverage.hit(mech::STORE_LOST_RESPONSE);
+                // Counted by the CALLER, and only when the response is
+                // actually discarded. Counting here would let a scenario
+                // satisfy `require(STORE_LOST_RESPONSE)` on a verb that
+                // silently ignores the decision — anti-vacuity that lies.
                 Ok(true)
             }
         }
+    }
+}
+
+impl FaultState {
+    /// Record an actually-applied lost response.
+    fn note_lost(&self) {
+        self.injected_lost.fetch_add(1, Ordering::Relaxed);
+        self.coverage.hit(mech::STORE_LOST_RESPONSE);
     }
 }
 
@@ -511,6 +523,7 @@ impl ObjectStore for FaultStore {
         let lose = self.st.gate(StoreOp::Put, location.as_ref()).await?;
         let res = self.inner.put_opts(location, payload, opts).await;
         if lose && res.is_ok() {
+            self.st.note_lost();
             return Err(lost_response_error());
         }
         res
@@ -521,8 +534,10 @@ impl ObjectStore for FaultStore {
         location: &ObjPath,
         opts: PutMultipartOptions,
     ) -> OsResult<Box<dyn MultipartUpload>> {
-        // Never lose this response: the caller would leak an upload it can
-        // no longer drive, which models nothing real.
+        // Latency and pre-dispatch errors only. A "lost" response here
+        // would leak an upload the caller can no longer drive, which
+        // models nothing real — and per-part/complete faulting needs a
+        // wrapped MultipartUpload we have not built (docs/DST.md §8).
         let _ = self.st.gate(StoreOp::Put, location.as_ref()).await?;
         self.inner.put_multipart_opts(location, opts).await
     }
@@ -532,27 +547,99 @@ impl ObjectStore for FaultStore {
         // content. A store that returns wrong bytes is outside the
         // object-store contract, and simulating one would test a system we
         // do not have and cannot ship against.
-        let _ = self.st.gate(StoreOp::Get, location.as_ref()).await?;
-        self.inner.get_opts(location, options).await
+        let lose = self.st.gate(StoreOp::Get, location.as_ref()).await?;
+        let res = self.inner.get_opts(location, options).await;
+        if lose && res.is_ok() {
+            // The object was read; the caller never sees it. For a GET
+            // this is indistinguishable from a transport failure, which
+            // is exactly what it models.
+            self.st.note_lost();
+            return Err(lost_response_error());
+        }
+        res
     }
 
+    /// Streaming list. Previously delegated straight through, so a
+    /// scenario could believe it was faulting listings while GC and
+    /// recovery walked an untouched store. Faults apply at two points a
+    /// real listing can fail: before the first item, and mid-stream after
+    /// partial results (truncation with a terminal error).
     fn list(
         &self,
         prefix: Option<&ObjPath>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
-        self.inner.list(prefix)
+        use futures_util::StreamExt;
+        let p = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
+        let class = ObjClass::of(&p);
+        let plan = self.st.profile.plan_for(StoreOp::List, class);
+        if plan.error_pct == 0 && plan.lost_response_pct == 0 && plan.latency_pct == 0 {
+            return self.inner.list(prefix);
+        }
+        let inner = self.inner.list(prefix);
+        let st = self.st.clone();
+        // Decide once before the first item (fail / delay / proceed), then
+        // stream. `unfold` keeps the inner stream owned by the state
+        // machine rather than captured by an FnMut closure.
+        futures_util::stream::unfold(
+            (Some(inner), st, p, 0u64, None::<bool>, false),
+            |(mut inner, st, p, mut n, mut lose_mid, mut done)| async move {
+                if done {
+                    return None;
+                }
+                if lose_mid.is_none() {
+                    match st.gate(StoreOp::List, &p).await {
+                        Err(e) => {
+                            return Some((Err(e), (None, st, p, n, Some(false), true)));
+                        }
+                        Ok(l) => lose_mid = Some(l),
+                    }
+                }
+                if lose_mid == Some(true) && n >= 3 {
+                    // Truncate after partial results with a terminal error:
+                    // a real S3 listing failure mode, and the point at
+                    // which the lost response is actually applied.
+                    st.note_lost();
+                    return Some((Err(lost_response_error()), (None, st, p, n, lose_mid, true)));
+                }
+                let item = match inner.as_mut() {
+                    Some(stream) => {
+                        use futures_util::StreamExt;
+                        stream.next().await
+                    }
+                    None => None,
+                };
+                match item {
+                    Some(v) => {
+                        n += 1;
+                        Some((v, (inner, st, p, n, lose_mid, false)))
+                    }
+                    None => {
+                        done = true;
+                        let _ = done;
+                        None
+                    }
+                }
+            },
+        )
+        .boxed()
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
         let p = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
-        let _ = self.st.gate(StoreOp::List, &p).await?;
-        self.inner.list_with_delimiter(prefix).await
+        let lose = self.st.gate(StoreOp::List, &p).await?;
+        let res = self.inner.list_with_delimiter(prefix).await;
+        if lose && res.is_ok() {
+            self.st.note_lost();
+            return Err(lost_response_error());
+        }
+        res
     }
 
     async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, opts: CopyOptions) -> OsResult<()> {
         let lose = self.st.gate(StoreOp::Copy, from.as_ref()).await?;
         let res = self.inner.copy_opts(from, to, opts).await;
         if lose && res.is_ok() {
+            self.st.note_lost();
             return Err(lost_response_error());
         }
         res
@@ -586,6 +673,7 @@ impl ObjectStore for FaultStore {
                         None => Ok(p),
                     };
                     if lose && res.is_ok() {
+                        st.note_lost();
                         return Err(lost_response_error());
                     }
                     res
@@ -625,6 +713,15 @@ pub struct OpLog {
     /// Logical operations driven with producer idempotence: across all of
     /// an operation's attempts, at most one may be stored.
     pub idempotent: HashSet<u64>,
+    /// Every attempt the workload ISSUED (whatever its outcome). An
+    /// observed record that belongs to no issued attempt is a fabrication
+    /// — a class the old audit tolerated because it only checked that
+    /// acked attempts were present, never that present attempts were
+    /// issued.
+    pub issued: HashSet<AttemptId>,
+    /// Offset reported by the server for each acked attempt, so a read can
+    /// be checked against what the client was told, not just for presence.
+    pub acked_offsets: HashMap<AttemptId, u64>,
 }
 
 impl OpLog {
@@ -653,6 +750,18 @@ impl OpLog {
         for attempts in observed.values() {
             for a in attempts {
                 *seen_count.entry(*a).or_insert(0) += 1;
+            }
+        }
+
+        // I7: every observed record belongs to an issued attempt. Only
+        // enforced when the workload actually tracked issuance, so hand-
+        // built oracle unit tests stay valid.
+        if !self.issued.is_empty() {
+            if let Some(a) = seen_count.keys().find(|a| !self.issued.contains(a)) {
+                return Err(format!(
+                    "I7 violated: op{}#{} is readable but was never issued",
+                    a.0, a.1
+                ));
             }
         }
 
@@ -797,6 +906,91 @@ impl Workload {
         }
     }
 
+    /// One attempt with an explicit producer identity and an optional
+    /// **client deadline** — the public boundary. A deadline that expires
+    /// leaves the server's append running and yields `Unknown`, which is
+    /// exactly the operational shape storage faults produce (slow, not
+    /// failed). Returns the raw outcome; the caller owns the ledger.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attempt_with_deadline(
+        &self,
+        engine: &Arc<crate::shard::ShardEngine>,
+        hash: [u8; 16],
+        key: &crate::crypto::StreamKey,
+        rk: &str,
+        body: &str,
+        producer: Option<crate::shard::ProducerReq>,
+        deadline: Option<std::time::Duration>,
+    ) -> Outcome {
+        use crate::shard::{AppendErr, AppendReq};
+        let subkey = crate::crypto::derive_subkey(key, &hash, rk, 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            entries: vec![bytes::Bytes::from(body.as_bytes().to_vec())],
+            usage: crate::usage::counters(&hash),
+            routing_key: rk.to_string(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            close: false,
+            producer,
+            deferred_error: None,
+            touch: None,
+            resp: tx,
+        };
+        if engine.try_enqueue(req).is_err() {
+            return Outcome::Rejected;
+        }
+        let got = match deadline {
+            Some(d) => match tokio::time::timeout(d, rx).await {
+                Ok(r) => r,
+                Err(_) => {
+                    // The client stopped waiting. The append is still
+                    // running server-side: this is the ambiguity.
+                    self.coverage.hit(mech::CLIENT_DEADLINE_EXPIRED);
+                    self.coverage.hit(mech::APPEND_UNKNOWN);
+                    return Outcome::Unknown;
+                }
+            },
+            None => rx.await,
+        };
+        match got {
+            Ok(Ok(ack)) => {
+                if ack.duplicate {
+                    self.coverage.hit(mech::PRODUCER_DUPLICATE);
+                }
+                self.coverage.hit(mech::APPEND_ACKED);
+                Outcome::Acked {
+                    last_offset: ack.last_offset,
+                    duplicate: ack.duplicate,
+                }
+            }
+            Ok(Err(
+                AppendErr::SeqConflict { .. }
+                | AppendErr::ProducerGap { .. }
+                | AppendErr::ProducerStale { .. }
+                | AppendErr::ProducerEpochSeq
+                | AppendErr::CtMismatch
+                | AppendErr::BadBody(_),
+            )) => {
+                self.coverage.hit(mech::APPEND_REJECTED);
+                Outcome::Rejected
+            }
+            Ok(Err(AppendErr::Moved | AppendErr::Closed { .. } | AppendErr::Internal(_))) => {
+                self.coverage.hit(mech::APPEND_UNKNOWN);
+                Outcome::Unknown
+            }
+            Err(_) => {
+                self.coverage.hit(mech::APPEND_UNKNOWN);
+                Outcome::Unknown
+            }
+        }
+    }
+
     /// One logical operation, retried like a production client: a retry
     /// after an unknown outcome is a NEW attempt of the SAME operation.
     ///
@@ -855,11 +1049,16 @@ impl Workload {
                 seq: pseq,
             });
             let engine = engines[(attempt as usize).min(engines.len() - 1)];
+            log.issued.insert((op, attempt));
             last = self
                 .attempt(engine, hash, key, rk, op, attempt, producer)
                 .await;
             match &last {
-                Outcome::Acked { duplicate, .. } => {
+                Outcome::Acked {
+                    duplicate,
+                    last_offset,
+                } => {
+                    log.acked_offsets.insert((op, attempt), *last_offset);
                     if *duplicate {
                         self.coverage.hit(mech::PRODUCER_DUPLICATE);
                     }

@@ -113,6 +113,19 @@ async fn deletes_and_reads_are_faulted_too() {
         "reads must be faultable for availability"
     );
 
+    // Streaming list() must be faulted too — it used to delegate straight
+    // through, so a scenario could "fault listings" while GC and recovery
+    // walked an untouched store.
+    let listed = s
+        .list(Some(&ObjPath::from("shards/x/wal")))
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        listed.iter().any(|r| r.is_err()),
+        "streaming list() must be faultable (got {} items, all ok)",
+        listed.len()
+    );
+
     let del = s
         .delete_stream(futures_util::stream::once(async move { Ok(p.clone()) }).boxed())
         .collect::<Vec<_>>()
@@ -125,6 +138,53 @@ async fn deletes_and_reads_are_faulted_too() {
             .await
             .is_ok(),
         "a delete that failed before dispatch must leave the object in place"
+    );
+}
+
+
+/// Anti-vacuity for the anti-vacuity mechanism: `STORE_LOST_RESPONSE` may
+/// only increment when a response was *actually* discarded. Counting the
+/// decision at roll time (the previous behaviour) let a scenario satisfy
+/// `require(STORE_LOST_RESPONSE)` on a verb that ignored the decision.
+#[tokio::test]
+async fn lost_response_counter_tracks_applied_behaviour_only() {
+    let inner = mem();
+    // 100 % lost-response, but only multipart is exercised — and multipart
+    // deliberately cannot apply it (it would leak an undrivable upload).
+    let s = FaultStore::uniform(inner.clone(), 11, FaultPlan::new(0, 100, 0));
+    let before = s.injected_lost();
+    let _ = s
+        .put_multipart_opts(
+            &ObjPath::from("shards/x/wal/mpu.sst"),
+            PutMultipartOptions::default(),
+        )
+        .await;
+    assert_eq!(
+        s.injected_lost(),
+        before,
+        "multipart cannot apply a lost response, so it must not count one"
+    );
+
+    // A plain PUT can apply it, and must count exactly then.
+    let r = s
+        .put_opts(
+            &ObjPath::from("shards/x/wal/1.sst"),
+            PutPayload::from(vec![1u8; 4]),
+            PutOptions::default(),
+        )
+        .await;
+    assert!(r.is_err(), "the caller must see the lost response");
+    assert_eq!(
+        s.injected_lost(),
+        before + 1,
+        "an applied lost response must count exactly once"
+    );
+    assert!(
+        inner
+            .get_opts(&ObjPath::from("shards/x/wal/1.sst"), GetOptions::default())
+            .await
+            .is_ok(),
+        "and the write must nonetheless have landed"
     );
 }
 
@@ -252,64 +312,234 @@ async fn store_errors_surface_as_latency_not_as_failed_appends() {
     log.audit(&observed).expect("audit");
 }
 
-/// **I6 across a shard handoff.**
+/// **I6, properly: duplicate suppression across a handoff.**
 ///
-/// Store faults alone cannot produce client-visible ambiguity here: SlateDB
-/// retries object-store errors until they succeed, so a flaky store yields
-/// *slow* appends, never failed or ambiguous ones. We measured that
-/// directly — 20/20 appends acknowledged with a 95 % injected error rate
-/// and 2,329 injected errors — and it is the same mechanism that made the
-/// eu-central-1 wedge invisible to clients until their own timeouts fired
-/// (docs/SOAK-REGIONS.md).
+/// The previous version of this scenario could pass without ever
+/// exercising duplicate suppression — the fenced owner could reject
+/// everything and the new owner commit each retry as a fresh append. This
+/// one forces the real path:
 ///
-/// So the ambiguity a real client actually meets comes from **fencing**: a
-/// shard moves, the in-flight append returns `Moved`, and the client cannot
-/// know whether it committed. It retries the same logical operation — same
-/// producer sequence — against the new owner, exactly as a client following
-/// `Streams-Replay-To` does. If producer state did not survive the handoff,
-/// that retry double-writes.
+///   1. owner A durably commits producer P sequence N (acked, offset
+///      recorded);
+///   2. owner B opens and fences A — the handoff;
+///   3. the client, which has an ambiguous view of N, retries **the exact
+///      same bytes** with the same P/N against B;
+///   4. B must answer `duplicate = true` **at the original offset**, and
+///      the stream must contain that operation exactly once;
+///   5. sequence N+1 must then succeed through B.
+///
+/// Producer state lives in the shard log (`producer_key`), so it survives
+/// the handoff by being read back from storage by the new owner — that is
+/// the property under test, and it is only observable via the duplicate
+/// response.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn idempotent_retries_commit_at_most_once_across_a_handoff() {
+async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
     for seed in [5u64, 21] {
         let inner = mem();
-        let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 10, 30));
+        let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 30));
         let cov = store.coverage();
         let key = skey();
         let hash = [4u8; 16];
         let prefix = format!("dst-idem-{seed}");
+        let pid = format!("producer-{seed}");
+        // The exact request bytes a retry must resend verbatim.
+        let body_n = format!("{{\"op\":\"n\",\"seed\":{seed}}}");
 
         let a = open_engine(store.clone(), &prefix).await;
-        let mut log = OpLog::default();
-        let mut w = Workload::new(cov.clone());
-        w.max_attempts = 2;
+        let w = Workload::new(cov.clone());
 
-        // A settled producer sequence through the original owner.
-        for _ in 0..10 {
-            w.append_to(&[&a], hash, &key, "p", true, &mut log).await;
+        // Warm the log so the tail is NOT at the committed offset — this is
+        // what makes "original offset" a real assertion rather than a
+        // coincidence.
+        for i in 0..4u64 {
+            let o = w
+                .attempt_with_deadline(&a, hash, &key, "p", &format!("warm{i}"), None, None)
+                .await;
+            assert!(matches!(o, Outcome::Acked { .. }), "warm-up append");
         }
-        assert!(log.total_acked() > 0, "seed {seed}: nothing acked");
 
-        // The move. From here the client's first attempt goes to the fenced
-        // owner and its retry to the new one, carrying the same sequence.
+        // Sequence N (0 for a fresh producer epoch) commits through A.
+        let first = w
+            .attempt_with_deadline(
+                &a, hash, &key, "p", &body_n,
+                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+                None,
+            )
+            .await;
+        let orig_offset = match first {
+            Outcome::Acked { last_offset, duplicate } => {
+                assert!(!duplicate, "the first commit is not a duplicate");
+                last_offset
+            }
+            other => panic!("seed {seed}: producer seq 0 must commit, got {other:?}"),
+        };
+
+        // More traffic, so the tail moves past the committed offset.
+        for i in 0..3u64 {
+            let _ = w
+                .attempt_with_deadline(&a, hash, &key, "p", &format!("after{i}"), None, None)
+                .await;
+        }
+
+        // The handoff.
         let b = open_engine(store.clone(), &prefix).await;
-        for _ in 0..8 {
-            w.append_to(&[&a, &b], hash, &key, "p", true, &mut log).await;
+        cov.hit(mech::OLD_OWNER_FENCED);
+
+        // The retry: identical bytes, identical producer identity.
+        let retry = w
+            .attempt_with_deadline(
+                &b, hash, &key, "p", &body_n,
+                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+                None,
+            )
+            .await;
+        match retry {
+            Outcome::Acked { last_offset, duplicate } => {
+                assert!(
+                    duplicate,
+                    "seed {seed}: the new owner did not recognise the retry as a \
+                     duplicate — producer state did not survive the handoff"
+                );
+                assert_eq!(
+                    last_offset, orig_offset,
+                    "seed {seed}: duplicate ack must carry the ORIGINAL offset"
+                );
+            }
+            other => panic!("seed {seed}: retry must be an acked duplicate, got {other:?}"),
         }
 
+        // Exactly one copy in the stream, and no offset consumed by the
+        // duplicate.
         let ds: Arc<dyn ObjectStore> = store.clone();
-        let observed = drain_observed(&ds, &b, hash, &key, &cov).await;
-        if let Err(e) = log.audit(&observed) {
-            panic!("seed {seed}: {e}\ncoverage={:?}", cov.snapshot());
-        }
-        // Non-vacuity: the handoff must actually have produced ambiguous
-        // outcomes and failover retries, or this tested nothing.
+        let handle = b.stream_handle(hash).await.expect("handle");
+        let before_next = handle.state.lock().unwrap().durable.next;
+        let res = crate::http::read_merged(&ds, &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024)
+            .await
+            .expect("read back");
+        let copies = res
+            .recs
+            .iter()
+            .filter(|r| r.payload.as_ref() == body_n.as_bytes())
+            .count();
+        assert_eq!(
+            copies, 1,
+            "seed {seed}: the logical operation must appear exactly once (found {copies})"
+        );
+        let after_next = handle.state.lock().unwrap().durable.next;
+        assert_eq!(
+            before_next, after_next,
+            "seed {seed}: a duplicate must not consume an offset"
+        );
+
+        // And the producer can continue: N+1 succeeds through the new owner.
+        let next = w
+            .attempt_with_deadline(
+                &b, hash, &key, "p", "seq-1",
+                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 1 }),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(next, Outcome::Acked { duplicate: false, .. }),
+            "seed {seed}: sequence N+1 must commit after the handoff, got {next:?}"
+        );
+
         if let Err(e) = cov.require(&[
             mech::APPEND_ACKED,
-            mech::APPEND_UNKNOWN,
-            mech::APPEND_RETRIED,
+            mech::PRODUCER_DUPLICATE,
+            mech::OLD_OWNER_FENCED,
         ]) {
             panic!("seed {seed}: {e}");
         }
+    }
+}
+
+/// **Storage faults DO produce client-visible ambiguity — via deadlines.**
+///
+/// The earlier characterisation ("store errors surface as latency, not
+/// failures") was measured with an infinitely patient caller, which made
+/// it narrower than it sounded. Real callers have deadlines. Under heavy
+/// injected store latency the append outlives the client's deadline: the
+/// client records `Unknown` while the server commits anyway — ambiguity
+/// with no fencing event anywhere.
+///
+/// The resolution is the same contract as everywhere else: retry
+/// idempotently once storage heals, and exactly one operation exists.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
+    let inner = mem();
+    // Every WAL write takes 3-6 simulated seconds: far beyond the client
+    // deadline below, nowhere near a failure.
+    let slow = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (3_000, 6_000),
+    };
+    let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 20)).with_class(ObjClass::Wal, slow);
+    let store = FaultStore::new(inner.clone(), 71, profile);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [25u8; 16];
+    let engine = open_engine(store.clone(), "dst-deadline").await;
+    let w = Workload::new(cov.clone());
+    let pid = "deadline-producer".to_string();
+    let body = "{\"op\":\"deadline\"}".to_string();
+
+    // The client gives up after 1 s while the append is still in flight.
+    let first = w
+        .attempt_with_deadline(
+            &engine, hash, &key, "d", &body,
+            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            Some(std::time::Duration::from_secs(1)),
+        )
+        .await;
+    assert_eq!(
+        first,
+        Outcome::Unknown,
+        "the client must time out while the server keeps working — \
+         no ambiguity means the scenario is vacuous"
+    );
+
+    // Storage heals; the server's original append completes on its own.
+    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+
+    // The client resolves its ambiguity by retrying idempotently.
+    let retry = w
+        .attempt_with_deadline(
+            &engine, hash, &key, "d", &body,
+            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            None,
+        )
+        .await;
+    match retry {
+        Outcome::Acked { duplicate, .. } => assert!(
+            duplicate,
+            "the retry must be recognised as a duplicate — otherwise a \
+             deadline-driven retry double-writes"
+        ),
+        other => panic!("retry should ack as a duplicate, got {other:?}"),
+    }
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let res = crate::http::read_merged(&ds, &key, &hash, &handle, &engine, 0, None, 1 << 20)
+        .await
+        .expect("read back");
+    let copies = res
+        .recs
+        .iter()
+        .filter(|r| r.payload.as_ref() == body.as_bytes())
+        .count();
+    assert_eq!(copies, 1, "exactly one copy after the ambiguous retry");
+
+    if let Err(e) = cov.require(&[
+        mech::CLIENT_DEADLINE_EXPIRED,
+        mech::APPEND_UNKNOWN,
+        mech::PRODUCER_DUPLICATE,
+        mech::STORE_LATENCY,
+    ]) {
+        panic!("{e}");
     }
 }
 
@@ -585,7 +815,20 @@ async fn a_fenced_owners_absorber_exits() {
         "I4 violated: the fenced owner acknowledged writes"
     );
 
-    // The old absorber must now exit of its own accord.
+    // EVERY task the old engine owns must terminate — not just the
+    // absorber, and not merely "is_finished" (which is also true after a
+    // panic). await_terminated joins each handle and names stragglers.
+    //
+    // The committer is the one that used to be unable to exit at all: it
+    // held the engine, the engine held its channel sender, so the channel
+    // could never close. One resident committer + engine allocation per
+    // shard move, forever.
+    match a.await_terminated(std::time::Duration::from_secs(30)).await {
+        Ok(()) => {}
+        Err(e) => panic!("fenced owner left tasks behind: {e}"),
+    }
+
+    // The absorber is a separately-owned task; join it explicitly too.
     let mut exited = false;
     for _ in 0..400 {
         if absorber_a.is_finished() {
@@ -599,9 +842,178 @@ async fn a_fenced_owners_absorber_exits() {
         "the fenced owner's absorber is still running — a zombie that will \
          fight the new owner for its history DB"
     );
+    absorber_a.await.expect("absorber must exit cleanly, not panic");
 
     absorber_b.abort();
     let _ = b;
+}
+
+/// Queued-but-uncommitted appends must be answered when the shard closes,
+/// not left to hang until each client's own timeout. `begin_close` drains
+/// what is in flight; the committer drains what is still queued behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
+    let inner = mem();
+    // Slow WAL writes so requests pile up behind the in-flight commit.
+    let slow = FaultPlan {
+        error_pct: 0,
+        lost_response_pct: 0,
+        latency_pct: 100,
+        latency_ms: (400, 800),
+    };
+    let store = FaultStore::new(
+        inner.clone(),
+        73,
+        FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow),
+    );
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [26u8; 16];
+    let engine = open_engine(store.clone(), "dst-drain").await;
+
+    // Fire a burst without awaiting; they queue behind the slow commit.
+    let mut waiters = Vec::new();
+    for i in 0..16u64 {
+        let e = engine.clone();
+        let k = key.clone();
+        let c = cov.clone();
+        waiters.push(tokio::spawn(async move {
+            let w = Workload::new(c);
+            w.attempt_with_deadline(&e, hash, &k, "q", &format!("drain{i}"), None, None)
+                .await
+        }));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    engine.begin_close();
+
+    // Every caller must get an answer — acked (it made it) or Unknown
+    // (fenced/moved) — and none may hang.
+    let mut answered = 0;
+    for w in waiters {
+        match tokio::time::timeout(std::time::Duration::from_secs(20), w).await {
+            Ok(Ok(_outcome)) => answered += 1,
+            Ok(Err(e)) => panic!("waiter task panicked: {e}"),
+            Err(_) => panic!("a queued append never received a response after close"),
+        }
+    }
+    assert_eq!(answered, 16, "every queued append must be answered");
+
+    engine
+        .await_terminated(std::time::Duration::from_secs(30))
+        .await
+        .expect("all engine tasks must terminate after close");
+}
+
+
+/// **The tiering invariant, not just "the absorber ran".**
+///
+/// The absorption scenario waits for `absorbed > 0`, which proves records
+/// moved but not that the split is real. This one waits for `trimmed > 0`
+/// and then asserts the three-way structure directly:
+///
+///   [0, trimmed)          gone from the shard log
+///   [0, absorbed)         readable from history
+///   [absorbed, next)      readable from the shard tail
+///
+/// and that the merged read equals the canonical stream exactly — no gap
+/// at the boundary, no overlap, nothing lost to the trim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_and_tail_partition_the_stream_after_trim() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 83, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [27u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-tier", hash, &key).await;
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    // Enough traffic, in waves, that absorption AND trim both advance
+    // (trim lands one absorb round behind the boundary by design).
+    for _ in 0..6 {
+        w.run(&engine, hash, &key, &["t1", "t2"], 12, false, &mut log).await;
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+
+    let (mut trimmed, mut absorbed, mut next) = (0u64, 0u64, 0u64);
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            let st = h.state.lock().unwrap();
+            trimmed = st.durable.trimmed;
+            absorbed = st.durable.absorbed;
+            next = st.durable.next;
+        }
+        if trimmed > 0 && absorbed < next {
+            break;
+        }
+        // keep the stream moving so the absorber has work
+        w.run(&engine, hash, &key, &["t1"], 2, false, &mut log).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        trimmed > 0,
+        "trim never advanced (absorbed={absorbed}, next={next}) — this \
+         scenario would only be re-testing absorption"
+    );
+    assert!(absorbed >= trimmed, "absorbed {absorbed} must cover trimmed {trimmed}");
+    assert!(
+        absorbed < next,
+        "no live tail above the boundary (absorbed={absorbed}, next={next}) — \
+         the merged read would be history-only and prove nothing"
+    );
+
+    // 1. Below the trim: physically gone from the shard log.
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let below = crate::shard::read_frames_range(&engine, &handle, 0, trimmed, 1 << 20)
+        .await
+        .expect("scan below trim");
+    assert!(
+        below.frames.is_empty(),
+        "{} frames still in the shard log below the trim boundary",
+        below.frames.len()
+    );
+
+    // 2. History serves [0, absorbed).
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = crate::history::read_history(&ds, &hash, &key, 0, absorbed, None, 8 << 20)
+        .await
+        .expect("history read");
+    assert!(
+        !hist.records.is_empty(),
+        "history returned nothing for [0, {absorbed})"
+    );
+    assert!(
+        hist.records.iter().all(|(off, _)| *off < absorbed),
+        "history returned an offset at or above the absorbed boundary"
+    );
+
+    // 3. The tail serves [absorbed, next).
+    let tail = crate::shard::read_frames_range(&engine, &handle, absorbed, next, 8 << 20)
+        .await
+        .expect("tail scan");
+    assert!(
+        !tail.frames.is_empty(),
+        "the shard tail is empty above the absorbed boundary"
+    );
+
+    // 4. The merged read is exactly the canonical stream: every acked
+    //    record, once, in order — across the boundary.
+    let observed = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&observed) {
+        panic!("merged read is not the canonical stream (trimmed={trimmed}, absorbed={absorbed}, next={next}): {e}");
+    }
+    let merged_total: usize = observed.values().map(|v| v.len()).sum();
+    assert!(
+        merged_total >= hist.records.len(),
+        "merged read ({merged_total}) returned fewer records than history alone ({})",
+        hist.records.len()
+    );
+    if let Err(e) = cov.require(&[mech::READ_FROM_HISTORY]) {
+        panic!("{e}");
+    }
+    absorber.abort();
 }
 
 // ---- the oracle itself must be able to fail -------------------------
@@ -649,6 +1061,19 @@ fn oracle_catches_reordering() {
         .audit(&obs(&[("k", &[(0, 0), (2, 0), (1, 0)])]))
         .unwrap_err();
     assert!(err.starts_with("I2"), "expected I2, got: {err}");
+}
+
+
+/// I7's negative control: a record that belongs to no issued attempt must
+/// be caught. Previously the audit only checked that acked attempts were
+/// present, so a fabricated record could pass unnoticed.
+#[test]
+fn oracle_catches_a_record_that_was_never_issued() {
+    let mut log = OpLog::default();
+    log.issued.insert((1, 0));
+    log.acked.insert("k".into(), vec![(1, 0)]);
+    let err = log.audit(&obs(&[("k", &[(1, 0), (9, 9)])])).unwrap_err();
+    assert!(err.starts_with("I7"), "expected I7, got: {err}");
 }
 
 /// I5's negative control: a write the server refused must not turn up.

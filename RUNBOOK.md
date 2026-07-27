@@ -564,6 +564,7 @@ keeping `SCALE_EDGE_SLOTS` calibrated when the platform edge changes.
 | WAL prefix grows unboundedly; watermark lags | flush cadence outrunning WAL GC | keep `FLUSH_INTERVAL_MS ≥ 25` and the 30/60 GC settings |
 | deploy applies but service behaves like a different role | project-scope env merge | §7.3 — restate complete env, always |
 | brief 503s on a shard after a fleet change | 3 s anti-flap hold-off after fencing | normal; clients retry |
+| client reports a timeout but the record is in the stream | storage slowness outlived the client's deadline — the append committed late (no fencing needed) | expected under a degraded store; clients MUST use producer idempotence (`Producer-Id`/`Epoch`/`Seq`) so the retry is deduped at the original offset |
 | `--env KEY=` rejected / RUST_LOG splits into bogus keys | CLI env parsing | `--unset-env` for removals; quote comma values |
 | throughput → 0, clients see connection timeouts, but stored record count keeps rising | **WAL read storm**: detached shard-open replays piling up after an engine death (each client timeout used to spawn another full-WAL replay; the zombies fence each other and the serving map never fills) | fixed by single-flight opens (sharddir.rs, 2026-07-27); `/v1/debug/store` → `wal_read_storm.stalled` detects the shape, `shard_opens` shows the loop (started ≫ completed). If it ever recurs: restart the instance, check `served_from` for out-of-region routing. Clients must use producer idempotence or late-landing writes become duplicates on retry |
 

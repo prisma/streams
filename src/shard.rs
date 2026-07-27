@@ -108,7 +108,12 @@ pub struct StreamState {
     pub applied: TailFields,
     /// Producer idempotence state: id -> (epoch, highest seq). Loaded from
     /// the durable `q` keys on first use, applied by the committer.
-    pub producers: HashMap<String, (u64, u64)>,
+    /// producer id -> (epoch, seq, last_offset of that seq's commit).
+    /// The offset makes a duplicate ack return the ORIGINAL committed
+    /// offset instead of whatever the tail happens to be when the retry
+    /// arrives — with interleaved appends those differ, and clients use
+    /// the ack offset for read-your-write.
+    pub producers: HashMap<String, (u64, u64, u64)>,
     /// Queue-profile consumer state (loaded lazily by the committer).
     pub queue: crate::queue::QueueState,
 }
@@ -308,6 +313,11 @@ pub struct ShardEngine {
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
+    /// Level-triggered close signal for background tasks (see start()).
+    close_tx: tokio::sync::watch::Sender<bool>,
+    /// Handles for every task this engine spawned, so termination is a
+    /// provable fact (`await_terminated`) instead of an assumption.
+    tasks: Mutex<Vec<(&'static str, tokio::task::JoinHandle<()>)>>,
     flush_wake: Notify,
     /// Group-commit pump wake: one permit means "commits landed since the
     /// pump last looked". Distinct from flush_wake, whose permit the acker
@@ -350,6 +360,12 @@ impl ShardEngine {
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Arc<ShardEngine> {
         let (tx, rx) = mpsc::channel(cfg.queue_reqs);
+        // Level-triggered close signal for the background tasks. The
+        // committer cannot rely on its channel closing: the engine itself
+        // holds a sender, and the committer holds the engine — a retain
+        // cycle that used to leave one committer task (and the whole
+        // engine allocation) resident per shard move, forever.
+        let (close_tx, _) = tokio::sync::watch::channel(false);
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
@@ -361,6 +377,8 @@ impl ShardEngine {
             absorb_tx,
             on_close,
             closed: std::sync::atomic::AtomicBool::new(false),
+            close_tx,
+            tasks: Mutex::new(Vec::new()),
             commit_write_started_ms: std::sync::atomic::AtomicI64::new(0),
             stats_appended: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
@@ -374,11 +392,12 @@ impl ShardEngine {
         // faster than the gap it enforces the same max SST mint rate as the
         // old tick. SlateDB's own flush_interval stays on as a long
         // failsafe (shard_settings stretches it when the pump is enabled).
+        let mut task_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
         if cfg.wal_group_commit {
             let pump = engine.clone();
             let gap = cfg.wal_flush_gap;
             tracing::info!(shard = %pump.prefix, gap_ms = gap.as_millis() as u64, "WAL group-commit pump on");
-            tokio::spawn(async move {
+            let h = tokio::spawn(async move {
                 use slatedb::config::{FlushOptions, FlushType};
                 let mut last_start: Option<std::time::Instant> = None;
                 loop {
@@ -420,37 +439,85 @@ impl ShardEngine {
                     }
                 }
             });
+            task_handles.push(("pump", h));
         }
         let committer = engine.clone();
-        tokio::spawn(async move { committer.committer_loop(rx, cfg).await });
+        task_handles.push((
+            "committer",
+            tokio::spawn(async move { committer.committer_loop(rx, cfg).await }),
+        ));
         let acker = engine.clone();
-        tokio::spawn(async move { acker.acker_loop().await });
+        task_handles.push((
+            "acker",
+            tokio::spawn(async move { acker.acker_loop().await }),
+        ));
         // F1 recovery bound: `max_wal_flushes_before_l0_flush` has a 4096
         // upstream floor, so we cap the WAL replay window ourselves with a
         // periodic explicit memtable->L0 flush whenever data accumulated.
         let ticker = engine.clone();
-        tokio::spawn(async move {
-            use slatedb::config::{FlushOptions, FlushType};
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            let mut last_appended = 0u64;
-            loop {
-                interval.tick().await;
-                let appended = ticker.stats_appended.load(Ordering::Relaxed);
-                if appended != last_appended {
-                    last_appended = appended;
-                    if let Err(e) = ticker
-                        .db
-                        .flush_with_options(FlushOptions {
-                            flush_type: FlushType::MemTable,
-                        })
-                        .await
-                    {
-                        tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
+        let mut ticker_closed = engine.close_tx.subscribe();
+        task_handles.push((
+            "flush-ticker",
+            tokio::spawn(async move {
+                use slatedb::config::{FlushOptions, FlushType};
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                let mut last_appended = 0u64;
+                loop {
+                    tokio::select! {
+                        _ = ticker_closed.changed() => {
+                            if *ticker_closed.borrow() {
+                                return;
+                            }
+                        }
+                        _ = interval.tick() => {}
+                    }
+                    if ticker.is_closed() {
+                        return;
+                    }
+                    let appended = ticker.stats_appended.load(Ordering::Relaxed);
+                    if appended != last_appended {
+                        last_appended = appended;
+                        if let Err(e) = ticker
+                            .db
+                            .flush_with_options(FlushOptions {
+                                flush_type: FlushType::MemTable,
+                            })
+                            .await
+                        {
+                            tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
+                        }
                     }
                 }
-            }
-        });
+            }),
+        ));
+        *engine.tasks.lock().unwrap() = task_handles;
         engine
+    }
+
+    /// Await every background task this engine spawned, up to `timeout`.
+    ///
+    /// `JoinHandle::is_finished()` is not evidence of clean termination —
+    /// it is also true after a panic. This joins each task and names the
+    /// stragglers, so "the fenced owner's tasks exited" is a provable
+    /// statement (the committer used to be unprovable: it held the engine,
+    /// the engine held its sender, so the channel could never close).
+    pub async fn await_terminated(&self, timeout: std::time::Duration) -> Result<(), String> {
+        let handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> =
+            self.tasks.lock().unwrap().drain(..).collect();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut failed: Vec<String> = Vec::new();
+        for (name, h) in handles {
+            match tokio::time::timeout_at(deadline, h).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => failed.push(format!("{name}: panicked ({e})")),
+                Err(_) => failed.push(format!("{name}: still running at timeout")),
+            }
+        }
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(failed.join("; "))
+        }
     }
 
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
@@ -478,6 +545,7 @@ impl ShardEngine {
         if self.closed.swap(true, Ordering::SeqCst) {
             return; // already closing
         }
+        let _ = self.close_tx.send(true);
         self.pump_wake.notify_one();
         let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
         for group in stranded {
@@ -584,8 +652,60 @@ impl ShardEngine {
     }
 
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
+        // The close signal is the ONLY way out: this task holds the engine
+        // and the engine holds a sender, so `rx` can never report closed.
+        let mut closed_rx = self.close_tx.subscribe();
         loop {
-            let Some(first) = rx.recv().await else { return };
+            let first = tokio::select! {
+                _ = closed_rx.changed() => {
+                    if !*closed_rx.borrow() {
+                        continue;
+                    }
+                    // Fail everything still queued — their clients would
+                    // otherwise hang into their own timeouts — then exit.
+                    while let Ok(op) = rx.try_recv() {
+                        match op {
+                            CommitOp::Append(r) => {
+                                let _ = r.resp.send(Err(AppendErr::Moved));
+                            }
+                            CommitOp::Queue { resp, .. } => {
+                                let _ = resp.send(Err("shard fenced/moved; retry".into()));
+                            }
+                            CommitOp::Absorbed { .. } => {}
+                        }
+                    }
+                    return;
+                }
+                got = rx.recv() => {
+                    let Some(op) = got else { return };
+                    op
+                }
+            };
+            if self.is_closed() {
+                // Set-before-subscribe race: honor the flag, fail the op we
+                // just took plus the rest of the queue, and exit.
+                match first {
+                    CommitOp::Append(r) => {
+                        let _ = r.resp.send(Err(AppendErr::Moved));
+                    }
+                    CommitOp::Queue { resp, .. } => {
+                        let _ = resp.send(Err("shard fenced/moved; retry".into()));
+                    }
+                    CommitOp::Absorbed { .. } => {}
+                }
+                while let Ok(op) = rx.try_recv() {
+                    match op {
+                        CommitOp::Append(r) => {
+                            let _ = r.resp.send(Err(AppendErr::Moved));
+                        }
+                        CommitOp::Queue { resp, .. } => {
+                            let _ = resp.send(Err("shard fenced/moved; retry".into()));
+                        }
+                        CommitOp::Absorbed { .. } => {}
+                    }
+                }
+                return;
+            }
             let mut ops = vec![first];
             let mut bytes = match &ops[0] {
                 CommitOp::Append(r) => r.bytes,
@@ -667,7 +787,7 @@ impl ShardEngine {
             handle: Arc<StreamHandle>,
             fields: TailFields,
             base: TailFields,
-            producers: HashMap<String, (u64, u64)>,
+            producers: HashMap<String, (u64, u64, u64)>,
             appended_bytes: u64,
         }
 
@@ -727,9 +847,20 @@ impl ShardEngine {
                             let loaded = match shared {
                                 Some(v) => Some(v),
                                 None => match self.db.get(producer_key(&hash, &pr.id)).await {
+                                    // 24-byte current format carries the
+                                    // commit offset; 16-byte legacy rows
+                                    // fall back to "offset unknown" (0),
+                                    // where the duplicate ack degrades to
+                                    // the old tail-based answer.
+                                    Ok(Some(v)) if v.len() >= 24 => Some((
+                                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
+                                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
+                                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
+                                    )),
                                     Ok(Some(v)) if v.len() >= 16 => Some((
                                         u64::from_le_bytes(v[0..8].try_into().unwrap()),
                                         u64::from_le_bytes(v[8..16].try_into().unwrap()),
+                                        0,
                                     )),
                                     Ok(_) => None,
                                     Err(e) => {
@@ -751,7 +882,7 @@ impl ShardEngine {
                     let mut prod_echo: Option<(u64, u64)> = None;
                     if let Some(pr) = &req.producer {
                         match local.producers.get(&pr.id).copied() {
-                            Some((ce, cs)) => {
+                            Some((ce, cs, coff)) => {
                                 if pr.epoch < ce {
                                     let _ = req
                                         .resp
@@ -759,8 +890,19 @@ impl ShardEngine {
                                     continue;
                                 }
                                 if pr.epoch == ce && pr.seq <= cs {
+                                    // Duplicate: answer with the ORIGINAL
+                                    // committed offset when the stored
+                                    // producer row carries it (24-byte
+                                    // format); a legacy 16-byte row (coff
+                                    // == 0 with a non-empty log) degrades
+                                    // to the tail-based answer.
+                                    let last = if pr.seq == cs && coff != 0 {
+                                        coff
+                                    } else {
+                                        local.fields.next.wrapping_sub(1)
+                                    };
                                     let _ = req.resp.send(Ok(AppendAck {
-                                        last_offset: local.fields.next.wrapping_sub(1),
+                                        last_offset: last,
                                         next_offset: local.fields.next,
                                         closed: local.fields.closed,
                                         producer: Some((ce, cs)),
@@ -826,12 +968,24 @@ impl ShardEngine {
                             }
                         }
                     }
-                    // Accept: stage producer + close + records.
+                    // Accept: stage producer + close + records. Entries are
+                    // staged below starting at the CURRENT `next`, so this
+                    // append's last offset is predictable here — persist it
+                    // with the producer row so a later duplicate retry can
+                    // be answered with the original offset.
                     if let Some(pr) = &req.producer {
-                        local.producers.insert(pr.id.clone(), (pr.epoch, pr.seq));
-                        let mut v = Vec::with_capacity(16);
+                        let commit_last = if req.entries.is_empty() {
+                            local.fields.next.wrapping_sub(1)
+                        } else {
+                            local.fields.next + req.entries.len() as u64 - 1
+                        };
+                        local
+                            .producers
+                            .insert(pr.id.clone(), (pr.epoch, pr.seq, commit_last));
+                        let mut v = Vec::with_capacity(24);
                         v.extend_from_slice(&pr.epoch.to_le_bytes());
                         v.extend_from_slice(&pr.seq.to_le_bytes());
+                        v.extend_from_slice(&commit_last.to_le_bytes());
                         wb.put(producer_key(&hash, &pr.id), v);
                     }
                     if req.close {
@@ -1286,6 +1440,7 @@ impl ShardEngine {
                     // may never drop). Touch waiters wake with stale.
                     tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}");
                     self.closed.store(true, Ordering::SeqCst);
+                    let _ = self.close_tx.send(true);
                     // Wake the group-commit pump so it observes closed and
                     // exits instead of parking on its Notify forever.
                     self.pump_wake.notify_one();
