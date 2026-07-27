@@ -133,8 +133,9 @@ across five regions in the same window.
 
 ## 8. Current state
 
-Incident 7 is live and we are deliberately leaving it untouched during
-our current 30-minute run so it can be inspected in place (the workload
-is unaffected; only inbound scraping is broken). We tear our benchmark
-projects down after each campaign, so if you want the specimen kept
-beyond today, tell us and we'll hold it.
+Incident 7 is **preserved for inspection**: when the current campaign's
+other five regions are torn down, project
+`proj_aetb1z2e6k5lhm4bg3v21zva` (both services and its bucket) stays up
+indefinitely — the 404ing preview domain, its `running` version, and
+the live app behind it, untouched. Ping the Streams team when you're
+done with it and we'll remove it.
