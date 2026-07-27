@@ -686,6 +686,11 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         // Reopen-storm visibility (sharddir.rs): started climbing while
         // completed stays flat = the eu-central-1 wedge shape.
         "shard_opens": crate::sharddir::stats_json(),
+        // History DbReader cache (history.rs): hits vs misses shows how
+        // much per-request manifest traffic the cache is absorbing;
+        // stale_reopens tracks absorbed-boundary races (bounded by absorb
+        // cadence, not request rate).
+        "history_readers": crate::history::reader_cache_stats_json(),
         "ops": ops,
         "slow": slow,
     })

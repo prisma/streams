@@ -863,6 +863,14 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
     );
 }
 
+
+/// OpenGate counters are process-global too; its three counter-asserting
+/// tests serialize here for the same reason as the reader-cache tests.
+fn gate_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// **The fix.** Same sick store, same impatient clients, through
 /// `OpenGate`: one open, started once, owning its own completion. Clients
 /// get retryable 503s while it runs; the engine lands in the serving map
@@ -871,6 +879,7 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn open_gate_survives_impatient_clients_without_a_storm() {
     use crate::sharddir::{OpenGate, OpenOutcome};
+    let _serial = gate_lock().lock().await;
     let inner = mem();
     seed_untrimmed_wal(inner.clone(), "dst-gate", 120).await;
 
@@ -971,6 +980,7 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     use crate::sharddir::{OpenGate, OpenOutcome};
+    let _serial = gate_lock().lock().await;
     let inner = mem();
     OpenGate::reset_counters_for_tests();
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
@@ -1036,6 +1046,7 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     use crate::sharddir::{OpenGate, OpenOutcome};
+    let _serial = gate_lock().lock().await;
     let inner = mem();
     OpenGate::reset_counters_for_tests();
 
@@ -1129,4 +1140,375 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     };
     assert!(!eng.is_closed(), "the recovery engine must be live");
     assert!(!shards.read().unwrap().is_empty());
+}
+
+// ---- the metadata-read surface (history reader cache + compactions GC)
+
+
+// The history reader cache and its counters are process-global, so the
+// tests below serialize on one lock (they pass solo but race each other
+// under the parallel test harness), and poll-pinning uses an RAII guard
+// so a panicking test cannot leave the hour-long poll behind for others.
+fn hrc_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+struct PollPin;
+impl PollPin {
+    fn hour() -> Self {
+        crate::history::set_reader_poll_ms_for_tests(3_600_000);
+        PollPin
+    }
+}
+impl Drop for PollPin {
+    fn drop(&mut self) {
+        crate::history::set_reader_poll_ms_for_tests(5_000);
+    }
+}
+
+/// Protocol-cost budget: after the first read warms the cache, repeated
+/// history reads must not open new DbReaders — the per-request manifest
+/// GETs and checkpoint writes are exactly the small-metadata operations
+/// Tigris sometimes serves from a remote region (the "metadata trickle",
+/// docs/SOAK-REGIONS.md), so each cold open is a chance at a
+/// transcontinental round trip on the user-visible read path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_reads_reuse_a_cached_reader() {
+    let _serial = hrc_lock().lock().await;
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 41, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [21u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-hrc", hash, &key).await;
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.run(&engine, hash, &key, &["h"], 30, false, &mut log).await;
+    let mut absorbed = 0u64;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            absorbed = h.state.lock().unwrap().durable.absorbed;
+            if absorbed > 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(absorbed > 0, "absorber never advanced — nothing to read from history");
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let (h0, m0, _p0, s0, _e0) = crate::history::reader_cache_counters();
+
+    // First drain: opens (or reuses a prior test's) reader.
+    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    log.audit(&obs).expect("first drain audit");
+    let manifest_gets_after_warm = store.count(StoreOp::Get, ObjClass::Manifest);
+
+    // Nineteen more drains: all served by the cached reader.
+    for _ in 0..19 {
+        let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+        log.audit(&obs).expect("cached drain audit");
+    }
+
+    let (h1, m1, _p1, s1, _e1) = crate::history::reader_cache_counters();
+    assert!(
+        m1 - m0 <= 1,
+        "at most one cache miss across 20 drains (got {})",
+        m1 - m0
+    );
+    assert!(
+        h1 - h0 >= 19,
+        "the cached reader must serve the repeat drains (hits {})",
+        h1 - h0
+    );
+    // The absorber may advance between drains; each advance is allowed one
+    // stale reopen — but reopens must be bounded by absorb cadence, never
+    // by request count.
+    assert!(
+        s1 - s0 <= 3,
+        "stale reopens must track absorb cadence, not request rate (got {})",
+        s1 - s0
+    );
+    // Store-level corroboration: 19 cached drains must not multiply the
+    // manifest traffic the warm-up produced. Uncached, every drain paid
+    // the open cost again.
+    let manifest_gets_final = store.count(StoreOp::Get, ObjClass::Manifest);
+    let cached_drain_cost = manifest_gets_final - manifest_gets_after_warm;
+    assert!(
+        cached_drain_cost <= manifest_gets_after_warm.max(20),
+        "19 cached drains cost {cached_drain_cost} manifest GETs vs {manifest_gets_after_warm} \
+         for the entire warm-up — the cache is not being used"
+    );
+    absorber.abort();
+}
+
+/// The correctness edge the cache must not soften: the absorbed boundary
+/// advances, and a read arrives BEFORE the cached reader's own poll has
+/// caught up. The poll interval is pinned absurdly high so the staleness
+/// is deterministic, not a race: the cache must detect non-coverage via
+/// its one-row probe, reopen fresh, and return every acknowledged record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_cached_reader_is_detected_and_replaced() {
+    let _serial = hrc_lock().lock().await;
+    let _poll = PollPin::hour();
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 43, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [22u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-hrc-stale", hash, &key).await;
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+
+    let mut wait_absorbed_past = |target: u64| {
+        let engine = engine.clone();
+        async move {
+            for _ in 0..400 {
+                if let Ok(h) = engine.stream_handle(hash).await {
+                    let a = h.state.lock().unwrap().durable.absorbed;
+                    if a > target {
+                        return a;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("absorbed never advanced past {target}");
+        }
+    };
+
+    // Batch 1 → absorb → drain (cache now holds a reader whose view ends
+    // at the first boundary).
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    let a1 = wait_absorbed_past(0).await;
+    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    log.audit(&obs).expect("drain 1");
+
+    // Batch 2 → absorb further. The cached reader CANNOT know (its poll
+    // is an hour away); only the probe-and-reopen path can serve this.
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    let a2 = wait_absorbed_past(a1).await;
+    assert!(a2 > a1);
+
+    let (_, _, _, s0, _) = crate::history::reader_cache_counters();
+    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&obs) {
+        panic!("stale-reader drain lost records: {e}");
+    }
+    let (_, _, _, s1, _) = crate::history::reader_cache_counters();
+    assert!(
+        s1 > s0,
+        "the stale reader was never detected — the scenario is vacuous \
+         (poll should have been pinned too high for it to self-heal)"
+    );
+
+    // And the replacement is itself cached: one more drain, no reopen.
+    let (_, _, _, s2a, _) = crate::history::reader_cache_counters();
+    let obs = drain_observed(&ds, &engine, hash, &key, &cov).await;
+    log.audit(&obs).expect("drain 3");
+    let (_, _, _, s2b, _) = crate::history::reader_cache_counters();
+    assert_eq!(s2b, s2a, "the fresh reader must be cached, not reopened again");
+
+    absorber.abort();
+}
+
+/// Key-filtered reads cannot verify coverage by offset contiguity (the
+/// filter legitimately skips offsets), which is why coverage is proven by
+/// probe. Same staleness setup, filtered read path directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn filtered_history_reads_survive_a_stale_reader() {
+    let _serial = hrc_lock().lock().await;
+    let _poll = PollPin::hour();
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 47, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [23u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-hrc-filt", hash, &key).await;
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
+    let mut a1 = 0;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            a1 = h.state.lock().unwrap().durable.absorbed;
+            if a1 > 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(a1 > 0);
+    // Warm the cache at boundary a1.
+    let _ = crate::history::read_history(&ds, &hash, &key, 0, a1, Some("fa"), 1 << 20)
+        .await
+        .expect("warm filtered read");
+
+    // Advance the boundary past the cached view.
+    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
+    let mut a2 = a1;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            a2 = h.state.lock().unwrap().durable.absorbed;
+            if a2 > a1 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(a2 > a1, "second absorb never landed");
+
+    let res = crate::history::read_history(&ds, &hash, &key, 0, a2, Some("fa"), 1 << 20)
+        .await
+        .expect("filtered read at new boundary");
+    assert!(
+        res.completed,
+        "filtered read must be coverage-proven complete after the fallback"
+    );
+    // Every "fa" record acked into [0, a2) must be present.
+    let acked_fa = log.acked.get("fa").map(|v| v.len()).unwrap_or(0);
+    let in_history = res.records.len();
+    assert!(
+        in_history >= acked_fa.saturating_sub(5),
+        "filtered read returned {in_history} records for {acked_fa} acked \
+         (allowing a small unabsorbed tail)"
+    );
+    absorber.abort();
+}
+
+/// The cache is bounded: streams beyond the cap evict the oldest reader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn history_reader_cache_evicts_beyond_its_cap() {
+    let _serial = hrc_lock().lock().await;
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 53, FaultPlan::CLEAN);
+    let key = skey();
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let (_, _, _, _, e0) = crate::history::reader_cache_counters();
+
+    // Twelve distinct minimal history DBs. A DbReader cannot open a
+    // nonexistent prefix (production never asks it to: reads only happen
+    // once the absorber has created the db), so seed each with one row.
+    for i in 0..12u8 {
+        let mut hash = [30u8; 16];
+        hash[15] = i;
+        let path = crate::history::history_db_path(&hash);
+        let db = slatedb::Db::builder(path.as_str(), ds.clone())
+            .build()
+            .await
+            .expect("seed history db");
+        db.put(b"seed", b"1").await.expect("seed row");
+        db.close().await.expect("close seed db");
+        let _ = crate::history::reader_cache()
+            .acquire(&ds, &hash, &key, 0)
+            .await
+            .expect("acquire");
+    }
+    let (_, _, _, _, e1) = crate::history::reader_cache_counters();
+    assert!(
+        e1 - e0 >= 3,
+        "12 streams past a cap of 8 must evict (evictions {})",
+        e1 - e0
+    );
+    assert!(
+        crate::history::reader_cache().len_for_tests().await <= 9,
+        "cache size must stay near its cap"
+    );
+}
+
+/// Reopen cost after compactor churn is a protocol budget: the
+/// compactions log is a versioned object where every compactor state
+/// change mints another file, and open pages through the survivors — at
+/// cross-region latency this class made the eu-central-1 open crawl. With
+/// GC reaping superseded versions (min_age floored at 0 here), a reopen
+/// after heavy churn must cost a bounded number of small-object reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reopen_cost_is_bounded_after_compactions_churn() {
+    let inner = mem();
+    let key = skey();
+    let hash = [24u8; 16];
+
+    let settings = || slatedb::config::Settings {
+        flush_interval: Some(std::time::Duration::from_millis(2)),
+        manifest_poll_interval: std::time::Duration::from_millis(25),
+        // Tiny L0 SSTs force constant compactor activity → many
+        // `.compactions` versions.
+        l0_sst_size_bytes: 4 * 1024,
+        compactor_options: Some(slatedb::config::CompactorOptions {
+            poll_interval: std::time::Duration::from_millis(20),
+            ..Default::default()
+        }),
+        garbage_collector_options: Some(slatedb::config::GarbageCollectorOptions {
+            compactions_options: Some(slatedb::config::GarbageCollectorDirectoryOptions {
+                interval: Some(std::time::Duration::from_millis(200)),
+                min_age: std::time::Duration::from_secs(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // Churn phase on the raw store (counted separately from the reopen).
+    let churn_store = FaultStore::uniform(inner.clone(), 59, FaultPlan::CLEAN);
+    {
+        let db = slatedb::Db::builder("dst-compact", churn_store.clone())
+            .with_settings(settings())
+            .build()
+            .await
+            .expect("open churn db");
+        for i in 0..400u32 {
+            db.put_with_options(
+                format!("k{i:05}").as_bytes(),
+                vec![7u8; 512].as_slice(),
+                &slatedb::config::PutOptions::default(),
+                &slatedb::config::WriteOptions {
+                    await_durable: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("churn put");
+            if i % 50 == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            }
+        }
+        // Let compactor + GC cycles run, then close cleanly.
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+        db.close().await.expect("close churn db");
+    }
+    // Non-vacuity: the churn must actually have minted compactions-log
+    // versions (they are Put:Other in our classifier).
+    let churn_other_puts = churn_store.count(StoreOp::Put, ObjClass::Other);
+    assert!(
+        churn_other_puts >= 5,
+        "churn phase minted only {churn_other_puts} small-object versions — \
+         the compactor never ran and this budget test is vacuous"
+    );
+    let _ = hash;
+    let _ = key;
+
+    // Reopen through a fresh counting store: the budget under test.
+    let reopen_store = FaultStore::uniform(inner.clone(), 61, FaultPlan::CLEAN);
+    let db2 = slatedb::Db::builder("dst-compact", reopen_store.clone())
+        .with_settings(settings())
+        .build()
+        .await
+        .expect("reopen db");
+    let other_reads = reopen_store.count(StoreOp::Get, ObjClass::Other)
+        + reopen_store.count(StoreOp::List, ObjClass::Other);
+    assert!(
+        other_reads <= 40,
+        "reopen paged through {other_reads} small-object reads — the \
+         compactions log is not being reaped (budget 40)"
+    );
+    db2.close().await.ok();
 }

@@ -102,6 +102,7 @@ with an empty pool rather than dead sockets.
 | `L0_MAX_SSTS_PER_KEY` | 0 (= follow `L0_MAX_SSTS`) | totally-ordered streams rewrite one meta row per memtable, so every L0 overlaps on that key and THIS cap is the real dispatch gate. The upstream default (8) stalled the flusher |
 | `MANIFEST_POLL_MS` | 2000 | also how the flusher learns compaction freed L0 slots; loaded shards want 1000–2000. 60 s polls produced 14 s flush stalls |
 | `WAL_GC_INTERVAL_SECS` / `WAL_GC_MIN_AGE_SECS` | 30 / 60 | tighter than upstream (60/300): a loaded shard mints ~20 WAL SSTs/s and the WAL prefix must stay small — GC lists share the path with ack-critical PUTs. `MIN_AGE` must cover shard-move replay (<1 s; 60 s is generous) |
+| `COMPACTIONS_GC_INTERVAL_SECS` / `COMPACTIONS_GC_MIN_AGE_SECS` | 30 / 120 | tighter than upstream (60/300): every compactor state change mints a `.compactions` version and shard OPEN pages through the survivors — at cross-region latency that class fed the eu-central-1 slow-open hang (docs/SOAK-REGIONS.md; upstream slatedb#1970). Only superseded versions below the GC boundary are reaped |
 | `TRIM_PER_OP` | 8192 | hot-log records retired per absorb commit; must outpace ingest (at 50k rec/s and one pass per 5 s a pass must retire ~250k) |
 | `ABSORB_BYTES` / `ABSORB_AGE_SECS` | 4 MiB / 300 | absorber thresholds into the history tier |
 | `ABSORB_PASS_BYTES` | 256 MiB | plaintext held in memory per pass — keep well under instance RAM; pilot used 32 MiB on 1-GB boxes |
@@ -318,6 +319,11 @@ was death (§3.6).
   the reads eat the outbound budget and starve the appends that would
   advance the WAL. Took eu-central-1 out of the 2026-07-26 soak
   ([docs/SOAK-REGIONS.md](./docs/SOAK-REGIONS.md)). Page on it.
+- `history_readers` hits ≪ misses, or `stale_reopens` tracking request
+  rate instead of absorb cadence → the history reader cache is not
+  absorbing per-request metadata traffic; every miss is a fresh DbReader
+  open (manifest reads + a checkpoint write) on the user-visible read
+  path.
 - `served_from` shows a large share from a **remote** PoP (>10 % non-local)
   → the provider is routing this bucket's traffic out of region. Every op
   carries the extra RTT; correlate before blaming our pipeline.

@@ -144,6 +144,22 @@ struct Args {
     #[arg(long, env = "WAL_GC_MIN_AGE_SECS", default_value_t = 60)]
     wal_gc_min_age_secs: u64,
 
+    /// Compactions-log GC cadence. The compactions state is a versioned
+    /// transactional object: every compactor state change mints another
+    /// small `.compactions` file, and shard OPEN must page through the
+    /// survivors — at cross-region latency that cost compounds into the
+    /// slow-open class behind the eu-central-1 hang (docs/SOAK-REGIONS.md).
+    /// Upstream defaults (60s interval / 300s min-age) retain minutes of
+    /// churn; we reap harder, like WAL GC.
+    #[arg(long, env = "COMPACTIONS_GC_INTERVAL_SECS", default_value_t = 30)]
+    compactions_gc_interval_secs: u64,
+
+    /// Min age before a superseded `.compactions` version may be reaped.
+    /// Only versions BELOW the GC boundary die, so this is a safety floor
+    /// against clock skew, not a retention feature.
+    #[arg(long, env = "COMPACTIONS_GC_MIN_AGE_SECS", default_value_t = 120)]
+    compactions_gc_min_age_secs: u64,
+
     /// Manifest poll cadence (ms). This is ALSO how the memtable flusher
     /// learns that compaction freed L0 slots: with a long poll, dispatch
     /// stays gated on a stale L0 view for the whole interval while imm
@@ -440,6 +456,11 @@ fn shard_settings(args: &Args) -> Settings {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
                 ..gc.wal_options.unwrap_or_default()
+            });
+            gc.compactions_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+                interval: Some(Duration::from_secs(args.compactions_gc_interval_secs)),
+                min_age: Duration::from_secs(args.compactions_gc_min_age_secs),
+                ..gc.compactions_options.unwrap_or_default()
             });
             Some(gc)
         },

@@ -706,6 +706,243 @@ pub struct HistoryReadResult {
 
 /// Read [from, upto) from a stream's history DB (plaintext records).
 /// `key_filter` uses the k! index (contiguous per routing key).
+
+// ---- history DbReader cache -----------------------------------------
+//
+// Every history read used to build a fresh `DbReader`: several manifest
+// GETs, a checkpoint WRITE against the history manifest (readers without
+// an explicit checkpoint maintain their own), and the WAL replay probe —
+// per request, on the user-visible read path. Those are exactly the
+// small-metadata operations Tigris sometimes serves from a remote region
+// (docs/SOAK-REGIONS.md, "metadata trickle"), so each cold read carried a
+// small chance of a transcontinental round trip.
+//
+// The cache keeps one polling reader per (stream, key). Correctness at
+// the absorbed boundary does NOT rely on the reader's poll: before
+// serving a read that requires offsets up to `upto`, the cache proves
+// coverage — `seen_upto >= upto`, or a one-row probe of
+// `hist_record_key(upto - 1)` through the reader — and reopens a fresh
+// reader when the probe misses. A fresh reader must see the range: the
+// absorber flushes the history db (memtable → L0, manifest published)
+// BEFORE the absorbed boundary advances, so any reader opened after the
+// boundary moved observes a manifest that covers it. The probe works for
+// key-filtered reads too, where offset-contiguity checks cannot.
+//
+// Readers are read-only: no fencing concerns. Entries are LRU-capped and
+// idle-evicted like the absorber's writer handles.
+
+const HIST_READER_CAP: usize = 8;
+const HIST_READER_IDLE: Duration = Duration::from_secs(120);
+
+static HR_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HR_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HR_PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HR_STALE_REOPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HR_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Reader manifest-poll interval, ms. A static (not a constant) so DST can
+/// pin it high and make staleness deterministic instead of a race.
+static HR_POLL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5_000);
+
+pub fn reader_cache_stats_json() -> serde_json::Value {
+    use std::sync::atomic::Ordering::Relaxed;
+    serde_json::json!({
+        "hits": HR_HITS.load(Relaxed),
+        "misses": HR_MISSES.load(Relaxed),
+        "probes": HR_PROBES.load(Relaxed),
+        "stale_reopens": HR_STALE_REOPENS.load(Relaxed),
+        "evictions": HR_EVICTIONS.load(Relaxed),
+    })
+}
+
+#[cfg(test)]
+pub fn reader_cache_counters() -> (u64, u64, u64, u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        HR_HITS.load(Relaxed),
+        HR_MISSES.load(Relaxed),
+        HR_PROBES.load(Relaxed),
+        HR_STALE_REOPENS.load(Relaxed),
+        HR_EVICTIONS.load(Relaxed),
+    )
+}
+
+#[cfg(test)]
+pub fn set_reader_poll_ms_for_tests(ms: u64) {
+    HR_POLL_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
+struct CachedReader {
+    reader: Arc<DbReader>,
+    last_used: Instant,
+    /// Offsets `[0, seen_upto)` are proven visible through this reader.
+    seen_upto: u64,
+}
+
+pub struct HistReaderCache {
+    map: tokio::sync::Mutex<HashMap<([u8; 16], u64), CachedReader>>,
+}
+
+pub fn reader_cache() -> &'static HistReaderCache {
+    static C: std::sync::OnceLock<HistReaderCache> = std::sync::OnceLock::new();
+    C.get_or_init(|| HistReaderCache {
+        map: tokio::sync::Mutex::new(HashMap::new()),
+    })
+}
+
+/// Non-cryptographic key discriminator: two requests for the same stream
+/// with different keys must not share a reader (its block transformer is
+/// key-bound).
+fn key_disc(key: &StreamKey) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.0.iter() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_1b3);
+    }
+    h
+}
+
+async fn open_history_reader(
+    data_store: &Arc<dyn ObjectStore>,
+    hash: &[u8; 16],
+    key: &StreamKey,
+) -> anyhow::Result<Arc<DbReader>> {
+    let path = history_db_path(hash);
+    let store = data_store.clone();
+    let k = key.clone();
+    let poll = HR_POLL_MS.load(std::sync::atomic::Ordering::Relaxed);
+    let reader = crate::on_slatedb_rt(async move {
+        DbReader::builder(path.as_str(), store)
+            .with_options(slatedb::config::DbReaderOptions {
+                manifest_poll_interval: Duration::from_millis(poll),
+                // must exceed 2x poll; also bounds how long an evicted
+                // reader's checkpoint can pin history objects
+                checkpoint_lifetime: Duration::from_millis((poll * 4).max(60_000)),
+                // The absorber flushes (memtable -> L0) before the
+                // absorbed boundary advances, so everything a reader is
+                // allowed to need is already in L0 — skipping WAL replay
+                // removes the reader's WAL reads entirely.
+                skip_wal_replay: true,
+                ..Default::default()
+            })
+            .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
+            .build()
+            .await
+    })
+    .await?;
+    Ok(Arc::new(reader))
+}
+
+impl HistReaderCache {
+    /// A reader proven to cover `[0, upto)`, opening or refreshing as
+    /// needed. Returns `(reader, covered)`; `covered = false` means even a
+    /// freshly opened reader cannot see `upto - 1` yet, and the caller
+    /// must report an honest partial read rather than skipping ahead.
+    pub async fn acquire(
+        &self,
+        data_store: &Arc<dyn ObjectStore>,
+        hash: &[u8; 16],
+        key: &StreamKey,
+        upto: u64,
+    ) -> anyhow::Result<(Arc<DbReader>, bool)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let ck = (*hash, key_disc(key));
+        let probe_key = hist_record_key(upto.saturating_sub(1));
+
+        // Fast path under the lock: proven-covered cache hit.
+        {
+            let mut map = self.map.lock().await;
+            if let Some(e) = map.get_mut(&ck) {
+                e.last_used = Instant::now();
+                if e.seen_upto >= upto {
+                    HR_HITS.fetch_add(1, Relaxed);
+                    return Ok((e.reader.clone(), true));
+                }
+            }
+        }
+
+        // Cached but not proven: probe one row through it (outside the
+        // lock — a probe is a real store read on a cold block cache).
+        let cached = {
+            let map = self.map.lock().await;
+            map.get(&ck).map(|e| e.reader.clone())
+        };
+        if let Some(reader) = cached {
+            HR_PROBES.fetch_add(1, Relaxed);
+            if let Ok(Some(_)) = reader.get(probe_key.clone()).await {
+                let mut map = self.map.lock().await;
+                if let Some(e) = map.get_mut(&ck) {
+                    e.seen_upto = e.seen_upto.max(upto);
+                    e.last_used = Instant::now();
+                }
+                HR_HITS.fetch_add(1, Relaxed);
+                return Ok((reader, true));
+            }
+            // Stale (or errored): this reader's view predates the
+            // boundary. Replace it with a fresh open.
+            HR_STALE_REOPENS.fetch_add(1, Relaxed);
+            let old = {
+                let mut map = self.map.lock().await;
+                map.remove(&ck)
+            };
+            if let Some(e) = old {
+                tokio::spawn(async move {
+                    let _ = e.reader.close().await;
+                });
+            }
+        } else {
+            HR_MISSES.fetch_add(1, Relaxed);
+        }
+
+        // Fresh open; must see the boundary (see module comment).
+        let reader = open_history_reader(data_store, hash, key).await?;
+        let covered = upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
+        {
+            let mut map = self.map.lock().await;
+            map.insert(
+                ck,
+                CachedReader {
+                    reader: reader.clone(),
+                    last_used: Instant::now(),
+                    seen_upto: if covered { upto } else { 0 },
+                },
+            );
+            // LRU + idle eviction, spawned closes.
+            let now = Instant::now();
+            let mut victims: Vec<([u8; 16], u64)> = map
+                .iter()
+                .filter(|(k2, e)| **k2 != ck && now - e.last_used > HIST_READER_IDLE)
+                .map(|(k2, _)| *k2)
+                .collect();
+            while map.len() - victims.len() > HIST_READER_CAP {
+                if let Some(oldest) = map
+                    .iter()
+                    .filter(|(k2, _)| **k2 != ck && !victims.contains(k2))
+                    .min_by_key(|(_, e)| e.last_used)
+                    .map(|(k2, _)| *k2)
+                {
+                    victims.push(oldest);
+                } else {
+                    break;
+                }
+            }
+            for v in victims {
+                if let Some(e) = map.remove(&v) {
+                    HR_EVICTIONS.fetch_add(1, Relaxed);
+                    tokio::spawn(async move {
+                        let _ = e.reader.close().await;
+                    });
+                }
+            }
+        }
+        Ok((reader, covered))
+    }
+
+    #[cfg(test)]
+    pub async fn len_for_tests(&self) -> usize {
+        self.map.lock().await.len()
+    }
+}
+
 pub async fn read_history(
     data_store: &Arc<dyn ObjectStore>,
     hash: &[u8; 16],
@@ -715,14 +952,17 @@ pub async fn read_history(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> anyhow::Result<HistoryReadResult> {
-    let reader = DbReader::builder(history_db_path(hash).as_str(), data_store.clone())
-        .with_block_transformer(Arc::new(AesBlockTransformer::new(key)))
-        .build()
+    // Cached, coverage-proven reader (see HistReaderCache). `covered =
+    // false` means even a fresh reader cannot see `upto - 1` yet; the read
+    // still runs, but reports completed = false so the caller re-polls
+    // instead of skipping the missing tail (which would be a silent gap).
+    let (reader, covered) = reader_cache()
+        .acquire(data_store, hash, key, upto)
         .await?;
     let mut out = HistoryReadResult {
         records: Vec::new(),
         last_offset: None,
-        completed: true,
+        completed: covered,
     };
     let mut total = 0usize;
     match key_filter {
@@ -761,7 +1001,7 @@ pub async fn read_history(
             }
         }
     }
-    reader.close().await.ok();
+    // The reader is cached and stays open; the cache owns its lifecycle.
     Ok(out)
 }
 

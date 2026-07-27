@@ -648,3 +648,23 @@ one campaign tick caught its live replica's terminal state: t10-conc64,
 forwarder end to end. `RESOLV_OVERRIDE` ships in all three wrappers,
 env-gated; the staging plan should set it until the platform resolver is
 fixed, and the probe fleet stays up to tell us when that happens.
+
+### Metadata-trickle mitigation (2026-07-27, follow-up)
+
+While Tigris considers the region-pinning question, the exposed surface
+shrank on our side (commit pending, DST-covered):
+
+- **History `DbReader`s are cached** per (stream, key) with LRU + idle
+  eviction. Correctness at the absorbed boundary is proven per read — a
+  one-row probe of `hist_record_key(upto−1)`, falling back to a fresh
+  reader that must see the boundary because the absorber flushes before
+  advancing it. This removes the per-request manifest GETs, the
+  per-request checkpoint WRITE every reader open used to perform, and
+  (via `skip_wal_replay`, safe under the same flush guarantee) the
+  reader's WAL reads. Reopens now scale with absorb cadence, not request
+  rate. Cache telemetry: `/v1/debug/store` → `history_readers`.
+- **Compactions-log GC is now tunable and tighter**
+  (`COMPACTIONS_GC_INTERVAL_SECS=30` / `COMPACTIONS_GC_MIN_AGE_SECS=120`
+  vs upstream 60/300), bounding how many `.compactions` versions a shard
+  open must page through. The open-side retry/fencing behavior itself is
+  upstream: [slatedb#1970](https://github.com/slatedb/slatedb/issues/1970).

@@ -40,7 +40,7 @@ real time.
 ## 1. Current status — and what it is not
 
 `src/dst.rs` + `src/dst/dst_tests.rs` is a **seeded fault-injection suite
-over the real single-node data plane**. Twenty-three scenarios, ~30 seconds:
+over the real single-node data plane**. Twenty-nine scenarios, ~35 seconds:
 
 ```bash
 cargo test --release dst
@@ -368,6 +368,16 @@ per-(op, class) protocol-cost counters (the storm IS a budget violation),
 and paused virtual time (a storm that takes twenty minutes of wall clock
 in production takes half a second here at the real simulated latencies).
 
+The same protocol-cost discipline now guards the metadata-read surface
+(the Tigris "metadata trickle", docs/SOAK-REGIONS.md): the history
+DbReader cache carries budget scenarios (repeat reads must not reopen
+readers; reopens must track absorb cadence, not request rate), a
+**deterministically stale** reader test (the reader's poll is pinned to
+an hour so the coverage probe MUST be what saves the read — for filtered
+reads too, where offset-contiguity checks cannot), an eviction-cap test,
+and a reopen-after-compactor-churn budget that fails if the compactions
+log stops being reaped (upstream: slatedb#1970).
+
 ## 9. Swarm and focused modes
 
 Not yet built. The shape: a serialised `Scenario` (schema version, seed,
@@ -431,7 +441,7 @@ configuration. Minimised escapes become permanent corpus entries.
 ## 12. CI
 
 Today CI runs `cargo check`, the release test suite (which includes these
-twenty-three scenarios) and one s3lite HTTP smoke test. The intended tiers:
+twenty-nine scenarios) and one s3lite HTTP smoke test. The intended tiers:
 
 - **Pull request** — fixed regression corpus, a bounded seed sweep,
   replay-hash comparison, canary/mutation tests, and the focused fencing,
