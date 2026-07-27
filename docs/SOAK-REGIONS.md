@@ -461,3 +461,92 @@ dropped because it straddles the concurrency step-up. `errs` and
 | t09-conc48 | 48 | 489 | 4,893 | 79.6 | 387.3 | 137.5 | 509.2 | 0 | 68285 |
 | t10-conc64 | 64 | 490 | 4,908 | 75.4 | 473.9 | 143.0 | 715.3 | 0 | 481464 |
 
+
+---
+
+## 2026-07-27: the storm hunt — four re-runs on the fixed binary
+
+The reopen-storm fix (`sharddir::OpenGate`, commit b50cb7c) was taken back
+to all six regions: fresh projects and buckets, the same 10-tier ramp,
+**four consecutive 30-minute runs** (fresh keyspace per run: `soak2r1..4`),
+each polled every 45 s for the storm signature (`wal_read_storm.stalled`,
+`shard_opens` started diverging from completed).
+
+**The storm did not recur.** More usefully, the campaign delivered the
+next best thing to a recurrence: **four genuine shard-open failures
+against the live store** — the exact event that ignited the original
+wedge — and the gate absorbed every one.
+
+| run | region | acked reqs | errs | throttled | append p50 (med tier) | opens s/c/f | storm |
+|---|---|---|---|---|---|---|---|
+| 1 | us-east-1 | 78,868 | 0 | 0 | 445.8 | 1/1/0 | none |
+| 1 | us-west-1 | 267,918 | 0 | 5,592 | 128.2 | 1/1/0 | none |
+| 1 | eu-central-1 | 345,251 | 0 | 18,972 | 89.3 | 1/1/0 | none |
+| 1 | eu-west-3 | 299,781 | 0 | 0 | 108.6 | 1/1/0 | none |
+| 1 | ap-southeast-1 † | 250,257 | 0 | 18,517 | 125.6 | 3/3/0 | none |
+| 1 | ap-northeast-1 | 343,101 | 0 | 216,393 | 82.3 | 1/1/0 | none |
+| 2 | us-east-1 | 79,237 | 0 | 0 | 448.4 | 1/1/0 | none |
+| 2 | us-west-1 | 271,192 | 0 | 0 | 127.1 | 1/1/0 | none |
+| 2 | eu-central-1 | 361,198 | 0 | 250,095 | 84.3 | 1/1/0 | none |
+| 2 | eu-west-3 | 311,460 | 0 | 82,818 | 104.4 | 1/1/0 | none |
+| 2 | ap-southeast-1 † | — | — | — | — | 1/1/0 | none |
+| 2 | ap-northeast-1 | 359,202 | 0 | 99,649 | 80.0 | 1/1/0 | none |
+| 3 | us-east-1 | 78,405 | 16 | 81,953 | 446.5 | 1/1/0 | none |
+| 3 | us-west-1 | 260,882 | 0 | 0 | 136.8 | 1/1/0 | none |
+| 3 | eu-central-1 | 361,979 | 0 | 403,704 | 81.2 | 1/1/0 | none |
+| 3 | eu-west-3 | 315,561 | 0 | 197,254 | 100.1 | 1/1/0 | none |
+| 3 | ap-southeast-1 | 248,674 | 63 | 20,872 | 101.5 | **3/2/1** | none |
+| 3 | ap-northeast-1 | 326,404 | 0 | 216,823 | 81.7 | 1/1/0 | none |
+| 4 | us-east-1 | 75,735 | 0 | 0 | 456.8 | 1/1/0 | none |
+| 4 | us-west-1 | 250,202 | 0 | 28,729 | 134.7 | 1/1/0 | none |
+| 4 | eu-central-1 | 325,742 | 66 | 207,861 | 81.7 | **3/1/1** | none |
+| 4 | eu-west-3 | 330,292 | 0 | 174,697 | 100.3 | 1/1/0 | none |
+| 4 | ap-southeast-1 | 243,211 | 8 | 3,152 | 121.2 | **4/2/2** | none |
+| 4 | ap-northeast-1 | 354,166 | 0 | 331,102 | 78.7 | 1/1/0 | none |
+
+† Run 1's ap-southeast-1 generator started ~25 min late (its stream
+create failed during a version migration and the old awsbench never
+retried — now fixed: the generator refuses to run until the stream
+exists). Run 2's never came up at all: the platform served its "running"
+version as a 404 for three consecutive deploys until the service was
+destroyed and recreated. Its server was healthy throughout both runs.
+
+Reading the table:
+
+- **~5.0 million acknowledged requests (≈50 M records) across the
+  campaign, 153 client-visible errors total (0.003 %), no storm in any
+  region in any run.**
+- Per-region latency is boringly reproducible across runs — eu-central-1
+  append p50 89.3/84.3/81.2/81.7 ms, ap-northeast-1 82.3/80.0/81.7/78.7,
+  us-east-1's storage penalty pinned at 445–457 ms all four runs.
+- The three bold `opens` cells are the fix working in production: real
+  open failures (run 3 SIN; run 4 SIN ×2 and eu-central-1) each produced
+  one failed attempt, an escalating holdoff, a single-flight retry — and
+  bounded client errors instead of a wedge. eu-central-1's failure landed
+  at tier 10, concurrency 64, the worst possible moment; it cost 66
+  errors and zero WAL-read amplification (`wal_gets` stayed 0).
+
+### The finding this campaign produced
+
+After run 4's harvest, eu-central-1's retry open was still in flight —
+**20+ minutes**, with 648 coalesced waiters and a steady ~250
+`list`+`get` per minute against `shards/10/compactions`: slatedb's
+compactions-log recovery grinding through the ~450 `.compactions` files
+our 500 ms compactor poll had minted during the run, at cross-region
+latency. The gate contained it completely (one open, no storm, zero
+`get:wal`) — but the shard was unavailable the whole time, because an
+open had **no deadline**.
+
+That is now fixed: `OpenGate` races every open against
+`SHARD_OPEN_DEADLINE_MS` (default 180 s). A deadlined open counts as a
+failure (strike + holdoff), and — the part that matters — it is
+**reaped, not detached**: a supervisor drives the abandoned open to
+completion and closes whatever engine it eventually produces. Detached
+late completions were precisely the zombie writers of the original
+storm; the reaper is what keeps the deadline from reintroducing them.
+DST scenario: `a_hung_open_is_deadlined_and_its_late_engine_reaped`.
+
+Two leads for upstream/slatedb follow-up, not blockers: compactions-log
+recovery cost scales with the number of `.compactions` files and is paid
+serially at open (450 files ≈ minutes at 100 ms+ per op), and our
+`COMPACTOR_POLL_MS=500` mints those files aggressively.

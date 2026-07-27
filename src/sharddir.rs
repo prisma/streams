@@ -50,6 +50,15 @@ const HOLDOFF_CAP: Duration = Duration::from_secs(60);
 /// longer resets the escalation.
 const SHORT_LIVED: Duration = Duration::from_secs(30);
 
+/// Default ceiling on one open attempt. A WAL replay is legitimately
+/// minutes long on a bad day, but *unbounded* is not a budget: the
+/// soak2 campaign's final run left eu-central-1 with an open that looped
+/// in slatedb's compactions-log recovery for 20+ minutes — the gate
+/// contained it (one open, 648 coalesced waiters, zero storm), but the
+/// shard was unavailable the whole time. Overridable via
+/// SHARD_OPEN_DEADLINE_MS.
+const OPEN_DEADLINE_DEFAULT: Duration = Duration::from_secs(180);
+
 // Process-global counters for /v1/debug/store: the cloud-run detector for
 // this failure mode is "opens_started climbing while the serving map stays
 // empty", and it must be visible without logs.
@@ -58,6 +67,10 @@ static OPENS_COMPLETED: AtomicU64 = AtomicU64::new(0);
 static OPENS_FAILED: AtomicU64 = AtomicU64::new(0);
 static OPENS_COALESCED: AtomicU64 = AtomicU64::new(0);
 static OPENS_IN_FLIGHT: AtomicI64 = AtomicI64::new(0);
+static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
+/// Abandoned opens that eventually completed and were closed by the
+/// reaper instead of installed.
+static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
 pub fn stats_json() -> serde_json::Value {
     serde_json::json!({
@@ -66,6 +79,8 @@ pub fn stats_json() -> serde_json::Value {
         "failed": OPENS_FAILED.load(Ordering::Relaxed),
         "coalesced": OPENS_COALESCED.load(Ordering::Relaxed),
         "in_flight": OPENS_IN_FLIGHT.load(Ordering::Relaxed),
+        "deadlined": OPENS_DEADLINED.load(Ordering::Relaxed),
+        "reaped": OPENS_REAPED.load(Ordering::Relaxed),
     })
 }
 
@@ -108,6 +123,8 @@ struct GateInner {
     shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
     opener: OpenFn,
     st: Mutex<HashMap<String, PrefixGate>>,
+    /// Ceiling on one open attempt (see OPEN_DEADLINE_DEFAULT).
+    open_deadline: Duration,
 }
 
 /// What a caller gets back. `Wait` is always retryable and never means the
@@ -133,11 +150,25 @@ impl OpenGate {
         shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
         opener: OpenFn,
     ) -> Self {
+        let open_deadline = std::env::var("SHARD_OPEN_DEADLINE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(OPEN_DEADLINE_DEFAULT);
+        Self::with_deadline(shards, opener, open_deadline)
+    }
+
+    pub fn with_deadline(
+        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
+        opener: OpenFn,
+        open_deadline: Duration,
+    ) -> Self {
         OpenGate {
             inner: Arc::new(GateInner {
                 shards,
                 opener,
                 st: Mutex::new(HashMap::new()),
+                open_deadline,
             }),
         }
     }
@@ -191,10 +222,18 @@ impl OpenGate {
                 let inner = self.inner.clone();
                 let p = prefix.to_string();
                 tokio::spawn(async move {
-                    let res = (inner.opener)(p.clone()).await;
+                    // The opener races a deadline. Without one, a single
+                    // open that loops inside slatedb recovery makes the
+                    // shard unavailable forever — observed live on
+                    // eu-central-1 at the end of the soak2 campaign.
+                    let mut fut = Box::pin((inner.opener)(p.clone()));
+                    let res: Result<
+                        anyhow::Result<Arc<ShardEngine>>,
+                        tokio::time::error::Elapsed,
+                    > = tokio::time::timeout(inner.open_deadline, &mut fut).await;
                     OPENS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
                     let out: OpenResult = match res {
-                        Ok(engine) => {
+                        Ok(Ok(engine)) => {
                             OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
                             inner
                                 .shards
@@ -208,7 +247,7 @@ impl OpenGate {
                             g.holdoff_until = None;
                             Ok(engine)
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
                             let msg = format!("{e:#}");
                             tracing::warn!(prefix = %p, "shard open failed: {msg}");
@@ -218,6 +257,46 @@ impl OpenGate {
                             g.strikes = g.strikes.saturating_add(1);
                             g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
                             Err(msg)
+                        }
+                        Err(_deadline) => {
+                            OPENS_DEADLINED.fetch_add(1, Ordering::Relaxed);
+                            OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
+                            tracing::warn!(
+                                prefix = %p,
+                                "shard open exceeded its deadline ({:?}); \
+                                 abandoning under supervision",
+                                inner.open_deadline
+                            );
+                            {
+                                let mut st = inner.st.lock().unwrap();
+                                let g = st.entry(p.clone()).or_default();
+                                g.inflight = None;
+                                g.strikes = g.strikes.saturating_add(1);
+                                g.holdoff_until =
+                                    Some(Instant::now() + holdoff_for(g.strikes));
+                            }
+                            // SUPERVISED abandonment, not detachment: the
+                            // old engine_for dropped abandoned opens on the
+                            // floor, and their late completions became the
+                            // zombie writers of the reopen storm. The
+                            // reaper drives the open to its end and closes
+                            // whatever it produces — the slot was forfeited
+                            // at the deadline.
+                            let p2 = p.clone();
+                            tokio::spawn(async move {
+                                if let Ok(engine) = fut.await {
+                                    OPENS_REAPED.fetch_add(1, Ordering::Relaxed);
+                                    tracing::info!(
+                                        prefix = %p2,
+                                        "deadlined open completed late; closing it"
+                                    );
+                                    engine.begin_close();
+                                }
+                            });
+                            Err(format!(
+                                "shard open exceeded {:?}",
+                                inner.open_deadline
+                            ))
                         }
                     };
                     let _ = tx.send(Some(out));

@@ -74,6 +74,22 @@ wrapper app without `node_modules` deploys and then fails at import.
 on the shared package cache and fail with `EEXIST`. Fan out across regions
 *sequentially*, or pre-warm the cache with one call first.
 
+**A copied CLI OAuth token expires in about an hour.** Extracting the
+access token from the CLI's auth store and exporting it as
+`PRISMA_API_TOKEN` works — until it silently doesn't: mid-campaign every
+deploy started "failing" in under a second, which was a 401 in disguise.
+Let the CLI use its own stored login (it refreshes itself); only pass a
+token for the raw management API, minted fresh at the moment of use.
+
+**Deploying by `--service-name` into an existing service fails** with
+"already exists". Resolve the id from `services list` first and pass
+`--service`; `deploy`'s own output never contains a service id.
+
+**A version can stay "running" while its domain serves the platform 404
+forever.** One generator service did this for three consecutive deploys.
+When redeploys keep zombie-ing, `services destroy` + recreate gets a
+fresh placement and has fixed it every time.
+
 **A missing required env var can look exactly like a boot failure.** A
 clap arg with no default makes the binary exit immediately at startup;
 Compute still reports the version `running` while its domain 404s/503s.

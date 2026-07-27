@@ -579,14 +579,43 @@ async fn main() -> anyhow::Result<()> {
                 .tcp_nodelay(true)
                 .timeout(Duration::from_secs(30))
                 .build()?;
-            // Create the stream up front (idempotent).
-            let _ = http
-                .put(format!("{}/v1/stream/{}", args.target, args.stream))
-                .header("authorization", format!("Bearer {}", args.auth))
-                .header("stream-encryption-key", args.stream_key.clone())
-                .header("content-type", "application/json")
-                .send()
-                .await;
+            // Create the stream up front, and REFUSE to proceed until it
+            // exists. The original fire-and-forget create cost a soak
+            // region: one platform-edge blip during a version migration
+            // failed the create, and every subsequent append 404'd for
+            // the whole run while the generator looked merely unlucky
+            // (soak2 run 1, ap-southeast-1, 2026-07-27).
+            let mut created = false;
+            for attempt in 0..30u32 {
+                match http
+                    .put(format!("{}/v1/stream/{}", args.target, args.stream))
+                    .header("authorization", format!("Bearer {}", args.auth))
+                    .header("stream-encryption-key", args.stream_key.clone())
+                    .header("content-type", "application/json")
+                    .send()
+                    .await
+                {
+                    // 2xx = created; 409 = already exists (a rerun) —
+                    // both mean appends will not 404.
+                    Ok(r) if r.status().is_success() || r.status().as_u16() == 409 => {
+                        created = true;
+                        break;
+                    }
+                    Ok(r) => eprintln!(
+                        "stream create attempt {attempt}: status {}",
+                        r.status()
+                    ),
+                    Err(e) => eprintln!("stream create attempt {attempt}: {e}"),
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            if !created {
+                anyhow::bail!(
+                    "stream {} could not be created after 30 attempts; refusing \
+                     to run a benchmark whose every append would 404",
+                    args.stream
+                );
+            }
             Client::Prisma(
                 http,
                 args.target.clone(),

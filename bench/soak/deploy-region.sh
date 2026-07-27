@@ -39,7 +39,13 @@ SOAK_PREFIX=${SOAK_PREFIX:-soak}
 BINEP=${ARTIFACT_ENDPOINT:-https://t3.storage.dev}
 BINBKT=${ARTIFACT_BUCKET:-prisma-streams-slatedb-sin}
 
-export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
+# Prefer the CLI's own stored login (it auto-refreshes). A static token
+# file is only a fallback — a copied OAuth access token expires in about
+# an hour, which silently killed every deploy of a soak run mid-campaign
+# (2026-07-27: five WARN "failures" that were all a 401 in disguise).
+if [ -s "$S/platform-token.txt" ]; then
+  export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
+fi
 P=$(cat "$S/proj-$R.txt")
 AUTH=$(cat "$S/auth.txt"); KEY=$(cat "$S/skey.txt")
 BINID=$(cat "$S/binid.txt"); BINSEC=$(cat "$S/binsec.txt")

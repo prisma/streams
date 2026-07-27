@@ -1022,3 +1022,111 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
         "holdoff must escalate for engines that die young, got {observed:?}"
     );
 }
+
+/// A hung open must not hold the shard hostage: the deadline fails it,
+/// the holdoff arms, and — critically — the abandoned open is *reaped*,
+/// not detached. Its late engine gets closed, never installed. Detached
+/// late completions were the zombie writers of the original storm; this
+/// is the guard that keeps the deadline from reintroducing them.
+///
+/// Observed live before this existed: the soak2 campaign's final run left
+/// eu-central-1 with an open looping in slatedb compactions recovery for
+/// 20+ minutes. One open, 648 coalesced waiters, zero storm — and an
+/// unavailable shard with no path back.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
+    use crate::sharddir::{OpenGate, OpenOutcome};
+    let inner = mem();
+    OpenGate::reset_counters_for_tests();
+
+    // The opener parks on a test-controlled gate until released — a stand-in
+    // for "slatedb open looping in recovery".
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let opened: Arc<Mutex<Vec<Arc<crate::shard::ShardEngine>>>> = Arc::new(Mutex::new(Vec::new()));
+    let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
+    let st = inner.clone();
+    let rel = release.clone();
+    let op = opened.clone();
+    let gate = OpenGate::with_deadline(
+        shards.clone(),
+        Box::new(move |prefix: String| {
+            let st = st.clone();
+            let rel = rel.clone();
+            let op = op.clone();
+            Box::pin(async move {
+                let _ = rel.acquire().await; // park here until the test releases
+                let s: Arc<dyn ObjectStore> = st.clone();
+                let e = open_engine(s, &prefix).await;
+                op.lock().unwrap().push(e.clone());
+                Ok(e)
+            })
+        }),
+        std::time::Duration::from_secs(30),
+    );
+
+    // First caller starts the open and times out waiting.
+    match gate
+        .get_or_open("dst-hang", std::time::Duration::from_secs(1))
+        .await
+    {
+        OpenOutcome::Wait { code, .. } => assert_eq!(code, "shard_opening"),
+        other => panic!(
+            "expected Wait, got {}",
+            match other {
+                OpenOutcome::Ready(_) => "Ready",
+                OpenOutcome::Failed(_) => "Failed",
+                OpenOutcome::Wait { .. } => unreachable!(),
+            }
+        ),
+    }
+
+    // Let the 30 s deadline pass. The open task must fail the attempt and
+    // arm the holdoff without any help from callers.
+    tokio::time::sleep(std::time::Duration::from_secs(35)).await;
+    let (_started, completed, failed, _coalesced) = OpenGate::counters_for_tests();
+    assert_eq!(failed, 1, "the hung open must be failed by its deadline");
+    assert_eq!(completed, 0);
+    assert!(
+        shards.read().unwrap().is_empty(),
+        "nothing may be installed by a deadlined open"
+    );
+
+    // The abandoned open now completes late. The reaper must close its
+    // engine, not install it.
+    release.add_permits(1);
+    let mut reaped = false;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let engines = opened.lock().unwrap().clone();
+        if let Some(e) = engines.first() {
+            if e.is_closed() {
+                reaped = true;
+                break;
+            }
+        }
+    }
+    assert!(reaped, "the late engine was never closed by the reaper");
+    assert!(
+        shards.read().unwrap().is_empty(),
+        "a reaped engine must never appear in the serving map"
+    );
+
+    // After the holdoff, a fresh open (opener no longer parks: permits
+    // remain) must succeed and install.
+    release.add_permits(10);
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await; // clear holdoff
+    let eng = loop {
+        match gate
+            .get_or_open("dst-hang", std::time::Duration::from_secs(30))
+            .await
+        {
+            OpenOutcome::Ready(e) => break e,
+            OpenOutcome::Wait {
+                retry_after_secs, ..
+            } => tokio::time::sleep(std::time::Duration::from_secs(retry_after_secs)).await,
+            OpenOutcome::Failed(e) => panic!("recovery open failed: {e}"),
+        }
+    };
+    assert!(!eng.is_closed(), "the recovery engine must be live");
+    assert!(!shards.read().unwrap().is_empty());
+}
