@@ -933,6 +933,31 @@ impl ShardEngine {
         let _ = self.tx.send(CommitOp::Absorbed { hash, upto }).await;
     }
 
+    /// Streams this engine holds open whose durable log extends past their
+    /// absorbed boundary — the absorber's re-discovery sweep. Signals are
+    /// the fast path; this closes their gaps (a bounded `try_send` channel
+    /// drops under a wide backlog, and a restarted instance has no signals
+    /// for data absorbed-before-crash): any stream a signal missed is
+    /// re-found here as long as its handle is resident. Handles are
+    /// snapshotted under the lock and inspected outside it.
+    pub fn absorb_backlog(&self) -> Vec<([u8; 16], u64)> {
+        let handles: Vec<([u8; 16], Arc<StreamHandle>)> = self
+            .streams
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(h, e)| (*h, e.clone()))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|(h, e)| {
+                let st = e.state.lock().unwrap();
+                let backlog = st.durable.next.saturating_sub(st.durable.absorbed);
+                (backlog > 0).then_some((h, backlog))
+            })
+            .collect()
+    }
+
     /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
     /// the strongest boundary any `DurabilityLevel::Remote` scan of the
     /// shard log can have observed trims for. The published handle state is

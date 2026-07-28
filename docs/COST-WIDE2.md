@@ -83,6 +83,49 @@ can't reach it. w100k-a10 is the fleet-wide peak (1,047 MB): full
 backlog grind plus big active passes. Every cell is above the 600 MB
 field shed line (WIDE1 §6).
 
+## Addendum 2026-07-28 — follow-ups implemented and verified
+
+The top three follow-ups landed the same day (absorber concurrent small
+lane + per-tick caps, handle re-discovery sweep, lag-join fix +
+`absorb_backlog` aggregate, key-missing backoff) and were verified by
+rerunning w10k-a100 and w100k-a100 on the new binary:
+
+| | w10k before | w10k after | w100k before | w100k after |
+|---|---|---|---|---|
+| absorb passes/min | ~272 | **~870 (3.2×)** | ~272 | **~870** |
+| inactive absorbed in-window | ~24 % | **~99 %** (91 left, max 64 s lag) | ~3 % | ~13 % |
+| absorb-lag observable | 0 everywhere | truthful | 0 everywhere | **86,947 lagging / max 1,038 s** |
+| append p50 / p99 ms | 48.0 / 87.0 | 48.0 / 87.6 | 48.8 / 87.3 | 47.8 / 86.7 |
+| errors / throttles | 0 | 0 | 0 | 0 |
+| RSS max MB | 682 | 966 | 989 | 1,098 |
+
+The w100k aggregate arithmetic closes the loop on §4: 99.9k seeded −
+~13k absorbed ≈ 86.9k lagging — the sweep finds even the ~35k streams
+whose signals the bounded channel dropped, and the aggregate is immune
+to the 65,536-entry listing cap (52,483 of the lagging streams appear
+in the per-stream list; the aggregate carries the truth).
+
+Trade-offs, stated plainly: steady-window Class A roughly doubles
+(290k → 608k at 10k; 295k → 686k at 100k) because 3.2× more per-stream
+passes complete per window at the unchanged ~43-Class-A-per-stream
+price — total cost to drain a given backlog is the same, it just
+finishes 3.2× sooner. The per-stream history price itself (the $215/M
+economics) is untouched; partitioned history remains the structural
+fix. RSS rises with the concurrency (bounded: per-tick lane caps +
+chunked eviction keep open DBs ≤ LRU + chunk; the first, uncapped
+version grew 2.3 GB in seven minutes and is why those caps exist) —
+1 GB field instances should run `ABSORB_CONCURRENCY` at 2-3, not the
+default 6. w10k's scan p50 moving 28 → 321 ms is the completion showing
+up on the read side: the scanned population is now absorbed, and every
+cold read pays the per-stream reader open — follow-up 4 unchanged.
+
+One correction to §4 as originally written: the REBALANCER was never
+fully blind — the heartbeat's `absorb_lag_max` reads the lag map
+directly and always worked for signal-delivered streams. What was
+broken: the per-stream `/v1/debug/usage` join (usage counters key by
+name hash, lag by engine hash — never matched), and streams whose
+signals were dropped were invisible to everything. Both fixed.
+
 ## Implications for the follow-up list
 
 Unchanged in order, sharpened in evidence: (1) absorber batching /

@@ -484,10 +484,13 @@ async fn debug_usage() -> Response {
                 "plaintext_bytes": pt,
                 "frame_bytes": fr,
                 "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
-                "absorb_lag_secs": crate::usage::absorb_lag(&h),
+                // Counters key by name hash, lag by engine hash; the
+                // linked join (usage.rs) is what makes this nonzero.
+                "absorb_lag_secs": crate::usage::absorb_lag_for_usage(&h),
             })
         })
         .collect();
+    let (backlog_streams, backlog_max) = crate::usage::absorb_backlog_summary();
     axum::Json(serde_json::json!({
         "limits": {
             "bytes_per_sec": l.bytes_per_sec,
@@ -495,6 +498,9 @@ async fn debug_usage() -> Response {
             "records_per_sec": l.recs_per_sec,
             "burst_secs": l.burst_secs,
         },
+        // Aggregate view, immune to the per-stream listing cap: how many
+        // engine streams carry absorb lag right now, and the worst one.
+        "absorb_backlog": { "streams": backlog_streams, "max_secs": backlog_max },
         "streams": streams,
     }))
     .into_response()
@@ -2039,6 +2045,9 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         Some(o) => desc.segment_hash(o),
         None => desc.storage_hash(),
     };
+    // Usage counters key by the name hash; the absorber keys lag by this
+    // engine hash. Record the alias so /v1/debug/usage can join them.
+    crate::usage::link_storage(&crate::crypto::stream_hash(&desc.name), &hash);
     let kv = key_version(&headers);
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(hash, key, epoch);

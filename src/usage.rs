@@ -216,6 +216,49 @@ pub fn clear_absorb_lag(hash: &[u8; 16]) {
     lag_map().lock().unwrap().remove(hash);
 }
 
+/// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,
+/// the shard-routing key), while the absorber publishes lag under the
+/// ENGINE hash (storage/segment hash). The /v1/debug/usage join used to
+/// look lag up by the name hash and therefore always read 0 — the wide
+/// tests' "absorb lag is invisible" finding (docs/COST-WIDE2.md §4).
+/// This alias map, fed by the append path where both hashes are in hand,
+/// closes the join. Per-key streams link one usage entry to many
+/// segment hashes; the join takes the max.
+fn storage_links() -> &'static Mutex<HashMap<[u8; 16], std::collections::HashSet<[u8; 16]>>> {
+    static M: OnceLock<Mutex<HashMap<[u8; 16], std::collections::HashSet<[u8; 16]>>>> =
+        OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn link_storage(usage_hash: &[u8; 16], storage_hash: &[u8; 16]) {
+    let mut m = storage_links().lock().unwrap();
+    if m.len() >= MAX_TRACKED && !m.contains_key(usage_hash) {
+        return;
+    }
+    m.entry(*usage_hash).or_default().insert(*storage_hash);
+}
+
+/// Absorb lag for a usage entry: the max across its linked engine
+/// hashes (a per-key stream has one per touched segment).
+pub fn absorb_lag_for_usage(usage_hash: &[u8; 16]) -> u64 {
+    let links = storage_links().lock().unwrap();
+    let Some(set) = links.get(usage_hash) else {
+        return 0;
+    };
+    let lags = lag_map().lock().unwrap();
+    set.iter().filter_map(|h| lags.get(h).copied()).max().unwrap_or(0)
+}
+
+/// Aggregate backlog view, independent of per-stream listing caps:
+/// (streams with nonzero lag, max lag secs). Complements the
+/// per-instance `absorb_lag_max` the heartbeat already carries.
+pub fn absorb_backlog_summary() -> (usize, u64) {
+    let m = lag_map().lock().unwrap();
+    let lagging = m.values().filter(|v| **v > 0).count();
+    let max = m.values().copied().max().unwrap_or(0);
+    (lagging, max)
+}
+
 pub fn absorb_lag(hash: &[u8; 16]) -> u64 {
     lag_map().lock().unwrap().get(hash).copied().unwrap_or(0)
 }
@@ -318,6 +361,35 @@ mod shard_lag_tests {
         assert_eq!(absorb_lag_max(), 61);
         clear_absorb_lag(&a);
         clear_absorb_lag(&b);
+    }
+
+    /// The wide tests' invisible-backlog finding: usage counters key by
+    /// the NAME hash, the absorber keys lag by the ENGINE hash, and the
+    /// per-stream join silently read 0 forever. The linked join must
+    /// bridge the keyspaces — including per-key streams, where one name
+    /// maps to several segment hashes (report the worst).
+    #[test]
+    fn lag_join_bridges_usage_and_engine_hashes() {
+        let usage_h = [10u8; 16];
+        let seg_a = [11u8; 16];
+        let seg_b = [12u8; 16];
+        // Unlinked: the join has nothing, even with lag present.
+        set_absorb_lag(&seg_a, 30);
+        assert_eq!(absorb_lag_for_usage(&usage_h), 0);
+        link_storage(&usage_h, &seg_a);
+        link_storage(&usage_h, &seg_b);
+        set_absorb_lag(&seg_b, 90);
+        assert_eq!(
+            absorb_lag_for_usage(&usage_h),
+            90,
+            "join must report the worst linked segment"
+        );
+        let (lagging, max) = absorb_backlog_summary();
+        assert!(lagging >= 2, "summary missed lagging streams");
+        assert!(max >= 90);
+        clear_absorb_lag(&seg_a);
+        clear_absorb_lag(&seg_b);
+        assert_eq!(absorb_lag_for_usage(&usage_h), 0, "cleared lag must read 0");
     }
 }
 

@@ -217,6 +217,17 @@ struct Args {
     #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
     absorb_age_secs: u64,
 
+    /// Concurrent small-lane absorb passes (1 = fully serial). Streams
+    /// with ≤ absorb_small_bytes pending overlap their latency-bound
+    /// per-stream passes; bigger streams keep the serial full-budget
+    /// lane. The serial grind measured ~4.5 streams/s against wide
+    /// backlogs (docs/COST-WIDE1.md §1); peak added memory is bounded by
+    /// concurrency × absorb_small_bytes of plaintext.
+    #[arg(long, env = "ABSORB_CONCURRENCY", default_value_t = 6)]
+    absorb_concurrency: usize,
+    #[arg(long, env = "ABSORB_SMALL_BYTES", default_value_t = 1024 * 1024)]
+    absorb_small_bytes: u64,
+
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
     /// conformance suite cannot send custom headers.
@@ -571,6 +582,8 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_bytes = args.absorb_bytes;
         let absorb_age = args.absorb_age_secs;
         let absorb_pass_bytes = args.absorb_pass_bytes;
+        let absorb_concurrency = args.absorb_concurrency;
+        let absorb_small_bytes = args.absorb_small_bytes;
         let trim_per_op = args.trim_per_op;
         let wal_group_commit = args.wal_group_commit != 0;
         let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
@@ -668,6 +681,8 @@ async fn async_main() -> anyhow::Result<()> {
                             threshold_bytes: absorb_bytes,
                             threshold_age: Duration::from_secs(absorb_age),
                             pass_bytes: absorb_pass_bytes,
+                            concurrency: absorb_concurrency,
+                            small_pass_bytes: absorb_small_bytes,
                             ..Default::default()
                         },
                         absorb_rx,

@@ -275,6 +275,23 @@ pub struct AbsorberConfig {
     /// 1 GB instance). The boundary advances per pass, so a capped pass
     /// just means more passes.
     pub pass_bytes: u64,
+    /// Streams whose pending bytes are at or under this run in the
+    /// CONCURRENT small lane; bigger streams keep the serial full-budget
+    /// lane. The split exists so wide sparse backlogs (thousands of
+    /// near-empty streams, each pass dominated by ~10 serial store
+    /// round-trips) can overlap latency without letting several
+    /// full-size passes multiply peak memory (docs/COST-WIDE1.md §1:
+    /// the serial grind measured ~4.5 streams/s, pinning both the bill
+    /// and backlog completion).
+    pub small_pass_bytes: u64,
+    /// Concurrent small-lane passes (1 = fully serial, the old behavior).
+    /// Peak extra memory is bounded by concurrency × small_pass_bytes of
+    /// plaintext.
+    pub concurrency: usize,
+    /// Every N ticks, re-discover unabsorbed streams from the engine's
+    /// resident handles. Signals are the fast path; the sweep closes
+    /// their gaps (bounded-channel drops under wide backlogs, restarts).
+    pub sweep_every: u32,
 }
 
 impl Default for AbsorberConfig {
@@ -285,6 +302,9 @@ impl Default for AbsorberConfig {
             tick: Duration::from_secs(5),
             batch_puts: 4_096,
             pass_bytes: 256 * 1024 * 1024,
+            small_pass_bytes: 1024 * 1024,
+            concurrency: 6,
+            sweep_every: 12,
         }
     }
 }
@@ -297,6 +317,58 @@ struct PendingAbsorb {
     failures: u32,
     /// Earliest next attempt (backoff); zero-delay until the first failure.
     retry_after: Option<Instant>,
+}
+
+/// Shared post-pass bookkeeping for both lanes: success retires the
+/// pending entry, key-missing backs off slowly (the key arrives with the
+/// next keyed request — hammering every tick just burns CPU across a
+/// wide key-expired backlog), fence-class drops the claim, and other
+/// errors take exponential backoff.
+async fn apply_absorb_result(
+    absorber: &Absorber,
+    pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+    hash: [u8; 16],
+    res: anyhow::Result<bool>,
+    now: Instant,
+) {
+    match res {
+        Ok(absorbed) => {
+            if absorbed {
+                pending.remove(&hash);
+                crate::usage::clear_absorb_lag(&hash);
+            } else if let Some(p) = pending.get_mut(&hash) {
+                // Key missing (KeyCache TTL or never supplied): the
+                // contract is absorb-on-next-touch — a keyed request
+                // re-fills the cache and the sweep/signal re-drives the
+                // pass. Until then, retry slowly instead of every tick.
+                p.failures = 0;
+                p.retry_after = Some(now + absorber.cfg.tick * 64);
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if absorb_error_is_fence(&msg) {
+                tracing::warn!(
+                    "dropping absorb claim for {} (fence-class): {msg}",
+                    hex(&hash)
+                );
+                pending.remove(&hash);
+                absorber.close_db(&hash).await;
+            } else if let Some(p) = pending.get_mut(&hash) {
+                p.failures = p.failures.saturating_add(1);
+                let shift = p.failures.min(6);
+                p.retry_after = Some(now + absorber.cfg.tick * 2u32.pow(shift));
+                // Log at failure 1, 2, 4, 8, ... only.
+                if p.failures.is_power_of_two() {
+                    tracing::warn!(
+                        failures = p.failures,
+                        "absorb failed for {}: {msg}",
+                        hex(&hash)
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Fence-class absorb errors mean this engine lost the shard to a new owner:
@@ -336,7 +408,11 @@ pub struct Absorber {
     submitted: std::sync::Mutex<HashMap<[u8; 16], u64>>,
 }
 
-const HISTORY_DB_LRU: usize = 4;
+/// Must exceed the small lane's concurrency, or a tick's concurrent
+/// passes evict each other's handles at the end of every tick and the
+/// next tick re-opens them (the open IS the per-stream cost being
+/// amortized).
+const HISTORY_DB_LRU: usize = 16;
 const HISTORY_DB_IDLE: Duration = Duration::from_secs(120);
 
 impl Absorber {
@@ -358,6 +434,7 @@ impl Absorber {
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
             let mut tick = tokio::time::interval(absorber.cfg.tick);
+            let mut tick_n: u32 = 0;
             loop {
                 // Lifecycle: this task holds the engine Arc, so the signal
                 // channel can never close on its own — without this check a
@@ -398,6 +475,38 @@ impl Absorber {
                     }
                     _ = tick.tick() => {
                         let now = Instant::now();
+                        tick_n = tick_n.wrapping_add(1);
+                        // Re-discovery sweep: signals are the fast path;
+                        // this closes their gaps (the bounded channel's
+                        // try_send drops under a wide backlog, and a
+                        // restarted instance has no signals for pre-crash
+                        // data). Thin backlogs (a few records) enter as
+                        // small-lane entries due by AGE — a re-discovered
+                        // wide backlog must trickle through the capped
+                        // lanes, not stampede them (the uncapped first
+                        // version opened a history DB per stream faster
+                        // than anything evicted: 2.3 GB RSS in seven
+                        // minutes). Fat backlogs enter due-now and big.
+                        if tick_n % absorber.cfg.sweep_every.max(1) == 0 {
+                            for (hash, backlog_records) in absorber.shard.absorb_backlog() {
+                                pending.entry(hash).or_insert_with(|| {
+                                    let fat = backlog_records > 4096;
+                                    PendingAbsorb {
+                                        bytes: if fat {
+                                            absorber
+                                                .cfg
+                                                .threshold_bytes
+                                                .max(absorber.cfg.small_pass_bytes + 1)
+                                        } else {
+                                            1
+                                        },
+                                        since: Instant::now(),
+                                        failures: 0,
+                                        retry_after: None,
+                                    }
+                                });
+                            }
+                        }
                         // Publish absorption lag (scale-out signal): age of
                         // the oldest unabsorbed bytes per stream.
                         for (h, p) in pending.iter() {
@@ -422,61 +531,88 @@ impl Absorber {
                         if absorb_paused() {
                             continue;
                         }
-                        let due: Vec<[u8; 16]> = pending
+                        let mut due: Vec<([u8; 16], u64)> = pending
                             .iter()
                             .filter(|(_, p)| {
                                 (p.bytes >= absorber.cfg.threshold_bytes
                                     || p.since.elapsed() >= absorber.cfg.threshold_age)
                                     && p.retry_after.map(|t| now >= t).unwrap_or(true)
                             })
-                            .map(|(h, _)| *h)
+                            .map(|(h, p)| (*h, p.bytes))
                             .collect();
-                        for hash in due {
+                        // Fattest first: under backlog pressure the hot
+                        // streams (large pending bytes) must not queue
+                        // behind ten thousand one-record strays — their
+                        // unabsorbed bytes are what grows the shard log.
+                        due.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+                        // Two lanes (docs/COST-WIDE1.md §1: the serial
+                        // grind was the ceiling for wide backlogs). Big
+                        // streams keep the serial full-budget lane — the
+                        // validated hot path, one full-size pass in memory
+                        // at a time. Small streams overlap their
+                        // latency-bound passes with bounded concurrency.
+                        // BOTH lanes are capped per tick: the tick must
+                        // return to the select loop (signals, lag
+                        // publication, shutdown), and eviction must run
+                        // often enough that open_dbs stays near the LRU —
+                        // an uncapped tick once grew 2.3 GB of open
+                        // history DBs before its first eviction. Leftover
+                        // due entries simply run next tick.
+                        const BIG_LANE_PER_TICK: usize = 16;
+                        const SMALL_LANE_PER_TICK: usize = 256;
+                        let (small, big): (Vec<_>, Vec<_>) = due
+                            .into_iter()
+                            .partition(|(_, b)| *b <= absorber.cfg.small_pass_bytes);
+                        for (hash, _) in big.into_iter().take(BIG_LANE_PER_TICK) {
                             if absorber.shard.is_closed() {
                                 break; // exit path above runs on next loop
                             }
-                            match absorber.absorb_one(&hash).await {
-                                Ok(absorbed) => {
-                                    if absorbed {
-                                        pending.remove(&hash);
-                                        crate::usage::clear_absorb_lag(&hash);
-                                    } else if let Some(p) = pending.get_mut(&hash) {
-                                        // key missing: keep pending; retried
-                                        // when the next keyed request arrives.
-                                        p.failures = 0;
-                                        p.retry_after = None;
-                                    }
-                                }
-                                Err(e) => {
-                                    let msg = e.to_string();
-                                    if absorb_error_is_fence(&msg) {
-                                        tracing::warn!(
-                                            "dropping absorb claim for {} (fence-class): {msg}",
-                                            hex(&hash)
-                                        );
-                                        pending.remove(&hash);
-                                        absorber.close_db(&hash).await;
-                                    } else if let Some(p) = pending.get_mut(&hash) {
-                                        p.failures = p.failures.saturating_add(1);
-                                        let shift = p.failures.min(6);
-                                        p.retry_after =
-                                            Some(now + absorber.cfg.tick * 2u32.pow(shift));
-                                        // Log at failure 1, 2, 4, 8, ... only.
-                                        if p.failures.is_power_of_two() {
-                                            tracing::warn!(
-                                                failures = p.failures,
-                                                "absorb failed for {}: {msg}",
-                                                hex(&hash)
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                            let res = absorber.absorb_one(&hash).await;
+                            apply_absorb_result(&absorber, &mut pending, hash, res, now).await;
                         }
+                        // Chunked: evict between chunks (never mid-chunk —
+                        // eviction would close a Db a concurrent sibling
+                        // pass is still writing), so open_dbs stays within
+                        // chunk size of the LRU cap.
+                        let chunk = (absorber.cfg.concurrency.max(1) * 2).max(2);
+                        let mut small_iter =
+                            small.into_iter().take(SMALL_LANE_PER_TICK).peekable();
+                        while small_iter.peek().is_some() && !absorber.shard.is_closed() {
+                            use futures_util::StreamExt;
+                            let batch: Vec<_> = small_iter.by_ref().take(chunk).collect();
+                            let a = &absorber;
+                            let results: Vec<([u8; 16], anyhow::Result<bool>)> =
+                                futures_util::stream::iter(batch.into_iter().map(|(hash, _)| {
+                                    async move { (hash, a.absorb_one_small(&hash).await) }
+                                }))
+                                .buffer_unordered(absorber.cfg.concurrency.max(1))
+                                .collect()
+                                .await;
+                            for (hash, res) in results {
+                                apply_absorb_result(&absorber, &mut pending, hash, res, now)
+                                    .await;
+                            }
+                            absorber.evict_idle_dbs().await;
+                        }
+                        absorber.evict_idle_dbs().await;
                     }
                 }
             }
         })
+    }
+
+    /// Serial full-budget pass (the validated hot path). Evicts idle DB
+    /// handles inline, as it always has — safe because big-lane passes
+    /// never overlap another pass.
+    async fn absorb_one(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
+        self.absorb_pass(hash, self.cfg.pass_bytes, true).await
+    }
+
+    /// Small-lane pass: bounded budget, and NO inline eviction — several
+    /// of these run concurrently, and evicting here could close a Db a
+    /// sibling pass is still writing. The tick evicts after the lane.
+    async fn absorb_one_small(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
+        self.absorb_pass(hash, self.cfg.small_pass_bytes, false).await
     }
 
     /// Close a cached history handle (fence-class failure or eviction).
@@ -529,7 +665,12 @@ impl Absorber {
     }
 
     /// Returns Ok(false) if the stream key isn't available.
-    async fn absorb_one(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
+    async fn absorb_pass(
+        &self,
+        hash: &[u8; 16],
+        budget: u64,
+        evict_inline: bool,
+    ) -> anyhow::Result<bool> {
         let Some((key, epoch)) = self.keys.get(hash) else {
             return Ok(false);
         };
@@ -643,7 +784,7 @@ impl Absorber {
             // A byte-truncated window breaks offset contiguity past its
             // last frame: stop here; the boundary advances to what we have.
             let complete = last_offset.map(|l| l + 1 >= win_end).unwrap_or(false);
-            if !complete || pass_bytes >= self.cfg.pass_bytes || pt_bytes >= self.cfg.pass_bytes {
+            if !complete || pass_bytes >= budget || pt_bytes >= budget {
                 break;
             }
         }
@@ -656,13 +797,25 @@ impl Absorber {
         // Bulk write through a cached handle (open once, reuse across
         // passes), explicit flush per pass so the boundary only advances
         // over durable data. See open_dbs field note for why not
-        // open/close per pass.
-        let db = {
+        // open/close per pass. The OPEN happens outside the cache lock:
+        // it is 1-2 s of manifest round-trips, and the concurrent small
+        // lane exists precisely to overlap that latency across streams —
+        // holding the map lock through it would re-serialize the lane.
+        // Two passes for the same hash never overlap (one pending entry,
+        // due at most once per tick), so a duplicate racing open is not
+        // possible; different hashes racing is the point.
+        let cached = {
             let mut cache = self.open_dbs.lock().await;
             if let Some((db, last_used)) = cache.get_mut(hash) {
                 *last_used = Instant::now();
-                db.clone()
+                Some(db.clone())
             } else {
+                None
+            }
+        };
+        let db = match cached {
+            Some(db) => db,
+            None => {
                 let path = history_db_path(hash);
                 let store = self.data_store.clone();
                 let k = key.clone();
@@ -677,7 +830,10 @@ impl Absorber {
                     })
                     .await?,
                 );
-                cache.insert(*hash, (db.clone(), Instant::now()));
+                self.open_dbs
+                    .lock()
+                    .await
+                    .insert(*hash, (db.clone(), Instant::now()));
                 db
             }
         };
@@ -713,7 +869,9 @@ impl Absorber {
             i = end;
         }
         db.flush().await?; // wal off => memtable -> L0 (durable)
-        self.evict_idle_dbs().await;
+        if evict_inline {
+            self.evict_idle_dbs().await;
+        }
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
         self.shard.submit_absorbed(*hash, absorbed_upto).await;

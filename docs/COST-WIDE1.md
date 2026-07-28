@@ -99,19 +99,29 @@ PUT + a 404-probe GET on create, WAL share of the seed append, plus
 early absorber passes that slip into the setup window). 100k streams
 provisioned + seeded in 3.6 minutes at 64-way concurrency.
 
-## Follow-ups (ordered)
+## Follow-ups (ordered; status 2026-07-28)
 
 1. **Absorber batching across streams** (review §6/§7): the ceiling is
    per-stream DB opens, not bytes. Shared/partitioned history DBs (or
    at minimum batched multi-stream passes with a bigger LRU) is the
    structural fix; a min-batch-per-stream threshold only defers work
-   the TTL then cancels.
+   the TTL then cancels. → *Incremental form landed: concurrent
+   small-pass lane, ~4.5 → ~14.5 streams/s at unchanged per-stream
+   price and flat append latency (COST-WIDE2.md addendum). Partitioned
+   history remains open as the cost-side fix.*
 2. **Absorb-lag truthfulness**: bounded signal channel drops + lag=0
    on backlogged streams + 65,536-entry usage truncation — the
    scale-out signal must see (or at least count) the wide backlog.
+   → *Fixed: usage↔engine hash join linked, handle re-discovery sweep
+   covers dropped signals and restarts, `absorb_backlog` aggregate is
+   truncation-immune. Verified: 86,947 lagging / max 1,038 s reported
+   at 100k.*
 3. **KeyCache TTL vs absorber**: decide the intended contract for
    sparse streams — never-absorb-until-touched is defensible but
    should be explicit (and the pending map shouldn't retry key-less
-   streams every tick forever).
+   streams every tick forever). → *Contract kept and documented;
+   key-less retries now back off (tick × 64) instead of every tick.*
 4. Scanner-visible cold-reader cost (~330 ms, checkpoint PUT per
-   open) — the review's reader-cache concern, now quantified.
+   open) — the review's reader-cache concern, now quantified. → *Open;
+   re-confirmed by w10k-after's scan p50 (28 → 321 ms once the
+   population absorbed).*

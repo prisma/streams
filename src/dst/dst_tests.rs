@@ -834,6 +834,7 @@ async fn open_engine_with_absorber(
         tick: std::time::Duration::from_millis(20),
         batch_puts: 256,
         pass_bytes: 8 * 1024 * 1024,
+        ..Default::default()
     };
     let handle = crate::history::Absorber::start(store, engine.clone(), keys, cfg, absorb_rx);
     (engine, handle)
@@ -1007,6 +1008,182 @@ async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
         leaked, 0,
         "unkeyed records still get a k! payload duplicate in history"
     );
+    absorber.abort();
+}
+
+/// Signals are the absorber's fast path, not its source of truth. The
+/// signal channel is a bounded `try_send` (it provably drops ~35k of
+/// 100k seed signals, docs/COST-WIDE1.md §3), and a restarted instance
+/// has no signals for pre-crash data. The re-discovery sweep must find
+/// unabsorbed streams from the engine's resident handles with NO signal
+/// ever delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 51, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [35u8; 16];
+
+    let db = slatedb::Db::builder("dst-sweep", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    // The engine's signal channel goes nowhere: rx dropped on the spot.
+    let (engine_tx, engine_rx) = crate::history::absorber_channel();
+    drop(engine_rx);
+    let engine = crate::shard::ShardEngine::start(
+        "dst-sweep".to_string(),
+        Arc::new(db),
+        crate::shard::ShardConfig::default(),
+        engine_tx,
+        None,
+    );
+    let keys = Arc::new(crate::history::KeyCache::default());
+    keys.put(hash, key.clone(), hash);
+    // The absorber listens on a channel that never carries a signal. Keep
+    // the sender alive: a closed channel would exit the absorber loop.
+    let (_quiet_tx, quiet_rx) = crate::history::absorber_channel();
+    let absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        keys,
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            batch_puts: 256,
+            pass_bytes: 8 * 1024 * 1024,
+            sweep_every: 2,
+            ..Default::default()
+        },
+        quiet_rx,
+    );
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    assert!(log.total_acked() > 0, "nothing acked");
+
+    // No signal was ever delivered; only the sweep can find this stream.
+    let mut caught_up = false;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            let st = h.state.lock().unwrap();
+            if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
+                caught_up = true;
+            }
+        }
+        if caught_up {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        caught_up,
+        "the sweep never absorbed the signal-less stream — lost signals \
+         mean lost absorption"
+    );
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&observed) {
+        panic!("sweep-absorbed stream lost records: {e}");
+    }
+    absorber.abort();
+}
+
+/// The concurrent small lane must preserve every per-stream invariant:
+/// a dozen small streams absorb in overlapping passes, and each one's
+/// merged read is still exactly its acked sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_small_lane_absorbs_many_streams_correctly() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 53, FaultPlan::new(0, 0, 10));
+    let cov = store.coverage();
+    let key = skey();
+
+    let db = slatedb::Db::builder("dst-lane", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-lane".to_string(),
+        Arc::new(db),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let keys = Arc::new(crate::history::KeyCache::default());
+    let hashes: Vec<[u8; 16]> = (0..12u8).map(|i| [100 + i; 16]).collect();
+    for h in &hashes {
+        keys.put(*h, key.clone(), *h);
+    }
+    let absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        keys,
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            batch_puts: 256,
+            pass_bytes: 8 * 1024 * 1024,
+            concurrency: 4,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    let mut logs: Vec<OpLog> = Vec::new();
+    for h in &hashes {
+        let mut log = OpLog::default();
+        let mut w = Workload::new(cov.clone());
+        w.run(&engine, *h, &key, &["m"], 6, false, &mut log).await;
+        assert!(log.total_acked() > 0, "stream {h:?}: nothing acked");
+        logs.push(log);
+    }
+
+    // Every stream must fully absorb — concurrently, since they are all
+    // due at once and far under the small-pass byte bound.
+    for h in &hashes {
+        let mut caught_up = false;
+        for _ in 0..400 {
+            let handle = engine.stream_handle(*h).await.expect("handle");
+            {
+                let st = handle.state.lock().unwrap();
+                if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
+                    caught_up = true;
+                }
+            }
+            if caught_up {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(caught_up, "stream {h:?} never fully absorbed");
+    }
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    for (h, log) in hashes.iter().zip(&logs) {
+        let observed = drain_observed(&hist, &engine, *h, &key, &cov).await;
+        if let Err(e) = log.audit(&observed) {
+            panic!("stream {h:?} corrupted by the concurrent lane: {e}");
+        }
+    }
+    if let Err(e) = cov.require(&[mech::READ_FROM_HISTORY]) {
+        panic!("{e}");
+    }
     absorber.abort();
 }
 
