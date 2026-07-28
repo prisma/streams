@@ -421,6 +421,14 @@ pub struct ShardEngine {
     pub ring_published: AtomicU64,
     pub ring_hits: AtomicU64,
     pub ring_misses: AtomicU64,
+    /// Miss causes. below_floor = reader lagging behind eviction;
+    /// above_ceil = reader knows an end the ring has not been handed yet
+    /// (mid-dispatch); one miss can set both. empty = stream has no ring
+    /// (never published, or fully evicted). With the ring enabled,
+    /// hits + misses = ring_read attempts.
+    pub ring_miss_below_floor: AtomicU64,
+    pub ring_miss_above_ceil: AtomicU64,
+    pub ring_miss_empty: AtomicU64,
     pub ring_evicted: AtomicU64,
     /// Resident bytes high-water mark; current residency is
     /// (config budget - ring_budget), exposed alongside it.
@@ -504,6 +512,9 @@ impl ShardEngine {
             ring_published: AtomicU64::new(0),
             ring_hits: AtomicU64::new(0),
             ring_misses: AtomicU64::new(0),
+            ring_miss_below_floor: AtomicU64::new(0),
+            ring_miss_above_ceil: AtomicU64::new(0),
+            ring_miss_empty: AtomicU64::new(0),
             ring_evicted: AtomicU64::new(0),
             ring_peak_bytes: AtomicU64::new(0),
             ring_cfg_bytes: cfg.tail_ring_bytes as u64,
@@ -1820,13 +1831,22 @@ impl ShardEngine {
             return None;
         }
         let ring = handle.ring.lock().unwrap();
-        let floor = ring.floor()?;
-        let ceil = ring.ceil()?;
+        let (Some(floor), Some(ceil)) = (ring.floor(), ring.ceil()) else {
+            self.ring_misses.fetch_add(1, Ordering::Relaxed);
+            self.ring_miss_empty.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
         // The ring can serve only what it contiguously holds. scan_to
         // beyond the ceiling means the caller knows about data the ring
         // has not been handed yet (possible mid-dispatch): DB path.
         if scan_from < floor || scan_to > ceil {
             self.ring_misses.fetch_add(1, Ordering::Relaxed);
+            if scan_from < floor {
+                self.ring_miss_below_floor.fetch_add(1, Ordering::Relaxed);
+            }
+            if scan_to > ceil {
+                self.ring_miss_above_ceil.fetch_add(1, Ordering::Relaxed);
+            }
             return None;
         }
         let mut out = FrameReadResult {
