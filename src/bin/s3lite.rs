@@ -58,6 +58,102 @@ struct Stats {
     multipart: AtomicU64,
     put_bytes: AtomicU64,
     get_bytes: AtomicU64,
+    /// Physical-request ledger for cost A/Bs: (tier, kind, op) →
+    /// per-status-bucket counts, cumulative since process start. `GET
+    /// /_s3lite/stats2` renders it with a Class A/B/free rollup at
+    /// public-Tigris-shaped billing rules (PUT/LIST/multipart billable
+    /// Class A on 2xx; GET/HEAD billable Class B on 2xx; 304/404/412,
+    /// deletes, and errors free).
+    detailed: Mutex<HashMap<(&'static str, &'static str, &'static str), [u64; 6]>>,
+}
+
+const STATUS_BUCKETS: [&str; 6] = ["2xx", "304", "404", "412", "4xx", "5xx"];
+
+fn status_index(status: StatusCode) -> usize {
+    match status.as_u16() {
+        304 => 1,
+        404 => 2,
+        412 => 3,
+        s if (200..300).contains(&s) => 0,
+        s if (400..500).contains(&s) => 4,
+        _ => 5,
+    }
+}
+
+/// Which tier of the system a key belongs to, from the fully-prefixed
+/// object key (bucket/PATH_PREFIX/...). Substrings mirror
+/// `store_timing::classify`, split further by tier: the shard log lives
+/// under `shards/`, per-stream history under `streams/`.
+fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'static str {
+    if key.is_empty() && *method == Method::GET {
+        // bucket-level list: classify by the prefix= it scans
+        return match query.get("prefix") {
+            Some(p) if p.contains("shards/") => "shard",
+            Some(p) if p.contains("streams/") => "hist",
+            Some(p) if p.contains("fleet") || p.contains("routers") => "fleet",
+            Some(p) if p.contains("registry") => "registry",
+            _ => "other",
+        };
+    }
+    let tier = if key.contains("shards/") {
+        "shard"
+    } else if key.contains("streams/") {
+        "hist"
+    } else if key.contains("fleet/") || key.contains("routers/") {
+        "fleet"
+    } else if key.contains("registry/") || key.ends_with("topology.json") {
+        "registry"
+    } else {
+        "other"
+    };
+    tier
+}
+
+/// Object kind within the tier — the second classification axis.
+fn kind_class(key: &str) -> &'static str {
+    if key.contains("/wal/") || key.starts_with("wal/") {
+        "wal"
+    } else if key.contains("compaction") {
+        "compactions"
+    } else if key.contains("manifest") {
+        "manifest"
+    } else if key.contains("/compacted/") || key.ends_with(".sst") {
+        "sst"
+    } else {
+        "meta"
+    }
+}
+
+fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) -> &'static str {
+    match (method.clone(), key_empty) {
+        (Method::GET, true) => "list",
+        (Method::POST, true) => "delete", // batch delete
+        (Method::POST, false) | (Method::PUT, false)
+            if query.contains_key("uploads") || query.contains_key("uploadId") =>
+        {
+            "multipart"
+        }
+        (Method::PUT, _) => "put",
+        (Method::GET, false) => "get",
+        (Method::HEAD, _) => "head",
+        (Method::DELETE, _) => "delete",
+        _ => "other",
+    }
+}
+
+/// Billing rollup per (op, status bucket): 'A' = Class A, 'B' = Class B,
+/// 'f' = free. Mirrors public Tigris pricing shape: writes and lists are
+/// Class A when successful; reads Class B when they return data;
+/// conditional/absent/failed responses and every delete are free.
+fn billing(op: &'static str, status_idx: usize) -> char {
+    if status_idx != 0 {
+        return 'f';
+    }
+    match op {
+        "put" | "multipart" | "list" => 'A',
+        "get" | "head" => 'B',
+        _ => 'f', // delete, other
+    }
 }
 
 struct AppState {
@@ -155,7 +251,7 @@ async fn handle(
 ) -> Response {
     let path = uri.path().to_string();
 
-    // Stats endpoint bypasses latency injection.
+    // Stats endpoints bypass latency injection.
     if path == "/_s3lite/stats" {
         let s = &state.stats;
         let body = serde_json::json!({
@@ -168,6 +264,59 @@ async fn handle(
             "put_bytes": s.put_bytes.load(Ordering::Relaxed),
             "get_bytes": s.get_bytes.load(Ordering::Relaxed),
             "objects": state.objects.lock().unwrap().len(),
+        });
+        return (
+            [(header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+            .into_response();
+    }
+    if path == "/_s3lite/stats2" {
+        let detailed = state.stats.detailed.lock().unwrap();
+        let mut cells = serde_json::Map::new();
+        let (mut class_a, mut class_b, mut free) = (0u64, 0u64, 0u64);
+        let mut rollup: HashMap<&'static str, [u64; 3]> = HashMap::new();
+        let mut keys: Vec<_> = detailed.keys().collect();
+        keys.sort();
+        for k in keys {
+            let (tier, kind, op) = *k;
+            let counts = &detailed[k];
+            let mut cell = serde_json::Map::new();
+            for (i, bucket) in STATUS_BUCKETS.iter().enumerate() {
+                if counts[i] > 0 {
+                    cell.insert((*bucket).into(), counts[i].into());
+                }
+                let r = rollup.entry(tier).or_default();
+                match billing(op, i) {
+                    'A' => {
+                        class_a += counts[i];
+                        r[0] += counts[i];
+                    }
+                    'B' => {
+                        class_b += counts[i];
+                        r[1] += counts[i];
+                    }
+                    _ => {
+                        free += counts[i];
+                        r[2] += counts[i];
+                    }
+                }
+            }
+            cells.insert(format!("{tier}/{kind}/{op}"), cell.into());
+        }
+        let by_tier: serde_json::Map<String, serde_json::Value> = rollup
+            .into_iter()
+            .map(|(t, [a, b, f])| {
+                (
+                    t.to_string(),
+                    serde_json::json!({"class_a": a, "class_b": b, "free": f}),
+                )
+            })
+            .collect();
+        let body = serde_json::json!({
+            "cells": cells,
+            "by_tier": by_tier,
+            "total": {"class_a": class_a, "class_b": class_b, "free": free},
         });
         return (
             [(header::CONTENT_TYPE, "application/json")],
@@ -190,6 +339,28 @@ async fn handle(
     }
     let full_key = format!("{bucket}/{key}");
 
+    let tier = tier_class(&method, &key, &query);
+    let kind = kind_class(&key);
+    let op = op_name(&method, key.is_empty(), &query);
+    let resp = dispatch(&state, method, &bucket, &key, &full_key, &query, headers, body).await;
+    {
+        let mut detailed = state.stats.detailed.lock().unwrap();
+        detailed.entry((tier, kind, op)).or_default()[status_index(resp.status())] += 1;
+    }
+    resp
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch(
+    state: &Arc<AppState>,
+    method: Method,
+    bucket: &str,
+    key: &str,
+    full_key: &str,
+    query: &HashMap<String, String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     match (method.clone(), key.is_empty()) {
         // ---- bucket-level ----
         (Method::GET, true) => list_objects(&state, &bucket, &query),
@@ -255,7 +426,7 @@ async fn handle(
         (Method::HEAD, false) => get_object(&state, &full_key, &headers, true),
         (Method::DELETE, false) => {
             state.stats.delete.fetch_add(1, Ordering::Relaxed);
-            state.objects.lock().unwrap().remove(&full_key);
+            state.objects.lock().unwrap().remove(full_key);
             StatusCode::NO_CONTENT.into_response()
         }
         _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
