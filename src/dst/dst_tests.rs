@@ -1669,6 +1669,95 @@ async fn history_and_tail_partition_the_stream_after_trim() {
     absorber.abort();
 }
 
+/// A duplicate `Absorbed{upto}` op must not advance the trim.
+///
+/// The absorber paces passes off the PUBLISHED absorbed boundary, which
+/// lags the committer by durability + dispatch, so under load it can
+/// re-submit an `upto` the committer has already applied. The committer
+/// used to treat that duplicate like any other pass and trim toward
+/// `prev_absorbed` — by then the LIVE boundary — collapsing the deferred-
+/// trim lag that protects readers holding a stale absorbed snapshot
+/// mid-merge. That collapse, plus the snapshot/tail-scan TOCTOU in
+/// `read_merged`, is the 2026-07-27 boundary-race DST failure: records
+/// vanished from a `completed = true` page at exactly the sampled
+/// absorbed boundary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 29, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [31u8; 16];
+    let engine = open_engine(store.clone(), "dst-duptrim").await;
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    // Offsets [0, 20).
+    w.run(&engine, hash, &key, &["d"], 20, false, &mut log).await;
+    assert_eq!(log.total_acked(), 20, "need all 20 offsets acked");
+
+    let published = |engine: &Arc<crate::shard::ShardEngine>| {
+        let engine = engine.clone();
+        async move {
+            let h = engine.stream_handle(hash).await.expect("handle");
+            let st = h.state.lock().unwrap();
+            (st.durable.absorbed, st.durable.trimmed)
+        }
+    };
+    let wait_absorbed = |engine: &Arc<crate::shard::ShardEngine>, want: u64| {
+        let engine = engine.clone();
+        async move {
+            for _ in 0..400 {
+                let h = engine.stream_handle(hash).await.expect("handle");
+                if h.state.lock().unwrap().durable.absorbed >= want {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("absorbed never reached {want}");
+        }
+    };
+
+    // Advance 0 -> 10: deferred trim means nothing is deleted yet.
+    engine.submit_absorbed(hash, 10).await;
+    wait_absorbed(&engine, 10).await;
+    // Advance 10 -> 18: trims up to the previous boundary, 10.
+    engine.submit_absorbed(hash, 18).await;
+    wait_absorbed(&engine, 18).await;
+    let (absorbed, trimmed) = published(&engine).await;
+    assert_eq!(absorbed, 18);
+    assert_eq!(trimmed, 10, "an advancing op trims to the previous boundary");
+
+    // The duplicate: re-submit the boundary the committer already holds,
+    // exactly as an absorber pass that raced dispatch does.
+    engine.submit_absorbed(hash, 18).await;
+    // Sentinel append: the committer queue is FIFO, so this ack proves the
+    // duplicate op was processed and its state published.
+    w.run(&engine, hash, &key, &["d"], 1, false, &mut log).await;
+    assert_eq!(log.total_acked(), 21, "sentinel append must ack");
+
+    let (absorbed, trimmed) = published(&engine).await;
+    assert_eq!(absorbed, 18, "a duplicate must not move the boundary");
+    assert_eq!(
+        trimmed, 10,
+        "a duplicate Absorbed op advanced the trim to the live boundary — \
+         the deferred-trim lag protecting stale-snapshot readers is gone"
+    );
+
+    // The lag is not bookkeeping: [10, 18) must still be readable from the
+    // shard log, because a reader that snapshotted absorbed=10 before the
+    // 10 -> 18 dispatch scans its tail from exactly there.
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mid = crate::shard::read_frames_range(&engine, &handle, 10, 18, 1 << 20)
+        .await
+        .expect("scan [10, 18)");
+    assert_eq!(
+        mid.frames.len(),
+        8,
+        "records above the previous boundary must survive a duplicate op"
+    );
+}
+
 // ---- the oracle itself must be able to fail -------------------------
 
 fn obs(pairs: &[(&str, &[AttemptId])]) -> HashMap<String, Vec<AttemptId>> {

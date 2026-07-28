@@ -1170,14 +1170,19 @@ pub async fn drain_observed(
             };
             out.entry(k.to_string()).or_default().push((op, att as u32));
         }
-        let next = match res.last {
-            Some(last) => last + 1,
-            None => return out,
-        };
-        if res.completed || next <= from {
+        if res.completed {
             return out;
         }
-        from = next;
+        // An incomplete page that made no progress is a transient: the
+        // reader raced the absorbed boundary (an honest empty page asks
+        // the caller to re-poll, and read_merged only says `completed`
+        // when the page really reached `end`). Retry — the pass bound
+        // above keeps a genuinely wedged engine from hanging the oracle,
+        // and the audit then reports the missing records honestly.
+        match res.last {
+            Some(last) if last + 1 > from => from = last + 1,
+            _ => {}
+        }
     }
     out
 }

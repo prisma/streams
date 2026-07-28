@@ -324,6 +324,16 @@ pub struct Absorber {
     /// concern bounded; entries are dropped on fence-class errors and on
     /// absorber exit.
     open_dbs: tokio::sync::Mutex<HashMap<[u8; 16], (Arc<Db>, Instant)>>,
+    /// Highest `upto` this absorber has submitted per stream. The
+    /// published handle state only reflects a submit after the committer
+    /// batch it landed in is durable AND dispatched, so pacing passes off
+    /// the published value alone re-absorbs the same range whenever
+    /// dispatch lags a tick — wasted decrypt/write work, and the duplicate
+    /// `Absorbed` op it produces used to collapse the deferred-trim lag
+    /// (2026-07-27 boundary-race DST failure). Per-instance state: a
+    /// restarted or new-owner absorber starts from published state again,
+    /// which is safe because re-absorbing is idempotent.
+    submitted: std::sync::Mutex<HashMap<[u8; 16], u64>>,
 }
 
 const HISTORY_DB_LRU: usize = 4;
@@ -343,6 +353,7 @@ impl Absorber {
             keys,
             cfg,
             open_dbs: tokio::sync::Mutex::new(HashMap::new()),
+            submitted: std::sync::Mutex::new(HashMap::new()),
         };
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
@@ -470,6 +481,10 @@ impl Absorber {
 
     /// Close a cached history handle (fence-class failure or eviction).
     async fn close_db(&self, hash: &[u8; 16]) {
+        // The submit high-water mark travels with the claim: dropping the
+        // claim (fence) must also drop the mark, so a hypothetical
+        // re-acquire re-paces from published state.
+        self.submitted.lock().unwrap().remove(hash);
         let entry = self.open_dbs.lock().await.remove(hash);
         if let Some((db, _)) = entry {
             let _ = db.close().await;
@@ -522,6 +537,13 @@ impl Absorber {
         let (from, upto) = {
             let st = handle.state.lock().unwrap();
             (st.durable.absorbed, st.durable.next)
+        };
+        // Skip what we already submitted: the published `absorbed` lags the
+        // committer by durability + dispatch, and re-absorbing that window
+        // is duplicate work (see the `submitted` field note).
+        let from = {
+            let submitted = self.submitted.lock().unwrap();
+            submitted.get(hash).copied().unwrap_or(0).max(from)
         };
         if from >= upto {
             return Ok(true);
@@ -684,6 +706,11 @@ impl Absorber {
 
         // Advance the readers' boundary + trim (deferred) in the shard log.
         self.shard.submit_absorbed(*hash, absorbed_upto).await;
+        {
+            let mut submitted = self.submitted.lock().unwrap();
+            let e = submitted.entry(*hash).or_insert(0);
+            *e = (*e).max(absorbed_upto);
+        }
         tracing::info!(
             "absorbed {} records into {} (upto {})",
             items.len(),

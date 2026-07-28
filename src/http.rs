@@ -2304,46 +2304,95 @@ pub(crate) async fn read_merged(
     };
     let mut budget = max_bytes;
 
-    let mut history_completed = true;
-    if scan_from < absorbed && budget > 0 {
-        let hist = read_history(
-            hist,
-            &hash,
-            key,
-            scan_from,
-            absorbed,
-            key_filter,
-            budget,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        history_completed = hist.completed;
-        for (off, rec) in hist.records {
-            budget = budget.saturating_sub(rec.payload.len());
-            out.recs.push(PlainRec {
-                off,
-                payload: rec.payload,
-            });
-            out.last = Some(off);
-        }
-    }
-    let shard_from = if scan_from < absorbed {
-        if history_completed {
-            if absorbed > 0 {
-                out.last = Some(out.last.map_or(absorbed - 1, |o| o.max(absorbed - 1)));
+    // The absorbed snapshot above and the tail scan below are a TOCTOU
+    // pair: the absorber can advance the boundary AND durably trim the
+    // shard log between them, leaving the tail scan a hole at
+    // `[cursor, new_boundary)` that this loop would otherwise emit as a
+    // "complete" page — permanently skipping records for a paginating
+    // client (2026-07-27 boundary-race DST failure). Everything trim can
+    // remove is already readable in history (the absorber flushes history
+    // before the boundary advances), so on detecting an advance we
+    // re-serve the gap from history and re-scan the tail. `boundary` only
+    // moves forward and is capped by `end`, so the loop terminates; the
+    // bound is paranoia, and falling out of it yields an honest
+    // `completed = false` partial page.
+    let mut cursor = scan_from; // next offset still needed
+    let mut boundary = absorbed; // history serves [_, boundary)
+    for _ in 0..16 {
+        let hist_upto = boundary.min(end);
+        if cursor < hist_upto && budget > 0 {
+            let h = read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
+                .await
+                .map_err(|e| e.to_string())?;
+            for (off, rec) in h.records {
+                budget = budget.saturating_sub(rec.payload.len());
+                out.recs.push(PlainRec {
+                    off,
+                    payload: rec.payload,
+                });
+                out.last = Some(off);
             }
-            absorbed
+            if !h.completed {
+                // Byte-truncated, or the reader cannot prove coverage of
+                // this boundary yet: report the honest partial; the caller
+                // re-polls from `last + 1`.
+                out.completed = false;
+                return Ok(out);
+            }
+            // Fully scanned with proven coverage: everything below
+            // `hist_upto` is consumed even when the range yields no
+            // records for this key filter.
+            if hist_upto > 0 {
+                out.last = Some(out.last.map_or(hist_upto - 1, |o| o.max(hist_upto - 1)));
+            }
+            cursor = hist_upto;
+        }
+        if budget == 0 || cursor >= end {
+            break;
+        }
+        let part = read_frames(engine, handle, cursor, key_filter, budget)
+            .await
+            .map_err(|e| e.to_string())?;
+        // Revalidate the scan against concurrent absorption before
+        // trusting it.
+        let raced_boundary = if key_filter.is_none() {
+            // Unfiltered offsets below the durable frontier are dense, so
+            // a missing head IS the trim race (and a dense head rules it
+            // out — ring hits and clean scans skip the tracker read).
+            let head_gap = match part.frames.first().map(|raw| decode_frame(raw)) {
+                Some(Some(f)) => f.header.offset > cursor,
+                Some(None) => return Err("bad frame".into()),
+                None => cursor < end, // nothing at all in a non-empty range
+            };
+            if head_gap {
+                Some(
+                    engine
+                        .durable_absorbed(&hash)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+            } else {
+                None
+            }
         } else {
+            // A filtered scan cannot distinguish "trimmed" from "did not
+            // match", so always ask the remotely-durable tracker.
+            let durable = engine
+                .durable_absorbed(&hash)
+                .await
+                .map_err(|e| e.to_string())?;
+            (durable > cursor).then_some(durable)
+        };
+        if let Some(durable) = raced_boundary {
+            if durable > boundary {
+                boundary = durable;
+                continue; // the gap is in history now; re-serve from there
+            }
+            // A hole the boundary does not explain: never emit it as
+            // consumed. Drop the tail and report the honest partial.
             out.completed = false;
             return Ok(out);
         }
-    } else {
-        scan_from
-    };
-    if budget > 0 && shard_from < end {
-        let part = read_frames(engine, handle, shard_from, key_filter, budget)
-            .await
-            .map_err(|e| e.to_string())?;
         let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
         for raw in part.frames {
             let Some(frame) = decode_frame(&raw) else {
@@ -2368,6 +2417,7 @@ pub(crate) async fn read_merged(
         if let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
         }
+        break;
     }
     let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
     out.completed = consumed_next >= end;

@@ -933,6 +933,28 @@ impl ShardEngine {
         let _ = self.tx.send(CommitOp::Absorbed { hash, upto }).await;
     }
 
+    /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
+    /// the strongest boundary any `DurabilityLevel::Remote` scan of the
+    /// shard log can have observed trims for. The published handle state is
+    /// NOT enough for that purpose: trim deletes become scan-visible when
+    /// their batch is durable, while `handle.state.durable` advances only
+    /// at dispatch, which can lag durability arbitrarily under load
+    /// (2026-07-27 boundary-race DST failure). Readers revalidating a tail
+    /// scan against concurrent absorption must consult this.
+    pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<u64, slatedb::Error> {
+        let v = self
+            .db
+            .get_with_options(
+                tail_key(hash),
+                &slatedb::config::ReadOptions {
+                    durability_filter: DurabilityLevel::Remote,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(v.and_then(|b| decode_tail(&b)).map_or(0, |t| t.absorbed))
+    }
+
     pub async fn submit_queue(
         &self,
         hash: [u8; 16],
@@ -1384,16 +1406,25 @@ impl ShardEngine {
                 }
                 CommitOp::Absorbed { upto, .. } => {
                     let prev_absorbed = local.fields.absorbed;
+                    // Only an op that ADVANCES the boundary may move the
+                    // trim. The absorber re-submits an already-covered
+                    // `upto` when it starts a pass before the previous
+                    // advance has been dispatched to handle state; letting
+                    // that duplicate trim toward `prev_absorbed` (== the
+                    // live boundary) collapses the one-pass lag that
+                    // in-flight readers holding a stale absorbed snapshot
+                    // depend on (2026-07-27 boundary-race DST failure).
                     if upto > prev_absorbed {
                         local.fields.absorbed = upto.min(local.fields.next);
+                        // Deferred trim: delete only up to the *previous*
+                        // absorbed boundary, bounded per op.
+                        let trim_to =
+                            prev_absorbed.min(local.fields.trimmed + cfg.max_trim_per_op);
+                        for off in local.fields.trimmed..trim_to {
+                            wb.delete(record_key(&hash, off));
+                        }
+                        local.fields.trimmed = trim_to;
                     }
-                    // Deferred trim: delete only up to the *previous* absorbed
-                    // boundary, bounded per op.
-                    let trim_to = prev_absorbed.min(local.fields.trimmed + cfg.max_trim_per_op);
-                    for off in local.fields.trimmed..trim_to {
-                        wb.delete(record_key(&hash, off));
-                    }
-                    local.fields.trimmed = trim_to;
                 }
                 CommitOp::Queue { op, resp, .. } => {
                     use crate::queue::*;
