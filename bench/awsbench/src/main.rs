@@ -704,6 +704,9 @@ async fn stats_server(stats: Arc<Stats>) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.shape == "wide" {
+        return run_wide(&args).await;
+    }
     let stats = Stats::new();
     tokio::spawn(stats_server(stats.clone()));
 
@@ -888,6 +891,324 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     eprintln!("BENCH_DONE");
+    Ok(())
+}
+
+// ---- wide-cardinality shape (BENCH_SHAPE=wide, prisma only) ----------
+//
+// Many streams, few active — the cost review's "many lightly used
+// streams" regime. Three phases:
+//
+//   1. create BENCH_WIDE_STREAMS streams;
+//   2. seed each with ONE record (so every stream exists in the shard
+//      log and eventually crosses the absorber's age threshold — the
+//      per-stream history tax is the thing under test);
+//   3. a BENCH_WIDE_SECS steady window: the first BENCH_WIDE_ACTIVE
+//      streams append batch×record_bytes every
+//      BENCH_WIDE_APPEND_INTERVAL_MS, while a scanner cold-reads random
+//      INACTIVE streams from offset 0 at BENCH_WIDE_SCAN_RPS (the
+//      history-reader cardinality path).
+//
+// Emits "SETUP_DONE ..." on stderr between phases so the runner can
+// split the store ledger into setup vs steady, one JSONL window line
+// per 20 s, and "WIDE_DONE" at the end.
+
+struct WideHist(std::sync::Mutex<Vec<u64>>);
+
+impl WideHist {
+    fn new() -> Arc<Self> {
+        Arc::new(WideHist(std::sync::Mutex::new(Vec::new())))
+    }
+    fn rec(&self, us: u64) {
+        self.0.lock().unwrap().push(us);
+    }
+    fn drain_sorted(&self) -> Vec<u64> {
+        let mut v = std::mem::take(&mut *self.0.lock().unwrap());
+        v.sort_unstable();
+        v
+    }
+}
+
+fn pctl_ms(sorted: &[u64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+    sorted[idx] as f64 / 1000.0
+}
+
+fn wide_env<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn wide_batch(batch: usize, record_bytes: usize) -> Vec<serde_json::Value> {
+    (0..batch)
+        .map(|b| {
+            serde_json::json!({
+                "t": now_ms(),
+                "b": b,
+                "pad": "x".repeat(record_bytes.saturating_sub(40).max(1)),
+            })
+        })
+        .collect()
+}
+
+async fn run_wide(args: &Args) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    let n: usize = std::env::var("BENCH_WIDE_STREAMS")
+        .context("BENCH_WIDE_STREAMS")?
+        .parse()?;
+    let active: usize = wide_env("BENCH_WIDE_ACTIVE", 100);
+    let secs: u64 = wide_env("BENCH_WIDE_SECS", 900);
+    let interval_ms: u64 = wide_env("BENCH_WIDE_APPEND_INTERVAL_MS", 500);
+    let scan_rps: u64 = wide_env("BENCH_WIDE_SCAN_RPS", 2);
+    let setup_conc: usize = wide_env("BENCH_WIDE_SETUP_CONC", 64);
+    anyhow::ensure!(active <= n, "BENCH_WIDE_ACTIVE must be <= BENCH_WIDE_STREAMS");
+    let http = reqwest::Client::builder()
+        .pool_max_idle_per_host(4096)
+        .pool_idle_timeout(Duration::from_secs(4))
+        .tcp_nodelay(true)
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let base = args.target.clone();
+    let auth = format!("Bearer {}", args.auth);
+    let key = args.stream_key.clone();
+    let prefix = args.stream.clone();
+    let mut out = std::fs::File::create(&args.out)?;
+    use std::io::Write as _;
+
+    eprintln!(
+        "WIDE: {n} streams, {active} active, {secs}s steady, append every {interval_ms}ms, scan {scan_rps}/s"
+    );
+
+    // Phase 1a: create. Every stream must exist or the regime is void.
+    let t_create = Instant::now();
+    for chunk_start in (0..n).step_by(10_000) {
+        let chunk_end = (chunk_start + 10_000).min(n);
+        let fails: usize = futures_util::stream::iter(
+            (chunk_start..chunk_end).map(|i| {
+                let http = http.clone();
+                let url = format!("{base}/v1/stream/{prefix}{i}");
+                let auth = auth.clone();
+                let key = key.clone();
+                async move {
+                    for attempt in 0..4u32 {
+                        let r = http
+                            .put(&url)
+                            .header("authorization", auth.clone())
+                            .header("stream-encryption-key", key.clone())
+                            .header("content-type", "application/json")
+                            .send()
+                            .await;
+                        if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                            return 0usize;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+                    }
+                    1usize
+                }
+            }),
+        )
+        .buffer_unordered(setup_conc)
+        .fold(0usize, |a, b| async move { a + b })
+        .await;
+        anyhow::ensure!(fails == 0, "{fails} creates failed in chunk at {chunk_start}");
+        eprintln!("WIDE: created {chunk_end}/{n}");
+    }
+    let create_ms = t_create.elapsed().as_millis();
+
+    // Phase 1b: seed one record per stream.
+    let t_seed = Instant::now();
+    let record_bytes = args.record_bytes;
+    for chunk_start in (0..n).step_by(10_000) {
+        let chunk_end = (chunk_start + 10_000).min(n);
+        let fails: usize = futures_util::stream::iter(
+            (chunk_start..chunk_end).map(|i| {
+                let http = http.clone();
+                let url = format!("{base}/v1/stream/{prefix}{i}");
+                let auth = auth.clone();
+                let key = key.clone();
+                async move {
+                    let body = wide_batch(1, record_bytes);
+                    for attempt in 0..4u32 {
+                        let r = http
+                            .post(&url)
+                            .header("authorization", auth.clone())
+                            .header("stream-encryption-key", key.clone())
+                            .header("content-type", "application/json")
+                            .json(&body)
+                            .send()
+                            .await;
+                        if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                            return 0usize;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+                    }
+                    1usize
+                }
+            }),
+        )
+        .buffer_unordered(setup_conc)
+        .fold(0usize, |a, b| async move { a + b })
+        .await;
+        anyhow::ensure!(fails == 0, "{fails} seeds failed in chunk at {chunk_start}");
+        eprintln!("WIDE: seeded {chunk_end}/{n}");
+    }
+    let seed_ms = t_seed.elapsed().as_millis();
+    eprintln!("SETUP_DONE streams={n} create_ms={create_ms} seed_ms={seed_ms}");
+    writeln!(
+        out,
+        "{}",
+        serde_json::json!({
+            "phase": "setup", "streams": n, "active": active,
+            "createMs": create_ms, "seedMs": seed_ms, "ts": now_ms()/1000,
+        })
+    )?;
+    out.flush()?;
+
+    // Phase 2: steady window.
+    let stop = Arc::new(AtomicU64::new(0));
+    let ap_hist = WideHist::new();
+    let sc_hist = WideHist::new();
+    let ap_ok = Arc::new(AtomicU64::new(0));
+    let ap_thr = Arc::new(AtomicU64::new(0));
+    let ap_err = Arc::new(AtomicU64::new(0));
+    let sc_ok = Arc::new(AtomicU64::new(0));
+    let sc_err = Arc::new(AtomicU64::new(0));
+    let sc_records = Arc::new(AtomicU64::new(0));
+
+    let mut tasks = Vec::new();
+    for j in 0..active {
+        let http = http.clone();
+        let url = format!("{base}/v1/stream/{prefix}{j}");
+        let auth = auth.clone();
+        let key = key.clone();
+        let stop = stop.clone();
+        let (hist, ok, thr, err) =
+            (ap_hist.clone(), ap_ok.clone(), ap_thr.clone(), ap_err.clone());
+        let batch = args.batch;
+        tasks.push(tokio::spawn(async move {
+            // Stagger starts so the herd doesn't align on one instant.
+            let interval = Duration::from_millis(interval_ms);
+            let mut next = Instant::now() + interval * j as u32 / active.max(1) as u32;
+            while stop.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(next)).await;
+                next += interval;
+                let body = wide_batch(batch, record_bytes);
+                let t0 = Instant::now();
+                match http
+                    .post(&url)
+                    .header("authorization", auth.clone())
+                    .header("stream-encryption-key", key.clone())
+                    .header("content-type", "application/json")
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        ok.fetch_add(1, Ordering::Relaxed);
+                        hist.rec(t0.elapsed().as_micros() as u64);
+                    }
+                    Ok(r) if r.status().as_u16() == 429 || r.status().as_u16() == 503 => {
+                        thr.fetch_add(1, Ordering::Relaxed);
+                    }
+                    _ => {
+                        err.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }));
+    }
+    // Scanner: cold catch-up reads of random INACTIVE streams. One task,
+    // paced; a splitmix64 keeps it dependency-free.
+    if n > active && scan_rps > 0 {
+        let http = http.clone();
+        let base = base.clone();
+        let auth = auth.clone();
+        let key = key.clone();
+        let prefix = prefix.clone();
+        let stop = stop.clone();
+        let (hist, ok, err, recs) =
+            (sc_hist.clone(), sc_ok.clone(), sc_err.clone(), sc_records.clone());
+        tasks.push(tokio::spawn(async move {
+            let mut seed = now_ms() as u64 | 1;
+            let mut rng = move || {
+                seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = seed;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            };
+            let gap = Duration::from_millis(1000 / scan_rps.max(1));
+            while stop.load(Ordering::Relaxed) == 0 {
+                // No offset param = read from the beginning (a canonical
+                // offset token is not a bare integer).
+                let idx = active + (rng() as usize % (n - active));
+                let url = format!("{base}/v1/stream/{prefix}{idx}");
+                let t0 = Instant::now();
+                match http
+                    .get(&url)
+                    .header("authorization", auth.clone())
+                    .header("stream-encryption-key", key.clone())
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => match r.bytes().await {
+                        Ok(body) => {
+                            ok.fetch_add(1, Ordering::Relaxed);
+                            hist.rec(t0.elapsed().as_micros() as u64);
+                            if let Ok(v) =
+                                serde_json::from_slice::<Vec<serde_json::Value>>(&body)
+                            {
+                                recs.fetch_add(v.len() as u64, Ordering::Relaxed);
+                            }
+                        }
+                        Err(_) => {
+                            err.fetch_add(1, Ordering::Relaxed);
+                        }
+                    },
+                    _ => {
+                        err.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                tokio::time::sleep(gap).await;
+            }
+        }));
+    }
+
+    // Window reporter until the deadline.
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
+        let left = deadline - Instant::now();
+        tokio::time::sleep(Duration::from_secs(20).min(left)).await;
+        let ap = ap_hist.drain_sorted();
+        let sc = sc_hist.drain_sorted();
+        let line = serde_json::json!({
+            "phase": "steady",
+            "apOk": ap_ok.load(Ordering::Relaxed),
+            "apThr": ap_thr.load(Ordering::Relaxed),
+            "apErr": ap_err.load(Ordering::Relaxed),
+            "apWinP50Ms": pctl_ms(&ap, 0.5),
+            "apWinP99Ms": pctl_ms(&ap, 0.99),
+            "scOk": sc_ok.load(Ordering::Relaxed),
+            "scErr": sc_err.load(Ordering::Relaxed),
+            "scWinP50Ms": pctl_ms(&sc, 0.5),
+            "scWinP99Ms": pctl_ms(&sc, 0.99),
+            "scRecords": sc_records.load(Ordering::Relaxed),
+            "ts": now_ms()/1000,
+        });
+        eprintln!("{line}");
+        writeln!(out, "{line}")?;
+        out.flush()?;
+    }
+    stop.store(1, Ordering::Relaxed);
+    for t in tasks {
+        let _ = tokio::time::timeout(Duration::from_secs(5), t).await;
+    }
+    eprintln!("WIDE_DONE");
     Ok(())
 }
 
