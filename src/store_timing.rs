@@ -387,7 +387,10 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         let r = self.inner.get_opts(location, options).await;
         // GetResult still streams the body afterwards; timing to first byte
         // is what the egress path gates on, and it keeps the guard simple.
-        g.finish(r.is_ok());
+        // A 304 on a conditional GET is a successful revalidation (the
+        // registry's TTL refresh), not an error.
+        let ok = r.is_ok() || matches!(&r, Err(object_store::Error::NotModified { .. }));
+        g.finish(ok);
         r
     }
 

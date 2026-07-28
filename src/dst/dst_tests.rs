@@ -891,6 +891,125 @@ async fn acked_records_survive_absorption_into_history() {
     absorber.abort();
 }
 
+/// Drain the merged reader WITH a key filter (drain_observed hardcodes
+/// unfiltered reads): paginate read_merged and collect attempt ids.
+async fn drain_filtered(
+    hist: &Arc<crate::history::HistReaders>,
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    filter: &str,
+) -> Vec<AttemptId> {
+    let mut out = Vec::new();
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mut from = 0u64;
+    for _ in 0..1024 {
+        let res = crate::http::read_merged(
+            hist,
+            key,
+            &hash,
+            &handle,
+            engine,
+            from,
+            Some(filter),
+            8 * 1024 * 1024,
+        )
+        .await
+        .expect("filtered read");
+        for rec in &res.recs {
+            let v: serde_json::Value = serde_json::from_slice(&rec.payload).expect("payload");
+            let (op, att) = (v["op"].as_u64().unwrap(), v["att"].as_u64().unwrap() as u32);
+            assert_eq!(
+                v["k"].as_str().unwrap(),
+                filter,
+                "filter {filter:?} returned a record for key {:?}",
+                v["k"]
+            );
+            out.push((op, att));
+        }
+        if res.completed {
+            break;
+        }
+        match res.last {
+            Some(last) if last + 1 > from => from = last + 1,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Unkeyed records carry **no k! index copy** in history (it is a full
+/// payload duplicate — double the history bytes for the common unkeyed
+/// workload), and an empty-key filtered read must still return exactly
+/// the unkeyed records, across the history/tail boundary, served from
+/// the primary r! range instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 47, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [33u8; 16];
+    let (engine, absorber) =
+        open_engine_with_absorber(store.clone(), "dst-noidx", hash, &key).await;
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    // Interleaved unkeyed ("") and keyed records.
+    w.run(&engine, hash, &key, &["", "k1"], 25, false, &mut log).await;
+    assert!(log.total_acked() > 0, "nothing acked");
+
+    let mut absorbed = 0u64;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            absorbed = h.state.lock().unwrap().durable.absorbed;
+            if absorbed > 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(absorbed > 0, "the absorber never ran — nothing reached history");
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+
+    // Each filter returns exactly its key's acked records, in ack order.
+    let unkeyed = drain_filtered(&hist, &engine, hash, &key, "").await;
+    let keyed = drain_filtered(&hist, &engine, hash, &key, "k1").await;
+    assert_eq!(
+        &unkeyed, &log.acked[""],
+        "empty-key filter lost or reordered unkeyed records (absorbed={absorbed})"
+    );
+    assert_eq!(
+        &keyed, &log.acked["k1"],
+        "keyed filter lost or reordered keyed records (absorbed={absorbed})"
+    );
+
+    // Write-side proof: the history DB holds NO k! entries for the empty
+    // key — the filtered read above was served without the index copy.
+    let (reader, covered) = hist
+        .acquire(&hash, &key, absorbed)
+        .await
+        .expect("history reader");
+    assert!(covered, "reader must cover the absorbed boundary");
+    let range = crate::history::hist_key_index_key("", 0)
+        ..crate::history::hist_key_index_key("", u64::MAX);
+    let mut iter = reader
+        .scan(range)
+        .await
+        .expect("scan empty-key index range");
+    let mut leaked = 0u64;
+    while let Some(_kv) = iter.next().await.expect("iter") {
+        leaked += 1;
+    }
+    assert_eq!(
+        leaked, 0,
+        "unkeyed records still get a k! payload duplicate in history"
+    );
+    absorber.abort();
+}
+
 /// A fenced owner must not leave a **zombie absorber** behind.
 ///
 /// This is not hypothetical: a fenced shard's absorber that keeps retrying

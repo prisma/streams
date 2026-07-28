@@ -126,8 +126,19 @@ pub fn media_type(ct: &str) -> String {
 
 pub struct Registry {
     store: Arc<dyn ObjectStore>,
-    cache: Mutex<HashMap<String, (Option<StreamDesc>, Instant)>>,
+    cache: Mutex<HashMap<String, CachedDesc>>,
     cache_ttl: Duration,
+}
+
+struct CachedDesc {
+    desc: Option<StreamDesc>,
+    at: Instant,
+    /// Store ETag of the object this entry was read from. TTL refreshes
+    /// revalidate with If-None-Match instead of refetching: descriptors
+    /// are immutable for the life of an incarnation, so almost every
+    /// refresh is a 304 — uncharged on Tigris — instead of a billable
+    /// GET (object-store cost review, item 5).
+    etag: Option<String>,
 }
 
 fn desc_path(name: &str) -> ObjPath {
@@ -152,19 +163,35 @@ impl Registry {
     }
 
     pub async fn get(&self, name: &str) -> Result<Option<StreamDesc>, object_store::Error> {
-        if let Some((desc, at)) = self.cache.lock().unwrap().get(name) {
-            if at.elapsed() < self.cache_ttl {
-                return Ok(desc.clone());
+        let revalidate = {
+            let cache = self.cache.lock().unwrap();
+            match cache.get(name) {
+                Some(e) if e.at.elapsed() < self.cache_ttl => return Ok(e.desc.clone()),
+                Some(e) => e.etag.clone().map(|t| (t, e.desc.clone())),
+                None => None,
             }
-        }
-        let fetched = match self.store.get(&desc_path(name)).await {
+        };
+        // TTL expired on a descriptor we hold an ETag for: conditional
+        // refresh. Unchanged (the overwhelmingly common case — a
+        // descriptor changes only on delete/recreate/config update) comes
+        // back 304 and only renews the TTL; a real change pays for a body.
+        let opts = |etag: Option<String>| object_store::GetOptions {
+            if_none_match: etag,
+            ..Default::default()
+        };
+        let (etag_sent, cached_desc) = match revalidate {
+            Some((t, d)) => (Some(t), d),
+            None => (None, None),
+        };
+        let fetched = match self.store.get_opts(&desc_path(name), opts(etag_sent.clone())).await {
             Ok(r) => {
+                let etag = r.meta.e_tag.clone();
                 let raw = r.bytes().await?;
                 // Fail CLOSED on a corrupt descriptor: treating it as absent
                 // would let a create/recreate path overwrite a live stream's
                 // identity (key epoch, incarnation) — worse than an error.
                 match serde_json::from_slice::<StreamDesc>(&raw) {
-                    Ok(d) => Some(d),
+                    Ok(d) => (Some(d), etag),
                     Err(e) => {
                         return Err(object_store::Error::Generic {
                             store: "registry",
@@ -173,14 +200,19 @@ impl Registry {
                     }
                 }
             }
-            Err(object_store::Error::NotFound { .. }) => None,
+            Err(object_store::Error::NotModified { .. }) => (cached_desc, etag_sent),
+            Err(object_store::Error::NotFound { .. }) => (None, None),
             Err(e) => return Err(e),
         };
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), (fetched.clone(), Instant::now()));
-        Ok(fetched)
+        self.cache.lock().unwrap().insert(
+            name.to_string(),
+            CachedDesc {
+                desc: fetched.0.clone(),
+                at: Instant::now(),
+                etag: fetched.1,
+            },
+        );
+        Ok(fetched.0)
     }
 
     /// Create a descriptor; on a lost CAS race, return the winner's.
@@ -198,11 +230,15 @@ impl Registry {
             )
             .await
         {
-            Ok(_) => {
-                self.cache
-                    .lock()
-                    .unwrap()
-                    .insert(desc.name.clone(), (Some(desc.clone()), Instant::now()));
+            Ok(put) => {
+                self.cache.lock().unwrap().insert(
+                    desc.name.clone(),
+                    CachedDesc {
+                        desc: Some(desc.clone()),
+                        at: Instant::now(),
+                        etag: put.e_tag,
+                    },
+                );
                 Ok((true, desc))
             }
             Err(object_store::Error::AlreadyExists { .. }) => {
@@ -250,10 +286,14 @@ impl Registry {
                     source: format!("corrupt descriptor for {name:?}: {e}").into(),
                 })?;
             if !still_dead(&current) {
-                self.cache
-                    .lock()
-                    .unwrap()
-                    .insert(name.to_string(), (Some(current.clone()), Instant::now()));
+                self.cache.lock().unwrap().insert(
+                    name.to_string(),
+                    CachedDesc {
+                        desc: Some(current.clone()),
+                        at: Instant::now(),
+                        etag: etag.clone(),
+                    },
+                );
                 return Ok((false, current));
             }
             let body = serde_json::to_vec(&fresh).expect("desc json");
@@ -333,6 +373,15 @@ impl Registry {
 
     pub fn invalidate(&self, name: &str) {
         self.cache.lock().unwrap().remove(name);
+    }
+
+    /// Force a cached entry past its TTL so tests can exercise the
+    /// refresh path without sleeping through the real TTL.
+    #[cfg(test)]
+    fn expire_for_tests(&self, name: &str) {
+        if let Some(e) = self.cache.lock().unwrap().get_mut(name) {
+            e.at -= self.cache_ttl + Duration::from_secs(1);
+        }
     }
 
     pub async fn list(&self, limit: usize) -> Result<Vec<StreamDesc>, object_store::Error> {
@@ -484,6 +533,124 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    /// Wrapper that counts get traffic and how it resolved, so the
+    /// conditional-refresh path is provable rather than assumed.
+    #[derive(Debug)]
+    struct CountingStore {
+        inner: Arc<dyn ObjectStore>,
+        gets: std::sync::atomic::AtomicU64,
+        conditional: std::sync::atomic::AtomicU64,
+        not_modified: std::sync::atomic::AtomicU64,
+    }
+    impl std::fmt::Display for CountingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CountingStore")
+        }
+    }
+    #[async_trait::async_trait]
+    impl ObjectStore for CountingStore {
+        async fn put_opts(
+            &self,
+            location: &ObjPath,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjPath,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &ObjPath,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            use std::sync::atomic::Ordering::Relaxed;
+            self.gets.fetch_add(1, Relaxed);
+            if options.if_none_match.is_some() {
+                self.conditional.fetch_add(1, Relaxed);
+            }
+            let r = self.inner.get_opts(location, options).await;
+            if matches!(&r, Err(object_store::Error::NotModified { .. })) {
+                self.not_modified.fetch_add(1, Relaxed);
+            }
+            r
+        }
+        fn delete_stream(
+            &self,
+            locations: futures_util::stream::BoxStream<'static, object_store::Result<ObjPath>>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<ObjPath>> {
+            self.inner.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &ObjPath,
+            to: &ObjPath,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    /// A TTL refresh of an unchanged descriptor must be a conditional GET
+    /// answered 304 (uncharged on Tigris), never a billable body fetch —
+    /// and a genuinely changed descriptor must still come through.
+    #[tokio::test]
+    async fn ttl_refresh_of_unchanged_descriptor_is_a_free_304() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counting = Arc::new(CountingStore {
+            inner: Arc::new(object_store::memory::InMemory::new()),
+            gets: Default::default(),
+            conditional: Default::default(),
+            not_modified: Default::default(),
+        });
+        let reg = Registry::new(counting.clone());
+        let (created, _) = reg.create(desc("s", "e1", false)).await.unwrap();
+        assert!(created);
+
+        // Warm read: cache hit, no store traffic at all.
+        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(counting.gets.load(Relaxed), 0, "warm read touched the store");
+
+        // TTL expiry on an unchanged descriptor: exactly one conditional
+        // GET, answered 304, still serving the cached descriptor.
+        reg.expire_for_tests("s");
+        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(counting.conditional.load(Relaxed), 1, "refresh was not conditional");
+        assert_eq!(counting.not_modified.load(Relaxed), 1, "refresh paid for a body");
+
+        // The 304 renews the TTL: the next read is a cache hit again.
+        let gets_now = counting.gets.load(Relaxed);
+        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(counting.gets.load(Relaxed), gets_now, "304 did not renew the TTL");
+
+        // A real change (delete tombstone) must come through on the next
+        // refresh — the conditional path must never pin a stale view.
+        reg.update("s", |d| d.deleted = true).await.unwrap();
+        reg.expire_for_tests("s");
+        // update() invalidates, so re-prime the cache then expire it.
+        assert!(reg.get("s").await.unwrap().unwrap().deleted);
+        reg.expire_for_tests("s");
+        assert!(reg.get("s").await.unwrap().unwrap().deleted);
     }
 
     /// A corrupt descriptor must surface as an ERROR — treating it as

@@ -688,8 +688,19 @@ impl Absorber {
             for (offset, rec) in &items[i..end] {
                 let value =
                     encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
-                wb.put(hist_record_key(*offset), value.clone());
-                wb.put(hist_key_index_key(&rec.routing_key, *offset), value);
+                // Unkeyed records get no k! index copy. The index is a
+                // full payload duplicate, so for the common unkeyed
+                // workload it doubled history bytes — twice the SSTs,
+                // compaction traffic and cache pressure for an index that
+                // only an empty-key filter could use (object-store cost
+                // review, item 6). Empty-key filtered reads are served
+                // from the primary r! range instead (read_history).
+                if rec.routing_key.is_empty() {
+                    wb.put(hist_record_key(*offset), value);
+                } else {
+                    wb.put(hist_record_key(*offset), value.clone());
+                    wb.put(hist_key_index_key(&rec.routing_key, *offset), value);
+                }
             }
             db.write_with_options(
                 wb,
@@ -1220,6 +1231,31 @@ pub async fn read_history(
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
                 if let Some(rec) = decode_hist_record(&kv.value) {
+                    total += rec.payload.len();
+                    out.records.push((off, rec));
+                    out.last_offset = Some(off);
+                    if total >= max_bytes {
+                        out.completed = false;
+                        break;
+                    }
+                }
+            }
+        }
+        // Empty-key filter: unkeyed records carry no k! index copy (the
+        // absorber stopped writing the payload duplicate), so serve from
+        // the primary r! range and filter. For an all-unkeyed stream this
+        // scans exactly the bytes the index copy would have held; only a
+        // mixed stream filtered by "" pays to skip its keyed records.
+        Some("") => {
+            let mut iter = reader
+                .scan_with_options(hist_record_key(from)..hist_record_key(upto), &hist_scan_opts())
+                .await?;
+            while let Some(kv) = iter.next().await? {
+                let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
+                if let Some(rec) = decode_hist_record(&kv.value) {
+                    if !rec.routing_key.is_empty() {
+                        continue;
+                    }
                     total += rec.payload.len();
                     out.records.push((off, rec));
                     out.last_offset = Some(off);
