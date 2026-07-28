@@ -51,10 +51,15 @@ def load_run(run):
     out["setup_line"] = next(l for l in lines if l.get("phase") == "setup")
     steady = [l for l in lines if l.get("phase") == "steady"]
     out["last"] = steady[-1]
-    out["ap_p50"] = median(l["apWinP50Ms"] for l in steady if l["apWinP50Ms"] > 0)
-    out["ap_p99"] = median(l["apWinP99Ms"] for l in steady if l["apWinP99Ms"] > 0)
-    out["sc_p50"] = median(l["scWinP50Ms"] for l in steady if l["scWinP50Ms"] > 0)
-    out["sc_p99"] = median(l["scWinP99Ms"] for l in steady if l["scWinP99Ms"] > 0)
+    def med(key):
+        vals = [l[key] for l in steady if l[key] > 0]
+        return median(vals) if vals else 0.0
+
+    out["ap_p50"] = med("apWinP50Ms")
+    out["ap_p99"] = med("apWinP99Ms")
+    # A regime with zero inactive streams runs no scanner.
+    out["sc_p50"] = med("scWinP50Ms")
+    out["sc_p99"] = med("scWinP99Ms")
     out["sc_p99_max"] = max(l["scWinP99Ms"] for l in steady)
     rss = [int(l.split()[1]) for l in (run / "rss.log").read_text().splitlines() if len(l.split()) == 2]
     out["rss_max_mb"] = max(rss) / 1024 if rss else 0
