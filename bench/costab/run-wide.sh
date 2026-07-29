@@ -57,6 +57,7 @@ snap() {
   curl -s http://127.0.0.1:9500/_s3lite/stats2 > "$OUT/snaps/$tag-stats2.json" || true
   curl -s -H "authorization: Bearer $AUTH" http://127.0.0.1:8090/v1/debug/store   > "$OUT/snaps/$tag-store.json" || true
   curl -s -H "authorization: Bearer $AUTH" http://127.0.0.1:8090/v1/debug/timings > "$OUT/snaps/$tag-timings.json" || true
+  curl -s -H "authorization: Bearer $AUTH" http://127.0.0.1:8090/v1/debug/load > "$OUT/snaps/$tag-load.json" || true
   ps -o rss= -p "$SRV_PID" 2>/dev/null | awk -v t="$tag" '{print t, $1}' >> "$OUT/rss.log" || true
 }
 # /v1/debug/usage is per-stream (~200 B each): at 100k streams one

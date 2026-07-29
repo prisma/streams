@@ -62,11 +62,17 @@ env BENCH_SYSTEM=prisma BENCH_SHAPE=tiers BENCH_TARGET=http://127.0.0.1:8090 \
   "$HERE/bin/awsbench-ab" > "$OUT/gen.log" 2>&1 &
 GEN_PID=$!
 
-# Wedge detector: goodput collapse. The shed line lets a trickle of
-# appends through as RSS hovers around it, so exact-frozen ok is too
-# strict — a window delta under 1% of the best window, twice in a row,
-# with throttles still rising, is the wedge.
-wedged=0; prev_ok=-1; prev_thr=0; frozen=0; best_delta=1
+# Overload detector. The property this gate protects is: after
+# sustained memory shedding, removing the load restores service. Two
+# stress signatures count (the recovery probe runs after either):
+#  - collapse: window ok-delta under 1% of the best window, twice in a
+#    row, with throttles rising (the historical ratchet wedge), or
+#  - sustained shedding: heavy 429 volume across two consecutive
+#    windows while goodput is degraded. With the honest footprint
+#    gauge + over-line purge, the instance self-regulates AT the line
+#    (throttled equilibrium, goodput never collapses) — that is
+#    overload too, and recovery afterwards is what must be proven.
+wedged=0; stressed=0; prev_ok=-1; prev_thr=0; frozen=0; shed_windows=0; best_delta=1
 end=$((SECONDS + LOAD_SECS))
 while [ $SECONDS -lt $end ]; do
   sleep 30
@@ -78,38 +84,55 @@ while [ $SECONDS -lt $end ]; do
   ps -o rss= -p "$SRV_PID" | awk '{print "'"$SECONDS"'", $1}' >> "$OUT/rss.log"
   if [ "$prev_ok" -ge 0 ]; then
     delta=$((ok - prev_ok))
+    thr_delta=$((thr - prev_thr))
     [ "$delta" -gt "$best_delta" ] && best_delta=$delta
-    if [ $((delta * 100)) -lt "$best_delta" ] && [ "$thr" -gt "$prev_thr" ]; then
+    if [ $((delta * 100)) -lt "$best_delta" ] && [ "$thr_delta" -gt 0 ]; then
       frozen=$((frozen+1))
     else
       frozen=0
     fi
+    # Sustained shedding: many rejects while goodput runs under half
+    # of the best window seen.
+    if [ "$thr_delta" -gt 10000 ] && [ $((delta * 2)) -lt "$best_delta" ]; then
+      shed_windows=$((shed_windows+1))
+    else
+      shed_windows=0
+    fi
   fi
   prev_ok=$ok; prev_thr=$thr
   if [ "$frozen" -ge 2 ]; then wedged=1; break; fi
+  if [ "$shed_windows" -ge 2 ]; then stressed=1; break; fi
 done
-if [ "$wedged" != 1 ]; then
-  echo "VERDICT=INCONCLUSIVE no wedge within ${LOAD_SECS}s (ok=$prev_ok thr=$prev_thr)"
+if [ "$wedged" != 1 ] && [ "$stressed" != 1 ]; then
+  echo "VERDICT=INCONCLUSIVE no overload within ${LOAD_SECS}s (ok=$prev_ok thr=$prev_thr)"
   exit 2
 fi
-echo "WEDGED at t=${SECONDS}s (ok frozen at $prev_ok, throttled=$prev_thr); removing load"
+echo "OVERLOADED at t=${SECONDS}s (wedged=$wedged stressed=$stressed ok=$prev_ok throttled=$prev_thr); removing load"
 kill "$GEN_PID" 2>/dev/null || true
 GEN_PID=""
 
 # Recovery probe: a FRESH stream must accept appends again. Five
-# consecutive successes = recovered.
-curl -sf -o /dev/null -X PUT -H "authorization: Bearer $AUTH" \
-  -H "stream-encryption-key: $KEY" -H "content-type: application/json" \
-  http://127.0.0.1:8090/v1/stream/wedge-probe || true
-consec=0; recovered=0
+# consecutive append successes = recovered. Stream creation is itself
+# a write (the shed 429s it while still engaged), so it is retried
+# inside the loop rather than attempted once — a swallowed creation
+# failure turned every probe into a 404 and produced a phantom FAIL.
+consec=0; recovered=0; created=0
 probe_end=$((SECONDS + RECOVERY_SECS))
 while [ $SECONDS -lt $probe_end ]; do
   sleep 5
+  if [ "$created" != 1 ]; then
+    ccode=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+      -H "authorization: Bearer $AUTH" -H "stream-encryption-key: $KEY" \
+      -H "content-type: application/json" http://127.0.0.1:8090/v1/stream/wedge-probe)
+    case "$ccode" in 2*) created=1;; esac
+  fi
   code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "authorization: Bearer $AUTH" -H "stream-encryption-key: $KEY" \
     -H "content-type: application/json" \
     -d '[{"probe":1}]' http://127.0.0.1:8090/v1/stream/wedge-probe)
-  ps -o rss= -p "$SRV_PID" | awk '{print "'"$SECONDS"'", $1, "'"$code"'"}' >> "$OUT/rss.log"
+  gauge=$(curl -s -H "authorization: Bearer $AUTH" http://127.0.0.1:8090/v1/debug/load \
+    | python3 -c "import json,sys; print(round(json.loads(sys.stdin.read())['rss_mb']))" 2>/dev/null || echo -)
+  echo "$SECONDS $(ps -o rss= -p "$SRV_PID" | tr -d ' ') $code fp=${gauge}MB" >> "$OUT/rss.log"
   case "$code" in
     2*) consec=$((consec+1));;
     *) consec=0;;
