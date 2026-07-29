@@ -19,17 +19,28 @@ Fork branch sorenbs/slatedb#gc-adaptive-backoff: f5e5380 (cadence) →
 
 ## 1. Headline economics (w100k: 100k one-record streams, 100 active, 15 min)
 
-| arm | steady total Class A | history Class A | $/1M sparse streams (hist, Tigris) |
+| arm | steady total Class A | history Class A (total) | Class A per sparse stream |
 |---|---|---|---|
-| A: v1 absorb-all | 685,647 | 559,470 | ≈ $215/M (≈43/stream) |
+| A: v1 absorb-all | 685,647 | 559,470 | ≈ 43 (≈ $215/M at Tigris prices) |
 | B: defer sparse (interim policy) | 272,791 | 147,872 | deferral, not absorption |
-| C: shared history v2 | 133,808 | 9,490 | ≈ $0.47/M (0.095/stream) |
-| C + LIST-free GC (this round) | _pending rerun_ | _pending rerun_ | target ≤ 5,000 hist A (gate) |
+| C: shared history v2 | 133,808 | 9,490 | 0.095 |
+| **C + LIST-free GC (final)** | **96,906** | **1,203** | **0.012 (≈ $0.06/M)** |
+| acceptance gate | — | ≤ 5,000 | ≤ 0.05 |
 
-v2's residual history cost was 79% GC LISTs (7,489 of 9,490) — the
-structural fix below targets exactly that. The v2 layout itself absorbs
-100k one-record streams in-window, keyless, with the 321 ms cold-read
-cliff gone (55 ms vs 28 ms unabsorbed) and appends flat.
+All gates pass on the final binary: full 100k drain in-window (backlog
+0, deferred 0), appends byte-flat across every arm (p50 46.9 / p99
+88.0 ms, 4.14 M ok, 0 errors), absorbed cold scans 54.8 ms (1.96× the
+28 ms unabsorbed control, within the ≤2× gate), history LISTs 128 for
+the whole run. End-to-end: absorbing a sparse stream's history now
+costs ~3,600× fewer Class A requests than v1, and steady-state total
+request volume is 7.1× lower than where the campaign started.
+
+With the interim deferral policy active instead (Arm B posture on the
+same binary), history Class A is 485 total and scan p50 halves to
+27.6 ms — sparse reads stay on the shard-log fast path. Both postures
+are now cheap; deferral remains the better read-latency choice for
+overwhelmingly-sparse populations, absorb-all the better trim/storage
+choice.
 
 ## 2. The LIST problem, solved in two layers
 
@@ -93,11 +104,20 @@ capped 30-min soak, each fixed before proceeding):
 
 | metric | GC-cadence baseline | LIST-free | delta |
 |---|---|---|---|
-| total LISTs | 16,671 | _pending final run_ | — |
-| total Class A | 77,937 | _pending_ | — |
-| total Class B | 25,772 | _pending_ | — |
-| end-state live objects | ~10,411 residual | _pending_ | must be comparable |
-| append integrity | exact | _pending_ | must stay exact |
+| total LISTs | 16,671 | **200** | **−98.8%** |
+| total Class A | 77,937 | 61,121 | −21.6% |
+| total Class B | 25,772 | 10,847 | −57.9% |
+| GC deletes | 50,877 | 57,769 | +13.5% (clears baseline's own residual) |
+| end-state live objects | ~10,411 residual | **3,075** (WAL 1,596 ≈ one min_age window) | healthier |
+| append integrity / errors | exact / 0 | exact / 0 | unchanged |
+
+Wide-shape confirmation (w100k, 100 active, 15 min, GC-cadence binary
+vs LIST-free binary with the sparse-deferral interim policy active):
+history-tier Class A 8,891 → **485 total** (LISTs 7,503 → 124), shard
+LISTs 31,083 → 334, steady total Class A −21%, appends byte-identical
+(p50 47.2 vs 47.7 ms, p99 ~86, 4.14 M ok, 0 errors), scan p50 halved
+(27.6 vs 54.8 ms — deferral keeps sparse reads on the shard-log fast
+path). The absorb-all Arm C scorecard run is in §5.
 
 ## 3. The wedge, root-caused: a shed that could not un-trip
 
@@ -128,7 +148,25 @@ and the 500 ms sampler forces `mi_collect(true)` (≤1/10 s) whenever the
 reading is over the shed line, re-measuring immediately after. Retained
 idle memory can no longer masquerade as live pressure.
 
-**Gate rerun with the fix:** _pending_ (target VERDICT=PASS).
+**Gate rerun with the fix: PASS** (a105408), with two findings worth
+more than the verdict:
+
+1. **The wedge is unreproducible.** The same conc24 load that froze ok
+   at 264k now sustains 334k accepted with footprint flat at ~285 MB
+   (ps-RSS ~490 MB — the 130-200 MB gap is OS-reclaimable pages the
+   old gauge counted). The 600 MB line never engages.
+2. **Under a line it CAN reach (WEDGE_SHED_MB=280), the instance
+   self-regulates instead of wedging** — a throttled equilibrium at
+   the line (goodput −80%, footprint pinned) that never collapses. The
+   gate's detector now counts sustained shedding as its overload
+   precondition; the recovery run then shows probes 429 at fp=294 MB
+   and five consecutive successes as the footprint drains through
+   272 MB — **recovered 197 s before the deadline**.
+
+(Two harness traps fixed en route: probe-stream creation must retry
+inside the recovery loop — the shed 429s the create, and a swallowed
+one-shot failure made every probe 404, a phantom FAIL; and shed lines
+must be placed against the server's own footprint gauge, never ps-RSS.)
 
 ## 4. Hash newtypes at the measured confusion seams
 
@@ -141,16 +179,42 @@ entire life, docs/COST-WIDE2.md §4) or would silently corrupt every v2
 key. Engine internals keep bare arrays; conversion happens at the
 boundary. Zero-cost (`repr(transparent)`).
 
-## 5. What remains open
+## 5. Memory posture on 1 GiB (measured, honest gauge)
+
+The footprint gauge (task_vm_info / statm, not ps-RSS) is now captured
+in every wide-run snapshot. w100k with 100 active at the full perf
+knobs (4×32 MiB rings, 64 MiB shared cache, ABSORB_CONCURRENCY 6):
+
+- absorb-all peak footprint **820 MB** (ps-RSS reads 950);
+- deferral-policy peak **800 MB** — near-identical, i.e. absorption is
+  NOT the memory driver at this shape; rings + 100k stream/registry
+  metadata + caches dominate;
+- single-hot-stream overload (the gate run) plateaus at ~285 MB.
+
+Consequence for 1 GiB field instances: a 100k-wide tenant on one
+instance runs above the 600 MB shed line regardless of absorb policy,
+so the posture is (a) trimmed knobs — TAIL_RING_BYTES=16 MiB (−64 MB),
+SHARED_CACHE_BYTES=32 MiB (−32 MB), ABSORB_CONCURRENCY=2 — for an
+estimated ~650-700 MB peak, (b) the now-honest shed as the guardrail
+(it self-regulates and provably recovers instead of wedging), and
+(c) fleet-level splitting of very wide tenants as the real fix. The
+old belief that this shape "needs ~1 GB RSS" overstated live memory by
+the reusable-page gap (~130-200 MB on this rig).
+
+## 6. What remains open
 
 - **Field validation** of everything since 581f1e2 (deferred by
   decision until credentials are provisioned): the shed fix on
-  Linux/musl semantics, LIST-free behavior against real Tigris, v2
-  economics at field latency.
-- **1 GiB posture profile** — _pending this campaign's final runs_.
+  Linux/musl semantics (statm + MADV_DONTNEED), LIST-free behavior
+  against real Tigris, v2 economics at field latency.
 - **Fork upstreaming** — explicitly out of scope this round; the fork
-  carries three patches (yield points, adaptive cadence + listing
-  reuse, probe-cached latest reads) that should become upstream PRs.
+  branch carries the yield points, adaptive cadence, listing reuse,
+  probe-cached latest reads, and concurrent GC deletes, and should
+  become upstream PRs.
 - Compacted-SST GC still lists at refresh cadence rather than taking a
   compactor-fed exact candidate feed; with the other layers in place
-  its residual cost did not justify the plumbing this round.
+  its residual cost (a handful of LISTs per hour) did not justify the
+  plumbing this round.
+- The registry still pays one Class A PUT per stream creation (100,001
+  per w100k setup) — the dominant remaining per-stream cost, untouched
+  by this campaign and priced into stream creation, not retention.

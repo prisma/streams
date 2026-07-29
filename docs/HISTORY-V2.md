@@ -11,8 +11,8 @@ acceptance gates, and the first Arm C measurements.
 
 | gate | target | measured | verdict |
 |---|---|---|---|
-| history Class A (setup+steady) | ≤ 5,000 | **9,490** (was ~4.3 M implied v1) | ~2× over target, **~450× under v1**; 7,489 of it is GC LISTs on the partition DBs — the queued exact-candidate-GC work, not the layout |
-| Class A per stream | ≤ 0.05 | **0.095** (0.020 excl. GC LISTs) | as above |
+| history Class A (setup+steady) | ≤ 5,000 | **9,490** at first landing → **1,203** after the LIST-free GC round (docs/COST-CAMPAIGN-2.md; hist LISTs 7,489 → 128) | **pass** |
+| Class A per stream | ≤ 0.05 | 0.095 → **0.012** | **pass** |
 | history DB opens | O(shards) | 4 partitions, kept open | **pass** |
 | per-stream checkpoint PUTs | 0 | 0 (no DbReaders) | **pass** |
 | 100k drain | ≤ 15 min | **complete in-window** (backlog 0, deferred 0) | **pass** |
@@ -20,7 +20,7 @@ acceptance gates, and the first Arm C measurements.
 | cold-read p50 | ≤ 2× unabsorbed | **55 ms vs 28 ms (1.96×)**; p99 83 vs v1's 331 | **pass** — the 321 ms cliff is gone |
 | WAL request cells | unchanged | shard tier 125,149 vs 124,9xx | **pass** |
 | errors / integrity | 0 / exact | 0 / exact | **pass** |
-| RSS (1 GiB posture) | < 600 MiB | 961 MB on the wide rig (4×32 MiB rings etc.) | open — field-posture sizing pass still owed |
+| RSS (1 GiB posture) | < 600 MiB | honest footprint peaks 820 MB at full perf knobs (the old 961 MB ps-RSS overstated by the reusable-page gap); absorption is NOT the driver — rings + 100k metadata + caches are (COST-CAMPAIGN-2 §5) | measured; 100k-wide-per-1GiB needs trimmed knobs + the (now provably recovering) shed, or fleet splitting |
 
 Steady total Class A across the arms: **685,647 (A: v1 absorb-all) →
 272,791 (B: defer sparse) → 133,808 (C: v2 absorb-all)** — v2 absorbs
@@ -77,14 +77,21 @@ pending crosses the gate mid-write can absorb a prefix and leave a
 sub-gate residue in the shard log; the residue stays readable and
 defers until it has volume — correct, but visible in absorbed < next.
 
-**Gate 0 status:** the wedge liveness gate exists
-(`bench/costab/wedge-liveness.sh`) and currently records the expected
-**FAIL**: driven past the envelope at field posture it wedges (~10 min
-at conc24), and 300 s after ALL load is removed the instance still
-rejects every append with RSS frozen at ~647 MB — above the 600 MB
-shed line, never draining. That non-recovery signature (soak7 sjc,
-now scripted) is the bug to fix; v2 does not ship until this gate
-passes.
+**Gate 0 status: PASS** (2026-07-29, slate a105408). The historical
+FAIL was the shed line reading memory gauges that structurally cannot
+decrease: macOS rss_bytes() returned the getrusage PEAK, Darwin keeps
+mimalloc's MADV_FREE_REUSABLE pages in resident_size, and an idle
+process never runs mimalloc's allocation-path purges. With the honest
+gauge (task_vm_info.phys_footprint) plus a forced mi_collect whenever
+the reading is over the line, the original wedge is unreproducible —
+the same conc24 load runs at a throttled equilibrium (footprint flat
+~285 MB; ps-RSS ~490 — the gap is OS-reclaimable pages) and never
+collapses. The gate now counts sustained shedding as its overload
+precondition and PASSES: overloaded at t=152 s against a 280 MB line,
+load removed, probes 429 at fp=294 MB, then five consecutive
+successes as the footprint drains through 272 MB — recovered 197 s
+before the deadline. Linux/musl semantics (statm + MADV_DONTNEED)
+validate with the deferred field batch.
 
 ## The design
 
