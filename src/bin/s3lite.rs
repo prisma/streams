@@ -318,10 +318,30 @@ async fn handle(
                 )
             })
             .collect();
+        // Live-object census: what the bucket holds RIGHT NOW, by
+        // tier/kind — the direct gauge for GC retention (request cells
+        // alone can't show what was never deleted).
+        let mut live: HashMap<(&'static str, &'static str), u64> = HashMap::new();
+        {
+            let objects = state.objects.lock().unwrap();
+            let no_query = HashMap::new();
+            for key in objects.keys() {
+                let k = key.splitn(2, '/').nth(1).unwrap_or(key);
+                let tier = tier_class(&Method::PUT, k, &no_query);
+                *live.entry((tier, kind_class(k))).or_default() += 1;
+            }
+        }
+        let mut live_map = serde_json::Map::new();
+        let mut live_keys: Vec<_> = live.keys().copied().collect();
+        live_keys.sort();
+        for (tier, kind) in live_keys {
+            live_map.insert(format!("{tier}/{kind}"), live[&(tier, kind)].into());
+        }
         let body = serde_json::json!({
             "cells": cells,
             "by_tier": by_tier,
             "total": {"class_a": class_a, "class_b": class_b, "free": free},
+            "live_objects": live_map,
         });
         return (
             [(header::CONTENT_TYPE, "application/json")],
