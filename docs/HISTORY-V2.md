@@ -221,7 +221,7 @@ optional and later.
 |---|---|
 | Gate 0 | Field-validate current changes (needs credentials); wedge liveness gate (`bench/costab/wedge-liveness.sh`) must pass before v2 ships |
 | Main | Shared history v2 (this page) |
-| Parallel quick win | Adaptive GC cadence → exact-candidate GC (≈ $158/mo per hot-soak shape; LIST target <100 per 30-min soak, from 18,800) |
+| Parallel quick win | Adaptive GC cadence → exact-candidate GC. *Cadence landed 2026-07-29 (fork `gc-adaptive-backoff`, GC_MAX_INTERVAL_SECS/HISTORY_GC_MAX_INTERVAL_SECS, default 600 s): empty sweeps back off, work snaps back, and the gate skips the per-tick expired-checkpoint manifest load. Verified on the capped 30-min soak vs the pre-v2 binary: Class B −31.7 % (manifest GETs: shard −34 %, hist −59 %), hist LISTs −17 %, latency and RSS improved. Shard LISTs barely moved — most originate outside the GC scheduler — so exact-candidate GC stays open as the structural fix.* |
 | Before fleet mode | Fleet tick redesign (O(N) steady-state, 10 s stable heartbeat, conditional GETs; ≈ $1,286/mo per 32-instance cell as-is) |
 | After | 5 s L0 timer → recovery budget |
 

@@ -234,10 +234,36 @@ fn history_settings() -> Settings {
     let compactor_off = std::env::var("HISTORY_COMPACTOR")
         .map(|v| v == "off")
         .unwrap_or(false);
+    // Quiet-backoff ceiling for every GC directory sweep: history DBs
+    // (per-stream v1 AND the shared v2 partitions) are quiet most of the
+    // time, and their fixed-cadence LISTs were 79% of v2's residual
+    // request cost (docs/HISTORY-V2.md scorecard). Any sweep that finds
+    // work snaps back to the base interval. HISTORY_GC_MAX_INTERVAL_SECS
+    // (0 = fixed cadence).
+    let gc_max = {
+        let secs: u64 = std::env::var("HISTORY_GC_MAX_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
+        (secs > 0).then(|| Duration::from_secs(secs))
+    };
+    let mut gc = Settings::default().garbage_collector_options.unwrap_or_default();
+    for slot in [
+        &mut gc.wal_options,
+        &mut gc.manifest_options,
+        &mut gc.compacted_options,
+        &mut gc.compactions_options,
+    ] {
+        *slot = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+            max_interval: gc_max,
+            ..slot.unwrap_or_default()
+        });
+    }
     Settings {
         wal_enabled: false,
         flush_interval: Some(Duration::from_millis(100)),
         manifest_poll_interval: Duration::from_secs(300),
+        garbage_collector_options: Some(gc),
         compression_codec: Some(CompressionCodec::Zstd),
         // Upstream default is 512 MB — on a 1 GB instance the absorber sink
         // buffers toward the kernel kill line long before backpressure

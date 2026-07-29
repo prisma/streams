@@ -166,6 +166,14 @@ struct Args {
     #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
     wal_gc_interval_secs: u64,
 
+    /// Adaptive GC ceiling (seconds): empty sweeps back off from the base
+    /// interval toward this; any sweep that finds work snaps back. Quiet
+    /// DBs stop paying 2 Class A LISTs per interval (cost review; GC
+    /// LISTs were 79% of history v2's residual request cost). 0 = fixed
+    /// cadence (the old behavior).
+    #[arg(long, env = "GC_MAX_INTERVAL_SECS", default_value_t = 600)]
+    gc_max_interval_secs: u64,
+
     /// Minimum WAL SST age before GC may delete it (seconds). Must cover
     /// the reopen/replay window (shard moves replay < ~1 s; 60 s is a
     /// generous safety factor at 5x fewer retained objects than the
@@ -502,15 +510,29 @@ fn shard_settings(args: &Args) -> Settings {
             let mut gc = Settings::default()
                 .garbage_collector_options
                 .unwrap_or_default();
+            let gc_max = (args.gc_max_interval_secs > 0)
+                .then(|| Duration::from_secs(args.gc_max_interval_secs));
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
+                max_interval: gc_max,
                 ..gc.wal_options.unwrap_or_default()
             });
             gc.compactions_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.compactions_gc_interval_secs)),
                 min_age: Duration::from_secs(args.compactions_gc_min_age_secs),
+                max_interval: gc_max,
                 ..gc.compactions_options.unwrap_or_default()
+            });
+            // Manifest + compacted sweeps keep their default base interval
+            // but get the same quiet-backoff ceiling.
+            gc.manifest_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+                max_interval: gc_max,
+                ..gc.manifest_options.unwrap_or_default()
+            });
+            gc.compacted_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+                max_interval: gc_max,
+                ..gc.compacted_options.unwrap_or_default()
             });
             Some(gc)
         },

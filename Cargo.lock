@@ -2709,7 +2709,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slatedb"
 version = "0.14.1"
-source = "git+https://github.com/sorenbs/slatedb.git?rev=e255cff3d14ae5176c60482f4a2701d9335b4e4d#e255cff3d14ae5176c60482f4a2701d9335b4e4d"
+source = "git+https://github.com/sorenbs/slatedb.git?rev=f5e5380777ff201aa4b60dfe854f78da6598640e#f5e5380777ff201aa4b60dfe854f78da6598640e"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -2754,7 +2754,7 @@ dependencies = [
 [[package]]
 name = "slatedb-common"
 version = "0.14.1"
-source = "git+https://github.com/sorenbs/slatedb.git?rev=e255cff3d14ae5176c60482f4a2701d9335b4e4d#e255cff3d14ae5176c60482f4a2701d9335b4e4d"
+source = "git+https://github.com/sorenbs/slatedb.git?rev=f5e5380777ff201aa4b60dfe854f78da6598640e#f5e5380777ff201aa4b60dfe854f78da6598640e"
 dependencies = [
  "chrono",
  "log",
@@ -2769,7 +2769,7 @@ dependencies = [
 [[package]]
 name = "slatedb-txn-obj"
 version = "0.14.1"
-source = "git+https://github.com/sorenbs/slatedb.git?rev=e255cff3d14ae5176c60482f4a2701d9335b4e4d#e255cff3d14ae5176c60482f4a2701d9335b4e4d"
+source = "git+https://github.com/sorenbs/slatedb.git?rev=f5e5380777ff201aa4b60dfe854f78da6598640e#f5e5380777ff201aa4b60dfe854f78da6598640e"
 dependencies = [
  "async-trait",
  "bytes",
