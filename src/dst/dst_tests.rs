@@ -1187,6 +1187,122 @@ async fn concurrent_small_lane_absorbs_many_streams_correctly() {
     absorber.abort();
 }
 
+/// The interim sparse policy: AGE absorption requires min_age_bytes of
+/// pending data. A tiny stream must stay in the shard log (readable,
+/// durable, no per-stream history DB minted) while a fat-enough stream
+/// age-absorbs — and the deferred stream is reported as policy, not lag.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sparse_streams_defer_absorption_until_they_have_volume() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 57, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let tiny = [40u8; 16];
+    let fat = [41u8; 16];
+
+    let db = slatedb::Db::builder("dst-defer", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-defer".to_string(),
+        Arc::new(db),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let keys = Arc::new(crate::history::KeyCache::default());
+    keys.put(tiny, key.clone(), tiny);
+    keys.put(fat, key.clone(), fat);
+    let absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        keys,
+        crate::history::AbsorberConfig {
+            // Byte threshold out of reach; age immediate — so ONLY the
+            // min_age_bytes gate separates the two streams.
+            threshold_bytes: 64 * 1024 * 1024,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            batch_puts: 256,
+            pass_bytes: 8 * 1024 * 1024,
+            // DST workload frames are tiny (~40-90 B): 2 records sit far
+            // under this gate, 60 far over it.
+            min_age_bytes: 1024,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    // Pause absorption while the workloads run: otherwise the fat
+    // stream's pending crosses the gate mid-workload, a pass absorbs the
+    // prefix, and the residue re-enters BELOW the gate — correct policy
+    // behavior (the residue stays readable in the shard log and defers
+    // until it has volume), but it makes "absorbed == next" racy here.
+    crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
+    let mut tiny_log = OpLog::default();
+    let mut w1 = Workload::new(cov.clone());
+    // ~2 small frames pending: under the 1 KiB min — must defer.
+    w1.run(&engine, tiny, &key, &["d"], 2, false, &mut tiny_log).await;
+    let mut fat_log = OpLog::default();
+    let mut w2 = Workload::new(cov.clone());
+    // ~60 frames pending: over the min — must age-absorb.
+    w2.run(&engine, fat, &key, &["d"], 60, false, &mut fat_log).await;
+    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+
+    let mut fat_absorbed = false;
+    for _ in 0..400 {
+        let h = engine.stream_handle(fat).await.expect("handle");
+        {
+            let st = h.state.lock().unwrap();
+            if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
+                fat_absorbed = true;
+            }
+        }
+        if fat_absorbed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(fat_absorbed, "the fat stream never age-absorbed");
+
+    // The tiny stream had the same age and MORE ticks than it needed —
+    // it must still be un-absorbed, by policy, and counted as deferred.
+    let h = engine.stream_handle(tiny).await.expect("handle");
+    {
+        let st = h.state.lock().unwrap();
+        assert_eq!(
+            st.durable.absorbed, 0,
+            "the sparse policy absorbed a tiny stream into per-stream history"
+        );
+        assert!(st.durable.next > 0);
+    }
+    // (The deferred_sparse SUMMARY is a process-global gauge that other
+    // tests' absorbers overwrite in the parallel suite; the Arm B wide
+    // run asserts it in a single-server process. Here: the per-hash lag
+    // map, which is collision-free.)
+    assert_eq!(
+        crate::usage::absorb_lag(&tiny),
+        0,
+        "a policy-deferred stream must not read as absorb lag"
+    );
+
+    // Both streams stay fully readable through the merged reader.
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let obs_tiny = drain_observed(&hist, &engine, tiny, &key, &cov).await;
+    tiny_log.audit(&obs_tiny).expect("tiny stream readable from the shard log");
+    let obs_fat = drain_observed(&hist, &engine, fat, &key, &cov).await;
+    fat_log.audit(&obs_fat).expect("fat stream readable after absorption");
+    absorber.abort();
+}
+
 /// A fenced owner must not leave a **zombie absorber** behind.
 ///
 /// This is not hypothetical: a fenced shard's absorber that keeps retrying

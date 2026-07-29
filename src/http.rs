@@ -491,6 +491,8 @@ async fn debug_usage() -> Response {
         })
         .collect();
     let (backlog_streams, backlog_max) = crate::usage::absorb_backlog_summary();
+    let (eligible, oldest_eligible, deferred, deferred_bytes) =
+        crate::usage::absorb_pending_summary();
     axum::Json(serde_json::json!({
         "limits": {
             "bytes_per_sec": l.bytes_per_sec,
@@ -500,7 +502,15 @@ async fn debug_usage() -> Response {
         },
         // Aggregate view, immune to the per-stream listing cap: how many
         // engine streams carry absorb lag right now, and the worst one.
-        "absorb_backlog": { "streams": backlog_streams, "max_secs": backlog_max },
+        "absorb_backlog": {
+            "streams": backlog_streams,
+            "max_secs": backlog_max,
+            "eligible": eligible,
+            "oldest_eligible_secs": oldest_eligible,
+        },
+        // The interim sparse policy's ledger: streams intentionally held
+        // in the shard log (pending < ABSORB_MIN_BYTES_FOR_AGE), NOT lag.
+        "deferred_sparse": { "streams": deferred, "bytes": deferred_bytes },
         "streams": streams,
     }))
     .into_response()

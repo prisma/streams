@@ -228,6 +228,16 @@ struct Args {
     #[arg(long, env = "ABSORB_SMALL_BYTES", default_value_t = 1024 * 1024)]
     absorb_small_bytes: u64,
 
+    /// Interim sparse policy (cost review round 2): AGE-triggered
+    /// absorption requires at least this many pending bytes. Tiny
+    /// streams stay in the shard log (durable, cheaper, and faster to
+    /// read than per-stream history) until they accumulate volume or
+    /// the byte threshold fires. 0 = age absorbs everything (the old
+    /// behavior). Deferred streams are reported as deferred_sparse in
+    /// /v1/debug/usage, never as absorb lag.
+    #[arg(long, env = "ABSORB_MIN_BYTES_FOR_AGE", default_value_t = 256 * 1024)]
+    absorb_min_bytes_for_age: u64,
+
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
     /// conformance suite cannot send custom headers.
@@ -584,6 +594,7 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_pass_bytes = args.absorb_pass_bytes;
         let absorb_concurrency = args.absorb_concurrency;
         let absorb_small_bytes = args.absorb_small_bytes;
+        let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
         let trim_per_op = args.trim_per_op;
         let wal_group_commit = args.wal_group_commit != 0;
         let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
@@ -683,6 +694,7 @@ async fn async_main() -> anyhow::Result<()> {
                             pass_bytes: absorb_pass_bytes,
                             concurrency: absorb_concurrency,
                             small_pass_bytes: absorb_small_bytes,
+                            min_age_bytes: absorb_min_bytes_for_age,
                             ..Default::default()
                         },
                         absorb_rx,
