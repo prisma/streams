@@ -20,7 +20,6 @@ use tokio::sync::oneshot;
 
 use crate::crypto::{
     FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame, hex,
-    stream_hash,
 };
 use crate::history::{KeyCache, read_history};
 use crate::offsets::Offset;
@@ -486,7 +485,7 @@ async fn debug_usage() -> Response {
                 "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
                 // Counters key by name hash, lag by engine hash; the
                 // linked join (usage.rs) is what makes this nonzero.
-                "absorb_lag_secs": crate::usage::absorb_lag_for_usage(&h),
+                "absorb_lag_secs": crate::usage::absorb_lag_for_usage(crate::crypto::RouteHash(h)),
             })
         })
         .collect();
@@ -2059,7 +2058,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     };
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
-    crate::usage::link_storage(&crate::crypto::stream_hash(&desc.name), &hash);
+    crate::usage::link_storage(crate::crypto::RouteHash::of(&desc.name), crate::crypto::SegmentHash(hash));
     let kv = key_version(&headers);
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(hash, key, epoch);
@@ -2396,7 +2395,13 @@ pub(crate) async fn read_merged(
                 // advanced the boundary). Frames decode like tail frames.
                 let part = engine.history_partition().await.map_err(|e| e.to_string())?;
                 let (frames, _last, completed) = crate::history::read_history2(
-                    &part, &route, &hash, cursor, hist_upto, key_filter, budget,
+                    &part,
+                    crate::crypto::RouteHash(route),
+                    crate::crypto::SegmentHash(hash),
+                    cursor,
+                    hist_upto,
+                    key_filter,
+                    budget,
                 )
                 .await
                 .map_err(|e| e.to_string())?;

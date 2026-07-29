@@ -32,9 +32,11 @@ sizing. The design accepted below is otherwise implemented as written,
 with one simplification: instead of a distinct `AbsorbedBatch` op, the
 gather lane's per-stream `Absorbed{v2}` advances coalesce into one
 committer batch — same one-tracker-write property, less machinery.
-(Newtypes for the three hash roles remain TODO — the route/incarnation
-distinction is currently enforced by field names and the set-once route
-freeze, not types.)
+(Newtypes landed 2026-07-29: `crypto::RouteHash` / `crypto::SegmentHash`
+type the v2 keyspace functions, `read_history2`, and the usage-link join
+— the two seams where a bare-`[u8;16]` swap had already caused or could
+silently cause a measured bug. Engine internals keep bare arrays;
+conversion happens at those boundaries.)
 
 ## Why this is a blocker, not an optimization
 

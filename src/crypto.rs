@@ -140,6 +140,33 @@ pub fn stream_hash(name: &str) -> [u8; 16] {
     out
 }
 
+/// Shard-routing identity: `stream_hash(name)`. Keys the usage counters
+/// and prefixes the history-v2 keyspace (range-splittable by route).
+///
+/// Distinct type from [`SegmentHash`] on purpose: the absorb-lag
+/// observable was broken for its entire life by joining a name-hash
+/// table against an engine-hash table of the same bare `[u8; 16]` shape
+/// (docs/COST-WIDE2.md §4), and the v2 keyspace places the two hashes
+/// adjacently where a silent swap would corrupt every key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub struct RouteHash(pub [u8; 16]);
+
+impl RouteHash {
+    pub fn of(name: &str) -> Self {
+        RouteHash(stream_hash(name))
+    }
+}
+
+/// Storage/segment incarnation identity (the engine hash): keys engine
+/// segments, the absorber lag map, and the incarnation slot of
+/// history-v2 keys. NOT derivable from the stream name — per-key
+/// streams mint one per touched segment. See [`RouteHash`] for why the
+/// two are distinct types.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub struct SegmentHash(pub [u8; 16]);
+
 pub fn derive_subkey(
     key: &StreamKey,
     stream_epoch: &[u8; EPOCH_LEN],

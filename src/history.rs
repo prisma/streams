@@ -21,7 +21,9 @@ use slatedb::config::{CompressionCodec, Settings, WriteOptions};
 use slatedb::{BlockTransformer, Db, DbReader, WriteBatch};
 use tokio::sync::mpsc;
 
-use crate::crypto::{StreamKey, decode_frame, decrypt_frame, derive_subkey, hex};
+use crate::crypto::{
+    RouteHash, SegmentHash, StreamKey, decode_frame, decrypt_frame, derive_subkey, hex,
+};
 use crate::shard::{AbsorbSignal, ShardEngine, now_ms, read_frames_range};
 
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
@@ -122,20 +124,20 @@ pub fn hist_record_key(offset: u64) -> Vec<u8> {
 // Values are raw stream-key-encrypted frames, byte-identical to the
 // shard log's — the reader decodes them with the same tail machinery.
 
-pub fn hist2_record_key(route: &[u8; 16], inc: &[u8; 16], offset: u64) -> Vec<u8> {
+pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(41);
-    k.extend_from_slice(route);
-    k.extend_from_slice(inc);
+    k.extend_from_slice(&route.0);
+    k.extend_from_slice(&inc.0);
     k.push(b'r');
     k.extend_from_slice(&offset.to_be_bytes());
     k
 }
 
-pub fn hist2_index_key(route: &[u8; 16], inc: &[u8; 16], rk: &str, offset: u64) -> Vec<u8> {
+pub fn hist2_index_key(route: RouteHash, inc: SegmentHash, rk: &str, offset: u64) -> Vec<u8> {
     let rkb = rk.as_bytes();
     let mut k = Vec::with_capacity(43 + rkb.len());
-    k.extend_from_slice(route);
-    k.extend_from_slice(inc);
+    k.extend_from_slice(&route.0);
+    k.extend_from_slice(&inc.0);
     k.push(b'k');
     k.extend_from_slice(&(rkb.len() as u16).to_be_bytes());
     k.extend_from_slice(rkb);
@@ -247,6 +249,18 @@ fn history_settings() -> Settings {
             .unwrap_or(600);
         (secs > 0).then(|| Duration::from_secs(secs))
     };
+    // Busy directories never reach the backoff ceiling, so they'd still
+    // pay a LIST per sweep — reuse one listing as the candidate inventory
+    // for this long instead (anchors are re-read fresh every sweep; only
+    // NEW garbage waits, up to the TTL). HISTORY_GC_LIST_TTL_SECS
+    // (0 = list every sweep).
+    let gc_ttl = {
+        let secs: u64 = std::env::var("HISTORY_GC_LIST_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600);
+        (secs > 0).then(|| Duration::from_secs(secs))
+    };
     let mut gc = Settings::default().garbage_collector_options.unwrap_or_default();
     for slot in [
         &mut gc.wal_options,
@@ -256,6 +270,7 @@ fn history_settings() -> Settings {
     ] {
         *slot = Some(slatedb::config::GarbageCollectorDirectoryOptions {
             max_interval: gc_max,
+            list_cache_ttl: gc_ttl,
             ..slot.unwrap_or_default()
         });
     }
@@ -420,7 +435,7 @@ async fn apply_absorb_result(
         Ok(absorbed) => {
             if absorbed {
                 pending.remove(&hash);
-                crate::usage::clear_absorb_lag(&hash);
+                crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(hash));
             } else if let Some(p) = pending.get_mut(&hash) {
                 // Key missing (KeyCache TTL or never supplied): the
                 // contract is absorb-on-next-touch — a keyed request
@@ -537,7 +552,7 @@ impl Absorber {
                     // the heartbeat forever (and would re-trigger the
                     // rebalancer's alarm view after the move).
                     for h in pending.keys() {
-                        crate::usage::clear_absorb_lag(h);
+                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
                     }
                     crate::usage::clear_shard_lag(&absorber.shard.prefix);
                     let handles: Vec<[u8; 16]> =
@@ -604,11 +619,11 @@ impl Absorber {
                             {
                                 eligible += 1;
                                 oldest_eligible = oldest_eligible.max(age);
-                                crate::usage::set_absorb_lag(h, age);
+                                crate::usage::set_absorb_lag(crate::crypto::SegmentHash(*h), age);
                             } else {
                                 deferred += 1;
                                 deferred_bytes += p.bytes;
-                                crate::usage::clear_absorb_lag(h);
+                                crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
                             }
                         }
                         crate::usage::set_absorb_pending_summary(
@@ -706,7 +721,7 @@ impl Absorber {
                                     // data re-arrive via signals/sweep.
                                     for h in &v2_lane {
                                         pending.remove(h);
-                                        crate::usage::clear_absorb_lag(h);
+                                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
                                     }
                                 }
                                 Err(e) => {
@@ -797,8 +812,9 @@ impl Absorber {
             let handle = self.shard.stream_handle(*hash).await?;
             let (from, upto, route) = {
                 let st = handle.state.lock().unwrap();
-                (st.durable.absorbed, st.durable.next, st.durable.route)
+                (st.durable.absorbed, st.durable.next, RouteHash(st.durable.route))
             };
+            let inc = SegmentHash(*hash);
             let from = {
                 let submitted = self.submitted.lock().unwrap();
                 submitted.get(hash).copied().unwrap_or(0).max(from)
@@ -817,10 +833,10 @@ impl Absorber {
                     anyhow::bail!("undecodable frame during v2 gather");
                 };
                 let off = frame.header.offset;
-                wb.put(hist2_record_key(&route, hash, off), raw.clone());
+                wb.put(hist2_record_key(route, inc, off), raw.clone());
                 if !frame.header.routing_key.is_empty() {
                     wb.put(
-                        hist2_index_key(&route, hash, &frame.header.routing_key, off),
+                        hist2_index_key(route, inc, &frame.header.routing_key, off),
                         raw.clone(),
                     );
                 }
@@ -1709,8 +1725,8 @@ pub async fn read_history(
 /// records carry no index entry); a non-empty filter scans the index.
 pub async fn read_history2(
     part: &Arc<Db>,
-    route: &[u8; 16],
-    inc: &[u8; 16],
+    route: RouteHash,
+    inc: SegmentHash,
     from: u64,
     upto: u64,
     key_filter: Option<&str>,

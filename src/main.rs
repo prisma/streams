@@ -174,6 +174,16 @@ struct Args {
     #[arg(long, env = "GC_MAX_INTERVAL_SECS", default_value_t = 600)]
     gc_max_interval_secs: u64,
 
+    /// GC directory-listing reuse window (seconds). Busy directories keep
+    /// their base sweep cadence but reuse one LIST as the candidate
+    /// inventory for this long — deletion anchors (latest manifest,
+    /// checkpoint refs, WAL replay boundary) are still read fresh every
+    /// sweep, so this only delays collection of newly created garbage by
+    /// up to the TTL. Kills the steady-state LIST-per-sweep tax that
+    /// adaptive backoff can't touch on busy DBs. 0 = list every sweep.
+    #[arg(long, env = "GC_LIST_TTL_SECS", default_value_t = 3600)]
+    gc_list_ttl_secs: u64,
+
     /// Minimum WAL SST age before GC may delete it (seconds). Must cover
     /// the reopen/replay window (shard moves replay < ~1 s; 60 s is a
     /// generous safety factor at 5x fewer retained objects than the
@@ -512,26 +522,32 @@ fn shard_settings(args: &Args) -> Settings {
                 .unwrap_or_default();
             let gc_max = (args.gc_max_interval_secs > 0)
                 .then(|| Duration::from_secs(args.gc_max_interval_secs));
+            let gc_ttl = (args.gc_list_ttl_secs > 0)
+                .then(|| Duration::from_secs(args.gc_list_ttl_secs));
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
                 max_interval: gc_max,
+                list_cache_ttl: gc_ttl,
                 ..gc.wal_options.unwrap_or_default()
             });
             gc.compactions_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.compactions_gc_interval_secs)),
                 min_age: Duration::from_secs(args.compactions_gc_min_age_secs),
                 max_interval: gc_max,
+                list_cache_ttl: gc_ttl,
                 ..gc.compactions_options.unwrap_or_default()
             });
             // Manifest + compacted sweeps keep their default base interval
-            // but get the same quiet-backoff ceiling.
+            // but get the same quiet-backoff ceiling and listing reuse.
             gc.manifest_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 max_interval: gc_max,
+                list_cache_ttl: gc_ttl,
                 ..gc.manifest_options.unwrap_or_default()
             });
             gc.compacted_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 max_interval: gc_max,
+                list_cache_ttl: gc_ttl,
                 ..gc.compacted_options.unwrap_or_default()
             });
             Some(gc)

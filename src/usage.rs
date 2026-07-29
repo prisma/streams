@@ -11,6 +11,7 @@
 //! any time. /v1/debug/usage exposes them; the billing task emits deltas
 //! as records on one internal stream (BILLING_STREAM / BILLING_STREAM_KEY).
 
+use crate::crypto::{RouteHash, SegmentHash};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -203,17 +204,17 @@ pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
 /// Absorption lag gauge (seconds behind), fed by the absorber's tick:
 /// per-stream age of the oldest unabsorbed bytes. THE scale-out signal
 /// (rebalance shards off a host when this exceeds ~60 s).
-fn lag_map() -> &'static Mutex<HashMap<[u8; 16], u64>> {
-    static M: OnceLock<Mutex<HashMap<[u8; 16], u64>>> = OnceLock::new();
+fn lag_map() -> &'static Mutex<HashMap<SegmentHash, u64>> {
+    static M: OnceLock<Mutex<HashMap<SegmentHash, u64>>> = OnceLock::new();
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn set_absorb_lag(hash: &[u8; 16], secs: u64) {
-    lag_map().lock().unwrap().insert(*hash, secs);
+pub fn set_absorb_lag(hash: SegmentHash, secs: u64) {
+    lag_map().lock().unwrap().insert(hash, secs);
 }
 
-pub fn clear_absorb_lag(hash: &[u8; 16]) {
-    lag_map().lock().unwrap().remove(hash);
+pub fn clear_absorb_lag(hash: SegmentHash) {
+    lag_map().lock().unwrap().remove(&hash);
 }
 
 /// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,
@@ -222,27 +223,28 @@ pub fn clear_absorb_lag(hash: &[u8; 16]) {
 /// look lag up by the name hash and therefore always read 0 — the wide
 /// tests' "absorb lag is invisible" finding (docs/COST-WIDE2.md §4).
 /// This alias map, fed by the append path where both hashes are in hand,
-/// closes the join. Per-key streams link one usage entry to many
-/// segment hashes; the join takes the max.
-fn storage_links() -> &'static Mutex<HashMap<[u8; 16], std::collections::HashSet<[u8; 16]>>> {
-    static M: OnceLock<Mutex<HashMap<[u8; 16], std::collections::HashSet<[u8; 16]>>>> =
+/// closes the join; RouteHash/SegmentHash make the two key spaces
+/// uncrossable at compile time. Per-key streams link one usage entry to
+/// many segment hashes; the join takes the max.
+fn storage_links() -> &'static Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>> {
+    static M: OnceLock<Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>> =
         OnceLock::new();
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn link_storage(usage_hash: &[u8; 16], storage_hash: &[u8; 16]) {
+pub fn link_storage(usage_hash: RouteHash, storage_hash: SegmentHash) {
     let mut m = storage_links().lock().unwrap();
-    if m.len() >= MAX_TRACKED && !m.contains_key(usage_hash) {
+    if m.len() >= MAX_TRACKED && !m.contains_key(&usage_hash) {
         return;
     }
-    m.entry(*usage_hash).or_default().insert(*storage_hash);
+    m.entry(usage_hash).or_default().insert(storage_hash);
 }
 
 /// Absorb lag for a usage entry: the max across its linked engine
 /// hashes (a per-key stream has one per touched segment).
-pub fn absorb_lag_for_usage(usage_hash: &[u8; 16]) -> u64 {
+pub fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
     let links = storage_links().lock().unwrap();
-    let Some(set) = links.get(usage_hash) else {
+    let Some(set) = links.get(&usage_hash) else {
         return 0;
     };
     let lags = lag_map().lock().unwrap();
@@ -298,8 +300,8 @@ pub fn absorb_pending_summary() -> (u64, u64, u64, u64) {
         })
 }
 
-pub fn absorb_lag(hash: &[u8; 16]) -> u64 {
-    lag_map().lock().unwrap().get(hash).copied().unwrap_or(0)
+pub fn absorb_lag(hash: SegmentHash) -> u64 {
+    lag_map().lock().unwrap().get(&hash).copied().unwrap_or(0)
 }
 
 pub fn absorb_lag_max() -> u64 {
@@ -336,7 +338,7 @@ pub fn shard_lag_all() -> Vec<(String, u64)> {
 
 /// Every stream with unabsorbed bytes and its lag — the rebalancer maps
 /// these to shard prefixes to choose which shard to move off a laggard.
-pub fn absorb_lag_all() -> Vec<([u8; 16], u64)> {
+pub fn absorb_lag_all() -> Vec<(SegmentHash, u64)> {
     lag_map()
         .lock()
         .unwrap()
@@ -393,13 +395,13 @@ mod shard_lag_tests {
 
     #[test]
     fn absorb_lag_max_is_the_worst_stream() {
-        let a = [1u8; 16];
-        let b = [2u8; 16];
-        set_absorb_lag(&a, 5);
-        set_absorb_lag(&b, 61);
+        let a = SegmentHash([1u8; 16]);
+        let b = SegmentHash([2u8; 16]);
+        set_absorb_lag(a, 5);
+        set_absorb_lag(b, 61);
         assert_eq!(absorb_lag_max(), 61);
-        clear_absorb_lag(&a);
-        clear_absorb_lag(&b);
+        clear_absorb_lag(a);
+        clear_absorb_lag(b);
     }
 
     /// The wide tests' invisible-backlog finding: usage counters key by
@@ -409,26 +411,26 @@ mod shard_lag_tests {
     /// maps to several segment hashes (report the worst).
     #[test]
     fn lag_join_bridges_usage_and_engine_hashes() {
-        let usage_h = [10u8; 16];
-        let seg_a = [11u8; 16];
-        let seg_b = [12u8; 16];
+        let usage_h = RouteHash([10u8; 16]);
+        let seg_a = SegmentHash([11u8; 16]);
+        let seg_b = SegmentHash([12u8; 16]);
         // Unlinked: the join has nothing, even with lag present.
-        set_absorb_lag(&seg_a, 30);
-        assert_eq!(absorb_lag_for_usage(&usage_h), 0);
-        link_storage(&usage_h, &seg_a);
-        link_storage(&usage_h, &seg_b);
-        set_absorb_lag(&seg_b, 90);
+        set_absorb_lag(seg_a, 30);
+        assert_eq!(absorb_lag_for_usage(usage_h), 0);
+        link_storage(usage_h, seg_a);
+        link_storage(usage_h, seg_b);
+        set_absorb_lag(seg_b, 90);
         assert_eq!(
-            absorb_lag_for_usage(&usage_h),
+            absorb_lag_for_usage(usage_h),
             90,
             "join must report the worst linked segment"
         );
         let (lagging, max) = absorb_backlog_summary();
         assert!(lagging >= 2, "summary missed lagging streams");
         assert!(max >= 90);
-        clear_absorb_lag(&seg_a);
-        clear_absorb_lag(&seg_b);
-        assert_eq!(absorb_lag_for_usage(&usage_h), 0, "cleared lag must read 0");
+        clear_absorb_lag(seg_a);
+        clear_absorb_lag(seg_b);
+        assert_eq!(absorb_lag_for_usage(usage_h), 0, "cleared lag must read 0");
     }
 }
 

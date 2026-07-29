@@ -1459,7 +1459,7 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
     // run asserts it in a single-server process. Here: the per-hash lag
     // map, which is collision-free.)
     assert_eq!(
-        crate::usage::absorb_lag(&tiny),
+        crate::usage::absorb_lag(crate::crypto::SegmentHash(tiny)),
         0,
         "a policy-deferred stream must not read as absorb lag"
     );
