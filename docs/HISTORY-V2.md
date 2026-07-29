@@ -1,9 +1,40 @@
 # History v2 — shared, partitioned history (design anchor)
 
-**Status: design accepted 2026-07-29 (cost review round 2 verdict on
-[COST-CAMPAIGN-1.md](./COST-CAMPAIGN-1.md)); not yet implemented.**
-This page anchors the verdict in-repo, with the campaign's data
-annotations and the acceptance gates the implementation must pass.
+**Status: first implementation landed 2026-07-29** (same-day as the
+design acceptance; see the scorecard below). New streams absorb into
+the shared per-shard partition by default; legacy v1 streams
+(absorbed > 0 without the v2 flag) keep the per-stream path and its
+DST coverage (`force_v1` in tests). This page holds the design, the
+acceptance gates, and the first Arm C measurements.
+
+## Arm C scorecard (w100k: 100k one-record streams + 100 active, 15 min)
+
+| gate | target | measured | verdict |
+|---|---|---|---|
+| history Class A (setup+steady) | ≤ 5,000 | **9,490** (was ~4.3 M implied v1) | ~2× over target, **~450× under v1**; 7,489 of it is GC LISTs on the partition DBs — the queued exact-candidate-GC work, not the layout |
+| Class A per stream | ≤ 0.05 | **0.095** (0.020 excl. GC LISTs) | as above |
+| history DB opens | O(shards) | 4 partitions, kept open | **pass** |
+| per-stream checkpoint PUTs | 0 | 0 (no DbReaders) | **pass** |
+| 100k drain | ≤ 15 min | **complete in-window** (backlog 0, deferred 0) | **pass** |
+| append p50 / p99 | ≤ 5 % / 10 % | 47.8/85.9 vs 47.8/86.7 ms | **pass** |
+| cold-read p50 | ≤ 2× unabsorbed | **55 ms vs 28 ms (1.96×)**; p99 83 vs v1's 331 | **pass** — the 321 ms cliff is gone |
+| WAL request cells | unchanged | shard tier 125,149 vs 124,9xx | **pass** |
+| errors / integrity | 0 / exact | 0 / exact | **pass** |
+| RSS (1 GiB posture) | < 600 MiB | 961 MB on the wide rig (4×32 MiB rings etc.) | open — field-posture sizing pass still owed |
+
+Steady total Class A across the arms: **685,647 (A: v1 absorb-all) →
+272,791 (B: defer sparse) → 133,808 (C: v2 absorb-all)** — v2 absorbs
+everything for half of what deferral-that-absorbs-nothing cost.
+
+The two open items are exactly the already-queued follow-ups: GC LIST
+cadence (79 % of v2's residual history cost) and field-posture memory
+sizing. The design accepted below is otherwise implemented as written,
+with one simplification: instead of a distinct `AbsorbedBatch` op, the
+gather lane's per-stream `Absorbed{v2}` advances coalesce into one
+committer batch — same one-tracker-write property, less machinery.
+(Newtypes for the three hash roles remain TODO — the route/incarnation
+distinction is currently enforced by field names and the set-once route
+freeze, not types.)
 
 ## Why this is a blocker, not an optimization
 

@@ -39,6 +39,7 @@ env SLATE_S3_ENDPOINT=http://127.0.0.1:9500 SLATE_S3_BUCKET=soakab \
   `# cardinality signal this test exists to measure. RSS is reported.` \
   ADMIT_RSS_SHED_MB="${WIDE_SHED_MB:-1400}" \
   ABSORB_BYTES=4194304 ABSORB_AGE_SECS=60 ABSORB_PASS_BYTES=67108864 \
+  ABSORB_MIN_BYTES_FOR_AGE="${WIDE_MIN_AGE_BYTES:-262144}" \
   TRIM_PER_OP=65536 RUST_LOG=warn \
   "$SERVER_BIN" --listen 127.0.0.1:8090 > "$OUT/server.log" 2>&1 &
 SRV_PID=$!

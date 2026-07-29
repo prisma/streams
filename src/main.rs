@@ -671,6 +671,7 @@ async fn async_main() -> anyhow::Result<()> {
                     let engine = ShardEngine::start(
                         prefix.clone(),
                         Arc::new(db),
+                        data_store.clone(),
                         ShardConfig {
                             max_trim_per_op: trim_per_op,
                             wal_group_commit,

@@ -864,6 +864,7 @@ impl Workload {
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash,
+            route: hash,
             entries: vec![bytes::Bytes::from(payload.into_bytes())],
             usage: crate::usage::counters(&hash),
             routing_key: rk.to_string(),
@@ -928,6 +929,7 @@ impl Workload {
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash,
+            route: hash,
             entries: vec![bytes::Bytes::from(body.as_bytes().to_vec())],
             usage: crate::usage::counters(&hash),
             routing_key: rk.to_string(),

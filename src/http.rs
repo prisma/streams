@@ -541,6 +541,7 @@ async fn internal_close(state: Arc<AppState>, name: String) -> Option<u64> {
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash,
+        route: crate::crypto::stream_hash(&desc.name),
         entries: vec![],
         usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
         routing_key: String::new(),
@@ -1568,6 +1569,7 @@ async fn create_stream(
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash,
+            route: crate::crypto::stream_hash(&desc.name),
             entries,
             routing_key: String::new(),
             key_version: 0,
@@ -2095,6 +2097,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash,
+        route: crate::crypto::stream_hash(&desc.name),
         entries,
         usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
         routing_key,
@@ -2291,6 +2294,46 @@ async fn read_records(
     .await
 }
 
+/// Decode raw stream-key-encrypted frames (v2 history or shard tail —
+/// byte-identical formats) into plaintext records, charging the byte
+/// budget per record.
+fn decode_frames_into(
+    frames: &[Bytes],
+    key: &StreamKey,
+    epoch: &[u8; 16],
+    hash: &[u8; 16],
+    subkeys: &mut HashMap<(String, u32), [u8; 32]>,
+    out: &mut ReadOut,
+    budget: &mut usize,
+) -> Result<(), String> {
+    for raw in frames {
+        let Some(frame) = decode_frame(raw) else {
+            return Err("bad frame".into());
+        };
+        let sk = *subkeys
+            .entry((frame.header.routing_key.clone(), frame.header.key_version))
+            .or_insert_with(|| {
+                derive_subkey(
+                    key,
+                    epoch,
+                    &frame.header.routing_key,
+                    frame.header.key_version,
+                )
+            });
+        let pt = decrypt_frame(&sk, hash, &frame, raw)?;
+        *budget = budget.saturating_sub(pt.len());
+        out.recs.push(PlainRec {
+            off: frame.header.offset,
+            payload: Bytes::from(pt),
+        });
+        out.last = Some(
+            out.last
+                .map_or(frame.header.offset, |o| o.max(frame.header.offset)),
+        );
+    }
+    Ok(())
+}
+
 /// The merge itself, free of `AppState` so the simulation harness can call
 /// the production reader instead of reimplementing the history/tail split
 /// (`src/dst.rs`). A second copy of this boundary logic would be a copy
@@ -2311,9 +2354,14 @@ pub(crate) async fn read_merged(
     // streams this is the incarnation hash; for per-key streams, the
     // segment hash. Either way it's the handle's identity.
     let hash = handle.hash;
-    let (absorbed, end) = {
+    let (absorbed, end, hist_v2, route) = {
         let st = handle.state.lock().unwrap();
-        (st.durable.absorbed, st.durable.next)
+        (
+            st.durable.absorbed,
+            st.durable.next,
+            st.durable.history_v2,
+            st.durable.route,
+        )
     };
     let mut out = ReadOut {
         recs: Vec::new(),
@@ -2322,6 +2370,7 @@ pub(crate) async fn read_merged(
         completed: true,
     };
     let mut budget = max_bytes;
+    let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
 
     // The absorbed snapshot above and the tail scan below are a TOCTOU
     // pair: the absorber can advance the boundary AND durably trim the
@@ -2340,21 +2389,46 @@ pub(crate) async fn read_merged(
     for _ in 0..16 {
         let hist_upto = boundary.min(end);
         if cursor < hist_upto && budget > 0 {
-            let h = read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
+            let completed = if hist_v2 {
+                // v2: the range lives in the shard's SHARED partition,
+                // read through the owner's open Db — no reader open, no
+                // checkpoint, no coverage probe (this Db's flush is what
+                // advanced the boundary). Frames decode like tail frames.
+                let part = engine.history_partition().await.map_err(|e| e.to_string())?;
+                let (frames, _last, completed) = crate::history::read_history2(
+                    &part, &route, &hash, cursor, hist_upto, key_filter, budget,
+                )
                 .await
                 .map_err(|e| e.to_string())?;
-            for (off, rec) in h.records {
-                budget = budget.saturating_sub(rec.payload.len());
-                out.recs.push(PlainRec {
-                    off,
-                    payload: rec.payload,
-                });
-                out.last = Some(off);
-            }
-            if !h.completed {
-                // Byte-truncated, or the reader cannot prove coverage of
-                // this boundary yet: report the honest partial; the caller
-                // re-polls from `last + 1`.
+                decode_frames_into(
+                    &frames,
+                    key,
+                    epoch,
+                    &hash,
+                    &mut subkeys,
+                    &mut out,
+                    &mut budget,
+                )?;
+                completed
+            } else {
+                let h =
+                    read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                for (off, rec) in h.records {
+                    budget = budget.saturating_sub(rec.payload.len());
+                    out.recs.push(PlainRec {
+                        off,
+                        payload: rec.payload,
+                    });
+                    out.last = Some(off);
+                }
+                h.completed
+            };
+            if !completed {
+                // Byte-truncated, or (v1) the reader cannot prove coverage
+                // of this boundary yet: report the honest partial; the
+                // caller re-polls from `last + 1`.
                 out.completed = false;
                 return Ok(out);
             }
@@ -2412,27 +2486,15 @@ pub(crate) async fn read_merged(
             out.completed = false;
             return Ok(out);
         }
-        let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
-        for raw in part.frames {
-            let Some(frame) = decode_frame(&raw) else {
-                return Err("bad frame".into());
-            };
-            let sk = *subkeys
-                .entry((frame.header.routing_key.clone(), frame.header.key_version))
-                .or_insert_with(|| {
-                    derive_subkey(
-                        key,
-                        epoch,
-                        &frame.header.routing_key,
-                        frame.header.key_version,
-                    )
-                });
-            let pt = decrypt_frame(&sk, &hash, &frame, &raw)?;
-            out.recs.push(PlainRec {
-                off: frame.header.offset,
-                payload: Bytes::from(pt),
-            });
-        }
+        decode_frames_into(
+            &part.frames,
+            key,
+            epoch,
+            &hash,
+            &mut subkeys,
+            &mut out,
+            &mut budget,
+        )?;
         if let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
         }

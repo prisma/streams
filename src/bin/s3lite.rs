@@ -88,6 +88,7 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
     if key.is_empty() && *method == Method::GET {
         // bucket-level list: classify by the prefix= it scans
         return match query.get("prefix") {
+            Some(p) if p.contains("history2") => "hist",
             Some(p) if p.contains("shards/") => "shard",
             Some(p) if p.contains("streams/") => "hist",
             Some(p) if p.contains("fleet") || p.contains("routers") => "fleet",
@@ -95,7 +96,11 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
             _ => "other",
         };
     }
-    let tier = if key.contains("shards/") {
+    // history2 lives UNDER the shard prefix (ownership travels with the
+    // shard) — classify it as history, checked before the shards/ match.
+    let tier = if key.contains("history2/") {
+        "hist"
+    } else if key.contains("shards/") {
         "shard"
     } else if key.contains("streams/") {
         "hist"

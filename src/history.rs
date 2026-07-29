@@ -115,6 +115,34 @@ pub fn hist_record_key(offset: u64) -> Vec<u8> {
     k
 }
 
+// ---- shared history v2 keyspace (docs/HISTORY-V2.md) ----
+//
+// Route hash FIRST so a shard split can clone the partition by key
+// range; then the stream incarnation, a tag byte, and the offset.
+// Values are raw stream-key-encrypted frames, byte-identical to the
+// shard log's — the reader decodes them with the same tail machinery.
+
+pub fn hist2_record_key(route: &[u8; 16], inc: &[u8; 16], offset: u64) -> Vec<u8> {
+    let mut k = Vec::with_capacity(41);
+    k.extend_from_slice(route);
+    k.extend_from_slice(inc);
+    k.push(b'r');
+    k.extend_from_slice(&offset.to_be_bytes());
+    k
+}
+
+pub fn hist2_index_key(route: &[u8; 16], inc: &[u8; 16], rk: &str, offset: u64) -> Vec<u8> {
+    let rkb = rk.as_bytes();
+    let mut k = Vec::with_capacity(43 + rkb.len());
+    k.extend_from_slice(route);
+    k.extend_from_slice(inc);
+    k.push(b'k');
+    k.extend_from_slice(&(rkb.len() as u16).to_be_bytes());
+    k.extend_from_slice(rkb);
+    k.extend_from_slice(&offset.to_be_bytes());
+    k
+}
+
 pub fn hist_key_index_key(rk: &str, offset: u64) -> Vec<u8> {
     let rkb = rk.as_bytes();
     let mut k = Vec::with_capacity(12 + rkb.len());
@@ -166,7 +194,7 @@ pub fn decode_hist_record(v: &Bytes) -> Option<HistRecord> {
 /// Shared block cache for ALL history DBs (absorber writes + reads):
 /// SlateDB's per-DB default is 512 MB, and the absorber opens a DB per
 /// absorbed stream — unbounded aggregate cache on a 1 GB box.
-fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
+pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
     static CACHE: std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>> =
         std::sync::OnceLock::new();
     CACHE
@@ -183,6 +211,19 @@ fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
             ))
         })
         .clone()
+}
+
+/// Settings for the SHARED history v2 partition (docs/HISTORY-V2.md).
+/// Differences from v1 per-stream DBs, each deliberate: NO compression
+/// (values are stream-key-encrypted frames — already compressed before
+/// encryption, and ciphertext does not compress) and NO block
+/// transformer (the frames are the ciphertext; object storage never
+/// sees plaintext either way).
+pub(crate) fn history2_settings() -> Settings {
+    Settings {
+        compression_codec: None,
+        ..history_settings()
+    }
 }
 
 fn history_settings() -> Settings {
@@ -292,6 +333,11 @@ pub struct AbsorberConfig {
     /// resident handles. Signals are the fast path; the sweep closes
     /// their gaps (bounded-channel drops under wide backlogs, restarts).
     pub sweep_every: u32,
+    /// Test-only escape hatch: classify every stream as legacy v1 so the
+    /// per-stream lanes, HistReaders coverage machinery and k!-index
+    /// behavior keep their DST coverage — v1 remains a supported layout
+    /// for streams that absorbed before v2 existed.
+    pub force_v1: bool,
     /// Interim sparse-stream policy (cost review round 2 verdict): the
     /// AGE trigger only fires for streams with at least this many
     /// pending bytes. A one-record stream costs ~43 Class A requests to
@@ -316,6 +362,7 @@ impl Default for AbsorberConfig {
             small_pass_bytes: 1024 * 1024,
             concurrency: 6,
             sweep_every: 12,
+            force_v1: false,
             min_age_bytes: 256 * 1024,
         }
     }
@@ -575,24 +622,94 @@ impl Absorber {
                         // behind ten thousand one-record strays — their
                         // unabsorbed bytes are what grows the shard log.
                         due.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-                        // Two lanes (docs/COST-WIDE1.md §1: the serial
-                        // grind was the ceiling for wide backlogs). Big
-                        // streams keep the serial full-budget lane — the
-                        // validated hot path, one full-size pass in memory
-                        // at a time. Small streams overlap their
-                        // latency-bound passes with bounded concurrency.
-                        // BOTH lanes are capped per tick: the tick must
-                        // return to the select loop (signals, lag
-                        // publication, shutdown), and eviction must run
-                        // often enough that open_dbs stays near the LRU —
-                        // an uncapped tick once grew 2.3 GB of open
-                        // history DBs before its first eviction. Leftover
-                        // due entries simply run next tick.
+                        // Three lanes. V2 (shared partition, one flush for
+                        // the whole lane) takes every stream whose
+                        // history lives — or will live — in the shared
+                        // partition: the history_v2 flag, or a stream
+                        // that has never absorbed. Legacy v1 streams keep
+                        // the two per-stream lanes (docs/COST-WIDE1.md §1:
+                        // the serial grind was the ceiling; the
+                        // concurrent small lane its repair). ALL lanes
+                        // are capped per tick: the tick must return to
+                        // the select loop, and v1 eviction must run often
+                        // enough that open_dbs stays near the LRU — an
+                        // uncapped tick once grew 2.3 GB of open history
+                        // DBs before its first eviction. Leftover due
+                        // entries simply run next tick. Classification
+                        // reads resident handle state (map lookup) and is
+                        // itself capped.
                         const BIG_LANE_PER_TICK: usize = 16;
                         const SMALL_LANE_PER_TICK: usize = 256;
-                        let (small, big): (Vec<_>, Vec<_>) = due
-                            .into_iter()
-                            .partition(|(_, b)| *b <= absorber.cfg.small_pass_bytes);
+                        const V2_LANE_PER_TICK: usize = 1024;
+                        const CLASSIFY_PER_TICK: usize = 4096;
+                        let mut v2_lane: Vec<[u8; 16]> = Vec::new();
+                        let mut small: Vec<([u8; 16], u64)> = Vec::new();
+                        let mut big: Vec<([u8; 16], u64)> = Vec::new();
+                        for (hash, bytes) in due.into_iter().take(CLASSIFY_PER_TICK) {
+                            if v2_lane.len() >= V2_LANE_PER_TICK
+                                && small.len() >= SMALL_LANE_PER_TICK
+                                && big.len() >= BIG_LANE_PER_TICK
+                            {
+                                break;
+                            }
+                            let Ok(handle) = absorber.shard.stream_handle(hash).await else {
+                                continue;
+                            };
+                            let (absorbed, v2flag) = {
+                                let st = handle.state.lock().unwrap();
+                                (st.durable.absorbed, st.durable.history_v2)
+                            };
+                            if !absorber.cfg.force_v1 && (v2flag || absorbed == 0) {
+                                if v2_lane.len() < V2_LANE_PER_TICK {
+                                    v2_lane.push(hash);
+                                }
+                            } else if bytes <= absorber.cfg.small_pass_bytes {
+                                if small.len() < SMALL_LANE_PER_TICK {
+                                    small.push((hash, bytes));
+                                }
+                            } else if big.len() < BIG_LANE_PER_TICK {
+                                big.push((hash, bytes));
+                            }
+                        }
+                        if !v2_lane.is_empty() && !absorber.shard.is_closed() {
+                            match absorber.absorb_gather_v2(&v2_lane).await {
+                                Ok(_advanced) => {
+                                    // The lane is settled: covered streams
+                                    // advanced; skipped ones had nothing
+                                    // durable to absorb. Residues and new
+                                    // data re-arrive via signals/sweep.
+                                    for h in &v2_lane {
+                                        pending.remove(h);
+                                        crate::usage::clear_absorb_lag(h);
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = e.to_string();
+                                    if absorb_error_is_fence(&msg) {
+                                        tracing::warn!(
+                                            "v2 gather fence-class ({} streams): {msg}",
+                                            v2_lane.len()
+                                        );
+                                        // Engine is dying; the exit path
+                                        // clears pending.
+                                    } else {
+                                        tracing::warn!(
+                                            "v2 gather failed ({} streams): {msg}",
+                                            v2_lane.len()
+                                        );
+                                        for h in &v2_lane {
+                                            if let Some(p) = pending.get_mut(h) {
+                                                p.failures = p.failures.saturating_add(1);
+                                                let shift = p.failures.min(6);
+                                                p.retry_after = Some(
+                                                    now + absorber.cfg.tick * 2u32.pow(shift),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for (hash, _) in big.into_iter().take(BIG_LANE_PER_TICK) {
                             if absorber.shard.is_closed() {
                                 break; // exit path above runs on next loop
@@ -629,6 +746,86 @@ impl Absorber {
                 }
             }
         })
+    }
+
+    /// Shared-partition gather pass (history v2): read MANY streams' raw
+    /// encrypted frames from the shard log, put them all into ONE
+    /// WriteBatch on the shard's shared partition, flush ONCE, then
+    /// advance every covered boundary. No decryption, no KeyCache, no
+    /// per-stream DB — the per-stream request tax this replaces was ~43
+    /// Class A per one-record stream (docs/COST-WIDE1.md §1).
+    ///
+    /// Returns (stream, new_upto) for every stream the flush covered.
+    /// A per-stream byte cap truncates fat streams mid-range — their
+    /// boundary still advances over what was written, and the sweep or
+    /// the next signal re-drives the remainder.
+    async fn absorb_gather_v2(
+        &self,
+        streams: &[[u8; 16]],
+    ) -> anyhow::Result<Vec<([u8; 16], u64)>> {
+        const PER_STREAM_CAP: usize = 4 * 1024 * 1024;
+        let part = self.shard.history_partition().await?;
+        let mut wb = WriteBatch::new();
+        let mut advanced: Vec<([u8; 16], u64)> = Vec::new();
+        for hash in streams {
+            let handle = self.shard.stream_handle(*hash).await?;
+            let (from, upto, route) = {
+                let st = handle.state.lock().unwrap();
+                (st.durable.absorbed, st.durable.next, st.durable.route)
+            };
+            let from = {
+                let submitted = self.submitted.lock().unwrap();
+                submitted.get(hash).copied().unwrap_or(0).max(from)
+            };
+            if from >= upto {
+                continue;
+            }
+            let chunk =
+                read_frames_range(&self.shard, &handle, from, upto, PER_STREAM_CAP).await?;
+            if chunk.frames.is_empty() {
+                continue;
+            }
+            let mut last = from;
+            for raw in &chunk.frames {
+                let Some(frame) = crate::crypto::decode_frame(raw) else {
+                    anyhow::bail!("undecodable frame during v2 gather");
+                };
+                let off = frame.header.offset;
+                wb.put(hist2_record_key(&route, hash, off), raw.clone());
+                if !frame.header.routing_key.is_empty() {
+                    wb.put(
+                        hist2_index_key(&route, hash, &frame.header.routing_key, off),
+                        raw.clone(),
+                    );
+                }
+                last = off;
+            }
+            advanced.push((*hash, last + 1));
+        }
+        if advanced.is_empty() {
+            return Ok(advanced);
+        }
+        part.write_with_options(
+            wb,
+            &WriteOptions {
+                await_durable: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+        part.flush().await?; // wal off => memtable -> L0, manifest published
+        for (hash, upto) in &advanced {
+            self.shard.submit_absorbed_v2(*hash, *upto).await;
+            let mut submitted = self.submitted.lock().unwrap();
+            let e = submitted.entry(*hash).or_insert(0);
+            *e = (*e).max(*upto);
+        }
+        tracing::info!(
+            "v2 gather absorbed {} streams into {}/history2",
+            advanced.len(),
+            self.shard.prefix
+        );
+        Ok(advanced)
     }
 
     /// Serial full-budget pass (the validated hot path). Evicts idle DB
@@ -1476,6 +1673,59 @@ pub async fn read_history(
     Ok(out)
 }
 
+/// Read [from, upto) of a v2-layout stream from the shard's SHARED
+/// partition, through the owner's open writer Db — no DbReader, no
+/// checkpoint, no coverage probe (the boundary only advances after this
+/// very Db's flush, so the writer's own view always covers it). Returns
+/// RAW encrypted frames; the caller decodes them with the same
+/// machinery as shard-tail frames. `key_filter`: `Some("")` scans the
+/// record range and filters by the plaintext frame header (unkeyed
+/// records carry no index entry); a non-empty filter scans the index.
+pub async fn read_history2(
+    part: &Arc<Db>,
+    route: &[u8; 16],
+    inc: &[u8; 16],
+    from: u64,
+    upto: u64,
+    key_filter: Option<&str>,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    let mut frames: Vec<Bytes> = Vec::new();
+    let mut last: Option<u64> = None;
+    let mut completed = true;
+    let mut total = 0usize;
+    let range = match key_filter {
+        Some(rk) if !rk.is_empty() => {
+            hist2_index_key(route, inc, rk, from)..hist2_index_key(route, inc, rk, upto)
+        }
+        _ => hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto),
+    };
+    let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
+    let empty_filter = matches!(key_filter, Some(""));
+    while let Some(kv) = iter.next().await? {
+        if empty_filter {
+            match crate::crypto::decode_frame(&kv.value) {
+                Some(f) if f.header.routing_key.is_empty() => {}
+                Some(_) => continue,
+                None => anyhow::bail!("undecodable v2 history frame"),
+            }
+        }
+        let off = u64::from_be_bytes(
+            kv.key[kv.key.len() - 8..]
+                .try_into()
+                .expect("hist2 key tail"),
+        );
+        total += kv.value.len();
+        frames.push(kv.value);
+        last = Some(off);
+        if total >= max_bytes {
+            completed = false;
+            break;
+        }
+    }
+    Ok((frames, last, completed))
+}
+
 pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbSignal>) {
     mpsc::channel(65_536)
 }
@@ -1579,6 +1829,7 @@ mod tests {
         let engine = ShardEngine::start(
             "t".into(),
             Arc::new(db1),
+            store.clone(),
             ShardConfig::default(),
             absorb_tx,
             None,
@@ -1621,6 +1872,7 @@ mod tests {
         let engine = ShardEngine::start(
             "w".into(),
             Arc::new(db),
+            store.clone(),
             ShardConfig::default(),
             absorb_tx,
             None,
@@ -1647,7 +1899,7 @@ mod tests {
     async fn commit_blocked_detects_real_flush_stall() {
         let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let slow: Arc<dyn ObjectStore> = Arc::new(SlowPuts(mem));
-        let db = Db::builder("s/shard", slow)
+        let db = Db::builder("s/shard", slow.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(Duration::from_millis(25)),
                 max_unflushed_bytes: 8 * 1024,
@@ -1660,6 +1912,7 @@ mod tests {
         let engine = ShardEngine::start(
             "s".into(),
             Arc::new(db),
+            slow.clone(),
             ShardConfig::default(),
             absorb_tx,
             None,
@@ -1674,6 +1927,7 @@ mod tests {
                 let req = crate::shard::AppendReq {
                     usage: Default::default(),
                     hash: [9u8; 16],
+                    route: [0u8; 16],
                     enqueued_at: Instant::now(),
                     entries: vec![bytes::Bytes::from(vec![b'x'; 1024])],
                     routing_key: String::new(),
@@ -1719,7 +1973,7 @@ mod tests {
         let mem: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let slow: Arc<dyn ObjectStore> = Arc::new(SlowPuts(mem));
         // Default (large) unflushed cap: writes are admitted, durability stalls.
-        let db = Db::builder("d/shard", slow)
+        let db = Db::builder("d/shard", slow.clone())
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(Duration::from_millis(25)),
                 ..Default::default()
@@ -1731,6 +1985,7 @@ mod tests {
         let engine = ShardEngine::start(
             "d".into(),
             Arc::new(db),
+            slow.clone(),
             ShardConfig::default(),
             absorb_tx,
             None,
@@ -1740,6 +1995,7 @@ mod tests {
             let req = crate::shard::AppendReq {
                 usage: Default::default(),
                 hash: [7u8; 16],
+                route: [0u8; 16],
                 enqueued_at: Instant::now(),
                 entries: vec![bytes::Bytes::from(vec![b'y'; 512])],
                 routing_key: String::new(),

@@ -35,19 +35,36 @@ pub fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 }
 
 /// Tail value v3:
-/// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq]
+/// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?]
+///
+/// `flags` is a bitmask: bit0 = closed, bit1 = history v2 (the stream's
+/// absorbed range lives in the shared per-shard partition, not a
+/// per-stream DB). The optional trailing route16 (the shard-routing
+/// hash) is a backward-compatible extension: v3 decoders read exactly
+/// `seq_len` seq bytes and ignore trailing bytes. Downgrade caveat: a
+/// pre-bitmask binary reads flags with `== 1`, so it would see a
+/// closed+v2 stream (flags=3) as open — acceptable for forward-only
+/// deployments, noted here because it is not zero.
 fn encode_tail(t: &TailFields) -> Vec<u8> {
     let seq = t.seq.as_deref().unwrap_or("").as_bytes();
-    let mut v = Vec::with_capacity(44 + seq.len());
+    let mut v = Vec::with_capacity(60 + seq.len());
     v.push(3);
     v.extend_from_slice(&t.next.to_le_bytes());
     v.extend_from_slice(&t.ts.to_le_bytes());
     v.extend_from_slice(&t.logical.to_le_bytes());
     v.extend_from_slice(&t.absorbed.to_le_bytes());
     v.extend_from_slice(&t.trimmed.to_le_bytes());
-    v.push(if t.closed { 1 } else { 0 });
+    let mut flags = 0u8;
+    if t.closed {
+        flags |= 1;
+    }
+    if t.history_v2 {
+        flags |= 2;
+    }
+    v.push(flags);
     v.extend_from_slice(&(seq.len() as u16).to_le_bytes());
     v.extend_from_slice(seq);
+    v.extend_from_slice(&t.route);
     v
 }
 
@@ -61,17 +78,18 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     let logical = u64::from_le_bytes(v[17..25].try_into().ok()?);
     let absorbed = u64::from_le_bytes(v[25..33].try_into().ok()?);
     let trimmed = u64::from_le_bytes(v[33..41].try_into().ok()?);
-    let (closed, seq_at) = if v3 {
-        (v[41] == 1, 42usize)
-    } else {
-        (false, 41usize)
-    };
+    let (flags, seq_at) = if v3 { (v[41], 42usize) } else { (0u8, 41usize) };
     let seq_len = u16::from_le_bytes(v[seq_at..seq_at + 2].try_into().ok()?) as usize;
     let seq = if seq_len == 0 {
         None
     } else {
         Some(String::from_utf8(v.get(seq_at + 2..seq_at + 2 + seq_len)?.to_vec()).ok()?)
     };
+    let route_at = seq_at + 2 + seq_len;
+    let route: [u8; 16] = v
+        .get(route_at..route_at + 16)
+        .and_then(|r| r.try_into().ok())
+        .unwrap_or([0u8; 16]);
     Some(TailFields {
         next,
         ts,
@@ -79,7 +97,9 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
         absorbed,
         trimmed,
         seq,
-        closed,
+        closed: flags & 1 != 0,
+        history_v2: flags & 2 != 0,
+        route,
     })
 }
 
@@ -100,6 +120,14 @@ pub struct TailFields {
     pub trimmed: u64,
     pub seq: Option<String>,
     pub closed: bool,
+    /// This stream's absorbed range lives in the shared per-shard
+    /// history partition (v2). Set by the first AbsorbedBatch that
+    /// covers the stream; absorbed > 0 with this bit UNSET means legacy
+    /// per-stream history (v1) and the stream stays v1.
+    pub history_v2: bool,
+    /// Shard-routing hash (stream_hash(name)); zeros for streams last
+    /// written by callers without a name identity or by older binaries.
+    pub route: [u8; 16],
 }
 
 /// `durable` is what readers see; `applied` is what's in the memtable.
@@ -184,6 +212,12 @@ pub enum DeferredErr {
 
 pub struct AppendReq {
     pub hash: [u8; 16],
+    /// Shard-routing identity (`stream_hash(name)`), persisted into the
+    /// tail so history v2 can key the shared partition route-first and a
+    /// future shard split can clone by range. Zeros when the caller has
+    /// no name-level identity (some DST paths); the v2 keyspace accepts
+    /// a zero route, it just can't range-split those entries.
+    pub route: [u8; 16],
     pub enqueued_at: std::time::Instant,
     /// Plaintext entries; encrypted in the committer with nonce = offset.
     pub entries: Vec<Bytes>,
@@ -251,9 +285,16 @@ pub enum CommitOp {
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
     /// (deferred one round so in-flight readers never lose their range).
+    /// `v2` marks the range as living in the SHARED per-shard partition
+    /// (docs/HISTORY-V2.md); the first advancing v2 op sets the stream's
+    /// history_v2 flag, which gates the read path's history source. The
+    /// v2 absorber flushes MANY streams once and then submits one of
+    /// these per covered stream; they coalesce into the same committer
+    /// batch, so the boundaries land in one tracker write-batch.
     Absorbed {
         hash: [u8; 16],
         upto: u64,
+        v2: bool,
     },
 }
 
@@ -378,6 +419,16 @@ struct InFlightGroup {
 pub struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
+    /// Object store the shard's DBs live on — held so the engine can
+    /// lazily open its shared history v2 partition.
+    data_store: Arc<dyn object_store::ObjectStore>,
+    /// Shared history v2 partition (docs/HISTORY-V2.md): ONE writer Db
+    /// per shard at `{prefix}/history2`, opened lazily by whoever needs
+    /// it first (absorber gather lane or a v2 history read) and shared —
+    /// two independent opens would fence each other. Closed with the
+    /// engine; a new shard owner's open fences this one at the slatedb
+    /// layer, same dynamics as the per-stream v1 DBs.
+    history2: tokio::sync::OnceCell<Arc<Db>>,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
@@ -476,6 +527,7 @@ impl ShardEngine {
     pub fn start(
         prefix: String,
         db: Arc<Db>,
+        data_store: Arc<dyn object_store::ObjectStore>,
         cfg: ShardConfig,
         absorb_tx: mpsc::Sender<AbsorbSignal>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -490,6 +542,8 @@ impl ShardEngine {
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
+            data_store,
+            history2: tokio::sync::OnceCell::new(),
             streams: Mutex::new(HashMap::new()),
             tx,
             in_flight: Mutex::new(Vec::new()),
@@ -883,10 +937,18 @@ impl ShardEngine {
         // can delay indefinitely (ladder p3: 92 minutes of unowned zombie
         // on shard 000, GC racing the eventual open).
         let db = self.db.clone();
+        let history2 = self.history2.get().cloned();
         let prefix = self.prefix.clone();
         tokio::spawn(async move {
             if let Err(e) = db.close().await {
                 tracing::warn!(shard = %prefix, "db close after move-away: {e}");
+            }
+            // Same zombie logic for the shared history partition: the new
+            // owner's open fences it, but close it deliberately.
+            if let Some(h2) = history2 {
+                if let Err(e) = h2.close().await {
+                    tracing::warn!(shard = %prefix, "history2 close after move-away: {e}");
+                }
             }
         });
     }
@@ -930,7 +992,45 @@ impl ShardEngine {
     }
 
     pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64) {
-        let _ = self.tx.send(CommitOp::Absorbed { hash, upto }).await;
+        let _ = self
+            .tx
+            .send(CommitOp::Absorbed { hash, upto, v2: false })
+            .await;
+    }
+
+    /// v2 boundary advance: the range is in the shared partition.
+    pub async fn submit_absorbed_v2(&self, hash: [u8; 16], upto: u64) {
+        let _ = self
+            .tx
+            .send(CommitOp::Absorbed { hash, upto, v2: true })
+            .await;
+    }
+
+    /// The shard's shared history v2 partition, opened once and shared
+    /// between the absorber's gather lane and v2 history reads. Values
+    /// are raw stream-key-encrypted frames, so the partition needs no
+    /// block transformer and no compression (frames compress before
+    /// encryption; re-compressing ciphertext is pure waste).
+    pub async fn history_partition(&self) -> Result<Arc<Db>, slatedb::Error> {
+        if self.is_closed() {
+            return Err(slatedb::Error::data("engine closed".to_string()));
+        }
+        self.history2
+            .get_or_try_init(|| async {
+                let path = format!("{}/history2", self.prefix);
+                let store = self.data_store.clone();
+                let db = crate::on_slatedb_rt(async move {
+                    Db::builder(path.as_str(), store)
+                        .with_settings(crate::history::history2_settings())
+                        .with_db_cache(crate::history::history_cache())
+                        .build()
+                        .await
+                })
+                .await?;
+                Ok(Arc::new(db))
+            })
+            .await
+            .cloned()
     }
 
     /// Streams this engine holds open whose durable log extends past their
@@ -1411,6 +1511,17 @@ impl ShardEngine {
                     records += req.entries.len() as u64;
                     local.fields.next = start + req.entries.len() as u64;
                     local.fields.ts = ts;
+                    // Route is set-once, and FROZEN once v2 absorption has
+                    // begun: the shared-partition keys embed it, so a
+                    // zero-route stream that absorbed under zero must not
+                    // acquire a route later — its writes and reads would
+                    // disagree on the key prefix.
+                    if local.fields.route == [0u8; 16]
+                        && req.route != [0u8; 16]
+                        && !local.fields.history_v2
+                    {
+                        local.fields.route = req.route;
+                    }
                     if req.seq.is_some() {
                         local.fields.seq = req.seq.clone();
                     }
@@ -1429,7 +1540,7 @@ impl ShardEngine {
                         },
                     ));
                 }
-                CommitOp::Absorbed { upto, .. } => {
+                CommitOp::Absorbed { upto, v2, .. } => {
                     let prev_absorbed = local.fields.absorbed;
                     // Only an op that ADVANCES the boundary may move the
                     // trim. The absorber re-submits an already-covered
@@ -1441,6 +1552,9 @@ impl ShardEngine {
                     // depend on (2026-07-27 boundary-race DST failure).
                     if upto > prev_absorbed {
                         local.fields.absorbed = upto.min(local.fields.next);
+                        if v2 {
+                            local.fields.history_v2 = true;
+                        }
                         // Deferred trim: delete only up to the *previous*
                         // absorbed boundary, bounded per op.
                         let trim_to =

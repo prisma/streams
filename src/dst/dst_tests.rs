@@ -228,7 +228,7 @@ async fn open_engine_cfg(
     } else {
         std::time::Duration::from_millis(5)
     };
-    let db = slatedb::Db::builder(prefix, store)
+    let db = slatedb::Db::builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(flush_interval),
             manifest_poll_interval: std::time::Duration::from_millis(50),
@@ -238,7 +238,7 @@ async fn open_engine_cfg(
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), cfg, absorb_tx, None)
+    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), store, cfg, absorb_tx, None)
 }
 
 /// I1+I2+I3 for a single writer under the full fault set — errors, lost
@@ -807,6 +807,29 @@ async fn open_engine_with_absorber(
     hash: [u8; 16],
     key: &crate::crypto::StreamKey,
 ) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
+    open_engine_with_absorber_layout(store, prefix, hash, key, false).await
+}
+
+/// Legacy-layout variant: forces every stream through the per-stream v1
+/// lanes so the v1 machinery (HistReaders coverage probes, k! index,
+/// per-stream DBs) keeps its DST coverage now that fresh streams
+/// default to the shared v2 partition.
+async fn open_engine_with_absorber_v1(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
+    open_engine_with_absorber_layout(store, prefix, hash, key, true).await
+}
+
+async fn open_engine_with_absorber_layout(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    force_v1: bool,
+) -> (Arc<crate::shard::ShardEngine>, tokio::task::JoinHandle<()>) {
     let db = slatedb::Db::builder(prefix, store.clone())
         .with_settings(slatedb::config::Settings {
             flush_interval: Some(std::time::Duration::from_millis(5)),
@@ -820,6 +843,7 @@ async fn open_engine_with_absorber(
     let engine = crate::shard::ShardEngine::start(
         prefix.to_string(),
         Arc::new(db),
+        store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
         None,
@@ -834,6 +858,7 @@ async fn open_engine_with_absorber(
         tick: std::time::Duration::from_millis(20),
         batch_puts: 256,
         pass_bytes: 8 * 1024 * 1024,
+        force_v1,
         ..Default::default()
     };
     let handle = crate::history::Absorber::start(store, engine.clone(), keys, cfg, absorb_rx);
@@ -952,7 +977,7 @@ async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
     let key = skey();
     let hash = [33u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-noidx", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-noidx", hash, &key).await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -1040,6 +1065,7 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
     let engine = crate::shard::ShardEngine::start(
         "dst-sweep".to_string(),
         Arc::new(db),
+        store.clone(),
         crate::shard::ShardConfig::default(),
         engine_tx,
         None,
@@ -1120,6 +1146,7 @@ async fn concurrent_small_lane_absorbs_many_streams_correctly() {
     let engine = crate::shard::ShardEngine::start(
         "dst-lane".to_string(),
         Arc::new(db),
+        store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
         None,
@@ -1140,6 +1167,7 @@ async fn concurrent_small_lane_absorbs_many_streams_correctly() {
             batch_puts: 256,
             pass_bytes: 8 * 1024 * 1024,
             concurrency: 4,
+            force_v1: true,
             ..Default::default()
         },
         absorb_rx,
@@ -1187,6 +1215,148 @@ async fn concurrent_small_lane_absorbs_many_streams_correctly() {
     absorber.abort();
 }
 
+/// History v2's headline property: absorption WITHOUT the customer key.
+/// The gather lane copies raw encrypted frames into the shared
+/// partition, so an absorber whose KeyCache is EMPTY must still absorb
+/// — and the records must decode correctly on read, where the client
+/// supplies the key. (v1 required the key server-side and stranded
+/// key-expired backlogs; docs/COST-WIDE1.md §2.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_absorbs_without_customer_keys() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 61, FaultPlan::new(0, 0, 10));
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [50u8; 16];
+
+    let db = slatedb::Db::builder("dst-v2nokey", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-v2nokey".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    // NO keys.put: the v1 absorber would return key-missing forever.
+    let keys = Arc::new(crate::history::KeyCache::default());
+    let absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        keys,
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            batch_puts: 256,
+            pass_bytes: 8 * 1024 * 1024,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.run(&engine, hash, &key, &["", "vk"], 25, false, &mut log).await;
+    assert!(log.total_acked() > 0, "nothing acked");
+
+    let mut absorbed = 0u64;
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            let st = h.state.lock().unwrap();
+            absorbed = st.durable.absorbed;
+            if absorbed > 0 {
+                assert!(st.durable.history_v2, "absorption advanced without the v2 flag");
+            }
+        }
+        if absorbed > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        absorbed > 0,
+        "keyless v2 absorption never advanced — the gather lane still \
+         depends on the customer key"
+    );
+
+    // Reads (client-supplied key) must see every acked record across the
+    // boundary, and filters must work against the shared partition.
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let observed = drain_observed(&hist, &engine, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&observed) {
+        panic!("v2 keyless absorption lost records (absorbed={absorbed}): {e}");
+    }
+    let unkeyed = drain_filtered(&hist, &engine, hash, &key, "").await;
+    assert_eq!(&unkeyed, &log.acked[""], "v2 empty-key filter broken");
+    let keyed = drain_filtered(&hist, &engine, hash, &key, "vk").await;
+    assert_eq!(&keyed, &log.acked["vk"], "v2 keyed filter broken");
+    absorber.abort();
+}
+
+/// v2 history must survive the owner handing the shard to a NEW engine:
+/// the flags/route round-trip through the durable tail, the successor
+/// opens the shared partition itself (fencing the old writer), and every
+/// acked record stays readable — without any customer key ever reaching
+/// an absorber.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_history_survives_engine_handoff() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 67, FaultPlan::CLEAN);
+    let cov = store.coverage();
+    let key = skey();
+    let hash = [51u8; 16];
+    let prefix = "dst-v2reopen";
+
+    let (a, absorber_a) =
+        open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
+    let mut absorbed = 0u64;
+    for _ in 0..400 {
+        if let Ok(h) = a.stream_handle(hash).await {
+            absorbed = h.state.lock().unwrap().durable.absorbed;
+            if absorbed > 0 {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(absorbed > 0, "no v2 absorption before the handoff");
+
+    // Successor opens the same shard; its first commit fences the old
+    // owner, its partition open fences the old partition writer.
+    let (b, absorber_b) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    // Same Workload: op numbering must continue, or the post-handoff ops
+    // collide with the pre-handoff ones in the shared OpLog.
+    w.run(&b, hash, &key, &["r"], 5, false, &mut log).await;
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let observed = drain_observed(&fresh_hist(&ds), &b, hash, &key, &cov).await;
+    if let Err(e) = log.audit(&observed) {
+        panic!("v2 history lost records across the handoff: {e}");
+    }
+    {
+        let h = b.stream_handle(hash).await.expect("handle");
+        let st = h.state.lock().unwrap();
+        assert!(st.durable.history_v2, "v2 flag lost across the tail round-trip");
+    }
+    absorber_a.abort();
+    absorber_b.abort();
+    a.begin_close();
+}
+
 /// The interim sparse policy: AGE absorption requires min_age_bytes of
 /// pending data. A tiny stream must stay in the shard log (readable,
 /// durable, no per-stream history DB minted) while a fat-enough stream
@@ -1213,6 +1383,7 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
     let engine = crate::shard::ShardEngine::start(
         "dst-defer".to_string(),
         Arc::new(db),
+        store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
         None,
@@ -1991,7 +2162,7 @@ async fn history_and_tail_partition_the_stream_after_trim() {
     let key = skey();
     let hash = [27u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-tier", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-tier", hash, &key).await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -2346,6 +2517,7 @@ async fn naive_get_or_open(
         // Non-panicking open: a detached replay that loses the epoch war
         // gets `Fenced` from the winner — count those, they are the
         // zombies of the real incident.
+        let st2 = st.clone();
         let db = slatedb::Db::builder(p.as_str(), st)
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(std::time::Duration::from_millis(5)),
@@ -2360,6 +2532,7 @@ async fn naive_get_or_open(
                 let eng = crate::shard::ShardEngine::start(
                     p,
                     Arc::new(db),
+                    st2,
                     crate::shard::ShardConfig::default(),
                     absorb_tx,
                     None,
@@ -2757,7 +2930,7 @@ async fn history_reads_reuse_a_cached_reader() {
     let key = skey();
     let hash = [21u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-hrc", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-hrc", hash, &key).await;
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
@@ -2825,7 +2998,7 @@ async fn a_stale_cached_reader_is_detected_and_replaced() {
     let key = skey();
     let hash = [22u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-hrc-stale", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-hrc-stale", hash, &key).await;
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hr = hist_hour(&ds, 8);
@@ -2892,7 +3065,7 @@ async fn filtered_history_reads_survive_a_stale_reader() {
     let key = skey();
     let hash = [23u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-hrc-filt", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-hrc-filt", hash, &key).await;
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hr = hist_hour(&ds, 8);
@@ -2915,11 +3088,17 @@ async fn filtered_history_reads_survive_a_stale_reader() {
         .expect("warm filtered read");
 
     w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
+    // Wait for absorption to CATCH UP, not merely advance: the lane-capped
+    // absorber legitimately advances the boundary in partial steps, and a
+    // read at a partial a2 honestly excludes the unabsorbed tail — which
+    // this test's record-count assertion would misread as loss (it did,
+    // ~50% of suite runs, once the per-tick caps landed).
     let mut a2 = a1;
     for _ in 0..400 {
         if let Ok(h) = engine.stream_handle(hash).await {
-            a2 = h.state.lock().unwrap().durable.absorbed;
-            if a2 > a1 {
+            let st = h.state.lock().unwrap();
+            a2 = st.durable.absorbed;
+            if a2 > a1 && a2 == st.durable.next {
                 break;
             }
         }
@@ -3064,7 +3243,7 @@ async fn sixty_four_stale_readers_cause_one_probe_and_one_reopen() {
     let key = skey();
     let hash = [32u8; 16];
     let (engine, absorber) =
-        open_engine_with_absorber(store.clone(), "dst-hrc-stampede", hash, &key).await;
+        open_engine_with_absorber_v1(store.clone(), "dst-hrc-stampede", hash, &key).await;
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hr = hist_hour(&ds, 8);
     let mut log = OpLog::default();
