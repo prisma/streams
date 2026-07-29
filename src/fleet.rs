@@ -128,8 +128,18 @@ pub fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String]) -> Opt
         .map(|(p, _)| p.clone())
 }
 
-/// Current RSS in bytes. Linux (musl cloud build): /proc/self/statm.
-/// macOS dev box: getrusage peak RSS as an approximation.
+/// Current memory pressure in bytes. Linux (musl cloud build):
+/// /proc/self/statm RSS. macOS dev box: task_vm_info.phys_footprint.
+///
+/// This MUST be a value that can go back DOWN when memory is returned:
+/// the admission shed compares it against ADMIT_RSS_SHED_MB, and the
+/// wedge liveness gate proved the old macOS reading (getrusage
+/// ru_maxrss — the lifetime PEAK) turns one overload spike into a
+/// permanent 429 wedge. Plain resident size is also wrong on macOS:
+/// mimalloc surrenders freed pages with MADV_FREE_REUSABLE, and Darwin
+/// keeps those OS-reclaimable pages in resident_size (measured on the
+/// wedge repro: resident 120 MB vs phys_footprint 2 MB after drain).
+/// phys_footprint is the metric Darwin's own memory limits use.
 pub fn rss_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -144,13 +154,54 @@ pub fn rss_bytes() -> u64 {
         }
         0
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     unsafe {
-        let mut ru: libc::rusage = std::mem::zeroed();
-        if libc::getrusage(libc::RUSAGE_SELF, &mut ru) != 0 {
-            return 0;
+        // Prefix of task_vm_info through phys_footprint; task_info fills
+        // only the count we pass, so the truncated layout is safe.
+        #[repr(C)]
+        struct TaskVmInfoPrefix {
+            virtual_size: u64,
+            region_count: i32,
+            page_size: i32,
+            resident_size: u64,
+            resident_size_peak: u64,
+            device: u64,
+            device_peak: u64,
+            internal: u64,
+            internal_peak: u64,
+            external: u64,
+            external_peak: u64,
+            reusable: u64,
+            reusable_peak: u64,
+            purgeable_volatile_pmap: u64,
+            purgeable_volatile_resident: u64,
+            purgeable_volatile_virtual: u64,
+            compressed: u64,
+            compressed_peak: u64,
+            compressed_lifetime: u64,
+            phys_footprint: u64,
         }
-        ru.ru_maxrss as u64 // bytes on macOS
+        const TASK_VM_INFO: u32 = 22;
+        unsafe extern "C" {
+            fn mach_task_self() -> u32;
+            fn task_info(task: u32, flavor: u32, info: *mut u8, count: *mut u32) -> i32;
+        }
+        let mut info: TaskVmInfoPrefix = std::mem::zeroed();
+        let mut count = (std::mem::size_of::<TaskVmInfoPrefix>() / 4) as u32;
+        let kr = task_info(
+            mach_task_self(),
+            TASK_VM_INFO,
+            &mut info as *mut _ as *mut u8,
+            &mut count,
+        );
+        if kr == 0 {
+            return info.phys_footprint;
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        0
     }
 }
 

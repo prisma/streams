@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 libc = "0.2"
 mimalloc = "0.1"
+libmimalloc-sys = { version = "0.1", features = ["extended"] }
 anyhow = "1"
 axum = "0.8"
 bytes = "1"
@@ -75,4 +76,4 @@ path = "src/bin/cryptobench.rs"
 # cadence (gc-adaptive-backoff branch: fixes runtime
 # starvation from single-poll SST builds; sentinel p99 848ms -> 4.8ms).
 # Drop this patch when a release containing the PR ships.
-slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "42e32498c8456df9ed9caa78d7ae973bcb451a86" }
+slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "7cb8fb42e7fd4dc078d559c19a592e7c653563fb" }

@@ -810,13 +810,36 @@ async fn async_main() -> anyhow::Result<()> {
         // a frozen 0 in standalone mode — the shed was dead exactly where
         // the 2026-07-21 single-instance gate needed it (OOM at ~725 MB
         // with admit_shed=0).
+        //
+        // Purge-on-pressure: mimalloc only purges freed OS pages on
+        // allocation-path ticks, so a process that goes IDLE after an
+        // overload spike never purges — RSS stays frozen at the high
+        // water and the shed 429s forever (the wedge liveness gate's
+        // FAIL signature: byte-identical RSS for minutes, zero store
+        // writes, zero backlog). When the sampler sees RSS above the
+        // shed line it forces a collection (segments decommit;
+        // purge_decommits defaults on) and re-measures, so retained-idle
+        // memory can't masquerade as live pressure. Rate-limited; the
+        // instance is already shedding writes when this runs.
         let st = state.clone();
+        let shed_line_mb = args.admit_rss_shed_mb;
         tokio::spawn(async move {
+            let mut last_purge: Option<std::time::Instant> = None;
             loop {
-                st.rss_mb_cached.store(
-                    crate::fleet::rss_bytes() / 1048576,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                let mut mb = crate::fleet::rss_bytes() / 1048576;
+                let purge_due = shed_line_mb > 0
+                    && mb > shed_line_mb
+                    && last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
+                if purge_due {
+                    let _ = tokio::task::spawn_blocking(|| unsafe {
+                        libmimalloc_sys::mi_collect(true);
+                    })
+                    .await;
+                    last_purge = Some(std::time::Instant::now());
+                    mb = crate::fleet::rss_bytes() / 1048576;
+                }
+                st.rss_mb_cached
+                    .store(mb, std::sync::atomic::Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         });
