@@ -76,4 +76,4 @@ path = "src/bin/cryptobench.rs"
 # cadence (gc-adaptive-backoff branch: fixes runtime
 # starvation from single-poll SST builds; sentinel p99 848ms -> 4.8ms).
 # Drop this patch when a release containing the PR ships.
-slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "5b4c4f81b650ae236967fa44f69f0a55e304daba" }
+slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "28507291d52d6c6a592d8739e26e89295f6a4f54" }

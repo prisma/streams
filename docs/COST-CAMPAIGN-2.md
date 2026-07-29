@@ -62,24 +62,42 @@ Fixes (fork, branch gc-adaptive-backoff):
   LIST-free via the probe cache), but the candidate inventory is one
   cached listing, pruned as objects are deleted. Objects created after
   the listing are invisible until refresh — deletion can only be
-  *delayed*, never done early. An empty sweep arms an early refresh at
-  max(min_age, 2× base interval); the first soak proved why (a 1 h TTL
-  against a boot-time empty listing suppressed collection entirely:
-  deletes 50,877 → 25).
+  *delayed*, never done early. An empty sweep arms an early refresh
+  clocked from the exhaustion moment (2× base interval, ≥ 60 s).
+- **Bounded-concurrency GC deletes** (WAL + compacted SSTs, fan-out 16).
+  Surfaced by this round's verification: deletes ran one object per
+  store round-trip — a 40/s ceiling at 25 ms RTT, *below* hot-shard WAL
+  churn. The old list-per-sweep design survived only by running at
+  exactly that ceiling continuously; any dead window made retention
+  diverge.
 
-**Verification (capped 30-min soak, same workload, LIST-free binary):**
+**What the verification harness caught** (each rerun of the same
+capped 30-min soak, each fixed before proceeding):
+
+1. *No-refresh:* a 1 h TTL against the boot-time (near-empty) listing
+   suppressed collection for the whole run — deletes 50,877 → 25.
+   Fix: refresh when a sweep finds nothing in the view.
+2. *Floor-from-listing + min_age inheritance:* drained views fed
+   false-empty sweeps into the adaptive backoff and big-min_age dirs
+   sat in multi-minute dead zones — end-of-run bucket residual 34,912
+   objects vs 10,411 baseline. Fix: floor runs from the exhaustion
+   moment and scales with the sweep interval, not min_age (early
+   relisting never deletes early).
+3. *Serial-delete divergence:* with dead windows in play, the 40/s
+   delete ceiling could no longer hide — the live-object census
+   (added to the s3lite ledger this round) showed 32,945 retained WAL
+   objects while sweep drains stretched 940 → 1,865 → 6,397 candidates
+   and starved the shared GC actor. Fix: concurrent deletes.
+
+**Verification (capped 30-min soak, same workload, final binary):**
 
 | metric | GC-cadence baseline | LIST-free | delta |
 |---|---|---|---|
-| total LISTs | 16,671 | _pending_ | — |
+| total LISTs | 16,671 | _pending final run_ | — |
 | total Class A | 77,937 | _pending_ | — |
 | total Class B | 25,772 | _pending_ | — |
-| GC deletes | 50,877 | _pending_ | must stay ≈ flat |
+| end-state live objects | ~10,411 residual | _pending_ | must be comparable |
 | append integrity | exact | _pending_ | must stay exact |
-
-(The tainted first rerun — no refresh floor — measured LISTs 16,671 →
-937 and Class A −21%, but with collection broken; the numbers above
-will be from the corrected binary.)
 
 ## 3. The wedge, root-caused: a shed that could not un-trip
 

@@ -524,12 +524,31 @@ fn shard_settings(args: &Args) -> Settings {
                 .then(|| Duration::from_secs(args.gc_max_interval_secs));
             let gc_ttl = (args.gc_list_ttl_secs > 0)
                 .then(|| Duration::from_secs(args.gc_list_ttl_secs));
+            // Regular WAL GC deliberately keeps list-per-sweep: after a
+            // drain, a cached view of the WAL dir holds only the zero-byte
+            // fence objects (size-filtered, never deleted, never forgotten),
+            // and that permanent remnant interacts with exhaustion/backoff
+            // into multi-minute collection gaps at hot-shard churn (soak 4:
+            // 28k retained WAL objects). The hot shard's ~2 LISTs/min are
+            // noise next to what the probe cache and the low-churn-dir
+            // views already removed; the FENCE task (below) is where the
+            // WAL-dir view genuinely pays.
             gc.wal_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.wal_gc_interval_secs)),
                 min_age: Duration::from_secs(args.wal_gc_min_age_secs),
                 max_interval: gc_max,
-                list_cache_ttl: gc_ttl,
+                list_cache_ttl: None,
                 ..gc.wal_options.unwrap_or_default()
+            });
+            // Fence sweeps are dry-run by default yet always "find" their
+            // fence candidates, so adaptive backoff never engages and they
+            // re-listed the whole WAL dir at base cadence forever. A cached
+            // view is exactly right there: fences are never deleted, the
+            // view stays valid until the TTL.
+            gc.wal_fence_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+                max_interval: gc_max,
+                list_cache_ttl: gc_ttl,
+                ..gc.wal_fence_options.unwrap_or_default()
             });
             gc.compactions_options = Some(slatedb::config::GarbageCollectorDirectoryOptions {
                 interval: Some(Duration::from_secs(args.compactions_gc_interval_secs)),
