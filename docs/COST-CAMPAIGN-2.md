@@ -465,8 +465,13 @@ its test failed). One pre-existing test fragility fixed along the way:
 `history_reads_reuse_a_cached_reader` raced the absorber's cadence
 under full-suite CPU load (an absorb advance between drains converts a
 cache hit into a stale reopen); it now waits for full absorption before
-draining — same assertions, deterministic setup. Validation numbers
-below; the capped-soak parity row is appended when that run completes.
+draining — same assertions, deterministic setup.
+
+**Capped-soak parity (1,2,3,4 × 450 s vs the round-3 run, identical
+rig/binaries otherwise):** Class A per M records −0.1%, Class B −0.0%,
+per-tier p50/p99 within tenths of a millisecond, RSS 415 → 420 MB,
+LISTs flat (55→53 hist, 152→153 shard). The round-4 machinery is free
+at the steady-state hot path.
 
 **Mature second-absorption stress (bench/costab/run-mature.sh —
 the review's required pre-promotion scenario).** 1,024 streams × 2,048
