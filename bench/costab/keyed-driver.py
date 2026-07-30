@@ -14,6 +14,7 @@ Pricing for the COGS gate (documented assumptions, public-Tigris-shaped
 + Compute-shaped CPU): Class A $4.50/M, Class B $0.36/M, storage
 $0.02/GiB-month, CPU $0.03/vCPU-hour.
 """
+import hashlib
 import json
 import os
 import random
@@ -90,10 +91,18 @@ def key_name(i):
     return f"k{i:07d}"
 
 
+def pad_for(i, rnd, j):
+    # Pseudo-random padding: realistic (incompressible) 1 KiB records.
+    # 'x'-padding compressed ~10x and shrank the canonical denominator,
+    # making fixed per-page index overhead read as 33% instead of ~3%.
+    h = hashlib.sha256(f"{i}:{rnd}:{j}".encode()).hexdigest()
+    return (h * ((REC - 60) // len(h) + 1))[: REC - 60]
+
+
 def ingest_round(args):
     i, rnd = args
     body = json.dumps(
-        [{"k": i, "r": rnd, "j": j, "pad": "x" * (REC - 60)} for j in range(B)]
+        [{"k": i, "r": rnd, "j": j, "pad": pad_for(i, rnd, j)} for j in range(B)]
     ).encode()
     sreq(
         "POST",
@@ -129,6 +138,7 @@ def snap(tag):
         "tag": tag,
         "t": round(time.time(), 1),
         "cpu_s": cpu_seconds(),
+        "stats": s3lite("/_s3lite/stats"),
         "stats2": s3lite("/_s3lite/stats2"),
         "load": debug("/v1/debug/load"),
     }

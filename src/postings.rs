@@ -208,7 +208,32 @@ pub struct AbsRun {
     pub start: u64,
     pub count: u32,
     pub matching_bytes: u64,
+    /// Stored bytes of the gap before this run — INTRA-PAGE truth from
+    /// the codec, or GAP_UNKNOWN once pages are stitched (the bytes
+    /// between two pages were never measured; the planner must not
+    /// treat them as free).
     pub gap_bytes_before: u64,
+}
+
+/// Cross-page gap marker: the byte cost is unknown, so coalescing is
+/// forbidden unless the offsets are literally contiguous.
+pub const GAP_UNKNOWN: u64 = u64::MAX;
+
+/// Append one page's decoded runs onto an accumulating list, marking
+/// the seam: unless the page's first run continues EXACTLY at the
+/// previous run's end, its gap byte cost was never measured and must
+/// read as GAP_UNKNOWN. Without this the first run of each page
+/// carries gap_bytes_before=0 and the planner coalesces arbitrarily
+/// distant pages into one giant span (measured: a 40k-offset stream
+/// scanned WHOLE for a 2-record key — 10,000x amplification).
+pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) {
+    let prev_end = all.last().map(|r| r.start + r.count as u64);
+    for (i, mut r) in page.into_iter().enumerate() {
+        if i == 0 && prev_end != Some(r.start) {
+            r.gap_bytes_before = GAP_UNKNOWN;
+        }
+        all.push(r);
+    }
 }
 
 /// Decode a page into absolute runs. `page_first` (from the KEY) must
@@ -412,16 +437,21 @@ pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
     for r in runs {
         let r_end = r.start + r.count as u64;
         let r_bytes = r.matching_bytes;
+        let contiguous = plan.spans.last().is_some_and(|s| s.end == r.start);
         match plan.spans.last_mut() {
             Some(s)
-                if r.gap_bytes_before <= cfg.max_gap_bytes
-                    && scan_total + r.gap_bytes_before + r_bytes <= cfg.max_scan_bytes =>
+                if (contiguous
+                    || (r.gap_bytes_before != GAP_UNKNOWN
+                        && r.gap_bytes_before <= cfg.max_gap_bytes))
+                    && scan_total + if contiguous { 0 } else { r.gap_bytes_before } + r_bytes
+                        <= cfg.max_scan_bytes =>
             {
                 // Coalesce into the open span (cheap gap).
                 s.end = r_end;
                 s.matching_bytes += r_bytes;
-                s.scan_bytes += r.gap_bytes_before + r_bytes;
-                scan_total += r.gap_bytes_before + r_bytes;
+                let gap = if contiguous { 0 } else { r.gap_bytes_before };
+                s.scan_bytes += gap + r_bytes;
+                scan_total += gap + r_bytes;
             }
             _ => {
                 if plan.spans.len() >= cfg.max_spans || scan_total + r_bytes > cfg.max_scan_bytes {
@@ -542,6 +572,38 @@ mod tests {
         assert_eq!(abs_b[1].start, 20);
         // Gap before b@20: frame a@13 (100 bytes).
         assert_eq!(abs_b[1].gap_bytes_before, 100);
+    }
+
+    #[test]
+    fn cross_page_seams_never_coalesce() {
+        let cfg = PlanCfg::default();
+        // Two singleton runs from DIFFERENT pages, 20k offsets apart,
+        // seam bytes unknown: must be two spans, never one giant scan.
+        let runs = vec![
+            run(5, 1, 1_000, 0),
+            AbsRun {
+                start: 20_005,
+                count: 1,
+                matching_bytes: 1_000,
+                gap_bytes_before: GAP_UNKNOWN,
+            },
+        ];
+        let plan = plan_spans(&runs, 40_000, &cfg);
+        assert_eq!(plan.spans.len(), 2, "unknown seams must open a new span");
+        assert_eq!(plan.spans[0].end, 6);
+        assert_eq!(plan.spans[1].start, 20_005);
+        // Truly contiguous across a seam still merges.
+        let runs = vec![
+            run(5, 1, 1_000, 0),
+            AbsRun {
+                start: 6,
+                count: 1,
+                matching_bytes: 1_000,
+                gap_bytes_before: GAP_UNKNOWN,
+            },
+        ];
+        let plan = plan_spans(&runs, 40_000, &cfg);
+        assert_eq!(plan.spans.len(), 1, "contiguous offsets are one span");
     }
 
     #[test]

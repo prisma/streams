@@ -2194,7 +2194,7 @@ async fn read_history2_keyed(
                     .expect("postings key tail"),
             );
             match crate::postings::decode_page_abs(first, &kv.value) {
-                Some(abs) => runs.extend(abs),
+                Some(abs) => crate::postings::append_page_runs(&mut runs, abs),
                 None => {
                     corrupt = true;
                     break;

@@ -48,9 +48,7 @@ def totals(s):
 
 
 def put_bytes(s):
-    # s3lite global byte ledger.
-    st = s["stats2"]
-    return st.get("put_bytes", st.get("bytes", {}).get("put", 0))
+    return s["stats"]["put_bytes"]
 
 
 def cells(s):
@@ -131,9 +129,13 @@ gate(
 )
 cache = v3_read["load"]["postings"].get("cache", {}) or {}
 hits = cache.get("hits", 0)
-misses = cache.get("misses", 0)
-hit_rate = 100.0 * hits / max(hits + misses, 1)
-gate(hit_rate >= 90.0, f"postings cache hit rate {hit_rate:.1f}% >= 90%")
+# Spec §15.2: >= 90% hit AFTER THE FIRST READ — cold reads are expected
+# misses; every WARM read should hit.
+warm = v3r["warm_reads"]
+gate(
+    hits >= warm * 0.9,
+    f"postings cache: {hits} hits for {warm} warm reads (>= 90%)",
+)
 # Per-offset GET pattern: canonical GETs during the read phase must be
 # bounded by pages served, not records returned.
 recs_served = v3r["cold_reads"] * v3r["expected_per_key"]

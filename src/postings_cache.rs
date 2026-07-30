@@ -313,7 +313,12 @@ impl PostingsCache {
                             // Forward extension: append past indexed_to.
                             let mut merged: Vec<AbsRun> = s.runs.to_vec();
                             let cut = s.indexed_to_offset;
-                            merged.extend(new_runs.iter().copied().filter(|r| r.start >= cut));
+                            let fresh: Vec<AbsRun> = new_runs
+                                .iter()
+                                .copied()
+                                .filter(|r| r.start >= cut)
+                                .collect();
+                            crate::postings::append_page_runs(&mut merged, fresh);
                             let bytes = merged.len() * std::mem::size_of::<AbsRun>();
                             (merged, s.first_bucket, bytes)
                         }
@@ -492,7 +497,7 @@ async fn load_runs(
                 .expect("postings first"),
         );
         match crate::postings::decode_page_abs(first, &kv.value) {
-            Some(abs) => runs.extend(abs),
+            Some(abs) => crate::postings::append_page_runs(&mut runs, abs),
             None => {
                 cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
                 return Ok((Vec::new(), encoded, 0, true));
