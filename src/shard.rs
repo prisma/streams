@@ -472,6 +472,8 @@ pub struct ShardConfig {
     /// (67M deletes at the wide posture's TRIM_PER_OP=65536).
     /// `max_trim_per_op` remains the per-stream bound within a group.
     pub trim_global_budget: u64,
+    /// Decoded postings-slice cache budget (spec §7.1), bytes.
+    pub postings_cache_bytes: usize,
 }
 
 impl Default for ShardConfig {
@@ -489,6 +491,7 @@ impl Default for ShardConfig {
             handle_idle_evict: std::time::Duration::from_secs(600),
             handle_max_resident: 65_536,
             trim_global_budget: 65_536,
+            postings_cache_bytes: crate::postings_cache::POSTINGS_CACHE_BYTES,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
@@ -630,6 +633,9 @@ pub struct ShardEngine {
     /// raced its own lane classification — harmless with the seal, but
     /// worth seeing.
     pub absorb_lane_dropped: AtomicU64,
+    /// Decoded postings-slice cache (spec §7): keyed historical reads
+    /// pay the index once per active window.
+    pub postings_cache: Arc<crate::postings_cache::PostingsCache>,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -745,6 +751,7 @@ impl ShardEngine {
             trim_deletes_max_batch: AtomicU64::new(0),
             trim_deletes_total: AtomicU64::new(0),
             absorb_lane_dropped: AtomicU64::new(0),
+            postings_cache: crate::postings_cache::PostingsCache::new(cfg.postings_cache_bytes),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -1027,6 +1034,9 @@ impl ShardEngine {
                             );
                         }
                     }
+                    ticker
+                        .postings_cache
+                        .sweep_idle(crate::postings_cache::POSTINGS_CACHE_IDLE);
                     // Trim maintenance pulse: whenever streams owe
                     // physical trims, queue one budgeted TrimTick.
                     // try_send — a full committer queue means the next

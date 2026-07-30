@@ -8,6 +8,7 @@ mod metrics;
 mod offsets;
 mod operator;
 mod postings;
+mod postings_cache;
 mod queue;
 mod registry;
 mod scaler;

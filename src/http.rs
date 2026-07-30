@@ -466,6 +466,14 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "read_frames_scanned": crate::history::READ_FRAMES_SCANNED.load(std::sync::atomic::Ordering::Relaxed),
             "read_frames_matched": crate::history::READ_FRAMES_MATCHED.load(std::sync::atomic::Ordering::Relaxed),
             "corrupt": crate::history::POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed),
+            "cache": state
+                .shards
+                .read()
+                .unwrap()
+                .values()
+                .next()
+                .map(|e| e.postings_cache.stats())
+                .unwrap_or(serde_json::json!(null)),
         },
         // Cross-layout absorb advances rejected by the committer's
         // layout seal. Nonzero = the absorber's lane classification
@@ -2529,21 +2537,38 @@ pub(crate) async fn read_merged(
                 // read through the owner's open Db — no reader open, no
                 // checkpoint, no coverage probe (this Db's flush is what
                 // advanced the boundary). Frames decode like tail frames.
+                // Keyed ranges resolve their postings runs through the
+                // engine's decoded slice cache (spec §7).
                 let part = engine
                     .history_partition()
                     .await
                     .map_err(|e| e.to_string())?;
-                let (frames, _last, completed) = crate::history::read_history2(
-                    &part,
-                    crate::crypto::RouteHash(route),
-                    crate::crypto::SegmentHash(hash),
-                    cursor,
-                    hist_upto,
-                    key_filter,
-                    budget,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
+                let (frames, _last, completed) = match key_filter {
+                    Some(rk) => crate::history::read_history2_keyed_cached(
+                        &engine.postings_cache,
+                        &part,
+                        crate::crypto::RouteHash(route),
+                        crate::crypto::SegmentHash(hash),
+                        rk,
+                        cursor,
+                        hist_upto,
+                        boundary,
+                        budget,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?,
+                    None => crate::history::read_history2(
+                        &part,
+                        crate::crypto::RouteHash(route),
+                        crate::crypto::SegmentHash(hash),
+                        cursor,
+                        hist_upto,
+                        None,
+                        budget,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?,
+                };
                 decode_frames_into(
                     &frames,
                     key,

@@ -5289,3 +5289,103 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
     );
     engine.begin_close();
 }
+
+/// Spec §7: a key's second read must be served from the decoded slice
+/// cache — no new physical index load — and repeated reads keep
+/// hitting. (The ≥90% active-window hit-rate gate runs in the
+/// acceptance campaign; this pins the mechanism.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeated_keyed_reads_hit_the_postings_cache() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 107, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xB5u8; 16];
+
+    let db = slatedb::Db::builder("dst-pcache", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-pcache".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    for i in 0..8u64 {
+        let subkey = crate::crypto::derive_subkey(&key, &hash, "hot", 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            route: hash,
+            entries: vec![bytes::Bytes::from(
+                serde_json::json!({"op": i, "att": 0, "k": "hot"})
+                    .to_string()
+                    .into_bytes(),
+            )],
+            usage: crate::usage::counters(&hash),
+            routing_key: "hot".to_string(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            close: false,
+            producer: None,
+            deferred_error: None,
+            touch: None,
+            resp: tx,
+        };
+        assert!(engine.try_enqueue(req).is_ok());
+        rx.await.expect("resp").expect("ack");
+        append_n(&engine, hash, &key, 32, 64).await;
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let cache = &engine.postings_cache;
+
+    let first = drain_filtered(&hist, &engine, hash, &key, "hot").await;
+    assert_eq!(first.len(), 8);
+    let loads_after_first = cache.index_loads.load(Ordering::Relaxed);
+    let hits_after_first = cache.hits.load(Ordering::Relaxed);
+    assert!(loads_after_first >= 1, "cold read must load the index");
+
+    for _ in 0..5 {
+        let again = drain_filtered(&hist, &engine, hash, &key, "hot").await;
+        assert_eq!(again, first);
+    }
+    assert_eq!(
+        cache.index_loads.load(Ordering::Relaxed),
+        loads_after_first,
+        "warm reads must not touch the physical index"
+    );
+    assert!(
+        cache.hits.load(Ordering::Relaxed) >= hits_after_first + 5,
+        "warm reads must be cache hits"
+    );
+    engine.begin_close();
+}

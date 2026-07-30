@@ -113,6 +113,10 @@ fn hist_scan_opts() -> slatedb::config::ScanOptions {
 /// buckets of compact pages in one cold load; blocks stay cacheable
 /// (the SST index/filter cache still applies), and the decoded slice
 /// cache (next PR) is the long-lived home for the result.
+pub(crate) fn postings_scan_opts_pub() -> slatedb::config::ScanOptions {
+    postings_scan_opts()
+}
+
 fn postings_scan_opts() -> slatedb::config::ScanOptions {
     slatedb::config::ScanOptions {
         read_ahead_bytes: 1024 * 1024,
@@ -2202,8 +2206,15 @@ async fn read_history2_keyed(
         POSTINGS_CORRUPT.fetch_add(1, Relaxed);
         return read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await;
     }
-    // 2. Clip runs to [from, upto) — pages are bucket-granular and can
-    // cover offsets outside the request.
+    let clipped = clip_runs_to(&runs, from, upto);
+    execute_postings_plan(part, route, inc, rk, clipped, upto, upto, max_bytes).await
+}
+
+fn clip_runs_to(
+    runs: &[crate::postings::AbsRun],
+    from: u64,
+    upto: u64,
+) -> Vec<crate::postings::AbsRun> {
     let mut clipped: Vec<crate::postings::AbsRun> = Vec::new();
     for r in runs {
         let start = r.start.max(from);
@@ -2221,12 +2232,67 @@ async fn read_history2_keyed(
             gap_bytes_before: r.gap_bytes_before,
         });
     }
+    clipped
+}
+
+/// Keyed read through the DECODED SLICE CACHE (spec §7): the engine's
+/// cache resolves the runs (hit, single-flight cold load, or forward
+/// extension), then the shared planner/executor below serves them.
+/// `provable_to < upto` (a load window that could not reach the whole
+/// range) yields an honest partial at the proven boundary.
+#[allow(clippy::too_many_arguments)]
+pub async fn read_history2_keyed_cached(
+    cache: &Arc<crate::postings_cache::PostingsCache>,
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    from: u64,
+    upto: u64,
+    absorbed: u64,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if from >= upto {
+        return Ok((Vec::new(), None, true));
+    }
+    let kh = crate::postings::rk_hash(rk);
+    match cache
+        .runs_for(part, route, inc, kh, from, upto, absorbed)
+        .await?
+    {
+        crate::postings_cache::CacheRuns::Corrupt => {
+            POSTINGS_CORRUPT.fetch_add(1, Relaxed);
+            read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
+        }
+        crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
+            let clipped = clip_runs_to(&runs, from, provable_to);
+            execute_postings_plan(part, route, inc, rk, clipped, provable_to, upto, max_bytes).await
+        }
+    }
+}
+
+/// Shared span planner + executor (spec §8): plans against
+/// [.., provable_to), executes each span as ONE canonical range scan
+/// with exact-key verification, and reports completion relative to the
+/// FULL requested `upto` (provable_to < upto is always a partial).
+async fn execute_postings_plan(
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    clipped: Vec<crate::postings::AbsRun>,
+    provable_to: u64,
+    upto: u64,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    use std::sync::atomic::Ordering::Relaxed;
     // 3. Plan bounded spans.
     let cfg = crate::postings::PlanCfg {
         max_scan_bytes: (max_bytes as u64).min(crate::postings::PlanCfg::default().max_scan_bytes),
         ..Default::default()
     };
-    let plan = crate::postings::plan_spans(&clipped, upto, &cfg);
+    let plan = crate::postings::plan_spans(&clipped, provable_to, &cfg);
     let mut spans_used = 0u64;
     let mut frames: Vec<Bytes> = Vec::new();
     let mut last: Option<u64> = None;
@@ -2265,16 +2331,14 @@ async fn read_history2_keyed(
     if truncated {
         return Ok((frames, last, false));
     }
-    // 5. Cursor semantics: a complete plan consumed the whole range —
-    // including any match-free tail — so the caller's next page starts
-    // at `upto`, not at the last matching record.
-    if plan.complete {
-        last = Some(last.map_or(plan.consumed_to - 1, |l| l.max(plan.consumed_to - 1)));
-        Ok((frames, last, true))
-    } else {
-        last = Some(last.map_or(plan.consumed_to - 1, |l| l.max(plan.consumed_to - 1)));
-        Ok((frames, last, false))
-    }
+    // 5. Cursor semantics: a complete plan consumed everything the
+    // index PROVED — including any match-free tail — so the caller's
+    // next page starts there. Completion is relative to the full
+    // request: an index window short of `upto` is an honest partial.
+    last = Some(last.map_or(plan.consumed_to.saturating_sub(1), |l| {
+        l.max(plan.consumed_to.saturating_sub(1))
+    }));
+    Ok((frames, last, plan.complete && provable_to >= upto))
 }
 
 /// Corruption envelope (spec §8.6): one bounded canonical scan of the
