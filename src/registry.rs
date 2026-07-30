@@ -81,12 +81,21 @@ pub struct SegRoute {
     pub seg_id: u32,
     /// Engine identity (record keyspace / history `inc` hash).
     pub identity: [u8; 16],
-    /// Shard-routing hash: which shard's engine takes the write. Empty
-    /// shard_prefix in the map means "the parent's default route".
+    /// Shard-routing hash: which shard's engine takes the write. A
+    /// segment's persisted route_hash wins; zeros (and the implicit
+    /// map) mean the parent stream's default route.
     pub shard_route: [u8; 16],
     /// The segment is sealed (mid-transition): the caller refreshes the
     /// descriptor once and re-resolves before erroring.
     pub sealed: bool,
+    /// The routing key's fixed-point position (sketch feeding + splits).
+    pub point: u64,
+    /// The routing key's 128-bit hash (postings/sketch identity) —
+    /// computed once here so hot paths never re-hash.
+    pub key_hash: crate::crypto::RoutingKeyHash,
+    /// This segment's key-point range (sketch bin domain).
+    pub lo: u64,
+    pub hi: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,8 +186,9 @@ impl StreamDesc {
     /// function never sees their parent appends.
     pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
         let parent_route = crate::crypto::stream_hash(&self.name);
+        let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
+        let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
         if let Some(map) = &self.segments {
-            let point = Self::key_point(routing_key);
             // Live segment containing the point; a well-formed map has
             // exactly one. A malformed map (no live cover) falls back to
             // sealed-any-cover so the caller's refresh path can heal.
@@ -198,7 +208,9 @@ impl StreamDesc {
                     .max_by_key(|s| (s.created_ms, s.seg_id))
             });
             if let Some(seg) = chosen {
-                let shard_route = if seg.shard_prefix.is_empty() {
+                let shard_route = if seg.route_hash != [0u8; 16] {
+                    seg.route_hash
+                } else if seg.shard_prefix.is_empty() {
                     parent_route
                 } else {
                     crate::crypto::stream_hash(&seg.shard_prefix)
@@ -208,6 +220,10 @@ impl StreamDesc {
                     identity: self.dynamic_segment_identity(seg.seg_id),
                     shard_route,
                     sealed: !seg.is_live(),
+                    point,
+                    key_hash,
+                    lo: seg.lo,
+                    hi: seg.hi,
                 };
             }
             // Unreachable for any map save() accepts; fall through to
@@ -224,6 +240,10 @@ impl StreamDesc {
                 identity: self.segment_hash(ord),
                 shard_route: parent_route,
                 sealed: false,
+                point,
+                key_hash,
+                lo: 0,
+                hi: crate::segmap::KEYSPACE_END,
             };
         }
         SegRoute {
@@ -231,6 +251,10 @@ impl StreamDesc {
             identity: self.storage_hash(),
             shard_route: parent_route,
             sealed: false,
+            point,
+            key_hash,
+            lo: 0,
+            hi: crate::segmap::KEYSPACE_END,
         }
     }
 }
@@ -521,6 +545,54 @@ impl Registry {
             store: "registry",
             source: "descriptor CAS retries exhausted".into(),
         })
+    }
+
+    /// CAS-mutate a live descriptor (ROUTING-V3 scaler transitions):
+    /// fresh read (bypassing the cache) → mutate → conditional PUT on
+    /// the store etag. Returns Ok(true) when OUR write landed, Ok(false)
+    /// when `mutate` declined or the descriptor is gone; etag conflicts
+    /// error and the caller re-evaluates (another instance decided
+    /// first — the same discipline segmap.json used).
+    pub async fn cas_update(
+        &self,
+        name: &str,
+        mutate: impl FnOnce(&mut StreamDesc) -> bool,
+    ) -> anyhow::Result<bool> {
+        let path = desc_path(name);
+        let got = match self.store.get(&path).await {
+            Ok(g) => g,
+            Err(object_store::Error::NotFound { .. }) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let etag = got.meta.e_tag.clone();
+        let bytes = got.bytes().await?;
+        let mut desc: StreamDesc = serde_json::from_slice(&bytes)?;
+        if desc.deleted {
+            return Ok(false);
+        }
+        if !mutate(&mut desc) {
+            return Ok(false);
+        }
+        let body = serde_json::to_vec(&desc)?;
+        let mode = match etag {
+            Some(e_tag) => PutMode::Update(UpdateVersion {
+                e_tag: Some(e_tag),
+                version: None,
+            }),
+            None => PutMode::Overwrite,
+        };
+        self.store
+            .put_opts(
+                &path,
+                PutPayload::from(body),
+                PutOptions {
+                    mode,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        self.invalidate(name);
+        Ok(true)
     }
 
     pub fn invalidate(&self, name: &str) {
@@ -947,6 +1019,7 @@ mod tests {
             lo: 0,
             hi: mid,
             shard_prefix: String::new(),
+            route_hash: [0u8; 16],
             created_ms: 2,
             predecessors: vec![0],
             sealed_ms: None,
@@ -957,6 +1030,7 @@ mod tests {
             lo: mid,
             hi: crate::segmap::KEYSPACE_END,
             shard_prefix: "shard-07".into(),
+            route_hash: [0u8; 16],
             created_ms: 2,
             predecessors: vec![0],
             sealed_ms: None,

@@ -12,9 +12,11 @@ mod postings_cache;
 mod queue;
 mod registry;
 mod scaler;
+mod scaler3;
 mod segmap;
 mod shard;
 mod sharddir;
+mod sketch;
 mod store_timing;
 mod touch;
 mod touch_keys;
@@ -843,6 +845,8 @@ async fn async_main() -> anyhow::Result<()> {
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
+    crate::scaler3::start(Arc::downgrade(&state));
     match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
         (Some(mk), Some(lb)) => {
             // Collection stays off without a flusher — see Metrics::enable.

@@ -19,7 +19,13 @@ pub struct SegmentDesc {
     /// Exclusive upper bound (KEYSPACE_END means "to the top", inclusive).
     pub hi: u64,
     /// Shard log prefix this segment's appends land on.
+    /// LEGACY placement field (child-stream scaler); v3 uses route_hash.
     pub shard_prefix: String,
+    /// ROUTING-V3 §5.5: persisted shard-routing hash for this segment —
+    /// controls placement AND the history-v2 route-first keyspace
+    /// prefix. Zeros = the parent stream's default route.
+    #[serde(default)]
+    pub route_hash: [u8; 16],
     pub created_ms: i64,
     /// Parent segment ids (1 for a split child, 2 for a merge child).
     #[serde(default)]
@@ -52,6 +58,25 @@ pub struct SegmentMap {
     /// All segments ever (sealed ones retained for lineage until their
     /// shard data is fully absorbed + GC'd, then pruned).
     pub segments: Vec<SegmentDesc>,
+    /// ROUTING-V3 two-phase transition intent: CAS'd into the map
+    /// BEFORE the parents seal, so a crash between seal and successor
+    /// publication is resumable and idempotent (spec §5.3) — the split
+    /// point is persisted here, the frozen offsets are re-read from the
+    /// sealed identities' tails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingTransition>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PendingTransition {
+    /// "split" | "merge"
+    pub kind: String,
+    /// Parent segment ids (1 for split, 2 for merge).
+    pub segs: Vec<u32>,
+    /// Split point (splits only).
+    #[serde(default)]
+    pub split_at: u64,
+    pub started_ms: i64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -69,11 +94,13 @@ impl SegmentMap {
         SegmentMap {
             version: 1,
             next_seg_id: 1,
+            pending: None,
             segments: vec![SegmentDesc {
                 seg_id: 0,
                 lo: 0,
                 hi: KEYSPACE_END,
                 shard_prefix: shard_prefix.to_string(),
+                route_hash: [0u8; 16],
                 created_ms: now_ms,
                 predecessors: vec![],
                 sealed_ms: None,
@@ -153,6 +180,7 @@ impl SegmentMap {
             lo,
             hi: split_at,
             shard_prefix: low_shard.to_string(),
+            route_hash: [0u8; 16],
             created_ms: now_ms,
             predecessors: vec![seg_id],
             sealed_ms: None,
@@ -163,6 +191,7 @@ impl SegmentMap {
             lo: split_at,
             hi,
             shard_prefix: high_shard.to_string(),
+            route_hash: [0u8; 16],
             created_ms: now_ms,
             predecessors: vec![seg_id],
             sealed_ms: None,
@@ -216,6 +245,7 @@ impl SegmentMap {
             lo,
             hi,
             shard_prefix: shard.to_string(),
+            route_hash: [0u8; 16],
             created_ms: now_ms,
             predecessors: vec![a_id, b_id],
             sealed_ms: None,

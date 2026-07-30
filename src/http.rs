@@ -156,6 +156,11 @@ impl AppState {
     /// Shard engine for `hash`, opening the shard log on first use (which
     /// fences any previous owner). A shard that was just fenced away is
     /// held off for 3 s (anti-flap while the router converges) → 503.
+    /// Response-free engine lookup for the unified scaler.
+    pub async fn engine_for_scaler(self: &Arc<Self>, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
+        self.engine_for(hash).await.ok()
+    }
+
     async fn engine_for(self: &Arc<Self>, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         if let Some(e) = self.shards.read().unwrap().get(&prefix) {
@@ -407,6 +412,59 @@ async fn debug_sleep(
 
 /// Live resource gauge for probes: in-flight now, peak since last call,
 /// and RSS.
+
+/// GET /v1/segments/{name} (spec §10): the stream's segment map as an
+/// observability surface — never a control knob. Implicit maps render
+/// as their single live segment.
+async fn get_segments(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if desc_alive(&d) => d,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
+    };
+    let seg_json = |s: &crate::segmap::SegmentDesc| {
+        serde_json::json!({
+            "seg_id": s.seg_id,
+            "lo": format!("{:#018x}", s.lo),
+            "hi": format!("{:#018x}", s.hi),
+            "live": s.is_live(),
+            "sealed_next_offset": s.sealed_next_offset,
+            "predecessors": s.predecessors,
+            "created_ms": s.created_ms,
+        })
+    };
+    let body = match &desc.segments {
+        Some(map) => serde_json::json!({
+            "version": map.version,
+            "pending": map.pending.as_ref().map(|p| p.kind.clone()),
+            "segments": map.segments.iter().map(seg_json).collect::<Vec<_>>(),
+        }),
+        None => serde_json::json!({
+            "version": 0,
+            "pending": null,
+            "segments": [{
+                "seg_id": 0,
+                "lo": "0x0000000000000000",
+                "hi": format!("{:#018x}", crate::segmap::KEYSPACE_END),
+                "live": true,
+                "sealed_next_offset": null,
+                "predecessors": [],
+                "created_ms": desc.created_ms,
+            }],
+        }),
+    };
+    axum::Json(body).into_response()
+}
+
 async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
     let peak = state
@@ -475,6 +533,7 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
                 .map(|e| e.postings_cache.stats())
                 .unwrap_or(serde_json::json!(null)),
         },
+        "scaler": crate::scaler3::stats_json(),
         // Cross-layout absorb advances rejected by the committer's
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
@@ -825,6 +884,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/streams", get(list_streams))
+        .route("/v1/segments/{*name}", get(get_segments))
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
@@ -1931,7 +1991,69 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
         .map(|t| t.timestamp_millis())
 }
 
+/// ROUTING-V3 sealed-segment retry wrapper: post-split streams (a
+/// materialized map with successors or an in-flight transition) buffer
+/// the body and retry a stream-closed response after refreshing the
+/// descriptor and resuming any pending transition — a seal is a few ms
+/// of routing indirection, never a client-visible 409. A 409 whose
+/// freshly-refreshed map shows the resolved segment LIVE with no
+/// pending transition is a genuine user-closed stream and passes
+/// through. Pre-split streams (segments: None — the common case) take
+/// the core path directly with zero overhead.
 async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Body) -> Response {
+    let wrapped = matches!(
+        state.registry.get(&name).await,
+        Ok(Some(d)) if d
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
+    );
+    if !wrapped {
+        return append_core(state, name, headers, body).await;
+    }
+    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+    };
+    for attempt in 0..4u32 {
+        let r = append_core(
+            state.clone(),
+            name.clone(),
+            headers.clone(),
+            Body::from(body_bytes.clone()),
+        )
+        .await;
+        if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
+            return r;
+        }
+        state.registry.invalidate(&name);
+        let Ok(Some(d)) = state.registry.get(&name).await else {
+            return r;
+        };
+        let rk = hdr(&headers, "stream-key").unwrap_or_default();
+        let seg = d.resolve_segment(&rk);
+        let pending = d.segments.as_ref().is_some_and(|m| m.pending.is_some());
+        if pending {
+            crate::scaler3::resume(&state, &name).await;
+        } else if !seg.sealed {
+            // Live segment, no transition: the stream really is closed.
+            return r;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1))).await;
+    }
+    err_resp(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "segment_transition",
+        "segment map transition did not converge; retry",
+    )
+}
+
+async fn append_core(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
     // segment map to an internal child stream "<parent>#<seg_id>". The
@@ -2191,6 +2313,11 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     }
     let seg = seg;
     let hash = seg.identity;
+    // Unified-scaler sketch feed (spec §5.1): admitted appends only.
+    if !close_only && deferred.is_none() {
+        let fed: usize = entries.iter().map(|e| e.len()).sum();
+        crate::scaler3::note_append(&desc, &seg, fed as u64, entries.len() as u64);
+    }
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
     crate::usage::link_storage(
@@ -2721,6 +2848,12 @@ async fn read(
     if desc.is_per_key() && desc.segment_count.max(1) > 1 {
         return read_per_key(state, desc, params, headers, head_only).await;
     }
+    // ROUTING-V3 dynamic maps with successors: lineage-aware reads
+    // (spec §3.4/§9). Single-segment maps fall through to the standard
+    // path — byte-identical to the pre-split contract.
+    if desc.segments.as_ref().is_some_and(|m| m.segments.len() > 1) {
+        return read_v3_lineage(state, desc, params, headers, head_only).await;
+    }
     // Single-segment streams (every unified-model stream until its
     // first split, all total-order streams, legacy per-key n=1) serve
     // the standard totally-ordered read path — byte-identical to the
@@ -3175,6 +3308,294 @@ async fn sse_response(
 }
 
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
+
+/// ROUTING-V3 lineage reads (spec §3.4/§9) for dynamic maps with
+/// successors. Contract:
+///
+/// - `?key=<k>`: ordered read for one routing key. The cursor names a
+///   position in ONE segment of the key's lineage
+///   (`epoch = segment id`); a drained sealed segment hands the next
+///   cursor to the successor containing the key at offset 0. Long-poll
+///   waits only on the key's LIVE segment.
+/// - no key: deterministic whole-stream replay in segment-id order —
+///   every record exactly once, no cross-key ordering.
+/// - live without a key: unsupported (one scalar cursor cannot
+///   represent concurrent segment progress).
+/// - SSE across lineage: not yet wired (single-segment streams keep
+///   full SSE); explicit 400 rather than silent misbehavior.
+async fn read_v3_lineage(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    params: ReadParams,
+    headers: HeaderMap,
+    head_only: bool,
+) -> Response {
+    let map = desc.segments.clone().expect("dispatch guaranteed a map");
+    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
+        KeyCheck::Ok(k, e) => (k, e),
+        KeyCheck::Missing => {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Stream-Encryption-Key required",
+            );
+        }
+        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
+        KeyCheck::BadDescriptor => {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "bad descriptor",
+            );
+        }
+    };
+    let live = match params.live.as_deref() {
+        None => None,
+        Some("long-poll") | Some("true") => Some("long-poll"),
+        Some("sse") => {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                "unsupported_on_segmented",
+                "SSE across segment lineage is not supported yet; use long-poll",
+            );
+        }
+        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
+    };
+    if live.is_some() && params.key.is_none() {
+        // Spec §3.4: one scalar cursor cannot represent several
+        // concurrently progressing segments.
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "keyless_live",
+            "live reads on a segmented stream require key=",
+        );
+    }
+
+    // Lineage: for a keyed read, every segment whose range contains the
+    // key point, oldest first; keyless replay walks ALL segments in
+    // seg-id order.
+    let lineage: Vec<crate::segmap::SegmentDesc> = match params.key.as_deref() {
+        Some(rk) => {
+            let point = StreamDesc::key_point(rk);
+            let mut v: Vec<_> = map
+                .segments
+                .iter()
+                .filter(|sg| sg.contains(point))
+                .cloned()
+                .collect();
+            v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
+            v
+        }
+        None => {
+            let mut v = map.segments.clone();
+            v.sort_by_key(|sg| sg.seg_id);
+            v
+        }
+    };
+    if lineage.is_empty() {
+        return err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "empty lineage",
+        );
+    }
+
+    // Cursor → (segment position in lineage, offset).
+    let (mut pos, mut scan_from) = match params.offset.as_deref() {
+        None => (0usize, 0u64),
+        Some("now") => {
+            // Keyed live tail: the lineage's last (live) segment.
+            (lineage.len() - 1, u64::MAX)
+        }
+        Some(raw) => match crate::offsets::parse_ep(raw) {
+            Ok((e, o)) => match lineage.iter().position(|sg| sg.seg_id == e) {
+                Some(p) => (p, o.scan_from()),
+                None => {
+                    return err_resp(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_offset",
+                        "offset names a segment outside this lineage",
+                    );
+                }
+            },
+            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
+        },
+    };
+
+    // Hop forward over already-drained sealed segments so one request
+    // always serves records when any exist ahead.
+    let seg_tok = |seg_id: u32, last: Option<u64>| match last {
+        None => crate::offsets::encode_ep(seg_id, Offset::START),
+        Some(o) => crate::offsets::encode_ep(seg_id, Offset(Some(o))),
+    };
+    loop {
+        let sg = &lineage[pos];
+        let identity = desc.dynamic_segment_identity(sg.seg_id);
+        let engine = match state
+            .engine_for(&crate::crypto::stream_hash(&desc.name))
+            .await
+        {
+            Ok(e) => e,
+            Err(r) => return r,
+        };
+        let handle = match engine.stream_handle(identity).await {
+            Ok(h) => h,
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
+            }
+        };
+        state.keys.put(identity, key.clone(), epoch);
+        let (durable_next, closed) = {
+            let st = handle.state.lock().unwrap();
+            (st.durable.next, st.durable.closed)
+        };
+        let seg_end = sg.sealed_next_offset.unwrap_or(durable_next);
+        if scan_from == u64::MAX {
+            scan_from = seg_end; // offset=now on the live segment
+        }
+        let is_last = pos + 1 >= lineage.len();
+        if scan_from >= seg_end && !is_last {
+            // Drained sealed segment: hop to the successor at 0.
+            pos += 1;
+            scan_from = 0;
+            continue;
+        }
+
+        // Long-poll on the live tail only.
+        let mut end = seg_end;
+        let mut live_wake = false;
+        if live.is_some() && is_last && scan_from >= end && !closed {
+            let wait = params
+                .timeout
+                .as_deref()
+                .and_then(parse_duration)
+                .unwrap_or(Duration::from_secs(3))
+                .min(MAX_LONG_POLL);
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let notified = handle.notify.notified();
+                let (e2, c2) = {
+                    let st = handle.state.lock().unwrap();
+                    (st.durable.next, st.durable.closed)
+                };
+                end = e2;
+                if end > scan_from || c2 {
+                    live_wake = end > scan_from;
+                    break;
+                }
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep_until(deadline) => break,
+                }
+            }
+            if end <= scan_from {
+                // Timed out empty: 204 with a rearm token.
+                let mut r = Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .header(
+                        "Stream-Next-Offset",
+                        seg_tok(sg.seg_id, scan_from.checked_sub(1)),
+                    )
+                    .header(header::CACHE_CONTROL, "no-store");
+                if closed {
+                    r = r.header("Stream-Closed", "true");
+                }
+                return r.body(Body::empty()).unwrap();
+            }
+        }
+
+        if head_only {
+            let mut r = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, desc.content_type.clone())
+                .header("Stream-Next-Offset", seg_tok(sg.seg_id, end.checked_sub(1)))
+                .header("Stream-Segment-Map-Version", map.version.to_string())
+                .header(header::CACHE_CONTROL, "no-store");
+            if closed && is_last {
+                r = r.header("Stream-Closed", "true");
+            }
+            return r.body(Body::empty()).unwrap();
+        }
+
+        let out = match read_records(
+            &state,
+            &desc,
+            &key,
+            &epoch,
+            &handle,
+            &engine,
+            scan_from,
+            params.key.as_deref(),
+            if live_wake {
+                tail_max_bytes()
+            } else {
+                MAX_READ_BYTES
+            },
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
+        };
+        // Clamp progression to this SEGMENT's end (sealed_next), never
+        // the raw handle end (a sealed identity's tail may sit past the
+        // frozen boundary only if re-opened — defensive).
+        let consumed_to = out
+            .last
+            .map(|o| o + 1)
+            .unwrap_or(scan_from)
+            .min(seg_end.max(scan_from));
+        let drained = out.completed && consumed_to >= seg_end;
+        let sealed_mid = sg.sealed_next_offset.is_some() && !is_last;
+        let next_token = if drained && sealed_mid {
+            // Hand the cursor to the successor.
+            let succ = &lineage[pos + 1];
+            seg_tok(succ.seg_id, None)
+        } else {
+            seg_tok(sg.seg_id, consumed_to.checked_sub(1))
+        };
+
+        let body: Bytes = if desc.is_json() {
+            let mut buf = BytesMut::new();
+            buf.extend_from_slice(b"[");
+            for (i, r) in out.recs.iter().enumerate() {
+                if i > 0 {
+                    buf.extend_from_slice(b",");
+                }
+                buf.extend_from_slice(&r.payload);
+            }
+            buf.extend_from_slice(b"]");
+            buf.freeze()
+        } else {
+            let mut buf = BytesMut::new();
+            for r in &out.recs {
+                buf.extend_from_slice(&r.payload);
+                buf.extend_from_slice(b"\n");
+            }
+            buf.freeze()
+        };
+        let up_to_date = drained && (is_last || !sealed_mid);
+        let mut r = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, desc.content_type.clone())
+            .header("Stream-Next-Offset", next_token)
+            .header("Stream-Ordering", "per-key")
+            .header("Stream-Segment-Map-Version", map.version.to_string())
+            .header(header::CACHE_CONTROL, "no-store")
+            .header("Cross-Origin-Resource-Policy", "cross-origin");
+        if up_to_date {
+            r = r.header("Stream-Up-To-Date", "true");
+        }
+        if closed && is_last && drained {
+            r = r.header("Stream-Closed", "true");
+        }
+        return r.body(Body::from(body)).unwrap();
+    }
+}
 
 async fn read_per_key(
     state: Arc<AppState>,
