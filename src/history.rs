@@ -1156,7 +1156,13 @@ impl Absorber {
                 last = off;
             }
             let (emitted, postings_bytes) = pages.finish();
+            POSTINGS_PAGES_WRITTEN
+                .fetch_add(emitted.len() as u64, std::sync::atomic::Ordering::Relaxed);
             for (kh, bucket, first, value) in emitted {
+                if let Some(pg) = crate::postings::decode_page(&value) {
+                    POSTINGS_RUNS_WRITTEN
+                        .fetch_add(pg.runs.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 wb.put(
                     crate::postings::postings_key(route, inc, &kh, bucket, first),
                     value,
@@ -2086,6 +2092,8 @@ pub async fn read_history(
 /// vs canonical write bytes, spans per keyed response, scanned vs
 /// matched amplification, and how often the pre-postings fallback ran.
 pub static POSTINGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub static POSTINGS_PAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub static POSTINGS_RUNS_WRITTEN: AtomicU64 = AtomicU64::new(0);
 pub static CANONICAL_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 pub static READ_SPANS_MAX: AtomicU64 = AtomicU64::new(0);
 pub static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
@@ -2300,32 +2308,51 @@ async fn execute_postings_plan(
     let mut truncated = false;
     // 4. Execute each span as one canonical range scan with exact-key
     // verification.
-    'spans: for span in &plan.spans {
-        spans_used += 1;
-        let range =
-            hist2_record_key(route, inc, span.start)..hist2_record_key(route, inc, span.end);
-        let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
-        while let Some(kv) = iter.next().await? {
-            READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
-            let Some(f) = crate::crypto::decode_frame(&kv.value) else {
-                anyhow::bail!("undecodable v2 history frame");
-            };
-            if f.header.routing_key != rk {
-                continue;
+    // Spec §8.4: bounded-concurrency span execution (max 4 in flight),
+    // results assembled in span order — cold multi-span reads pay
+    // max(RTT), not sum(RTT). Serial execution measured 2x the covering
+    // baseline's cold p50 on the two-span batch-1 shape.
+    {
+        use futures_util::StreamExt;
+        let mut results = futures_util::stream::iter(plan.spans.iter().copied().map(|span| {
+            let part = part.clone();
+            let rk = rk.to_string();
+            async move {
+                let range = hist2_record_key(route, inc, span.start)
+                    ..hist2_record_key(route, inc, span.end);
+                let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
+                let mut hits: Vec<(u64, Bytes)> = Vec::new();
+                while let Some(kv) = iter.next().await? {
+                    READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
+                    let Some(f) = crate::crypto::decode_frame(&kv.value) else {
+                        anyhow::bail!("undecodable v2 history frame");
+                    };
+                    if f.header.routing_key != rk {
+                        continue;
+                    }
+                    READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
+                    hits.push((f.header.offset, kv.value));
+                }
+                anyhow::Ok((span, hits))
             }
-            READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
-            let off = f.header.offset;
-            total += kv.value.len();
-            frames.push(kv.value);
-            last = Some(off);
-            if total >= max_bytes {
-                truncated = true;
-                break 'spans;
+        }))
+        .buffered(4);
+        'spans: while let Some(res) = results.next().await {
+            let (span, hits) = res?;
+            spans_used += 1;
+            for (off, raw) in hits {
+                total += raw.len();
+                frames.push(raw);
+                last = Some(off);
+                if total >= max_bytes {
+                    truncated = true;
+                    break 'spans;
+                }
             }
+            // The span is fully consumed even if nothing matched (hash
+            // collisions or clipping estimates): the cursor may advance.
+            last = Some(last.map_or(span.end - 1, |l| l.max(span.end - 1)));
         }
-        // The span is fully consumed even if nothing matched (hash
-        // collisions or clipping estimates): the cursor may advance.
-        last = Some(last.map_or(span.end - 1, |l| l.max(span.end - 1)));
     }
     READ_SPANS_MAX.fetch_max(spans_used, Relaxed);
     if truncated {

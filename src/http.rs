@@ -519,6 +519,8 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         // never move).
         "postings": {
             "bytes_written": crate::history::POSTINGS_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+            "pages_written": crate::history::POSTINGS_PAGES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+            "runs_written": crate::history::POSTINGS_RUNS_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
             "canonical_bytes_written": crate::history::CANONICAL_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
             "read_spans_max": crate::history::READ_SPANS_MAX.load(std::sync::atomic::Ordering::Relaxed),
             "read_frames_scanned": crate::history::READ_FRAMES_SCANNED.load(std::sync::atomic::Ordering::Relaxed),
@@ -3356,6 +3358,24 @@ async fn read_v3_lineage(
     headers: HeaderMap,
     head_only: bool,
 ) -> Response {
+    read_v3_lineage_inner(state, desc, params, headers, head_only, true).await
+}
+
+/// `may_refresh`: one stale-descriptor retry. Two shapes demand it —
+/// a cursor token naming a segment our cached map does not know yet,
+/// and a CLOSED segment handle our map still calls live-and-last (a
+/// split sealed it after our descriptor read; stopping there would
+/// declare Up-To-Date below the successor's records). A refreshed map
+/// that STILL shows live-and-last with no pending transition is a
+/// genuinely user-closed stream.
+async fn read_v3_lineage_inner(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    params: ReadParams,
+    headers: HeaderMap,
+    head_only: bool,
+    may_refresh: bool,
+) -> Response {
     let map = desc.segments.clone().expect("dispatch guaranteed a map");
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
@@ -3436,6 +3456,24 @@ async fn read_v3_lineage(
         Some(raw) => match crate::offsets::parse_ep(raw) {
             Ok((e, o)) => match lineage.iter().position(|sg| sg.seg_id == e) {
                 Some(p) => (p, o.scan_from()),
+                None if may_refresh => {
+                    // A successor our cached map has not seen yet.
+                    state.registry.invalidate(&desc.name);
+                    let fresh = match state.registry.get(&desc.name).await {
+                        Ok(Some(d)) if desc_alive(&d) => d,
+                        _ => {
+                            return err_resp(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_offset",
+                                "offset names a segment outside this lineage",
+                            );
+                        }
+                    };
+                    return Box::pin(read_v3_lineage_inner(
+                        state, fresh, params, headers, head_only, false,
+                    ))
+                    .await;
+                }
                 None => {
                     return err_resp(
                         StatusCode::BAD_REQUEST,
@@ -3479,6 +3517,21 @@ async fn read_v3_lineage(
             let st = handle.state.lock().unwrap();
             (st.durable.next, st.durable.closed)
         };
+        if closed && sg.sealed_next_offset.is_none() && pos + 1 >= lineage.len() && may_refresh {
+            // The engine says CLOSED but our map says live-and-last: a
+            // split sealed this segment after our descriptor read.
+            // Refresh once — the successor (or a genuine user close)
+            // is in the fresh map.
+            state.registry.invalidate(&desc.name);
+            if let Ok(Some(fresh)) = state.registry.get(&desc.name).await {
+                if desc_alive(&fresh) {
+                    return Box::pin(read_v3_lineage_inner(
+                        state, fresh, params, headers, head_only, false,
+                    ))
+                    .await;
+                }
+            }
+        }
         let seg_end = sg.sealed_next_offset.unwrap_or(durable_next);
         if scan_from == u64::MAX {
             scan_from = seg_end; // offset=now on the live segment
