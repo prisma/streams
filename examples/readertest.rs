@@ -1,7 +1,7 @@
 // Standalone DbReader probe against a history db written by the absorber.
-use std::sync::Arc;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use std::sync::Arc;
 
 fn streams_slate_key(b64: &str) -> [u8; 32] {
     use base64::Engine;
@@ -16,7 +16,9 @@ struct TestTransformer {
 }
 impl TestTransformer {
     fn new(k: [u8; 32]) -> Self {
-        Self { cipher: Aes256Gcm::new((&k).into()) }
+        Self {
+            cipher: Aes256Gcm::new((&k).into()),
+        }
     }
 }
 #[async_trait::async_trait]
@@ -39,10 +41,14 @@ impl slatedb::BlockTransformer for TestTransformer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let path = std::env::args().nth(1).expect("usage: readertest <db-path>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: readertest <db-path>");
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(
         object_store::aws::AmazonS3Builder::new()
-            .with_endpoint(&std::env::var("RT_EP").unwrap_or_else(|_| "http://127.0.0.1:9503".into()))
+            .with_endpoint(
+                &std::env::var("RT_EP").unwrap_or_else(|_| "http://127.0.0.1:9503".into()),
+            )
             .with_bucket_name("scale5")
             .with_region("local")
             .with_access_key_id("test")
@@ -84,7 +90,9 @@ async fn main() -> anyhow::Result<()> {
                 while let Some(kv) = it.next().await? {
                     n += 1;
                     bytes += kv.value.len();
-                    if n >= 20000 { break; }
+                    if n >= 20000 {
+                        break;
+                    }
                 }
                 Ok::<_, slatedb::Error>((n, bytes))
             })

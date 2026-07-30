@@ -293,11 +293,6 @@ struct Args {
     #[arg(long)]
     conformance_default_key: Option<String>,
 
-    /// Conformance accommodation: make headerless creates per-key with this
-    /// many segments (power of two).
-    #[arg(long)]
-    conformance_ordering_segments: Option<u32>,
-
     /// Require `Authorization: Bearer <token>` on all /v1/* requests.
     #[arg(long, env = "AUTH_TOKEN")]
     auth_token: Option<String>,
@@ -842,9 +837,6 @@ async fn async_main() -> anyhow::Result<()> {
         keys,
         touch,
         default_key: args.conformance_default_key.clone(),
-        default_ordering: args
-            .conformance_ordering_segments
-            .map(|n| ("per-key".to_string(), n)),
         auth_token: args.auth_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });

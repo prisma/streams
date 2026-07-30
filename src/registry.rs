@@ -59,11 +59,34 @@ pub struct StreamDesc {
     #[serde(default)]
     pub touch_sig_key: Option<String>,
     /// Pravega-style auto-scaling (SCALING.md): per-key streams only.
-    /// When true, routing keys map through a dynamic segment map to
-    /// internal segment streams ("name#segN"); the scaler splits/merges
-    /// segments against the per-segment service limits.
+    /// LEGACY (ROUTING-V3): parsed for pre-v3 descriptors so their
+    /// child-stream routing keeps working until PR4 folds them into the
+    /// descriptor-resident map; never written for new streams.
     #[serde(default)]
     pub scaling: bool,
+    /// ROUTING-V3: the descriptor-resident segment map. `None` is the
+    /// implicit single-segment map — segment 0 covers the whole
+    /// keyspace and its engine identity IS `storage_hash()`, so a fresh
+    /// stream (and every existing total-order stream) carries zero map
+    /// bytes and pays zero extra requests. Materialized by the first
+    /// split (CAS on the registry object). See docs/ROUTING-V3.md §2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segments: Option<crate::segmap::SegmentMap>,
+}
+
+/// One resolved append/read target under the unified routing model:
+/// which segment of the stream owns a routing key right now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SegRoute {
+    pub seg_id: u32,
+    /// Engine identity (record keyspace / history `inc` hash).
+    pub identity: [u8; 16],
+    /// Shard-routing hash: which shard's engine takes the write. Empty
+    /// shard_prefix in the map means "the parent's default route".
+    pub shard_route: [u8; 16],
+    /// The segment is sealed (mid-transition): the caller refreshes the
+    /// descriptor once and re-resolves before erroring.
+    pub sealed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +127,8 @@ impl StreamDesc {
     }
 
     /// Routing key -> segment ordinal (top bits of SHA-256(rk)).
+    /// LEGACY static per-key layout only (ROUTING-V3 resolves through
+    /// `resolve_segment`).
     pub fn segment_for(&self, routing_key: &str) -> u32 {
         let n = self.segment_count.max(1);
         if n == 1 {
@@ -112,6 +137,101 @@ impl StreamDesc {
         let h = crate::crypto::stream_hash(routing_key);
         let top = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
         top >> (32 - n.trailing_zeros())
+    }
+
+    /// Fixed-point position of a routing key in the [0,1) keyspace —
+    /// the coordinate the segment map partitions. The empty/default key
+    /// is an ordinary key at stream_hash("")'s position.
+    pub fn key_point(routing_key: &str) -> u64 {
+        let h = crate::crypto::stream_hash(routing_key);
+        u64::from_be_bytes(h[..8].try_into().expect("hash prefix"))
+    }
+
+    /// Engine identity of a dynamic-map segment (ROUTING-V3 §2).
+    /// Segment 0 is ALWAYS `storage_hash()` — that equality is what
+    /// makes every pre-v3 total-order stream already-migrated, with its
+    /// whole history as segment 0 and zero data movement.
+    pub fn dynamic_segment_identity(&self, seg_id: u32) -> [u8; 16] {
+        if seg_id == 0 {
+            return self.storage_hash();
+        }
+        crate::crypto::stream_hash(&format!(
+            "{}\u{0}segid\u{0}{}\u{0}{}",
+            self.name, seg_id, self.stream_epoch
+        ))
+    }
+
+    /// THE unified routing resolution (ROUTING-V3 §1-2): routing key →
+    /// the segment that owns it right now. Handles every layout:
+    ///
+    /// - descriptor-resident dynamic map (`segments: Some`) — the v3
+    ///   model; selects the live segment containing the key point;
+    /// - legacy static per-key (`ordering: per-key`, power-of-two
+    ///   `segment_count`) — ordinal mapping, identities unchanged;
+    /// - everything else — the implicit single-segment map: segment 0,
+    ///   identity `storage_hash()`, parent's shard route. This arm IS
+    ///   the old total-order behavior, unchanged to the byte.
+    ///
+    /// Legacy `scaling` descriptors are routed by their child-stream
+    /// machinery upstream of this call until PR4 folds them in; this
+    /// function never sees their parent appends.
+    pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
+        let parent_route = crate::crypto::stream_hash(&self.name);
+        if let Some(map) = &self.segments {
+            let point = Self::key_point(routing_key);
+            // Live segment containing the point; a well-formed map has
+            // exactly one. A malformed map (no live cover) falls back to
+            // sealed-any-cover so the caller's refresh path can heal.
+            let live = map
+                .segments
+                .iter()
+                .find(|s| s.is_live() && s.contains(point));
+            // No live cover = mid-transition (a seal published before
+            // its successors, or a scaler died between the two): pick
+            // the NEWEST sealed cover — the deepest lineage point, the
+            // one whose successor the refresh will reveal — never a
+            // long-superseded ancestor.
+            let chosen = live.or_else(|| {
+                map.segments
+                    .iter()
+                    .filter(|s| s.contains(point))
+                    .max_by_key(|s| (s.created_ms, s.seg_id))
+            });
+            if let Some(seg) = chosen {
+                let shard_route = if seg.shard_prefix.is_empty() {
+                    parent_route
+                } else {
+                    crate::crypto::stream_hash(&seg.shard_prefix)
+                };
+                return SegRoute {
+                    seg_id: seg.seg_id,
+                    identity: self.dynamic_segment_identity(seg.seg_id),
+                    shard_route,
+                    sealed: !seg.is_live(),
+                };
+            }
+            // Unreachable for any map save() accepts; fall through to
+            // the implicit segment rather than failing the append.
+        }
+        if self.is_per_key() {
+            // Any segment count, INCLUDING 1: a legacy per-key stream's
+            // records live under segment_hash(ordinal) even when the
+            // only ordinal is 0 — falling through to storage_hash would
+            // point at an empty keyspace.
+            let ord = self.segment_for(routing_key);
+            return SegRoute {
+                seg_id: ord,
+                identity: self.segment_hash(ord),
+                shard_route: parent_route,
+                sealed: false,
+            };
+        }
+        SegRoute {
+            seg_id: 0,
+            identity: self.storage_hash(),
+            shard_route: parent_route,
+            sealed: false,
+        }
     }
 }
 
@@ -211,7 +331,11 @@ impl Registry {
             Some((t, d)) => (Some(t), d),
             None => (None, None),
         };
-        let fetched = match self.store.get_opts(&desc_path(name), opts(etag_sent.clone())).await {
+        let fetched = match self
+            .store
+            .get_opts(&desc_path(name), opts(etag_sent.clone()))
+            .await
+        {
             Ok(r) => {
                 let etag = r.meta.e_tag.clone();
                 let raw = r.bytes().await?;
@@ -550,6 +674,7 @@ mod tests {
             touch_templates: Vec::new(),
             touch_sig_key: None,
             scaling: false,
+            segments: None,
         }
     }
 
@@ -657,19 +782,35 @@ mod tests {
 
         // Warm read: cache hit, no store traffic at all.
         assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
-        assert_eq!(counting.gets.load(Relaxed), 0, "warm read touched the store");
+        assert_eq!(
+            counting.gets.load(Relaxed),
+            0,
+            "warm read touched the store"
+        );
 
         // TTL expiry on an unchanged descriptor: exactly one conditional
         // GET, answered 304, still serving the cached descriptor.
         reg.expire_for_tests("s");
         assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
-        assert_eq!(counting.conditional.load(Relaxed), 1, "refresh was not conditional");
-        assert_eq!(counting.not_modified.load(Relaxed), 1, "refresh paid for a body");
+        assert_eq!(
+            counting.conditional.load(Relaxed),
+            1,
+            "refresh was not conditional"
+        );
+        assert_eq!(
+            counting.not_modified.load(Relaxed),
+            1,
+            "refresh paid for a body"
+        );
 
         // The 304 renews the TTL: the next read is a cache hit again.
         let gets_now = counting.gets.load(Relaxed);
         assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
-        assert_eq!(counting.gets.load(Relaxed), gets_now, "304 did not renew the TTL");
+        assert_eq!(
+            counting.gets.load(Relaxed),
+            gets_now,
+            "304 did not renew the TTL"
+        );
 
         // A real change (delete tombstone) must come through on the next
         // refresh — the conditional path must never pin a stale view.
@@ -750,5 +891,138 @@ mod tests {
         reg.invalidate("s");
         let stored = reg.get("s").await.unwrap().unwrap();
         assert_eq!(stored.stream_epoch, "epoch-a", "loser overwrote the winner");
+    }
+
+    // ---- ROUTING-V3 resolution (docs/ROUTING-V3.md §1-2) ------------
+
+    /// Total-order streams (segments: None, no legacy fields) resolve
+    /// every key to segment 0 with identity == storage_hash() — the
+    /// zero-move migration guarantee.
+    #[test]
+    fn implicit_map_is_the_old_total_order_layout() {
+        let d = desc("t", "e1", false);
+        for rk in ["", "a", "user-42", "\u{1F600}"] {
+            let r = d.resolve_segment(rk);
+            assert_eq!(r.seg_id, 0);
+            assert_eq!(r.identity, d.storage_hash());
+            assert_eq!(r.shard_route, stream_hash("t"));
+            assert!(!r.sealed);
+        }
+    }
+
+    /// Legacy static per-key layouts keep their EXACT identities: the
+    /// ordinal from segment_for and the identity from segment_hash —
+    /// including the n == 1 case, whose records live under
+    /// segment_hash(0), NOT storage_hash().
+    #[test]
+    fn legacy_per_key_resolution_is_identity_preserving() {
+        let mut d = desc("p", "e2", false);
+        d.ordering = Some("per-key".into());
+        for n in [1u32, 2, 8, 64] {
+            d.segment_count = n;
+            for rk in ["", "k1", "hot", "zzzz"] {
+                let r = d.resolve_segment(rk);
+                assert_eq!(r.seg_id, d.segment_for(rk));
+                assert_eq!(r.identity, d.segment_hash(d.segment_for(rk)));
+                assert!(!r.sealed);
+            }
+        }
+    }
+
+    /// Descriptor-resident dynamic maps: the live segment containing
+    /// the key point wins; seg 0's identity is storage_hash() (old data
+    /// stays addressable); sealed segments surface `sealed` so the
+    /// caller refreshes; a segment with its own shard_prefix routes to
+    /// that shard.
+    #[test]
+    fn dynamic_map_resolution_selects_the_live_cover() {
+        let mut d = desc("dyn", "e3", false);
+        let mut map = crate::segmap::SegmentMap::initial("", 1);
+        // Split the keyspace in half: seg 0 sealed, children 1 and 2.
+        let mid = u64::MAX / 2;
+        map.segments[0].sealed_ms = Some(2);
+        map.segments[0].sealed_next_offset = Some(10);
+        map.segments.push(crate::segmap::SegmentDesc {
+            seg_id: 1,
+            lo: 0,
+            hi: mid,
+            shard_prefix: String::new(),
+            created_ms: 2,
+            predecessors: vec![0],
+            sealed_ms: None,
+            sealed_next_offset: None,
+        });
+        map.segments.push(crate::segmap::SegmentDesc {
+            seg_id: 2,
+            lo: mid,
+            hi: crate::segmap::KEYSPACE_END,
+            shard_prefix: "shard-07".into(),
+            created_ms: 2,
+            predecessors: vec![0],
+            sealed_ms: None,
+            sealed_next_offset: None,
+        });
+        map.next_seg_id = 3;
+        map.version = 2;
+        d.segments = Some(map);
+
+        assert_eq!(d.dynamic_segment_identity(0), d.storage_hash());
+
+        // Find one key on each side of the midpoint.
+        let mut lo_key = None;
+        let mut hi_key = None;
+        for i in 0..64 {
+            let k = format!("k{i}");
+            if StreamDesc::key_point(&k) < mid {
+                lo_key.get_or_insert(k);
+            } else {
+                hi_key.get_or_insert(k);
+            }
+            if lo_key.is_some() && hi_key.is_some() {
+                break;
+            }
+        }
+        let (lo_key, hi_key) = (lo_key.unwrap(), hi_key.unwrap());
+
+        let r = d.resolve_segment(&lo_key);
+        assert_eq!((r.seg_id, r.sealed), (1, false));
+        assert_eq!(r.identity, d.dynamic_segment_identity(1));
+        assert_ne!(r.identity, d.storage_hash());
+        assert_eq!(
+            r.shard_route,
+            stream_hash("dyn"),
+            "empty prefix = parent route"
+        );
+
+        let r = d.resolve_segment(&hi_key);
+        assert_eq!((r.seg_id, r.sealed), (2, false));
+        assert_eq!(r.shard_route, stream_hash("shard-07"));
+
+        // Seal child 1 with no successor yet (mid-transition crash
+        // shape): resolution surfaces sealed=true instead of failing.
+        d.segments.as_mut().unwrap().segments[1].sealed_ms = Some(3);
+        let r = d.resolve_segment(&lo_key);
+        assert_eq!((r.seg_id, r.sealed), (1, true));
+    }
+
+    /// Serde: fresh descriptors stay byte-lean (no "segments" key);
+    /// pre-v3 JSON (no field at all) parses; a materialized map
+    /// round-trips.
+    #[test]
+    fn descriptor_segments_serde_roundtrip() {
+        let d = desc("s", "e4", false);
+        let j = serde_json::to_string(&d).unwrap();
+        assert!(
+            !j.contains("\"segments\""),
+            "implicit map must cost zero bytes"
+        );
+        let legacy: StreamDesc = serde_json::from_str(&j.replace("\"name\"", "\"name\"")).unwrap();
+        assert!(legacy.segments.is_none());
+
+        let mut with_map = desc("s2", "e5", false);
+        with_map.segments = Some(crate::segmap::SegmentMap::initial("sh", 7));
+        let j2 = serde_json::to_string(&with_map).unwrap();
+        let back: StreamDesc = serde_json::from_str(&j2).unwrap();
+        assert_eq!(back.segments, with_map.segments);
     }
 }

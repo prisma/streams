@@ -217,7 +217,9 @@ pub async fn resume_split(
     let (lo, hi) = (seg.lo, seg.hi);
     let mid = lo + (hi - lo) / 2;
     let now = crate::shard::now_ms();
-    let ok = map.split(seg_id, mid, sealed_next_offset, "", "", now).is_ok()
+    let ok = map
+        .split(seg_id, mid, sealed_next_offset, "", "", now)
+        .is_ok()
         && segmap::save(store, &hash, &map, etag).await.is_ok();
     invalidate(&hash);
     if ok {
@@ -260,10 +262,7 @@ where
     let dt = p.eval_secs as f64;
     let alpha = 1.0 - (-(dt) / p.rate_window_secs).exp();
 
-    let live: Vec<(u32, u64, u64)> = map
-        .live()
-        .map(|s| (s.seg_id, s.lo, s.hi))
-        .collect();
+    let live: Vec<(u32, u64, u64)> = map.live().map(|s| (s.seg_id, s.lo, s.hi)).collect();
     let now = crate::shard::now_ms();
 
     // Update EWMAs from the usage counters of each segment stream — but
@@ -306,10 +305,13 @@ where
         let hot = (limits.bytes_per_sec > 0.0 && e.bytes_rate > p.hot_pct * limits.bytes_per_sec)
             || (limits.reqs_per_sec > 0.0 && e.reqs_rate > p.hot_pct * limits.reqs_per_sec)
             || (limits.recs_per_sec > 0.0 && e.recs_rate > p.hot_pct * limits.recs_per_sec);
-        let cold = (limits.bytes_per_sec <= 0.0 || e.bytes_rate < p.cold_pct * limits.bytes_per_sec)
+        let cold = (limits.bytes_per_sec <= 0.0
+            || e.bytes_rate < p.cold_pct * limits.bytes_per_sec)
             && (limits.reqs_per_sec <= 0.0 || e.reqs_rate < p.cold_pct * limits.reqs_per_sec)
             && (limits.recs_per_sec <= 0.0 || e.recs_rate < p.cold_pct * limits.recs_per_sec)
-            && (limits.bytes_per_sec > 0.0 || limits.reqs_per_sec > 0.0 || limits.recs_per_sec > 0.0);
+            && (limits.bytes_per_sec > 0.0
+                || limits.reqs_per_sec > 0.0
+                || limits.recs_per_sec > 0.0);
         e.hot_streak = if hot { e.hot_streak + 1 } else { 0 };
         e.cold_streak = if cold { e.cold_streak + 1 } else { 0 };
     }
@@ -354,7 +356,9 @@ where
         {
             invalidate(&hash);
             ewmas.remove(&seg_id);
-            return Some(format!("split seg{seg_id} of {parent} at {mid:#x} (next={next})"));
+            return Some(format!(
+                "split seg{seg_id} of {parent} at {mid:#x} (next={next})"
+            ));
         }
         invalidate(&hash);
         return None;

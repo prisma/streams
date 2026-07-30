@@ -5014,9 +5014,7 @@ async fn the_first_advance_seals_the_history_layout() {
     for _ in 0..5 {
         append_sized(&engine, a, &key, "", 512).await;
     }
-    engine
-        .submit_absorbed_batch_v2(vec![(a, 3, 0)])
-        .await;
+    engine.submit_absorbed_batch_v2(vec![(a, 3, 0)]).await;
     let (abs, flag) = wait_absorbed(&engine, a, 3).await;
     assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
     engine.submit_absorbed(a, 5, 0).await; // cross-layout v1 advance

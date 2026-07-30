@@ -657,7 +657,9 @@ async fn generator() {
     // records (default 200 B); READ_EVERY mixes one read per N ops
     // (default 10; 0 = pure write so shapes match the awsbench arms).
     let read_every: u64 = env("READ_EVERY").and_then(|v| v.parse().ok()).unwrap_or(10);
-    let record_pad: usize = env("RECORD_PAD").and_then(|v| v.parse().ok()).unwrap_or(200);
+    let record_pad: usize = env("RECORD_PAD")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
     // Distinct per-generator stream namespaces: multiple generators over
     // the same streams muddies closed-loop accounting and attribution.
     let stream_prefix: String = env("STREAM_PREFIX").unwrap_or_else(|| "pilot".into());

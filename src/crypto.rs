@@ -471,7 +471,14 @@ mod compress_tests {
         let cipher = FrameCipher::new(&sub());
         let hash = stream_hash("s");
         let h = hdr(9);
-        let frame = cipher.encrypt(&hash, h.offset, h.ts_ms, h.key_version, &h.routing_key, b"tiny");
+        let frame = cipher.encrypt(
+            &hash,
+            h.offset,
+            h.ts_ms,
+            h.key_version,
+            &h.routing_key,
+            b"tiny",
+        );
         let dec = decode_frame(&frame).expect("v2 decodes");
         assert_eq!(dec.ver, FRAME_VER);
         assert_eq!(decrypt_frame(&sub(), &hash, &dec, &frame).unwrap(), b"tiny");

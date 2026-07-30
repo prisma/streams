@@ -367,7 +367,10 @@ async fn handle(
     let tier = tier_class(&method, &key, &query);
     let kind = kind_class(&key);
     let op = op_name(&method, key.is_empty(), &query);
-    let resp = dispatch(&state, method, &bucket, &key, &full_key, &query, headers, body).await;
+    let resp = dispatch(
+        &state, method, &bucket, &key, &full_key, &query, headers, body,
+    )
+    .await;
     {
         let mut detailed = state.stats.detailed.lock().unwrap();
         detailed.entry((tier, kind, op)).or_default()[status_index(resp.status())] += 1;
@@ -552,7 +555,10 @@ fn get_object(
     };
     // Conditional GET: If-None-Match -> 304 (real S3 semantics; the
     // segmap TTL refresh depends on this being cheap).
-    if let Some(inm) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+    if let Some(inm) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
         if inm == obj.etag || inm.split(',').any(|t| t.trim() == obj.etag) {
             return Response::builder()
                 .status(StatusCode::NOT_MODIFIED)

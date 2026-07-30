@@ -136,10 +136,6 @@ pub struct AppState {
     /// Stream-Encryption-Key header (the upstream conformance suite cannot
     /// send custom headers). Never set in production.
     pub default_key: Option<String>,
-    /// Conformance accommodation: apply this ordering + segment count to
-    /// streams created WITHOUT a Stream-Ordering header, so the upstream
-    /// suite (which cannot send custom headers) exercises per-key streams.
-    pub default_ordering: Option<(String, u32)>,
     /// Bearer token required on /v1/* when set (pilot authn).
     pub auth_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
@@ -1321,8 +1317,6 @@ fn fresh_desc(
     expires_at_ms: Option<i64>,
     profile: Option<String>,
     touch_templates: Vec<crate::registry::PinnedTemplate>,
-    ordering: Option<String>,
-    segment_count: u32,
 ) -> StreamDesc {
     let _ = state;
     let epoch = rand_epoch();
@@ -1348,13 +1342,18 @@ fn fresh_desc(
         profile,
         content_type,
         ttl_secs,
-        ordering,
-        segment_count,
+        // ROUTING-V3: every stream is key-partitioned with the implicit
+        // single-segment map; ordering/segmentation/scaling are no
+        // longer creation-time choices. The legacy fields stay zeroed
+        // (they exist only to parse pre-v3 descriptors).
+        ordering: None,
+        segment_count: 0,
         queue_max_deliveries: None,
         touch_token_fingerprint: tt_fpr,
         touch_templates,
         touch_sig_key: sig_key,
         scaling: false,
+        segments: None,
     }
 }
 
@@ -1437,57 +1436,21 @@ async fn create_stream(
     }
     // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
     // order, byte-identical semantics to before this feature existed.
-    let ordering = match hdr(&headers, "stream-ordering") {
-        None => state.default_ordering.as_ref().map(|(o, _)| o.clone()),
-        Some(v) if v.eq_ignore_ascii_case("total") => None,
-        Some(v) if v.eq_ignore_ascii_case("per-key") => Some("per-key".to_string()),
-        Some(_) => {
+    // ROUTING-V3 (docs/ROUTING-V3.md): one routing model. Every stream
+    // is key-partitioned internally, per-key ordered, born with one
+    // segment, and scaled automatically — ordering, segmentation and
+    // scaling are no longer creation-time choices, and the old knobs
+    // are rejected loudly rather than silently ignored.
+    for h in ["stream-ordering", "stream-segments", "stream-scaling"] {
+        if hdr(&headers, h).is_some() {
             return err_resp(
                 StatusCode::BAD_REQUEST,
-                "invalid_ordering",
-                "ordering must be total or per-key",
+                "unified_routing",
+                &format!(
+                    "{h} was removed: streams are key-partitioned with \
+                     automatic scaling (docs/ROUTING-V3.md)"
+                ),
             );
-        }
-    };
-    let segment_count: u32 = match hdr(&headers, "stream-segments") {
-        None => {
-            if ordering.is_some() {
-                state
-                    .default_ordering
-                    .as_ref()
-                    .map(|(_, n)| *n)
-                    .unwrap_or(2)
-            } else {
-                0
-            }
-        }
-        Some(_) if ordering.is_none() => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "Stream-Segments requires Stream-Ordering: per-key",
-            );
-        }
-        Some(v) => match parse_ttl_strict(&v) {
-            Some(n) if (1..=256).contains(&n) && (n as u32).is_power_of_two() => n as u32,
-            _ => {
-                return err_resp(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_segments",
-                    "Stream-Segments must be a power of two in 1..=256",
-                );
-            }
-        },
-    };
-    if ordering.is_some() {
-        if let Some(p) = hdr(&headers, "stream-profile") {
-            if p == "state-protocol" || p == "queue" {
-                return err_resp(
-                    StatusCode::BAD_REQUEST,
-                    "unsupported_combination",
-                    "this profile requires total ordering (v1)",
-                );
-            }
         }
     }
     let mut touch_templates: Vec<crate::registry::PinnedTemplate> = Vec::new();
@@ -1537,11 +1500,11 @@ async fn create_stream(
             let same_ct = crate::registry::media_type(&d.content_type)
                 == crate::registry::media_type(&content_type)
                 || hdr(&headers, "content-type").is_none();
-            if !same_ct
-                || d.ttl_secs != ttl_secs
-                || d.ordering != ordering
-                || (ordering.is_some() && d.segment_count != segment_count)
-            {
+            // ROUTING-V3: ordering/segmentation are no longer part of
+            // user-visible config, so the idempotent-PUT compare ignores
+            // the legacy fields — a headerless re-PUT of a pre-v3
+            // per-key stream is config-identical, not a conflict.
+            if !same_ct || d.ttl_secs != ttl_secs {
                 return Err(err_resp(
                     StatusCode::CONFLICT,
                     "config_mismatch",
@@ -1575,13 +1538,9 @@ async fn create_stream(
                 expires_at_ms,
                 profile.clone(),
                 touch_templates.clone(),
-                ordering.clone(),
-                segment_count,
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            fresh.scaling =
-                hdr(&headers, "stream-scaling").as_deref() == Some("auto") && !name.contains('#');
             match state
                 .registry
                 .recreate(&name, fresh, |d| !desc_alive(d))
@@ -1611,13 +1570,9 @@ async fn create_stream(
                 expires_at_ms,
                 profile.clone(),
                 touch_templates.clone(),
-                ordering.clone(),
-                segment_count,
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            fresh.scaling =
-                hdr(&headers, "stream-scaling").as_deref() == Some("auto") && !name.contains('#');
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -1641,11 +1596,7 @@ async fn create_stream(
         }
     };
 
-    let hash = if desc.is_per_key() {
-        desc.segment_hash(desc.segment_for(""))
-    } else {
-        desc.storage_hash()
-    };
+    let hash = desc.resolve_segment("").identity;
     let epoch_bytes = desc.epoch_bytes().unwrap_or([0u8; 16]);
     state.keys.put(hash, key.clone(), epoch_bytes);
     // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
@@ -1967,7 +1918,9 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     // child is sealed (closed) during a split/merge transition; the retry
     // loop refreshes the map and follows the successor, so clients never
     // observe the transition beyond a few ms of latency.
-    let desc = match state.registry.get(&name).await {
+    // (LEGACY path, pre-v3 descriptors only; unified-model streams
+    // resolve segments in-process below — docs/ROUTING-V3.md §2.)
+    let mut desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(other) => {
             // Lazy child creation: "<parent>#<n>" appears when the scaler
@@ -2185,15 +2138,39 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     };
 
     let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
-    let seg_ord: Option<u32> = if desc.is_per_key() {
-        Some(desc.segment_for(&routing_key))
-    } else {
-        None
-    };
-    let hash = match seg_ord {
-        Some(o) => desc.segment_hash(o),
-        None => desc.storage_hash(),
-    };
+    // ROUTING-V3 §1: an absent key is the empty/default key, and the
+    // sole ordering guarantee is per-routing-key order. Resolution
+    // picks the owning segment — the implicit single segment for every
+    // stream born under the unified model (splits arrive with the
+    // sketch scaler), the ordinal segment for legacy per-key layouts.
+    let mut seg = desc.resolve_segment(&routing_key);
+    if seg.sealed {
+        // Mid-transition (a split/merge sealed this segment): refresh
+        // the descriptor once and re-resolve; the successor is in the
+        // CAS'd map. Still sealed after a fresh read = the transition
+        // is mid-publish — tell the client to retry rather than hang.
+        state.registry.invalidate(&name);
+        match state.registry.get(&name).await {
+            Ok(Some(d2)) if desc_alive(&d2) => {
+                desc = d2;
+                seg = desc.resolve_segment(&routing_key);
+            }
+            _ => {}
+        }
+        if seg.sealed {
+            let mut r = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "segment_transition",
+                "segment map transition in progress; retry",
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str("1") {
+                r.headers_mut().insert("retry-after", v);
+            }
+            return r;
+        }
+    }
+    let seg = seg;
+    let hash = seg.identity;
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
     crate::usage::link_storage(
@@ -2252,10 +2229,7 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         touch,
         resp: tx,
     };
-    let engine = match state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
-        .await
-    {
+    let engine = match state.engine_for(&seg.shard_route).await {
         Ok(e) => e,
         Err(r) => return r,
     };
@@ -2300,16 +2274,25 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         }
     };
 
-    let tok = |next: u64| match seg_ord {
-        Some(o) => crate::offsets::encode_ep(
-            o,
-            if next == 0 {
-                Offset::START
-            } else {
-                Offset(Some(next - 1))
-            },
-        ),
-        None => tail_token(next),
+    // Ack-token shape is client-visible: single-segment streams (every
+    // unified-model stream until its first split, and all total-order
+    // streams) keep the plain token byte-for-byte; legacy per-key
+    // layouts keep their epoch-prefixed tokens (epoch 0 when n == 1,
+    // exactly as before).
+    let segmented = desc.is_per_key() || desc.segments.is_some();
+    let tok = |next: u64| {
+        if segmented {
+            crate::offsets::encode_ep(
+                seg.seg_id,
+                if next == 0 {
+                    Offset::START
+                } else {
+                    Offset(Some(next - 1))
+                },
+            )
+        } else {
+            tail_token(next)
+        }
     };
     match outcome {
         Ok(ack) => {
@@ -2701,11 +2684,11 @@ async fn read(
     if desc.is_per_key() && desc.segment_count.max(1) > 1 {
         return read_per_key(state, desc, params, headers, head_only).await;
     }
-    let hash = if desc.is_per_key() {
-        desc.segment_hash(0)
-    } else {
-        desc.storage_hash()
-    };
+    // Single-segment streams (every unified-model stream until its
+    // first split, all total-order streams, legacy per-key n=1) serve
+    // the standard totally-ordered read path — byte-identical to the
+    // pre-v3 contract because one segment means one routing key space.
+    let hash = desc.resolve_segment("").identity;
     let engine = match state
         .engine_for(&crate::crypto::stream_hash(&desc.name))
         .await

@@ -110,7 +110,7 @@ pub fn pick_move_target(
     peers
         .iter()
         .filter(|(n, (_, lag))| n.as_str() != me && *lag < lag_threshold_secs / 2)
-        .min_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+        .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
         .map(|(n, _)| n.clone())
 }
 
@@ -340,7 +340,12 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     .get(waits.len() / 2)
                     .map(|us| *us as f64 / 1000.0)
                     .unwrap_or(0.0);
-                (owned, (p50 * 10.0).round() / 10.0, wedge_prefix, wedge_max_ms)
+                (
+                    owned,
+                    (p50 * 10.0).round() / 10.0,
+                    wedge_prefix,
+                    wedge_max_ms,
+                )
             };
             let inflight_now = state.inflight.load(Ordering::Relaxed);
             let inflight_peak = state.inflight_peak.swap(inflight_now, Ordering::Relaxed);
@@ -640,9 +645,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                                     );
                                 }
                                 crate::sharddir::OpenOutcome::Wait { code, .. } => {
-                                    tracing::info!(
-                                        "eager open of {prefix} deferred ({code})"
-                                    );
+                                    tracing::info!("eager open of {prefix} deferred ({code})");
                                 }
                                 crate::sharddir::OpenOutcome::Failed(e) => {
                                     tracing::warn!("eager open of {prefix} failed: {e}");
@@ -679,8 +682,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         let healthy = peer_load
                             .get(&home)
                             .map(|(_, lag)| *lag == 0)
-                            .unwrap_or(home == cfg.instance
-                                && crate::usage::absorb_lag_max() == 0);
+                            .unwrap_or(home == cfg.instance && crate::usage::absorb_lag_max() == 0);
                         if healthy {
                             drop_keys.push(prefix.clone());
                         }
@@ -710,7 +712,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     }
                 }
 
-                let my_lag = hb.absorb_lag_max_secs.max((hb.wedge_max_ms / 1000).max(0) as u64);
+                let my_lag = hb
+                    .absorb_lag_max_secs
+                    .max((hb.wedge_max_ms / 1000).max(0) as u64);
                 lag_hot_ticks = if my_lag > rebalance_lag_secs {
                     lag_hot_ticks + 1
                 } else {
@@ -726,8 +730,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     // the threshold and unguarded moves just hand the
                     // backlog around (ladder p3: 7 moves in 10 min, shard
                     // ping-pong, zero net absorption gained).
-                    let target =
-                        pick_move_target(&peer_load, &cfg.instance, rebalance_lag_secs);
+                    let target = pick_move_target(&peer_load, &cfg.instance, rebalance_lag_secs);
                     if target.is_none() {
                         tracing::info!(
                             "rebalancer: lag {my_lag}s but no healthy peer; holding shards"
@@ -764,11 +767,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             None => PutMode::Create,
                         };
                         let res = store
-                            .put_opts(
-                                &opath,
-                                payload,
-                                PutOptions::from(mode),
-                            )
+                            .put_opts(&opath, payload, PutOptions::from(mode))
                             .await;
                         match res {
                             Ok(_) => {
@@ -792,7 +791,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                                 lag_hot_ticks = 0;
                             }
                             Err(e) => {
-                                tracing::info!("rebalancer: overrides CAS lost ({e}); retry next tick");
+                                tracing::info!(
+                                    "rebalancer: overrides CAS lost ({e}); retry next tick"
+                                );
                             }
                         }
                     }
@@ -862,7 +863,9 @@ mod tests {
     use std::collections::HashMap;
 
     fn peers(v: &[(&str, f64, u64)]) -> HashMap<String, (f64, u64)> {
-        v.iter().map(|(n, c, l)| (n.to_string(), (*c, *l))).collect()
+        v.iter()
+            .map(|(n, c, l)| (n.to_string(), (*c, *l)))
+            .collect()
     }
 
     // Regression: ladder pass 3 did 7 moves in 10 minutes because moves

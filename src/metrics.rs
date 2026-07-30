@@ -26,7 +26,8 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn enable(&self) {
-        self.enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.enabled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     fn on(&self) -> bool {
         self.enabled.load(std::sync::atomic::Ordering::Relaxed)

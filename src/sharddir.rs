@@ -146,10 +146,7 @@ pub struct OpenGate {
 }
 
 impl OpenGate {
-    pub fn new(
-        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
-        opener: OpenFn,
-    ) -> Self {
+    pub fn new(shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>, opener: OpenFn) -> Self {
         let open_deadline = std::env::var("SHARD_OPEN_DEADLINE_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -227,10 +224,8 @@ impl OpenGate {
                     // shard unavailable forever — observed live on
                     // eu-central-1 at the end of the soak2 campaign.
                     let mut fut = Box::pin((inner.opener)(p.clone()));
-                    let res: Result<
-                        anyhow::Result<Arc<ShardEngine>>,
-                        tokio::time::error::Elapsed,
-                    > = tokio::time::timeout(inner.open_deadline, &mut fut).await;
+                    let res: Result<anyhow::Result<Arc<ShardEngine>>, tokio::time::error::Elapsed> =
+                        tokio::time::timeout(inner.open_deadline, &mut fut).await;
                     OPENS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
                     let out: OpenResult = match res {
                         Ok(Ok(engine)) => {
@@ -272,8 +267,7 @@ impl OpenGate {
                                 let g = st.entry(p.clone()).or_default();
                                 g.inflight = None;
                                 g.strikes = g.strikes.saturating_add(1);
-                                g.holdoff_until =
-                                    Some(Instant::now() + holdoff_for(g.strikes));
+                                g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
                             }
                             // SUPERVISED abandonment, not detachment: the
                             // old engine_for dropped abandoned opens on the
@@ -293,10 +287,7 @@ impl OpenGate {
                                     engine.begin_close();
                                 }
                             });
-                            Err(format!(
-                                "shard open exceeded {:?}",
-                                inner.open_deadline
-                            ))
+                            Err(format!("shard open exceeded {:?}", inner.open_deadline))
                         }
                     };
                     let _ = tx.send(Some(out));

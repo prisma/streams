@@ -621,7 +621,10 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
             Default::default();
         for ((region, op, class), n) in m.iter() {
             let cell = format!("{}:{}", OPS[*op as usize], CLASSES[*class as usize]);
-            *out.entry(region.clone()).or_default().entry(cell).or_default() += n;
+            *out.entry(region.clone())
+                .or_default()
+                .entry(cell)
+                .or_default() += n;
         }
         serde_json::to_value(out).unwrap_or(serde_json::Value::Null)
     };
@@ -834,9 +837,14 @@ impl object_store::client::HttpService for SniffService {
 pub struct SniffConnector;
 
 impl object_store::client::HttpConnector for SniffConnector {
-    fn connect(&self, options: &object_store::ClientOptions) -> Result<object_store::client::HttpClient> {
+    fn connect(
+        &self,
+        options: &object_store::ClientOptions,
+    ) -> Result<object_store::client::HttpClient> {
         let inner = object_store::client::ReqwestConnector::default().connect(options)?;
-        Ok(object_store::client::HttpClient::new(SniffService { inner }))
+        Ok(object_store::client::HttpClient::new(SniffService {
+            inner,
+        }))
     }
 }
 

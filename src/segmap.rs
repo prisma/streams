@@ -296,7 +296,10 @@ mod tests {
         let (a, b) = m.split(0, KEYSPACE_END / 2, 0, "s1", "s2", 2).unwrap();
         let (c, d) = m.split(a, KEYSPACE_END / 4, 0, "s3", "s4", 3).unwrap();
         // c=[0,q) d=[q,mid) b=[mid,end) — c+b not adjacent
-        assert_eq!(m.merge(c, b, 0, 0, "sx", 4).unwrap_err(), MapError::NotAdjacent(c, b));
+        assert_eq!(
+            m.merge(c, b, 0, 0, "sx", 4).unwrap_err(),
+            MapError::NotAdjacent(c, b)
+        );
         let e = m.merge(d, b, 1, 2, "sy", 5).unwrap();
         assert!(m.check_partition());
         assert_eq!(m.live().count(), 2);
