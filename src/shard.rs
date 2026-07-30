@@ -111,6 +111,33 @@ pub fn producer_key(hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
     k
 }
 
+/// Durable dirty-stream index (static audit P1): a marker per stream
+/// with `absorbed < next`, written in the SAME committer batch as the
+/// tail it describes and deleted in the batch whose absorbed boundary
+/// catches up. A fresh owner scans this prefix once at absorber start,
+/// so unabsorbed tails are rediscovered after restart/handoff without
+/// the customer ever touching the stream again. Lives under a reserved
+/// sentinel "hash" of all-0xFF (unreachable for SHA-derived stream
+/// hashes) with its own tag byte, so it can be range-scanned without
+/// colliding with `<hash16><tag>` stream keys, and sorts at the end of
+/// the keyspace.
+const DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
+
+pub fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(33);
+    k.extend_from_slice(&DIRTY_SENTINEL);
+    k.push(b'D');
+    k.extend_from_slice(hash);
+    k
+}
+
+fn dirty_value(absorbed: u64, next: u64) -> [u8; 8 + 8] {
+    let mut v = [0u8; 16];
+    v[..8].copy_from_slice(&absorbed.to_le_bytes());
+    v[8..].copy_from_slice(&next.to_le_bytes());
+    v
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TailFields {
     pub next: u64,
@@ -1058,6 +1085,31 @@ impl ShardEngine {
             .collect()
     }
 
+    /// Enumerate the durable dirty-stream index: every stream whose last
+    /// committed batch left `absorbed < next`, with those two boundaries
+    /// as of that batch. This is how a fresh owner rediscovers unabsorbed
+    /// tails after restart/handoff WITHOUT materializing stream handles
+    /// (the resident-handle sweep in `absorb_backlog` only sees streams
+    /// something already touched) and without customer keys.
+    pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
+        let mut pfx = Vec::with_capacity(17);
+        pfx.extend_from_slice(&DIRTY_SENTINEL);
+        pfx.push(b'D');
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            if kv.key.len() != 33 || kv.value.len() < 16 {
+                continue;
+            }
+            let mut h = [0u8; 16];
+            h.copy_from_slice(&kv.key[17..33]);
+            let absorbed = u64::from_le_bytes(kv.value[..8].try_into().unwrap());
+            let next = u64::from_le_bytes(kv.value[8..16].try_into().unwrap());
+            out.push((h, absorbed, next));
+        }
+        Ok(out)
+    }
+
     /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
     /// the strongest boundary any `DurabilityLevel::Remote` scan of the
     /// shard log can have observed trims for. The published handle state is
@@ -1846,6 +1898,15 @@ impl ShardEngine {
                 || f.closed != b.closed
             {
                 wb.put(tail_key(hash), encode_tail(f));
+                // Dirty-stream index: marker present iff absorbed < next,
+                // maintained atomically with the tail it describes.
+                let was_dirty = b.absorbed < b.next;
+                let is_dirty = f.absorbed < f.next;
+                if is_dirty {
+                    wb.put(dirty_key(hash), dirty_value(f.absorbed, f.next));
+                } else if was_dirty {
+                    wb.delete(dirty_key(hash));
+                }
                 changed = true;
             }
             tails.push((local.handle.clone(), f.clone()));

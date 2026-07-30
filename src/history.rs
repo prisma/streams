@@ -390,6 +390,16 @@ pub struct AbsorberConfig {
     /// (`deferred_sparse_*` in /v1/debug/usage) so an intentional cost
     /// policy never reads as unhealthy absorption.
     pub min_age_bytes: u64,
+    /// Aggregate byte budget for ONE v2 gather WriteBatch (keys + frame
+    /// values, keyed index duplicates counted twice). Without it the
+    /// lane's nominal exposure is V2_LANE_PER_TICK x per-stream cap
+    /// (~4 GiB) held in memory before SlateDB backpressure can apply —
+    /// and oversized first frames (bodies up to the 32 MiB API cap) can
+    /// exceed even that. Streams that do not fit stay pending and
+    /// gather on later ticks; a single over-budget chunk still proceeds
+    /// alone so every stream makes progress. Default matches the
+    /// history DB's max_unflushed_bytes: one gather ≈ one memtable.
+    pub gather_max_bytes: usize,
 }
 
 impl Default for AbsorberConfig {
@@ -405,6 +415,7 @@ impl Default for AbsorberConfig {
             sweep_every: 12,
             force_v1: false,
             min_age_bytes: 256 * 1024,
+            gather_max_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -516,6 +527,24 @@ const HISTORY_DB_LRU: usize = 16;
 const HISTORY_DB_IDLE: Duration = Duration::from_secs(120);
 
 impl Absorber {
+    /// Construct without starting the pump — DST tests drive gathers
+    /// directly for deterministic budget/packing assertions.
+    pub(crate) fn new(
+        data_store: Arc<dyn ObjectStore>,
+        shard: Arc<ShardEngine>,
+        keys: Arc<KeyCache>,
+        cfg: AbsorberConfig,
+    ) -> Self {
+        Absorber {
+            data_store,
+            shard,
+            keys,
+            cfg,
+            open_dbs: tokio::sync::Mutex::new(HashMap::new()),
+            submitted: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
     pub fn start(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
@@ -523,16 +552,45 @@ impl Absorber {
         cfg: AbsorberConfig,
         mut rx: mpsc::Receiver<AbsorbSignal>,
     ) -> tokio::task::JoinHandle<()> {
-        let absorber = Absorber {
-            data_store,
-            shard,
-            keys,
-            cfg,
-            open_dbs: tokio::sync::Mutex::new(HashMap::new()),
-            submitted: std::sync::Mutex::new(HashMap::new()),
-        };
+        let absorber = Self::new(data_store, shard, keys, cfg);
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
+            // Restart rediscovery (static audit P1): seed from the durable
+            // dirty-stream index so tails left unabsorbed by a previous
+            // owner converge WITHOUT the customer ever touching those
+            // streams again. Backdating `since` by the age threshold makes
+            // them eligible promptly rather than a full window later. The
+            // resident-handle sweep below remains as belt-and-braces.
+            match absorber.shard.scan_dirty_streams().await {
+                Ok(dirty) => {
+                    let n = dirty.len();
+                    for (h, absorbed, next) in dirty {
+                        let recs = next.saturating_sub(absorbed);
+                        if recs == 0 {
+                            continue;
+                        }
+                        let since = Instant::now()
+                            .checked_sub(absorber.cfg.threshold_age)
+                            .unwrap_or_else(Instant::now);
+                        pending.entry(h).or_insert(PendingAbsorb {
+                            bytes: recs.saturating_mul(1024),
+                            since,
+                            failures: 0,
+                            retry_after: None,
+                        });
+                    }
+                    if n > 0 {
+                        tracing::info!(
+                            "absorber seeded {} dirty streams from the durable index ({})",
+                            n,
+                            absorber.shard.prefix
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("dirty-stream index scan failed at absorber start: {e}");
+                }
+            }
             let mut tick = tokio::time::interval(absorber.cfg.tick);
             let mut tick_n: u32 = 0;
             loop {
@@ -800,15 +858,25 @@ impl Absorber {
     /// A per-stream byte cap truncates fat streams mid-range — their
     /// boundary still advances over what was written, and the sweep or
     /// the next signal re-drives the remainder.
-    async fn absorb_gather_v2(
+    pub(crate) async fn absorb_gather_v2(
         &self,
         streams: &[[u8; 16]],
     ) -> anyhow::Result<Vec<([u8; 16], u64)>> {
         const PER_STREAM_CAP: usize = 4 * 1024 * 1024;
+        // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
+        const ENTRY_OVERHEAD: usize = 64;
         let part = self.shard.history_partition().await?;
         let mut wb = WriteBatch::new();
         let mut advanced: Vec<([u8; 16], u64)> = Vec::new();
+        let mut batch_bytes: usize = 0;
         for hash in streams {
+            // Aggregate budget: the batch is held in memory until the one
+            // flush below, so its size — not the lane's stream count — is
+            // what a 1 GiB instance actually feels. Anything deferred here
+            // stays in the pending set and gathers on a later tick.
+            if batch_bytes >= self.cfg.gather_max_bytes {
+                break;
+            }
             let handle = self.shard.stream_handle(*hash).await?;
             let (from, upto, route) = {
                 let st = handle.state.lock().unwrap();
@@ -822,11 +890,33 @@ impl Absorber {
             if from >= upto {
                 continue;
             }
+            let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
             let chunk =
-                read_frames_range(&self.shard, &handle, from, upto, PER_STREAM_CAP).await?;
+                read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
             if chunk.frames.is_empty() {
                 continue;
             }
+            // Exact contribution of this chunk (keyed frames store the
+            // value twice: record row + routing-key index row).
+            let mut chunk_bytes = 0usize;
+            for raw in &chunk.frames {
+                let Some(frame) = crate::crypto::decode_frame(raw) else {
+                    anyhow::bail!("undecodable frame during v2 gather");
+                };
+                let per_row = raw.len() + 41 + ENTRY_OVERHEAD;
+                chunk_bytes += per_row;
+                if !frame.header.routing_key.is_empty() {
+                    chunk_bytes += per_row + frame.header.routing_key.len();
+                }
+            }
+            // A chunk that would blow the budget waits for a batch of its
+            // own — unless the batch is empty, in which case it proceeds
+            // alone (one oversized frame must still make progress; frame
+            // bodies can reach the 32 MiB API cap).
+            if batch_bytes > 0 && batch_bytes + chunk_bytes > self.cfg.gather_max_bytes {
+                continue;
+            }
+            batch_bytes += chunk_bytes;
             let mut last = from;
             for raw in &chunk.frames {
                 let Some(frame) = crate::crypto::decode_frame(raw) else {

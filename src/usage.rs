@@ -18,9 +18,91 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 /// Bound on distinct streams tracked (same discipline as the per-stream
-/// admission map): beyond this, new streams are unlimited/untracked
-/// rather than evicting hot entries.
+/// admission map). Beyond the cap the module must NEVER fail open
+/// (static audit P0: limits silently stopped applying and counters
+/// vanished into unregistered Arcs past 65,536 streams). Overflow
+/// traffic instead shares ONE conservative bucket and ONE aggregate
+/// counter set, and idle tracked entries are opportunistically evicted
+/// to make room for new streams.
 const MAX_TRACKED: usize = 65_536;
+
+/// A tracked entry idle at least this long may be evicted at cap. The
+/// billing emitter runs every minute, so anything idle this long has
+/// had its last nonzero delta emitted many intervals ago; the emitter
+/// additionally treats a shrinking cumulative counter as a reset.
+const EVICT_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Scan for evictable entries only every Nth overflow admission — a
+/// full-map scan on every hot-path admit at cap would be O(65k).
+const EVICT_SCAN_EVERY: u64 = 64;
+
+/// Shared token bucket for ALL streams past the cap: conservative by
+/// construction (the whole overflow population shares one stream's
+/// allowance) and visible, never silently unlimited.
+fn overflow_bucket() -> &'static Mutex<Bucket> {
+    static B: OnceLock<Mutex<Bucket>> = OnceLock::new();
+    B.get_or_init(|| {
+        let l = limits();
+        Mutex::new(Bucket {
+            bytes: l.bytes_per_sec * l.burst_secs,
+            reqs: l.reqs_per_sec * l.burst_secs,
+            recs: l.recs_per_sec * l.burst_secs,
+            last: Instant::now(),
+        })
+    })
+}
+
+/// Aggregate counters for every stream past the cap. Both counters()
+/// call sites on the append path resolve to this same Arc, so overflow
+/// traffic is accounted (in aggregate) instead of written into
+/// unrelated temporaries and dropped.
+fn overflow_counters() -> &'static std::sync::Arc<Counters> {
+    static C: OnceLock<std::sync::Arc<Counters>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+static OVERFLOW_ADMITS: AtomicU64 = AtomicU64::new(0);
+static OVERFLOW_SCAN_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// (admissions routed through the shared overflow bucket, aggregate
+/// overflow counter totals) — the visibility half of never-fail-open.
+pub fn overflow_stats() -> (u64, u64, u64, u64) {
+    let c = overflow_counters();
+    (
+        OVERFLOW_ADMITS.load(Ordering::Relaxed),
+        c.requests.load(Ordering::Relaxed),
+        c.records.load(Ordering::Relaxed),
+        c.bytes_in.load(Ordering::Relaxed),
+    )
+}
+
+pub fn tracked_streams() -> usize {
+    map().lock().unwrap().len()
+}
+
+/// Evict one entry idle >= `idle` from a full map. Returns whether a
+/// slot was freed. Cumulative counters for an evicted stream restart at
+/// zero if it returns; the billing emitter handles that as a counter
+/// reset.
+fn evict_one_idle(m: &mut HashMap<[u8; 16], StreamUsage>, idle: std::time::Duration) -> bool {
+    let now = Instant::now();
+    let victim = m
+        .iter()
+        .find(|(_, u)| now.duration_since(u.bucket.last) >= idle)
+        .map(|(h, _)| *h);
+    match victim {
+        Some(h) => {
+            m.remove(&h);
+            true
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn evict_idle_for_test(idle: std::time::Duration) -> bool {
+    evict_one_idle(&mut map().lock().unwrap(), idle)
+}
 
 pub struct Limits {
     pub bytes_per_sec: f64,
@@ -118,36 +200,16 @@ impl LimitHit {
     }
 }
 
-/// Refill-and-consume for one append request: `bytes` of body carrying
-/// `records` records. Returns Err(the first limit hit) without consuming
-/// anything when any bucket is short — the request is rejected whole.
-pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), LimitHit> {
-    let l = limits();
-    let mut m = map().lock().unwrap();
-    let n = m.len();
-    let u = match m.get_mut(hash) {
-        Some(u) => u,
-        None => {
-            if n >= MAX_TRACKED {
-                return Ok(());
-            }
-            m.entry(*hash).or_insert_with(|| StreamUsage {
-                bucket: Bucket {
-                    bytes: l.bytes_per_sec * l.burst_secs,
-                    reqs: l.reqs_per_sec * l.burst_secs,
-                    recs: l.recs_per_sec * l.burst_secs,
-                    last: Instant::now(),
-                },
-                counters: Default::default(),
-            })
-        }
-    };
+/// Refill-and-consume against one bucket. Returns Err(the first limit
+/// hit) without consuming anything when any bucket is short — the
+/// request is rejected whole.
+fn admit_on(bucket: &mut Bucket, l: &Limits, bytes: u64, records: u64) -> Result<(), LimitHit> {
     let now = Instant::now();
-    let dt = now.duration_since(u.bucket.last).as_secs_f64();
-    u.bucket.last = now;
-    u.bucket.bytes = (u.bucket.bytes + dt * l.bytes_per_sec).min(l.bytes_per_sec * l.burst_secs);
-    u.bucket.reqs = (u.bucket.reqs + dt * l.reqs_per_sec).min(l.reqs_per_sec * l.burst_secs);
-    u.bucket.recs = (u.bucket.recs + dt * l.recs_per_sec).min(l.recs_per_sec * l.burst_secs);
+    let dt = now.duration_since(bucket.last).as_secs_f64();
+    bucket.last = now;
+    bucket.bytes = (bucket.bytes + dt * l.bytes_per_sec).min(l.bytes_per_sec * l.burst_secs);
+    bucket.reqs = (bucket.reqs + dt * l.reqs_per_sec).min(l.reqs_per_sec * l.burst_secs);
+    bucket.recs = (bucket.recs + dt * l.recs_per_sec).min(l.recs_per_sec * l.burst_secs);
 
     let need_ms = |deficit: f64, rate: f64| -> u64 {
         if rate <= 0.0 {
@@ -156,25 +218,58 @@ pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), Lim
             ((deficit / rate) * 1000.0).ceil() as u64
         }
     };
-    if l.bytes_per_sec > 0.0 && u.bucket.bytes < bytes as f64 {
+    if l.bytes_per_sec > 0.0 && bucket.bytes < bytes as f64 {
         return Err(LimitHit::Bytes {
-            retry_ms: need_ms(bytes as f64 - u.bucket.bytes, l.bytes_per_sec),
+            retry_ms: need_ms(bytes as f64 - bucket.bytes, l.bytes_per_sec),
         });
     }
-    if l.reqs_per_sec > 0.0 && u.bucket.reqs < 1.0 {
+    if l.reqs_per_sec > 0.0 && bucket.reqs < 1.0 {
         return Err(LimitHit::Requests {
-            retry_ms: need_ms(1.0 - u.bucket.reqs, l.reqs_per_sec),
+            retry_ms: need_ms(1.0 - bucket.reqs, l.reqs_per_sec),
         });
     }
-    if l.recs_per_sec > 0.0 && u.bucket.recs < records as f64 {
+    if l.recs_per_sec > 0.0 && bucket.recs < records as f64 {
         return Err(LimitHit::Records {
-            retry_ms: need_ms(records as f64 - u.bucket.recs, l.recs_per_sec),
+            retry_ms: need_ms(records as f64 - bucket.recs, l.recs_per_sec),
         });
     }
-    u.bucket.bytes -= bytes as f64;
-    u.bucket.reqs -= 1.0;
-    u.bucket.recs -= records as f64;
+    bucket.bytes -= bytes as f64;
+    bucket.reqs -= 1.0;
+    bucket.recs -= records as f64;
     Ok(())
+}
+
+/// Admission for one append request: `bytes` of body carrying `records`
+/// records. Past MAX_TRACKED distinct streams this NEVER fails open:
+/// an idle tracked entry is evicted (amortized scan) to make room, and
+/// otherwise the request is admitted through the shared conservative
+/// overflow bucket.
+pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), LimitHit> {
+    let l = limits();
+    let mut m = map().lock().unwrap();
+    let n = m.len();
+    if !m.contains_key(hash) && n >= MAX_TRACKED {
+        let tick = OVERFLOW_SCAN_TICK.fetch_add(1, Ordering::Relaxed);
+        let freed = tick % EVICT_SCAN_EVERY == 0 && evict_one_idle(&mut m, EVICT_IDLE);
+        if !freed {
+            drop(m);
+            let r = admit_on(&mut overflow_bucket().lock().unwrap(), l, bytes, records);
+            if r.is_ok() {
+                OVERFLOW_ADMITS.fetch_add(1, Ordering::Relaxed);
+            }
+            return r;
+        }
+    }
+    let u = m.entry(*hash).or_insert_with(|| StreamUsage {
+        bucket: Bucket {
+            bytes: l.bytes_per_sec * l.burst_secs,
+            reqs: l.reqs_per_sec * l.burst_secs,
+            recs: l.recs_per_sec * l.burst_secs,
+            last: Instant::now(),
+        },
+        counters: Default::default(),
+    });
+    admit_on(&mut u.bucket, l, bytes, records)
 }
 
 /// Counters handle for a stream (shared Arc; cheap to hold on hot paths).
@@ -184,7 +279,10 @@ pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
     let n = m.len();
     match m.get(hash) {
         Some(u) => u.counters.clone(),
-        None if n >= MAX_TRACKED => Default::default(),
+        // Past the cap, all untracked streams account into ONE shared
+        // aggregate — both hot-path counters() calls resolve to the same
+        // Arc, so nothing vanishes into unrelated temporaries.
+        None if n >= MAX_TRACKED => overflow_counters().clone(),
         None => m
             .entry(*hash)
             .or_insert_with(|| StreamUsage {
@@ -462,5 +560,100 @@ mod tests {
         // one oversized request beyond 2s of byte budget
         let e = admit_append(&h, 11_000_000, 1);
         assert!(matches!(e, Err(LimitHit::Bytes { .. })));
+    }
+
+
+    /// Static-audit P0: past MAX_TRACKED distinct streams, admission
+    /// previously returned Ok(()) unconditionally (no limits) and
+    /// counters() minted unrelated temporaries (lost accounting). The
+    /// overflow population must stay rate-limited — through the shared
+    /// conservative bucket — and its traffic must aggregate somewhere
+    /// visible.
+    #[test]
+    fn past_the_cap_limits_still_apply_and_counters_aggregate() {
+        // Fill the map to the cap with distinct hashes.
+        {
+            let l = limits();
+            let mut m = map().lock().unwrap();
+            let mut h = [0u8; 16];
+            while m.len() < MAX_TRACKED {
+                let i = m.len() as u64;
+                h[..8].copy_from_slice(&i.to_le_bytes());
+                h[8] = 0xCA;
+                m.entry(h).or_insert_with(|| StreamUsage {
+                    bucket: Bucket {
+                        bytes: l.bytes_per_sec * l.burst_secs,
+                        reqs: l.reqs_per_sec * l.burst_secs,
+                        recs: l.recs_per_sec * l.burst_secs,
+                        last: Instant::now(),
+                    },
+                    counters: Default::default(),
+                });
+            }
+        }
+        assert!(tracked_streams() >= MAX_TRACKED);
+
+        // 5,000 distinct NEW streams past the cap: every admit routes
+        // through ONE shared bucket, so the aggregate population cannot
+        // exceed one stream's allowance — limits fire long before 5,000
+        // request tokens exist (burst is reqs_per_sec x burst_secs).
+        let (admits_before, _, _, _) = overflow_stats();
+        let mut admitted = 0u64;
+        let mut limited = 0u64;
+        let loop_started = Instant::now();
+        for i in 0..5_000u64 {
+            let mut h = [0u8; 16];
+            h[..8].copy_from_slice(&i.to_le_bytes());
+            h[8] = 0xFE;
+            match admit_append(&h, 100, 1) {
+                Ok(()) => {
+                    admitted += 1;
+                    // account exactly as the append path does
+                    let c = counters(&h);
+                    c.requests.fetch_add(1, Ordering::Relaxed);
+                    c.records.fetch_add(1, Ordering::Relaxed);
+                    c.bytes_in.fetch_add(100, Ordering::Relaxed);
+                }
+                Err(_) => limited += 1,
+            }
+        }
+        assert!(
+            limited > 0,
+            "overflow admission must be rate-limited, got {admitted} unlimited admits"
+        );
+        let l = limits();
+        // One stream's allowance = its burst plus whatever refilled while
+        // the loop itself ran.
+        let refill = (loop_started.elapsed().as_secs_f64() * l.reqs_per_sec).ceil() as u64;
+        let burst = (l.reqs_per_sec * l.burst_secs).ceil() as u64 + refill + 8;
+        assert!(
+            admitted <= burst,
+            "overflow population exceeded one stream's allowance: {admitted} > {burst}"
+        );
+
+        // Aggregate accounting: everything admitted is visible in the
+        // shared overflow counters, nothing vanished.
+        let (admits_after, req_total, rec_total, bytes_total) = overflow_stats();
+        assert_eq!(admits_after - admits_before, admitted);
+        assert!(req_total >= admitted);
+        assert!(rec_total >= admitted);
+        assert!(bytes_total >= admitted * 100);
+
+        // Both hot-path counters() calls for an overflow stream resolve
+        // to the same Arc.
+        let h = [0xEE; 16];
+        let a = counters(&h);
+        let b = counters(&h);
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "overflow counters must be shared");
+
+        // Idle entries are evictable to make room again.
+        assert!(
+            evict_idle_for_test(std::time::Duration::ZERO),
+            "an idle tracked entry must be evictable at cap"
+        );
+
+        // The map is a process-global; drain this test's fill so other
+        // usage tests (same binary) see pre-cap behavior.
+        map().lock().unwrap().retain(|h, _| h[8] != 0xCA);
     }
 }

@@ -3668,3 +3668,330 @@ async fn reopen_cost_is_bounded_after_compactions_churn() {
     );
     db2.close().await.ok();
 }
+
+/// Direct append of a payload of chosen size (the workload helper only
+/// sends tiny JSON bodies; the gather-budget tests need real volume).
+async fn append_sized(
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    rk: &str,
+    payload_bytes: usize,
+) -> u64 {
+    let subkey = crate::crypto::derive_subkey(key, &hash, rk, 0);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = crate::shard::AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash,
+        route: hash,
+        entries: vec![bytes::Bytes::from(vec![0x5au8; payload_bytes])],
+        usage: crate::usage::counters(&hash),
+        routing_key: rk.to_string(),
+        key_version: 0,
+        subkey,
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 0,
+        close: false,
+        producer: None,
+        deferred_error: None,
+        touch: None,
+        resp: tx,
+    };
+    assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+    rx.await.expect("resp").expect("ack").last_offset
+}
+
+async fn wait_all_absorbed(
+    engine: &Arc<crate::shard::ShardEngine>,
+    hashes: &[[u8; 16]],
+) {
+    for h in hashes {
+        let mut ok = false;
+        for _ in 0..400 {
+            let st = engine.stream_handle(*h).await.unwrap();
+            let (a, n) = {
+                let s = st.state.lock().unwrap();
+                (s.durable.absorbed, s.durable.next)
+            };
+            if a == n && n > 0 {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(ok, "stream {:02x?} never fully absorbed", &h[..2]);
+    }
+}
+
+/// P0 (static audit): the v2 gather previously accumulated up to
+/// V2_LANE_PER_TICK x 4 MiB (~4 GiB) in ONE WriteBatch before any
+/// backpressure could apply. The aggregate budget must pack streams up
+/// to gather_max_bytes and defer the rest to later gathers — with no
+/// stream starved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_gather_packs_to_the_aggregate_budget() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hashes: Vec<[u8; 16]> = (0u8..6).map(|i| [0x70 + i; 16]).collect();
+
+    let db = slatedb::Db::builder("dst-budget", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-budget".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "", 16 * 1024).await;
+    }
+
+    // Unstarted absorber: gathers are driven directly so packing is
+    // deterministic. ~16.6 KiB per unkeyed chunk against a 40 KiB budget
+    // means exactly two streams per gather.
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes: 40 * 1024,
+            ..Default::default()
+        },
+    );
+    let mut per_gather = Vec::new();
+    for _ in 0..6 {
+        let advanced = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+        if advanced.is_empty() {
+            break;
+        }
+        per_gather.push(advanced.len());
+    }
+    assert_eq!(
+        per_gather,
+        vec![2, 2, 2],
+        "budget must pack exactly two 16 KiB streams per gather"
+    );
+    wait_all_absorbed(&engine, &hashes).await;
+    engine.begin_close();
+}
+
+/// A chunk larger than the whole budget must still make progress — alone
+/// — instead of starving (frame bodies can reach the 32 MiB API cap).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_oversized_chunk_gathers_alone() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 92, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let big = [0x80u8; 16];
+    let small_a = [0x81u8; 16];
+    let small_b = [0x82u8; 16];
+
+    let db = slatedb::Db::builder("dst-oversize", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-oversize".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    append_sized(&engine, big, &key, "", 200 * 1024).await;
+    append_sized(&engine, small_a, &key, "", 16 * 1024).await;
+    append_sized(&engine, small_b, &key, "", 16 * 1024).await;
+
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes: 64 * 1024,
+            ..Default::default()
+        },
+    );
+    let all = [big, small_a, small_b];
+    let g1 = absorber.absorb_gather_v2(&all).await.expect("gather 1");
+    assert_eq!(g1.len(), 1, "oversized chunk must gather alone");
+    assert_eq!(g1[0].0, big);
+    let g2 = absorber.absorb_gather_v2(&all).await.expect("gather 2");
+    assert_eq!(g2.len(), 2, "both small streams fit the next gather");
+    wait_all_absorbed(&engine, &all).await;
+    engine.begin_close();
+}
+
+/// Keyed frames are written twice (record row + routing-key index row),
+/// so they must count twice against the gather budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keyed_frames_count_twice_against_the_budget() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hashes: Vec<[u8; 16]> = (0u8..2).map(|i| [0x90 + i; 16]).collect();
+
+    let db = slatedb::Db::builder("dst-keyedbudget", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-keyedbudget".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "k1", 16 * 1024).await;
+    }
+
+    // Keyed chunks weigh ~33 KiB each; the same 40 KiB budget that packed
+    // two unkeyed streams now fits only one keyed stream per gather.
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            gather_max_bytes: 40 * 1024,
+            ..Default::default()
+        },
+    );
+    let g1 = absorber.absorb_gather_v2(&hashes).await.expect("gather 1");
+    assert_eq!(g1.len(), 1, "keyed double-write must halve packing");
+    let g2 = absorber.absorb_gather_v2(&hashes).await.expect("gather 2");
+    assert_eq!(g2.len(), 1);
+    wait_all_absorbed(&engine, &hashes).await;
+    engine.begin_close();
+}
+
+/// Static-audit P1: an unabsorbed tail must be rediscovered by a fresh
+/// owner WITHOUT the customer ever touching the stream again. The old
+/// rediscovery enumerated resident handles only — a restarted engine
+/// has none, so a pre-crash stream's absorption never resumed and trim
+/// never advanced. The durable dirty-stream index closes this.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn untouched_streams_absorb_after_restart() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 94, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xA4u8; 16];
+
+    // Owner A: append + ack with NO absorber running (crash before
+    // absorption), then drop the engine without a clean close.
+    {
+        let db = slatedb::Db::builder("dst-restart", store.clone() as Arc<dyn ObjectStore>)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(std::time::Duration::from_millis(5)),
+                manifest_poll_interval: std::time::Duration::from_millis(50),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("open db A");
+        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        let engine_a = crate::shard::ShardEngine::start(
+            "dst-restart".to_string(),
+            Arc::new(db),
+            store.clone(),
+            crate::shard::ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        for _ in 0..5 {
+            append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
+        }
+        // Simulate a crash: close the engine (fencing handoff) but note
+        // the absorber never ran, so absorbed == 0 < next == 5 and the
+        // dirty marker is durably present.
+        engine_a.begin_close();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // Owner B: fresh engine + absorber, EMPTY key cache (v2 needs none),
+    // and — the point — not a single request for the stream.
+    let db = slatedb::Db::builder("dst-restart", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db B");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine_b = crate::shard::ShardEngine::start(
+        "dst-restart".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine_b.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            // Disable the resident-handle sweep entirely: convergence in
+            // this test must come from the durable index seed ALONE, and
+            // the test itself must not materialize the handle early (the
+            // sweep would then find it and mask a broken seed).
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    // Wait on the MARKER only — it clears in the same committer batch
+    // that brings absorbed up to next, and polling it does not touch the
+    // stream.
+    let mut cleared = false;
+    for _ in 0..500 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let dirty = engine_b.scan_dirty_streams().await.unwrap();
+        if !dirty.iter().any(|(h, _, _)| *h == hash) {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(cleared, "untouched pre-crash stream never absorbed after restart");
+
+    // Only now touch the stream to confirm the boundary state.
+    let st = engine_b.stream_handle(hash).await.unwrap();
+    let (a, n) = {
+        let s = st.state.lock().unwrap();
+        (s.durable.absorbed, s.durable.next)
+    };
+    assert_eq!(n, 5, "durable next lost across restart");
+    assert_eq!(a, n, "absorbed must equal next after index-seeded absorption");
+    engine_b.begin_close();
+}

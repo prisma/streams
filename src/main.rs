@@ -256,6 +256,13 @@ struct Args {
     #[arg(long, env = "ABSORB_MIN_BYTES_FOR_AGE", default_value_t = 256 * 1024)]
     absorb_min_bytes_for_age: u64,
 
+    /// Aggregate byte budget for one shared-history gather WriteBatch
+    /// (keys + frames, keyed index rows counted twice). Bounds absorber
+    /// peak memory on small instances; streams that do not fit gather on
+    /// later ticks. Default = the history DB's unflushed cap.
+    #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 32 * 1024 * 1024)]
+    absorb_gather_max_bytes: usize,
+
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
     /// conformance suite cannot send custom headers.
@@ -652,6 +659,7 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_concurrency = args.absorb_concurrency;
         let absorb_small_bytes = args.absorb_small_bytes;
         let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
+        let absorb_gather_max_bytes = args.absorb_gather_max_bytes;
         let trim_per_op = args.trim_per_op;
         let wal_group_commit = args.wal_group_commit != 0;
         let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
@@ -753,6 +761,7 @@ async fn async_main() -> anyhow::Result<()> {
                             concurrency: absorb_concurrency,
                             small_pass_bytes: absorb_small_bytes,
                             min_age_bytes: absorb_min_bytes_for_age,
+                            gather_max_bytes: absorb_gather_max_bytes,
                             ..Default::default()
                         },
                         absorb_rx,

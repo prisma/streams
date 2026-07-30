@@ -492,6 +492,8 @@ async fn debug_usage() -> Response {
     let (backlog_streams, backlog_max) = crate::usage::absorb_backlog_summary();
     let (eligible, oldest_eligible, deferred, deferred_bytes) =
         crate::usage::absorb_pending_summary();
+    let (overflow_admits, overflow_requests, overflow_records, overflow_bytes) =
+        crate::usage::overflow_stats();
     axum::Json(serde_json::json!({
         "limits": {
             "bytes_per_sec": l.bytes_per_sec,
@@ -510,6 +512,18 @@ async fn debug_usage() -> Response {
         // The interim sparse policy's ledger: streams intentionally held
         // in the shard log (pending < ABSORB_MIN_BYTES_FOR_AGE), NOT lag.
         "deferred_sparse": { "streams": deferred, "bytes": deferred_bytes },
+        // Past-cap visibility (never fail open): admissions routed
+        // through the shared conservative overflow bucket, plus the
+        // aggregate counters those streams accrue. `streams` below is
+        // capped at MAX_TRACKED entries — use these plus absorb_backlog
+        // for population-level truth.
+        "tracked_streams": crate::usage::tracked_streams(),
+        "overflow": {
+            "admits": overflow_admits,
+            "requests": overflow_requests,
+            "records": overflow_records,
+            "bytes_in": overflow_bytes,
+        },
         "streams": streams,
     }))
     .into_response()
@@ -645,19 +659,35 @@ pub fn spawn_billing(state: Arc<AppState>) {
         );
         // Idempotent create (409/conflict is fine on an existing stream).
         let _ = create_stream(state.clone(), name.clone(), hdrs.clone(), Bytes::new()).await;
+        // POSTURE (static audit): this emitter is best-effort usage
+        // telemetry, not a production billing system of record — that
+        // needs a durable outbox/ledger (deltas persisted transactionally
+        // with an ack cursor). Until that exists, the emitter must at
+        // least never DROP an interval: checkpoints advance only after
+        // the append succeeds, so a failed emit retries the accumulated
+        // delta next tick instead of losing it.
         let mut prev: std::collections::HashMap<[u8; 16], (u64, u64, u64, u64)> =
             std::collections::HashMap::new();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let now_ms = crate::shard::now_ms();
             let mut recs: Vec<serde_json::Value> = Vec::new();
+            let mut staged: Vec<([u8; 16], (u64, u64, u64, u64))> = Vec::new();
             for (h, req, rec, bi, bo, pt, fr) in crate::usage::snapshot() {
                 if h == self_hash {
                     continue;
                 }
-                let p = prev.entry(h).or_insert((0, 0, 0, 0));
-                let d = (req - p.0, rec - p.1, bi - p.2, bo - p.3);
-                *p = (req, rec, bi, bo);
+                let p = prev.get(&h).copied().unwrap_or((0, 0, 0, 0));
+                // A cumulative counter smaller than its checkpoint means
+                // the tracked entry was evicted and the stream returned:
+                // treat as a reset and bill the fresh cumulative.
+                let reset = req < p.0 || rec < p.1 || bi < p.2 || bo < p.3;
+                let d = if reset {
+                    (req, rec, bi, bo)
+                } else {
+                    (req - p.0, rec - p.1, bi - p.2, bo - p.3)
+                };
+                staged.push((h, (req, rec, bi, bo)));
                 if d == (0, 0, 0, 0) {
                     continue;
                 }
@@ -673,6 +703,11 @@ pub fn spawn_billing(state: Arc<AppState>) {
                 }));
             }
             if recs.is_empty() {
+                // Still advance checkpoints for streams whose counters
+                // moved without billable deltas (resets to zero).
+                for (h, cur) in staged {
+                    prev.insert(h, cur);
+                }
                 continue;
             }
             let body = serde_json::to_vec(&recs).unwrap_or_default();
@@ -683,8 +718,15 @@ pub fn spawn_billing(state: Arc<AppState>) {
                 Body::from(body),
             )
             .await;
-            if !resp.status().is_success() {
-                tracing::warn!(status = %resp.status(), "billing emit failed");
+            if resp.status().is_success() {
+                for (h, cur) in staged {
+                    prev.insert(h, cur);
+                }
+            } else {
+                tracing::warn!(
+                    status = %resp.status(),
+                    "billing emit failed; interval delta retained for retry"
+                );
             }
         }
     });
