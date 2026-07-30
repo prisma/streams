@@ -272,6 +272,24 @@ on this branch; the wide rerun in the table below revalidates them at
    aggregate backlog gauge and reports the honest footprint gauge; ps
    RSS remains as a labeled fallback column.
 
+**Round-3 validation runs** (same harness, round-3 binary fe30317):
+
+- Capped 30-min soak vs the pre-round-3 binary: statistically
+  identical — LISTs 207 vs 208, total Class A 60,192 vs 60,233,
+  Class B 10,584 vs 10,562, integrity exact, 0 errors. The fixes cost
+  nothing on the hot path.
+- w100k absorb-all: **drain proven from the uncapped aggregate gauge**
+  (backlog 0 streams / 0 s, deferred 0); **the previously invisible
+  population is now accounted** — tracked_streams 65,536 at cap plus
+  overflow 34,464 admits / 34,464 records / 35.1 MB, exactly the
+  100,000 − 65,536 streams the audit flagged, rate-governed through
+  the shared bucket; history Class A 1,461 (gate ≤ 5,000; +258 vs
+  pre-round-3, the dirty-marker bytes riding existing batches); total
+  Class A +1.6%; appends flat (p50 47.5 / p99 87.3 ms, 4.14 M ok,
+  0 errors); honest footprint max **777 MB** (was 820) with end-state
+  cardinality bounded and evicting — resident handles 34,012,
+  keycache 65,259 (capped), registry cache 14,917, metrics 0 (gated).
+
 Explicitly deferred, with rationale: v1→v2 cutover offsets
 (docs/HISTORY-V2.md rollout section) — no production v1 history data
 exists; greenfield deployments start on v2, and the boolean flag is
