@@ -58,7 +58,7 @@ fn overflow_bucket() -> &'static Mutex<Bucket> {
 /// unrelated temporaries and dropped.
 fn overflow_counters() -> &'static std::sync::Arc<Counters> {
     static C: OnceLock<std::sync::Arc<Counters>> = OnceLock::new();
-    C.get_or_init(Default::default)
+    C.get_or_init(Counters::fresh)
 }
 
 static OVERFLOW_ADMITS: AtomicU64 = AtomicU64::new(0);
@@ -137,6 +137,12 @@ struct Bucket {
 
 #[derive(Default)]
 pub struct Counters {
+    /// Process-unique incarnation id (0 for ad-hoc test constructions):
+    /// the billing emitter uses this to tell two incarnations of the
+    /// same stream apart. Plain counter-regression detection misses the
+    /// evict → return → regrow-past-checkpoint case and silently
+    /// under-bills the difference.
+    pub generation: u64,
     pub requests: AtomicU64,
     pub records: AtomicU64,
     pub bytes_in: AtomicU64,
@@ -147,6 +153,17 @@ pub struct Counters {
     /// Frame bytes committed (post compress+encrypt+header) — what the
     /// store actually holds; plaintext/frame = achieved compression rate.
     pub frame_bytes: AtomicU64,
+}
+
+impl Counters {
+    /// A counters object with a fresh generation id.
+    fn fresh() -> std::sync::Arc<Counters> {
+        static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
+        std::sync::Arc::new(Counters {
+            generation: NEXT_GEN.fetch_add(1, Ordering::Relaxed),
+            ..Default::default()
+        })
+    }
 }
 
 struct StreamUsage {
@@ -244,7 +261,19 @@ fn admit_on(bucket: &mut Bucket, l: &Limits, bytes: u64, records: u64) -> Result
 /// an idle tracked entry is evicted (amortized scan) to make room, and
 /// otherwise the request is admitted through the shared conservative
 /// overflow bucket.
-pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), LimitHit> {
+///
+/// On success returns the counters object the request must account
+/// into — chosen ATOMICALLY with the admission decision. The caller
+/// carries this one Arc through both count sites (request-side and
+/// committed-side); re-resolving by hash mid-request used to race a
+/// concurrent eviction/promotion and split one request's accounting
+/// across the overflow aggregate and a fresh tracked entry (review
+/// round 4).
+pub fn admit_append(
+    hash: &[u8; 16],
+    bytes: u64,
+    records: u64,
+) -> Result<std::sync::Arc<Counters>, LimitHit> {
     let l = limits();
     let mut m = map().lock().unwrap();
     let n = m.len();
@@ -253,11 +282,9 @@ pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), Lim
         let freed = tick % EVICT_SCAN_EVERY == 0 && evict_one_idle(&mut m, EVICT_IDLE);
         if !freed {
             drop(m);
-            let r = admit_on(&mut overflow_bucket().lock().unwrap(), l, bytes, records);
-            if r.is_ok() {
-                OVERFLOW_ADMITS.fetch_add(1, Ordering::Relaxed);
-            }
-            return r;
+            admit_on(&mut overflow_bucket().lock().unwrap(), l, bytes, records)?;
+            OVERFLOW_ADMITS.fetch_add(1, Ordering::Relaxed);
+            return Ok(overflow_counters().clone());
         }
     }
     let u = m.entry(*hash).or_insert_with(|| StreamUsage {
@@ -267,9 +294,10 @@ pub fn admit_append(hash: &[u8; 16], bytes: u64, records: u64) -> Result<(), Lim
             recs: l.recs_per_sec * l.burst_secs,
             last: Instant::now(),
         },
-        counters: Default::default(),
+        counters: Counters::fresh(),
     });
-    admit_on(&mut u.bucket, l, bytes, records)
+    admit_on(&mut u.bucket, l, bytes, records)?;
+    Ok(u.counters.clone())
 }
 
 /// Counters handle for a stream (shared Arc; cheap to hold on hot paths).
@@ -292,7 +320,7 @@ pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
                     recs: l.recs_per_sec * l.burst_secs,
                     last: Instant::now(),
                 },
-                counters: Default::default(),
+                counters: Counters::fresh(),
             })
             .counters
             .clone(),
@@ -346,7 +374,10 @@ pub fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
         return 0;
     };
     let lags = lag_map().lock().unwrap();
-    set.iter().filter_map(|h| lags.get(h).copied()).max().unwrap_or(0)
+    set.iter()
+        .filter_map(|h| lags.get(h).copied())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Aggregate backlog view, independent of per-stream listing caps:
@@ -386,6 +417,29 @@ pub fn set_absorb_pending_summary(
         );
 }
 
+/// Remove one shard's pending-summary row. MUST run when an absorber
+/// exits (shard fenced/moved/evicted): the frozen row would otherwise
+/// double-count against the new owner's live row and the instance
+/// rollup reports phantom backlog forever (review round 4 — the fleet
+/// campaign reads that rollup as its drain proof).
+pub fn clear_absorb_pending_summary(shard_prefix: &str) {
+    PENDING_SUMMARY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .remove(shard_prefix);
+}
+
+/// One shard's pending-summary row (None once cleared/never published).
+pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64, u64, u64)> {
+    PENDING_SUMMARY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .get(shard_prefix)
+        .copied()
+}
+
 /// Instance-wide rollup: sums across shards, max for the oldest age.
 pub fn absorb_pending_summary() -> (u64, u64, u64, u64) {
     PENDING_SUMMARY
@@ -403,7 +457,13 @@ pub fn absorb_lag(hash: SegmentHash) -> u64 {
 }
 
 pub fn absorb_lag_max() -> u64 {
-    lag_map().lock().unwrap().values().copied().max().unwrap_or(0)
+    lag_map()
+        .lock()
+        .unwrap()
+        .values()
+        .copied()
+        .max()
+        .unwrap_or(0)
 }
 
 /// Per-SHARD absorb lag, published by each shard's absorber (which knows
@@ -417,7 +477,10 @@ fn shard_lag_map() -> &'static Mutex<HashMap<String, u64>> {
 }
 
 pub fn set_shard_lag(prefix: &str, secs: u64) {
-    shard_lag_map().lock().unwrap().insert(prefix.to_string(), secs);
+    shard_lag_map()
+        .lock()
+        .unwrap()
+        .insert(prefix.to_string(), secs);
 }
 
 pub fn clear_shard_lag(prefix: &str) {
@@ -446,8 +509,13 @@ pub fn absorb_lag_all() -> Vec<(SegmentHash, u64)> {
 }
 
 /// Snapshot every stream's cumulative counters (for /v1/debug/usage and
-/// the billing emitter).
-pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64)> {
+/// the billing emitter). The second field is the counters object's
+/// generation id — the emitter uses it to detect evict-and-return
+/// incarnations. NOTE (accepted best-effort posture): the shared
+/// overflow aggregate is deliberately NOT a row here — it has no
+/// per-stream attribution to bill against; it is visible via
+/// overflow_stats() / /v1/debug/usage instead.
+pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64, u64)> {
     map()
         .lock()
         .unwrap()
@@ -455,6 +523,7 @@ pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64)> {
         .map(|(h, u)| {
             (
                 *h,
+                u.counters.generation,
                 u.counters.requests.load(Ordering::Relaxed),
                 u.counters.records.load(Ordering::Relaxed),
                 u.counters.bytes_in.load(Ordering::Relaxed),
@@ -476,16 +545,14 @@ mod shard_lag_tests {
     fn shard_lag_roundtrips_and_clears() {
         set_shard_lag("101", 42);
         set_shard_lag("110", 7);
-        let all: std::collections::HashMap<String, u64> =
-            shard_lag_all().into_iter().collect();
+        let all: std::collections::HashMap<String, u64> = shard_lag_all().into_iter().collect();
         assert_eq!(all.get("101"), Some(&42));
         assert_eq!(all.get("110"), Some(&7));
 
         // a fenced-away shard must stop reporting, or it shows as
         // phantom lag on an instance serving nothing (ladder pass 1 D3)
         clear_shard_lag("101");
-        let all: std::collections::HashMap<String, u64> =
-            shard_lag_all().into_iter().collect();
+        let all: std::collections::HashMap<String, u64> = shard_lag_all().into_iter().collect();
         assert!(!all.contains_key("101"));
         assert_eq!(all.get("110"), Some(&7));
         clear_shard_lag("110");
@@ -562,6 +629,22 @@ mod tests {
         assert!(matches!(e, Err(LimitHit::Bytes { .. })));
     }
 
+    /// Every counters incarnation carries a distinct, increasing
+    /// generation — the billing emitter's evict-and-return discriminator
+    /// (review round 4).
+    #[test]
+    fn counter_generations_are_unique_per_incarnation() {
+        let a = Counters::fresh();
+        let b = Counters::fresh();
+        assert!(
+            a.generation > 0,
+            "fresh counters must have a nonzero generation"
+        );
+        assert!(
+            b.generation > a.generation,
+            "each incarnation must get a new generation"
+        );
+    }
 
     /// Static-audit P0: past MAX_TRACKED distinct streams, admission
     /// previously returned Ok(()) unconditionally (no limits) and
@@ -606,10 +689,17 @@ mod tests {
             h[..8].copy_from_slice(&i.to_le_bytes());
             h[8] = 0xFE;
             match admit_append(&h, 100, 1) {
-                Ok(()) => {
+                Ok(c) => {
                     admitted += 1;
-                    // account exactly as the append path does
-                    let c = counters(&h);
+                    // Account into the Arc ADMISSION returned — the same
+                    // object the append path carries end-to-end (review
+                    // round 4: choosing it atomically with admission is
+                    // what stops a concurrent promotion from splitting
+                    // one request's accounting across two objects).
+                    assert!(
+                        std::sync::Arc::ptr_eq(&c, overflow_counters()),
+                        "past-cap admission must hand back the shared overflow aggregate"
+                    );
                     c.requests.fetch_add(1, Ordering::Relaxed);
                     c.records.fetch_add(1, Ordering::Relaxed);
                     c.bytes_in.fetch_add(100, Ordering::Relaxed);
@@ -644,7 +734,10 @@ mod tests {
         let h = [0xEE; 16];
         let a = counters(&h);
         let b = counters(&h);
-        assert!(std::sync::Arc::ptr_eq(&a, &b), "overflow counters must be shared");
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "overflow counters must be shared"
+        );
 
         // Idle entries are evictable to make room again.
         assert!(

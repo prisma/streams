@@ -145,7 +145,6 @@ async fn deletes_and_reads_are_faulted_too() {
     );
 }
 
-
 /// Anti-vacuity for the anti-vacuity mechanism: `STORE_LOST_RESPONSE` may
 /// only increment when a response was *actually* discarded. Counting the
 /// decision at roll time (the previous behaviour) let a scenario satisfy
@@ -238,7 +237,14 @@ async fn open_engine_cfg(
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    crate::shard::ShardEngine::start(prefix.to_string(), Arc::new(db), store, cfg, absorb_tx, None)
+    crate::shard::ShardEngine::start(
+        prefix.to_string(),
+        Arc::new(db),
+        store,
+        cfg,
+        absorb_tx,
+        None,
+    )
 }
 
 /// I1+I2+I3 for a single writer under the full fault set — errors, lost
@@ -375,13 +381,24 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         // Sequence N (0 for a fresh producer epoch) commits through A.
         let first = w
             .attempt_with_deadline(
-                &a, hash, &key, "p", &body_n,
-                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+                &a,
+                hash,
+                &key,
+                "p",
+                &body_n,
+                Some(crate::shard::ProducerReq {
+                    id: pid.clone(),
+                    epoch: 1,
+                    seq: 0,
+                }),
                 None,
             )
             .await;
         let orig_offset = match first {
-            Outcome::Acked { last_offset, duplicate } => {
+            Outcome::Acked {
+                last_offset,
+                duplicate,
+            } => {
                 assert!(!duplicate, "the first commit is not a duplicate");
                 last_offset
             }
@@ -402,13 +419,24 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         // The retry: identical bytes, identical producer identity.
         let retry = w
             .attempt_with_deadline(
-                &b, hash, &key, "p", &body_n,
-                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+                &b,
+                hash,
+                &key,
+                "p",
+                &body_n,
+                Some(crate::shard::ProducerReq {
+                    id: pid.clone(),
+                    epoch: 1,
+                    seq: 0,
+                }),
                 None,
             )
             .await;
         match retry {
-            Outcome::Acked { last_offset, duplicate } => {
+            Outcome::Acked {
+                last_offset,
+                duplicate,
+            } => {
                 assert!(
                     duplicate,
                     "seed {seed}: the new owner did not recognise the retry as a \
@@ -427,9 +455,18 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         let ds: Arc<dyn ObjectStore> = store.clone();
         let handle = b.stream_handle(hash).await.expect("handle");
         let before_next = handle.state.lock().unwrap().durable.next;
-        let res = crate::http::read_merged(&fresh_hist(&ds), &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024)
-            .await
-            .expect("read back");
+        let res = crate::http::read_merged(
+            &fresh_hist(&ds),
+            &key,
+            &hash,
+            &handle,
+            &b,
+            0,
+            None,
+            8 * 1024 * 1024,
+        )
+        .await
+        .expect("read back");
         let copies = res
             .recs
             .iter()
@@ -448,13 +485,27 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         // And the producer can continue: N+1 succeeds through the new owner.
         let next = w
             .attempt_with_deadline(
-                &b, hash, &key, "p", "seq-1",
-                Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 1 }),
+                &b,
+                hash,
+                &key,
+                "p",
+                "seq-1",
+                Some(crate::shard::ProducerReq {
+                    id: pid.clone(),
+                    epoch: 1,
+                    seq: 1,
+                }),
                 None,
             )
             .await;
         assert!(
-            matches!(next, Outcome::Acked { duplicate: false, .. }),
+            matches!(
+                next,
+                Outcome::Acked {
+                    duplicate: false,
+                    ..
+                }
+            ),
             "seed {seed}: sequence N+1 must commit after the handoff, got {next:?}"
         );
 
@@ -467,7 +518,6 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         }
     }
 }
-
 
 /// **I6, the undeniable composite** (review #3's closing ask): the append
 /// COMMITS durably but its response never reaches the client (deadline
@@ -485,7 +535,8 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
         latency_pct: 100,
         latency_ms: (2_000, 4_000),
     };
-    let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 15)).with_class(ObjClass::Wal, slow_wal);
+    let profile =
+        FaultProfile::uniform(FaultPlan::new(0, 0, 15)).with_class(ObjClass::Wal, slow_wal);
     let store = FaultStore::new(inner.clone(), 77, profile);
     let cov = store.coverage();
     let key = skey();
@@ -510,8 +561,16 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
     // sees an offset.
     let first = w
         .attempt_with_deadline(
-            &a, hash, &key, "x", &body,
-            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            &a,
+            hash,
+            &key,
+            "x",
+            &body,
+            Some(crate::shard::ProducerReq {
+                id: pid.clone(),
+                epoch: 1,
+                seq: 0,
+            }),
             Some(std::time::Duration::from_millis(300)),
         )
         .await;
@@ -525,13 +584,24 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
     // The retry: identical bytes, identical producer identity, new owner.
     let retry = w
         .attempt_with_deadline(
-            &b, hash, &key, "x", &body,
-            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            &b,
+            hash,
+            &key,
+            "x",
+            &body,
+            Some(crate::shard::ProducerReq {
+                id: pid.clone(),
+                epoch: 1,
+                seq: 0,
+            }),
             None,
         )
         .await;
     let (retry_off, dup) = match retry {
-        Outcome::Acked { last_offset, duplicate } => (last_offset, duplicate),
+        Outcome::Acked {
+            last_offset,
+            duplicate,
+        } => (last_offset, duplicate),
         other => panic!("retry must ack, got {other:?}"),
     };
     assert!(
@@ -546,7 +616,14 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
     let ds: Arc<dyn ObjectStore> = store.clone();
     let handle = b.stream_handle(hash).await.expect("handle");
     let res = crate::http::read_merged(
-        &fresh_hist(&ds), &key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024,
+        &fresh_hist(&ds),
+        &key,
+        &hash,
+        &handle,
+        &b,
+        0,
+        None,
+        8 * 1024 * 1024,
     )
     .await
     .expect("read back");
@@ -607,8 +684,16 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
     // The client gives up after 1 s while the append is still in flight.
     let first = w
         .attempt_with_deadline(
-            &engine, hash, &key, "d", &body,
-            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            &engine,
+            hash,
+            &key,
+            "d",
+            &body,
+            Some(crate::shard::ProducerReq {
+                id: pid.clone(),
+                epoch: 1,
+                seq: 0,
+            }),
             Some(std::time::Duration::from_secs(1)),
         )
         .await;
@@ -625,8 +710,16 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
     // The client resolves its ambiguity by retrying idempotently.
     let retry = w
         .attempt_with_deadline(
-            &engine, hash, &key, "d", &body,
-            Some(crate::shard::ProducerReq { id: pid.clone(), epoch: 1, seq: 0 }),
+            &engine,
+            hash,
+            &key,
+            "d",
+            &body,
+            Some(crate::shard::ProducerReq {
+                id: pid.clone(),
+                epoch: 1,
+                seq: 0,
+            }),
             None,
         )
         .await;
@@ -641,9 +734,18 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let handle = engine.stream_handle(hash).await.expect("handle");
-    let res = crate::http::read_merged(&fresh_hist(&ds), &key, &hash, &handle, &engine, 0, None, 1 << 20)
-        .await
-        .expect("read back");
+    let res = crate::http::read_merged(
+        &fresh_hist(&ds),
+        &key,
+        &hash,
+        &handle,
+        &engine,
+        0,
+        None,
+        1 << 20,
+    )
+    .await
+    .expect("read back");
     let copies = res
         .recs
         .iter()
@@ -689,7 +791,8 @@ async fn a_fenced_owner_acknowledges_nothing() {
         let mut ghost = OpLog::default();
         let mut gw = Workload::new(cov.clone());
         gw.max_attempts = 1; // a fenced owner gets one shot, not three
-        gw.run(&a, hash, &key, &["x", "y"], 5, false, &mut ghost).await;
+        gw.run(&a, hash, &key, &["x", "y"], 5, false, &mut ghost)
+            .await;
 
         assert_eq!(
             ghost.total_acked(),
@@ -788,8 +891,6 @@ async fn a_handoff_with_an_append_in_flight_resolves_safely() {
         panic!("{e}");
     }
 }
-
-
 
 // ---- the tiered read path -------------------------------------------
 
@@ -982,7 +1083,8 @@ async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     // Interleaved unkeyed ("") and keyed records.
-    w.run(&engine, hash, &key, &["", "k1"], 25, false, &mut log).await;
+    w.run(&engine, hash, &key, &["", "k1"], 25, false, &mut log)
+        .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
     let mut absorbed = 0u64;
@@ -995,7 +1097,10 @@ async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    assert!(absorbed > 0, "the absorber never ran — nothing reached history");
+    assert!(
+        absorbed > 0,
+        "the absorber never ran — nothing reached history"
+    );
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hist = fresh_hist(&ds);
@@ -1019,8 +1124,8 @@ async fn empty_key_records_skip_the_index_copy_but_still_filter_read() {
         .await
         .expect("history reader");
     assert!(covered, "reader must cover the absorbed boundary");
-    let range = crate::history::hist_key_index_key("", 0)
-        ..crate::history::hist_key_index_key("", u64::MAX);
+    let range =
+        crate::history::hist_key_index_key("", 0)..crate::history::hist_key_index_key("", u64::MAX);
     let mut iter = reader
         .scan(range)
         .await
@@ -1093,7 +1198,8 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
+        .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
     // No signal was ever delivered; only the sweep can find this stream.
@@ -1266,7 +1372,8 @@ async fn v2_absorbs_without_customer_keys() {
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
-    w.run(&engine, hash, &key, &["", "vk"], 25, false, &mut log).await;
+    w.run(&engine, hash, &key, &["", "vk"], 25, false, &mut log)
+        .await;
     assert!(log.total_acked() > 0, "nothing acked");
 
     let mut absorbed = 0u64;
@@ -1275,7 +1382,10 @@ async fn v2_absorbs_without_customer_keys() {
             let st = h.state.lock().unwrap();
             absorbed = st.durable.absorbed;
             if absorbed > 0 {
-                assert!(st.durable.history_v2, "absorption advanced without the v2 flag");
+                assert!(
+                    st.durable.history_v2,
+                    "absorption advanced without the v2 flag"
+                );
             }
         }
         if absorbed > 0 {
@@ -1318,8 +1428,7 @@ async fn v2_history_survives_engine_handoff() {
     let hash = [51u8; 16];
     let prefix = "dst-v2reopen";
 
-    let (a, absorber_a) =
-        open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
+    let (a, absorber_a) = open_engine_with_absorber(store.clone(), prefix, hash, &key).await;
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     w.run(&a, hash, &key, &["r"], 20, false, &mut log).await;
@@ -1350,7 +1459,10 @@ async fn v2_history_survives_engine_handoff() {
     {
         let h = b.stream_handle(hash).await.expect("handle");
         let st = h.state.lock().unwrap();
-        assert!(st.durable.history_v2, "v2 flag lost across the tail round-trip");
+        assert!(
+            st.durable.history_v2,
+            "v2 flag lost across the tail round-trip"
+        );
     }
     absorber_a.abort();
     absorber_b.abort();
@@ -1420,11 +1532,13 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
     let mut tiny_log = OpLog::default();
     let mut w1 = Workload::new(cov.clone());
     // ~2 small frames pending: under the 1 KiB min — must defer.
-    w1.run(&engine, tiny, &key, &["d"], 2, false, &mut tiny_log).await;
+    w1.run(&engine, tiny, &key, &["d"], 2, false, &mut tiny_log)
+        .await;
     let mut fat_log = OpLog::default();
     let mut w2 = Workload::new(cov.clone());
     // ~60 frames pending: over the min — must age-absorb.
-    w2.run(&engine, fat, &key, &["d"], 60, false, &mut fat_log).await;
+    w2.run(&engine, fat, &key, &["d"], 60, false, &mut fat_log)
+        .await;
     crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
 
     let mut fat_absorbed = false;
@@ -1468,9 +1582,13 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hist = fresh_hist(&ds);
     let obs_tiny = drain_observed(&hist, &engine, tiny, &key, &cov).await;
-    tiny_log.audit(&obs_tiny).expect("tiny stream readable from the shard log");
+    tiny_log
+        .audit(&obs_tiny)
+        .expect("tiny stream readable from the shard log");
     let obs_fat = drain_observed(&hist, &engine, fat, &key, &cov).await;
-    fat_log.audit(&obs_fat).expect("fat stream readable after absorption");
+    fat_log
+        .audit(&obs_fat)
+        .expect("fat stream readable after absorption");
     absorber.abort();
 }
 
@@ -1543,7 +1661,9 @@ async fn a_fenced_owners_absorber_exits() {
         "the fenced owner's absorber is still running — a zombie that will \
          fight the new owner for its history DB"
     );
-    absorber_a.await.expect("absorber must exit cleanly, not panic");
+    absorber_a
+        .await
+        .expect("absorber must exit cleanly, not panic");
 
     absorber_b.abort();
     let _ = b;
@@ -1605,9 +1725,6 @@ async fn closing_an_engine_answers_queued_appends_and_ends_every_task() {
         .await
         .expect("all engine tasks must terminate after close");
 }
-
-
-
 
 /// **Review #2's barrier test, exact form: the gather must not start
 /// until this flush's acks are ON THE WIRE.** The dispatch gate is held
@@ -1771,8 +1888,7 @@ async fn a_busy_next_generation_skips_the_gather_window() {
             wal_gather_skip_bytes: u64::MAX,
             ..Default::default()
         };
-        let engine =
-            open_engine_cfg(store.clone(), &format!("dst-busy-{skip_reqs}"), cfg).await;
+        let engine = open_engine_cfg(store.clone(), &format!("dst-busy-{skip_reqs}"), cfg).await;
         let w = Workload::new(cov.clone());
         let o = w
             .attempt_with_deadline(&engine, hash, &key, "s", "warm", None, None)
@@ -1869,8 +1985,16 @@ async fn gather_pump_preserves_invariants_under_faults() {
         // Two closed-loop waves with concurrent keys — the shape the
         // gather window exists for.
         for _ in 0..4 {
-            w.run(&engine, hash, &key, &["g1", "g2", "g3"], 10, false, &mut log)
-                .await;
+            w.run(
+                &engine,
+                hash,
+                &key,
+                &["g1", "g2", "g3"],
+                10,
+                false,
+                &mut log,
+            )
+            .await;
         }
 
         // The pump must be flushing, and across the seeds the drift
@@ -1921,8 +2045,6 @@ async fn gather_pump_preserves_invariants_under_faults() {
          has degraded to re-testing the acker"
     );
 }
-
-
 
 /// **Review #2's ring ordering + paging asks, pinned at offset level.**
 ///
@@ -1976,13 +2098,17 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
         .ring_read(&handle, before_next, next, 1 << 20)
         .expect("a woken reader must hit the ring, not fall to the DB");
     assert_eq!(hit.frames.len(), (next - before_next) as usize);
-    assert!(matches!(appender.await.expect("join"), Outcome::Acked { .. }));
+    assert!(matches!(
+        appender.await.expect("join"),
+        Outcome::Acked { .. }
+    ));
 
     // (2) Mid-batch: append a 4-record batch (one commit group), read
     // starting inside it.
     let mut log = OpLog::default();
     let mut w2 = Workload::new(cov.clone());
-    w2.run(&engine, hash, &key, &["o"], 4, false, &mut log).await;
+    w2.run(&engine, hash, &key, &["o"], 4, false, &mut log)
+        .await;
     let end = handle.state.lock().unwrap().durable.next;
     let mid = end - 2;
     let part = engine
@@ -1992,11 +2118,21 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     assert_eq!(part.last_offset, Some(end - 1));
 
     // (3) Duplicate publishes nothing.
-    let pr = crate::shard::ProducerReq { id: "ring-dup".into(), epoch: 1, seq: 0 };
+    let pr = crate::shard::ProducerReq {
+        id: "ring-dup".into(),
+        epoch: 1,
+        seq: 0,
+    };
     let first = w
         .attempt_with_deadline(&engine, hash, &key, "o", "dup-body", Some(pr.clone()), None)
         .await;
-    assert!(matches!(first, Outcome::Acked { duplicate: false, .. }));
+    assert!(matches!(
+        first,
+        Outcome::Acked {
+            duplicate: false,
+            ..
+        }
+    ));
     let ceil_before = {
         let r = handle.ring.lock().unwrap();
         r.batches.back().map(|b| b.next)
@@ -2005,12 +2141,21 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let retry = w
         .attempt_with_deadline(&engine, hash, &key, "o", "dup-body", Some(pr), None)
         .await;
-    assert!(matches!(retry, Outcome::Acked { duplicate: true, .. }));
+    assert!(matches!(
+        retry,
+        Outcome::Acked {
+            duplicate: true,
+            ..
+        }
+    ));
     let ceil_after = {
         let r = handle.ring.lock().unwrap();
         r.batches.back().map(|b| b.next)
     };
-    assert_eq!(ceil_before, ceil_after, "a duplicate must not move the ring ceiling");
+    assert_eq!(
+        ceil_before, ceil_after,
+        "a duplicate must not move the ring ceiling"
+    );
     assert_eq!(
         engine.ring_published.load(Ordering::Relaxed),
         published_before,
@@ -2028,7 +2173,10 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
     let b = open_engine_cfg(
         store.clone(),
         "dst-ring-ord",
-        crate::shard::ShardConfig { tail_ring_bytes: 32 * 1024 * 1024, ..Default::default() },
+        crate::shard::ShardConfig {
+            tail_ring_bytes: 32 * 1024 * 1024,
+            ..Default::default()
+        },
     )
     .await;
     let hb = b.stream_handle(hash).await.expect("handle");
@@ -2036,7 +2184,10 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
         .await
         .expect("db budget-1 read");
     assert_eq!(one_db.frames.len(), 1);
-    assert_eq!(one.frames[0], one_db.frames[0], "same first frame either path");
+    assert_eq!(
+        one.frames[0], one_db.frames[0],
+        "same first frame either path"
+    );
 }
 
 /// **Durable-tail ring: correct under load, evictions, and fallback.**
@@ -2064,7 +2215,8 @@ async fn tail_ring_serves_live_reads_and_survives_eviction() {
         let mut log = OpLog::default();
         let mut w = Workload::new(cov.clone());
         for _ in 0..4 {
-            w.run(&engine, hash, &key, &["r1", "r2"], 12, false, &mut log).await;
+            w.run(&engine, hash, &key, &["r1", "r2"], 12, false, &mut log)
+                .await;
         }
 
         let hits = engine.ring_hits.load(Ordering::Relaxed);
@@ -2135,7 +2287,11 @@ async fn tail_ring_matches_the_db_scan_and_restarts_cold() {
     let via_db = crate::shard::read_frames_range(&b, &handle_b, 0, next, 8 << 20)
         .await
         .expect("db read");
-    assert_eq!(b.ring_hits.load(Ordering::Relaxed), 0, "cold ring cannot hit");
+    assert_eq!(
+        b.ring_hits.load(Ordering::Relaxed),
+        0,
+        "cold ring cannot hit"
+    );
     assert_eq!(via_ring.frames.len(), via_db.frames.len(), "frame count");
     for (i, (ra, rb)) in via_ring.frames.iter().zip(via_db.frames.iter()).enumerate() {
         assert_eq!(ra, rb, "frame {i} differs between ring and DB");
@@ -2169,7 +2325,8 @@ async fn history_and_tail_partition_the_stream_after_trim() {
     // Enough traffic, in waves, that absorption AND trim both advance
     // (trim lands one absorb round behind the boundary by design).
     for _ in 0..6 {
-        w.run(&engine, hash, &key, &["t1", "t2"], 12, false, &mut log).await;
+        w.run(&engine, hash, &key, &["t1", "t2"], 12, false, &mut log)
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     }
 
@@ -2185,7 +2342,8 @@ async fn history_and_tail_partition_the_stream_after_trim() {
             break;
         }
         // keep the stream moving so the absorber has work
-        w.run(&engine, hash, &key, &["t1"], 2, false, &mut log).await;
+        w.run(&engine, hash, &key, &["t1"], 2, false, &mut log)
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert!(
@@ -2193,7 +2351,10 @@ async fn history_and_tail_partition_the_stream_after_trim() {
         "trim never advanced (absorbed={absorbed}, next={next}) — this \
          scenario would only be re-testing absorption"
     );
-    assert!(absorbed >= trimmed, "absorbed {absorbed} must cover trimmed {trimmed}");
+    assert!(
+        absorbed >= trimmed,
+        "absorbed {absorbed} must cover trimmed {trimmed}"
+    );
     assert!(
         absorbed < next,
         "no live tail above the boundary (absorbed={absorbed}, next={next}) — \
@@ -2213,9 +2374,10 @@ async fn history_and_tail_partition_the_stream_after_trim() {
 
     // 2. History serves [0, absorbed).
     let ds: Arc<dyn ObjectStore> = store.clone();
-    let hist = crate::history::read_history(&fresh_hist(&ds), &hash, &key, 0, absorbed, None, 8 << 20)
-        .await
-        .expect("history read");
+    let hist =
+        crate::history::read_history(&fresh_hist(&ds), &hash, &key, 0, absorbed, None, 8 << 20)
+            .await
+            .expect("history read");
     assert!(
         !hist.records.is_empty(),
         "history returned nothing for [0, {absorbed})"
@@ -2238,7 +2400,9 @@ async fn history_and_tail_partition_the_stream_after_trim() {
     //    record, once, in order — across the boundary.
     let observed = drain_observed(&fresh_hist(&ds), &engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
-        panic!("merged read is not the canonical stream (trimmed={trimmed}, absorbed={absorbed}, next={next}): {e}");
+        panic!(
+            "merged read is not the canonical stream (trimmed={trimmed}, absorbed={absorbed}, next={next}): {e}"
+        );
     }
     let merged_total: usize = observed.values().map(|v| v.len()).sum();
     assert!(
@@ -2276,7 +2440,8 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
     // Offsets [0, 20).
-    w.run(&engine, hash, &key, &["d"], 20, false, &mut log).await;
+    w.run(&engine, hash, &key, &["d"], 20, false, &mut log)
+        .await;
     assert_eq!(log.total_acked(), 20, "need all 20 offsets acked");
 
     let published = |engine: &Arc<crate::shard::ShardEngine>| {
@@ -2302,18 +2467,21 @@ async fn a_duplicate_absorbed_op_does_not_advance_the_trim() {
     };
 
     // Advance 0 -> 10: deferred trim means nothing is deleted yet.
-    engine.submit_absorbed(hash, 10).await;
+    engine.submit_absorbed(hash, 10, 0).await;
     wait_absorbed(&engine, 10).await;
     // Advance 10 -> 18: trims up to the previous boundary, 10.
-    engine.submit_absorbed(hash, 18).await;
+    engine.submit_absorbed(hash, 18, 0).await;
     wait_absorbed(&engine, 18).await;
     let (absorbed, trimmed) = published(&engine).await;
     assert_eq!(absorbed, 18);
-    assert_eq!(trimmed, 10, "an advancing op trims to the previous boundary");
+    assert_eq!(
+        trimmed, 10,
+        "an advancing op trims to the previous boundary"
+    );
 
     // The duplicate: re-submit the boundary the committer already holds,
     // exactly as an absorber pass that raced dispatch does.
-    engine.submit_absorbed(hash, 18).await;
+    engine.submit_absorbed(hash, 18, 0).await;
     // Sentinel append: the committer queue is FIFO, so this ack proves the
     // duplicate op was processed and its state published.
     w.run(&engine, hash, &key, &["d"], 1, false, &mut log).await;
@@ -2364,7 +2532,9 @@ fn oracle_catches_loss() {
     let mut log = OpLog::default();
     let acked: Vec<AttemptId> = (0..10).map(|i| (i, 0)).collect();
     log.acked.insert("k".into(), acked);
-    let err = log.audit(&obs(&[("k", &[(0, 0), (1, 0), (2, 0)])])).unwrap_err();
+    let err = log
+        .audit(&obs(&[("k", &[(0, 0), (1, 0), (2, 0)])]))
+        .unwrap_err();
     assert!(err.starts_with("I1"), "expected I1, got: {err}");
 }
 
@@ -2387,7 +2557,6 @@ fn oracle_catches_reordering() {
         .unwrap_err();
     assert!(err.starts_with("I2"), "expected I2, got: {err}");
 }
-
 
 /// I7's negative control: a record that belongs to no issued attempt must
 /// be caught. Previously the audit only checked that acked attempts were
@@ -2616,7 +2785,6 @@ async fn reopen_storm_reproduces_the_eu_central_wedge() {
          did not reproduce"
     );
 }
-
 
 /// OpenGate counters are process-global too; its three counter-asserting
 /// tests serialize here for the same reason as the reader-cache tests.
@@ -2898,7 +3066,6 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
 
 // ---- the metadata-read surface (history reader cache + compactions GC)
 
-
 // The history reader cache and its counters are process-global, so the
 // The reader service is per-instance now (one per store), so these
 // scenarios need no cross-test serialization and no global poll pin:
@@ -2936,18 +3103,30 @@ async fn history_reads_reuse_a_cached_reader() {
 
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
-    w.run(&engine, hash, &key, &["h"], 30, false, &mut log).await;
-    let mut absorbed = 0u64;
+    w.run(&engine, hash, &key, &["h"], 30, false, &mut log)
+        .await;
+    // Wait for FULL absorption, not merely absorbed > 0: an absorb
+    // advance landing between drains forces a stale reopen in place of
+    // a cache hit, and this test's budget is about repeat reads at a
+    // SETTLED boundary. With `absorbed > 0` the test raced the
+    // absorber's cadence and flaked under full-suite CPU load (hits 18
+    // of 19 — one advance interleaved with the drain loop).
+    let (mut absorbed, mut next) = (0u64, u64::MAX);
     for _ in 0..400 {
         if let Ok(h) = engine.stream_handle(hash).await {
-            absorbed = h.state.lock().unwrap().durable.absorbed;
-            if absorbed > 0 {
+            let s = h.state.lock().unwrap();
+            absorbed = s.durable.absorbed;
+            next = s.durable.next;
+            if absorbed == next && next > 0 {
                 break;
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    assert!(absorbed > 0, "absorber never advanced — nothing to read from history");
+    assert!(
+        absorbed == next && next > 0,
+        "absorber never settled ({absorbed}/{next}) — nothing stable to read from history"
+    );
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     // ONE service held across all drains — the reuse under test.
@@ -3023,12 +3202,14 @@ async fn a_stale_cached_reader_is_detected_and_replaced() {
         }
     };
 
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
+        .await;
     let a1 = wait_absorbed_past(0).await;
     let obs = drain_observed(&hr, &engine, hash, &key, &cov).await;
     log.audit(&obs).expect("drain 1");
 
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
+        .await;
     let a2 = wait_absorbed_past(a1).await;
     assert!(a2 > a1);
 
@@ -3073,7 +3254,8 @@ async fn filtered_history_reads_survive_a_stale_reader() {
     let hr = hist_hour(&ds, 8);
     let mut log = OpLog::default();
     let mut w = Workload::new(cov.clone());
-    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
+    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log)
+        .await;
     let mut a1 = 0;
     for _ in 0..400 {
         if let Ok(h) = engine.stream_handle(hash).await {
@@ -3089,7 +3271,8 @@ async fn filtered_history_reads_survive_a_stale_reader() {
         .await
         .expect("warm filtered read");
 
-    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log).await;
+    w.run(&engine, hash, &key, &["fa", "fb"], 10, false, &mut log)
+        .await;
     // Wait for absorption to CATCH UP, not merely advance: the lane-capped
     // absorber legitimately advances the boundary in partial steps, and a
     // read at a partial a2 honestly excludes the unabsorbed tail — which
@@ -3223,7 +3406,11 @@ async fn sixty_four_cold_readers_cause_exactly_one_open() {
         assert!(covered, "upto=0 is trivially covered");
     }
     assert_eq!(m(&hr.metrics.opens_started), 1, "exactly one open started");
-    assert_eq!(m(&hr.metrics.opens_completed), 1, "exactly one open completed");
+    assert_eq!(
+        m(&hr.metrics.opens_completed),
+        1,
+        "exactly one open completed"
+    );
     assert_eq!(m(&hr.metrics.misses), 1, "exactly one cold miss");
     assert!(
         m(&hr.metrics.coalesced) >= 63,
@@ -3252,7 +3439,8 @@ async fn sixty_four_stale_readers_cause_one_probe_and_one_reopen() {
     let mut w = Workload::new(cov.clone());
 
     // Warm at boundary a1.
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
+        .await;
     let mut a1 = 0;
     for _ in 0..400 {
         if let Ok(h) = engine.stream_handle(hash).await {
@@ -3269,7 +3457,8 @@ async fn sixty_four_stale_readers_cause_one_probe_and_one_reopen() {
         .expect("warm");
 
     // Advance the boundary past the cached (hour-poll) view.
-    w.run(&engine, hash, &key, &["s"], 15, false, &mut log).await;
+    w.run(&engine, hash, &key, &["s"], 15, false, &mut log)
+        .await;
     let mut a2 = a1;
     for _ in 0..400 {
         if let Ok(h) = engine.stream_handle(hash).await {
@@ -3295,7 +3484,10 @@ async fn sixty_four_stale_readers_cause_one_probe_and_one_reopen() {
     }
     for t in tasks {
         let res = t.await.expect("join").expect("read");
-        assert!(res.completed, "every stampede read must cover the new boundary");
+        assert!(
+            res.completed,
+            "every stampede read must cover the new boundary"
+        );
     }
     assert_eq!(
         m(&hr.metrics.probes) - probes0,
@@ -3410,8 +3602,8 @@ async fn all_callers_cancel_but_the_open_still_lands_in_the_cache() {
 async fn a_probe_error_does_not_evict_the_reader() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 71, FaultPlan::CLEAN);
-    let key = skey();     // the key the history db is actually written with
-    let wrong = skey2();  // a reader under this key gets transform errors
+    let key = skey(); // the key the history db is actually written with
+    let wrong = skey2(); // a reader under this key gets transform errors
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hr = hist_hour(&ds, 8);
     let hash = seed_history_dbs(&ds, &key, 34, 1).await[0];
@@ -3468,7 +3660,10 @@ async fn a_probe_error_does_not_evict_the_reader() {
     // The RIGHT key reads the same stream fine through its own reader —
     // the error was confined to the one caller with the bad key.
     let (r, covered) = hr.acquire(&hash, &key, 1).await.expect("right-key acquire");
-    assert!(covered, "the right key's probe reads the row and proves coverage");
+    assert!(
+        covered,
+        "the right key's probe reads the row and proves coverage"
+    );
     let v = r
         .get(crate::history::hist_record_key(0))
         .await
@@ -3491,12 +3686,8 @@ async fn hot_set_versus_capacity_has_measured_bounds() {
     let hashes = seed_history_dbs(&ds, &key, 35, 5).await;
 
     // Fits: 3 round-robin passes over 5 streams, cap 8.
-    let fits = crate::history::HistReaders::new(
-        ds.clone(),
-        8,
-        std::time::Duration::from_secs(120),
-        5_000,
-    );
+    let fits =
+        crate::history::HistReaders::new(ds.clone(), 8, std::time::Duration::from_secs(120), 5_000);
     for _ in 0..3 {
         for h in &hashes {
             let _ = fits.acquire(h, &key, 0).await.expect("fit acquire");
@@ -3510,12 +3701,8 @@ async fn hot_set_versus_capacity_has_measured_bounds() {
     assert_eq!(m(&fits.metrics.evictions), 0);
 
     // Does not fit: cap 4, same 5 streams round-robin — LRU's worst case.
-    let thrash = crate::history::HistReaders::new(
-        ds.clone(),
-        4,
-        std::time::Duration::from_secs(120),
-        5_000,
-    );
+    let thrash =
+        crate::history::HistReaders::new(ds.clone(), 4, std::time::Duration::from_secs(120), 5_000);
     let mut reads = 0u64;
     for _ in 0..3 {
         for h in &hashes {
@@ -3570,7 +3757,10 @@ async fn two_nodes_have_independent_reader_caches() {
     for (hr, r, seed) in &readers {
         assert_eq!(m(&hr.metrics.opens_started), 1, "node {seed}: its own open");
         assert_eq!(m(&hr.metrics.misses), 1);
-        let v = r.get(bytes::Bytes::from_static(b"seed")).await.expect("get");
+        let v = r
+            .get(bytes::Bytes::from_static(b"seed"))
+            .await
+            .expect("get");
         let v = v.expect("seed present");
         assert_eq!(
             v.as_ref(),
@@ -3702,10 +3892,7 @@ async fn append_sized(
     rx.await.expect("resp").expect("ack").last_offset
 }
 
-async fn wait_all_absorbed(
-    engine: &Arc<crate::shard::ShardEngine>,
-    hashes: &[[u8; 16]],
-) {
+async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u8; 16]]) {
     for h in hashes {
         let mut ok = false;
         for _ in 0..400 {
@@ -3771,17 +3958,28 @@ async fn v2_gather_packs_to_the_aggregate_budget() {
         },
     );
     let mut per_gather = Vec::new();
+    let mut first_deferred = None;
     for _ in 0..6 {
-        let advanced = absorber.absorb_gather_v2(&hashes).await.expect("gather");
-        if advanced.is_empty() {
+        let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+        if outcome.advanced.is_empty() {
             break;
         }
-        per_gather.push(advanced.len());
+        if first_deferred.is_none() {
+            first_deferred = Some(outcome.deferred_budget.len());
+        }
+        per_gather.push(outcome.advanced.len());
     }
     assert_eq!(
         per_gather,
         vec![2, 2, 2],
         "budget must pack exactly two 16 KiB streams per gather"
+    );
+    // Review round 4: streams that did not fit must be REPORTED as
+    // budget-deferred (the pump keeps them pending off this signal).
+    assert_eq!(
+        first_deferred,
+        Some(4),
+        "the four streams that did not fit must classify as deferred_budget"
     );
     wait_all_absorbed(&engine, &hashes).await;
     engine.begin_close();
@@ -3831,10 +4029,15 @@ async fn an_oversized_chunk_gathers_alone() {
     );
     let all = [big, small_a, small_b];
     let g1 = absorber.absorb_gather_v2(&all).await.expect("gather 1");
-    assert_eq!(g1.len(), 1, "oversized chunk must gather alone");
-    assert_eq!(g1[0].0, big);
+    assert_eq!(g1.advanced.len(), 1, "oversized chunk must gather alone");
+    assert_eq!(g1.advanced[0].0, big);
+    assert_eq!(g1.deferred_budget.len(), 2);
     let g2 = absorber.absorb_gather_v2(&all).await.expect("gather 2");
-    assert_eq!(g2.len(), 2, "both small streams fit the next gather");
+    assert_eq!(
+        g2.advanced.len(),
+        2,
+        "both small streams fit the next gather"
+    );
     wait_all_absorbed(&engine, &all).await;
     engine.begin_close();
 }
@@ -3882,9 +4085,13 @@ async fn keyed_frames_count_twice_against_the_budget() {
         },
     );
     let g1 = absorber.absorb_gather_v2(&hashes).await.expect("gather 1");
-    assert_eq!(g1.len(), 1, "keyed double-write must halve packing");
+    assert_eq!(
+        g1.advanced.len(),
+        1,
+        "keyed double-write must halve packing"
+    );
     let g2 = absorber.absorb_gather_v2(&hashes).await.expect("gather 2");
-    assert_eq!(g2.len(), 1);
+    assert_eq!(g2.advanced.len(), 1);
     wait_all_absorbed(&engine, &hashes).await;
     engine.begin_close();
 }
@@ -3983,7 +4190,10 @@ async fn untouched_streams_absorb_after_restart() {
             break;
         }
     }
-    assert!(cleared, "untouched pre-crash stream never absorbed after restart");
+    assert!(
+        cleared,
+        "untouched pre-crash stream never absorbed after restart"
+    );
 
     // Only now touch the stream to confirm the boundary state.
     let st = engine_b.stream_handle(hash).await.unwrap();
@@ -3992,7 +4202,10 @@ async fn untouched_streams_absorb_after_restart() {
         (s.durable.absorbed, s.durable.next)
     };
     assert_eq!(n, 5, "durable next lost across restart");
-    assert_eq!(a, n, "absorbed must equal next after index-seeded absorption");
+    assert_eq!(
+        a, n,
+        "absorbed must equal next after index-seeded absorption"
+    );
     engine_b.begin_close();
 }
 
@@ -4033,8 +4246,11 @@ async fn idle_stream_handles_evict_and_reload() {
     // Give the pipeline a beat so no committer batch still holds clones,
     // then evict with a zero idle threshold: everything unreferenced goes.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let evicted = engine.evict_idle_handles(std::time::Duration::ZERO);
-    assert!(evicted >= 8, "expected all idle handles evicted, got {evicted}");
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    assert!(
+        evicted >= 8,
+        "expected all idle handles evicted, got {evicted}"
+    );
     assert_eq!(engine.resident_streams(), 0);
 
     // Reload: durable state must be intact from the shard DB.
@@ -4044,7 +4260,812 @@ async fn idle_stream_handles_evict_and_reload() {
 
     // A held reference is untouchable by construction.
     let _held = engine.stream_handle(hashes[1]).await.unwrap();
-    let evicted = engine.evict_idle_handles(std::time::Duration::ZERO);
-    assert!(engine.resident_streams() >= 1, "held handle must survive, evicted={evicted}");
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    assert!(
+        engine.resident_streams() >= 1,
+        "held handle must survive, evicted={evicted}"
+    );
+    engine.begin_close();
+}
+
+/// Multi-record variant of append_sized: one request carrying `n`
+/// records of `each` bytes (the mature-wave test needs deep per-stream
+/// prefixes without 4,800 round-trips).
+async fn append_n(
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    n: usize,
+    each: usize,
+) -> u64 {
+    let subkey = crate::crypto::derive_subkey(key, &hash, "", 0);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = crate::shard::AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash,
+        route: hash,
+        entries: (0..n)
+            .map(|_| bytes::Bytes::from(vec![0x5au8; each]))
+            .collect(),
+        usage: crate::usage::counters(&hash),
+        routing_key: String::new(),
+        key_version: 0,
+        subkey,
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 0,
+        close: false,
+        producer: None,
+        deferred_error: None,
+        touch: None,
+        resp: tx,
+    };
+    assert!(engine.try_enqueue(req).is_ok(), "enqueue");
+    rx.await.expect("resp").expect("ack").last_offset
+}
+
+/// Release blocker (review round 4, P0): a second absorption wave across
+/// many mature streams used to expand into ONE WriteBatch of
+/// streams × max_trim_per_op deletes (67M at the wide posture — a
+/// multi-GiB batch). Boundary publication and physical trimming are now
+/// decoupled: the advance batch trims at most TRIM_GLOBAL_BUDGET
+/// deletes, the remainder becomes trim debt, and TrimTick maintenance
+/// drains it a budgeted slice per commit — including via the 5 s flush
+/// ticker with no test involvement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_absorption_wave_trims_under_a_global_budget() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 96, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hashes: Vec<[u8; 16]> = (0u8..24).map(|i| [0xC0u8.wrapping_add(i); 16]).collect();
+    const RECS: u64 = 200;
+    const BUDGET: u64 = 512;
+
+    let db = slatedb::Db::builder("dst-maturewave", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-maturewave".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig {
+            // The per-stream cap is deliberately HUGE: only the global
+            // budget may bound the wave (the wide posture runs
+            // TRIM_PER_OP=65536, where per-stream capping alone still
+            // permitted the 67M-delete batch).
+            max_trim_per_op: 65_536,
+            trim_global_budget: BUDGET,
+            ..Default::default()
+        },
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    // Wave 1: build mature streams (deep absorbed prefixes). A FIRST
+    // absorption sets trim_safe_to to the previous boundary (0), so it
+    // owes no trims — which is exactly why the earlier 100k-stream run
+    // never caught this bug.
+    for h in &hashes {
+        append_n(&engine, *h, &key, RECS as usize, 512).await;
+    }
+    wait_all_absorbed(&engine, &hashes).await;
+    let (debt0, _, max0, _) = engine.trim_stats();
+    assert_eq!(debt0, 0, "first absorption must owe no trims");
+    assert_eq!(max0, 0, "first absorption must delete nothing");
+
+    // Wave 2: one new record each, then absorption advances every
+    // boundary and RECS offsets per stream become trimmable at once.
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "", 512).await;
+    }
+    let mut ok = false;
+    for _ in 0..500 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut all = true;
+        for h in &hashes {
+            let st = engine.stream_handle(*h).await.unwrap();
+            let a = st.state.lock().unwrap().durable.absorbed;
+            if a < RECS + 1 {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "wave-2 boundaries never advanced");
+
+    // The decoupling proof: boundaries are published but the bulk of the
+    // physical trim work is DEBT, not one giant batch. (The old code
+    // trimmed all 24 × 200 = 4,800 offsets inline in the advance batch.)
+    let (debt, _, max_batch, _) = engine.trim_stats();
+    assert!(
+        debt > 0,
+        "trim work must be deferred as debt, not done inline in the advance batch"
+    );
+    assert!(
+        max_batch <= BUDGET,
+        "a commit group exceeded the global trim budget: {max_batch} > {BUDGET}"
+    );
+
+    // Drain most of the debt with explicit pulses (fast), asserting the
+    // bound holds throughout.
+    for _ in 0..200 {
+        engine.pump_trim_tick();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let (d, _, m, _) = engine.trim_stats();
+        assert!(m <= BUDGET, "budget violated mid-drain: {m}");
+        if d <= 2 {
+            break;
+        }
+    }
+    // Leave the tail of the debt to the PRODUCTION driver: the 5 s flush
+    // ticker must finish the job with no help from the test.
+    let mut drained = false;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        if engine.trim_stats().0 == 0 {
+            drained = true;
+            break;
+        }
+    }
+    assert!(
+        drained,
+        "flush-ticker trim maintenance never drained the debt"
+    );
+
+    // Convergence: every stream fully advanced AND fully trimmed, and
+    // the maintenance markers are gone.
+    for h in &hashes {
+        let st = engine.stream_handle(*h).await.unwrap();
+        let f = { st.state.lock().unwrap().durable.clone() };
+        assert_eq!(f.absorbed, RECS + 1);
+        assert_eq!(f.next, RECS + 1);
+        assert_eq!(
+            f.trimmed, f.trim_safe_to,
+            "trim cursor must reach the safe target"
+        );
+        assert_eq!(f.trim_safe_to, RECS, "safe target is the previous boundary");
+    }
+    let (_, _, max_final, total) = engine.trim_stats();
+    assert!(max_final <= BUDGET);
+    assert_eq!(
+        total,
+        24 * RECS,
+        "every owed offset must be trimmed exactly once"
+    );
+    let dirty = engine.scan_dirty_streams().await.unwrap();
+    assert!(
+        !dirty.iter().any(|(h, _, _)| hashes.contains(h)),
+        "maintenance markers must clear once absorb and trim both catch up"
+    );
+    engine.begin_close();
+}
+
+/// Review round 4, P1: a stream skipped by the gather's byte budget must
+/// STAY pending and absorb on a later tick — with the resident-handle
+/// sweep disabled, nothing else can rediscover it. The old pump removed
+/// every lane member from pending, stranding budget-deferred streams
+/// for up to a sweep period and blinding the lag view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn budget_deferred_streams_absorb_on_the_next_tick() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 97, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hashes: Vec<[u8; 16]> = (0u8..6).map(|i| [0xD0 + i; 16]).collect();
+
+    let db = slatedb::Db::builder("dst-defer", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-defer".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    // PRODUCTION pump (not direct gather calls): tiny budget packs ~2
+    // streams per gather, so full convergence REQUIRES deferred streams
+    // surviving in pending across ticks. No sweep, no extra signals.
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            gather_max_bytes: 40 * 1024,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "", 16 * 1024).await;
+    }
+    // All six must absorb across the NEXT FEW ticks off the ORIGINAL
+    // signals alone — ~3 gathers at 2 streams each, so well under 1 s
+    // at a 20 ms tick. The deadline is deliberately far below the
+    // periodic durable-index rescan (tick 120 ≈ 2.4 s here), which
+    // would otherwise re-find dropped streams and mask exactly the bug
+    // this test exists to catch (proven by mutation: removing deferred
+    // streams from pending converges at rescan time, not tick time).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1_200);
+    'outer: loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "budget-deferred streams did not absorb within the tick horizon"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        for h in &hashes {
+            let st = engine.stream_handle(*h).await.unwrap();
+            let (a, n) = {
+                let s = st.state.lock().unwrap();
+                (s.durable.absorbed, s.durable.next)
+            };
+            if !(a == n && n > 0) {
+                continue 'outer;
+            }
+        }
+        break;
+    }
+    engine.begin_close();
+}
+
+/// Review round 4, P1: restart rediscovery under the TRUE default
+/// policy. A single large record used to be estimated at 1 KiB
+/// (records × 1 KiB), below every default threshold — never absorbed
+/// again without a customer request. The tail now carries exact
+/// unabsorbed bytes and the seed reads them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_record_absorbs_after_restart_under_default_policy() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 98, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xA7u8; 16];
+
+    {
+        let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(std::time::Duration::from_millis(5)),
+                manifest_poll_interval: std::time::Duration::from_millis(50),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("open db A");
+        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        let engine_a = crate::shard::ShardEngine::start(
+            "dst-bigrec".to_string(),
+            Arc::new(db),
+            store.clone(),
+            crate::shard::ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        // One 5 MiB record: above the default 4 MiB byte threshold in
+        // truth, 1 KiB in the old estimate.
+        append_sized(&engine_a, hash, &key, "", 5 * 1024 * 1024).await;
+        engine_a.begin_close();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db B");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine_b = crate::shard::ShardEngine::start(
+        "dst-bigrec".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    // THE POINT: pure AbsorberConfig::default() — production thresholds,
+    // production tick, production sweep cadence. No requests arrive.
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine_b.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig::default(),
+        absorb_rx,
+    );
+    let mut cleared = false;
+    for _ in 0..300 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let dirty = engine_b.scan_dirty_streams().await.unwrap();
+        if !dirty.iter().any(|(h, _, _)| *h == hash) {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(
+        cleared,
+        "a 5 MiB pre-restart record never absorbed under the default policy"
+    );
+    let st = engine_b.stream_handle(hash).await.unwrap();
+    let (a, n) = {
+        let s = st.state.lock().unwrap();
+        (s.durable.absorbed, s.durable.next)
+    };
+    assert_eq!((a, n), (1, 1));
+    engine_b.begin_close();
+}
+
+/// Review round 4, P1: the dirty-index scan must RETRY until it
+/// succeeds. A failed startup scan used to log-and-forget, permanently
+/// stranding pre-restart streams (no signal, no handle, no pending
+/// entry, no rediscovery path).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dirty_scan_retries_until_it_succeeds() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 99, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xA9u8; 16];
+
+    {
+        let db = slatedb::Db::builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(std::time::Duration::from_millis(5)),
+                manifest_poll_interval: std::time::Duration::from_millis(50),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("open db A");
+        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        let engine_a = crate::shard::ShardEngine::start(
+            "dst-scanretry".to_string(),
+            Arc::new(db),
+            store.clone(),
+            crate::shard::ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
+        engine_a.begin_close();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // The first TWO scans on this shard fail; the third succeeds.
+    crate::shard::inject_dirty_scan_faults("dst-scanretry", 2);
+
+    let db = slatedb::Db::builder("dst-scanretry", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db B");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine_b = crate::shard::ShardEngine::start(
+        "dst-scanretry".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine_b.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(50),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    // Backoff schedule: attempt at tick 1 (fail), tick 3 (fail), tick 7
+    // (succeeds) — then absorption converges. The marker poll here uses
+    // the same scan, so consume-faults also proves the injection is
+    // per-prefix (this poll runs against engine_b's prefix only after
+    // the absorber has burned the injected failures... the poll itself
+    // would otherwise eat them; poll starts after a delay for that).
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let mut cleared = false;
+    for _ in 0..300 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Tolerate an injected fault if the absorber hasn't burned both
+        // yet on a slow runner — the poll must not eat the absorber's
+        // schedule into a panic.
+        let Ok(dirty) = engine_b.scan_dirty_streams().await else {
+            continue;
+        };
+        if !dirty.iter().any(|(h, _, _)| *h == hash) {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(
+        cleared,
+        "absorber never recovered from failed startup dirty scans"
+    );
+    engine_b.begin_close();
+}
+
+/// Review round 4, P1 (companion): a tiny sparse record under the
+/// default policy must stay DEFERRED after restart — and be REPORTED as
+/// deferred in the shard's pending summary, not silently dropped and
+/// not absorbed against the sparse-cost policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sparse_records_stay_deferred_and_reported_after_restart() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 100, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xABu8; 16];
+
+    {
+        let db = slatedb::Db::builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
+            .with_settings(slatedb::config::Settings {
+                flush_interval: Some(std::time::Duration::from_millis(5)),
+                manifest_poll_interval: std::time::Duration::from_millis(50),
+                ..Default::default()
+            })
+            .build()
+            .await
+            .expect("open db A");
+        let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        let engine_a = crate::shard::ShardEngine::start(
+            "dst-sparse".to_string(),
+            Arc::new(db),
+            store.clone(),
+            crate::shard::ShardConfig::default(),
+            absorb_tx,
+            None,
+        );
+        append_sized(&engine_a, hash, &key, "", 512).await;
+        engine_a.begin_close();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let db = slatedb::Db::builder("dst-sparse", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db B");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine_b = crate::shard::ShardEngine::start(
+        "dst-sparse".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    // Default thresholds (4 MiB / 256 KiB min-age bytes), fast tick so
+    // the summary publishes quickly.
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine_b.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            tick: std::time::Duration::from_millis(50),
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    // The seed must land it in pending AND the tick must classify it as
+    // policy-deferred in this shard's summary row.
+    let mut reported = false;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Some((_eligible, _oldest, deferred, dbytes)) =
+            crate::usage::absorb_pending_summary_for("dst-sparse")
+        {
+            if deferred >= 1 && dbytes > 0 {
+                reported = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        reported,
+        "a rediscovered sparse record must be visible as policy-deferred"
+    );
+    // And it must NOT absorb (the deferral is the intended policy).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let dirty = engine_b.scan_dirty_streams().await.unwrap();
+    assert!(
+        dirty.iter().any(|(h, _, _)| *h == hash),
+        "sparse stream must remain durably marked (not absorbed, not dropped)"
+    );
+    engine_b.begin_close();
+}
+
+/// Review round 4, P1: an absorber's pending-summary row must clear on
+/// shard departure — the frozen row otherwise double-counts against the
+/// new owner's and the fleet rollup reports phantom backlog.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_summary_clears_on_shard_close() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 101, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xADu8; 16];
+
+    let db = slatedb::Db::builder("dst-sumclear", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-sumclear".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            tick: std::time::Duration::from_millis(50),
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    // A sparse record deferred by the default policy keeps the row
+    // populated for as long as we need it.
+    append_sized(&engine, hash, &key, "", 512).await;
+    let mut published = false;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if crate::usage::absorb_pending_summary_for("dst-sumclear").is_some() {
+            published = true;
+            break;
+        }
+    }
+    assert!(published, "summary row never published");
+
+    engine.begin_close();
+    let mut cleared = false;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if crate::usage::absorb_pending_summary_for("dst-sumclear").is_none() {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(
+        cleared,
+        "pending-summary row survived shard close (phantom fleet backlog)"
+    );
+}
+
+/// Review round 4 (memory): time-based handle eviction alone lets a
+/// cardinality burst hold rate × idle-window handles. Past
+/// handle_max_resident the ticker must evict oldest-touched
+/// unreferenced handles immediately — referenced ones never.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn handle_capacity_cap_evicts_oldest_first() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 102, FaultPlan::new(0, 0, 0));
+    let key = skey();
+
+    let db = slatedb::Db::builder("dst-handlecap", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-handlecap".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let hashes: Vec<[u8; 16]> = (0u8..12).map(|i| [0xE0 + i; 16]).collect();
+    for (i, h) in hashes.iter().enumerate() {
+        append_sized(&engine, *h, &key, "", 256).await;
+        // Distinct last_touch ordering (ms granularity).
+        if i % 3 == 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Hold the OLDEST handle: the cap must skip it (referenced) and
+    // evict the oldest UNREFERENCED instead.
+    let held = engine.stream_handle(hashes[0]).await.unwrap();
+    // A fresh burst is NOT idle — the idle pass alone (10 min default)
+    // would evict nothing; only the capacity cap can.
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_secs(600), 4);
+    assert!(
+        evicted >= 8,
+        "cap must evict down toward the bound, got {evicted}"
+    );
+    assert!(
+        engine.resident_streams() <= 4,
+        "resident handles above the cap: {}",
+        engine.resident_streams()
+    );
+    // The held handle survived.
+    let still = engine.stream_handle(hashes[0]).await.unwrap();
+    assert!(
+        Arc::ptr_eq(&held, &still),
+        "referenced handle must never evict"
+    );
+    engine.begin_close();
+}
+
+/// Round-4 root cause: the absorber's lane classification races
+/// dispatch (a signal can arrive before its append's tail publishes, so
+/// the zero-route guard briefly reads route==0 and picks v1; a tick
+/// later a stale absorbed==0 re-admits v2). The two lanes then
+/// interleave and a flagged-v2 stream ends up with ranges that exist
+/// ONLY in the v1 per-stream DB — acked records the v2 read path can
+/// never see. The COMMITTER seals the layout at the first advance:
+/// cross-layout advances are dropped, boundaries never cover a range
+/// the sealed tier doesn't hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_advance_seals_the_history_layout() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 103, FaultPlan::new(0, 0, 0));
+    let key = skey();
+
+    let db = slatedb::Db::builder("dst-seal", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-seal".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+
+    async fn wait_absorbed(
+        engine: &Arc<crate::shard::ShardEngine>,
+        hash: [u8; 16],
+        want: u64,
+    ) -> (u64, bool) {
+        for _ in 0..400 {
+            let h = engine.stream_handle(hash).await.unwrap();
+            let (a, f) = {
+                let s = h.state.lock().unwrap();
+                (s.durable.absorbed, s.durable.history_v2)
+            };
+            if a >= want {
+                return (a, f);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let h = engine.stream_handle(hash).await.unwrap();
+        let s = h.state.lock().unwrap();
+        (s.durable.absorbed, s.durable.history_v2)
+    }
+
+    // Stream A: sealed v2 by its first advance; a later v1 advance (the
+    // racy in-flight v1 pass) must be DROPPED — boundary and flag hold.
+    let a = [0xF1u8; 16];
+    for _ in 0..5 {
+        append_sized(&engine, a, &key, "", 512).await;
+    }
+    engine
+        .submit_absorbed_batch_v2(vec![(a, 3, 0)])
+        .await;
+    let (abs, flag) = wait_absorbed(&engine, a, 3).await;
+    assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
+    engine.submit_absorbed(a, 5, 0).await; // cross-layout v1 advance
+    // Sentinel append proves the committer processed the op above.
+    append_sized(&engine, a, &key, "", 64).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let h = engine.stream_handle(a).await.unwrap();
+    let (abs, flag) = {
+        let s = h.state.lock().unwrap();
+        (s.durable.absorbed, s.durable.history_v2)
+    };
+    assert_eq!(
+        (abs, flag),
+        (3, true),
+        "a v1 advance on a sealed-v2 stream must be dropped whole"
+    );
+
+    // Stream B: sealed v1 by its first advance; a later v2 AbsorbedBatch
+    // entry must be dropped — the flag must never flip mid-stream.
+    let b = [0xF2u8; 16];
+    for _ in 0..5 {
+        append_sized(&engine, b, &key, "", 512).await;
+    }
+    engine.submit_absorbed(b, 3, 0).await;
+    let (abs, flag) = wait_absorbed(&engine, b, 3).await;
+    assert_eq!((abs, flag), (3, false), "first v1 advance seals v1");
+    engine.submit_absorbed_batch_v2(vec![(b, 5, 0)]).await;
+    append_sized(&engine, b, &key, "", 64).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let h = engine.stream_handle(b).await.unwrap();
+    let (abs, flag) = {
+        let s = h.state.lock().unwrap();
+        (s.durable.absorbed, s.durable.history_v2)
+    };
+    assert_eq!(
+        (abs, flag),
+        (3, false),
+        "a v2 advance on a sealed-v1 stream must be dropped whole"
+    );
+    // Continuation on the SEALED lane still works.
+    engine.submit_absorbed(b, 5, 0).await;
+    let (abs, flag) = wait_absorbed(&engine, b, 5).await;
+    assert_eq!((abs, flag), (5, false));
+    assert!(
+        engine
+            .absorb_lane_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 2,
+        "both cross-layout advances must be counted"
+    );
     engine.begin_close();
 }

@@ -238,9 +238,12 @@ on this branch; the wide rerun in the table below revalidates them at
 
 1. **Aggregate gather budget** (was: one WriteBatch could hold ~4 GiB;
    oversized frames worse). `ABSORB_GATHER_MAX_BYTES` (default 32 MiB,
-   one history memtable) with exact key+frame+keyed-duplicate
-   accounting; non-fitting streams gather on later ticks; an oversized
-   chunk proceeds alone. Deterministic packing tests.
+   one history memtable) with key+frame+keyed-duplicate accounting;
+   non-fitting streams gather on later ticks; an oversized chunk
+   proceeds alone. A SOFT budget, not an absolute memory ceiling: the
+   one-chunk exception admits a per-stream-cap chunk, and one oversized
+   KEYED frame is stored twice — worst case ≈ 2× the largest admissible
+   frame plus overhead. Deterministic packing tests.
 2. **Usage/limits never fail open** (was: silently unlimited and
    unaccounted past 65,536 streams; the two hot-path counters() calls
    returned unrelated temporaries). Overflow admissions now share one
@@ -334,3 +337,172 @@ and projects deleted, zero soak30 projects remaining). Remaining field
 scope for the fleet phase: multi-instance fleet mode (FLEET_PREFIX),
 wide-cardinality shapes in-region, and the ewr latency SLO question —
 a placement/routing decision, not a Streams code question.
+
+## 9. Round 4: the final static review, addressed
+
+The round-3 review verdict was "genuinely and thoughtfully addressed,
+but the loop is not complete": one new release-blocking memory risk and
+several liveness/observability gaps. All six items in its release
+sequence are now closed.
+
+**P0 — AbsorbedBatch could expand into an unbounded trim batch.** One
+gather covers up to 1,024 streams; each advancing `Absorbed` op used to
+emit up to `max_trim_per_op` deletes inline, so a second absorption
+wave across mature streams could build ONE shard WriteBatch of 1,024 ×
+65,536 = 67M deletes at the fleet posture (~multi-GiB). First
+absorptions owe no trims (`prev_absorbed == 0`), which is exactly why
+w100k never saw it. Fix: boundary publication and physical trimming are
+decoupled. The tail persists `trim_safe_to` (the previous absorbed
+boundary — the same one-advance reader lag as before); an advance
+records the target and trims only what a GLOBAL per-commit budget
+(`TRIM_GLOBAL_BUDGET`, default 65,536 deletes) still allows; the
+remainder becomes trim debt drained by a `TrimTick` maintenance op the
+5 s flush ticker queues, round-robin across streams, same budget per
+commit. Telemetry: `/v1/debug/load` `trim` {debt_streams,
+deletes_last_batch, deletes_max_batch, deletes_total}. DST: mature
+second wave over 24 streams with the per-stream cap maxed proves the
+GLOBAL bound binds (max ≤ budget, mutation-verified), boundaries
+advance immediately, debt drains via the production ticker, every owed
+offset trims exactly once, markers clear. Bench: run-mature.sh (below).
+
+**P1 — budget-deferred streams fell out of pending.** The gather
+correctly skipped streams past the byte budget, but the pump then
+removed every lane member from `pending` — deferred streams lost their
+lag entry and waited for the ~60 s handle sweep. `absorb_gather_v2` now
+returns a per-stream classification (`advanced` / `no_work` /
+`deferred_budget`); the pump retires only the first two. Deferred
+streams keep entry, age and lag, and gather next tick. Mutation-
+verified against a deadline below the rescan cadence.
+
+**P1 — restart rediscovery now survives production defaults.** The
+dirty marker carried only (absorbed, next); startup estimated pending
+bytes as records × 1 KiB, so one unabsorbed 32 MiB record read as 1 KiB
+— below both default thresholds, never absorbed again without a
+customer request. The tail now maintains exact `unabsorbed_bytes`
+(appends add stored frame lengths; Absorbed ops subtract the bytes the
+absorber actually copied, both v1 and v2), and the startup scan reads
+marked streams' tails for the truth. A failed scan used to log-and-
+forget — permanently stranding pre-restart streams; the scan now runs
+inside the tick loop with exponential backoff until it succeeds, plus a
+low-cadence rescan (~10 min) as protection against runtime handle
+eviction and dropped signals. Three DSTs under TRUE defaults: a 5 MiB
+pre-restart record absorbs with no request; two injected scan failures
+then success converges; a 512 B sparse record stays deferred AND
+reported (`deferred_sparse` ≥ 1) rather than absorbed or dropped.
+
+**P1 — pending summaries survive shard movement.** The absorber exit
+path cleared per-stream and per-shard lag but not its PENDING_SUMMARY
+row, so after a move the frozen row double-counts against the new
+owner's and the fleet rollup reports phantom backlog — and wide-report
+uses that rollup as drain proof. `clear_absorb_pending_summary()` now
+runs on absorber exit; DST covers publish → close → row gone.
+
+**Usage accounting sharpened (still best-effort billing by posture).**
+`admit_append` now returns the `Arc<Counters>` chosen atomically with
+admission and the append path carries that one Arc through both count
+sites — a concurrent eviction/promotion can no longer split one
+request's accounting across the overflow aggregate and a fresh tracked
+entry. Counters carry a generation id; the billing emitter treats a
+generation change as a reset and bills the fresh cumulative (value-
+regression detection missed evict → return → regrow-past-checkpoint and
+under-billed it), and prunes checkpoints for streams no longer in the
+snapshot after each successful emit (billing memory no longer grows
+with every stream ever seen). Overflow-aggregate traffic remains
+deliberately un-emitted (no per-stream attribution past the cap) and
+process-restart re-bills current cumulatives — the durable-outbox
+ledger stays the acceptance bar for invoice-grade billing.
+
+**Memory: capacity cap joins time-based eviction.** `HANDLE_MAX_RESIDENT`
+(default 65,536 per shard): past the cap the ticker evicts oldest-
+touched unreferenced handles immediately instead of waiting out the
+idle window, so a cardinality burst can no longer hold rate × 600 s of
+handles. Referenced handles never evict. The 1-GiB posture in
+docs/STAGING.md already pins ABSORB_CONCURRENCY=2 and now pins
+TRIM_GLOBAL_BUDGET explicitly.
+
+**Precision fixes from the review margins.** The keyed-index row now
+costs 43 bytes + routing key in the gather budget (the index key is two
+bytes longer than the record key; was under-counted by 2/row);
+`gather_max_bytes` is documented as a SOFT budget (the one-oversized-
+chunk exception admits ~2× the largest admissible keyed frame, not an
+absolute ceiling); the dirty-sentinel comment no longer claims
+"unreachable" (p = 2^-128 and the tag byte is the real separator); and
+HISTORY-V2.md records the range-split constraint: the maintenance index
+must move route-local (or to a tracker partition) before physical
+splits land.
+
+**Found and fixed BY this round's validation: the history layout was
+never sealed (I1-class).** Looping the acked-records DST 120× on the
+round-4 tree failed 10× (8.3%; baseline 0/120) — and the specimen
+showed acked records permanently invisible: `completed=true` over
+[0,80) with offsets {0, 13–17} missing. Root cause (traced classify →
+pass → advance): the absorber's lane classification decides a
+PERSISTENT layout from a racy snapshot. A pending entry created in the
+commit-to-dispatch window (round 4's dirty-index seed/rescan reads
+commit-visible DB state; on round-3 binaries only a restart-time scan
+could do it) sees route==0 → the zero-route guard picks the v1 lane;
+one tick later a stale absorbed==0 re-admits the v2 lane; the two
+interleave, a v1 advance lands under the v2 flag, and its range exists
+only in the per-stream v1 DB — which a flagged-v2 stream's reads never
+consult. Three-part fix: (1) the COMMITTER seals the layout at the
+first advance (v2 advances require a fresh boundary or the v2 flag; v1
+advances require the flag unset; violators are dropped whole — the
+range stays in the shard log below an unmoved boundary, so nothing is
+lost, and `absorb_lane_dropped` in /v1/debug/load counts every drop);
+(2) lane eligibility reads the APPLIED tail, which is updated
+synchronously at commit and cannot race dispatch; (3) the absorber's
+submitted floors are lane-scoped, so a dropped lane's mark can never
+make the surviving lane skip a range that only exists in the dropped
+tier. Deterministic seal DST both directions + the acked-records loop
+clean after the fix. Round-3 field binaries carried the narrow
+restart-window variant; nothing in the fra/ewr runs matches its
+signature (single continuously-appended streams classify long after
+dispatch), and the seal closes it everywhere.
+
+**Validation round 4.** Full suite green (115 tests; the new coverage
+is mutation-verified — each headline fix was reverted in isolation and
+its test failed). One pre-existing test fragility fixed along the way:
+`history_reads_reuse_a_cached_reader` raced the absorber's cadence
+under full-suite CPU load (an absorb advance between drains converts a
+cache hit into a stale reopen); it now waits for full absorption before
+draining — same assertions, deterministic setup. Validation numbers
+below; the capped-soak parity row is appended when that run completes.
+
+**Mature second-absorption stress (bench/costab/run-mature.sh —
+the review's required pre-promotion scenario).** 1,024 streams × 2,048
+records absorbed to maturity (wave 1: zero trims owed, as designed —
+why w100k never saw the bug), then a 384 KiB wave-2 append per stream
+(crossing the sparse-deferral bar) re-absorbs every stream and makes
+2,097,152 offsets trimmable at once, under the fleet posture the review
+flagged (TRIM_PER_OP=65536). Depth is scaled (~2k/stream vs the
+review's 65k — the budget bound is depth-independent; the DST twin
+pins the per-stream-cap interplay with the cap maxed):
+
+| gate | result |
+|---|---|
+| max trim deletes in ANY commit | **65,536 = budget, never exceeded** (old code: 2.1M in one batch here; 67M at fleet shape) |
+| boundary/trim decoupling | boundaries advanced immediately; peak 896 streams of trim debt |
+| convergence | debt → 0 via the production 5 s ticker; totals quiet at 153 s |
+| exactness | deletes_total = 2,097,152 = owed, each offset once |
+| memory | gauge sawtooths 786→1,127→~920 MB (compaction churn across 4 shard DBs), < 1,300 gate, < 1,400 shed; wave-2 ingest itself steady ~830 |
+| integrity | 32 sampled streams read back 2,054/2,054 records end-to-end |
+
+**Full field ladder (bonus): 1..64 × 180 s survived whole.** The ladder
+that historically wedged the process at conc6+ (history flush stall →
+RSS through the shed → 429-forever) now completes end-to-end:
+2,333,024 records, ZERO errors, p50 flat at 47 ms through conc64,
+throughput ceiling ~490 req/s = the per-stream limiter doing its job
+under 14.6 M throttles, RSS plateau ~602 MB, LISTs 207 total
+(LIST-free posture parity), zero layout-seal drops.
+
+**w100k rerun (the handle cap actively engages at 100 k streams).**
+Steady Class A 98,269 vs round 3's 96,906 (+1.4%, parity); honest
+gauge 783 vs 777 MB; setup 1.21 Class A/stream unchanged; zero
+errors/throttles; sparse policy intact (99,900 deferred). The new
+machinery in vivo: resident handles END at 1,154 (pre-cap: ~100 k
+resident), usage/keycache pinned at their 65,536 caps, trim budget
+held silently through 1.59 M wide-run deletes (max batch 49,670 ≤
+65,536), zero seal drops. hist-tier Class A fell 1,461 → 424: round
+3's runs were quietly paying per-stream v1-DB costs for streams the
+racy pre-seal classification misrouted — the layout fix is also a
+cost fix.

@@ -35,19 +35,27 @@ pub fn record_key(hash: &[u8; 16], offset: u64) -> Vec<u8> {
 }
 
 /// Tail value v3:
-/// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?]
+/// [ver u8=3][next u64][last_ts i64][logical u64][absorbed u64][trimmed u64][flags u8][seq_len u16][seq][route16?][trim_safe_to u64?][unabsorbed_bytes u64?]
 ///
 /// `flags` is a bitmask: bit0 = closed, bit1 = history v2 (the stream's
 /// absorbed range lives in the shared per-shard partition, not a
 /// per-stream DB). The optional trailing route16 (the shard-routing
-/// hash) is a backward-compatible extension: v3 decoders read exactly
-/// `seq_len` seq bytes and ignore trailing bytes. Downgrade caveat: a
-/// pre-bitmask binary reads flags with `== 1`, so it would see a
-/// closed+v2 stream (flags=3) as open — acceptable for forward-only
-/// deployments, noted here because it is not zero.
+/// hash), trim_safe_to and unabsorbed_bytes are backward-compatible
+/// extensions: v3 decoders read exactly `seq_len` seq bytes and ignore
+/// trailing bytes. `trim_safe_to` is the highest offset physical
+/// trimming may reach (the absorbed boundary as of the PREVIOUS
+/// advance — one advance of lag so in-flight readers holding a stale
+/// absorbed snapshot never lose their range); `unabsorbed_bytes` is the
+/// exact stored frame bytes in [absorbed, next), maintained by the
+/// committer so restart rediscovery sizes pending work truthfully
+/// instead of estimating (a single 32 MiB record used to estimate as
+/// 1 KiB and never re-absorb under the default policy). Downgrade
+/// caveat: a pre-bitmask binary reads flags with `== 1`, so it would
+/// see a closed+v2 stream (flags=3) as open — acceptable for
+/// forward-only deployments, noted here because it is not zero.
 fn encode_tail(t: &TailFields) -> Vec<u8> {
     let seq = t.seq.as_deref().unwrap_or("").as_bytes();
-    let mut v = Vec::with_capacity(60 + seq.len());
+    let mut v = Vec::with_capacity(76 + seq.len());
     v.push(3);
     v.extend_from_slice(&t.next.to_le_bytes());
     v.extend_from_slice(&t.ts.to_le_bytes());
@@ -65,6 +73,8 @@ fn encode_tail(t: &TailFields) -> Vec<u8> {
     v.extend_from_slice(&(seq.len() as u16).to_le_bytes());
     v.extend_from_slice(seq);
     v.extend_from_slice(&t.route);
+    v.extend_from_slice(&t.trim_safe_to.to_le_bytes());
+    v.extend_from_slice(&t.unabsorbed_bytes.to_le_bytes());
     v
 }
 
@@ -90,6 +100,14 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
         .get(route_at..route_at + 16)
         .and_then(|r| r.try_into().ok())
         .unwrap_or([0u8; 16]);
+    let le8 = |at: usize| -> u64 {
+        v.get(at..at + 8)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(0)
+    };
+    let trim_safe_to = le8(route_at + 16);
+    let unabsorbed_bytes = le8(route_at + 24);
     Some(TailFields {
         next,
         ts,
@@ -100,6 +118,8 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
         closed: flags & 1 != 0,
         history_v2: flags & 2 != 0,
         route,
+        trim_safe_to,
+        unabsorbed_bytes,
     })
 }
 
@@ -112,15 +132,23 @@ pub fn producer_key(hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
 }
 
 /// Durable dirty-stream index (static audit P1): a marker per stream
-/// with `absorbed < next`, written in the SAME committer batch as the
-/// tail it describes and deleted in the batch whose absorbed boundary
-/// catches up. A fresh owner scans this prefix once at absorber start,
-/// so unabsorbed tails are rediscovered after restart/handoff without
-/// the customer ever touching the stream again. Lives under a reserved
-/// sentinel "hash" of all-0xFF (unreachable for SHA-derived stream
-/// hashes) with its own tag byte, so it can be range-scanned without
-/// colliding with `<hash16><tag>` stream keys, and sorts at the end of
-/// the keyspace.
+/// with outstanding maintenance — unabsorbed tail (`absorbed < next`)
+/// or pending physical trim (`trimmed < trim_safe_to`) — written in the
+/// SAME committer batch as the tail it describes and deleted in the
+/// batch that catches both up. A fresh owner scans this prefix once at
+/// absorber start, so outstanding work is rediscovered after
+/// restart/handoff without the customer ever touching the stream again.
+/// Lives under a sentinel "hash" of all-0xFF; a truncated-SHA stream
+/// hash CAN equal that value (p = 2^-128, astronomically unlikely, not
+/// impossible), but the distinct tag byte `D` — no stream row uses it —
+/// is what actually guarantees these keys never collide with
+/// `<hash16><tag>` stream rows. The sentinel's job is only to sort the
+/// index at the end of the keyspace for one cheap range scan. NOTE for
+/// physical range splitting (future): these markers sort OUTSIDE every
+/// stream's route range, so a range split cannot carry them into the
+/// child by key range — the index needs a route-local representation
+/// (or its own tracker partition) before splits land; static handoff
+/// (new owner opens the whole shard DB) is unaffected.
 const DIRTY_SENTINEL: [u8; 16] = [0xFF; 16];
 
 pub fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
@@ -155,6 +183,20 @@ pub struct TailFields {
     /// Shard-routing hash (stream_hash(name)); zeros for streams last
     /// written by callers without a name identity or by older binaries.
     pub route: [u8; 16],
+    /// Highest offset physical trimming may reach: the absorbed boundary
+    /// as of the PREVIOUS advance (one advance of lag, so in-flight
+    /// readers holding a stale absorbed snapshot never lose their
+    /// range). Trim maintenance moves `trimmed` toward this under a
+    /// GLOBAL per-commit delete budget — boundary publication and
+    /// physical trimming are decoupled so a 1,024-stream second
+    /// absorption wave can never build one multi-gigabyte delete batch.
+    pub trim_safe_to: u64,
+    /// Exact stored frame bytes in [absorbed, next), maintained by the
+    /// committer (appends add frame lengths; absorb advances subtract
+    /// the bytes the absorber actually copied). Restart rediscovery
+    /// reads this instead of estimating records × 1 KiB, so the default
+    /// absorption policy's byte thresholds see the truth.
+    pub unabsorbed_bytes: u64,
 }
 
 /// `durable` is what readers see; `applied` is what's in the memtable.
@@ -317,12 +359,21 @@ pub enum CommitOp {
     /// committer message so every covered boundary lands in the same
     /// write batch deterministically (the per-stream sends only
     /// coalesced opportunistically — the committer could run between
-    /// them). Expanded into per-stream `Absorbed` ops at commit_group
-    /// entry.
+    /// them). Each entry is (hash, new upto, frame bytes the absorber
+    /// copied for that stream — decremented from the tail's
+    /// unabsorbed_bytes gauge). Expanded into per-stream `Absorbed` ops
+    /// at commit_group entry.
     AbsorbedBatch {
-        streams: Vec<([u8; 16], u64)>,
+        streams: Vec<([u8; 16], u64, u64)>,
         v2: bool,
     },
+    /// Trim maintenance pulse (flush ticker, whenever the trim-debt set
+    /// is non-empty): round-robins streams with `trimmed <
+    /// trim_safe_to` and emits record deletes under the commit group's
+    /// GLOBAL trim budget. This is where the bulk of physical trimming
+    /// happens — the `Absorbed` arm only advances boundaries and takes
+    /// whatever budget is left over.
+    TrimTick,
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
     /// (deferred one round so in-flight readers never lose their range).
@@ -335,7 +386,14 @@ pub enum CommitOp {
     Absorbed {
         hash: [u8; 16],
         upto: u64,
+        /// Stored frame bytes the absorber copied for this advance.
+        bytes: u64,
         v2: bool,
+    },
+    /// TrimTick expansion product (commit_group entry): one stream's
+    /// budgeted trim step. Never sent over the channel directly.
+    TrimStep {
+        hash: [u8; 16],
     },
 }
 
@@ -399,6 +457,21 @@ pub struct ShardConfig {
     /// dirty-stream index keeps unabsorbed evictees discoverable, so
     /// eviction never strands a tail.
     pub handle_idle_evict: std::time::Duration,
+    /// Capacity cap on resident stream handles (0 disables): when the
+    /// map exceeds this, the ticker evicts oldest-touched unreferenced
+    /// handles down to the cap WITHOUT waiting for the idle threshold —
+    /// a cardinality burst can otherwise accumulate rate × idle-window
+    /// handles before the first one ages out. Referenced handles
+    /// (strong_count > 1) are never evicted, so the map can exceed the
+    /// cap by the number of streams actively in use.
+    pub handle_max_resident: usize,
+    /// GLOBAL cap on record-trim deletes per commit group, shared by
+    /// every `Absorbed` advance and `TrimStep` in the group. Without it
+    /// one gather's AbsorbedBatch over 1,024 mature streams ×
+    /// max_trim_per_op could expand into a multi-gigabyte WriteBatch
+    /// (67M deletes at the wide posture's TRIM_PER_OP=65536).
+    /// `max_trim_per_op` remains the per-stream bound within a group.
+    pub trim_global_budget: u64,
 }
 
 impl Default for ShardConfig {
@@ -414,6 +487,8 @@ impl Default for ShardConfig {
             wal_flush_gap: std::time::Duration::from_millis(25),
             wal_post_ack_gather: std::time::Duration::ZERO,
             handle_idle_evict: std::time::Duration::from_secs(600),
+            handle_max_resident: 65_536,
+            trim_global_budget: 65_536,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
@@ -534,6 +609,27 @@ pub struct ShardEngine {
     ring_cfg_bytes: u64,
     /// Idle threshold for resident-handle eviction (ShardConfig copy).
     handle_idle_evict: std::time::Duration,
+    /// Capacity cap for resident handles (ShardConfig copy; 0 = off).
+    handle_max_resident: usize,
+    /// Streams with `trimmed < trim_safe_to`: physical-trim work the
+    /// budgeted TrimTick maintenance still owes. Maintained by the
+    /// committer after each successful group; seeded from the durable
+    /// dirty index at absorber start and from tail loads. BTreeSet so
+    /// the round-robin cursor is a plain range scan.
+    trim_debt: Mutex<std::collections::BTreeSet<[u8; 16]>>,
+    /// Round-robin position for TrimTick expansion.
+    trim_cursor: Mutex<[u8; 16]>,
+    /// Trim telemetry: deletes emitted in the last commit group that
+    /// trimmed anything, the max ever emitted in one group (the bound
+    /// the mature-second-wave gate reads), and a cumulative total.
+    pub trim_deletes_last: AtomicU64,
+    pub trim_deletes_max_batch: AtomicU64,
+    pub trim_deletes_total: AtomicU64,
+    /// Advances rejected by the layout seal (cross-lane absorb after the
+    /// stream's history layout was decided). Nonzero means the absorber
+    /// raced its own lane classification — harmless with the seal, but
+    /// worth seeing.
+    pub absorb_lane_dropped: AtomicU64,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -570,6 +666,26 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Test-only fault injection for the durable dirty-index scan, keyed by
+/// shard prefix so concurrent tests cannot poison each other. The
+/// object-store fault substrate cannot reach this path deterministically
+/// (SlateDB retries store faults internally), and the absorber's
+/// scan-retry loop is exactly the code under test.
+#[cfg(test)]
+fn dirty_scan_faults() -> &'static Mutex<HashMap<String, u32>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<String, u32>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Arrange for the next `n` dirty-index scans on `prefix` to fail.
+#[cfg(test)]
+pub(crate) fn inject_dirty_scan_faults(prefix: &str, n: u32) {
+    dirty_scan_faults()
+        .lock()
+        .unwrap()
+        .insert(prefix.to_string(), n);
 }
 
 impl ShardEngine {
@@ -622,6 +738,13 @@ impl ShardEngine {
             ring_peak_bytes: AtomicU64::new(0),
             ring_cfg_bytes: cfg.tail_ring_bytes as u64,
             handle_idle_evict: cfg.handle_idle_evict,
+            handle_max_resident: cfg.handle_max_resident,
+            trim_debt: Mutex::new(std::collections::BTreeSet::new()),
+            trim_cursor: Mutex::new([0u8; 16]),
+            trim_deletes_last: AtomicU64::new(0),
+            trim_deletes_max_batch: AtomicU64::new(0),
+            trim_deletes_total: AtomicU64::new(0),
+            absorb_lane_dropped: AtomicU64::new(0),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -734,7 +857,8 @@ impl ShardEngine {
                             pump.pump_flushed_reqs.fetch_add(fl_reqs, Ordering::Relaxed);
                             pump.pump_flushed_records
                                 .fetch_add(fl_records, Ordering::Relaxed);
-                            pump.pump_flushed_bytes.fetch_add(fl_bytes, Ordering::Relaxed);
+                            pump.pump_flushed_bytes
+                                .fetch_add(fl_bytes, Ordering::Relaxed);
                             if gather.is_zero() {
                                 continue;
                             }
@@ -822,9 +946,7 @@ impl ShardEngine {
                                     q.iter().map(|g| g.bytes).sum::<u64>(),
                                 )
                             };
-                            if drifted
-                                && (pend_reqs >= skip_reqs || pend_bytes >= skip_bytes)
-                            {
+                            if drifted && (pend_reqs >= skip_reqs || pend_bytes >= skip_bytes) {
                                 pump.pump_gathers_skipped_busy
                                     .fetch_add(1, Ordering::Relaxed);
                             } else if drifted {
@@ -835,13 +957,8 @@ impl ShardEngine {
                                 }
                                 // What the window caught: requests present
                                 // now that were not pending when it opened.
-                                let after: u32 = pump
-                                    .in_flight
-                                    .lock()
-                                    .unwrap()
-                                    .iter()
-                                    .map(|g| g.reqs)
-                                    .sum();
+                                let after: u32 =
+                                    pump.in_flight.lock().unwrap().iter().map(|g| g.reqs).sum();
                                 pump.pump_gathered_reqs.fetch_add(
                                     after.saturating_sub(pend_reqs) as u64,
                                     Ordering::Relaxed,
@@ -900,14 +1017,23 @@ impl ShardEngine {
                         }
                     }
                     let idle = ticker.handle_idle_evict;
-                    if !idle.is_zero() {
-                        let evicted = ticker.evict_idle_handles(idle);
+                    if !idle.is_zero() || ticker.handle_max_resident > 0 {
+                        let evicted =
+                            ticker.evict_idle_handles(idle, ticker.handle_max_resident);
                         if evicted > 0 {
                             tracing::debug!(
                                 shard = %ticker.prefix,
                                 "evicted {evicted} idle stream handles"
                             );
                         }
+                    }
+                    // Trim maintenance pulse: whenever streams owe
+                    // physical trims, queue one budgeted TrimTick.
+                    // try_send — a full committer queue means the next
+                    // tick retries; trim work is never urgent enough to
+                    // block behind.
+                    if !ticker.trim_debt.lock().unwrap().is_empty() {
+                        let _ = ticker.tx.try_send(CommitOp::TrimTick);
                     }
                 }
             }),
@@ -1051,25 +1177,36 @@ impl ShardEngine {
         self.commit_blocked_ms().max(self.oldest_inflight_ms())
     }
 
-    pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64) {
+    pub async fn submit_absorbed(&self, hash: [u8; 16], upto: u64, bytes: u64) {
         let _ = self
             .tx
-            .send(CommitOp::Absorbed { hash, upto, v2: false })
+            .send(CommitOp::Absorbed {
+                hash,
+                upto,
+                bytes,
+                v2: false,
+            })
             .await;
     }
 
     /// v2 boundary advance: the range is in the shared partition.
-    pub async fn submit_absorbed_v2(&self, hash: [u8; 16], upto: u64) {
+    pub async fn submit_absorbed_v2(&self, hash: [u8; 16], upto: u64, bytes: u64) {
         let _ = self
             .tx
-            .send(CommitOp::Absorbed { hash, upto, v2: true })
+            .send(CommitOp::Absorbed {
+                hash,
+                upto,
+                bytes,
+                v2: true,
+            })
             .await;
     }
 
     /// One gather's boundary advances as a SINGLE committer message:
     /// every covered stream lands in the same write batch by
     /// construction (per-stream sends only coalesced opportunistically).
-    pub async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64)>) {
+    /// Entries are (hash, new upto, frame bytes copied).
+    pub async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64, u64)>) {
         if streams.is_empty() {
             return;
         }
@@ -1151,6 +1288,16 @@ impl ShardEngine {
     /// (the resident-handle sweep in `absorb_backlog` only sees streams
     /// something already touched) and without customer keys.
     pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
+        #[cfg(test)]
+        {
+            let mut faults = dirty_scan_faults().lock().unwrap();
+            if let Some(n) = faults.get_mut(&self.prefix) {
+                if *n > 0 {
+                    *n -= 1;
+                    anyhow::bail!("injected dirty-scan fault (test hook)");
+                }
+            }
+        }
         let mut pfx = Vec::with_capacity(17);
         pfx.extend_from_slice(&DIRTY_SENTINEL);
         pfx.push(b'D');
@@ -1167,6 +1314,43 @@ impl ShardEngine {
             out.push((h, absorbed, next));
         }
         Ok(out)
+    }
+
+    /// The durable tail for one stream WITHOUT materializing a handle —
+    /// the startup marker scan reads these for the exact pending state
+    /// (unabsorbed_bytes, trim debt) of each marked stream; loading
+    /// handles for every cold dirty stream is exactly what memory
+    /// pruning must avoid.
+    pub async fn tail_fields(&self, hash: &[u8; 16]) -> anyhow::Result<Option<TailFields>> {
+        Ok(self
+            .db
+            .get(tail_key(hash))
+            .await?
+            .and_then(|raw| decode_tail(&raw)))
+    }
+
+    /// Enroll a stream in TrimTick maintenance (startup marker scan; the
+    /// committer maintains the set itself for live streams).
+    pub fn note_trim_debt(&self, hash: [u8; 16]) {
+        self.trim_debt.lock().unwrap().insert(hash);
+    }
+
+    /// Queue one budgeted trim-maintenance pulse NOW (tests drive drain
+    /// cadence with this; the 5 s flush ticker is the production driver).
+    pub fn pump_trim_tick(&self) {
+        let _ = self.tx.try_send(CommitOp::TrimTick);
+    }
+
+    /// (streams owing trims, last group's deletes, max deletes in any
+    /// one group, cumulative deletes) — the mature-second-wave gate
+    /// reads max ≤ trim_global_budget from here.
+    pub fn trim_stats(&self) -> (usize, u64, u64, u64) {
+        (
+            self.trim_debt.lock().unwrap().len(),
+            self.trim_deletes_last.load(Ordering::Relaxed),
+            self.trim_deletes_max_batch.load(Ordering::Relaxed),
+            self.trim_deletes_total.load(Ordering::Relaxed),
+        )
     }
 
     /// The absorbed boundary as recorded by the REMOTELY-DURABLE tracker —
@@ -1207,13 +1391,21 @@ impl ShardEngine {
 
     pub async fn stream_handle(&self, hash: [u8; 16]) -> Result<Arc<StreamHandle>, slatedb::Error> {
         if let Some(h) = self.streams.lock().unwrap().get(&hash) {
-            h.last_touch_ms.store(now_ms() as u64, std::sync::atomic::Ordering::Relaxed);
+            h.last_touch_ms
+                .store(now_ms() as u64, std::sync::atomic::Ordering::Relaxed);
             return Ok(h.clone());
         }
         let tail = match self.db.get(tail_key(&hash)).await? {
             Some(raw) => decode_tail(&raw).unwrap_or_default(),
             None => TailFields::default(),
         };
+        // Trim-debt discovery on load: a stream evicted (or restarted)
+        // mid-maintenance re-enters the TrimTick rotation the moment
+        // anything touches it again. The absorber's startup marker scan
+        // covers never-touched streams.
+        if tail.trimmed < tail.trim_safe_to {
+            self.trim_debt.lock().unwrap().insert(hash);
+        }
         let handle = Arc::new(StreamHandle {
             hash,
             state: Mutex::new(StreamState {
@@ -1233,18 +1425,43 @@ impl ShardEngine {
     /// Evict resident handles idle at least `idle` and referenced by
     /// nobody but the map (strong_count == 1 — in-flight readers,
     /// waiters, ring publication and committer batches all hold clones,
-    /// so anything in use is untouchable by construction). Returns how
-    /// many were dropped. A later touch reloads durable state from the
-    /// shard DB, and the dirty-stream index keeps unabsorbed evictees
+    /// so anything in use is untouchable by construction). Then, if the
+    /// map still exceeds `max_resident` (0 = uncapped), evict the
+    /// OLDEST-touched unreferenced handles down to the cap regardless of
+    /// idle age — time-based eviction alone lets a cardinality burst
+    /// accumulate rate × idle-window handles before the first ages out.
+    /// Referenced handles are never evicted, so the map can exceed the
+    /// cap by the number of streams actively in use. Returns how many
+    /// were dropped. A later touch reloads durable state from the shard
+    /// DB, and the dirty-stream index keeps unabsorbed evictees
     /// discoverable.
-    pub fn evict_idle_handles(&self, idle: std::time::Duration) -> usize {
-        let cutoff = (now_ms() as u64).saturating_sub(idle.as_millis() as u64);
+    pub fn evict_idle_handles(&self, idle: std::time::Duration, max_resident: usize) -> usize {
         let mut map = self.streams.lock().unwrap();
         let before = map.len();
-        map.retain(|_, h| {
-            std::sync::Arc::strong_count(h) > 1
-                || h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed) > cutoff
-        });
+        if !idle.is_zero() {
+            let cutoff = (now_ms() as u64).saturating_sub(idle.as_millis() as u64);
+            map.retain(|_, h| {
+                std::sync::Arc::strong_count(h) > 1
+                    || h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed) > cutoff
+            });
+        }
+        if max_resident > 0 && map.len() > max_resident {
+            let mut evictable: Vec<(u64, [u8; 16])> = map
+                .iter()
+                .filter(|(_, h)| std::sync::Arc::strong_count(h) == 1)
+                .map(|(k, h)| {
+                    (
+                        h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed),
+                        *k,
+                    )
+                })
+                .collect();
+            evictable.sort_unstable();
+            let excess = map.len() - max_resident;
+            for (_, k) in evictable.into_iter().take(excess) {
+                map.remove(&k);
+            }
+        }
         before - map.len()
     }
 
@@ -1280,7 +1497,10 @@ impl ShardEngine {
                             CommitOp::Queue { resp, .. } => {
                                 let _ = resp.send(Err("shard fenced/moved; retry".into()));
                             }
-                            CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
+                            CommitOp::Absorbed { .. }
+                            | CommitOp::AbsorbedBatch { .. }
+                            | CommitOp::TrimTick
+                            | CommitOp::TrimStep { .. } => {}
                         }
                     }
                     return;
@@ -1300,7 +1520,10 @@ impl ShardEngine {
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
-                    CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
+                    CommitOp::Absorbed { .. }
+                    | CommitOp::AbsorbedBatch { .. }
+                    | CommitOp::TrimTick
+                    | CommitOp::TrimStep { .. } => {}
                 }
                 while let Ok(op) = rx.try_recv() {
                     match op {
@@ -1310,7 +1533,10 @@ impl ShardEngine {
                         CommitOp::Queue { resp, .. } => {
                             let _ = resp.send(Err("shard fenced/moved; retry".into()));
                         }
-                        CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
+                        CommitOp::Absorbed { .. }
+                        | CommitOp::AbsorbedBatch { .. }
+                        | CommitOp::TrimTick
+                        | CommitOp::TrimStep { .. } => {}
                     }
                 }
                 return;
@@ -1366,17 +1592,46 @@ impl ShardEngine {
     async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
         // Expand gather batches into per-stream ops INSIDE this group, so
         // one gather's boundary advances share one write batch by
-        // construction.
-        let ops: Vec<CommitOp> = ops
-            .into_iter()
-            .flat_map(|op| match op {
-                CommitOp::AbsorbedBatch { streams, v2 } => streams
-                    .into_iter()
-                    .map(|(hash, upto)| CommitOp::Absorbed { hash, upto, v2 })
-                    .collect::<Vec<_>>(),
-                other => vec![other],
-            })
-            .collect();
+        // construction. TrimTick expands into a bounded round-robin
+        // window of trim-debt streams; the byte-scale bound is the
+        // group-global `trim_budget` below, this cap only bounds handle
+        // loads per group.
+        const TRIM_STREAMS_PER_TICK: usize = 64;
+        let mut expanded: Vec<CommitOp> = Vec::with_capacity(ops.len());
+        for op in ops {
+            match op {
+                CommitOp::AbsorbedBatch { streams, v2 } => {
+                    expanded.extend(streams.into_iter().map(|(hash, upto, bytes)| {
+                        CommitOp::Absorbed {
+                            hash,
+                            upto,
+                            bytes,
+                            v2,
+                        }
+                    }));
+                }
+                CommitOp::TrimTick => {
+                    use std::ops::Bound;
+                    let debt = self.trim_debt.lock().unwrap();
+                    if debt.is_empty() {
+                        continue;
+                    }
+                    let mut cur = self.trim_cursor.lock().unwrap();
+                    let picked: Vec<[u8; 16]> = debt
+                        .range((Bound::Excluded(*cur), Bound::Unbounded))
+                        .chain(debt.range((Bound::Unbounded, Bound::Included(*cur))))
+                        .take(TRIM_STREAMS_PER_TICK)
+                        .copied()
+                        .collect();
+                    if let Some(last) = picked.last() {
+                        *cur = *last;
+                    }
+                    expanded.extend(picked.into_iter().map(|hash| CommitOp::TrimStep { hash }));
+                }
+                other => expanded.push(other),
+            }
+        }
+        let ops = expanded;
         if self.is_closed() {
             // Fenced mid-flight: fail fast instead of writing to a dead db.
             for op in ops {
@@ -1387,7 +1642,10 @@ impl ShardEngine {
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
-                    CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
+                    CommitOp::Absorbed { .. }
+                    | CommitOp::AbsorbedBatch { .. }
+                    | CommitOp::TrimTick
+                    | CommitOp::TrimStep { .. } => {}
                 }
             }
             return;
@@ -1428,14 +1686,20 @@ impl ShardEngine {
             crate::queue::QueueOut,
         )> = Vec::new();
         let mut extra_writes = false;
+        // GLOBAL trim budget for this commit group: every record-delete a
+        // boundary advance or TrimStep emits draws from this one pool, so
+        // the group's WriteBatch delete count is bounded no matter how
+        // many streams one gather covered (the unbounded-trim P0).
+        let mut trim_budget: u64 = cfg.trim_global_budget;
 
         for op in ops {
             let hash = match &op {
                 CommitOp::Append(r) => r.hash,
                 CommitOp::Absorbed { hash, .. } => *hash,
                 CommitOp::Queue { hash, .. } => *hash,
+                CommitOp::TrimStep { hash } => *hash,
                 // Expanded at commit_group entry; unreachable here.
-                CommitOp::AbsorbedBatch { .. } => continue,
+                CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => continue,
             };
             if !locals.contains_key(&hash) {
                 match self.stream_handle(hash).await {
@@ -1465,7 +1729,7 @@ impl ShardEngine {
 
             match op {
                 // Expanded at commit_group entry; unreachable here.
-                CommitOp::AbsorbedBatch { .. } => {}
+                CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
                 CommitOp::Append(req) => {
                     // Producer state: ensure loaded (durable `q` key) into
                     // the batch-local staging map.
@@ -1658,6 +1922,7 @@ impl ShardEngine {
                         if self.ring_enabled {
                             local.ring_recs.push((offset, frame.clone()));
                         }
+                        local.fields.unabsorbed_bytes += frame.len() as u64;
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
@@ -1700,30 +1965,103 @@ impl ShardEngine {
                         },
                     ));
                 }
-                CommitOp::Absorbed { upto, v2, .. } => {
+                CommitOp::Absorbed {
+                    upto, bytes, v2, ..
+                } => {
                     let prev_absorbed = local.fields.absorbed;
+                    #[cfg(test)]
+                    if std::env::var("DST_DRAIN_TRACE").is_ok() {
+                        eprintln!(
+                            "ADVANCE {} prev={prev_absorbed} upto={upto} v2={v2} next={} trimmed={} flag={}",
+                            crate::crypto::hex(&hash[..4]),
+                            local.fields.next,
+                            local.fields.trimmed,
+                            local.fields.history_v2
+                        );
+                    }
+                    // LAYOUT SEAL (round 4 root-cause): the first advance
+                    // decides the stream's history layout FOREVER — a v2
+                    // advance is only legal on a fresh boundary or an
+                    // already-v2 stream, a v1 advance only while the v2
+                    // flag is unset. The absorber classifies lanes from a
+                    // RACY snapshot (a signal can arrive before its
+                    // append's tail dispatches, so the zero-route guard
+                    // briefly reads route==0 and picks v1; one tick later
+                    // a stale absorbed==0 re-admits v2) — without this
+                    // seal the two lanes interleave and leave a
+                    // flagged-v2 stream with ranges that exist ONLY in
+                    // the per-stream v1 DB: acked records the v2 read
+                    // path can never see (8% I1 failures under the DST
+                    // loop). A dropped advance loses no data: its range
+                    // stays in the shard log below a boundary that never
+                    // moved, and the SEALED lane re-absorbs it (the
+                    // absorber's submitted floors are lane-scoped so the
+                    // dropped lane's mark cannot make the survivor skip
+                    // the range).
+                    let lane_ok = if v2 {
+                        prev_absorbed == 0 || local.fields.history_v2
+                    } else {
+                        !local.fields.history_v2
+                    };
+                    if !lane_ok && upto > prev_absorbed {
+                        self.absorb_lane_dropped.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            shard = %self.prefix,
+                            v2,
+                            upto,
+                            prev = prev_absorbed,
+                            "dropped cross-layout absorb advance (layout sealed)"
+                        );
+                    }
                     // Only an op that ADVANCES the boundary may move the
-                    // trim. The absorber re-submits an already-covered
-                    // `upto` when it starts a pass before the previous
-                    // advance has been dispatched to handle state; letting
-                    // that duplicate trim toward `prev_absorbed` (== the
-                    // live boundary) collapses the one-pass lag that
-                    // in-flight readers holding a stale absorbed snapshot
-                    // depend on (2026-07-27 boundary-race DST failure).
-                    if upto > prev_absorbed {
+                    // trim target. The absorber re-submits an already-
+                    // covered `upto` when it starts a pass before the
+                    // previous advance has been dispatched to handle
+                    // state; letting that duplicate raise the target to
+                    // `prev_absorbed` (== the live boundary) collapses
+                    // the one-pass lag that in-flight readers holding a
+                    // stale absorbed snapshot depend on (2026-07-27
+                    // boundary-race DST failure).
+                    if lane_ok && upto > prev_absorbed {
                         local.fields.absorbed = upto.min(local.fields.next);
+                        local.fields.unabsorbed_bytes =
+                            local.fields.unabsorbed_bytes.saturating_sub(bytes);
                         if v2 {
                             local.fields.history_v2 = true;
                         }
-                        // Deferred trim: delete only up to the *previous*
-                        // absorbed boundary, bounded per op.
-                        let trim_to =
-                            prev_absorbed.min(local.fields.trimmed + cfg.max_trim_per_op);
+                        // Boundary publication and physical trimming are
+                        // decoupled (unbounded-trim P0): the advance only
+                        // RECORDS the new safe target — the previous
+                        // absorbed boundary, one advance of reader lag —
+                        // and trims inline only what the group's global
+                        // budget still allows. The remainder becomes
+                        // trim debt, drained by TrimTick maintenance a
+                        // budgeted slice per commit.
+                        local.fields.trim_safe_to = local.fields.trim_safe_to.max(prev_absorbed);
+                        let allowed = trim_budget.min(cfg.max_trim_per_op);
+                        let trim_to = local
+                            .fields
+                            .trim_safe_to
+                            .min(local.fields.trimmed + allowed);
                         for off in local.fields.trimmed..trim_to {
                             wb.delete(record_key(&hash, off));
                         }
-                        local.fields.trimmed = trim_to;
+                        trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
+                        local.fields.trimmed = local.fields.trimmed.max(trim_to);
                     }
+                }
+                CommitOp::TrimStep { .. } => {
+                    // Budgeted maintenance slice toward the persisted safe
+                    // target. `min(absorbed)` is defensive only —
+                    // trim_safe_to is always a previous absorbed boundary.
+                    let target = local.fields.trim_safe_to.min(local.fields.absorbed);
+                    let allowed = trim_budget.min(cfg.max_trim_per_op);
+                    let trim_to = target.min(local.fields.trimmed + allowed);
+                    for off in local.fields.trimmed..trim_to {
+                        wb.delete(record_key(&hash, off));
+                    }
+                    trim_budget -= trim_to.saturating_sub(local.fields.trimmed);
+                    local.fields.trimmed = local.fields.trimmed.max(trim_to);
                 }
                 CommitOp::Queue { op, resp, .. } => {
                     use crate::queue::*;
@@ -1979,6 +2317,7 @@ impl ShardEngine {
                         if self.ring_enabled {
                             local.ring_recs.push((offset, frame.clone()));
                         }
+                        local.fields.unabsorbed_bytes += frame.len() as u64;
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.next += 1;
                         local.fields.logical += payload.len() as u64;
@@ -2002,17 +2341,23 @@ impl ShardEngine {
             if f.next != b.next
                 || f.absorbed != b.absorbed
                 || f.trimmed != b.trimmed
+                || f.trim_safe_to != b.trim_safe_to
+                || f.unabsorbed_bytes != b.unabsorbed_bytes
                 || f.seq != b.seq
                 || f.closed != b.closed
             {
                 wb.put(tail_key(hash), encode_tail(f));
-                // Dirty-stream index: marker present iff absorbed < next,
-                // maintained atomically with the tail it describes.
-                let was_dirty = b.absorbed < b.next;
-                let is_dirty = f.absorbed < f.next;
-                if is_dirty {
+                // Dirty-stream index: marker present iff the stream has
+                // outstanding maintenance — an unabsorbed tail or pending
+                // physical trim — maintained atomically with the tail it
+                // describes. (The value carries the absorb view; a
+                // trim-only marker reads absorbed == next, and the
+                // scanner reads the tail for the full state anyway.)
+                let was_marked = b.absorbed < b.next || b.trimmed < b.trim_safe_to;
+                let is_marked = f.absorbed < f.next || f.trimmed < f.trim_safe_to;
+                if is_marked {
                     wb.put(dirty_key(hash), dirty_value(f.absorbed, f.next));
-                } else if was_dirty {
+                } else if was_marked {
                     wb.delete(dirty_key(hash));
                 }
                 changed = true;
@@ -2070,6 +2415,29 @@ impl ShardEngine {
                     for (id, v) in &local.producers {
                         st.producers.insert(id.clone(), *v);
                     }
+                }
+                // Trim-debt bookkeeping: streams whose safe target still
+                // leads their trim cursor stay in (or enter) the
+                // maintenance set; caught-up streams leave it. Advisory
+                // state — a stale entry is a no-op TrimStep that then
+                // self-removes.
+                {
+                    let mut debt = self.trim_debt.lock().unwrap();
+                    for (hash, local) in &locals {
+                        if local.fields.trimmed < local.fields.trim_safe_to {
+                            debt.insert(*hash);
+                        } else {
+                            debt.remove(hash);
+                        }
+                    }
+                }
+                let trim_used = cfg.trim_global_budget.saturating_sub(trim_budget);
+                if trim_used > 0 {
+                    self.trim_deletes_last.store(trim_used, Ordering::Relaxed);
+                    self.trim_deletes_max_batch
+                        .fetch_max(trim_used, Ordering::Relaxed);
+                    self.trim_deletes_total
+                        .fetch_add(trim_used, Ordering::Relaxed);
                 }
                 self.stats_appended.fetch_add(records, Ordering::Relaxed);
                 self.in_flight.lock().unwrap().push(InFlightGroup {
@@ -2145,7 +2513,8 @@ impl ShardEngine {
             let mut ring = victim.ring.lock().unwrap();
             if let Some(b) = ring.batches.pop_front() {
                 ring.bytes -= b.bytes;
-                self.ring_budget.fetch_add(b.bytes as i64, Ordering::Relaxed);
+                self.ring_budget
+                    .fetch_add(b.bytes as i64, Ordering::Relaxed);
                 self.ring_evicted.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -2256,8 +2625,7 @@ impl ShardEngine {
                 self.ring_publish(handle, recs);
             }
             {
-                let wait_us =
-                    group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
+                let wait_us = group.written_at.elapsed().as_micros().min(u32::MAX as u128) as u32;
                 let mut t = self.timings.lock().unwrap();
                 t.push_back(GroupTiming {
                     ts_ms: now_ms(),

@@ -202,9 +202,7 @@ impl AppState {
                     code,
                     "shard not currently serving here; retry",
                 );
-                if let Ok(v) =
-                    axum::http::HeaderValue::from_str(&retry_after_secs.to_string())
-                {
+                if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
                     r.headers_mut().insert("retry-after", v);
                 }
                 Err(r)
@@ -427,6 +425,18 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         .values()
         .map(|e| e.resident_streams())
         .sum();
+    // Trim maintenance rollup across shards: debt = streams owing
+    // physical trims; max_batch is the gate the mature-second-wave
+    // stress reads (must stay ≤ TRIM_GLOBAL_BUDGET).
+    let (trim_debt, trim_last, trim_max_batch, trim_total) = state
+        .shards
+        .read()
+        .unwrap()
+        .values()
+        .map(|e| e.trim_stats())
+        .fold((0usize, 0u64, 0u64, 0u64), |a, v| {
+            (a.0 + v.0, a.1.max(v.1), a.2.max(v.2), a.3 + v.3)
+        });
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
@@ -443,6 +453,23 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "registry_cache": state.registry.cache_len(),
             "metrics": state.metrics.len(),
         },
+        "trim": {
+            "debt_streams": trim_debt,
+            "deletes_last_batch": trim_last,
+            "deletes_max_batch": trim_max_batch,
+            "deletes_total": trim_total,
+        },
+        // Cross-layout absorb advances rejected by the committer's
+        // layout seal. Nonzero = the absorber's lane classification
+        // raced dispatch somewhere; the seal made it harmless, but it
+        // should stay rare enough to investigate when it moves.
+        "absorb_lane_dropped": state
+            .shards
+            .read()
+            .unwrap()
+            .values()
+            .map(|e| e.absorb_lane_dropped.load(std::sync::atomic::Ordering::Relaxed))
+            .sum::<u64>(),
     }))
     .into_response()
 }
@@ -474,14 +501,10 @@ async fn debug_store(
         // History DbReader service: hits vs misses shows how much
         // per-request manifest traffic the cache absorbs; stale_reopens
         // is bounded by absorb cadence; coalesced proves single-flight.
-        obj.insert(
-            "history_readers".into(),
-            state.hist_readers.stats_json(),
-        );
+        obj.insert("history_readers".into(), state.hist_readers.stats_json());
     }
     axum::Json(snap).into_response()
 }
-
 
 /// Per-stream usage counters + the active limits. Auth: same bearer as
 /// the other debug endpoints (enforced by the middleware layer).
@@ -489,7 +512,7 @@ async fn debug_usage() -> Response {
     let l = crate::usage::limits();
     let streams: Vec<serde_json::Value> = crate::usage::snapshot()
         .into_iter()
-        .map(|(h, req, rec, bi, bo, pt, fr)| {
+        .map(|(h, _gen, req, rec, bi, bo, pt, fr)| {
             serde_json::json!({
                 "stream": crate::crypto::hex(&h),
                 "requests": req,
@@ -678,32 +701,31 @@ pub fn spawn_billing(state: Arc<AppState>) {
         // POSTURE (static audit): this emitter is best-effort usage
         // telemetry, not a production billing system of record — that
         // needs a durable outbox/ledger (deltas persisted transactionally
-        // with an ack cursor). Until that exists, the emitter must at
-        // least never DROP an interval: checkpoints advance only after
-        // the append succeeds, so a failed emit retries the accumulated
-        // delta next tick instead of losing it.
-        let mut prev: std::collections::HashMap<[u8; 16], (u64, u64, u64, u64)> =
-            std::collections::HashMap::new();
+        // with an ack cursor). Known accepted gaps until then: overflow-
+        // aggregate traffic (past the tracked-stream cap) has no
+        // per-stream attribution and is never emitted here (visible via
+        // /v1/debug/usage only), and checkpoints live in process memory —
+        // a restart re-bills current cumulative values. What the emitter
+        // DOES guarantee: no interval is dropped (checkpoints advance
+        // only after the append succeeds), evict-and-return incarnations
+        // are told apart by counter generation instead of value
+        // regression (which missed regrow-past-checkpoint and
+        // under-billed), and checkpoint memory does not grow with every
+        // stream ever seen.
+        let mut prev: BillingCheckpoints = std::collections::HashMap::new();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let now_ms = crate::shard::now_ms();
             let mut recs: Vec<serde_json::Value> = Vec::new();
-            let mut staged: Vec<([u8; 16], (u64, u64, u64, u64))> = Vec::new();
-            for (h, req, rec, bi, bo, pt, fr) in crate::usage::snapshot() {
+            let mut staged: Vec<([u8; 16], (u64, (u64, u64, u64, u64)))> = Vec::new();
+            let mut seen: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+            for (h, cgen, req, rec, bi, bo, pt, fr) in crate::usage::snapshot() {
                 if h == self_hash {
                     continue;
                 }
-                let p = prev.get(&h).copied().unwrap_or((0, 0, 0, 0));
-                // A cumulative counter smaller than its checkpoint means
-                // the tracked entry was evicted and the stream returned:
-                // treat as a reset and bill the fresh cumulative.
-                let reset = req < p.0 || rec < p.1 || bi < p.2 || bo < p.3;
-                let d = if reset {
-                    (req, rec, bi, bo)
-                } else {
-                    (req - p.0, rec - p.1, bi - p.2, bo - p.3)
-                };
-                staged.push((h, (req, rec, bi, bo)));
+                seen.insert(h);
+                let d = billing_delta(&prev, &h, cgen, req, rec, bi, bo);
+                staged.push((h, (cgen, (req, rec, bi, bo))));
                 if d == (0, 0, 0, 0) {
                     continue;
                 }
@@ -720,24 +742,28 @@ pub fn spawn_billing(state: Arc<AppState>) {
             }
             if recs.is_empty() {
                 // Still advance checkpoints for streams whose counters
-                // moved without billable deltas (resets to zero).
+                // moved without billable deltas, and drop checkpoints for
+                // evicted streams (nothing outstanding to lose — their
+                // next incarnation carries a fresh generation anyway).
                 for (h, cur) in staged {
                     prev.insert(h, cur);
                 }
+                prev.retain(|h, _| seen.contains(h));
                 continue;
             }
             let body = serde_json::to_vec(&recs).unwrap_or_default();
-            let resp = append(
-                state.clone(),
-                name.clone(),
-                hdrs.clone(),
-                Body::from(body),
-            )
-            .await;
+            let resp = append(state.clone(), name.clone(), hdrs.clone(), Body::from(body)).await;
             if resp.status().is_success() {
                 for (h, cur) in staged {
                     prev.insert(h, cur);
                 }
+                // Checkpoint hygiene: entries for streams no longer in the
+                // snapshot are dead weight (their counters object is gone;
+                // a returning stream gets a new generation). Only after a
+                // SUCCESSFUL emit — an evicted-mid-failure stream keeps
+                // nothing outstanding here by construction (its row was in
+                // this emit or a previous one).
+                prev.retain(|h, _| seen.contains(h));
             } else {
                 tracing::warn!(
                     status = %resp.status(),
@@ -746,6 +772,37 @@ pub fn spawn_billing(state: Arc<AppState>) {
             }
         }
     });
+}
+
+/// stream → (counter generation, cumulative checkpoint) for the emitter.
+type BillingCheckpoints = std::collections::HashMap<[u8; 16], (u64, (u64, u64, u64, u64))>;
+
+/// One stream's billable delta against its checkpoint. Same generation
+/// and monotonic counters → plain difference. A DIFFERENT generation
+/// means the tracked entry was evicted and re-created: bill the fresh
+/// cumulative in full — value-regression detection alone missed the
+/// evict → return → regrow-past-checkpoint case (old checkpoint 10,
+/// new incarnation already at 20 reads as "delta 10" when the truth is
+/// 20). In-generation regression cannot happen (counters only grow),
+/// but is handled the same way defensively.
+fn billing_delta(
+    prev: &BillingCheckpoints,
+    h: &[u8; 16],
+    generation: u64,
+    req: u64,
+    rec: u64,
+    bi: u64,
+    bo: u64,
+) -> (u64, u64, u64, u64) {
+    match prev.get(h) {
+        Some((pgen, p))
+            if *pgen == generation && req >= p.0 && rec >= p.1 && bi >= p.2 && bo >= p.3 =>
+        {
+            (req - p.0, rec - p.1, bi - p.2, bo - p.3)
+        }
+        Some(_) => (req, rec, bi, bo),
+        None => (req, rec, bi, bo),
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -758,16 +815,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/usage", get(debug_usage))
         .route(
             "/v1/debug/absorb-pause",
-            post(|Query(q): Query<std::collections::HashMap<String, String>>| async move {
-                let on = q.get("on").map(|v| v == "1").unwrap_or(false);
-                crate::history::absorb_pause_flag()
-                    .store(on, std::sync::atomic::Ordering::Relaxed);
-                axum::Json(serde_json::json!({"absorb_paused": on}))
-            }),
+            post(
+                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                    let on = q.get("on").map(|v| v == "1").unwrap_or(false);
+                    crate::history::absorb_pause_flag()
+                        .store(on, std::sync::atomic::Ordering::Relaxed);
+                    axum::Json(serde_json::json!({"absorb_paused": on}))
+                },
+            ),
         )
-        .route("/v1/debug/scaler", get(|| async {
-            axum::Json(crate::scaler::debug_snapshot())
-        }))
+        .route(
+            "/v1/debug/scaler",
+            get(|| async { axum::Json(crate::scaler::debug_snapshot()) }),
+        )
         .route("/v1/debug/sleep", get(debug_sleep))
         // Operator dashboard: UNSECURED by explicit product decision (on-call
         // must see the cell without credentials). The payload is therefore
@@ -1020,7 +1080,11 @@ async fn stream_entry_inner(
             Ok(Some(d)) if desc_alive(&d) => d,
             Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
             Err(e) => {
-                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e.to_string());
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
             }
         };
         match check_key(raw_key(&headers, &state), &desc) {
@@ -1516,8 +1580,8 @@ async fn create_stream(
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            fresh.scaling = hdr(&headers, "stream-scaling").as_deref() == Some("auto")
-                && !name.contains('#');
+            fresh.scaling =
+                hdr(&headers, "stream-scaling").as_deref() == Some("auto") && !name.contains('#');
             match state
                 .registry
                 .recreate(&name, fresh, |d| !desc_alive(d))
@@ -1552,8 +1616,8 @@ async fn create_stream(
             );
             fresh.queue_max_deliveries =
                 hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
-            fresh.scaling = hdr(&headers, "stream-scaling").as_deref() == Some("auto")
-                && !name.contains('#');
+            fresh.scaling =
+                hdr(&headers, "stream-scaling").as_deref() == Some("auto") && !name.contains('#');
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -1639,7 +1703,7 @@ async fn create_stream(
             deferred_error: None,
             touch: None,
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
-        resp: tx,
+            resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
             return err_resp(StatusCode::TOO_MANY_REQUESTS, "overloaded", "queue full");
@@ -1946,7 +2010,9 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
         let store = state.registry.store();
         let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
             Ok(b) => b,
-            Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+            Err(_) => {
+                return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
+            }
         };
         for attempt in 0..4u32 {
             let target = crate::scaler::route(&store, &name, &rk).await;
@@ -2085,24 +2151,38 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
 
     // Per-shard service limits (usage.rs): token buckets over request rate,
     // record rate, and ingest bytes. Reject-whole with the limit named.
-    if !close_only && deferred.is_none() {
-        let h = crate::crypto::stream_hash(&desc.name);
-        if let Err(hit) = crate::usage::admit_append(&h, body.len() as u64, entries.len() as u64) {
-            let mut r = err_resp(StatusCode::TOO_MANY_REQUESTS, hit.code(), &hit.message());
-            if let Ok(v) =
-                axum::http::HeaderValue::from_str(&format!("{}", hit.retry_ms().div_ceil(1000).max(1)))
-            {
-                r.headers_mut().insert("retry-after", v);
+    // Admission also picks THE counters object for this request — one Arc
+    // carried through both count sites (here and the committer), so a
+    // concurrent eviction/promotion can never split one request's
+    // accounting across two objects (review round 4).
+    let name_hash = crate::crypto::stream_hash(&desc.name);
+    let usage_c = if !close_only && deferred.is_none() {
+        match crate::usage::admit_append(&name_hash, body.len() as u64, entries.len() as u64) {
+            Err(hit) => {
+                let mut r = err_resp(StatusCode::TOO_MANY_REQUESTS, hit.code(), &hit.message());
+                if let Ok(v) = axum::http::HeaderValue::from_str(&format!(
+                    "{}",
+                    hit.retry_ms().div_ceil(1000).max(1)
+                )) {
+                    r.headers_mut().insert("retry-after", v);
+                }
+                return r;
             }
-            return r;
+            Ok(c) => {
+                c.requests
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                c.records
+                    .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                c.bytes_in
+                    .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                c
+            }
         }
-        let c = crate::usage::counters(&h);
-        c.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        c.records
-            .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        c.bytes_in
-            .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    }
+    } else {
+        // Close-only / deferred-error requests skip admission; a single
+        // resolve here still beats the old two-site double resolve.
+        crate::usage::counters(&name_hash)
+    };
 
     let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
     let seg_ord: Option<u32> = if desc.is_per_key() {
@@ -2116,7 +2196,10 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     };
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
-    crate::usage::link_storage(crate::crypto::RouteHash::of(&desc.name), crate::crypto::SegmentHash(hash));
+    crate::usage::link_storage(
+        crate::crypto::RouteHash::of(&desc.name),
+        crate::crypto::SegmentHash(hash),
+    );
     let kv = key_version(&headers);
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(hash, key, epoch);
@@ -2154,9 +2237,9 @@ async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Bo
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash,
-        route: crate::crypto::stream_hash(&desc.name),
+        route: name_hash,
         entries,
-        usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
+        usage: usage_c,
         routing_key,
         key_version: kv,
         subkey,
@@ -2451,7 +2534,10 @@ pub(crate) async fn read_merged(
                 // read through the owner's open Db — no reader open, no
                 // checkpoint, no coverage probe (this Db's flush is what
                 // advanced the boundary). Frames decode like tail frames.
-                let part = engine.history_partition().await.map_err(|e| e.to_string())?;
+                let part = engine
+                    .history_partition()
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let (frames, _last, completed) = crate::history::read_history2(
                     &part,
                     crate::crypto::RouteHash(route),
@@ -2474,10 +2560,9 @@ pub(crate) async fn read_merged(
                 )?;
                 completed
             } else {
-                let h =
-                    read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                let h = read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 for (off, rec) in h.records {
                     budget = budget.saturating_sub(rec.payload.len());
                     out.recs.push(PlainRec {
@@ -2798,7 +2883,11 @@ async fn read(
         params.key.as_deref(),
         // Woken live reads carry a fresh commit group, not a backlog:
         // keep the response (and the client's rearm) proportional to it.
-        if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
+        if live_wake {
+            tail_max_bytes()
+        } else {
+            MAX_READ_BYTES
+        },
     )
     .await
     {
@@ -3270,7 +3359,11 @@ async fn read_per_key(
             // A woken live read returns a fresh commit group, not a
             // backlog: the small budget keeps the response — and the
             // consumer's next-poll rearm — proportional to it.
-            if live_wake { tail_max_bytes() } else { MAX_READ_BYTES },
+            if live_wake {
+                tail_max_bytes()
+            } else {
+                MAX_READ_BYTES
+            },
         )
         .await
         {
@@ -3891,5 +3984,37 @@ mod tests {
         stream_slot_release(&mut m, &h);
         stream_slot_release(&mut m, &h);
         assert!(!m.contains_key(&h), "zero-count entry must be removed");
+    }
+
+    /// Review round 4: value-regression reset detection under-billed the
+    /// evict → return → regrow case. Generation ids close it.
+    #[test]
+    fn billing_deltas_follow_counter_generations() {
+        let h = [7u8; 16];
+        let mut prev: BillingCheckpoints = HashMap::new();
+
+        // First sighting: bill the full cumulative.
+        assert_eq!(
+            billing_delta(&prev, &h, 1, 10, 10, 100, 0),
+            (10, 10, 100, 0)
+        );
+        prev.insert(h, (1, (10, 10, 100, 0)));
+
+        // Same generation, counters grew: plain difference.
+        assert_eq!(billing_delta(&prev, &h, 1, 15, 12, 130, 5), (5, 2, 30, 5));
+        prev.insert(h, (1, (15, 12, 130, 5)));
+
+        // Evicted at 15 requests, returned, and REGREW PAST the old
+        // checkpoint before the next tick: cumulative 20 under a new
+        // generation. Value comparison alone would emit 5 — the truth
+        // for the new incarnation is all 20.
+        assert_eq!(
+            billing_delta(&prev, &h, 2, 20, 20, 200, 0),
+            (20, 20, 200, 0)
+        );
+
+        // Same generation with a (defensively handled) regression also
+        // re-bills the cumulative rather than underflowing.
+        assert_eq!(billing_delta(&prev, &h, 1, 3, 1, 10, 0), (3, 1, 10, 0));
     }
 }

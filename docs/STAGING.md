@@ -143,6 +143,7 @@ ABSORB_BYTES=4194304
 ABSORB_AGE_SECS=60
 ABSORB_PASS_BYTES=67108864
 TRIM_PER_OP=65536
+TRIM_GLOBAL_BUDGET=65536            # global per-commit trim-delete cap; TRIM_PER_OP is per-stream within it
 
 # --- admission (ON in production, RUNBOOK 3.6)
 ADMIT_MAX_INFLIGHT=512

@@ -9,11 +9,11 @@ mod offsets;
 mod operator;
 mod queue;
 mod registry;
-mod shard;
-mod store_timing;
 mod scaler;
 mod segmap;
+mod shard;
 mod sharddir;
+mod store_timing;
 mod touch;
 mod touch_keys;
 mod usage;
@@ -216,13 +216,23 @@ struct Args {
     #[arg(long, env = "MANIFEST_POLL_MS", default_value_t = 2000)]
     manifest_poll_ms: u64,
 
-    /// Hot-log records deleted per Absorbed commit op. Trim must keep pace
-    /// with ingest in steady state: at 50k records/s and ~1 absorb pass
-    /// per 5 s, the pass has to retire ~250k records or the hot DB grows
-    /// without bound. Tombstones are ~30 B, so even the high setting is a
-    /// few MB per batch.
+    /// Hot-log records deleted per stream per commit group. Trim must
+    /// keep pace with ingest in steady state: at 50k records/s and ~1
+    /// absorb pass per 5 s, the pass has to retire ~250k records or the
+    /// hot DB grows without bound. Tombstones are ~30 B, so even the
+    /// high setting is a few MB per batch. The GLOBAL per-commit bound
+    /// across all streams is TRIM_GLOBAL_BUDGET.
     #[arg(long, env = "TRIM_PER_OP", default_value_t = 8_192)]
     trim_per_op: u64,
+
+    /// GLOBAL cap on trim deletes per commit group, shared by every
+    /// boundary advance and maintenance step in the group. This is what
+    /// bounds a mature-fleet second absorption wave: without it one
+    /// gather's AbsorbedBatch × TRIM_PER_OP could expand into tens of
+    /// millions of deletes in a single WriteBatch (multi-GiB). Leftover
+    /// work becomes trim debt, drained a budgeted slice per 5 s tick.
+    #[arg(long, env = "TRIM_GLOBAL_BUDGET", default_value_t = 65_536)]
+    trim_global_budget: u64,
 
     /// Plaintext bytes buffered per absorber pass (absorb_one holds a pass
     /// in memory; cap it well below the instance's RAM).
@@ -262,6 +272,13 @@ struct Args {
     /// discoverable, so this only trades a tail-row read for memory.
     #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
     handle_idle_evict_secs: u64,
+
+    /// Capacity cap on resident per-stream handles per shard (0 =
+    /// uncapped). Time-based eviction alone lets a cardinality burst
+    /// accumulate rate × idle-window handles; past this cap the ticker
+    /// evicts oldest-touched unreferenced handles immediately.
+    #[arg(long, env = "HANDLE_MAX_RESIDENT", default_value_t = 65_536)]
+    handle_max_resident: usize,
 
     /// Aggregate byte budget for one shared-history gather WriteBatch
     /// (keys + frames, keyed index rows counted twice). Bounds absorber
@@ -536,8 +553,8 @@ fn shard_settings(args: &Args) -> Settings {
                 .unwrap_or_default();
             let gc_max = (args.gc_max_interval_secs > 0)
                 .then(|| Duration::from_secs(args.gc_max_interval_secs));
-            let gc_ttl = (args.gc_list_ttl_secs > 0)
-                .then(|| Duration::from_secs(args.gc_list_ttl_secs));
+            let gc_ttl =
+                (args.gc_list_ttl_secs > 0).then(|| Duration::from_secs(args.gc_list_ttl_secs));
             // Regular WAL GC deliberately keeps list-per-sweep: after a
             // drain, a cached view of the WAL dir holds only the zero-byte
             // fence objects (size-filtered, never deleted, never forgotten),
@@ -668,7 +685,9 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
         let absorb_gather_max_bytes = args.absorb_gather_max_bytes;
         let handle_idle_evict_secs = args.handle_idle_evict_secs;
+        let handle_max_resident = args.handle_max_resident;
         let trim_per_op = args.trim_per_op;
+        let trim_global_budget = args.trim_global_budget;
         let wal_group_commit = args.wal_group_commit != 0;
         let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
             args.flush_interval_ms
@@ -743,6 +762,7 @@ async fn async_main() -> anyhow::Result<()> {
                         data_store.clone(),
                         ShardConfig {
                             max_trim_per_op: trim_per_op,
+                            trim_global_budget,
                             wal_group_commit,
                             wal_flush_gap,
                             wal_post_ack_gather,
@@ -750,6 +770,7 @@ async fn async_main() -> anyhow::Result<()> {
                             wal_gather_skip_bytes,
                             tail_ring_bytes,
                             handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
+                            handle_max_resident,
                             ..Default::default()
                         },
                         absorb_tx,
@@ -784,9 +805,15 @@ async fn async_main() -> anyhow::Result<()> {
     let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener.open);
     let hist_readers = crate::history::HistReaders::new(
         data_store.clone(),
-        std::env::var("HIST_READER_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(8),
+        std::env::var("HIST_READER_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8),
         Duration::from_secs(
-            std::env::var("HIST_READER_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+            std::env::var("HIST_READER_IDLE_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(120),
         ),
         5_000,
     );

@@ -97,7 +97,6 @@ fn block_err(msg: &str) -> slatedb::Error {
 
 // ---- history record codec ----
 
-
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
 /// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
@@ -261,7 +260,9 @@ fn history_settings() -> Settings {
             .unwrap_or(3600);
         (secs > 0).then(|| Duration::from_secs(secs))
     };
-    let mut gc = Settings::default().garbage_collector_options.unwrap_or_default();
+    let mut gc = Settings::default()
+        .garbage_collector_options
+        .unwrap_or_default();
     for slot in [
         &mut gc.wal_options,
         &mut gc.manifest_options,
@@ -334,11 +335,7 @@ impl KeyCache {
         if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
             map.retain(|_, e| e.at.elapsed() <= KEY_TTL);
             if map.len() >= KEY_CACHE_MAX {
-                if let Some(oldest) = map
-                    .iter()
-                    .min_by_key(|(_, e)| e.at)
-                    .map(|(h, _)| *h)
-                {
+                if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(h, _)| *h) {
                     map.remove(&oldest);
                 }
             }
@@ -355,9 +352,7 @@ impl KeyCache {
 
     pub fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
         let mut map = self.map.lock().unwrap();
-        let expired = map
-            .get(hash)
-            .is_some_and(|e| e.at.elapsed() > KEY_TTL);
+        let expired = map.get(hash).is_some_and(|e| e.at.elapsed() > KEY_TTL);
         if expired {
             map.remove(hash);
             return None;
@@ -424,8 +419,13 @@ pub struct AbsorberConfig {
     /// and oversized first frames (bodies up to the 32 MiB API cap) can
     /// exceed even that. Streams that do not fit stay pending and
     /// gather on later ticks; a single over-budget chunk still proceeds
-    /// alone so every stream makes progress. Default matches the
-    /// history DB's max_unflushed_bytes: one gather ≈ one memtable.
+    /// alone so every stream makes progress. This is therefore a SOFT
+    /// budget, not an absolute memory ceiling: that one-chunk exception
+    /// admits up to a per-stream-cap chunk — and a single oversized
+    /// KEYED frame is stored twice (record + index row), so the true
+    /// worst case is ~2× the largest admissible frame plus overhead.
+    /// Default matches the history DB's max_unflushed_bytes: one
+    /// gather ≈ one memtable.
     pub gather_max_bytes: usize,
 }
 
@@ -455,6 +455,19 @@ struct PendingAbsorb {
     failures: u32,
     /// Earliest next attempt (backoff); zero-delay until the first failure.
     retry_after: Option<Instant>,
+}
+
+/// Per-stream classification of one v2 gather (review round 4, P1): the
+/// pump must retire ONLY what the gather settled. `advanced` carries
+/// (hash, new upto, raw frame bytes copied — the committer's
+/// unabsorbed_bytes decrement); `no_work` had nothing durable to absorb;
+/// `deferred_budget` did not fit this batch's byte budget and MUST stay
+/// pending — with lag and age intact — for the next tick.
+#[derive(Default)]
+pub(crate) struct GatherOutcome {
+    pub(crate) advanced: Vec<([u8; 16], u64, u64)>,
+    pub(crate) no_work: Vec<[u8; 16]>,
+    pub(crate) deferred_budget: Vec<[u8; 16]>,
 }
 
 /// Shared post-pass bookkeeping for both lanes: success retires the
@@ -534,16 +547,23 @@ pub struct Absorber {
     /// concern bounded; entries are dropped on fence-class errors and on
     /// absorber exit.
     open_dbs: tokio::sync::Mutex<HashMap<[u8; 16], (Arc<Db>, Instant)>>,
-    /// Highest `upto` this absorber has submitted per stream. The
+    /// Highest `upto` this absorber has submitted per stream, WITH the
+    /// lane that submitted it (true = v2 shared partition). The
     /// published handle state only reflects a submit after the committer
     /// batch it landed in is durable AND dispatched, so pacing passes off
     /// the published value alone re-absorbs the same range whenever
     /// dispatch lags a tick — wasted decrypt/write work, and the duplicate
     /// `Absorbed` op it produces used to collapse the deferred-trim lag
-    /// (2026-07-27 boundary-race DST failure). Per-instance state: a
-    /// restarted or new-owner absorber starts from published state again,
-    /// which is safe because re-absorbing is idempotent.
-    submitted: std::sync::Mutex<HashMap<[u8; 16], u64>>,
+    /// (2026-07-27 boundary-race DST failure). LANE-SCOPED (round 4):
+    /// each lane trusts only its OWN mark — during the brief pre-seal
+    /// window both lanes can claim a stream, and the committer's layout
+    /// seal then DROPS one side's advance; if the surviving lane trusted
+    /// the dropped lane's floor it would skip a range that only exists
+    /// in the dropped tier, permanently hiding acked records. Per-
+    /// instance state: a restarted or new-owner absorber starts from
+    /// published state again, which is safe because re-absorbing is
+    /// idempotent.
+    submitted: std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>,
 }
 
 /// Must exceed the small lane's concurrency, or a tick's concurrent
@@ -582,42 +602,21 @@ impl Absorber {
         let absorber = Self::new(data_store, shard, keys, cfg);
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
-            // Restart rediscovery (static audit P1): seed from the durable
-            // dirty-stream index so tails left unabsorbed by a previous
-            // owner converge WITHOUT the customer ever touching those
-            // streams again. Backdating `since` by the age threshold makes
-            // them eligible promptly rather than a full window later. The
-            // resident-handle sweep below remains as belt-and-braces.
-            match absorber.shard.scan_dirty_streams().await {
-                Ok(dirty) => {
-                    let n = dirty.len();
-                    for (h, absorbed, next) in dirty {
-                        let recs = next.saturating_sub(absorbed);
-                        if recs == 0 {
-                            continue;
-                        }
-                        let since = Instant::now()
-                            .checked_sub(absorber.cfg.threshold_age)
-                            .unwrap_or_else(Instant::now);
-                        pending.entry(h).or_insert(PendingAbsorb {
-                            bytes: recs.saturating_mul(1024),
-                            since,
-                            failures: 0,
-                            retry_after: None,
-                        });
-                    }
-                    if n > 0 {
-                        tracing::info!(
-                            "absorber seeded {} dirty streams from the durable index ({})",
-                            n,
-                            absorber.shard.prefix
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("dirty-stream index scan failed at absorber start: {e}");
-                }
-            }
+            // Restart rediscovery (static audit P1, hardened round 4):
+            // seed from the durable dirty-stream index so work left
+            // outstanding by a previous owner converges WITHOUT the
+            // customer ever touching those streams again. The scan runs
+            // inside the tick loop so signals keep flowing while it
+            // retries: a failed startup scan with no retry permanently
+            // stranded pre-restart streams (no signal, no handle, no
+            // pending entry — no rediscovery path at all). Once seeded, a
+            // low-cadence rescan re-merges anything runtime handle
+            // eviction or dropped signals let slip. The resident-handle
+            // sweep below remains as belt-and-braces.
+            let mut seeded = false;
+            let mut seed_failures: u32 = 0;
+            let mut seed_next_tick: u32 = 0;
+            const RESCAN_EVERY: u32 = 120; // ~10 min at the 5 s tick
             let mut tick = tokio::time::interval(absorber.cfg.tick);
             let mut tick_n: u32 = 0;
             loop {
@@ -640,6 +639,12 @@ impl Absorber {
                         crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
                     }
                     crate::usage::clear_shard_lag(&absorber.shard.prefix);
+                    // The per-shard pending-summary row too (review round
+                    // 4): after a shard moves, the old owner's frozen row
+                    // double-counts against the new owner's — the
+                    // instance rollup reports phantom backlog, and
+                    // wide-report treats that rollup as its drain proof.
+                    crate::usage::clear_absorb_pending_summary(&absorber.shard.prefix);
                     let handles: Vec<[u8; 16]> =
                         absorber.open_dbs.lock().await.keys().copied().collect();
                     for h in handles {
@@ -661,6 +666,39 @@ impl Absorber {
                     _ = tick.tick() => {
                         let now = Instant::now();
                         tick_n = tick_n.wrapping_add(1);
+                        // Durable-index discovery: retry with exponential
+                        // backoff until the FIRST scan succeeds, then
+                        // rescan at low cadence as a safety net.
+                        if (!seeded && tick_n >= seed_next_tick)
+                            || (seeded && tick_n % RESCAN_EVERY == 0)
+                        {
+                            match absorber.seed_from_dirty_index(&mut pending).await {
+                                Ok(n) => {
+                                    if !seeded && n > 0 {
+                                        tracing::info!(
+                                            "absorber seeded {} dirty streams from the durable index ({})",
+                                            n,
+                                            absorber.shard.prefix
+                                        );
+                                    }
+                                    seeded = true;
+                                }
+                                Err(e) => {
+                                    if seeded {
+                                        tracing::warn!("dirty-stream index rescan failed: {e}");
+                                    } else {
+                                        seed_failures = seed_failures.saturating_add(1);
+                                        let shift = seed_failures.min(6);
+                                        seed_next_tick = tick_n
+                                            .saturating_add(2u32.saturating_pow(shift));
+                                        tracing::warn!(
+                                            failures = seed_failures,
+                                            "dirty-stream index scan failed at absorber start (retrying): {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         // Re-discovery sweep: signals are the fast path;
                         // this closes their gaps (the bounded channel's
                         // try_send drops under a wide backlog, and a
@@ -701,7 +739,7 @@ impl Absorber {
                                     || absorber
                                         .shard
                                         .resident_absorbed(h)
-                                        .is_some_and(|a| a < *v)
+                                        .is_some_and(|a| a < v.0)
                             });
                         }
                         // Publish absorption lag (scale-out signal) for
@@ -798,9 +836,22 @@ impl Absorber {
                             let Ok(handle) = absorber.shard.stream_handle(hash).await else {
                                 continue;
                             };
+                            // Lane eligibility reads the APPLIED tail, not
+                            // the durable one (round-4 root cause): a
+                            // signal can arrive before its append's batch
+                            // DISPATCHES, so the durable snapshot briefly
+                            // shows route==0 / absorbed==0 and the lane
+                            // decision flaps — the zero-route guard sent
+                            // fresh routed streams down v1, and one tick
+                            // later a stale absorbed==0 re-admitted v2.
+                            // `applied` is updated synchronously at commit,
+                            // strictly before any signal for that batch
+                            // exists, so it cannot race the classifier.
+                            // (The committer-side layout seal remains the
+                            // hard correctness backstop.)
                             let (absorbed, v2flag, route) = {
                                 let st = handle.state.lock().unwrap();
-                                (st.durable.absorbed, st.durable.history_v2, st.durable.route)
+                                (st.applied.absorbed, st.applied.history_v2, st.applied.route)
                             };
                             // Zero-route guard (static audit): a legacy
                             // stream with no name-level route must NOT
@@ -809,6 +860,14 @@ impl Absorber {
                             // would classify them into the wrong range.
                             // Such streams keep the v1 per-stream layout.
                             let v2_eligible = v2flag || (absorbed == 0 && route != [0u8; 16]);
+                            #[cfg(test)]
+                            if std::env::var("DST_DRAIN_TRACE").is_ok() {
+                                eprintln!(
+                                    "CLASSIFY {} absorbed={absorbed} v2flag={v2flag} route_set={} eligible={v2_eligible} bytes={bytes}",
+                                    crate::crypto::hex(&hash[..4]),
+                                    route != [0u8; 16],
+                                );
+                            }
                             if !absorber.cfg.force_v1 && v2_eligible {
                                 if v2_lane.len() < V2_LANE_PER_TICK {
                                     v2_lane.push(hash);
@@ -823,12 +882,24 @@ impl Absorber {
                         }
                         if !v2_lane.is_empty() && !absorber.shard.is_closed() {
                             match absorber.absorb_gather_v2(&v2_lane).await {
-                                Ok(_advanced) => {
-                                    // The lane is settled: covered streams
-                                    // advanced; skipped ones had nothing
-                                    // durable to absorb. Residues and new
-                                    // data re-arrive via signals/sweep.
-                                    for h in &v2_lane {
+                                Ok(outcome) => {
+                                    // Retire ONLY what the gather settled:
+                                    // covered streams advanced; no_work had
+                                    // nothing durable to absorb (residues
+                                    // and new data re-arrive via
+                                    // signals/sweep). Budget-deferred
+                                    // streams KEEP their pending entry, lag
+                                    // and age — they gather next tick
+                                    // without needing a new signal or the
+                                    // ~60 s handle sweep (review round 4:
+                                    // removing them silently stranded
+                                    // their backlog for up to a minute and
+                                    // blinded the fleet lag view).
+                                    for (h, _, _) in &outcome.advanced {
+                                        pending.remove(h);
+                                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
+                                    }
+                                    for h in &outcome.no_work {
                                         pending.remove(h);
                                         crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
                                     }
@@ -898,6 +969,60 @@ impl Absorber {
         })
     }
 
+    /// Scan the durable dirty index and merge outstanding work:
+    /// unabsorbed streams into `pending`, trim debt into the engine's
+    /// maintenance set. Pending bytes come from the tail's EXACT
+    /// `unabsorbed_bytes` gauge — the old records × 1 KiB estimate
+    /// under-sized a single 32 MiB record by 32,000×, putting it below
+    /// both default absorption thresholds forever (review round 4).
+    /// `or_insert` merge: live entries always win over the scan's view.
+    async fn seed_from_dirty_index(
+        &self,
+        pending: &mut HashMap<[u8; 16], PendingAbsorb>,
+    ) -> anyhow::Result<usize> {
+        let dirty = self.shard.scan_dirty_streams().await?;
+        let mut absorb_seeded = 0usize;
+        for (h, absorbed, next) in dirty {
+            let (recs, bytes) = match self.shard.tail_fields(&h).await {
+                Ok(Some(t)) => {
+                    if t.trimmed < t.trim_safe_to {
+                        self.shard.note_trim_debt(h);
+                    }
+                    let recs = t.next.saturating_sub(t.absorbed);
+                    let bytes = if t.unabsorbed_bytes > 0 {
+                        t.unabsorbed_bytes
+                    } else {
+                        // Legacy tail without the gauge: keep the estimate.
+                        recs.saturating_mul(1024)
+                    };
+                    (recs, bytes)
+                }
+                // Tail unreadable right now: fall back to the marker's
+                // view rather than failing the whole seed pass.
+                _ => {
+                    let recs = next.saturating_sub(absorbed);
+                    (recs, recs.saturating_mul(1024))
+                }
+            };
+            if recs == 0 {
+                continue;
+            }
+            // Backdate by the age threshold so recovered work is eligible
+            // promptly rather than a full window later.
+            let since = Instant::now()
+                .checked_sub(self.cfg.threshold_age)
+                .unwrap_or_else(Instant::now);
+            pending.entry(h).or_insert(PendingAbsorb {
+                bytes,
+                since,
+                failures: 0,
+                retry_after: None,
+            });
+            absorb_seeded += 1;
+        }
+        Ok(absorb_seeded)
+    }
+
     /// Shared-partition gather pass (history v2): read MANY streams' raw
     /// encrypted frames from the shard log, put them all into ONE
     /// WriteBatch on the shard's shared partition, flush ONCE, then
@@ -905,20 +1030,25 @@ impl Absorber {
     /// per-stream DB — the per-stream request tax this replaces was ~43
     /// Class A per one-record stream (docs/COST-WIDE1.md §1).
     ///
-    /// Returns (stream, new_upto) for every stream the flush covered.
-    /// A per-stream byte cap truncates fat streams mid-range — their
-    /// boundary still advances over what was written, and the sweep or
-    /// the next signal re-drives the remainder.
+    /// Classifies every requested stream: `advanced` covered by this
+    /// flush (with new upto and the frame bytes copied), `no_work` had
+    /// nothing durable to absorb, and `deferred_budget` did not fit the
+    /// aggregate byte budget — the CALLER must keep those pending (with
+    /// lag and age intact) so they gather on the next tick; dropping
+    /// them used to strand their backlog until the ~60 s resident-handle
+    /// sweep re-found it. A per-stream byte cap truncates fat streams
+    /// mid-range — their boundary still advances over what was written,
+    /// and the sweep or the next signal re-drives the remainder.
     pub(crate) async fn absorb_gather_v2(
         &self,
         streams: &[[u8; 16]],
-    ) -> anyhow::Result<Vec<([u8; 16], u64)>> {
+    ) -> anyhow::Result<GatherOutcome> {
         const PER_STREAM_CAP: usize = 4 * 1024 * 1024;
         // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
         const ENTRY_OVERHEAD: usize = 64;
         let part = self.shard.history_partition().await?;
         let mut wb = WriteBatch::new();
-        let mut advanced: Vec<([u8; 16], u64)> = Vec::new();
+        let mut out = GatherOutcome::default();
         let mut batch_bytes: usize = 0;
         for hash in streams {
             // Aggregate budget: the batch is held in memory until the one
@@ -926,38 +1056,55 @@ impl Absorber {
             // what a 1 GiB instance actually feels. Anything deferred here
             // stays in the pending set and gathers on a later tick.
             if batch_bytes >= self.cfg.gather_max_bytes {
-                break;
+                out.deferred_budget.push(*hash);
+                continue;
             }
             let handle = self.shard.stream_handle(*hash).await?;
             let (from, upto, route) = {
                 let st = handle.state.lock().unwrap();
-                (st.durable.absorbed, st.durable.next, RouteHash(st.durable.route))
+                (
+                    st.durable.absorbed,
+                    st.durable.next,
+                    RouteHash(st.durable.route),
+                )
             };
             let inc = SegmentHash(*hash);
+            // Lane-scoped floor: trust only OUR lane's mark — a v1 mark
+            // here may describe an advance the layout seal dropped, and
+            // skipping past it would hide that range from the partition.
             let from = {
                 let submitted = self.submitted.lock().unwrap();
-                submitted.get(hash).copied().unwrap_or(0).max(from)
+                submitted
+                    .get(hash)
+                    .and_then(|(u, v2)| (*v2).then_some(*u))
+                    .unwrap_or(0)
+                    .max(from)
             };
             if from >= upto {
+                out.no_work.push(*hash);
                 continue;
             }
             let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
-            let chunk =
-                read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
+            let chunk = read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
             if chunk.frames.is_empty() {
+                out.no_work.push(*hash);
                 continue;
             }
-            // Exact contribution of this chunk (keyed frames store the
-            // value twice: record row + routing-key index row).
+            // This chunk's batch contribution (keyed frames store the
+            // value twice: record row + routing-key index row, whose key
+            // is 2 bytes longer than the record row's for the length
+            // prefix), plus the raw frame bytes for the tail's
+            // unabsorbed_bytes gauge.
             let mut chunk_bytes = 0usize;
+            let mut chunk_raw = 0u64;
             for raw in &chunk.frames {
                 let Some(frame) = crate::crypto::decode_frame(raw) else {
                     anyhow::bail!("undecodable frame during v2 gather");
                 };
-                let per_row = raw.len() + 41 + ENTRY_OVERHEAD;
-                chunk_bytes += per_row;
+                chunk_raw += raw.len() as u64;
+                chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD;
                 if !frame.header.routing_key.is_empty() {
-                    chunk_bytes += per_row + frame.header.routing_key.len();
+                    chunk_bytes += raw.len() + 43 + frame.header.routing_key.len() + ENTRY_OVERHEAD;
                 }
             }
             // A chunk that would blow the budget waits for a batch of its
@@ -965,9 +1112,23 @@ impl Absorber {
             // alone (one oversized frame must still make progress; frame
             // bodies can reach the 32 MiB API cap).
             if batch_bytes > 0 && batch_bytes + chunk_bytes > self.cfg.gather_max_bytes {
+                out.deferred_budget.push(*hash);
                 continue;
             }
             batch_bytes += chunk_bytes;
+            #[cfg(test)]
+            if std::env::var("DST_DRAIN_TRACE").is_ok() {
+                let offs: Vec<u64> = chunk
+                    .frames
+                    .iter()
+                    .filter_map(|raw| crate::crypto::decode_frame(raw))
+                    .map(|f| f.header.offset)
+                    .collect();
+                eprintln!(
+                    "GATHER {} from={from} upto={upto} frames={offs:?}",
+                    crate::crypto::hex(&hash[..4]),
+                );
+            }
             let mut last = from;
             for raw in &chunk.frames {
                 let Some(frame) = crate::crypto::decode_frame(raw) else {
@@ -983,10 +1144,10 @@ impl Absorber {
                 }
                 last = off;
             }
-            advanced.push((*hash, last + 1));
+            out.advanced.push((*hash, last + 1, chunk_raw));
         }
-        if advanced.is_empty() {
-            return Ok(advanced);
+        if out.advanced.is_empty() {
+            return Ok(out);
         }
         part.write_with_options(
             wb,
@@ -997,20 +1158,27 @@ impl Absorber {
         )
         .await?;
         part.flush().await?; // wal off => memtable -> L0, manifest published
-        self.shard.submit_absorbed_batch_v2(advanced.clone()).await;
+        self.shard
+            .submit_absorbed_batch_v2(out.advanced.clone())
+            .await;
         {
             let mut submitted = self.submitted.lock().unwrap();
-            for (hash, upto) in &advanced {
-                let e = submitted.entry(*hash).or_insert(0);
-                *e = (*e).max(*upto);
+            for (hash, upto, _) in &out.advanced {
+                let e = submitted.entry(*hash).or_insert((0, true));
+                if e.1 {
+                    e.0 = e.0.max(*upto);
+                } else {
+                    *e = (*upto, true);
+                }
             }
         }
         tracing::info!(
-            "v2 gather absorbed {} streams into {}/history2",
-            advanced.len(),
-            self.shard.prefix
+            "v2 gather absorbed {} streams into {}/history2 ({} budget-deferred)",
+            out.advanced.len(),
+            self.shard.prefix,
+            out.deferred_budget.len()
         );
-        Ok(advanced)
+        Ok(out)
     }
 
     /// Serial full-budget pass (the validated hot path). Evicts idle DB
@@ -1024,7 +1192,8 @@ impl Absorber {
     /// of these run concurrently, and evicting here could close a Db a
     /// sibling pass is still writing. The tick evicts after the lane.
     async fn absorb_one_small(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
-        self.absorb_pass(hash, self.cfg.small_pass_bytes, false).await
+        self.absorb_pass(hash, self.cfg.small_pass_bytes, false)
+            .await
     }
 
     /// Close a cached history handle (fence-class failure or eviction).
@@ -1091,12 +1260,26 @@ impl Absorber {
             let st = handle.state.lock().unwrap();
             (st.durable.absorbed, st.durable.next)
         };
+        #[cfg(test)]
+        if std::env::var("DST_DRAIN_TRACE").is_ok() {
+            eprintln!(
+                "V1PASS {} from={from} upto={upto}",
+                crate::crypto::hex(&hash[..4])
+            );
+        }
         // Skip what we already submitted: the published `absorbed` lags the
         // committer by durability + dispatch, and re-absorbing that window
         // is duplicate work (see the `submitted` field note).
+        // Lane-scoped floor (see the field note): a v2 mark here may
+        // describe an advance the layout seal dropped — its range lives
+        // only in the shared partition a v1 stream never reads.
         let from = {
             let submitted = self.submitted.lock().unwrap();
-            submitted.get(hash).copied().unwrap_or(0).max(from)
+            submitted
+                .get(hash)
+                .and_then(|(u, v2)| (!*v2).then_some(*u))
+                .unwrap_or(0)
+                .max(from)
         };
         if from >= upto {
             return Ok(true);
@@ -1285,12 +1468,20 @@ impl Absorber {
             self.evict_idle_dbs().await;
         }
 
-        // Advance the readers' boundary + trim (deferred) in the shard log.
-        self.shard.submit_absorbed(*hash, absorbed_upto).await;
+        // Advance the readers' boundary (+ budgeted trim) in the shard
+        // log. `pass_bytes` is the raw frame bytes of exactly the items
+        // absorbed — the committer's unabsorbed_bytes decrement.
+        self.shard
+            .submit_absorbed(*hash, absorbed_upto, pass_bytes)
+            .await;
         {
             let mut submitted = self.submitted.lock().unwrap();
-            let e = submitted.entry(*hash).or_insert(0);
-            *e = (*e).max(absorbed_upto);
+            let e = submitted.entry(*hash).or_insert((0, false));
+            if e.1 {
+                *e = (absorbed_upto, false);
+            } else {
+                e.0 = e.0.max(absorbed_upto);
+            }
         }
         tracing::info!(
             "absorbed {} records into {} (upto {})",
@@ -1634,8 +1825,7 @@ impl HistReaders {
                     // publishes history before advancing it). A probe
                     // ERROR here is conservative non-coverage: the read
                     // reports completed=false and the caller re-polls.
-                    let covered =
-                        upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
+                    let covered = upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
                     let mut evicted: Vec<Arc<DbReader>> = Vec::new();
                     {
                         let mut map = svc.map.lock().unwrap();
@@ -1796,7 +1986,10 @@ pub async fn read_history(
     match key_filter {
         None => {
             let mut iter = reader
-                .scan_with_options(hist_record_key(from)..hist_record_key(upto), &hist_scan_opts())
+                .scan_with_options(
+                    hist_record_key(from)..hist_record_key(upto),
+                    &hist_scan_opts(),
+                )
                 .await?;
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
@@ -1818,7 +2011,10 @@ pub async fn read_history(
         // mixed stream filtered by "" pays to skip its keyed records.
         Some("") => {
             let mut iter = reader
-                .scan_with_options(hist_record_key(from)..hist_record_key(upto), &hist_scan_opts())
+                .scan_with_options(
+                    hist_record_key(from)..hist_record_key(upto),
+                    &hist_scan_opts(),
+                )
                 .await?;
             while let Some(kv) = iter.next().await? {
                 let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));

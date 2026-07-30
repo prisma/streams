@@ -196,7 +196,12 @@ impl Coverage {
     }
 
     pub fn get(&self, name: &str) -> u64 {
-        self.counters.lock().unwrap().get(name).copied().unwrap_or(0)
+        self.counters
+            .lock()
+            .unwrap()
+            .get(name)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn snapshot(&self) -> Vec<(String, u64)> {
@@ -255,10 +260,7 @@ fn mix(seed: u64, path: &str, op: u8, n: u64) -> u64 {
         h ^= *b as u64;
         h = h.wrapping_mul(0x1000_0000_1b3);
     }
-    let mut z = seed
-        ^ h
-        ^ ((op as u64) << 56)
-        ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut z = seed ^ h ^ ((op as u64) << 56) ^ n.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
@@ -488,12 +490,7 @@ impl FaultStore {
     /// and then opens a second owner on the same shard, and that open
     /// writes to the WAL too. An unbounded hold parks the handoff itself
     /// and the gate is never released.
-    pub fn hold_class(
-        &self,
-        op: StoreOp,
-        class: ObjClass,
-        max_parked: u64,
-    ) -> Arc<AtomicU64> {
+    pub fn hold_class(&self, op: StoreOp, class: ObjClass, max_parked: u64) -> Arc<AtomicU64> {
         let engaged = Arc::new(AtomicU64::new(0));
         *self.st.hold.lock().unwrap() = Some(Hold {
             op,
@@ -806,8 +803,11 @@ impl OpLog {
         // I6: an idempotent operation commits at most once, however many
         // times its client retried.
         for op in &self.idempotent {
-            let stored: Vec<AttemptId> =
-                seen_count.keys().copied().filter(|(o, _)| o == op).collect();
+            let stored: Vec<AttemptId> = seen_count
+                .keys()
+                .copied()
+                .filter(|(o, _)| o == op)
+                .collect();
             if stored.len() > 1 {
                 return Err(format!(
                     "I6 violated: idempotent op{op} stored {} times ({stored:?})",
@@ -1009,7 +1009,8 @@ impl Workload {
         idempotent: bool,
         log: &mut OpLog,
     ) -> Outcome {
-        self.append_to(&[engine], hash, key, rk, idempotent, log).await
+        self.append_to(&[engine], hash, key, rk, idempotent, log)
+            .await
     }
 
     /// One logical operation, failing over across owners.
@@ -1118,12 +1119,7 @@ impl Workload {
 /// correctness scenarios. Budget scenarios construct their own (pinned
 /// poll, chosen cap) and hold it across reads.
 pub fn fresh_hist(store: &Arc<dyn ObjectStore>) -> Arc<crate::history::HistReaders> {
-    crate::history::HistReaders::new(
-        store.clone(),
-        8,
-        std::time::Duration::from_secs(120),
-        5_000,
-    )
+    crate::history::HistReaders::new(store.clone(), 8, std::time::Duration::from_secs(120), 5_000)
 }
 
 pub async fn drain_observed(
@@ -1159,6 +1155,16 @@ pub async fn drain_observed(
             Ok(r) => r,
             Err(_) => return out,
         };
+        if std::env::var("DST_DRAIN_TRACE").is_ok() {
+            let offs: Vec<u64> = res.recs.iter().map(|r| r.off).collect();
+            eprintln!(
+                "DRAIN from={from} n={} last={:?} completed={} end={} offs={offs:?}",
+                res.recs.len(),
+                res.last,
+                res.completed,
+                res.end
+            );
+        }
         for rec in &res.recs {
             let Ok(v) = serde_json::from_slice::<serde_json::Value>(&rec.payload) else {
                 continue;

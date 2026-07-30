@@ -219,6 +219,16 @@ for migrating deployments that hold REAL v1 history. None exist today
 — every production-bound deployment is greenfield-v2 — so the offset
 machinery is deliberately deferred until a migration actually needs it.
 
+**Before physical range splitting (round-4 note):** the durable
+maintenance index (dirty/trim markers) lives under an all-0xFF sentinel
+that sorts OUTSIDE every stream's route range — correct for whole-shard
+ownership handoff (the new owner opens the same shard DB and scans
+once), but a key-range split cannot carry a stream's marker into the
+child range. Before splits land, the index needs a route-local
+representation or its own small tracker partition, and the all-FF keys
+should stop riding hot write batches (they currently widen L0 SST key
+ranges by construction, a compaction-overlap tax accepted for now).
+
 No dual-writes (that doubles exactly the cost being removed). Persist
 per-stream in the durable tail state:
 
