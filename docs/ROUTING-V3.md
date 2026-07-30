@@ -331,10 +331,14 @@ PR that introduces the machinery they cover.
 
 ## 11. Campaign results (2026-07-30)
 
+**Precise status: compact postings and logical split-lineage gates
+pass. Physical automatic scaling and several transition edge cases
+remain open** (review of 30d0a4b; disposition below).
+
 Local rig: s3lite at 25 ms latency, 1 KiB incompressible records
 (base64 chained sha256), covering baseline = pre-postings build on the
-identical driver. Suite 137 green. **Every gate passes**: batch-1
-16/16, batch-10 16/16, live split 7/7.
+identical driver. Suite 137 green. Batch-1 16/16, batch-10 16/16,
+live split 7/7 — as those gates are defined here.
 
 ```
                                    batch 1 (20k keys x2)   batch 10 (10k keys)
@@ -376,6 +380,52 @@ the covering baseline), tracked as a follow-up outside routing-v3;
 the earlier "0.8 ms warm / 0 GETs" numbers from compressible-padding
 runs were a write-through block-cache artifact, not a real read path.
 
-Deferred beyond this campaign: spec-PR5 legacy scaling fold + child
-tombstoning, SSE across lineage, merge-policy exercise, queue/state
-profiles (pinned single-segment).
+COGS precision (review wording): the stored-byte and asymptotic
+retention COGS gates pass (54.0% / 43.2%). Total workload COGS
+reaches those ratios only when retained history dominates fixed WAL
+and request costs — the measured 1-month totals were 88.4% / 97.8%.
+The asymptote is a production projection, not a measured total-COGS
+pass; a break-even model over retained GiB, read frequency, key
+activity, retention months and Compute CPU is tracked work.
+
+### Review disposition (30d0a4b)
+
+Approved: postings storage format; same-flush write economics;
+measured b1/b10 read behavior (for the tested shapes); large-section
+cache mechanics; logical split lineage.
+
+Open, release-blocking:
+
+- **Splits are logical, not physical.** Children carry
+  `shard_prefix: ""` / `route_hash: [0;16]` and resolve to the parent
+  route — same engine, same committer, same admission bucket; a split
+  adds no capacity. Children need persisted independent routes used
+  consistently by append/read/seal/absorb/queue/consumer paths
+  (seal_identity and read_v3_lineage currently hard-code the parent
+  route), admission split into stream accounting vs segment capacity,
+  and a two-owner campaign proving ≥1.8× post-split throughput on
+  distinct ShardEngines.
+- **Seal-to-publication reads can report permanent closure.** Read
+  dispatch must be transition-aware (`segments.len()>1 ||
+  pending.is_some()`), never emit Stream-Closed / final Up-To-Date
+  while a pending transition's successor is unpublished, and resume
+  the transition; deterministic failpoint between seal and successor
+  CAS, exercised by GET/HEAD/long-poll/mid-gap/cancel-retry tests.
+- **Oversized keyed records stall.** A run larger than the 8 MiB read
+  budget plans zero spans; consumed_to must flow end-to-end and the
+  first record must always progress (bounded sub-runs, budget-stop).
+
+Open, incomplete: Stream-Seq must resolve through sealed predecessors
+(a parent-accepted sequence is currently reusable on a child);
+producer rows must include the routing-key hash; the hard 4× read
+amplification bound is not enforced (a 64 KiB gap coalesce over tiny
+records can reach ~31×); the postings cache is per-engine (nominal
+512 MiB at 32 engines), its weight ignores entry overhead, its
+POSTINGS_CACHE_BYTES env is unwired, and write-through admits every
+absorbed key rather than read-interested ones; heavy-hitter and HLL
+sketch state never decays and SKETCH_MAX=4096 silently stops sketching
+new segments.
+
+Deferred (tracked): merge execution, SSE across lineage, queue/state
+profile integration (pinned single-segment), legacy static per-key +
+auto-scaling surface removal.
