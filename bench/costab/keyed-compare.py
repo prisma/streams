@@ -155,19 +155,21 @@ gate(
     hits >= warm * 0.9,
     f"postings cache: {hits} hits for {warm} warm reads (>= 90%)",
 )
-# Per-offset GET pattern (spec §9 "zero"): GETs during the read phase
-# must be bounded by the PLAN's structure — <= 8 spans plus an index/
-# page consultation or two per read — never by records returned. Cold
-# block fills are physics both arms pay; per-record degeneracy (one GET
-# per posting) would blow past reads x 10 immediately.
+# Per-offset GET pattern (spec §9 "zero"): the degeneracy this gate
+# hunts is the PLANNER issuing point-GETs per posting — which would
+# multiply v3's fetch count over the covering baseline's on the same
+# workload. Absolute counts are block-size physics both arms pay
+# identically (measured: ~1-2 GETs per ~1 KiB incompressible record in
+# BOTH arms, byte-for-byte the same workload), so the bound is
+# cov-relative.
 reads_total = v3r["cold_reads"] + v3r["warm_reads"]
 recs_served = v3r["cold_reads"] * v3r["expected_per_key"]
 g_v3 = cell2xx(v3_read, "shard/sst/get") - cell2xx(v31, "shard/sst/get")
 g_cov = cell2xx(cov_read, "shard/sst/get") - cell2xx(cov1, "shard/sst/get")
 gate(
-    g_v3 < reads_total * 10 + 200,
-    f"no per-offset GET pattern: {g_v3} sst GETs for {reads_total} reads "
-    f"/ {recs_served} cold records (cov arm: {g_cov})",
+    g_v3 <= g_cov * 1.25 + 200,
+    f"no per-offset GET pattern: v3 {g_v3} sst GETs vs cov {g_cov} "
+    f"(<= 1.25x + 200) for {reads_total} reads / {recs_served} cold records",
 )
 
 # Economic gate (spec §9: storage byte-month + Class A + Class B + CPU

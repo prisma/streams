@@ -328,3 +328,54 @@ write+read (planner, verification, consumed_to) → PR3 slice cache →
 PR4 sketch scaler (splits/merges live) → PR5 split-safe producers →
 gates harness. Each PR lands suite-green; DST crash points ride the
 PR that introduces the machinery they cover.
+
+## 11. Campaign results (2026-07-30)
+
+Local rig: s3lite at 25 ms latency, 1 KiB incompressible records
+(base64 chained sha256), covering baseline = pre-postings build on the
+identical driver. Suite 137 green. **Every gate passes**: batch-1
+16/16, batch-10 16/16, live split 7/7.
+
+```
+                                   batch 1 (20k keys x2)   batch 10 (10k keys)
+history stored bytes               54.0%  (28.1/52.1 MB)   43.2%  (12.7/29.5 MB)
+postings/canonical bytes           4.09%  (gate 8%)        0.41%  (gate 2%)
+history Class A                    +0.9%  (1654/1640)      +0.2%  (492/491)
+flush/manifest/compaction puts     unchanged               unchanged
+whole-pipeline put bytes (info)    79.2%                   94.9%
+cold keyed p50                     1.38x  (90.5/65.4 ms)   1.00x  (220.8/220.1 ms)
+warm keyed p50                     1.00x  (36.8/36.8 ms)   1.00x  (218.2/218.6 ms)
+keyed p99                          1.36x  (101/74 ms)      0.92x  (325/352 ms)
+spans per response                 2                        1
+read amplification                 1.00x                    1.00x
+postings cache hits (1200 warm)    1801                     1807
+sst GETs vs covering               3602 vs 3602             36,721 vs 36,813
+COGS asymptote (byte-months)       54.0%                    43.2%
+COGS measured @1mo / @3mo (info)   88.4% / 74.2%            97.8% / 94.2%
+zero read errors                   both arms                both arms
+```
+
+Live split scenario (scaler knobs hot): a multi-key hot stream splits
+under lockstep 8-key load with ZERO client-visible append errors
+through the seal; per-key order and exact counts hold across the split
+(also verified page-by-page: 511/511 every key, seg0 drain → child
+token hop → up-to-date); a one-dominant-key stream never splits and
+stays fully readable (hot_key exposed); resume/idempotence via the
+descriptor's pending intent.
+
+Keyless regression check on the same code: w100k wide soak — steady
+Class A 101,060 (round-4 baseline 98,269, +2.8%, within the ±3% run
+variance of absorb cadence), append p50 46.4 ms, honest footprint
+gauge 778 MB vs 783 baseline, ps-RSS 908 vs 896 MB, zero errors.
+
+Read-latency context: the honest-padding regime exposed that BOTH
+arms' keyed reads pay ~1-2 store GETs per ~1 KiB record — warm equals
+cold — i.e. range scans are not served from the shared block cache
+across statements. This is the shared history read path (identical in
+the covering baseline), tracked as a follow-up outside routing-v3;
+the earlier "0.8 ms warm / 0 GETs" numbers from compressible-padding
+runs were a write-through block-cache artifact, not a real read path.
+
+Deferred beyond this campaign: spec-PR5 legacy scaling fold + child
+tombstoning, SSE across lineage, merge-policy exercise, queue/state
+profiles (pinned single-segment).
