@@ -2859,6 +2859,42 @@ async fn read(
     headers: HeaderMap,
     head_only: bool,
 ) -> Response {
+    read_inner(state, name, params, headers, head_only, true).await
+}
+
+/// Standard-path closure discriminator: the engine says CLOSED but our
+/// cached descriptor never heard of a transition. Refresh once — if the
+/// fresh descriptor shows successors or a pending transition, the
+/// closure is a split seal and the caller must redispatch instead of
+/// reporting it. `false` = redispatch (the fresh descriptor is cached).
+async fn genuine_closure(state: &Arc<AppState>, name: &str, may_refresh: bool) -> bool {
+    if !may_refresh {
+        return true;
+    }
+    state.registry.invalidate(name);
+    match state.registry.get(name).await {
+        Ok(Some(d)) => !d
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some()),
+        _ => true,
+    }
+}
+
+/// `may_refresh`: one stale-descriptor redispatch. A CLOSED engine
+/// handle can mean a user close — or a split's seal racing our cached
+/// descriptor (the transition seals the parent BEFORE publishing its
+/// successors). Only the freshest descriptor tells them apart, and only
+/// genuine closure may reach the client: a topology transition may
+/// delay a reader, but it must never look like permanent end-of-stream.
+async fn read_inner(
+    state: Arc<AppState>,
+    name: String,
+    params: ReadParams,
+    headers: HeaderMap,
+    head_only: bool,
+    may_refresh: bool,
+) -> Response {
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
@@ -2876,11 +2912,18 @@ async fn read(
     if desc.is_per_key() && desc.segment_count.max(1) > 1 {
         return read_per_key(state, desc, params, headers, head_only).await;
     }
-    // ROUTING-V3 dynamic maps with successors: lineage-aware reads
-    // (spec §3.4/§9). Single-segment maps fall through to the standard
-    // path — byte-identical to the pre-split contract.
-    if desc.segments.as_ref().is_some_and(|m| m.segments.len() > 1) {
-        return read_v3_lineage(state, desc, params, headers, head_only).await;
+    // ROUTING-V3 dynamic maps with successors OR an in-flight transition:
+    // lineage-aware reads (spec §3.4/§9). A pending transition routes
+    // here even at one segment, because the seal-to-publication gap is
+    // exactly where the standard path would mistake the sealed parent
+    // for a user-closed stream. Plain single-segment maps fall through —
+    // byte-identical to the pre-split contract.
+    if desc
+        .segments
+        .as_ref()
+        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
+    {
+        return read_v3_lineage_inner(state, desc, params, headers, head_only, may_refresh).await;
     }
     // Single-segment streams (every unified-model stream until its
     // first split, all total-order streams, legacy per-key n=1) serve
@@ -2910,6 +2953,9 @@ async fn read(
     };
 
     if head_only {
+        if closed && !genuine_closure(&state, &name, may_refresh).await {
+            return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+        }
         let mut r = Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -2979,6 +3025,10 @@ async fn read(
             // Instant tail snapshot for plain reads; long-poll from `now`
             // falls through with scan_from = current end.
             if live.is_none() {
+                if closed && !genuine_closure(&state, &name, may_refresh).await {
+                    return Box::pin(read_inner(state, name, params, headers, head_only, false))
+                        .await;
+                }
                 let body: Body = if desc.is_json() {
                     Body::from("[]")
                 } else {
@@ -3034,6 +3084,9 @@ async fn read(
             }
         }
         if end <= scan_from {
+            if closed && !genuine_closure(&state, &name, may_refresh).await {
+                return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+            }
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
             // a tail probe is billable work even when it returns no bytes
             // (run-1 finding: `offset=now` reads were invisible to billing).
@@ -3139,6 +3192,12 @@ async fn read(
         buf.freeze()
     };
 
+    // A drained read of a closed handle is the response that would carry
+    // Stream-Closed — discriminate a split seal from a user close BEFORE
+    // metering, so a redispatched read is billed exactly once.
+    if up_to_date && closed && !genuine_closure(&state, &name, may_refresh).await {
+        return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+    }
     state.metrics.read(&name, body.len() as u64);
     let mut r = Response::builder()
         .status(StatusCode::OK)
@@ -3285,7 +3344,15 @@ async fn sse_response(
             }
             let at_end = pos >= end;
             if at_end || sent_any || first {
-                let ctl = sse_control(pos, cursor.as_deref(), at_end, closed && at_end);
+                // A close observed mid-SSE can be a split's seal, not a
+                // user close. Genuine closure sends the final closed
+                // control; a transition ends the connection WITHOUT it —
+                // the client reconnects and the fresh dispatch serves the
+                // successors (or tells it SSE is unsupported on the now-
+                // segmented stream).
+                let report_closed =
+                    closed && at_end && genuine_closure(&state, &desc.name, true).await;
+                let ctl = sse_control(pos, cursor.as_deref(), at_end, report_closed);
                 if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
                     return;
                 }
@@ -3351,23 +3418,16 @@ async fn sse_response(
 ///   represent concurrent segment progress).
 /// - SSE across lineage: not yet wired (single-segment streams keep
 ///   full SSE); explicit 400 rather than silent misbehavior.
-async fn read_v3_lineage(
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    params: ReadParams,
-    headers: HeaderMap,
-    head_only: bool,
-) -> Response {
-    read_v3_lineage_inner(state, desc, params, headers, head_only, true).await
-}
-
 /// `may_refresh`: one stale-descriptor retry. Two shapes demand it —
 /// a cursor token naming a segment our cached map does not know yet,
 /// and a CLOSED segment handle our map still calls live-and-last (a
 /// split sealed it after our descriptor read; stopping there would
 /// declare Up-To-Date below the successor's records). A refreshed map
 /// that STILL shows live-and-last with no pending transition is a
-/// genuinely user-closed stream.
+/// genuinely user-closed stream; one whose pending transition names
+/// this segment is mid-split (seal done, successors unpublished) — the
+/// SEAL GAP — and the response may carry records and a resume cursor
+/// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
 async fn read_v3_lineage_inner(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -3407,9 +3467,12 @@ async fn read_v3_lineage_inner(
         }
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
     };
-    if live.is_some() && params.key.is_none() {
+    if live.is_some() && params.key.is_none() && map.segments.len() > 1 {
         // Spec §3.4: one scalar cursor cannot represent several
-        // concurrently progressing segments.
+        // concurrently progressing segments. A single-segment map routed
+        // here for its PENDING transition keeps keyless live until the
+        // successors actually publish — the seal gap must not change the
+        // API surface out from under a poller mid-flight.
         return err_resp(
             StatusCode::BAD_REQUEST,
             "keyless_live",
@@ -3517,11 +3580,22 @@ async fn read_v3_lineage_inner(
             let st = handle.state.lock().unwrap();
             (st.durable.next, st.durable.closed)
         };
-        if closed && sg.sealed_next_offset.is_none() && pos + 1 >= lineage.len() && may_refresh {
+        let live_and_last = sg.sealed_next_offset.is_none() && pos + 1 >= lineage.len();
+        if closed && live_and_last && may_refresh {
             // The engine says CLOSED but our map says live-and-last: a
-            // split sealed this segment after our descriptor read.
-            // Refresh once — the successor (or a genuine user close)
-            // is in the fresh map.
+            // split sealed this segment after our descriptor read. Help
+            // the transition along WITHOUT blocking this read (resume is
+            // idempotent; a parked or failing publication must not turn
+            // a read into a hang), then refresh once — the successor (or
+            // a genuine user close, or a still-pending gap) is in the
+            // fresh map.
+            {
+                let st = state.clone();
+                let nm = desc.name.clone();
+                tokio::spawn(async move {
+                    crate::scaler3::resume(&st, &nm).await;
+                });
+            }
             state.registry.invalidate(&desc.name);
             if let Ok(Some(fresh)) = state.registry.get(&desc.name).await {
                 if desc_alive(&fresh) {
@@ -3532,6 +3606,17 @@ async fn read_v3_lineage_inner(
                 }
             }
         }
+        // The SEAL GAP: this segment is sealed but its successors are
+        // not published yet (the map's pending transition names it).
+        // Records stay servable; closure and finality do not exist —
+        // the reader polls again and finds either the successors or a
+        // genuinely closed stream.
+        let seal_gap = closed
+            && live_and_last
+            && map
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.segs.contains(&sg.seg_id));
         let seg_end = sg.sealed_next_offset.unwrap_or(durable_next);
         if scan_from == u64::MAX {
             scan_from = seg_end; // offset=now on the live segment
@@ -3572,7 +3657,9 @@ async fn read_v3_lineage_inner(
                 }
             }
             if end <= scan_from {
-                // Timed out empty: 204 with a rearm token.
+                // Timed out empty: 204 with a rearm token. A mid-wait
+                // seal (c2) reports nothing here — the next poll's entry
+                // logic classifies it (successor, gap, or genuine close).
                 let mut r = Response::builder()
                     .status(StatusCode::NO_CONTENT)
                     .header(
@@ -3580,7 +3667,7 @@ async fn read_v3_lineage_inner(
                         seg_tok(sg.seg_id, scan_from.checked_sub(1)),
                     )
                     .header(header::CACHE_CONTROL, "no-store");
-                if closed {
+                if closed && !seal_gap {
                     r = r.header("Stream-Closed", "true");
                 }
                 return r.body(Body::empty()).unwrap();
@@ -3594,7 +3681,7 @@ async fn read_v3_lineage_inner(
                 .header("Stream-Next-Offset", seg_tok(sg.seg_id, end.checked_sub(1)))
                 .header("Stream-Segment-Map-Version", map.version.to_string())
                 .header(header::CACHE_CONTROL, "no-store");
-            if closed && is_last {
+            if closed && is_last && !seal_gap {
                 r = r.header("Stream-Closed", "true");
             }
             return r.body(Body::empty()).unwrap();
@@ -3666,10 +3753,10 @@ async fn read_v3_lineage_inner(
             .header("Stream-Segment-Map-Version", map.version.to_string())
             .header(header::CACHE_CONTROL, "no-store")
             .header("Cross-Origin-Resource-Policy", "cross-origin");
-        if up_to_date {
+        if up_to_date && !seal_gap {
             r = r.header("Stream-Up-To-Date", "true");
         }
-        if closed && is_last && drained {
+        if closed && is_last && drained && !seal_gap {
             r = r.header("Stream-Closed", "true");
         }
         return r.body(Body::from(body)).unwrap();

@@ -334,6 +334,21 @@ impl Registry {
         self.cache.lock().unwrap().len()
     }
 
+    /// Test-only: plant a descriptor in the cache as if this instance
+    /// had read it moments ago — the cross-instance stale-descriptor
+    /// shape (another instance CAS'd a transition we have not seen).
+    #[cfg(test)]
+    pub fn test_poison_cache(&self, name: &str, desc: StreamDesc) {
+        self.cache_insert(
+            name.to_string(),
+            CachedDesc {
+                desc: Some(desc),
+                at: Instant::now(),
+                etag: None,
+            },
+        );
+    }
+
     pub async fn get(&self, name: &str) -> Result<Option<StreamDesc>, object_store::Error> {
         let revalidate = {
             let cache = self.cache.lock().unwrap();

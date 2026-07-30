@@ -5599,3 +5599,603 @@ async fn producer_retries_across_a_split_commit_once() {
     assert_eq!(ack3.last_offset, 0, "first real child record at offset 0");
     engine.begin_close();
 }
+
+// ---- seal-gap read semantics (review blocker: a topology transition
+// may delay a reader, but it must NEVER look like permanent closure) --
+
+/// Full-fidelity HTTP rig: real AppState + axum server on a loopback
+/// port, one shard prefix, fast absorber. The gap tests need the exact
+/// header behavior clients see, not engine-level approximations.
+async fn http_rig(
+    store: Arc<dyn ObjectStore>,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    let registry = crate::registry::Registry::new(store.clone());
+    let keys = Arc::new(crate::history::KeyCache::default());
+    let touch = Arc::new(crate::touch::TouchRegistry::default());
+    let shards_map: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, Arc<crate::shard::ShardEngine>>>,
+    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+    let opener = {
+        let store = store.clone();
+        let keys = keys.clone();
+        Box::new(move |prefix: String| {
+            let store = store.clone();
+            let keys = keys.clone();
+            let fut: futures_util::future::BoxFuture<
+                'static,
+                anyhow::Result<Arc<crate::shard::ShardEngine>>,
+            > = Box::pin(async move {
+                let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
+                    .with_settings(slatedb::config::Settings {
+                        flush_interval: Some(std::time::Duration::from_millis(5)),
+                        manifest_poll_interval: std::time::Duration::from_millis(50),
+                        ..Default::default()
+                    })
+                    .build()
+                    .await?;
+                let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+                let engine = crate::shard::ShardEngine::start(
+                    prefix,
+                    Arc::new(db),
+                    store.clone(),
+                    crate::shard::ShardConfig::default(),
+                    absorb_tx,
+                    None,
+                );
+                crate::history::Absorber::start(
+                    store,
+                    engine.clone(),
+                    keys,
+                    crate::history::AbsorberConfig {
+                        threshold_bytes: 1,
+                        threshold_age: std::time::Duration::from_millis(1),
+                        tick: std::time::Duration::from_millis(20),
+                        min_age_bytes: 0,
+                        sweep_every: u32::MAX,
+                        ..Default::default()
+                    },
+                    absorb_rx,
+                );
+                Ok(engine)
+            });
+            fut
+        })
+    };
+    let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener);
+    let state = Arc::new(crate::http::AppState {
+        registry,
+        hist_readers: crate::history::HistReaders::new(
+            store.clone(),
+            8,
+            std::time::Duration::from_secs(120),
+            5_000,
+        ),
+        shard_prefixes: vec!["00".to_string()],
+        shards: shards_map,
+        fleet_store: None,
+        gate,
+        fleet_ops: std::sync::atomic::AtomicU64::new(0),
+        inflight: std::sync::atomic::AtomicI64::new(0),
+        inflight_peak: std::sync::atomic::AtomicI64::new(0),
+        admit_max_inflight: 0,
+        admit_rss_shed_mb: 0,
+        rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
+        admit_shed: std::sync::atomic::AtomicU64::new(0),
+        admit_max_inflight_per_stream: 0,
+        stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
+        stream_shed: std::sync::atomic::AtomicU64::new(0),
+        wedge_shed: std::sync::atomic::AtomicU64::new(0),
+        instance_name: String::new(),
+        ring_active: std::sync::RwLock::new(Vec::new()),
+        ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
+        data_store: store,
+        keys,
+        touch,
+        default_key: None,
+        auth_token: None,
+        metrics: Arc::new(crate::metrics::Metrics::default()),
+    });
+    let app = crate::http::router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    (state, addr)
+}
+
+const RIG_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="; // skey() = [7u8; 32]
+
+/// Minimal HTTP/1.1 client: returns (status, lowercased headers, body).
+async fn hreq(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    extra: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\nstream-encryption-key: {RIG_KEY_B64}\r\ncontent-length: {}\r\n",
+        body.len()
+    );
+    for (k, v) in extra {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    s.write_all(body).await.unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("header terminator");
+    let head = String::from_utf8_lossy(&buf[..split]).to_string();
+    let mut lines = head.split("\r\n");
+    let status: u16 = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut headers = std::collections::HashMap::new();
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+    let mut raw_body = buf[split + 4..].to_vec();
+    if headers.get("transfer-encoding").map(|v| v == "chunked") == Some(true) {
+        // Connection: close + chunked — decode.
+        let mut out = Vec::new();
+        let mut rest: &[u8] = &raw_body;
+        loop {
+            let Some(le) = rest.windows(2).position(|w| w == b"\r\n") else {
+                break;
+            };
+            let n =
+                usize::from_str_radix(std::str::from_utf8(&rest[..le]).unwrap_or("0").trim(), 16)
+                    .unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            let start = le + 2;
+            out.extend_from_slice(&rest[start..start + n]);
+            rest = &rest[start + n + 2..];
+        }
+        raw_body = out;
+    }
+    (status, headers, raw_body)
+}
+
+/// One page of a keyed/keyless read. Returns (status, headers, records).
+async fn read_page(
+    addr: std::net::SocketAddr,
+    stream: &str,
+    key: Option<&str>,
+    tok: Option<&str>,
+) -> (
+    u16,
+    std::collections::HashMap<String, String>,
+    Vec<serde_json::Value>,
+) {
+    let mut path = format!("/v1/stream/{stream}?x=1");
+    if let Some(k) = key {
+        path.push_str(&format!("&key={k}"));
+    }
+    if let Some(t) = tok {
+        path.push_str(&format!("&offset={t}"));
+    }
+    let (st, h, b) = hreq(addr, "GET", &path, &[], b"").await;
+    let recs = if b.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice::<Vec<serde_json::Value>>(&b).unwrap_or_default()
+    };
+    (st, h, recs)
+}
+
+/// Drain a key fully, asserting NO page ever reports closure. Returns
+/// (records, final headers).
+async fn drain_no_closure(
+    addr: std::net::SocketAddr,
+    stream: &str,
+    key: Option<&str>,
+) -> (
+    Vec<serde_json::Value>,
+    std::collections::HashMap<String, String>,
+) {
+    let mut tok: Option<String> = None;
+    let mut out = Vec::new();
+    for _ in 0..64 {
+        let (st, h, recs) = read_page(addr, stream, key, tok.as_deref()).await;
+        assert!(st == 200 || st == 204, "page status {st}");
+        assert!(
+            !h.contains_key("stream-closed"),
+            "a transition must never report closure (headers: {h:?})"
+        );
+        out.extend(recs);
+        let nxt = h.get("stream-next-offset").cloned();
+        let utd = h.get("stream-up-to-date").map(|v| v == "true") == Some(true);
+        if utd || nxt.is_none() || nxt == tok {
+            return (out, h);
+        }
+        tok = nxt;
+    }
+    panic!("drain did not settle");
+}
+
+fn gap_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Releases the publish failpoint even if the test panics — a parked
+/// resume must never leak into sibling tests.
+struct FailpointGuard;
+impl Drop for FailpointGuard {
+    fn drop(&mut self) {
+        crate::scaler3::failpoints::release_before_publish();
+    }
+}
+
+/// Boot a rig, create + fill a stream, then drive a split INTO the
+/// parked seal-gap: Phase A CAS'd, parent sealed, successors withheld.
+/// Returns everything the gap assertions need.
+async fn rig_in_seal_gap(
+    stream: &str,
+    per_key: usize,
+) -> (
+    Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+    FailpointGuard,
+    tokio::task::JoinHandle<bool>,
+) {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        &format!("/v1/stream/{stream}"),
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "create {st}");
+    for i in 0..per_key {
+        for k in ["ga", "gb"] {
+            let body = serde_json::json!([{ "k": k, "n": i }]).to_string();
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                &format!("/v1/stream/{stream}"),
+                &[("stream-key", k), ("content-type", "application/json")],
+                body.as_bytes(),
+            )
+            .await;
+            assert!(st == 200 || st == 204, "append {st}");
+        }
+    }
+    crate::scaler3::failpoints::arm_before_publish();
+    let guard = FailpointGuard;
+    let split = {
+        let state = state.clone();
+        let name = stream.to_string();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&state, &name, 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    // The gap is entered once the parent identity's engine handle is
+    // CLOSED while the descriptor still shows one segment + pending.
+    let desc = state.registry.get(stream).await.unwrap().unwrap();
+    let identity = desc.resolve_segment("").identity;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let closed = match state
+            .engine_for_scaler(&crate::crypto::stream_hash(stream))
+            .await
+        {
+            Some(e) => match e.stream_handle(identity).await {
+                Ok(h) => h.state.lock().unwrap().durable.closed,
+                Err(_) => false,
+            },
+            None => false,
+        };
+        let d = state.registry.get(stream).await.unwrap().unwrap();
+        let pending = d
+            .segments
+            .as_ref()
+            .map(|m| m.pending.is_some() && m.segments.len() == 1)
+            .unwrap_or(false);
+        if closed && pending {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "seal gap never entered (closed={closed} pending={pending})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    (state, addr, guard, split)
+}
+
+/// Wait until the withheld publication lands after release.
+async fn await_published(state: &Arc<crate::http::AppState>, stream: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        state.registry.invalidate(stream);
+        let d = state.registry.get(stream).await.unwrap().unwrap();
+        let done = d
+            .segments
+            .as_ref()
+            .map(|m| m.pending.is_none() && m.segments.len() > 1)
+            .unwrap_or(false);
+        if done {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "publication never completed after release"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// GET during the seal gap: records + resume cursor, never closure,
+/// never a final Up-To-Date; after release, the same client drains the
+/// full lineage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_get_never_reports_closure() {
+    let _l = gap_lock().lock().await;
+    let (state, addr, _guard, split) = rig_in_seal_gap("gapget", 6).await;
+
+    let mut tok: Option<String> = None;
+    let mut got = 0usize;
+    for _ in 0..16 {
+        let (st, h, recs) = read_page(addr, "gapget", Some("ga"), tok.as_deref()).await;
+        assert!(st == 200 || st == 204, "gap page status {st}");
+        assert!(
+            !h.contains_key("stream-closed"),
+            "seal gap reported closure: {h:?}"
+        );
+        assert!(
+            !h.contains_key("stream-up-to-date"),
+            "seal gap reported finality: {h:?}"
+        );
+        got += recs.len();
+        let nxt = h.get("stream-next-offset").cloned();
+        if nxt.is_none() || nxt == tok {
+            break;
+        }
+        tok = nxt;
+    }
+    assert_eq!(got, 6, "every pre-seal record stays readable in the gap");
+
+    crate::scaler3::failpoints::release_before_publish();
+    // The reader-spawned resume() may win the publication CAS; the
+    // split task's own bool only says who published. The outcome gate
+    // is await_published.
+    split.await.unwrap();
+    await_published(&state, "gapget").await;
+    let (recs, last) = drain_no_closure(addr, "gapget", Some("ga")).await;
+    assert_eq!(recs.len(), 6);
+    assert_eq!(
+        last.get("stream-up-to-date").map(String::as_str),
+        Some("true"),
+        "published lineage ends Up-To-Date"
+    );
+}
+
+/// HEAD during the gap must not report closure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_head_no_closure() {
+    let _l = gap_lock().lock().await;
+    let (state, addr, _guard, split) = rig_in_seal_gap("gaphead", 3).await;
+    let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/gaphead", &[], b"").await;
+    assert_eq!(st, 200);
+    assert!(
+        !h.contains_key("stream-closed"),
+        "HEAD reported closure in the gap: {h:?}"
+    );
+    crate::scaler3::failpoints::release_before_publish();
+    split.await.unwrap();
+    await_published(&state, "gaphead").await;
+    let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/gaphead", &[], b"").await;
+    assert_eq!(st, 200);
+    assert!(!h.contains_key("stream-closed"));
+}
+
+/// A long-poll already parked at the tail when the seal lands must wake
+/// WITHOUT closure and with a usable rearm token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_long_poll_wakes_without_closure() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/gappoll",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "create {st}");
+    for i in 0..3 {
+        let body = serde_json::json!([{ "k": "ga", "n": i }]).to_string();
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/gappoll",
+            &[("stream-key", "ga"), ("content-type", "application/json")],
+            body.as_bytes(),
+        )
+        .await;
+    }
+    // Find the tail token, then park a long-poll on it.
+    let (_, h, _) = read_page(addr, "gappoll", None, None).await;
+    let tail = h.get("stream-next-offset").unwrap().clone();
+    let poll = {
+        let tail = tail.clone();
+        tokio::spawn(async move {
+            hreq(
+                addr,
+                "GET",
+                &format!("/v1/stream/gappoll?offset={tail}&live=long-poll&timeout=8s"),
+                &[],
+                b"",
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    crate::scaler3::failpoints::arm_before_publish();
+    let _guard = FailpointGuard;
+    let split = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&state, "gappoll", 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    let (st, h, _) = poll.await.unwrap();
+    assert!(st == 200 || st == 204, "poll woke with {st}");
+    assert!(
+        !h.contains_key("stream-closed"),
+        "seal wake reported closure: {h:?}"
+    );
+    crate::scaler3::failpoints::release_before_publish();
+    split.await.unwrap();
+    await_published(&state, "gappoll").await;
+    let (recs, _) = drain_no_closure(addr, "gappoll", Some("ga")).await;
+    assert_eq!(recs.len(), 3);
+}
+
+/// A read STARTING inside the gap (cold client, offset 0).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_cold_read_mid_gap() {
+    let _l = gap_lock().lock().await;
+    let (state, addr, _guard, split) = rig_in_seal_gap("gapcold", 4).await;
+    let (st, h, recs) = read_page(addr, "gapcold", Some("gb"), None).await;
+    assert_eq!(st, 200);
+    assert!(!h.contains_key("stream-closed"), "{h:?}");
+    assert!(!h.contains_key("stream-up-to-date"), "{h:?}");
+    assert_eq!(recs.len(), 4, "gap serves everything below the seal");
+    crate::scaler3::failpoints::release_before_publish();
+    split.await.unwrap();
+    await_published(&state, "gapcold").await;
+    let (recs, _) = drain_no_closure(addr, "gapcold", Some("gb")).await;
+    assert_eq!(recs.len(), 4);
+}
+
+/// A client that vanishes mid-request during the gap, then retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_cancel_then_retry() {
+    let _l = gap_lock().lock().await;
+    let (state, addr, _guard, split) = rig_in_seal_gap("gapcancel", 4).await;
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /v1/stream/gapcancel?key=ga HTTP/1.1\r\nhost: x\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        drop(s); // vanish without reading the response
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (st, h, recs) = read_page(addr, "gapcancel", Some("ga"), None).await;
+    assert_eq!(st, 200);
+    assert!(!h.contains_key("stream-closed"), "{h:?}");
+    assert_eq!(
+        recs.len(),
+        4,
+        "retry after cancellation serves the gap view"
+    );
+    crate::scaler3::failpoints::release_before_publish();
+    split.await.unwrap();
+    await_published(&state, "gapcancel").await;
+    let (recs, _) = drain_no_closure(addr, "gapcancel", Some("ga")).await;
+    assert_eq!(recs.len(), 4);
+}
+
+/// The cross-instance shape: a reader whose CACHED descriptor predates
+/// the whole transition (no pending, one segment) meets the sealed
+/// engine handle. The standard path must refresh + redispatch instead
+/// of trusting the stale map and reporting closure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_gap_stale_descriptor_redispatches() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/gapstale",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "create {st}");
+    for i in 0..4 {
+        let body = serde_json::json!([{ "k": "ga", "n": i }]).to_string();
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/gapstale",
+            &[("stream-key", "ga"), ("content-type", "application/json")],
+            body.as_bytes(),
+        )
+        .await;
+    }
+    // The pre-transition descriptor this "instance" will keep believing.
+    let stale = state.registry.get("gapstale").await.unwrap().unwrap();
+    assert!(stale.segments.as_ref().is_none_or(|m| m.pending.is_none()));
+
+    crate::scaler3::failpoints::arm_before_publish();
+    let _guard = FailpointGuard;
+    let split = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&state, "gapstale", 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    // Wait for the seal, then plant the STALE descriptor over the fresh
+    // cache entry — the reader now sees exactly what a lagging sibling
+    // instance would.
+    let identity = stale.resolve_segment("").identity;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let closed = match state
+            .engine_for_scaler(&crate::crypto::stream_hash("gapstale"))
+            .await
+        {
+            Some(e) => match e.stream_handle(identity).await {
+                Ok(h) => h.state.lock().unwrap().durable.closed,
+                Err(_) => false,
+            },
+            None => false,
+        };
+        if closed {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "seal never landed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    state.registry.test_poison_cache("gapstale", stale);
+
+    let (st, h, recs) = read_page(addr, "gapstale", Some("ga"), None).await;
+    assert_eq!(st, 200);
+    assert!(
+        !h.contains_key("stream-closed"),
+        "stale descriptor let closure through: {h:?}"
+    );
+    assert_eq!(recs.len(), 4);
+    crate::scaler3::failpoints::release_before_publish();
+    split.await.unwrap();
+    await_published(&state, "gapstale").await;
+    let (recs, _) = drain_no_closure(addr, "gapstale", Some("ga")).await;
+    assert_eq!(recs.len(), 4);
+}
