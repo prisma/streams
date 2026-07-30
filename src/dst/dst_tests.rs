@@ -2463,7 +2463,9 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
             flush_interval: Some(std::time::Duration::from_millis(1)),
             // ...and never flush the memtable to L0, so replay_after_wal_id
             // stays at zero and every subsequent open replays everything.
+            // (0.15 validates max_unflushed > l0_sst_size, so raise both.)
             l0_sst_size_bytes: 1 << 30,
+            max_unflushed_bytes: 2 << 30,
             manifest_poll_interval: std::time::Duration::from_millis(50),
             ..Default::default()
         })

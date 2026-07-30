@@ -19,7 +19,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-slatedb = { version = "0.14.1", features = ["zstd", "wal_disable"] }
+slatedb = { version = "0.15.0", features = ["zstd", "wal_disable"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -72,8 +72,10 @@ path = "src/bin/cryptobench.rs"
 
 
 [patch.crates-io]
-# v0.14.1 + upstream PR slatedb/slatedb#1964 (yield points) + adaptive GC
-# cadence (gc-adaptive-backoff branch: fixes runtime
-# starvation from single-poll SST builds; sentinel p99 848ms -> 4.8ms).
-# Drop this patch when a release containing the PR ships.
-slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "28507291d52d6c6a592d8739e26e89295f6a4f54" }
+# upstream main (0.15.0, includes slatedb#1968 probe-cached latest reads
+# and #1894 concurrent GC deletes) + our not-yet-upstreamed patches on the
+# gc-adaptive-backoff branch: #1964 yield points, adaptive GC cadence
+# (max_interval), and GC listing reuse (list_cache_ttl). Old 0.14-based
+# pin preserved as tag pin-014-final. Drop patches here as upstream PRs
+# merge and release.
+slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "323bc1b957f9c4aabd1d711912d123a3407e5c31" }

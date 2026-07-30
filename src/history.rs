@@ -1945,6 +1945,9 @@ mod tests {
             .with_settings(slatedb::config::Settings {
                 flush_interval: Some(Duration::from_millis(25)),
                 max_unflushed_bytes: 8 * 1024,
+                // 0.15 validates max_unflushed > l0_sst_size; keep the tiny
+                // unflushed cap (the stall trigger) and shrink L0 under it.
+                l0_sst_size_bytes: 4 * 1024,
                 ..Default::default()
             })
             .build()
