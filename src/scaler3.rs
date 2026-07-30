@@ -197,6 +197,8 @@ async fn seal_identity(
         entries: Vec::new(),
         usage: crate::usage::counters(&route),
         routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
         key_version: 0,
         subkey: [0u8; 32],
         ts_hint_ms: None,

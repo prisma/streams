@@ -672,6 +672,8 @@ async fn internal_close(state: Arc<AppState>, name: String) -> Option<u64> {
         entries: vec![],
         usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
         routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
         key_version: 0,
         subkey: [0u8; 32],
         ts_hint_ms: None,
@@ -1724,6 +1726,8 @@ async fn create_stream(
             route: crate::crypto::stream_hash(&desc.name),
             entries,
             routing_key: String::new(),
+            key_hash: crate::crypto::stream_hash(""),
+            producer_lineage: Vec::new(),
             key_version: 0,
             subkey,
             ts_hint_ms: None,
@@ -2313,6 +2317,23 @@ async fn append_core(
     }
     let seg = seg;
     let hash = seg.identity;
+    // Predecessor identities for this routing key (nearest-first) —
+    // only multi-segment dynamic maps have any.
+    let producer_lineage: Vec<[u8; 16]> = match &desc.segments {
+        Some(map) if map.segments.len() > 1 => {
+            let mut preds: Vec<&crate::segmap::SegmentDesc> = map
+                .segments
+                .iter()
+                .filter(|sg| sg.seg_id != seg.seg_id && sg.contains(seg.point) && !sg.is_live())
+                .collect();
+            preds.sort_by_key(|sg| std::cmp::Reverse((sg.created_ms, sg.seg_id)));
+            preds
+                .into_iter()
+                .map(|sg| desc.dynamic_segment_identity(sg.seg_id))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     // Unified-scaler sketch feed (spec §5.1): admitted appends only.
     if !close_only && deferred.is_none() {
         let fed: usize = entries.iter().map(|e| e.len()).sum();
@@ -2365,6 +2386,11 @@ async fn append_core(
         entries,
         usage: usage_c,
         routing_key,
+        key_hash: seg.key_hash.0,
+        // Producer state resolves through the key's sealed predecessors
+        // after a split (ROUTING-V3 §3.6); single-segment streams carry
+        // an empty chain.
+        producer_lineage: producer_lineage.clone(),
         key_version: kv,
         subkey,
         ts_hint_ms: parse_ts_hint(&headers),

@@ -123,6 +123,16 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     })
 }
 
+/// Per-routing-key Stream-Seq row (ROUTING-V3 §3.6): seq is scoped to
+/// the KEY, not the segment — a segment carries many keys' lanes.
+pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(33);
+    k.extend_from_slice(hash);
+    k.push(b's');
+    k.extend_from_slice(key_hash);
+    k
+}
+
 pub fn producer_key(hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + producer_id.len());
     k.extend_from_slice(hash);
@@ -211,6 +221,9 @@ pub struct StreamState {
     /// arrives — with interleaved appends those differ, and clients use
     /// the ack offset for read-your-write.
     pub producers: HashMap<String, (u64, u64, u64)>,
+    /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
+    /// lazily from the durable `s` rows and applied by the committer.
+    pub seqs: HashMap<[u8; 16], String>,
     /// Queue-profile consumer state (loaded lazily by the committer).
     pub queue: crate::queue::QueueState,
 }
@@ -295,6 +308,15 @@ pub struct AppendReq {
     /// Plaintext entries; encrypted in the committer with nonce = offset.
     pub entries: Vec<Bytes>,
     pub routing_key: String,
+    /// stream_hash(routing_key), computed once at admission: the
+    /// per-key Stream-Seq lane and postings/sketch identity.
+    pub key_hash: [u8; 16],
+    /// Predecessor segment identities for the routing key's lineage
+    /// (nearest-first, empty for single-segment streams): the committer
+    /// resolves producer state through this chain after a split
+    /// (ROUTING-V3 §3.6) so a retry that committed on the sealed parent
+    /// is suppressed by the child without consuming an offset.
+    pub producer_lineage: Vec<[u8; 16]>,
     pub key_version: u32,
     pub subkey: [u8; 32],
     pub ts_hint_ms: Option<i64>,
@@ -1297,6 +1319,44 @@ impl ShardEngine {
     /// tails after restart/handoff WITHOUT materializing stream handles
     /// (the resident-handle sweep in `absorb_backlog` only sees streams
     /// something already touched) and without customer keys.
+    /// Producer-state lookup through the routing key's predecessor
+    /// chain (ROUTING-V3 §3.6): own identity first, then each sealed
+    /// predecessor. A hit on a predecessor means the producer's last
+    /// commit landed before a split — the caller stages it locally so
+    /// the duplicate check answers with the ORIGINAL offset and no new
+    /// offset is consumed.
+    async fn load_producer_chain(
+        &self,
+        own: &[u8; 16],
+        lineage: &[[u8; 16]],
+        pid: &str,
+    ) -> Result<Option<(u64, u64, u64)>, slatedb::Error> {
+        for identity in std::iter::once(own).chain(lineage.iter()) {
+            match self.db.get(producer_key(identity, pid)).await? {
+                Some(v) if v.len() >= 24 => {
+                    return Ok(Some((
+                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
+                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
+                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
+                    )));
+                }
+                Some(v) if v.len() >= 16 => {
+                    // Legacy 16-byte row: the commit offset is UNKNOWN.
+                    // u64::MAX marks that (offset 0 is a perfectly valid
+                    // commit — the old 0-sentinel answered the wrong
+                    // offset for a first-record duplicate).
+                    return Ok(Some((
+                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
+                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
+                        u64::MAX,
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
         #[cfg(test)]
         {
@@ -1422,6 +1482,7 @@ impl ShardEngine {
                 durable: tail.clone(),
                 applied: tail,
                 producers: HashMap::new(),
+                seqs: HashMap::new(),
                 queue: crate::queue::QueueState::default(),
             }),
             notify: Notify::new(),
@@ -1678,6 +1739,7 @@ impl ShardEngine {
             fields: TailFields,
             base: TailFields,
             producers: HashMap<String, (u64, u64, u64)>,
+            seqs: HashMap<[u8; 16], String>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
@@ -1722,6 +1784,7 @@ impl ShardEngine {
                                 fields: applied.clone(),
                                 base: applied,
                                 producers: HashMap::new(),
+                                seqs: HashMap::new(),
                                 appended_bytes: 0,
                                 ring_recs: Vec::new(),
                             },
@@ -1751,23 +1814,15 @@ impl ShardEngine {
                             };
                             let loaded = match shared {
                                 Some(v) => Some(v),
-                                None => match self.db.get(producer_key(&hash, &pr.id)).await {
-                                    // 24-byte current format carries the
-                                    // commit offset; 16-byte legacy rows
-                                    // fall back to "offset unknown" (0),
-                                    // where the duplicate ack degrades to
-                                    // the old tail-based answer.
-                                    Ok(Some(v)) if v.len() >= 24 => Some((
-                                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
-                                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
-                                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
-                                    )),
-                                    Ok(Some(v)) if v.len() >= 16 => Some((
-                                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
-                                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
-                                        0,
-                                    )),
-                                    Ok(_) => None,
+                                // Own identity first, then the routing
+                                // key's sealed predecessors (split-safe
+                                // idempotence, ROUTING-V3 §3.6). Format
+                                // parsing lives in the chain loader.
+                                None => match self
+                                    .load_producer_chain(&hash, &req.producer_lineage, &pr.id)
+                                    .await
+                                {
+                                    Ok(v) => v,
                                     Err(e) => {
                                         let _ =
                                             req.resp.send(Err(AppendErr::Internal(e.to_string())));
@@ -1798,10 +1853,10 @@ impl ShardEngine {
                                     // Duplicate: answer with the ORIGINAL
                                     // committed offset when the stored
                                     // producer row carries it (24-byte
-                                    // format); a legacy 16-byte row (coff
-                                    // == 0 with a non-empty log) degrades
-                                    // to the tail-based answer.
-                                    let last = if pr.seq == cs && coff != 0 {
+                                    // format; offset 0 is valid). Only a
+                                    // legacy 16-byte row (coff == MAX)
+                                    // degrades to the tail-based answer.
+                                    let last = if pr.seq == cs && coff != u64::MAX {
                                         coff
                                     } else {
                                         local.fields.next.wrapping_sub(1)
@@ -1864,7 +1919,33 @@ impl ShardEngine {
                         continue;
                     }
                     if let Some(seq) = &req.seq {
-                        if let Some(cur) = &local.fields.seq {
+                        // ROUTING-V3 §3.6: Stream-Seq is scoped to the
+                        // ROUTING KEY. Lazy-load the key's lane (shared
+                        // state, then the durable `s` row); the empty
+                        // key is an ordinary lane, so single-key
+                        // streams behave exactly as before.
+                        if !local.seqs.contains_key(&req.key_hash) {
+                            let shared = {
+                                let st = local.handle.state.lock().unwrap();
+                                st.seqs.get(&req.key_hash).cloned()
+                            };
+                            let loaded = match shared {
+                                Some(v) => Some(v),
+                                None => match self.db.get(seq_key(&hash, &req.key_hash)).await {
+                                    Ok(Some(v)) => String::from_utf8(v.to_vec()).ok(),
+                                    Ok(None) => None,
+                                    Err(e) => {
+                                        let _ =
+                                            req.resp.send(Err(AppendErr::Internal(e.to_string())));
+                                        continue;
+                                    }
+                                },
+                            };
+                            if let Some(v) = loaded {
+                                local.seqs.insert(req.key_hash, v);
+                            }
+                        }
+                        if let Some(cur) = local.seqs.get(&req.key_hash) {
                             if seq <= cur {
                                 let _ = req.resp.send(Err(AppendErr::SeqConflict {
                                     current: Some(cur.clone()),
@@ -1957,8 +2038,10 @@ impl ShardEngine {
                     {
                         local.fields.route = req.route;
                     }
-                    if req.seq.is_some() {
-                        local.fields.seq = req.seq.clone();
+                    if let Some(seq) = &req.seq {
+                        local.fields.seq = Some(seq.clone());
+                        local.seqs.insert(req.key_hash, seq.clone());
+                        wb.put(seq_key(&hash, &req.key_hash), seq.clone().into_bytes());
                     }
                     if let Some(mut t) = req.touch {
                         t.next_offset = local.fields.next;
@@ -2424,6 +2507,9 @@ impl ShardEngine {
                     st.applied = local.fields.clone();
                     for (id, v) in &local.producers {
                         st.producers.insert(id.clone(), *v);
+                    }
+                    for (kh, v) in &local.seqs {
+                        st.seqs.insert(*kh, v.clone());
                     }
                 }
                 // Trim-debt bookkeeping: streams whose safe target still

@@ -3877,6 +3877,8 @@ async fn append_sized(
         entries: vec![bytes::Bytes::from(vec![0x5au8; payload_bytes])],
         usage: crate::usage::counters(&hash),
         routing_key: rk.to_string(),
+        key_hash: crate::crypto::stream_hash(rk),
+        producer_lineage: Vec::new(),
         key_version: 0,
         subkey,
         ts_hint_ms: None,
@@ -4297,6 +4299,8 @@ async fn append_n(
             .collect(),
         usage: crate::usage::counters(&hash),
         routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
         key_version: 0,
         subkey,
         ts_hint_ms: None,
@@ -5142,6 +5146,8 @@ async fn sparse_key_reads_page_with_bounded_spans() {
             )],
             usage: crate::usage::counters(&hash),
             routing_key: "sp".to_string(),
+            key_hash: crate::crypto::stream_hash("sp"),
+            producer_lineage: Vec::new(),
             key_version: 0,
             subkey,
             ts_hint_ms: None,
@@ -5235,6 +5241,8 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
             )],
             usage: crate::usage::counters(&hash),
             routing_key: "ck".to_string(),
+            key_hash: crate::crypto::stream_hash("ck"),
+            producer_lineage: Vec::new(),
             key_version: 0,
             subkey,
             ts_hint_ms: None,
@@ -5347,6 +5355,8 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
             )],
             usage: crate::usage::counters(&hash),
             routing_key: "hot".to_string(),
+            key_hash: crate::crypto::stream_hash("hot"),
+            producer_lineage: Vec::new(),
             key_version: 0,
             subkey,
             ts_hint_ms: None,
@@ -5387,5 +5397,184 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
         cache.hits.load(Ordering::Relaxed) >= hits_after_first + 5,
         "warm reads must be cache hits"
     );
+    engine.begin_close();
+}
+
+/// ROUTING-V3 §3.6: Stream-Seq is scoped to the ROUTING KEY. Two keys
+/// advance independent lanes on one segment; a regression within one
+/// key still conflicts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_seq_is_scoped_to_the_routing_key() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 108, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xB7u8; 16];
+    let db = slatedb::Db::builder("dst-keyseq", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-keyseq".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let send = |rk: &'static str, seq: &'static str| {
+        let engine = engine.clone();
+        let key = key.clone();
+        async move {
+            let subkey = crate::crypto::derive_subkey(&key, &hash, rk, 0);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let req = crate::shard::AppendReq {
+                enqueued_at: std::time::Instant::now(),
+                hash,
+                route: hash,
+                entries: vec![bytes::Bytes::from_static(b"{}")],
+                usage: crate::usage::counters(&hash),
+                routing_key: rk.to_string(),
+                key_hash: crate::crypto::stream_hash(rk),
+                producer_lineage: Vec::new(),
+                key_version: 0,
+                subkey,
+                ts_hint_ms: None,
+                seq: Some(seq.to_string()),
+                bytes: 0,
+                close: false,
+                producer: None,
+                deferred_error: None,
+                touch: None,
+                resp: tx,
+            };
+            assert!(engine.try_enqueue(req).is_ok());
+            rx.await.expect("resp")
+        }
+    };
+    assert!(send("a", "s1").await.is_ok());
+    assert!(send("b", "s1").await.is_ok(), "key b has its own lane");
+    assert!(send("a", "s2").await.is_ok());
+    assert!(send("b", "s2").await.is_ok());
+    // Regression WITHIN a key conflicts; the other key is untouched.
+    match send("a", "s2").await {
+        Err(crate::shard::AppendErr::SeqConflict { current }) => {
+            assert_eq!(current.as_deref(), Some("s2"));
+        }
+        other => panic!("expected per-key seq conflict, got {other:?}"),
+    }
+    assert!(send("b", "s3").await.is_ok());
+    engine.begin_close();
+}
+
+/// ROUTING-V3 §3.6 release gate: a producer retry whose first attempt
+/// committed on the SEALED PARENT segment must be recognized by the
+/// child through the predecessor chain — duplicate ack carrying the
+/// parent's committed offset, and NO offset consumed on the child.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn producer_retries_across_a_split_commit_once() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 109, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let parent = [0xC1u8; 16];
+    let child = [0xC2u8; 16];
+    let db = slatedb::Db::builder("dst-splitprod", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-splitprod".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: u64, close: bool| {
+        let engine = engine.clone();
+        let key = key.clone();
+        async move {
+            let subkey = crate::crypto::derive_subkey(&key, &identity, "pk", 0);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let req = crate::shard::AppendReq {
+                enqueued_at: std::time::Instant::now(),
+                hash: identity,
+                route: identity,
+                entries: if close {
+                    Vec::new()
+                } else {
+                    vec![bytes::Bytes::from_static(b"{\"p\":1}")]
+                },
+                usage: crate::usage::counters(&identity),
+                routing_key: "pk".to_string(),
+                key_hash: crate::crypto::stream_hash("pk"),
+                producer_lineage: lineage,
+                key_version: 0,
+                subkey,
+                ts_hint_ms: None,
+                seq: None,
+                bytes: 0,
+                close,
+                producer: if close {
+                    None
+                } else {
+                    Some(crate::shard::ProducerReq {
+                        id: "prod-1".into(),
+                        epoch: 1,
+                        seq,
+                    })
+                },
+                deferred_error: None,
+                touch: None,
+                resp: tx,
+            };
+            assert!(engine.try_enqueue(req).is_ok());
+            rx.await.expect("resp")
+        }
+    };
+
+    // Commit (epoch 1, seq 0) on the parent, then seal it — the split.
+    let ack1 = send(parent, vec![], 0, false).await.expect("parent commit");
+    assert!(!ack1.duplicate);
+    let parent_off = ack1.last_offset;
+    send(parent, vec![], 0, true).await.expect("seal parent");
+
+    // The ambiguous retry lands on the CHILD with the predecessor chain:
+    // recognized as a duplicate, answered with the PARENT's offset, and
+    // the child consumes no offset.
+    let ack2 = send(child, vec![parent], 0, false)
+        .await
+        .expect("child retry");
+    assert!(ack2.duplicate, "retry across the seal must be a duplicate");
+    assert_eq!(
+        ack2.last_offset, parent_off,
+        "duplicate must answer with the ORIGINAL committed offset"
+    );
+    let child_next = {
+        let h = engine.stream_handle(child).await.unwrap();
+        let st = h.state.lock().unwrap();
+        st.durable.next.max(st.applied.next)
+    };
+    assert_eq!(
+        child_next, 0,
+        "the duplicate must not consume a child offset"
+    );
+
+    // The NEXT sequence commits on the child normally, seeded state
+    // continuing the chain.
+    let ack3 = send(child, vec![parent], 1, false).await.expect("child s1");
+    assert!(!ack3.duplicate);
+    assert_eq!(ack3.last_offset, 0, "first real child record at offset 0");
     engine.begin_close();
 }
