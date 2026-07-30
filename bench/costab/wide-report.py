@@ -61,21 +61,37 @@ def load_run(run):
     out["sc_p50"] = med("scWinP50Ms")
     out["sc_p99"] = med("scWinP99Ms")
     out["sc_p99_max"] = max(l["scWinP99Ms"] for l in steady)
+    # Memory: prefer the server's own footprint gauge (task_vm_info /
+    # statm via /v1/debug/load, snapshotted per minute) — ps RSS counts
+    # OS-reclaimable reusable pages and overstates by 100-200 MB (static
+    # audit; the shed-ratchet root cause). ps stays as a fallback column.
+    fps = []
+    for lp in sorted(run.glob("snaps/t*-load.json")):
+        try:
+            fps.append(float(json.loads(lp.read_text())["rss_mb"]))
+        except Exception:
+            pass
+    out["footprint_max_mb"] = max(fps) if fps else 0
     rss = [int(l.split()[1]) for l in (run / "rss.log").read_text().splitlines() if len(l.split()) == 2]
     out["rss_max_mb"] = max(rss) / 1024 if rss else 0
     out["rss_final_mb"] = rss[-1] / 1024 if rss else 0
-    # absorb backlog at the end: streams still carrying lag.
+    # Drain proof: the AGGREGATE backlog gauge, which is immune to the
+    # per-stream listing cap (usage::snapshot lists at most 65,536
+    # entries — a 100k-stream run cannot be proven drained from it;
+    # static audit called this out).
     lagging = lag_max = 0
+    deferred = 0
     up = run / "snaps/final-usage.json"
     if up.exists():
         try:
             u = json.loads(up.read_text())
-            lags = [s.get("absorb_lag_secs", 0) for s in u.get("streams", [])]
-            lagging = sum(1 for x in lags if x > 0)
-            lag_max = max(lags, default=0)
+            agg = u.get("absorb_backlog", {})
+            lagging = agg.get("streams", 0)
+            lag_max = agg.get("max_secs", 0)
+            deferred = u.get("deferred_sparse", {}).get("streams", 0)
         except Exception:
             pass
-    out["lagging"], out["lag_max"] = lagging, lag_max
+    out["lagging"], out["lag_max"], out["deferred"] = lagging, lag_max, deferred
     return out
 
 def main(dirs):
@@ -106,8 +122,10 @@ def main(dirs):
     row("append p99 ms (med of windows)", ",.1f", lambda r: r["ap_p99"])
     row("scan p50 ms", ",.1f", lambda r: r["sc_p50"])
     row("scan p99 ms (med / worst win)", "s", lambda r: f"{r['sc_p99']:.0f}/{r['sc_p99_max']:.0f}")
-    row("RSS max MB / final MB", "s", lambda r: f"{r['rss_max_mb']:.0f}/{r['rss_final_mb']:.0f}")
-    row("streams still absorb-lagging", ",d", lambda r: r["lagging"])
+    row("footprint max MB (honest gauge)", "s", lambda r: f"{r['footprint_max_mb']:.0f}")
+    row("ps-RSS max MB / final MB", "s", lambda r: f"{r['rss_max_mb']:.0f}/{r['rss_final_mb']:.0f}")
+    row("streams still absorb-lagging (aggregate)", ",d", lambda r: r["lagging"])
+    row("streams deferred by sparse policy", ",d", lambda r: r["deferred"])
     row("max absorb lag secs", ",d", lambda r: r["lag_max"])
     print()
     print("== steady cells (top movers per run) ==")

@@ -27,13 +27,21 @@ Fork branch sorenbs/slatedb#gc-adaptive-backoff: f5e5380 (cadence) →
 | **C + LIST-free GC (final)** | **96,906** | **1,203** | **0.012 (≈ $0.06/M)** |
 | acceptance gate | — | ≤ 5,000 | ≤ 0.05 |
 
-All gates pass on the final binary: full 100k drain in-window (backlog
-0, deferred 0), appends byte-flat across every arm (p50 46.9 / p99
-88.0 ms, 4.14 M ok, 0 errors), absorbed cold scans 54.8 ms (1.96× the
-28 ms unabsorbed control, within the ≤2× gate), history LISTs 128 for
-the whole run. End-to-end: absorbing a sparse stream's history now
-costs ~3,600× fewer Class A requests than v1, and steady-state total
-request volume is 7.1× lower than where the campaign started.
+All measured local history-v2 REQUEST-COST, append-performance,
+cold-read, and integrity gates passed for this workload: full 100k
+drain in-window (backlog 0, deferred 0), appends byte-flat across
+every arm (p50 46.9 / p99 88.0 ms, 4.14 M ok, 0 errors), absorbed cold
+scans 54.8 ms (1.96× the 28 ms unabsorbed control, within the ≤2×
+gate), history LISTs 128 for the whole run. End-to-end: absorbing a
+sparse stream's history now costs ~3,600× fewer Class A requests than
+v1, and steady-state total request volume is 7.1× lower than where
+the campaign started. NOT covered by that sentence at the time it was
+first written — and called out by the round-3 static audit — were: the
+1-GiB RSS gate (measured 820 MB footprint, not passed), product
+accounting above 65,536 streams, aggregate gather memory safety,
+passive restart discovery, mixed-layout migration, the full
+crash-point matrix, and field validation. §7 records how round 3
+closed the first four of those.
 
 With the interim deferral policy active instead (Arm B posture on the
 same binary), history Class A is 485 total and scan p50 halves to
@@ -218,3 +226,56 @@ the reusable-page gap (~130-200 MB on this rig).
 - The registry still pays one Class A PUT per stream creation (100,001
   per w100k setup) — the dominant remaining per-stream cost, untouched
   by this campaign and priced into stream creation, not retention.
+
+
+## 7. Round 3: static-audit findings addressed
+
+An external static audit of a0c36fa found two release blockers and one
+significant gap that the friendly w100k workload (tiny records, 65,536
+accounting cap) could not surface. All were fixed and regression-tested
+on this branch; the wide rerun in the table below revalidates them at
+100k scale.
+
+1. **Aggregate gather budget** (was: one WriteBatch could hold ~4 GiB;
+   oversized frames worse). `ABSORB_GATHER_MAX_BYTES` (default 32 MiB,
+   one history memtable) with exact key+frame+keyed-duplicate
+   accounting; non-fitting streams gather on later ticks; an oversized
+   chunk proceeds alone. Deterministic packing tests.
+2. **Usage/limits never fail open** (was: silently unlimited and
+   unaccounted past 65,536 streams; the two hot-path counters() calls
+   returned unrelated temporaries). Overflow admissions now share one
+   conservative bucket and one aggregate counter set; idle tracked
+   entries evict (600 s) to restore full tracking; /v1/debug/usage
+   exposes tracked_streams + overflow gauges. Tested past the cap.
+3. **Billing emitter** advances checkpoints only on append success
+   (failed emits retry the accumulated delta) and handles counter
+   resets from eviction. Posture stated in-code: best-effort telemetry
+   until a durable outbox exists.
+4. **Durable dirty-stream index**: `absorbed < next` markers written
+   atomically with the tail, cleared on catch-up, scanned once at
+   absorber start — the audit's append→crash→new-owner→zero-requests
+   scenario now converges with the resident-handle sweep disabled.
+5. **Memory**: idle StreamHandle eviction (HANDLE_IDLE_EVICT_SECS,
+   default 600, safe via strong-count + the dirty index), registry
+   cache bound, KeyCache expired-entry removal + bound, absorber
+   `submitted` pruning, metrics collection gated on a flusher, and
+   cardinality gauges in /v1/debug/load.
+6. **Correctness edges**: gather boundary advances now ride ONE
+   `AbsorbedBatch` committer message (deterministic single-batch);
+   `history_partition` re-checks closed after init (close race);
+   history2 paths derive from the same helper as the shard DB path
+   (they previously landed BESIDE the shards/ tree — a pre-GA layout
+   fix, breaking for any existing v2 data, of which there is none
+   deployed); zero-route legacy streams stay on v1 so a future
+   route-range split cannot misclassify their records.
+7. **Reporting**: wide-report.py now proves drains from the uncapped
+   aggregate backlog gauge and reports the honest footprint gauge; ps
+   RSS remains as a labeled fallback column.
+
+Explicitly deferred, with rationale: v1→v2 cutover offsets
+(docs/HISTORY-V2.md rollout section) — no production v1 history data
+exists; greenfield deployments start on v2, and the boolean flag is
+sufficient until a deployment with real v1 data needs migrating.
+Newtypes remain scoped to the two measured confusion seams
+(RouteHash/SegmentHash); incarnation/partition/offset identities widen
+opportunistically as APIs are touched.

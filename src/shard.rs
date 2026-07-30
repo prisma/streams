@@ -182,6 +182,10 @@ pub struct StreamHandle {
     /// (or by tail notify) finds the record here without a DB scan.
     /// Empty unless ShardConfig.tail_ring_bytes > 0.
     pub ring: Mutex<TailRing>,
+    /// Millisecond timestamp of the last lookup — feeds idle eviction
+    /// (resident handles previously lived forever; a wide shard held
+    /// 100k of them, the largest per-stream memory term).
+    pub last_touch_ms: std::sync::atomic::AtomicU64,
 }
 
 /// One durably-committed group's frames for one stream: a contiguous
@@ -309,6 +313,16 @@ pub enum CommitOp {
         op: crate::queue::QueueOp,
         resp: oneshot::Sender<Result<crate::queue::QueueOut, String>>,
     },
+    /// One gather's worth of absorber confirmations, carried as a SINGLE
+    /// committer message so every covered boundary lands in the same
+    /// write batch deterministically (the per-stream sends only
+    /// coalesced opportunistically — the committer could run between
+    /// them). Expanded into per-stream `Absorbed` ops at commit_group
+    /// entry.
+    AbsorbedBatch {
+        streams: Vec<([u8; 16], u64)>,
+        v2: bool,
+    },
     /// Absorber confirmation: history tier now durably holds [.., upto).
     /// Advances the readers' boundary and trims previously-absorbed records
     /// (deferred one round so in-flight readers never lose their range).
@@ -380,6 +394,11 @@ pub struct ShardConfig {
     /// truth for anything the ring no longer covers: restart, eviction,
     /// lagging consumers.
     pub tail_ring_bytes: usize,
+    /// Evict resident stream handles idle at least this long (and
+    /// referenced by nothing but the map). Zero disables. The durable
+    /// dirty-stream index keeps unabsorbed evictees discoverable, so
+    /// eviction never strands a tail.
+    pub handle_idle_evict: std::time::Duration,
 }
 
 impl Default for ShardConfig {
@@ -394,6 +413,7 @@ impl Default for ShardConfig {
             wal_group_commit: false,
             wal_flush_gap: std::time::Duration::from_millis(25),
             wal_post_ack_gather: std::time::Duration::ZERO,
+            handle_idle_evict: std::time::Duration::from_secs(600),
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
@@ -512,6 +532,8 @@ pub struct ShardEngine {
     /// (config budget - ring_budget), exposed alongside it.
     pub ring_peak_bytes: AtomicU64,
     ring_cfg_bytes: u64,
+    /// Idle threshold for resident-handle eviction (ShardConfig copy).
+    handle_idle_evict: std::time::Duration,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -599,6 +621,7 @@ impl ShardEngine {
             ring_evicted: AtomicU64::new(0),
             ring_peak_bytes: AtomicU64::new(0),
             ring_cfg_bytes: cfg.tail_ring_bytes as u64,
+            handle_idle_evict: cfg.handle_idle_evict,
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
@@ -876,6 +899,16 @@ impl ShardEngine {
                             tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
                         }
                     }
+                    let idle = ticker.handle_idle_evict;
+                    if !idle.is_zero() {
+                        let evicted = ticker.evict_idle_handles(idle);
+                        if evicted > 0 {
+                            tracing::debug!(
+                                shard = %ticker.prefix,
+                                "evicted {evicted} idle stream handles"
+                            );
+                        }
+                    }
                 }
             }),
         ));
@@ -1033,6 +1066,19 @@ impl ShardEngine {
             .await;
     }
 
+    /// One gather's boundary advances as a SINGLE committer message:
+    /// every covered stream lands in the same write batch by
+    /// construction (per-stream sends only coalesced opportunistically).
+    pub async fn submit_absorbed_batch_v2(&self, streams: Vec<([u8; 16], u64)>) {
+        if streams.is_empty() {
+            return;
+        }
+        let _ = self
+            .tx
+            .send(CommitOp::AbsorbedBatch { streams, v2: true })
+            .await;
+    }
+
     /// The shard's shared history v2 partition, opened once and shared
     /// between the absorber's gather lane and v2 history reads. Values
     /// are raw stream-key-encrypted frames, so the partition needs no
@@ -1042,9 +1088,10 @@ impl ShardEngine {
         if self.is_closed() {
             return Err(slatedb::Error::data("engine closed".to_string()));
         }
-        self.history2
+        let part = self
+            .history2
             .get_or_try_init(|| async {
-                let path = format!("{}/history2", self.prefix);
+                let path = crate::sharddir::history2_path(&self.prefix);
                 let store = self.data_store.clone();
                 let db = crate::on_slatedb_rt(async move {
                     Db::builder(path.as_str(), store)
@@ -1054,10 +1101,22 @@ impl ShardEngine {
                         .await
                 })
                 .await?;
-                Ok(Arc::new(db))
+                Ok::<_, slatedb::Error>(Arc::new(db))
             })
             .await
-            .cloned()
+            .cloned()?;
+        // Close race (static audit): begin_close snapshots only the
+        // INITIALIZED cell — an open in flight at that instant would
+        // otherwise escape the deliberate close path. Re-check after
+        // init and shut the fresh partition down ourselves.
+        if self.is_closed() {
+            let doomed = part.clone();
+            tokio::spawn(async move {
+                let _ = doomed.close().await;
+            });
+            return Err(slatedb::Error::data("engine closed".to_string()));
+        }
+        Ok(part)
     }
 
     /// Streams this engine holds open whose durable log extends past their
@@ -1148,6 +1207,7 @@ impl ShardEngine {
 
     pub async fn stream_handle(&self, hash: [u8; 16]) -> Result<Arc<StreamHandle>, slatedb::Error> {
         if let Some(h) = self.streams.lock().unwrap().get(&hash) {
+            h.last_touch_ms.store(now_ms() as u64, std::sync::atomic::Ordering::Relaxed);
             return Ok(h.clone());
         }
         let tail = match self.db.get(tail_key(&hash)).await? {
@@ -1164,9 +1224,40 @@ impl ShardEngine {
             }),
             notify: Notify::new(),
             ring: Mutex::new(TailRing::default()),
+            last_touch_ms: std::sync::atomic::AtomicU64::new(now_ms() as u64),
         });
         let mut map = self.streams.lock().unwrap();
         Ok(map.entry(hash).or_insert(handle).clone())
+    }
+
+    /// Evict resident handles idle at least `idle` and referenced by
+    /// nobody but the map (strong_count == 1 — in-flight readers,
+    /// waiters, ring publication and committer batches all hold clones,
+    /// so anything in use is untouchable by construction). Returns how
+    /// many were dropped. A later touch reloads durable state from the
+    /// shard DB, and the dirty-stream index keeps unabsorbed evictees
+    /// discoverable.
+    pub fn evict_idle_handles(&self, idle: std::time::Duration) -> usize {
+        let cutoff = (now_ms() as u64).saturating_sub(idle.as_millis() as u64);
+        let mut map = self.streams.lock().unwrap();
+        let before = map.len();
+        map.retain(|_, h| {
+            std::sync::Arc::strong_count(h) > 1
+                || h.last_touch_ms.load(std::sync::atomic::Ordering::Relaxed) > cutoff
+        });
+        before - map.len()
+    }
+
+    pub fn resident_streams(&self) -> usize {
+        self.streams.lock().unwrap().len()
+    }
+
+    /// Peek a resident handle's absorbed boundary WITHOUT materializing
+    /// one (materialization is exactly what memory pruning must avoid).
+    pub fn resident_absorbed(&self, hash: &[u8; 16]) -> Option<u64> {
+        let h = self.streams.lock().unwrap().get(hash).cloned()?;
+        let st = h.state.lock().unwrap();
+        Some(st.durable.absorbed)
     }
 
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
@@ -1189,7 +1280,7 @@ impl ShardEngine {
                             CommitOp::Queue { resp, .. } => {
                                 let _ = resp.send(Err("shard fenced/moved; retry".into()));
                             }
-                            CommitOp::Absorbed { .. } => {}
+                            CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
                         }
                     }
                     return;
@@ -1209,7 +1300,7 @@ impl ShardEngine {
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
-                    CommitOp::Absorbed { .. } => {}
+                    CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
                 }
                 while let Ok(op) = rx.try_recv() {
                     match op {
@@ -1219,7 +1310,7 @@ impl ShardEngine {
                         CommitOp::Queue { resp, .. } => {
                             let _ = resp.send(Err("shard fenced/moved; retry".into()));
                         }
-                        CommitOp::Absorbed { .. } => {}
+                        CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
                     }
                 }
                 return;
@@ -1273,6 +1364,19 @@ impl ShardEngine {
     }
 
     async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
+        // Expand gather batches into per-stream ops INSIDE this group, so
+        // one gather's boundary advances share one write batch by
+        // construction.
+        let ops: Vec<CommitOp> = ops
+            .into_iter()
+            .flat_map(|op| match op {
+                CommitOp::AbsorbedBatch { streams, v2 } => streams
+                    .into_iter()
+                    .map(|(hash, upto)| CommitOp::Absorbed { hash, upto, v2 })
+                    .collect::<Vec<_>>(),
+                other => vec![other],
+            })
+            .collect();
         if self.is_closed() {
             // Fenced mid-flight: fail fast instead of writing to a dead db.
             for op in ops {
@@ -1283,7 +1387,7 @@ impl ShardEngine {
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
-                    CommitOp::Absorbed { .. } => {}
+                    CommitOp::Absorbed { .. } | CommitOp::AbsorbedBatch { .. } => {}
                 }
             }
             return;
@@ -1330,6 +1434,8 @@ impl ShardEngine {
                 CommitOp::Append(r) => r.hash,
                 CommitOp::Absorbed { hash, .. } => *hash,
                 CommitOp::Queue { hash, .. } => *hash,
+                // Expanded at commit_group entry; unreachable here.
+                CommitOp::AbsorbedBatch { .. } => continue,
             };
             if !locals.contains_key(&hash) {
                 match self.stream_handle(hash).await {
@@ -1358,6 +1464,8 @@ impl ShardEngine {
             let local = locals.get_mut(&hash).expect("local");
 
             match op {
+                // Expanded at commit_group entry; unreachable here.
+                CommitOp::AbsorbedBatch { .. } => {}
                 CommitOp::Append(req) => {
                     // Producer state: ensure loaded (durable `q` key) into
                     // the batch-local staging map.

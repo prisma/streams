@@ -418,6 +418,15 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
     let peak = state
         .inflight_peak
         .swap(now, std::sync::atomic::Ordering::Relaxed);
+    // Cardinality gauges for every stream-indexed structure (static
+    // audit: several grew unbounded and invisibly).
+    let resident_handles: usize = state
+        .shards
+        .read()
+        .unwrap()
+        .values()
+        .map(|e| e.resident_streams())
+        .sum();
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
@@ -427,6 +436,13 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
         "absorb_lag_max_secs": crate::usage::absorb_lag_max(),
+        "cardinality": {
+            "resident_handles": resident_handles,
+            "usage_tracked": crate::usage::tracked_streams(),
+            "keycache": state.keys.len(),
+            "registry_cache": state.registry.cache_len(),
+            "metrics": state.metrics.len(),
+        },
     }))
     .into_response()
 }

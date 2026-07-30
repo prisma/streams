@@ -256,6 +256,13 @@ struct Args {
     #[arg(long, env = "ABSORB_MIN_BYTES_FOR_AGE", default_value_t = 256 * 1024)]
     absorb_min_bytes_for_age: u64,
 
+    /// Evict resident per-stream handles idle at least this long
+    /// (seconds; 0 = never). Handles reload from the shard DB on next
+    /// touch; the durable dirty-stream index keeps unabsorbed evictees
+    /// discoverable, so this only trades a tail-row read for memory.
+    #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
+    handle_idle_evict_secs: u64,
+
     /// Aggregate byte budget for one shared-history gather WriteBatch
     /// (keys + frames, keyed index rows counted twice). Bounds absorber
     /// peak memory on small instances; streams that do not fit gather on
@@ -660,6 +667,7 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_small_bytes = args.absorb_small_bytes;
         let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
         let absorb_gather_max_bytes = args.absorb_gather_max_bytes;
+        let handle_idle_evict_secs = args.handle_idle_evict_secs;
         let trim_per_op = args.trim_per_op;
         let wal_group_commit = args.wal_group_commit != 0;
         let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
@@ -703,11 +711,7 @@ async fn async_main() -> anyhow::Result<()> {
                 }
                 let state_slot = state_slot.clone();
                 Box::pin(async move {
-                    let path = if prefix.is_empty() {
-                        "shards/root".to_string()
-                    } else {
-                        format!("shards/{prefix}")
-                    };
+                    let path = crate::sharddir::shard_db_path(&prefix);
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
                     let db = {
                         let p2 = path.clone();
@@ -745,6 +749,7 @@ async fn async_main() -> anyhow::Result<()> {
                             wal_gather_skip_reqs,
                             wal_gather_skip_bytes,
                             tail_ring_bytes,
+                            handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
                             ..Default::default()
                         },
                         absorb_tx,
@@ -819,6 +824,8 @@ async fn async_main() -> anyhow::Result<()> {
     let _ = state_slot.set(Arc::downgrade(&state));
     match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
         (Some(mk), Some(lb)) => {
+            // Collection stays off without a flusher — see Metrics::enable.
+            state.metrics.enable();
             let st = state.clone();
             let instance = args.instance_name.clone();
             tokio::spawn(async move {

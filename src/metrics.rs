@@ -18,22 +18,44 @@ pub struct PerStream {
 #[derive(Default)]
 pub struct Metrics {
     counters: Mutex<HashMap<String, PerStream>>,
+    /// Collection is OFF until a flusher exists: without one, drain()
+    /// never runs and the per-stream map grows with total cardinality
+    /// forever (static-audit memory finding).
+    enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Metrics {
+    pub fn enable(&self) {
+        self.enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn on(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn len(&self) -> usize {
+        self.counters.lock().unwrap().len()
+    }
     pub fn append(&self, stream: &str, bytes: u64) {
+        if !self.on() {
+            return;
+        }
         let mut m = self.counters.lock().unwrap();
         let e = m.entry(stream.to_string()).or_default();
         e.appends += 1;
         e.append_bytes += bytes;
     }
     pub fn read(&self, stream: &str, bytes: u64) {
+        if !self.on() {
+            return;
+        }
         let mut m = self.counters.lock().unwrap();
         let e = m.entry(stream.to_string()).or_default();
         e.reads += 1;
         e.read_bytes += bytes;
     }
     pub fn queue(&self, stream: &str) {
+        if !self.on() {
+            return;
+        }
         let mut m = self.counters.lock().unwrap();
         m.entry(stream.to_string()).or_default().queue_ops += 1;
     }

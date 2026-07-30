@@ -322,9 +322,28 @@ pub struct KeyCache {
     map: Mutex<HashMap<[u8; 16], KeyEntry>>,
 }
 
+const KEY_TTL: Duration = Duration::from_secs(900);
+/// Cardinality bound: v2 absorption never consults this cache, so on a
+/// wide shard it is pure retention — expired entries used to return
+/// None but stay resident forever (static-audit memory finding).
+const KEY_CACHE_MAX: usize = 65_536;
+
 impl KeyCache {
     pub fn put(&self, hash: [u8; 16], key: StreamKey, epoch: [u8; 16]) {
-        self.map.lock().unwrap().insert(
+        let mut map = self.map.lock().unwrap();
+        if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
+            map.retain(|_, e| e.at.elapsed() <= KEY_TTL);
+            if map.len() >= KEY_CACHE_MAX {
+                if let Some(oldest) = map
+                    .iter()
+                    .min_by_key(|(_, e)| e.at)
+                    .map(|(h, _)| *h)
+                {
+                    map.remove(&oldest);
+                }
+            }
+        }
+        map.insert(
             hash,
             KeyEntry {
                 key,
@@ -335,12 +354,20 @@ impl KeyCache {
     }
 
     pub fn get(&self, hash: &[u8; 16]) -> Option<(StreamKey, [u8; 16])> {
-        let map = self.map.lock().unwrap();
-        let e = map.get(hash)?;
-        if e.at.elapsed() > Duration::from_secs(900) {
+        let mut map = self.map.lock().unwrap();
+        let expired = map
+            .get(hash)
+            .is_some_and(|e| e.at.elapsed() > KEY_TTL);
+        if expired {
+            map.remove(hash);
             return None;
         }
+        let e = map.get(hash)?;
         Some((e.key.clone(), e.epoch))
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
     }
 }
 
@@ -659,6 +686,23 @@ impl Absorber {
                                     retry_after: None,
                                 });
                             }
+                            // Prune the submitted high-water map (it
+                            // otherwise grows with every stream ever
+                            // absorbed): an entry is only load-bearing
+                            // while a re-gather could still observe a
+                            // stale durable boundary — i.e. while the
+                            // stream is pending or its resident absorbed
+                            // boundary trails the submitted mark. Frames
+                            // are deterministic and boundary submits are
+                            // guarded, so over-pruning merely costs an
+                            // idempotent rewrite.
+                            absorber.submitted.lock().unwrap().retain(|h, v| {
+                                pending.contains_key(h)
+                                    || absorber
+                                        .shard
+                                        .resident_absorbed(h)
+                                        .is_some_and(|a| a < *v)
+                            });
                         }
                         // Publish absorption lag (scale-out signal) for
                         // ELIGIBLE streams only: a stream the sparse
@@ -754,11 +798,18 @@ impl Absorber {
                             let Ok(handle) = absorber.shard.stream_handle(hash).await else {
                                 continue;
                             };
-                            let (absorbed, v2flag) = {
+                            let (absorbed, v2flag, route) = {
                                 let st = handle.state.lock().unwrap();
-                                (st.durable.absorbed, st.durable.history_v2)
+                                (st.durable.absorbed, st.durable.history_v2, st.durable.route)
                             };
-                            if !absorber.cfg.force_v1 && (v2flag || absorbed == 0) {
+                            // Zero-route guard (static audit): a legacy
+                            // stream with no name-level route must NOT
+                            // enter v2 — its records would be keyed under
+                            // route 0x00.. and a future route-range split
+                            // would classify them into the wrong range.
+                            // Such streams keep the v1 per-stream layout.
+                            let v2_eligible = v2flag || (absorbed == 0 && route != [0u8; 16]);
+                            if !absorber.cfg.force_v1 && v2_eligible {
                                 if v2_lane.len() < V2_LANE_PER_TICK {
                                     v2_lane.push(hash);
                                 }
@@ -946,11 +997,13 @@ impl Absorber {
         )
         .await?;
         part.flush().await?; // wal off => memtable -> L0, manifest published
-        for (hash, upto) in &advanced {
-            self.shard.submit_absorbed_v2(*hash, *upto).await;
+        self.shard.submit_absorbed_batch_v2(advanced.clone()).await;
+        {
             let mut submitted = self.submitted.lock().unwrap();
-            let e = submitted.entry(*hash).or_insert(0);
-            *e = (*e).max(*upto);
+            for (hash, upto) in &advanced {
+                let e = submitted.entry(*hash).or_insert(0);
+                *e = (*e).max(*upto);
+            }
         }
         tracing::info!(
             "v2 gather absorbed {} streams into {}/history2",

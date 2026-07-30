@@ -162,6 +162,34 @@ impl Registry {
         }
     }
 
+    /// Bounded cache insert: the descriptor cache previously grew with
+    /// every distinct name ever touched (static-audit memory finding —
+    /// creates alone put 100k entries in it). At the cap, expired
+    /// entries purge first (TTL is seconds, so this is almost always
+    /// enough), then the oldest entry falls out.
+    fn cache_insert(&self, name: String, entry: CachedDesc) {
+        const REGISTRY_CACHE_MAX: usize = 65_536;
+        let mut cache = self.cache.lock().unwrap();
+        if cache.len() >= REGISTRY_CACHE_MAX && !cache.contains_key(&name) {
+            let ttl = self.cache_ttl;
+            cache.retain(|_, e| e.at.elapsed() < ttl);
+            if cache.len() >= REGISTRY_CACHE_MAX {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, e)| e.at)
+                    .map(|(n, _)| n.clone())
+                {
+                    cache.remove(&oldest);
+                }
+            }
+        }
+        cache.insert(name, entry);
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.lock().unwrap().len()
+    }
+
     pub async fn get(&self, name: &str) -> Result<Option<StreamDesc>, object_store::Error> {
         let revalidate = {
             let cache = self.cache.lock().unwrap();
@@ -204,7 +232,7 @@ impl Registry {
             Err(object_store::Error::NotFound { .. }) => (None, None),
             Err(e) => return Err(e),
         };
-        self.cache.lock().unwrap().insert(
+        self.cache_insert(
             name.to_string(),
             CachedDesc {
                 desc: fetched.0.clone(),
@@ -231,7 +259,7 @@ impl Registry {
             .await
         {
             Ok(put) => {
-                self.cache.lock().unwrap().insert(
+                self.cache_insert(
                     desc.name.clone(),
                     CachedDesc {
                         desc: Some(desc.clone()),
@@ -286,7 +314,7 @@ impl Registry {
                     source: format!("corrupt descriptor for {name:?}: {e}").into(),
                 })?;
             if !still_dead(&current) {
-                self.cache.lock().unwrap().insert(
+                self.cache_insert(
                     name.to_string(),
                     CachedDesc {
                         desc: Some(current.clone()),

@@ -211,6 +211,14 @@ unfinished boundary without customer keys.
 
 ## Rollout
 
+**Implementation status (round 3):** the shipped mechanism is the
+boolean `history_v2` flag plus the zero-route guard (streams without a
+name-level route stay v1 so future route-range splits cannot
+misclassify them); the cutover-offset scheme below remains the design
+for migrating deployments that hold REAL v1 history. None exist today
+— every production-bound deployment is greenfield-v2 — so the offset
+machinery is deliberately deferred until a migration actually needs it.
+
 No dual-writes (that doubles exactly the cost being removed). Persist
 per-stream in the durable tail state:
 

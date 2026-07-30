@@ -3995,3 +3995,56 @@ async fn untouched_streams_absorb_after_restart() {
     assert_eq!(a, n, "absorbed must equal next after index-seeded absorption");
     engine_b.begin_close();
 }
+
+/// Memory finding (static audit): resident StreamHandles lived forever —
+/// a wide shard held one per stream ever touched. Idle handles with no
+/// outside references must evict, and a later touch must reload the
+/// same durable state from the shard DB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_stream_handles_evict_and_reload() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 95, FaultPlan::new(0, 0, 0));
+    let key = skey();
+
+    let db = slatedb::Db::builder("dst-evict", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-evict".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let hashes: Vec<[u8; 16]> = (0u8..8).map(|i| [0xB0 + i; 16]).collect();
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "", 512).await;
+    }
+    assert!(engine.resident_streams() >= 8);
+
+    // Give the pipeline a beat so no committer batch still holds clones,
+    // then evict with a zero idle threshold: everything unreferenced goes.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let evicted = engine.evict_idle_handles(std::time::Duration::ZERO);
+    assert!(evicted >= 8, "expected all idle handles evicted, got {evicted}");
+    assert_eq!(engine.resident_streams(), 0);
+
+    // Reload: durable state must be intact from the shard DB.
+    let st = engine.stream_handle(hashes[0]).await.unwrap();
+    let n = { st.state.lock().unwrap().durable.next };
+    assert_eq!(n, 1, "reloaded handle lost durable state");
+
+    // A held reference is untouchable by construction.
+    let _held = engine.stream_handle(hashes[1]).await.unwrap();
+    let evicted = engine.evict_idle_handles(std::time::Duration::ZERO);
+    assert!(engine.resident_streams() >= 1, "held handle must survive, evicted={evicted}");
+    engine.begin_close();
+}
