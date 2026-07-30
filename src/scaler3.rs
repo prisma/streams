@@ -37,7 +37,19 @@ struct SegSketch {
     dist: KeyDistribution,
     hot_streak: u32,
     profile_pinned: bool,
+    last_fed_ms: i64,
 }
+
+/// Bounded sketch population (w100k finding: 100k streams x ~2 KB of
+/// sketch = ~200 MB resident). The scaler only ever acts on HOT
+/// segments, so cold sketches are pure ballast: idle entries evict on
+/// an amortized sweep, and past the cap new streams are not sketched
+/// until slots free (they re-enter on their next append once the sweep
+/// runs — a hot stream feeds constantly and re-enters immediately).
+const SKETCH_MAX: usize = 4_096;
+const SKETCH_IDLE_MS: i64 = 600_000;
+const SKETCH_SWEEP_EVERY: u64 = 4_096;
+static SKETCH_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct State {
     sketches: HashMap<(String, u32), SegSketch>,
@@ -86,20 +98,26 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
             desc.profile.as_deref(),
             Some("queue") | Some("state-protocol")
         );
+    let now = crate::shard::now_ms();
     let mut g = state().lock().unwrap();
+    // Amortized idle sweep keeps the population honest without a
+    // per-append scan.
+    if SKETCH_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SKETCH_SWEEP_EVERY == 0 {
+        g.sketches
+            .retain(|_, e| now - e.last_fed_ms < SKETCH_IDLE_MS);
+    }
     let key = (desc.name.clone(), seg.seg_id);
+    if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
+        return; // full: cold population; hot streams re-enter post-sweep
+    }
     let e = g.sketches.entry(key).or_insert_with(|| SegSketch {
         dist: KeyDistribution::new(seg.lo, seg.hi, crate::scaler::policy().rate_window_secs),
         hot_streak: 0,
         profile_pinned: pinned,
+        last_fed_ms: now,
     });
-    e.dist.note(
-        crate::shard::now_ms(),
-        seg.point,
-        seg.key_hash.0,
-        bytes,
-        records,
-    );
+    e.last_fed_ms = now;
+    e.dist.note(now, seg.point, seg.key_hash.0, bytes, records);
 }
 
 /// One evaluation pass over every sketched segment. Returns the split
