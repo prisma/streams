@@ -5288,6 +5288,11 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
     let before = crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed);
     let ds: Arc<dyn ObjectStore> = store.clone();
     let hist = fresh_hist(&ds);
+    // The absorber write-through-warmed the slice cache with the (valid)
+    // runs it encoded; served from there, the corruption would never be
+    // touched. The envelope contract is about a COLD index read — model
+    // the instance that did not absorb this data.
+    engine.postings_cache.sweep_idle(std::time::Duration::ZERO);
     let got = drain_filtered(&hist, &engine, hash, &key, "ck").await;
     let want: Vec<(u64, u32)> = (0..30u64).map(|i| (i, 0u32)).collect();
     assert_eq!(got, want, "envelope fallback lost records");
@@ -5378,23 +5383,39 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
     let hist = fresh_hist(&ds);
     let cache = &engine.postings_cache;
 
+    // Write-through warming (spec §7): the absorber installed the runs
+    // it just wrote, so even the FIRST read pays no index round trip.
     let first = drain_filtered(&hist, &engine, hash, &key, "hot").await;
     assert_eq!(first.len(), 8);
-    let loads_after_first = cache.index_loads.load(Ordering::Relaxed);
-    let hits_after_first = cache.hits.load(Ordering::Relaxed);
-    assert!(loads_after_first >= 1, "cold read must load the index");
+    assert_eq!(
+        cache.index_loads.load(Ordering::Relaxed),
+        0,
+        "first read after in-process absorption must be warm"
+    );
+    assert!(cache.hits.load(Ordering::Relaxed) >= 1);
+    assert!(cache.warm_installs.load(Ordering::Relaxed) >= 1);
+
+    // Simulate an instance that did NOT absorb this data (restart /
+    // ownership move): sweep everything, then the cold-load contract
+    // applies — one physical load, then hits.
+    cache.sweep_idle(std::time::Duration::ZERO);
+    let again = drain_filtered(&hist, &engine, hash, &key, "hot").await;
+    assert_eq!(again, first);
+    let loads_after_cold = cache.index_loads.load(Ordering::Relaxed);
+    let hits_after_cold = cache.hits.load(Ordering::Relaxed);
+    assert!(loads_after_cold >= 1, "swept cache must load the index");
 
     for _ in 0..5 {
-        let again = drain_filtered(&hist, &engine, hash, &key, "hot").await;
-        assert_eq!(again, first);
+        let warm = drain_filtered(&hist, &engine, hash, &key, "hot").await;
+        assert_eq!(warm, first);
     }
     assert_eq!(
         cache.index_loads.load(Ordering::Relaxed),
-        loads_after_first,
+        loads_after_cold,
         "warm reads must not touch the physical index"
     );
     assert!(
-        cache.hits.load(Ordering::Relaxed) >= hits_after_first + 5,
+        cache.hits.load(Ordering::Relaxed) >= hits_after_cold + 5,
         "warm reads must be cache hits"
     );
     engine.begin_close();

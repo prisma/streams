@@ -28,7 +28,14 @@ def req(method, path, body=None, headers=None, timeout=30):
     for k, v in (headers or {}).items():
         r.add_header(k, v)
     with urllib.request.urlopen(r, timeout=timeout) as resp:
-        return resp.status, dict(resp.headers), resp.read()
+        return (
+            resp.status,
+            # hyper emits lowercase header names; a plain dict() would
+            # make Stream-Next-Offset lookups silently miss (the S1
+            # 'half the records' harness bug).
+            {k.lower(): v for k, v in resp.headers.items()},
+            resp.read(),
+        )
 
 
 def sreq(method, path, body=None, headers=None, attempts=6):
@@ -68,8 +75,8 @@ def read_key_all(stream, k):
         if body:
             recs = json.loads(body)
             out.extend(recs if isinstance(recs, list) else [recs])
-        nxt = h.get("Stream-Next-Offset")
-        if h.get("Stream-Up-To-Date", "").lower() == "true" or not nxt or nxt == tok:
+        nxt = h.get("stream-next-offset")
+        if h.get("stream-up-to-date", "").lower() == "true" or not nxt or nxt == tok:
             break
         tok = nxt
     return out

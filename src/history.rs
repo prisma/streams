@@ -1055,6 +1055,15 @@ impl Absorber {
         let mut wb = WriteBatch::new();
         let mut out = GatherOutcome::default();
         let mut batch_bytes: usize = 0;
+        // (segment, chunk_from, chunk_to, per-key runs) for write-through
+        // cache warming — installed only after the batch flush succeeds.
+        type WarmChunk = (
+            SegmentHash,
+            u64,
+            u64,
+            Vec<([u8; 16], Vec<crate::postings::AbsRun>)>,
+        );
+        let mut warm_installs: Vec<WarmChunk> = Vec::new();
         for hash in streams {
             // Aggregate budget: the batch is held in memory until the one
             // flush below, so its size — not the lane's stream count — is
@@ -1158,10 +1167,20 @@ impl Absorber {
             let (emitted, postings_bytes) = pages.finish();
             POSTINGS_PAGES_WRITTEN
                 .fetch_add(emitted.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            // Decode what we just encoded (cheap varints, and a free
+            // round-trip check) to hand the slice cache exactly the runs
+            // a reader would load — write-through warming (spec §7)
+            // makes first-read-after-absorb skip the index round trip.
+            let mut chunk_runs: std::collections::HashMap<[u8; 16], Vec<crate::postings::AbsRun>> =
+                std::collections::HashMap::new();
             for (kh, bucket, first, value) in emitted {
-                if let Some(pg) = crate::postings::decode_page(&value) {
-                    POSTINGS_RUNS_WRITTEN
-                        .fetch_add(pg.runs.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                match crate::postings::decode_page_abs(first, &value) {
+                    Some(abs) => {
+                        POSTINGS_RUNS_WRITTEN
+                            .fetch_add(abs.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                        crate::postings::append_page_runs(chunk_runs.entry(kh.0).or_default(), abs);
+                    }
+                    None => anyhow::bail!("postings page failed self-decode during gather"),
                 }
                 wb.put(
                     crate::postings::postings_key(route, inc, &kh, bucket, first),
@@ -1170,6 +1189,7 @@ impl Absorber {
             }
             POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, std::sync::atomic::Ordering::Relaxed);
             CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
+            warm_installs.push((inc, from, last + 1, chunk_runs.into_iter().collect()));
             out.advanced.push((*hash, last + 1, chunk_raw));
         }
         if out.advanced.is_empty() {
@@ -1184,6 +1204,14 @@ impl Absorber {
         )
         .await?;
         part.flush().await?; // wal off => memtable -> L0, manifest published
+        // The pages are durable: warm the slice cache with the runs we
+        // just wrote. Readers clip to their own durable boundary, so an
+        // install racing the boundary advance can never over-serve.
+        for (inc, chunk_from, chunk_to, per_key) in warm_installs {
+            self.shard
+                .postings_cache
+                .install_chunk(inc, chunk_from, chunk_to, per_key);
+        }
         self.shard
             .submit_absorbed_batch_v2(out.advanced.clone())
             .await;

@@ -40,7 +40,12 @@ pub const LOAD_MAX_ENCODED_BYTES: u64 = 1024 * 1024;
 pub struct PostingsSlice {
     pub first_bucket: u64,
     pub last_bucket_exclusive: u64,
-    /// The index provably covers [first_bucket*B, indexed_to_offset):
+    /// The slice's runs are COMPLETE over [covered_from, indexed_to_offset):
+    /// a read below covered_from cannot be served from this slice (store
+    /// loads prove coverage at bucket granularity; write-through installs
+    /// at chunk granularity).
+    pub covered_from: u64,
+    /// The index provably covers [covered_from, indexed_to_offset):
     /// runs at or past this offset may exist but were not loaded.
     pub indexed_to_offset: u64,
     pub runs: Arc<[AbsRun]>,
@@ -54,10 +59,26 @@ struct Entry {
 
 type Key = ([u8; 16], [u8; 16]); // (segment identity, routing-key hash)
 
+/// Write-through warm state for one segment (spec §7: the absorber
+/// installs the runs it just encoded, so first-read-after-absorb skips
+/// the index round trip). `clean` guards the ABSENCE proof: a fresh
+/// install may claim "no matches in [from, chunk_start)" only while
+/// every chunk since `from` was installed contiguously in this process
+/// AND none of this segment's entries were evicted (an evicted entry's
+/// key could re-appear and falsely claim its pre-eviction history was
+/// empty).
+struct SegWarm {
+    from: u64,
+    to: u64,
+    clean: bool,
+    touched: Instant,
+}
+
 struct Inner {
     slices: HashMap<Key, Entry>,
     total_bytes: usize,
     inflight: HashMap<Key, tokio::sync::watch::Receiver<bool>>,
+    warm: HashMap<[u8; 16], SegWarm>,
 }
 
 pub struct PostingsCache {
@@ -71,6 +92,8 @@ pub struct PostingsCache {
     pub index_bytes_read: AtomicU64,
     pub prefetch_started: AtomicU64,
     pub prefetch_completed: AtomicU64,
+    pub warm_installs: AtomicU64,
+    pub warm_extends: AtomicU64,
 }
 
 /// Outcome of a cache consultation for one read.
@@ -92,6 +115,7 @@ impl PostingsCache {
                 slices: HashMap::new(),
                 total_bytes: 0,
                 inflight: HashMap::new(),
+                warm: HashMap::new(),
             }),
             max_bytes: max_bytes.max(1024 * 1024),
             hits: AtomicU64::new(0),
@@ -102,6 +126,8 @@ impl PostingsCache {
             index_bytes_read: AtomicU64::new(0),
             prefetch_started: AtomicU64::new(0),
             prefetch_completed: AtomicU64::new(0),
+            warm_installs: AtomicU64::new(0),
+            warm_extends: AtomicU64::new(0),
         })
     }
 
@@ -121,7 +147,135 @@ impl PostingsCache {
             "index_bytes_read": self.index_bytes_read.load(Ordering::Relaxed),
             "prefetch_started": self.prefetch_started.load(Ordering::Relaxed),
             "prefetch_completed": self.prefetch_completed.load(Ordering::Relaxed),
+            "warm_installs": self.warm_installs.load(Ordering::Relaxed),
+            "warm_extends": self.warm_extends.load(Ordering::Relaxed),
         })
+    }
+
+    /// Write-through install (spec §7): the absorber hands over the runs
+    /// it just encoded for one contiguous gather chunk
+    /// [chunk_from, chunk_to) of one segment, so the first read after
+    /// absorption pays no index round trip. Coverage claims are exact:
+    /// an EXTENDED entry keeps its covered_from; a FRESH entry claims
+    /// from the segment's contiguous-warm base only while that base is 0
+    /// (segment born in this process) and no entry of this segment was
+    /// ever evicted — otherwise it claims only the chunk itself.
+    pub fn install_chunk(
+        &self,
+        inc: SegmentHash,
+        chunk_from: u64,
+        chunk_to: u64,
+        per_key: Vec<([u8; 16], Vec<AbsRun>)>,
+    ) {
+        if chunk_to <= chunk_from {
+            return;
+        }
+        let now = Instant::now();
+        let mut installs = 0u64;
+        let mut extends = 0u64;
+        let mut g = self.inner.lock().unwrap();
+        let w = g.warm.entry(inc.0).or_insert(SegWarm {
+            from: chunk_from,
+            to: chunk_from,
+            clean: true,
+            touched: now,
+        });
+        if w.to != chunk_from {
+            // A gap (restart, ownership move, or a chunk we never saw):
+            // the contiguity claim restarts at this chunk.
+            *w = SegWarm {
+                from: chunk_from,
+                to: chunk_from,
+                clean: true,
+                touched: now,
+            };
+        }
+        w.to = chunk_to;
+        w.touched = now;
+        // Fresh installs claim absence-of-earlier-matches only from the
+        // warm base, and only from 0: a base above 0 means history below
+        // it predates this process, which we never saw.
+        let fresh_from = if w.clean && w.from == 0 {
+            0
+        } else {
+            chunk_from
+        };
+        for (kh, runs) in per_key {
+            let key: Key = (inc.0, kh);
+            match g.slices.get(&key) {
+                Some(e) => {
+                    let s = &e.slice;
+                    if s.indexed_to_offset < chunk_from || s.indexed_to_offset >= chunk_to {
+                        continue; // hole below us, or already covers us
+                    }
+                    let mut merged: Vec<AbsRun> = s.runs.to_vec();
+                    let cut = s.indexed_to_offset;
+                    let fresh: Vec<AbsRun> = runs.into_iter().filter(|r| r.start >= cut).collect();
+                    crate::postings::append_page_runs(&mut merged, fresh);
+                    let decoded = merged.len() * std::mem::size_of::<AbsRun>();
+                    let slice = Arc::new(PostingsSlice {
+                        first_bucket: s.first_bucket,
+                        last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
+                        covered_from: s.covered_from,
+                        indexed_to_offset: chunk_to,
+                        runs: merged.into(),
+                        decoded_bytes: decoded,
+                    });
+                    g.total_bytes = g.total_bytes + decoded - s.decoded_bytes;
+                    g.slices.insert(
+                        key,
+                        Entry {
+                            slice,
+                            last_used: now,
+                        },
+                    );
+                    extends += 1;
+                }
+                None => {
+                    let decoded = runs.len() * std::mem::size_of::<AbsRun>();
+                    let slice = Arc::new(PostingsSlice {
+                        first_bucket: fresh_from / BUCKET_OFFSETS,
+                        last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
+                        covered_from: fresh_from,
+                        indexed_to_offset: chunk_to,
+                        runs: runs.into(),
+                        decoded_bytes: decoded,
+                    });
+                    g.total_bytes += decoded;
+                    g.slices.insert(
+                        key,
+                        Entry {
+                            slice,
+                            last_used: now,
+                        },
+                    );
+                    installs += 1;
+                }
+            }
+        }
+        // Weight eviction, poisoning each victim segment's absence proof.
+        while g.total_bytes > self.max_bytes && g.slices.len() > 1 {
+            let victim = g
+                .slices
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| *k);
+            match victim {
+                Some(v) => {
+                    if let Some(e) = g.slices.remove(&v) {
+                        g.total_bytes -= e.slice.decoded_bytes;
+                        self.evictions.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if let Some(w) = g.warm.get_mut(&v.0) {
+                        w.clean = false;
+                    }
+                }
+                None => break,
+            }
+        }
+        drop(g);
+        self.warm_installs.fetch_add(installs, Ordering::Relaxed);
+        self.warm_extends.fetch_add(extends, Ordering::Relaxed);
     }
 
     /// Runs covering [from, upto) for one (segment, key), through the
@@ -156,10 +310,10 @@ impl PostingsCache {
             let decision = {
                 let mut g = self.inner.lock().unwrap();
                 let covered = g.slices.get_mut(&key).and_then(|e| {
-                    if e.slice.first_bucket <= want_bucket && upto <= e.slice.indexed_to_offset {
+                    if e.slice.covered_from <= from && upto <= e.slice.indexed_to_offset {
                         e.last_used = Instant::now();
                         Some(Decision::Hit(e.slice.clone()))
-                    } else if e.slice.first_bucket > want_bucket {
+                    } else if e.slice.covered_from > from {
                         Some(Decision::Bypass)
                     } else {
                         None
@@ -242,9 +396,7 @@ impl PostingsCache {
                 (
                     g.slices
                         .get(&key)
-                        .map(|e| {
-                            e.slice.first_bucket <= want_bucket && upto <= e.slice.indexed_to_offset
-                        })
+                        .map(|e| e.slice.covered_from <= from && upto <= e.slice.indexed_to_offset)
                         .unwrap_or(false),
                     g.inflight.contains_key(&key),
                 )
@@ -308,7 +460,7 @@ impl PostingsCache {
             g.inflight.remove(&key);
             if let Ok((new_runs, _enc, provable_to, corrupt)) = res {
                 if !corrupt {
-                    let (runs, first_bucket, decoded) = match &existing {
+                    let (runs, first_bucket, covered_from, decoded) = match &existing {
                         Some(s) if s.first_bucket <= want_bucket => {
                             // Forward extension: append past indexed_to.
                             let mut merged: Vec<AbsRun> = s.runs.to_vec();
@@ -320,11 +472,14 @@ impl PostingsCache {
                                 .collect();
                             crate::postings::append_page_runs(&mut merged, fresh);
                             let bytes = merged.len() * std::mem::size_of::<AbsRun>();
-                            (merged, s.first_bucket, bytes)
+                            (merged, s.first_bucket, s.covered_from, bytes)
                         }
                         _ => {
                             let bytes = new_runs.len() * std::mem::size_of::<AbsRun>();
-                            (new_runs, start_bucket, bytes)
+                            // Store loads prove coverage at bucket
+                            // granularity: every bucket from start_bucket
+                            // was scanned in full.
+                            (new_runs, start_bucket, start_bucket * BUCKET_OFFSETS, bytes)
                         }
                     };
                     let old_bytes = g
@@ -335,6 +490,7 @@ impl PostingsCache {
                     let slice = Arc::new(PostingsSlice {
                         first_bucket,
                         last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
+                        covered_from,
                         indexed_to_offset: provable_to,
                         runs: runs.into(),
                         decoded_bytes: decoded,
@@ -349,6 +505,8 @@ impl PostingsCache {
                     );
                     // Weight eviction: drop least-recent entries (never
                     // the one just inserted) until the budget holds.
+                    // Every victim poisons its segment's warm absence
+                    // proof (see install_chunk).
                     while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
                         let victim = g
                             .slices
@@ -361,6 +519,9 @@ impl PostingsCache {
                                 if let Some(e) = g.slices.remove(&v) {
                                     g.total_bytes -= e.slice.decoded_bytes;
                                     cache.evictions.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if let Some(w) = g.warm.get_mut(&v.0) {
+                                    w.clean = false;
                                 }
                             }
                             None => break,
@@ -421,7 +582,10 @@ impl PostingsCache {
     }
 
     /// Idle sweep (engine flush ticker): drop slices unused for the
-    /// idle horizon.
+    /// idle horizon. Sweeping an entry poisons its segment's warm
+    /// absence proof (the swept key could re-appear and a fresh install
+    /// must not claim its pre-sweep history was empty); warm records
+    /// idle past the horizon are dropped outright.
     pub fn sweep_idle(&self, idle: Duration) -> usize {
         let cutoff = Instant::now() - idle;
         let mut g = self.inner.lock().unwrap();
@@ -437,7 +601,11 @@ impl PostingsCache {
                 g.total_bytes -= e.slice.decoded_bytes;
                 self.evictions.fetch_add(1, Ordering::Relaxed);
             }
+            if let Some(w) = g.warm.get_mut(&k.0) {
+                w.clean = false;
+            }
         }
+        g.warm.retain(|_, w| w.touched >= cutoff);
         before - g.slices.len()
     }
 }
@@ -520,4 +688,143 @@ async fn load_runs(
         end_bucket * BUCKET_OFFSETS
     };
     Ok((runs, encoded, provable_to, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(start: u64, count: u32) -> AbsRun {
+        AbsRun {
+            start,
+            count,
+            matching_bytes: count as u64 * 100,
+            gap_bytes_before: 0,
+        }
+    }
+
+    async fn mem_db(prefix: &str) -> Arc<Db> {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        Arc::new(Db::builder(prefix, store).build().await.unwrap())
+    }
+
+    fn ids(n: u8) -> (RouteHash, SegmentHash, RoutingKeyHash) {
+        (
+            RouteHash([n; 16]),
+            SegmentHash([n.wrapping_add(1); 16]),
+            RoutingKeyHash([n.wrapping_add(2); 16]),
+        )
+    }
+
+    async fn runs_of(
+        c: &Arc<PostingsCache>,
+        part: &Arc<Db>,
+        n: u8,
+        from: u64,
+        upto: u64,
+    ) -> Vec<AbsRun> {
+        let (route, inc, kh) = ids(n);
+        match c
+            .runs_for(part, route, inc, kh, from, upto, upto)
+            .await
+            .unwrap()
+        {
+            CacheRuns::Runs { runs, provable_to } => {
+                assert!(provable_to >= upto, "honest coverage to the request");
+                runs
+            }
+            CacheRuns::Corrupt => panic!("unexpected corruption"),
+        }
+    }
+
+    /// Write-through warming: a chunk installed from offset 0 serves a
+    /// from-0 read entirely from the cache — no index round trip.
+    #[tokio::test]
+    async fn warm_install_serves_from_zero_without_index_load() {
+        let part = mem_db("wt/a").await;
+        let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+        let (_, inc, kh) = ids(1);
+        cache.install_chunk(inc, 0, 100, vec![(kh.0, vec![run(5, 3)])]);
+        let got = runs_of(&cache, &part, 1, 0, 100).await;
+        assert_eq!(got, vec![run(5, 3)]);
+        assert_eq!(
+            cache.index_loads.load(Ordering::Relaxed),
+            0,
+            "no store load"
+        );
+        assert_eq!(cache.hits.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.warm_installs.load(Ordering::Relaxed), 1);
+    }
+
+    /// Contiguous chunks extend the same slice; the stitched slice
+    /// serves the union without touching the store.
+    #[tokio::test]
+    async fn warm_extension_stitches_chunks() {
+        let part = mem_db("wt/b").await;
+        let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+        let (_, inc, kh) = ids(2);
+        cache.install_chunk(inc, 0, 100, vec![(kh.0, vec![run(5, 3)])]);
+        cache.install_chunk(inc, 100, 200, vec![(kh.0, vec![run(150, 2)])]);
+        assert_eq!(cache.warm_extends.load(Ordering::Relaxed), 1);
+        let got = runs_of(&cache, &part, 2, 0, 200).await;
+        // The chunk seam is a stitched boundary: its gap is UNKNOWN by
+        // design (the planner refuses to coalesce across it), exactly as
+        // if the two pages had been loaded from the store.
+        let seam = AbsRun {
+            gap_bytes_before: crate::postings::GAP_UNKNOWN,
+            ..run(150, 2)
+        };
+        assert_eq!(got, vec![run(5, 3), seam]);
+        assert_eq!(cache.index_loads.load(Ordering::Relaxed), 0);
+    }
+
+    /// A gap in the chunk sequence (restart / ownership move) resets the
+    /// claim window: a key first seen AFTER the gap must not pretend its
+    /// earlier history is empty — a from-0 read consults the store.
+    #[tokio::test]
+    async fn noncontiguous_chunk_resets_absence_claim() {
+        let part = mem_db("wt/c").await;
+        let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+        let (_, inc, kh) = ids(3);
+        cache.install_chunk(inc, 0, 100, vec![]);
+        cache.install_chunk(inc, 150, 220, vec![(kh.0, vec![run(160, 1)])]);
+        // From the chunk itself: warm hit.
+        let got = runs_of(&cache, &part, 3, 150, 220).await;
+        assert_eq!(got, vec![run(160, 1)]);
+        assert_eq!(cache.index_loads.load(Ordering::Relaxed), 0);
+        // From 0: below covered_from — must go to the store.
+        let _ = runs_of(&cache, &part, 3, 0, 220).await;
+        assert!(
+            cache.index_loads.load(Ordering::Relaxed) >= 1,
+            "read below the claim window must consult the index"
+        );
+    }
+
+    /// Evicting any entry of a segment poisons its absence proof: a key
+    /// evicted and later reinstalled fresh must not claim from 0.
+    #[tokio::test]
+    async fn eviction_poisons_fresh_claims() {
+        let part = mem_db("wt/d").await;
+        let cache = PostingsCache::new(1); // clamps to the 1 MiB floor
+        let (_, inc, kh) = ids(4);
+        let (_, _, other) = ids(9);
+        // Fill past the budget so the victim loop runs: ~32 B per run.
+        let fat: Vec<AbsRun> = (0..40_000u64).map(|i| run(i * 2, 1)).collect();
+        cache.install_chunk(inc, 0, 100_000, vec![(kh.0, fat.clone())]);
+        cache.install_chunk(inc, 100_000, 200_000, vec![(other.0, fat)]);
+        assert!(
+            cache.evictions.load(Ordering::Relaxed) >= 1,
+            "budget must evict"
+        );
+        // The first key was evicted; reinstall it fresh in the next
+        // contiguous chunk. Its from-0 read must consult the store.
+        cache.install_chunk(inc, 200_000, 200_100, vec![(kh.0, vec![run(200_050, 1)])]);
+        let loads_before = cache.index_loads.load(Ordering::Relaxed);
+        let _ = runs_of(&cache, &part, 4, 0, 200_100).await;
+        assert!(
+            cache.index_loads.load(Ordering::Relaxed) > loads_before,
+            "poisoned segment must not serve absence from the warm claim"
+        );
+    }
 }

@@ -14,6 +14,7 @@ Pricing for the COGS gate (documented assumptions, public-Tigris-shaped
 + Compute-shaped CPU): Class A $4.50/M, Class B $0.36/M, storage
 $0.02/GiB-month, CPU $0.03/vCPU-hour.
 """
+import base64
 import hashlib
 import json
 import os
@@ -48,7 +49,14 @@ def req(method, path, body=None, headers=None, timeout=30):
     for k, v in (headers or {}).items():
         r.add_header(k, v)
     with urllib.request.urlopen(r, timeout=timeout) as resp:
-        return resp.status, dict(resp.headers), resp.read()
+        return (
+            resp.status,
+            # hyper emits lowercase header names; a plain dict() would
+            # make Stream-Next-Offset lookups silently miss (the S1
+            # 'half the records' harness bug).
+            {k.lower(): v for k, v in resp.headers.items()},
+            resp.read(),
+        )
 
 
 def sreq(method, path, body=None, headers=None, attempts=6):
@@ -92,11 +100,17 @@ def key_name(i):
 
 
 def pad_for(i, rnd, j):
-    # Pseudo-random padding: realistic (incompressible) 1 KiB records.
-    # 'x'-padding compressed ~10x and shrank the canonical denominator,
-    # making fixed per-page index overhead read as 33% instead of ~3%.
-    h = hashlib.sha256(f"{i}:{rnd}:{j}".encode()).hexdigest()
-    return (h * ((REC - 60) // len(h) + 1))[: REC - 60]
+    # Incompressible-in-JSON padding: base64 over CHAINED sha256 blocks.
+    # (One digest repeated 15x compressed ~7x and deflated the canonical
+    # denominator, inflating the postings byte-ratio gate 7x; hex of
+    # distinct digests still compresses ~2x. base64 of distinct digests
+    # is the JSON-safe entropy ceiling, ~1.3x.)
+    raw = b""
+    n = 0
+    while len(raw) * 4 < (REC - 60) * 3:
+        raw += hashlib.sha256(f"{i}:{rnd}:{j}:{n}".encode()).digest()
+        n += 1
+    return base64.b64encode(raw).decode()[: REC - 60]
 
 
 def ingest_round(args):
@@ -126,8 +140,8 @@ def read_key_full(i):
         if body:
             recs = json.loads(body)
             total += len(recs) if isinstance(recs, list) else 1
-        nxt = h.get("Stream-Next-Offset")
-        if h.get("Stream-Up-To-Date", "").lower() == "true" or not nxt or nxt == tok:
+        nxt = h.get("stream-next-offset")
+        if h.get("stream-up-to-date", "").lower() == "true" or not nxt or nxt == tok:
             break
         tok = nxt
     return total, pages, (time.time() - t0) * 1000.0
