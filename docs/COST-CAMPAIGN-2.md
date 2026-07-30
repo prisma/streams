@@ -297,3 +297,40 @@ sufficient until a deployment with real v1 data needs migrating.
 Newtypes remain scoped to the two measured confusion seams
 (RouteHash/SegmentHash); incarnation/partition/offset identities widen
 opportunistically as APIs are touched.
+
+## 8. Field validation on Prisma Compute (Frankfurt + US East, 2026-07-30)
+
+First field run of the corrected binary (caada7a, x86_64-musl, fork
+323bc1b9): fresh projects/buckets per region, co-located generators,
+the standard 10-tier ramp (conc 1→64, 180 s/tier), field posture
+(32 MiB ring, 600 MB shed on the honest statm gauge, group-commit +
+post-ACK gather, RESOLV_OVERRIDE per the soak-3 DNS forensics).
+Harvested tables in the soak workspace; headline:
+
+| region | PoP | records | errors | append p50 (best/steady) | append p99 | notes |
+|---|---|---|---|---|---|---|
+| eu-central-1 | fra | 3,977,740 | **0** | 40 / 81 ms | 244-284 ms | throttles at conc≥48 are the per-stream limiter (~490 req/s ceiling), not the shed |
+| us-east-1 | ewr | 799,010 | **0** | 228 / 463 ms | 1.0-2.2 s | the known ewr↔Tigris(iad) distance; store ops 5-15× fra's (put:manifest 225 vs 46 ms p50) — platform geography, not a regression, and better than the 456 ms historical record |
+
+What the deferred field items each showed:
+
+- **Integrity**: server-durable ≥ client-acked in both regions (fra
+  +520 records, ewr +640 — ambiguous-timeout retries that committed;
+  the safe direction). Zero errors across 4.78 M records.
+- **LIST-free posture on real Tigris**: final 60 s windows show **3
+  LISTs per region, `list:wal` = 0** — the probe cache + listing-reuse
+  behavior transfers from the s3lite twin to the real store.
+- **Linux shed semantics**: the statm footprint gauge reads sane
+  (265 / 246 MB post-load), the shed never tripped (admit_shed 0), and
+  the throttling observed was the per-stream limiter doing its job.
+- **Memory/eviction in vivo**: end-of-run cardinality — 1 resident
+  handle, 1 usage entry, metrics 0 — the eviction stack behaves on
+  musl/mimalloc exactly as on the dev rig.
+- **v2 absorption keyless against real Tigris**: absorb backlog 0 in
+  both regions at end of ramp.
+
+All infrastructure torn down and verified (services destroyed, buckets
+and projects deleted, zero soak30 projects remaining). Remaining field
+scope for the fleet phase: multi-instance fleet mode (FLEET_PREFIX),
+wide-cardinality shapes in-region, and the ewr latency SLO question —
+a placement/routing decision, not a Streams code question.

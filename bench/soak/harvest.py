@@ -9,11 +9,13 @@ Client metric semantics (bench/awsbench/src/main.rs):
                            (FULL producer->consumer roundtrip), 20s window
   ok / errs / throttled -- cumulative counters
 """
-import json, sys, subprocess, os, sys, statistics
+import json
+import os, sys, subprocess, os, sys, statistics
 
 S = os.environ.get("SOAK_HOME") or os.path.dirname(os.path.abspath(__file__))
-REGIONS = ["us-east-1", "us-west-1", "eu-central-1", "eu-west-3",
-           "ap-southeast-1", "ap-northeast-1"]
+REGIONS = (os.environ.get("SOAK_REGIONS") or
+           "us-east-1 us-west-1 eu-central-1 eu-west-3 "
+           "ap-southeast-1 ap-northeast-1").split()
 POP = {"us-east-1": "ewr/iad", "us-west-1": "sjc", "eu-central-1": "fra",
        "eu-west-3": "cdg", "ap-southeast-1": "sin", "ap-northeast-1": "nrt"}
 
