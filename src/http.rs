@@ -455,6 +455,18 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "deletes_max_batch": trim_max_batch,
             "deletes_total": trim_total,
         },
+        // Postings index telemetry (ROUTING-V3 §14): write-side byte
+        // ratio (the 8%/2% gates), planner spans (≤ 8), scan-vs-match
+        // amplification, and corruption-envelope fallbacks (should
+        // never move).
+        "postings": {
+            "bytes_written": crate::history::POSTINGS_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+            "canonical_bytes_written": crate::history::CANONICAL_BYTES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+            "read_spans_max": crate::history::READ_SPANS_MAX.load(std::sync::atomic::Ordering::Relaxed),
+            "read_frames_scanned": crate::history::READ_FRAMES_SCANNED.load(std::sync::atomic::Ordering::Relaxed),
+            "read_frames_matched": crate::history::READ_FRAMES_MATCHED.load(std::sync::atomic::Ordering::Relaxed),
+            "corrupt": crate::history::POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed),
+        },
         // Cross-layout absorb advances rejected by the committer's
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it

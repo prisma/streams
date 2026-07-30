@@ -109,6 +109,19 @@ fn hist_scan_opts() -> slatedb::config::ScanOptions {
     }
 }
 
+/// Postings-index scans (spec §7.5): 1 MiB read-ahead reaches ~64
+/// buckets of compact pages in one cold load; blocks stay cacheable
+/// (the SST index/filter cache still applies), and the decoded slice
+/// cache (next PR) is the long-lived home for the result.
+fn postings_scan_opts() -> slatedb::config::ScanOptions {
+    slatedb::config::ScanOptions {
+        read_ahead_bytes: 1024 * 1024,
+        max_fetch_tasks: 2,
+        cache_blocks: true,
+        ..Default::default()
+    }
+}
+
 pub fn hist_record_key(offset: u64) -> Vec<u8> {
     let mut k = Vec::with_capacity(10);
     k.extend_from_slice(b"r!");
@@ -128,18 +141,6 @@ pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<
     k.extend_from_slice(&route.0);
     k.extend_from_slice(&inc.0);
     k.push(b'r');
-    k.extend_from_slice(&offset.to_be_bytes());
-    k
-}
-
-pub fn hist2_index_key(route: RouteHash, inc: SegmentHash, rk: &str, offset: u64) -> Vec<u8> {
-    let rkb = rk.as_bytes();
-    let mut k = Vec::with_capacity(43 + rkb.len());
-    k.extend_from_slice(&route.0);
-    k.extend_from_slice(&inc.0);
-    k.push(b'k');
-    k.extend_from_slice(&(rkb.len() as u16).to_be_bytes());
-    k.extend_from_slice(rkb);
     k.extend_from_slice(&offset.to_be_bytes());
     k
 }
@@ -1098,14 +1099,14 @@ impl Absorber {
             let mut chunk_bytes = 0usize;
             let mut chunk_raw = 0u64;
             for raw in &chunk.frames {
-                let Some(frame) = crate::crypto::decode_frame(raw) else {
+                if crate::crypto::decode_frame(raw).is_none() {
                     anyhow::bail!("undecodable frame during v2 gather");
-                };
-                chunk_raw += raw.len() as u64;
-                chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD;
-                if !frame.header.routing_key.is_empty() {
-                    chunk_bytes += raw.len() + 43 + frame.header.routing_key.len() + ENTRY_OVERHEAD;
                 }
+                chunk_raw += raw.len() as u64;
+                // Canonical row + a conservative per-record postings
+                // allowance (~key 65 B amortized + a few varints). The
+                // full-frame keyed duplicate is GONE (ROUTING-V3 §3).
+                chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD + 24;
             }
             // A chunk that would blow the budget waits for a batch of its
             // own — unless the batch is empty, in which case it proceeds
@@ -1130,20 +1131,35 @@ impl Absorber {
                 );
             }
             let mut last = from;
+            // Postings replace the covering index (ROUTING-V3 §3): the
+            // frame is stored once under its canonical offset; every
+            // routing key — INCLUDING the empty/default key — gets
+            // compact offset-run pages in the SAME WriteBatch, so the
+            // index adds no request, manifest, database, namespace or
+            // GC surface of its own.
+            let mut pages = crate::postings::PageBuilder::default();
             for raw in &chunk.frames {
                 let Some(frame) = crate::crypto::decode_frame(raw) else {
                     anyhow::bail!("undecodable frame during v2 gather");
                 };
                 let off = frame.header.offset;
                 wb.put(hist2_record_key(route, inc, off), raw.clone());
-                if !frame.header.routing_key.is_empty() {
-                    wb.put(
-                        hist2_index_key(route, inc, &frame.header.routing_key, off),
-                        raw.clone(),
-                    );
-                }
+                pages.note_frame(
+                    crate::postings::rk_hash(&frame.header.routing_key),
+                    off,
+                    raw.len() as u64,
+                );
                 last = off;
             }
+            let (emitted, postings_bytes) = pages.finish();
+            for (kh, bucket, first, value) in emitted {
+                wb.put(
+                    crate::postings::postings_key(route, inc, &kh, bucket, first),
+                    value,
+                );
+            }
+            POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, std::sync::atomic::Ordering::Relaxed);
+            CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
             out.advanced.push((*hash, last + 1, chunk_raw));
         }
         if out.advanced.is_empty() {
@@ -2062,6 +2078,16 @@ pub async fn read_history(
 /// machinery as shard-tail frames. `key_filter`: `Some("")` scans the
 /// record range and filters by the plaintext frame header (unkeyed
 /// records carry no index entry); a non-empty filter scans the index.
+/// Postings/read-planner telemetry (ROUTING-V3 §3/§5 gates): postings
+/// vs canonical write bytes, spans per keyed response, scanned vs
+/// matched amplification, and how often the pre-postings fallback ran.
+pub static POSTINGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub static CANONICAL_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
+pub static READ_SPANS_MAX: AtomicU64 = AtomicU64::new(0);
+pub static READ_FRAMES_SCANNED: AtomicU64 = AtomicU64::new(0);
+pub static READ_FRAMES_MATCHED: AtomicU64 = AtomicU64::new(0);
+pub static POSTINGS_CORRUPT: AtomicU64 = AtomicU64::new(0);
+
 pub async fn read_history2(
     part: &Arc<Db>,
     route: RouteHash,
@@ -2071,26 +2097,29 @@ pub async fn read_history2(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    match key_filter {
+        Some(rk) => read_history2_keyed(part, route, inc, rk, from, upto, max_bytes).await,
+        None => read_history2_scan(part, route, inc, from, upto, max_bytes).await,
+    }
+}
+
+/// Unfiltered canonical scan (whole-segment replay): unchanged from the
+/// covering-index era — the canonical rows ARE the stream.
+async fn read_history2_scan(
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    from: u64,
+    upto: u64,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
     let mut frames: Vec<Bytes> = Vec::new();
     let mut last: Option<u64> = None;
     let mut completed = true;
     let mut total = 0usize;
-    let range = match key_filter {
-        Some(rk) if !rk.is_empty() => {
-            hist2_index_key(route, inc, rk, from)..hist2_index_key(route, inc, rk, upto)
-        }
-        _ => hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto),
-    };
+    let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
     let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
-    let empty_filter = matches!(key_filter, Some(""));
     while let Some(kv) = iter.next().await? {
-        if empty_filter {
-            match crate::crypto::decode_frame(&kv.value) {
-                Some(f) if f.header.routing_key.is_empty() => {}
-                Some(_) => continue,
-                None => anyhow::bail!("undecodable v2 history frame"),
-            }
-        }
         let off = u64::from_be_bytes(
             kv.key[kv.key.len() - 8..]
                 .try_into()
@@ -2103,6 +2132,191 @@ pub async fn read_history2(
             completed = false;
             break;
         }
+    }
+    Ok((frames, last, completed))
+}
+
+/// Keyed read through the postings planner (ROUTING-V3 §3/§5): decode
+/// the key's offset runs for the requested range, plan bounded
+/// canonical spans (<= 8 per response, gap-coalesced by BYTES, 16 MiB
+/// scan cap), execute each span as ONE canonical range scan, and
+/// verify every frame against the exact routing-key bytes — a 128-bit
+/// rk-hash collision can add candidates, never another key's data.
+///
+/// `last` advances to `consumed_to - 1` even when a planned range holds
+/// no matches, so cursors move over provably match-free ranges. The
+/// per-offset GET pattern is structurally impossible here: reads are
+/// range scans only.
+///
+/// Ranges with ZERO postings pages fall back to the pre-postings
+/// covering index (`k!`-era `hist2_index_key` rows / filtered canonical
+/// scan for the empty key) — the migration arm for partitions absorbed
+/// before postings existed. Partitions that STRADDLE the cutover in one
+/// requested range are a dev-rig-only shape and are not served exactly
+/// (docs/ROUTING-V3.md §3); production deployments are greenfield.
+async fn read_history2_keyed(
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    from: u64,
+    upto: u64,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    use std::sync::atomic::Ordering::Relaxed;
+    if from >= upto {
+        return Ok((Vec::new(), None, true));
+    }
+    let kh = crate::postings::rk_hash(rk);
+    // 1. Collect this key's pages for every bucket the range touches.
+    // Greenfield layout (spec §12.4, postings_from = 0): the postings
+    // index is authoritative for the WHOLE absorbed range — zero pages
+    // means the range provably holds no matches and the cursor advances
+    // over it. A page that fails to decode (or disagrees with its key)
+    // is corruption: never claim completeness over an unverified range;
+    // fall back to ONE bounded canonical envelope scan of the requested
+    // range, filtered by exact key bytes (spec §8.6), and count it.
+    let (lo, hi) = crate::postings::postings_range(route, inc, &kh, from, upto);
+    let mut runs: Vec<crate::postings::AbsRun> = Vec::new();
+    let mut corrupt = false;
+    {
+        let mut iter = part
+            .scan_with_options(lo..hi, &postings_scan_opts())
+            .await?;
+        while let Some(kv) = iter.next().await? {
+            let first = u64::from_be_bytes(
+                kv.key[kv.key.len() - 8..]
+                    .try_into()
+                    .expect("postings key tail"),
+            );
+            match crate::postings::decode_page_abs(first, &kv.value) {
+                Some(abs) => runs.extend(abs),
+                None => {
+                    corrupt = true;
+                    break;
+                }
+            }
+        }
+    }
+    if corrupt {
+        POSTINGS_CORRUPT.fetch_add(1, Relaxed);
+        return read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await;
+    }
+    // 2. Clip runs to [from, upto) — pages are bucket-granular and can
+    // cover offsets outside the request.
+    let mut clipped: Vec<crate::postings::AbsRun> = Vec::new();
+    for r in runs {
+        let start = r.start.max(from);
+        let end = (r.start + r.count as u64).min(upto);
+        if start >= end {
+            continue;
+        }
+        // Byte fields stay whole-run estimates after clipping — the
+        // planner treats them as estimates, and the byte budget below
+        // enforces the real cap during execution.
+        clipped.push(crate::postings::AbsRun {
+            start,
+            count: (end - start) as u32,
+            matching_bytes: r.matching_bytes,
+            gap_bytes_before: r.gap_bytes_before,
+        });
+    }
+    // 3. Plan bounded spans.
+    let cfg = crate::postings::PlanCfg {
+        max_scan_bytes: (max_bytes as u64).min(crate::postings::PlanCfg::default().max_scan_bytes),
+        ..Default::default()
+    };
+    let plan = crate::postings::plan_spans(&clipped, upto, &cfg);
+    let mut spans_used = 0u64;
+    let mut frames: Vec<Bytes> = Vec::new();
+    let mut last: Option<u64> = None;
+    let mut total = 0usize;
+    let mut truncated = false;
+    // 4. Execute each span as one canonical range scan with exact-key
+    // verification.
+    'spans: for span in &plan.spans {
+        spans_used += 1;
+        let range =
+            hist2_record_key(route, inc, span.start)..hist2_record_key(route, inc, span.end);
+        let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
+        while let Some(kv) = iter.next().await? {
+            READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
+            let Some(f) = crate::crypto::decode_frame(&kv.value) else {
+                anyhow::bail!("undecodable v2 history frame");
+            };
+            if f.header.routing_key != rk {
+                continue;
+            }
+            READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
+            let off = f.header.offset;
+            total += kv.value.len();
+            frames.push(kv.value);
+            last = Some(off);
+            if total >= max_bytes {
+                truncated = true;
+                break 'spans;
+            }
+        }
+        // The span is fully consumed even if nothing matched (hash
+        // collisions or clipping estimates): the cursor may advance.
+        last = Some(last.map_or(span.end - 1, |l| l.max(span.end - 1)));
+    }
+    READ_SPANS_MAX.fetch_max(spans_used, Relaxed);
+    if truncated {
+        return Ok((frames, last, false));
+    }
+    // 5. Cursor semantics: a complete plan consumed the whole range —
+    // including any match-free tail — so the caller's next page starts
+    // at `upto`, not at the last matching record.
+    if plan.complete {
+        last = Some(last.map_or(plan.consumed_to - 1, |l| l.max(plan.consumed_to - 1)));
+        Ok((frames, last, true))
+    } else {
+        last = Some(last.map_or(plan.consumed_to - 1, |l| l.max(plan.consumed_to - 1)));
+        Ok((frames, last, false))
+    }
+}
+
+/// Corruption envelope (spec §8.6): one bounded canonical scan of the
+/// requested range, filtered by EXACT routing-key bytes. Never lies
+/// about completeness — a byte-truncated envelope returns an honest
+/// partial with a resume cursor.
+async fn read_history2_keyed_envelope(
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    from: u64,
+    upto: u64,
+    max_bytes: usize,
+) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+    let mut frames: Vec<Bytes> = Vec::new();
+    let mut last: Option<u64> = None;
+    let mut completed = true;
+    let mut total = 0usize;
+    let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
+    let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
+    while let Some(kv) = iter.next().await? {
+        let Some(f) = crate::crypto::decode_frame(&kv.value) else {
+            anyhow::bail!("undecodable v2 history frame");
+        };
+        let off = f.header.offset;
+        if f.header.routing_key != rk {
+            // Consumed but not matching: the cursor may advance past it.
+            last = Some(last.map_or(off, |l| l.max(off)));
+            continue;
+        }
+        total += kv.value.len();
+        frames.push(kv.value);
+        last = Some(off);
+        if total >= max_bytes {
+            completed = false;
+            break;
+        }
+    }
+    if completed {
+        // The whole range was verified frame-by-frame.
+        last = Some(last.map_or(upto - 1, |l| l.max(upto - 1)));
     }
     Ok((frames, last, completed))
 }

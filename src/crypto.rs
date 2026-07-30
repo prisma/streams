@@ -167,6 +167,20 @@ impl RouteHash {
 #[repr(transparent)]
 pub struct SegmentHash(pub [u8; 16]);
 
+/// 128-bit SHA-256 prefix of a ROUTING KEY's bytes (ROUTING-V3 §3.1) —
+/// the postings-index discriminator. Distinct from RouteHash (shard
+/// placement) and SegmentHash (engine identity) by construction: a
+/// routing key is user data, the other two are system identities, and
+/// confusing them was the class of bug the newtypes exist to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RoutingKeyHash(pub [u8; 16]);
+
+impl RoutingKeyHash {
+    pub fn of(rk: &str) -> Self {
+        RoutingKeyHash(stream_hash(rk))
+    }
+}
+
 pub fn derive_subkey(
     key: &StreamKey,
     stream_epoch: &[u8; EPOCH_LEN],

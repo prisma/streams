@@ -4042,10 +4042,12 @@ async fn an_oversized_chunk_gathers_alone() {
     engine.begin_close();
 }
 
-/// Keyed frames are written twice (record row + routing-key index row),
-/// so they must count twice against the gather budget.
+/// ROUTING-V3 §3: postings REPLACED the covering index — a keyed frame
+/// is stored once (plus a ~tens-of-bytes postings page), so keyed and
+/// unkeyed streams now cost the same against the gather budget. The
+/// 40 KiB budget that used to fit ONE keyed 16 KiB stream fits two.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn keyed_frames_count_twice_against_the_budget() {
+async fn keyed_frames_no_longer_count_twice_against_the_budget() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::new(0, 0, 0));
     let key = skey();
@@ -4073,8 +4075,8 @@ async fn keyed_frames_count_twice_against_the_budget() {
         append_sized(&engine, *h, &key, "k1", 16 * 1024).await;
     }
 
-    // Keyed chunks weigh ~33 KiB each; the same 40 KiB budget that packed
-    // two unkeyed streams now fits only one keyed stream per gather.
+    // Keyed chunks now weigh what unkeyed ones do (~16.6 KiB): the
+    // canonical row plus a compact postings allowance.
     let absorber = crate::history::Absorber::new(
         store.clone(),
         engine.clone(),
@@ -4084,14 +4086,20 @@ async fn keyed_frames_count_twice_against_the_budget() {
             ..Default::default()
         },
     );
+    let before = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed);
     let g1 = absorber.absorb_gather_v2(&hashes).await.expect("gather 1");
     assert_eq!(
         g1.advanced.len(),
-        1,
-        "keyed double-write must halve packing"
+        2,
+        "postings killed the keyed double-write: both streams fit one budget"
     );
-    let g2 = absorber.absorb_gather_v2(&hashes).await.expect("gather 2");
-    assert_eq!(g2.advanced.len(), 1);
+    let postings = crate::history::POSTINGS_BYTES_WRITTEN.load(Ordering::Relaxed) - before;
+    let canonical: u64 = g1.advanced.iter().map(|(_, _, b)| *b).sum();
+    assert!(postings > 0, "keyed frames must produce postings pages");
+    assert!(
+        postings * 100 <= canonical * 8,
+        "postings bytes must stay within the 8% batch-1 gate: {postings} vs {canonical}"
+    );
     wait_all_absorbed(&engine, &hashes).await;
     engine.begin_close();
 }
@@ -5064,6 +5072,220 @@ async fn the_first_advance_seals_the_history_layout() {
             .load(std::sync::atomic::Ordering::Relaxed)
             >= 2,
         "both cross-layout advances must be counted"
+    );
+    engine.begin_close();
+}
+
+/// ROUTING-V3 §5/§8.5: a sparse key spread across many canonical gaps
+/// pages through the planner under the span budget (≤ 8 per response)
+/// and the cursor advances via consumed_to — every match returned
+/// exactly once, in order, across multiple partial responses, with no
+/// per-offset GET pattern (structural: the reader only range-scans).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sparse_key_reads_page_with_bounded_spans() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 104, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xB1u8; 16];
+
+    let db = slatedb::Db::builder("dst-sparsekey", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-sparsekey".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    // 24 appends of 512 records each (12,288 offsets): the key "sp"
+    // hits every 512th offset (24 matches), buried in default-key
+    // records. Batched multi-entry appends with per-entry keys are not
+    // a workload-helper shape, so append per batch with the FIRST
+    // record keyed via a dedicated single append then a filler batch.
+    let mut expected = Vec::new();
+    let mut off = 0u64;
+    for i in 0..24u64 {
+        let subkey = crate::crypto::derive_subkey(&key, &hash, "sp", 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            route: hash,
+            entries: vec![bytes::Bytes::from(
+                serde_json::json!({"op": i, "att": 0, "k": "sp"})
+                    .to_string()
+                    .into_bytes(),
+            )],
+            usage: crate::usage::counters(&hash),
+            routing_key: "sp".to_string(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            close: false,
+            producer: None,
+            deferred_error: None,
+            touch: None,
+            resp: tx,
+        };
+        assert!(engine.try_enqueue(req).is_ok());
+        rx.await.expect("resp").expect("ack");
+        expected.push((i, 0u32));
+        off += 1;
+        append_n(&engine, hash, &key, 511, 40).await;
+        off += 511;
+    }
+    let _ = off;
+    wait_all_absorbed(&engine, &[hash]).await;
+
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let got = drain_filtered(&hist, &engine, hash, &key, "sp").await;
+    assert_eq!(
+        got, expected,
+        "sparse keyed paging lost or reordered records"
+    );
+    assert!(
+        crate::history::READ_FRAMES_MATCHED.load(Ordering::Relaxed) > 0,
+        "the postings planner path must have served this"
+    );
+    engine.begin_close();
+}
+
+/// ROUTING-V3 §8.6: a corrupt postings page must never surface as
+/// completed=true over an unverified range — the reader falls back to
+/// ONE bounded canonical envelope scan (exact-key filtered), counts
+/// the corruption, and still returns every record exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn corrupt_postings_fall_back_to_the_envelope() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 105, FaultPlan::new(0, 0, 0));
+    let key = skey();
+    let hash = [0xB3u8; 16];
+
+    let db = slatedb::Db::builder("dst-corruptp", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-corruptp".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    for i in 0..30u64 {
+        let subkey = crate::crypto::derive_subkey(&key, &hash, "ck", 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            route: hash,
+            entries: vec![bytes::Bytes::from(
+                serde_json::json!({"op": i, "att": 0, "k": "ck"})
+                    .to_string()
+                    .into_bytes(),
+            )],
+            usage: crate::usage::counters(&hash),
+            routing_key: "ck".to_string(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            close: false,
+            producer: None,
+            deferred_error: None,
+            touch: None,
+            resp: tx,
+        };
+        assert!(engine.try_enqueue(req).is_ok());
+        rx.await.expect("resp").expect("ack");
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+
+    // Corrupt the key's page in place: contiguous matches from offset 0
+    // make the page key fully deterministic (bucket 0, page_first 0).
+    let part = engine.history_partition().await.expect("partition");
+    let pk = crate::postings::postings_key(
+        crate::crypto::RouteHash(hash),
+        crate::crypto::SegmentHash(hash),
+        &crate::postings::rk_hash("ck"),
+        0,
+        0,
+    );
+    // The partition is WAL-disabled: a default (await-durable) put would
+    // wait for a flush that only comes later — write like the gather
+    // does, then flush explicitly.
+    let mut wb = slatedb::WriteBatch::new();
+    wb.put(&pk, b"garbage-not-a-page");
+    part.write_with_options(
+        wb,
+        &slatedb::config::WriteOptions {
+            await_durable: false,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("corrupt");
+    part.flush().await.expect("flush corruption");
+
+    let before = crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed);
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let got = drain_filtered(&hist, &engine, hash, &key, "ck").await;
+    let want: Vec<(u64, u32)> = (0..30u64).map(|i| (i, 0u32)).collect();
+    assert_eq!(got, want, "envelope fallback lost records");
+    assert!(
+        crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed) > before,
+        "corruption must be counted"
     );
     engine.begin_close();
 }

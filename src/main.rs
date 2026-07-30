@@ -7,6 +7,7 @@ mod http;
 mod metrics;
 mod offsets;
 mod operator;
+mod postings;
 mod queue;
 mod registry;
 mod scaler;

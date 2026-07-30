@@ -1,11 +1,27 @@
 # ROUTING-V3: one routing model, compact postings
 
-Status: implementation spec, binding for the routing-v3 work. Derived
-from the unified-routing handoff brief (2026-07-30). Where the brief's
-companion document specified exact codecs/policies that did not reach
-this repo, the choices made here are recorded as **[bound here]** so a
-later reconciliation against the original document is a diff, not an
-archaeology dig.
+Status: implementation companion to the full specification ("Unified
+Routing-Key Streams and Compact Postings Index", received 2026-07-30),
+which is authoritative. This file records the REPO-SIDE bindings and
+the few deliberate deltas, marked **[bound here]**:
+
+- Segment 0's engine identity is `storage_hash()` for NEW streams too
+  (the spec's §4.2 formula applies from seg_id ≥ 1; keeping seg 0 ≡
+  storage_hash makes fresh and migrated streams identical and keeps
+  the implicit map at zero descriptor bytes — spec §12.1 semantics,
+  applied universally).
+- PostingsPageV1 header integers are fixed-width LE; runs are varint
+  (spec §6.4 leaves header encoding open). codec=1
+  (compress-if-smaller) is reserved but not yet emitted.
+- Greenfield deployment: postings_from = 0 everywhere (spec §12.4's
+  pre-GA arm); the covering-index reader was DELETED rather than
+  retained — the only fallback is the §8.6 corruption envelope. The
+  `k`-keyspace rows in old dev partitions are inert.
+- PR ordering: repo PR1 = spec PR1 minus the legacy scaling fold
+  (child-stream routing stays functional for pre-v3 descriptors until
+  spec-PR5); repo PR2 = spec PR3 + the planner/consumed_to half of
+  spec PR4. The slice cache, sketch scaler, split-safe producers and
+  profile integrations follow in spec order.
 
 ## 0. What is being replaced
 
@@ -119,21 +135,28 @@ including the empty key:
   the gather emits at most one page per (key, bucket) per flush, so
   page granularity tracks absorption batching.
 
-Page value codec **[bound here]**:
+Page value codec — PostingsPageV1 (spec §6.4; header widths
+**[bound here]**):
 
 ```
 u8  version = 1
-varint run_count
+u8  codec   = 0 raw (1 reserved: deterministic compress-if-smaller)
+u64 first_offset (LE)            // duplicates the key's page_first
+u64 last_offset_exclusive (LE)
+u32 run_count (LE)
+u64 matching_frame_bytes (LE)    // page total
 run*: varint gap_offsets            // offsets skipped since prev run end
       varint record_count           // matching records in this run
       varint matching_frame_bytes   // stored bytes of the matching frames
       varint gap_frame_bytes_before // stored bytes of the skipped gap
 ```
 
-Runs are delta/varint packed (that IS the compression; zstd measured
-separately and only added if it pays at page sizes). The byte fields
-let the read planner choose between scanning exact runs, combining
-nearby runs, or reading one envelope and filtering.
+Pages self-describe (header/runs disagreement or key/header first-
+offset mismatch = corruption → the §8.6 envelope). Encoded pages cap
+at POSTINGS_PAGE_MAX_ENCODED_BYTES = 32 KiB; the builder splits a
+bucket into further pages (fresh page_first) at the cap. The byte
+fields let the read planner choose between scanning exact runs,
+combining nearby runs, or reading one envelope and filtering.
 
 Postings pages enter the SAME history WriteBatch and flush as their
 canonical rows. Therefore postings add **no** additional Class A
