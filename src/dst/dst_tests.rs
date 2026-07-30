@@ -5390,7 +5390,12 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
     assert_eq!(
         cache.index_loads.load(Ordering::Relaxed),
         0,
-        "first read after in-process absorption must be warm"
+        "first read after in-process absorption must be warm: {} / slice {:?}",
+        cache.stats(),
+        cache.debug_slice(
+            &crate::crypto::SegmentHash(hash),
+            &crate::postings::rk_hash("hot")
+        ),
     );
     assert!(cache.hits.load(Ordering::Relaxed) >= 1);
     assert!(cache.warm_installs.load(Ordering::Relaxed) >= 1);
@@ -6198,4 +6203,220 @@ async fn seal_gap_stale_descriptor_redispatches() {
     await_published(&state, "gapstale").await;
     let (recs, _) = drain_no_closure(addr, "gapstale", Some("ga")).await;
     assert_eq!(recs.len(), 4);
+}
+
+// ---- oversized keyed records / long runs (review blocker: the first
+// record must ALWAYS make progress; consumed_to is first-class) -------
+
+/// Byte-budgeted keyed drain returning (offsets, payload_sizes, pages).
+/// Panics if a page makes no progress — the stall this guards against.
+async fn drain_keyed_paged(
+    hist: &Arc<crate::history::HistReaders>,
+    engine: &Arc<crate::shard::ShardEngine>,
+    hash: [u8; 16],
+    key: &crate::crypto::StreamKey,
+    rk: &str,
+    page_bytes: usize,
+) -> (Vec<u64>, Vec<usize>, usize) {
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mut from = 0u64;
+    let mut offs = Vec::new();
+    let mut sizes = Vec::new();
+    let mut pages = 0usize;
+    loop {
+        pages += 1;
+        assert!(pages <= 128, "drain did not settle");
+        let res = crate::http::read_merged(
+            hist,
+            key,
+            &hash,
+            &handle,
+            engine,
+            from,
+            Some(rk),
+            page_bytes,
+        )
+        .await
+        .expect("keyed read");
+        for rec in &res.recs {
+            offs.push(rec.off);
+            sizes.push(rec.payload.len());
+        }
+        if res.completed {
+            return (offs, sizes, pages);
+        }
+        match res.last {
+            Some(last) if last + 1 > from => from = last + 1,
+            other => panic!(
+                "incomplete page made no progress (from={from}, last={other:?}) — \
+                 the oversized-run stall"
+            ),
+        }
+    }
+}
+
+/// One record far larger than the page budget, surrounded by small
+/// records of another key: it must be served (allow-first), and the
+/// drain must complete with exact contents.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_keyed_record_pages_through() {
+    let store = mem();
+    let key = skey();
+    let hash = [0xC1u8; 16];
+    let db = slatedb::Db::builder("dst-bigrec", store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-bigrec".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    let mut want: Vec<(u64, usize)> = Vec::new();
+    for _ in 0..3 {
+        append_sized(&engine, hash, &key, "other", 4 * 1024).await;
+    }
+    want.push((
+        append_sized(&engine, hash, &key, "big", 12 * 1024 * 1024).await,
+        12 * 1024 * 1024,
+    ));
+    for _ in 0..3 {
+        append_sized(&engine, hash, &key, "other", 4 * 1024).await;
+    }
+    for _ in 0..4 {
+        want.push((
+            append_sized(&engine, hash, &key, "big", 4 * 1024).await,
+            4 * 1024,
+        ));
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+    let (offs, sizes, pages) =
+        drain_keyed_paged(&hist, &engine, hash, &key, "big", 1024 * 1024).await;
+    assert_eq!(
+        offs,
+        want.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+        "exact offsets in order"
+    );
+    assert_eq!(
+        sizes,
+        want.iter().map(|(_, s)| *s).collect::<Vec<_>>(),
+        "the 12 MiB record arrived intact"
+    );
+    assert!(pages >= 2, "budget forces pagination (pages={pages})");
+    engine.begin_close();
+}
+
+/// A contiguous single-key run larger than the 16 MiB plan budget AND
+/// the page budget: sub-run planning + span truncation page it through,
+/// including across a postings-cache wipe mid-drain (the restart /
+/// cold-instance shape).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn long_keyed_run_pages_with_progress() {
+    let store = mem();
+    let key = skey();
+    let hash = [0xC2u8; 16];
+    let db = slatedb::Db::builder("dst-bigrun", store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-bigrun".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+    let mut want = Vec::new();
+    for _ in 0..24 {
+        want.push(append_sized(&engine, hash, &key, "run", 1024 * 1024).await);
+    }
+    wait_all_absorbed(&engine, &[hash]).await;
+    let ds: Arc<dyn ObjectStore> = store.clone();
+    let hist = fresh_hist(&ds);
+
+    // Page manually so the cache wipe lands between pages.
+    let handle = engine.stream_handle(hash).await.expect("handle");
+    let mut from = 0u64;
+    let mut offs = Vec::new();
+    let mut pages = 0usize;
+    loop {
+        pages += 1;
+        assert!(pages <= 64, "drain did not settle");
+        let res = crate::http::read_merged(
+            &hist,
+            &key,
+            &hash,
+            &handle,
+            &engine,
+            from,
+            Some("run"),
+            4 * 1024 * 1024,
+        )
+        .await
+        .expect("keyed read");
+        for rec in &res.recs {
+            offs.push(rec.off);
+            assert_eq!(rec.payload.len(), 1024 * 1024);
+        }
+        if res.completed {
+            break;
+        }
+        match res.last {
+            Some(last) if last + 1 > from => from = last + 1,
+            other => panic!("no progress at from={from} ({other:?})"),
+        }
+        if pages == 2 {
+            // Cold-instance restart between partial pages.
+            engine.postings_cache.sweep_idle(std::time::Duration::ZERO);
+        }
+    }
+    assert_eq!(offs, want, "all 24 MiB drained exactly once, in order");
+    assert!(pages >= 4, "24 MiB through 4 MiB pages (pages={pages})");
+    engine.begin_close();
 }

@@ -192,10 +192,11 @@ impl PostingsCache {
         }
         w.to = chunk_to;
         w.touched = now;
+        let (w_from, w_clean) = (w.from, w.clean);
         // Fresh installs claim absence-of-earlier-matches only from the
         // warm base, and only from 0: a base above 0 means history below
         // it predates this process, which we never saw.
-        let fresh_from = if w.clean && w.from == 0 {
+        let fresh_from = if w_clean && w_from == 0 {
             0
         } else {
             chunk_from
@@ -205,8 +206,21 @@ impl PostingsCache {
             match g.slices.get(&key) {
                 Some(e) => {
                     let s = &e.slice;
-                    if s.indexed_to_offset < chunk_from || s.indexed_to_offset >= chunk_to {
-                        continue; // hole below us, or already covers us
+                    if s.indexed_to_offset >= chunk_to {
+                        continue; // already covers us
+                    }
+                    // Adjacent chunks extend directly. A HOLE between the
+                    // slice's coverage and this chunk is bridgeable iff
+                    // the warm window contiguously installed every chunk
+                    // across it with no evictions: this key's absence
+                    // from those installs IS the proof the hole is
+                    // match-free (a key active only intermittently would
+                    // otherwise stop being warm forever — the campaign's
+                    // warm_extends=0 finding).
+                    let bridgeable = s.indexed_to_offset >= chunk_from
+                        || (w_clean && s.indexed_to_offset >= w_from);
+                    if !bridgeable {
+                        continue;
                     }
                     let mut merged: Vec<AbsRun> = s.runs.to_vec();
                     let cut = s.indexed_to_offset;
@@ -292,7 +306,7 @@ impl PostingsCache {
         absorbed: u64,
     ) -> anyhow::Result<CacheRuns> {
         enum Decision {
-            Hit(Arc<PostingsSlice>),
+            Hit(Arc<PostingsSlice>, u64),
             /// Cursor behind the slice: serve uncached, do not churn.
             Bypass,
             Wait(tokio::sync::watch::Receiver<bool>),
@@ -309,10 +323,28 @@ impl PostingsCache {
         for _ in 0..4 {
             let decision = {
                 let mut g = self.inner.lock().unwrap();
+                // Warm-window bridge, demand side: a key whose slice ends
+                // BEFORE the segment's contiguously-installed frontier is
+                // still fully covered up to that frontier — its absence
+                // from every install past indexed_to IS the proof of no
+                // matches there. (The install-side bridge only fires on
+                // the key's NEXT appearance; a key that never re-appears
+                // would otherwise go cold at every new chunk.)
+                let warm_to = g
+                    .warm
+                    .get(&key.0)
+                    .filter(|w| w.clean)
+                    .map(|w| (w.from, w.to));
                 let covered = g.slices.get_mut(&key).and_then(|e| {
-                    if e.slice.covered_from <= from && upto <= e.slice.indexed_to_offset {
+                    let mut effective_to = e.slice.indexed_to_offset;
+                    if let Some((wf, wt)) = warm_to {
+                        if wf <= effective_to && wt > effective_to {
+                            effective_to = wt;
+                        }
+                    }
+                    if e.slice.covered_from <= from && upto <= effective_to {
                         e.last_used = Instant::now();
-                        Some(Decision::Hit(e.slice.clone()))
+                        Some(Decision::Hit(e.slice.clone(), effective_to))
                     } else if e.slice.covered_from > from {
                         Some(Decision::Bypass)
                     } else {
@@ -335,9 +367,9 @@ impl PostingsCache {
                 }
             };
             match decision {
-                Decision::Hit(s) => {
+                Decision::Hit(s, covered_to) => {
                     self.hits.fetch_add(1, Ordering::Relaxed);
-                    self.maybe_prefetch(part, route, inc, kh, &s, upto, absorbed);
+                    self.maybe_prefetch(part, route, inc, kh, &s, upto, absorbed, covered_to);
                     let runs = clip_runs(&s.runs, from, upto);
                     return Ok(CacheRuns::Runs {
                         runs,
@@ -394,10 +426,25 @@ impl PostingsCache {
             let (ready, still_inflight) = {
                 let g = self.inner.lock().unwrap();
                 (
-                    g.slices
-                        .get(&key)
-                        .map(|e| e.slice.covered_from <= from && upto <= e.slice.indexed_to_offset)
-                        .unwrap_or(false),
+                    {
+                        let warm_to = g
+                            .warm
+                            .get(&key.0)
+                            .filter(|w| w.clean)
+                            .map(|w| (w.from, w.to));
+                        g.slices
+                            .get(&key)
+                            .map(|e| {
+                                let mut eff = e.slice.indexed_to_offset;
+                                if let Some((wf, wt)) = warm_to {
+                                    if wf <= eff && wt > eff {
+                                        eff = wt;
+                                    }
+                                }
+                                e.slice.covered_from <= from && upto <= eff
+                            })
+                            .unwrap_or(false)
+                    },
                     g.inflight.contains_key(&key),
                 )
             };
@@ -538,6 +585,7 @@ impl PostingsCache {
     /// Best-effort forward prefetch once 75% of the slice is consumed
     /// (spec §7.6). Single-flight via the same in-flight map; never
     /// blocks or delays the current response.
+    #[allow(clippy::too_many_arguments)]
     fn maybe_prefetch(
         self: &Arc<Self>,
         part: &Arc<Db>,
@@ -547,9 +595,10 @@ impl PostingsCache {
         slice: &Arc<PostingsSlice>,
         upto: u64,
         absorbed: u64,
+        covered_to: u64,
     ) {
-        if slice.indexed_to_offset >= absorbed {
-            return; // nothing further exists yet
+        if slice.indexed_to_offset >= absorbed || covered_to >= absorbed {
+            return; // nothing further exists (or the warm window covers it)
         }
         let span = slice
             .indexed_to_offset
@@ -579,6 +628,24 @@ impl PostingsCache {
             target,
             tx,
         );
+    }
+
+    /// Test-only: the (covered_from, indexed_to, runs) of one cached
+    /// slice, for flake diagnosis.
+    #[cfg(test)]
+    pub fn debug_slice(
+        &self,
+        inc: &SegmentHash,
+        kh: &crate::crypto::RoutingKeyHash,
+    ) -> Option<(u64, u64, usize)> {
+        let g = self.inner.lock().unwrap();
+        g.slices.get(&(inc.0, kh.0)).map(|e| {
+            (
+                e.slice.covered_from,
+                e.slice.indexed_to_offset,
+                e.slice.runs.len(),
+            )
+        })
     }
 
     /// Idle sweep (engine flush ticker): drop slices unused for the
@@ -798,6 +865,43 @@ mod tests {
         assert!(
             cache.index_loads.load(Ordering::Relaxed) >= 1,
             "read below the claim window must consult the index"
+        );
+    }
+
+    /// A key absent from intermediate chunks stays warm: the clean
+    /// contiguous warm window proves the hole match-free, so the
+    /// extension bridges it (seam marked GAP_UNKNOWN like any stitched
+    /// page boundary).
+    #[tokio::test]
+    async fn warm_extension_bridges_matchfree_hole() {
+        let part = mem_db("wt/e").await;
+        let cache = PostingsCache::new(POSTINGS_CACHE_BYTES);
+        let (_, inc, kh) = ids(5);
+        cache.install_chunk(inc, 0, 100, vec![(kh.0, vec![run(5, 3)])]);
+        cache.install_chunk(inc, 100, 200, vec![]); // key absent
+        cache.install_chunk(inc, 200, 300, vec![(kh.0, vec![run(250, 2)])]);
+        assert_eq!(cache.warm_extends.load(Ordering::Relaxed), 1);
+        let got = runs_of(&cache, &part, 5, 0, 300).await;
+        let seam = AbsRun {
+            gap_bytes_before: crate::postings::GAP_UNKNOWN,
+            ..run(250, 2)
+        };
+        assert_eq!(got, vec![run(5, 3), seam]);
+        assert_eq!(
+            cache.index_loads.load(Ordering::Relaxed),
+            0,
+            "bridged, no load"
+        );
+
+        // A DIRTY window must NOT bridge: poison via a sweep, then a
+        // later chunk cannot extend across the unproven middle.
+        cache.sweep_idle(Duration::ZERO);
+        cache.install_chunk(inc, 300, 400, vec![(kh.0, vec![run(350, 1)])]);
+        let loads0 = cache.index_loads.load(Ordering::Relaxed);
+        let _ = runs_of(&cache, &part, 5, 0, 400).await;
+        assert!(
+            cache.index_loads.load(Ordering::Relaxed) > loads0,
+            "post-sweep reads must consult the store"
         );
     }
 

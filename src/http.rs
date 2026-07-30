@@ -2698,7 +2698,7 @@ pub(crate) async fn read_merged(
                     .history_partition()
                     .await
                     .map_err(|e| e.to_string())?;
-                let (frames, _last, completed) = match key_filter {
+                let (frames, scan_last, completed) = match key_filter {
                     Some(rk) => crate::history::read_history2_keyed_cached(
                         &engine.postings_cache,
                         &part,
@@ -2733,6 +2733,16 @@ pub(crate) async fn read_merged(
                     &mut out,
                     &mut budget,
                 )?;
+                // consumed_to is first-class (review blocker): a partial
+                // keyed page's cursor advances over every range the read
+                // PROVED — index-verified match-free stretches and
+                // mid-run truncation points — never inferred from the
+                // last matching frame alone. Without this, a fat run
+                // that planned zero frames re-polled the same position
+                // forever.
+                if let Some(sl) = scan_last {
+                    out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
+                }
                 completed
             } else {
                 let h = read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
@@ -3136,6 +3146,11 @@ async fn read_inner(
             Some(raw) if raw != "now" => Offset::parse(raw)
                 .map(|o| o.encode())
                 .unwrap_or_else(|_| tail_token(out.end)),
+            // No offset given and nothing proven: an INCOMPLETE empty
+            // page must hold the cursor at the start, not teleport it to
+            // the stream end (review blocker: that fallback silently
+            // skipped everything an oversized-run stall failed to serve).
+            _ if !out.completed => Offset::START.encode(),
             _ => tail_token(out.end),
         });
     let up_to_date = out.completed;

@@ -2365,6 +2365,8 @@ async fn execute_postings_plan(
                 };
                 let mut iter = part.scan_with_options(range, &opts).await?;
                 let mut hits: Vec<(u64, Bytes)> = Vec::new();
+                let mut span_bytes = 0usize;
+                let mut span_trunc = false;
                 while let Some(kv) = iter.next().await? {
                     READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
                     let Some(f) = crate::crypto::decode_frame(&kv.value) else {
@@ -2374,14 +2376,24 @@ async fn execute_postings_plan(
                         continue;
                     }
                     READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
+                    // Stop MATERIALIZING once this span alone could fill
+                    // the whole response — never buffer an unbounded run
+                    // into memory (review blocker: long runs must page,
+                    // and the FIRST record must always fit regardless of
+                    // its size).
+                    if !hits.is_empty() && span_bytes + kv.value.len() > max_bytes {
+                        span_trunc = true;
+                        break;
+                    }
+                    span_bytes += kv.value.len();
                     hits.push((f.header.offset, kv.value));
                 }
-                anyhow::Ok((span, hits))
+                anyhow::Ok((span, hits, span_trunc))
             }
         }))
         .buffered(4);
         'spans: while let Some(res) = results.next().await {
-            let (span, hits) = res?;
+            let (span, hits, span_trunc) = res?;
             spans_used += 1;
             for (off, raw) in hits {
                 total += raw.len();
@@ -2391,6 +2403,13 @@ async fn execute_postings_plan(
                     truncated = true;
                     break 'spans;
                 }
+            }
+            if span_trunc {
+                // The span stopped mid-run: the cursor holds at the last
+                // emitted record, NOT the span end — later results are
+                // discarded and the caller re-polls from there.
+                truncated = true;
+                break 'spans;
             }
             // The span is fully consumed even if nothing matched (hash
             // collisions or clipping estimates): the cursor may advance.

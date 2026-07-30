@@ -454,7 +454,33 @@ pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
                 scan_total += gap + r_bytes;
             }
             _ => {
-                if plan.spans.len() >= cfg.max_spans || scan_total + r_bytes > cfg.max_scan_bytes {
+                if plan.spans.len() >= cfg.max_spans {
+                    plan.complete = false;
+                    return plan;
+                }
+                if scan_total + r_bytes > cfg.max_scan_bytes {
+                    // Budget exhausted BY this run. With prior spans the
+                    // partial already made progress; with NONE, the first
+                    // record must still be served (review blocker: a run
+                    // fatter than the whole scan budget used to plan ZERO
+                    // spans, so the read returned an empty page forever).
+                    // Split the run to a bounded prefix — per-record
+                    // estimate, never fewer than one record; the span
+                    // executor's response budget truncates honestly if
+                    // the estimate under-counts.
+                    if plan.spans.is_empty() {
+                        let per_rec = (r.matching_bytes / r.count.max(1) as u64).max(1);
+                        let budget_recs = (cfg.max_scan_bytes / per_rec).clamp(1, r.count as u64);
+                        let end = r.start + budget_recs;
+                        let bytes = per_rec * budget_recs;
+                        plan.spans.push(Span {
+                            start: r.start,
+                            end,
+                            matching_bytes: bytes,
+                            scan_bytes: bytes,
+                        });
+                        plan.consumed_to = end;
+                    }
                     plan.complete = false;
                     return plan;
                 }
@@ -486,6 +512,60 @@ mod tests {
             matching_bytes: bytes,
             gap_bytes_before: gap_bytes,
         }
+    }
+
+    /// Review blocker: a first run fatter than the whole scan budget
+    /// must still plan a bounded prefix — never zero spans.
+    #[test]
+    fn oversized_first_run_plans_bounded_prefix() {
+        let cfg = PlanCfg {
+            max_spans: 8,
+            max_gap_bytes: 64 * 1024,
+            max_scan_bytes: 16 * 1024 * 1024,
+        };
+        // One 32 MiB record: budget/record floor still allows exactly it.
+        let plan = plan_spans(&[run(10, 1, 32 * 1024 * 1024, 0)], 11, &cfg);
+        assert_eq!(plan.spans.len(), 1);
+        assert_eq!((plan.spans[0].start, plan.spans[0].end), (10, 11));
+        assert!(!plan.complete);
+        assert_eq!(plan.consumed_to, 11);
+
+        // A 24 MiB contiguous run of 1 MiB records: ~16 records fit.
+        let plan = plan_spans(&[run(0, 24, 24 * 1024 * 1024, 0)], 24, &cfg);
+        assert_eq!(plan.spans.len(), 1);
+        assert_eq!(plan.spans[0].start, 0);
+        assert_eq!(plan.spans[0].end, 16, "budget/per-record prefix");
+        assert!(!plan.complete);
+        assert_eq!(plan.consumed_to, 16, "cursor advances to the prefix end");
+    }
+
+    /// A fat run AFTER planned spans returns an honest partial whose
+    /// consumed_to covers the planned prefix only.
+    #[test]
+    fn oversized_mid_run_partial_keeps_progress() {
+        let cfg = PlanCfg {
+            max_spans: 8,
+            max_gap_bytes: 64 * 1024,
+            max_scan_bytes: 1024,
+        };
+        let plan = plan_spans(
+            &[run(0, 2, 400, 0), run(100, 1, 10_000, GAP_UNKNOWN)],
+            101,
+            &cfg,
+        );
+        assert_eq!(plan.spans.len(), 1);
+        assert!(!plan.complete);
+        assert_eq!(plan.consumed_to, 2, "progress = what was actually planned");
+    }
+
+    /// No runs in the window: the plan consumes the whole match-free
+    /// range (overall completion is the caller's provable_to gate).
+    #[test]
+    fn empty_window_consumes_range() {
+        let plan = plan_spans(&[], 500, &PlanCfg::default());
+        assert!(plan.spans.is_empty());
+        assert!(plan.complete);
+        assert_eq!(plan.consumed_to, 500);
     }
 
     #[test]
