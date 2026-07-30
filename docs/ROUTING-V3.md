@@ -171,6 +171,7 @@ Per shard engine, a weighted single-flight decoded cache:
 ```
 PostingsSlice {
     first_bucket, last_bucket_exclusive,
+    covered_from,               // runs are COMPLETE from this offset
     indexed_to_offset,          // how far the index provably covers
     runs: Arc<[DecodedRun]>,
 }
@@ -186,6 +187,34 @@ slice when 75% of the current slice is consumed.
 
 Acceptance: for 100 randomly active keys per 5-minute window,
 postings-cache hit rate after each key's first read ≥ 90%.
+
+**Write-through warming.** A cold keyed read otherwise pays two
+DEPENDENT store round trips — index page fetch, then canonical span
+fetch — measuring ~2× the covering baseline's cold p50 (covering
+needed one trip because its index WAS the data). Indirection cannot
+beat that structurally unless the index half is already resident. It
+can be: reads route to the shard owner, the shard owner runs the
+absorber, and the absorber holds every chunk's decoded runs at the
+instant it encodes them — so the gather installs each chunk's runs
+into the slice cache right after the batch flush.
+
+Coverage claims stay provable via `covered_from` plus per-segment warm
+state (`SegWarm{from, to, clean}`):
+
+- a fresh warm install claims coverage from 0 only while the segment's
+  chunks have been contiguous from offset 0 within this process AND no
+  entry of the segment was ever evicted (weight eviction and the idle
+  sweep both poison `clean` — an evicted key must not re-appear
+  claiming its pre-eviction history was empty);
+- any other fresh install claims only its own chunk; extensions keep
+  their existing `covered_from`; a read below `covered_from` bypasses
+  to the normal store load;
+- chunk seams carry GAP_UNKNOWN exactly like store-loaded page
+  boundaries, so the planner treats warm and loaded runs identically.
+
+Readers clip every claim to their own durable-absorbed snapshot, so an
+install racing the boundary advance can never over-serve. Restarted or
+non-absorbing instances find nothing warm and take the cold-load path.
 
 ## 5. Bounded canonical indirection (read planner)
 
@@ -267,6 +296,29 @@ canonical spans per response       <= 8
 normal read amplification          <= 4x
 per-offset GET pattern             zero
 ```
+
+Measurement bindings (what the harness actually computes — learned the
+hard way in the acceptance campaign):
+
+- **history stored bytes** comes from the engine's own counters
+  (canonical + postings bytes + 65 B/page key), NOT whole-pipeline
+  `put_bytes`: WAL SSTs, compaction rewrites and manifests are
+  identical in both arms and dominate at rig scale, diluting the
+  layout difference to noise.
+- **total COGS** binds the at-scale asymptote — the stored-byte-month
+  ratio — with measured op-parity guards (read Class B, CPU) alongside
+  the Class A/flush/LIST parity gates. Raw local-run COGS is reported
+  but not gated: rig flush Class A is cadence-driven (25 ms ticker
+  over a trickle), so op counts do not extrapolate; byte ratios do.
+- **the byte-ratio workload must be incompressible**: frames compress
+  before storage, so compressible padding deflates the canonical
+  denominator and inflates the ratio (a repeated-digest pad read as
+  23.9% where the true ratio was ~3%). The harness pads with base64
+  over chained distinct sha256 blocks — the JSON-safe entropy ceiling.
+- **harness clients must read HTTP headers case-insensitively**: hyper
+  lowercases header names on the wire; a `dict()`-based lookup of
+  `Stream-Next-Offset` silently misses, which truncates any read that
+  paginates — mid-segment pages and every lineage hop across a split.
 
 ## 10. Staging
 

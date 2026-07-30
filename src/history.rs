@@ -2348,7 +2348,22 @@ async fn execute_postings_plan(
             async move {
                 let range = hist2_record_key(route, inc, span.start)
                     ..hist2_record_key(route, inc, span.end);
-                let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
+                // Read-ahead sized from the plan's own scan estimate: a
+                // blanket 2 MiB per span floods the shared history block
+                // cache (32 MiB default) — ~16 keyed reads evict every
+                // index/filter/data block, so warm reads re-fetch the
+                // world (measured: warm == cold, ~20 GETs per read on a
+                // multi-SST partition). Spans are planner-bounded and
+                // typically tiny; fetch what the span needs plus slack.
+                let opts = slatedb::config::ScanOptions {
+                    read_ahead_bytes: (span.scan_bytes.saturating_mul(3) / 2)
+                        .clamp(64 * 1024, 2 * 1024 * 1024)
+                        as usize,
+                    max_fetch_tasks: 2,
+                    cache_blocks: true,
+                    ..Default::default()
+                };
+                let mut iter = part.scan_with_options(range, &opts).await?;
                 let mut hits: Vec<(u64, Bytes)> = Vec::new();
                 while let Some(kv) = iter.next().await? {
                     READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
