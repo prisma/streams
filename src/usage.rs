@@ -560,13 +560,23 @@ mod shard_lag_tests {
 
     #[test]
     fn absorb_lag_max_is_the_worst_stream() {
+        // The lag map is process-global and other tests' absorbers
+        // publish into it concurrently: assert with a sentinel that IS
+        // the global worst (no real absorber publishes a year of lag)
+        // and exact per-stream reads, not an exact global max.
         let a = SegmentHash([1u8; 16]);
         let b = SegmentHash([2u8; 16]);
         set_absorb_lag(a, 5);
-        set_absorb_lag(b, 61);
-        assert_eq!(absorb_lag_max(), 61);
-        clear_absorb_lag(a);
+        set_absorb_lag(b, 40_000_000);
+        assert_eq!(absorb_lag(a), 5);
+        assert_eq!(absorb_lag(b), 40_000_000);
+        assert!(
+            absorb_lag_max() >= 40_000_000,
+            "the max must reflect the worst stream"
+        );
         clear_absorb_lag(b);
+        assert!(absorb_lag_max() < 40_000_000, "clearing removes the worst");
+        clear_absorb_lag(a);
     }
 
     /// The wide tests' invisible-backlog finding: usage counters key by
