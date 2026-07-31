@@ -4668,10 +4668,18 @@ async fn hreq(
 ) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let mut req = format!(
-        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\nstream-encryption-key: {RIG_KEY_B64}\r\ncontent-length: {}\r\n",
-        body.len()
-    );
+    // The rig key is supplied by default, but a caller that passes its
+    // OWN stream-encryption-key must not end up sending two — the
+    // server reads the first, so the injected one would silently win
+    // and a "wrong key" test would quietly exercise the right key.
+    let mut req = format!("{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\n");
+    if !extra
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("stream-encryption-key"))
+    {
+        req.push_str(&format!("stream-encryption-key: {RIG_KEY_B64}\r\n"));
+    }
+    req.push_str(&format!("content-length: {}\r\n", body.len()));
     for (k, v) in extra {
         req.push_str(&format!("{k}: {v}\r\n"));
     }
@@ -9089,6 +9097,186 @@ async fn product_responses_carry_cors_not_just_preflights() {
     engine_shutdown(&state).await;
 }
 
+/// Readiness is not a stopwatch. An abandoned initialization used to
+/// stop blocking reads once its claim aged past 15 s, so a stream whose
+/// creator died mid-write started serving as complete — the original
+/// field anomaly with a delay. A stale claim decides who may REDO the
+/// work; it never publishes half-built content.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_initialization_never_becomes_visible() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/stale1", &ct, br#"[{"n":1}]"#).await;
+    assert_eq!(st, 201);
+    // A creator that died long ago: claim present, ancient.
+    state
+        .registry
+        .cas_update("stale1", |d| {
+            d.init = Some(crate::registry::InitState {
+                request_hash: "abandoned".into(),
+                key_fingerprint: d.key_fingerprint.clone(),
+                claimed_ms: crate::shard::now_ms() - crate::registry::INIT_CLAIM_MS * 100,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("stale1");
+
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/stale1", &[], b"").await;
+    assert_eq!(st, 503, "an abandoned create must not read as complete");
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/stale1", &ct, br#"[{"n":2}]"#).await;
+    assert_eq!(st, 503, "…nor accept appends");
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/stale1",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 503, "…nor describe itself through the product route");
+    // …and it is not in the catalog.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams?limit=100", &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let names: Vec<&str> = v["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(!names.contains(&"stale1"), "half-built stream in catalog: {names:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Resuming an initialization writes the initial content with the
+/// REQUEST's key. The resume path skips the idempotent-PUT validation
+/// where the key would normally be compared, so a replay of the same
+/// body under a different key completed the creation with a key the
+/// descriptor's own fingerprint does not match — a stream that cannot
+/// decrypt its first record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_initialization_cannot_be_resumed_with_another_key() {
+    const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let body = br#"[{"n":1}]"#;
+    let mine = [
+        ("content-type", "application/json"),
+        ("stream-encryption-key", RIG_KEY_B64),
+    ];
+    let theirs = [
+        ("content-type", "application/json"),
+        ("stream-encryption-key", OTHER_KEY),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keyinit", &mine, body).await;
+    assert_eq!(st, 201);
+    // Reopen the initialization, as a crashed creator would leave it.
+    let plant = |stale: bool| {
+        let state = state.clone();
+        async move {
+            state
+                .registry
+                .cas_update("keyinit", |d| {
+                    d.init = Some(crate::registry::InitState {
+                        request_hash: crate::http::create_request_hash(
+                            "application/json",
+                            None,
+                            None,
+                            false,
+                            br#"[{"n":1}]"#,
+                            None,
+                        ),
+                        key_fingerprint: d.key_fingerprint.clone(),
+                        claimed_ms: if stale {
+                            crate::shard::now_ms() - crate::registry::INIT_CLAIM_MS * 100
+                        } else {
+                            crate::shard::now_ms()
+                        },
+                    });
+                    true
+                })
+                .await
+                .unwrap();
+            state.registry.invalidate("keyinit");
+        }
+    };
+    for stale in [false, true] {
+        plant(stale).await;
+        let (st, _, b) = hreq(addr, "PUT", "/v1/stream/keyinit", &theirs, body).await;
+        assert_eq!(
+            st,
+            403,
+            "wrong key resumed an initialization (stale={stale}): {}",
+            String::from_utf8_lossy(&b)
+        );
+        // The descriptor is untouched: still initializing, still ours.
+        let d = state.registry.get("keyinit").await.unwrap().unwrap();
+        assert!(d.init.is_some(), "a refused resume must not complete it");
+    }
+    // The RIGHT key resumes and completes it.
+    plant(false).await;
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keyinit", &mine, body).await;
+    assert!(st == 200 || st == 201);
+    let d = state.registry.get("keyinit").await.unwrap().unwrap();
+    assert!(d.init.is_none(), "the right key completes initialization");
+    engine_shutdown(&state).await;
+}
+
+/// A catalog page that crosses a dense run of tombstoned, expired or
+/// half-built streams comes back underfull. That used to be read as
+/// "end of catalog", which made every live stream after the run
+/// unreachable — the walk continues while the PROVIDER has more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_paging_survives_dense_dead_entries() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    // 40 collections; everything except the last two is then killed,
+    // so any page-sized window early in the walk is all corpses.
+    for i in 0..40 {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/cat{i:03}"),
+            &key,
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+    }
+    for i in 0..38 {
+        let (st, _, _) = preq(addr, "DELETE", &format!("/v1/streams/cat{i:03}"), &key, b"").await;
+        assert!(st == 204 || st == 200, "delete cat{i:03}: {st}");
+    }
+    // Walk with a small limit: the first pages are empty but not final.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..40 {
+        let path = match &cursor {
+            None => "/v1/streams?limit=3".to_string(),
+            Some(c) => format!("/v1/streams?limit=3&cursor={c}"),
+        };
+        let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        for s in v["streams"].as_array().unwrap() {
+            seen.push(s["name"].as_str().unwrap().to_string());
+        }
+        match v["cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    assert!(
+        seen.contains(&"cat038".to_string()) && seen.contains(&"cat039".to_string()),
+        "live streams behind a run of dead ones were unreachable: {seen:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
@@ -9543,6 +9731,7 @@ async fn create_replay_never_loses_the_initial_body() {
         .cas_update("replay2", |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: "deadbeef".into(),
+                key_fingerprint: d.key_fingerprint.clone(),
                 claimed_ms: crate::shard::now_ms(),
             });
             true
@@ -9568,6 +9757,7 @@ async fn create_replay_never_loses_the_initial_body() {
         .cas_update("replay2", |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: "deadbeef".into(),
+                key_fingerprint: d.key_fingerprint.clone(),
                 claimed_ms: crate::shard::now_ms() - crate::registry::INIT_CLAIM_MS - 1_000,
             });
             true

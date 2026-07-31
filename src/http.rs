@@ -1188,14 +1188,58 @@ pub(crate) fn desc_alive(desc: &StreamDesc) -> bool {
     !desc.deleted && !desc.soft_deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
 }
 
-/// A live descriptor whose initialization has not completed (audit
-/// P0): its content is not durable yet, so readers and appenders get a
-/// retryable answer rather than an empty stream. A stale claim (dead
-/// creator) stops blocking so the name is never wedged.
+/// Identity of a creation request: a replayed PUT hashes identically,
+/// so it JOINS an in-flight initialization instead of observing the
+/// descriptor and skipping the work. Deliberately NOT keyed by the
+/// encryption key — the key is checked separately, because a request
+/// that differs only by key must be refused, not treated as a new one.
+pub(crate) fn create_request_hash(
+    content_type: &str,
+    ttl_secs: Option<u64>,
+    expires_at_ms: Option<i64>,
+    close: bool,
+    body: &[u8],
+    fork: Option<&crate::registry::ForkRef>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(content_type.as_bytes());
+    h.update([0u8]);
+    h.update(ttl_secs.unwrap_or(0).to_le_bytes());
+    h.update(expires_at_ms.unwrap_or(0).to_le_bytes());
+    h.update([u8::from(close)]);
+    h.update((body.len() as u64).to_le_bytes());
+    h.update(body);
+    if let Some(fr) = fork {
+        h.update(fr.source.as_bytes());
+        h.update(fr.fork_offset.to_le_bytes());
+        h.update(fr.fork_sub.to_le_bytes());
+    }
+    hex(&h.finalize()[..16])
+}
+
+/// A live descriptor whose initialization has not completed: its
+/// content is not durable yet, so readers and appenders get a retryable
+/// answer rather than an empty stream.
+///
+/// Readiness is `init.is_none()` and nothing else. This used to expire
+/// with the claim, which answered the wrong question: after 15 seconds
+/// an abandoned half-built stream started serving as though it were
+/// finished — the original field anomaly, delayed. Whether the claim is
+/// stale decides only WHO MAY TAKE OVER the work (see
+/// [`init_claim_stale`]); it never makes incomplete content visible.
 pub(crate) fn initializing(desc: &StreamDesc) -> bool {
+    desc.init.is_some()
+}
+
+/// Whether an initialization claim is old enough for another request to
+/// take it over. A creator is a single in-process task, so a crash must
+/// not wedge the name forever — but taking over means REDOING the work,
+/// not declaring it done.
+pub(crate) fn init_claim_stale(desc: &StreamDesc) -> bool {
     desc.init
         .as_ref()
-        .is_some_and(|i| now_ms() - i.claimed_ms <= crate::registry::INIT_CLAIM_MS)
+        .is_some_and(|i| now_ms() - i.claimed_ms > crate::registry::INIT_CLAIM_MS)
 }
 
 fn creating_resp() -> Response {
@@ -1950,23 +1994,14 @@ async fn create_stream(
     // identically, so it JOINS an in-flight initialization instead of
     // observing the descriptor and skipping the work.
     let needs_init = !body.is_empty() || close || fork_src_hdr.is_some();
-    let create_hash: String = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(content_type.as_bytes());
-        h.update([0u8]);
-        h.update(ttl_secs.unwrap_or(0).to_le_bytes());
-        h.update(expires_at_ms.unwrap_or(0).to_le_bytes());
-        h.update([u8::from(close)]);
-        h.update((body.len() as u64).to_le_bytes());
-        h.update(&body);
-        if let Some(fr) = &expected_fork_ref {
-            h.update(fr.source.as_bytes());
-            h.update(fr.fork_offset.to_le_bytes());
-            h.update(fr.fork_sub.to_le_bytes());
-        }
-        hex(&h.finalize()[..16])
-    };
+    let create_hash = create_request_hash(
+        &content_type,
+        ttl_secs,
+        expires_at_ms,
+        close,
+        &body,
+        expected_fork_ref.as_ref(),
+    );
 
     // Resolve existing.
     let existing = match state.registry.get(&name).await {
@@ -2021,8 +2056,7 @@ async fn create_stream(
             if !desc_alive(d) {
                 // dead-and-initializing: fall through to the recreate arm
             } else if init.request_hash != create_hash {
-                let stale = now_ms() - init.claimed_ms > crate::registry::INIT_CLAIM_MS;
-                if !stale {
+                if !init_claim_stale(d) {
                     return err_resp(
                         StatusCode::CONFLICT,
                         "creating",
@@ -2035,6 +2069,34 @@ async fn create_stream(
                     "stream exists with different config",
                 );
             } else {
+                // The resume path skips validate_live, so the key has to
+                // be checked HERE. Without it, a caller replaying the
+                // same creation body under a DIFFERENT key resumed the
+                // initialization and wrote the initial content with that
+                // key, while the descriptor kept the original
+                // fingerprint — a stream whose configured key cannot
+                // decrypt its own first record.
+                match check_key(raw_key(&headers, &state), d) {
+                    KeyCheck::Ok(..) => {}
+                    _ => {
+                        return err_resp(
+                            StatusCode::FORBIDDEN,
+                            "wrong_key",
+                            "key mismatch",
+                        );
+                    }
+                }
+                // Belt and braces: the initialization identity itself
+                // records which key it was claimed for.
+                if !init.key_fingerprint.is_empty()
+                    && init.key_fingerprint != d.key_fingerprint
+                {
+                    return err_resp(
+                        StatusCode::FORBIDDEN,
+                        "wrong_key",
+                        "initialization was claimed under a different key",
+                    );
+                }
                 resume_init = true;
             }
         }
@@ -2075,8 +2137,10 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
+            let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {
                 request_hash: create_hash.clone(),
+                key_fingerprint: fp,
                 claimed_ms: now_ms(),
             });
             match state
@@ -2108,8 +2172,10 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
+            let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {
                 request_hash: create_hash.clone(),
+                key_fingerprint: fp,
                 claimed_ms: now_ms(),
             });
             match state.registry.create(fresh).await {
@@ -2127,9 +2193,17 @@ async fn create_stream(
                     // answer success for content that is not durable
                     // yet. Same request -> resume; different request ->
                     // conflict.
+                    // Joining or taking over someone else's
+                    // initialization writes THIS request's content under
+                    // THIS request's key, so it has to be the right one.
+                    if d.init.is_some()
+                        && !matches!(check_key(raw_key(&headers, &state), &d), KeyCheck::Ok(..))
+                    {
+                        return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
+                    }
                     match d.init.as_ref() {
                         Some(i) if i.request_hash == create_hash => (true, d),
-                        Some(i) if now_ms() - i.claimed_ms <= crate::registry::INIT_CLAIM_MS => {
+                        Some(_) if !init_claim_stale(&d) => {
                             return err_resp(
                                 StatusCode::CONFLICT,
                                 "creating",

@@ -976,6 +976,15 @@ fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {
 
 async fn product_metadata(state: Arc<AppState>, name: String) -> Response {
     match state.registry.get(&name).await {
+        // A half-built collection is not a collection yet: reporting its
+        // metadata would describe content that is not durable.
+        Ok(Some(d)) if crate::http::desc_alive(&d) && crate::http::initializing(&d) => perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "creating",
+            "stream is still being created; retry",
+            None,
+            true,
+        ),
         Ok(Some(d)) if crate::http::desc_alive(&d) => metadata_response(&d, StatusCode::OK),
         Ok(_) => perr(
             StatusCode::NOT_FOUND,
@@ -3758,9 +3767,11 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         })
         .collect();
     let mut body = json!({ "streams": items });
-    // A cursor is offered only when the page filled — an underfull page
-    // is the end of the catalog.
-    if page.streams.len() == limit {
+    // The walk continues while the PROVIDER has more, never "while the
+    // page came back full". A page that crossed a run of tombstoned,
+    // expired or half-built streams is short but not final, and ending
+    // there hides every live stream behind the run.
+    if !page.exhausted {
         if let Some(n) = page.next_after {
             use base64::Engine;
             body["cursor"] =

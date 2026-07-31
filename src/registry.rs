@@ -127,8 +127,14 @@ pub struct InitState {
     /// Identifies the creating request; a retry carrying the same hash
     /// resumes, a different one conflicts.
     pub request_hash: String,
+    /// The key fingerprint this initialization was claimed under, so a
+    /// resume cannot complete the work with a different key than the
+    /// descriptor was created for.
+    #[serde(default)]
+    pub key_fingerprint: String,
     /// Wall clock of the last claim — a creator that dies leaves this
-    /// stale and the next retry takes over.
+    /// stale and the next retry takes over. Staleness governs TAKEOVER
+    /// only: it never means "ready" (see `http::initializing`).
     pub claimed_ms: i64,
 }
 
@@ -403,6 +409,12 @@ pub struct CatalogPage {
     pub streams: Vec<StreamDesc>,
     /// Name to continue after, when more may follow.
     pub next_after: Option<String>,
+    /// The provider listing ran out. This — NOT the page being
+    /// underfull — is what ends a catalog walk: a page can come back
+    /// short because it crossed a run of tombstones, expirations or
+    /// half-built streams, and treating that as the end makes every
+    /// live stream after the run unreachable.
+    pub exhausted: bool,
 }
 
 impl Registry {
@@ -773,32 +785,43 @@ impl Registry {
         };
         let mut out = Vec::new();
         let mut last_name = None;
-        // Live descriptors only; a tombstoned or fork-retained name is
-        // not a listable stream. Scanning past them is bounded by their
-        // density, so cap the walk.
+        // Only streams a caller can actually use: not tombstoned, not
+        // fork-retained, not expired, and not still being built. The
+        // walk is capped so one page cannot scan the world, and the cap
+        // is why `exhausted` exists — stopping early is a pause, not an
+        // end.
         let mut scanned = 0usize;
+        let mut exhausted = false;
+        let now = crate::shard::now_ms();
         while out.len() < limit && scanned < limit.saturating_mul(8) + 64 {
             let Some(meta) = stream.try_next().await? else {
-                return Ok(CatalogPage {
-                    streams: out,
-                    next_after: None,
-                });
+                exhausted = true;
+                break;
             };
             scanned += 1;
-            if let Ok(r) = self.store.get(&meta.location).await {
-                if let Ok(raw) = r.bytes().await {
-                    if let Ok(d) = decode_desc(&raw) {
-                        last_name = Some(d.name.clone());
-                        if !d.deleted && !d.soft_deleted {
-                            out.push(d);
-                        }
-                    }
-                }
+            // A descriptor that vanished between the listing and the GET
+            // is genuinely gone; anything else is a real failure and
+            // must not silently advance the cursor past a live stream.
+            let raw = match self.store.get(&meta.location).await {
+                Ok(r) => r.bytes().await?,
+                Err(object_store::Error::NotFound { .. }) => continue,
+                Err(e) => return Err(e),
+            };
+            let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
+                store: "registry",
+                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location)
+                    .into(),
+            })?;
+            last_name = Some(d.name.clone());
+            let expired = d.expires_at_ms.is_some_and(|e| now >= e);
+            if !d.deleted && !d.soft_deleted && !expired && d.init.is_none() {
+                out.push(d);
             }
         }
         Ok(CatalogPage {
             streams: out,
             next_after: last_name,
+            exhausted,
         })
     }
 
