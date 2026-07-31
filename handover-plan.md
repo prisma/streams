@@ -2,9 +2,45 @@
 
 Branch: `slate` (all work committed and pushed)
 Suite at handover: **157/157 green** (`cargo test --release`)
-Spec package: `Prisma Streams Unified Product-Surface Specification`
-(pre-launch hard cutover edition; unzipped copy lives in the session
-scratchpad under `spec/prisma_streams_surface_spec_prelaunch_hard_cutover/`)
+Spec package: `handover/prisma_streams_surface_spec_prelaunch_hard_cutover/`
+(Prisma Streams Unified Product-Surface Specification, pre-launch hard
+cutover edition)
+
+---
+
+## 0. Documents in this handover
+
+All paths are relative to the repository root. **The stage files are the
+authoritative implementation units**; the consolidated edition is
+generated from them, so when the two disagree, the stage file wins.
+
+| Document | Role |
+|---|---|
+| [`handover-plan.md`](handover-plan.md) | **This file** — state, plan, agreements. Start here. |
+| [`handover/.../README.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/README.md) | Package index + the critical standards decision (singular vs plural route) |
+| [`handover/.../PRISMA_STREAMS_PRODUCT_SURFACE_SPEC.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/PRISMA_STREAMS_PRODUCT_SURFACE_SPEC.md) | **Consolidated edition** — the whole spec in one file (generated from the stage files) |
+| [`handover/.../PRELAUNCH-HARD-CUTOVER-CHECKLIST.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/PRELAUNCH-HARD-CUTOVER-CHECKLIST.md) | Normative required / forbidden / rollback checklist |
+| [`handover/.../00-OVERVIEW.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/00-OVERVIEW.md) | Clean-switch policy, standards boundary, cross-stage invariants (§5), final SDK target |
+| [`handover/.../01-REMOVE-PROFILES.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/01-REMOVE-PROFILES.md) | Stage 1 — remove profiles (task #83) |
+| [`handover/.../02-CONSUMERS-AND-WATCHES.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/02-CONSUMERS-AND-WATCHES.md) | Stage 2 — consumer groups + watches (tasks #81, #82) |
+| [`handover/.../03-UNIFIED-ROUTING-SCALING-POSTINGS.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/03-UNIFIED-ROUTING-SCALING-POSTINGS.md) | Stage 3 — routing, scaling, postings (task #77, **done**) |
+| [`handover/.../04-APPEND-AND-APPEND-MANY.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/04-APPEND-AND-APPEND-MANY.md) | Stage 4 — append / appendMany (task #78, **done**) |
+| [`handover/.../05-PRODUCER-SESSIONS.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/05-PRODUCER-SESSIONS.md) | Stage 5 — producer sessions (task #80) |
+| [`handover/.../06-READ-SUBSCRIBE-SCAN.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/06-READ-SUBSCRIBE-SCAN.md) | Stage 6 — read / subscribe / scan (task #79) |
+| [`handover/.../07-TYPED-CREATION-DOCUMENT.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/07-TYPED-CREATION-DOCUMENT.md) | Stage 7 — typed creation document (task #84) |
+| [`handover/.../08-NAMING-LIFECYCLE-ROUTES.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/08-NAMING-LIFECYCLE-ROUTES.md) | Stage 8 — naming, lifecycle, routes, SDK (task #85) |
+| [`handover/.../09-CONFORMANCE-MATRIX-AND-HARD-CUTOVER.md`](handover/prisma_streams_surface_spec_prelaunch_hard_cutover/09-CONFORMANCE-MATRIX-AND-HARD-CUTOVER.md) | Appendix — conformance matrix, CI topology, dual-surface corpus, **§13 final release gate** (tasks #86, #87) |
+
+> The consolidated edition and the ten stage/appendix files are the same
+> content in two shapes — the package ships both, so no separate copy of
+> the consolidated text was added here. Read a stage file when
+> implementing that stage; read the consolidated edition when you want
+> the whole spec in one buffer.
+
+Repo docs worth reading alongside these:
+[`docs/ROUTING-V3.md`](docs/ROUTING-V3.md) (§11 campaign results and
+review disposition), [`CONFORMANCE.md`](CONFORMANCE.md) (how to run the
+239-test upstream suite), [`RUNBOOK.md`](RUNBOOK.md).
 
 ---
 
