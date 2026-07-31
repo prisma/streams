@@ -7,7 +7,9 @@ import {
 } from "./src/index.ts";
 
 const url = process.argv[2] ?? "http://127.0.0.1:8971";
-const encryptionKey = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+const encryptionKey =
+  process.env.STREAMS_KEY ?? "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+const token = process.env.STREAMS_TOKEN;
 let failures = 0;
 function check(name, cond, extra = "") {
   if (cond) console.log(`ok   ${name}`);
@@ -17,7 +19,7 @@ function check(name, cond, extra = "") {
   }
 }
 
-const client = new StreamsClient({ url });
+const client = new StreamsClient({ url, token });
 
 // Create with watches; idempotent retry.
 const orders = await client.createStream("smoke/orders", {
