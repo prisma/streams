@@ -1,10 +1,9 @@
 // End-to-end SDK smoke against a live server (run by CI/scripts, not
 // part of the package). Usage: node smoke.mjs http://127.0.0.1:8971
-import {
-  StreamsClient,
-  MemoryProducerStateStore,
-  ProducerSequenceReusedError,
-} from "./src/index.ts";
+// Imports the PACKAGE (dist), so this same file validates an
+// installed tarball; set STREAMS_SDK to override the specifier.
+const mod = await import(process.env.STREAMS_SDK ?? "../sdk/dist/index.js");
+const { StreamsClient, MemoryProducerStateStore, ProducerSequenceReusedError } = mod;
 
 const url = process.argv[2] ?? "http://127.0.0.1:8971";
 const encryptionKey =

@@ -840,8 +840,10 @@ async fn product_seal(
             // producer identity when the caller supplied none, so a
             // resumed seal never writes a second final record.
             if !ih.contains_key("producer-id") {
-                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("\u{0}seal\u{0}{op_id}"))
-                {
+                // Header-SAFE id: a header value may not contain control
+                // bytes, so a NUL-delimited id silently fails to insert
+                // (and the append then loses its producer identity).
+                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("prisma.seal.{op_id}")) {
                     ih.insert("producer-id", v);
                     ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
                     ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));

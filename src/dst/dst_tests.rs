@@ -5884,7 +5884,18 @@ async fn post_split_throughput_scales() {
     // committer — a latency-bound load (few sequential clients) would
     // measure round trips, not capacity, and mask the split entirely.
     blast_keys(addr, "cap-scale", &keys, 48, 0.5).await;
-    let before = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+    // Capacity is a MAXIMUM-achievable property, so each phase takes
+    // the best of two windows. A contended host depresses samples
+    // one-sidedly — the post-split phase needs two committers' worth of
+    // CPU, so noise lands there and only ever understates the ratio
+    // (observed: 1.78 with three other servers running, 1.82-1.91
+    // quiet). Best-of-two removes that bias without relaxing the gate:
+    // a real capacity regression fails both windows.
+    let before = {
+        let a = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+        let b = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+        a.max(b)
+    };
 
     assert!(
         crate::scaler3::execute_split(&state, "cap-scale", 0, 0x8000_0000_0000_0000).await,
@@ -5907,7 +5918,11 @@ async fn post_split_throughput_scales() {
 
     // Warm the child committers, then measure.
     blast_keys(addr, "cap-scale", &keys, 48, 0.5).await;
-    let after = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+    let after = {
+        let a = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+        let b = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
+        a.max(b)
+    };
 
     let ratio = after as f64 / before.max(1) as f64;
     eprintln!("capacity gate: before={before} after={after} ratio={ratio:.2}");
@@ -8607,6 +8622,57 @@ async fn product_seal_final_append_and_catalog() {
         .collect();
     assert_eq!(page2, vec!["cat-c"]);
     assert!(v["cursor"].is_null(), "final page carries no cursor");
+    engine_shutdown(&state).await;
+}
+
+/// Seal-with-final through the SDK's own shape: NO caller producer
+/// headers, so the seal relies on the server's synthetic producer
+/// identity for idempotence. That identity travels as a request header
+/// into the shared committer path, and a header value may not contain
+/// control bytes — a NUL-delimited id silently failed to insert, the
+/// final append lost its producer, and the just-entered Sealing state
+/// then refused the very record it was sealing with (live 409
+/// `sealed`). The sibling test above passes its own producer headers
+/// and never reaches this branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_seal_final_needs_no_caller_producer() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealnp",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let hdrs = vec![("prisma-encryption-key", PRISMA_KEY)];
+    let body = br#"{"final":{"type":"done"},"routingKey":"c1"}"#;
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/sealnp:seal", &hdrs, body).await;
+    assert!(
+        st == 200 || st == 204,
+        "seal without caller producer: {} {}",
+        st,
+        String::from_utf8_lossy(&b)
+    );
+    // Replay: the synthetic identity dedups the final append, so the
+    // record lands exactly once and the seal stays idempotent.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/sealnp:seal", &hdrs, body).await;
+    assert!(st == 200 || st == 204);
+    let (st, h, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/sealnp/records?routingKey=c1",
+        &hdrs,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "final record exactly once: {recs:?}");
+    assert_eq!(recs[0]["type"], "done");
+    assert_eq!(h.get("prisma-sealed").map(String::as_str), Some("true"));
     engine_shutdown(&state).await;
 }
 

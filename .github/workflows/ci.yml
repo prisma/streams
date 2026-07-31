@@ -30,23 +30,55 @@ jobs:
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
-      - name: SDK typecheck
+  # Job: the SDK ships as an npm package, so CI validates the PACKAGE,
+  # not the source tree: build, pack, install the tarball into a clean
+  # project, and run the end-to-end smoke through the package specifier
+  # on the oldest supported runtime (engines: >=18) and on current Node.
+  sdk-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Typecheck + build + pack
         run: |
-          npm install -g typescript >/dev/null 2>&1 || true
-          cd sdk && tsc --noEmit -p tsconfig.json
-      - name: Smoke (SDK end-to-end against s3lite, fresh namespace)
+          cd sdk
+          npm ci
+          npx tsc --noEmit -p tsconfig.json
+          npm run build
+          npm pack --pack-destination /tmp/pkg
+      - name: Install the tarball into a clean project
         run: |
-          cargo build --release --bin s3lite --bin streams-slate --bin streams-keys
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y >/dev/null
+          npm install /tmp/pkg/prisma-streams-*.tgz
+          node -e "require('node:assert').ok(require('node:fs').existsSync('node_modules/@prisma/streams/dist/index.js'))"
+      - name: Build server
+        run: cargo build --release --bin s3lite --bin streams-slate
+      - name: Smoke through the package (current Node)
+        run: |
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
           ./target/release/streams-slate --listen 127.0.0.1:8090 \
-            --s3-endpoint http://127.0.0.1:9500 --bucket streams --region auto \
-            --access-key-id test --secret-access-key test \
-            --path-prefix ci-$RANDOM --initial-shards 4 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket sdk22-$RANDOM \
             --max-unflushed-bytes 67108864 &
           sleep 2
-          curl -fsS http://127.0.0.1:8090/health
-          node --experimental-strip-types sdk/smoke.mjs http://127.0.0.1:8090
+          cd /tmp/consumer
+          STREAMS_SDK=@prisma/streams node $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8090
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Smoke through the package (Node 18, the engines floor)
+        run: |
+          ./target/release/streams-slate --listen 127.0.0.1:8091 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket sdk18-$RANDOM \
+            --max-unflushed-bytes 67108864 &
+          sleep 2
+          cd /tmp/consumer
+          STREAMS_SDK=@prisma/streams node $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8091
 
   # Job: the pinned upstream Durable Streams server conformance suite,
   # UNMODIFIED, against a fresh namespace (spec appendix §7). The
