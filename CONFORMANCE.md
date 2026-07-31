@@ -35,6 +35,30 @@ KEY=$(./target/release/streams-keys generate)
 
 No changes to the suite itself were needed.
 
+
+## Run 2026-07-31 — pinned suite 0.3.6 (final-gate baseline run)
+
+Suite: `@durable-streams/server-conformance-tests@0.3.6` (pinned in
+`src/protocol_pin.rs`), 338 tests (grown from 239 since the 2026-07-08
+run). s3lite (2 ms latency), fresh bucket, `--conformance-default-key`,
+`--max-unflushed-bytes 67108864`.
+
+Result: **265 passed, 67 failed, 6 skipped.**
+
+Triage of the 67 (all are pinned-baseline features the suite added
+since the 239-test run — no regressions from the product-surface work):
+
+| family | count | gap |
+|---|---:|---|
+| Fork (creation, sub-offsets, reads across boundaries, recursive, live modes, soft-delete/410 lifecycle, GC cascade, TTL inheritance, JSON mode) | 58 | Forks are NOT implemented — `Stream-Forked-From` headers are accepted as plain creates; no source-prefix reads, no reference lifecycle. The largest remaining protocol feature. |
+| TTL sliding window | 5 | `Stream-TTL` idle expiry must RESET on origin reads/writes/close; we compute `expires_at` once at create and never slide it. |
+| SSE catch-up control pairing | 2 | The 0.3.6 baseline expects a control event after EVERY data event during catch-up; we emit one control per batch. |
+| CORS preflight `If-None-Match` | 1 | `OPTIONS` returns 405; the baseline wants a preflight that allows the header. |
+| Large payload status | 1 | An oversized body answers 429 (admission) where the baseline wants 413 (or 200/204). |
+
+These are the open items of the final release gate (task #87). The
+239 tests of the previous baseline remain green within the 265.
+
 ## Results
 
 | configuration | result |
