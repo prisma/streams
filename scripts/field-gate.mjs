@@ -236,7 +236,11 @@ const json = async (res) => {
     );
     rounds++;
     if (rounds % 4 === 0) {
-      const s = await json(await fetch(`${base}/v1/segments/${name}`));
+      const s = await json(
+        await fetch(`${base}/v1/segments/${name}`, {
+          headers: token ? { authorization: `Bearer ${token}` } : {},
+        }),
+      );
       segments = (s?.segments ?? []).filter((x) => x.live !== false).length || 1;
       if (segments > 1) break;
     }

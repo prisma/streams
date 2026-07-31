@@ -418,10 +418,24 @@ async fn debug_sleep(
 /// GET /v1/segments/{name} (spec §10): the stream's segment map as an
 /// observability surface — never a control knob. Implicit maps render
 /// as their single live segment.
+///
+/// Account-authenticated. Physical segmentation is internal to the
+/// product surface, and this response names the collection and exposes
+/// its key ranges, predecessors, pending transitions and sealed
+/// offsets — nothing a caller without the account token should be able
+/// to enumerate.
 async fn get_segments(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
@@ -999,7 +1013,9 @@ async fn product_list_axum(
     axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    crate::product::product_list(state, query.unwrap_or_default(), headers).await
+    crate::product::with_product_cors(
+        crate::product::product_list(state, query.unwrap_or_default(), headers).await,
+    )
 }
 
 /// Prisma product surface (spec Stage 8): everything under /v1/streams/.
@@ -1011,19 +1027,29 @@ async fn product_entry_axum(
     req: axum::extract::Request,
 ) -> Response {
     let query = req.uri().query().unwrap_or("").to_string();
+    // Authorize BEFORE buffering. Reading up to MAX_BODY_BYTES first
+    // let an unauthenticated caller make the server allocate 32 MiB per
+    // request; the gate needs only the path, method, query and headers.
+    if let Some(r) =
+        crate::product::product_auth_gate(&state, &name, &method, &query, &headers)
+    {
+        return crate::product::with_product_cors(r);
+    }
     let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
-            return crate::product::perr(
+            return crate::product::with_product_cors(crate::product::perr(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
                 "request body exceeds the limit",
                 None,
                 false,
-            );
+            ));
         }
     };
-    crate::product::product_entry(state, name, method, headers, query, body).await
+    crate::product::with_product_cors(
+        crate::product::product_entry(state, name, method, headers, query, body).await,
+    )
 }
 
 async fn stream_entry(

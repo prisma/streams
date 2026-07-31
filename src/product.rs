@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
 use bytes::Bytes;
 use serde::Deserialize;
@@ -376,6 +376,183 @@ fn parse_create_doc(body: &Bytes) -> Result<ParsedCreate, Response> {
 
 // ---- entry -----------------------------------------------------------
 
+/// Every resource the product surface defines. Requests are classified
+/// into exactly one of these BEFORE anything is authorized, because
+/// authorization differs per resource and a substring test cannot tell
+/// these apart: collection names are hierarchical, so `acme/watches/x/
+/// keys/y/extra` is a perfectly legal COLLECTION whose path contains
+/// every fragment a watch URL has. Deciding "this looks like a signed
+/// watch" by `path.contains()` let that name — and its `/records`
+/// subresource — skip the account token entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ProductRoute {
+    Collection {
+        name: String,
+    },
+    Records {
+        name: String,
+    },
+    Consumer {
+        name: String,
+        consumer: String,
+    },
+    Watches {
+        name: String,
+    },
+    Watch {
+        name: String,
+        watch: String,
+    },
+    /// The ONE route that can authorize itself, with a signature.
+    WatchWait {
+        name: String,
+        watch: String,
+        key: String,
+    },
+}
+
+/// Split a trailing `:verb` off the final segment. Only the known verbs
+/// count — a colon is legal inside a collection name.
+pub(crate) fn strip_verb(path: &str) -> (&str, Option<&str>) {
+    const VERBS: [&str; 7] = [
+        "batch", "long-poll", "sse", "pull", "settle", "seal", "scan",
+    ];
+    match path.rsplit_once(':') {
+        Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => (p, Some(v)),
+        _ => (path, None),
+    }
+}
+
+/// Parse a request path into exactly one resource. Pure: no auth, no
+/// state, no I/O — so the auth gate can run before the body is read.
+pub(crate) fn classify_route(path: &str) -> Result<ProductRoute, Response> {
+    let (path, _) = strip_verb(path);
+    let Some((stream, rest)) = split_subresource(path) else {
+        return Ok(ProductRoute::Collection {
+            name: canonical_name(path).map_err(|r| r)?,
+        });
+    };
+    let name = canonical_name(stream)?;
+    if rest == "records" {
+        return Ok(ProductRoute::Records { name });
+    }
+    if let Some(cname) = rest.strip_prefix("consumers/") {
+        let Some(consumer) = valid_consumer_name(cname) else {
+            return Err(perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_consumer_name",
+                "consumer names are one path-safe segment, 1-128 bytes",
+                None,
+                false,
+            ));
+        };
+        return Ok(ProductRoute::Consumer { name, consumer });
+    }
+    if rest == "watches" {
+        return Ok(ProductRoute::Watches { name });
+    }
+    if let Some(wrest) = rest.strip_prefix("watches/") {
+        // `{watch}/keys/{key}` is the signed observation resource, and
+        // it is exact: the watch name is one segment, the key is one
+        // segment, and nothing may follow.
+        if let Some((watch, key)) = wrest.split_once("/keys/") {
+            if !watch.is_empty()
+                && !watch.contains('/')
+                && !key.is_empty()
+                && !key.contains('/')
+            {
+                return Ok(ProductRoute::WatchWait {
+                    name,
+                    watch: watch.to_string(),
+                    key: key.to_string(),
+                });
+            }
+            return Err(perr(
+                StatusCode::NOT_FOUND,
+                "unknown_route",
+                "watch observation URLs are /watches/{watch}/keys/{key}",
+                None,
+                false,
+            ));
+        }
+        if wrest.contains('/') {
+            return Err(perr(
+                StatusCode::NOT_FOUND,
+                "unknown_route",
+                "watch names are one path segment",
+                None,
+                false,
+            ));
+        }
+        return Ok(ProductRoute::Watch {
+            name,
+            watch: wrest.to_string(),
+        });
+    }
+    Err(perr(
+        StatusCode::NOT_FOUND,
+        "unknown_route",
+        &format!("unknown product subresource '{rest}'"),
+        None,
+        false,
+    ))
+}
+
+/// ACCOUNT authorization (spec Stage 8 §14). The token authorizes
+/// account/product operations; the encryption key is a SEPARATE
+/// credential that proves record access, and neither substitutes for
+/// the other. The one exception is an exact signed watch-observation
+/// URL, a delegated capability that authorizes itself — verified
+/// against the descriptor's persisted verifier inside the handler.
+///
+/// Returns the 401 to send, or None when the request may proceed.
+pub(crate) fn product_auth_gate(
+    state: &AppState,
+    path: &str,
+    method: &Method,
+    query: &str,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    if method == Method::OPTIONS {
+        return None; // preflights carry no credentials, by definition
+    }
+    let capability = matches!(classify_route(path), Ok(ProductRoute::WatchWait { .. }))
+        && method == Method::GET
+        && query.split('&').any(|kv| kv.starts_with("sig="));
+    if capability || crate::http::authorized(state, headers) {
+        return None;
+    }
+    Some(perr(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "bearer token required",
+        None,
+        false,
+    ))
+}
+
+/// Product responses are browser-facing: a preflight that passes and an
+/// actual response the browser then blocks is no better than no CORS at
+/// all. Applied to EVERY plural-route response — successes, errors,
+/// 204s, long polls, SSE — and it must expose the product's own headers
+/// or a browser client cannot read cursors, sealed state, or Retry-After.
+pub(crate) fn with_product_cors(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    if !h.contains_key("access-control-allow-origin") {
+        h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    }
+    h.insert(
+        "access-control-expose-headers",
+        HeaderValue::from_static(
+            "content-type, retry-after, prisma-next-cursor, prisma-up-to-date, \
+             prisma-sealed, prisma-next-scan-cursor, prisma-scan-complete, \
+             prisma-routing-key",
+        ),
+    );
+    resp
+}
+
+
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
 /// explicit matching before wildcard interpretation).
@@ -404,51 +581,23 @@ pub async fn product_entry(
             .body(Body::empty())
             .unwrap();
     }
-    // ACCOUNT authorization (spec Stage 8 §14: the token authorizes
-    // account/product operations; the encryption key is a SEPARATE
-    // credential that proves record access). Every product operation
-    // requires it when one is configured — the ONE deliberate exception
-    // is the signed watch observation URL, an explicit delegated
-    // capability, which authorizes itself and is checked inside the
-    // watch handler.
-    let is_signed_watch = path.contains("/watches/")
-        && path.contains("/keys/")
-        && method == Method::GET
-        && query.split('&').any(|kv| kv.starts_with("sig="));
-    if !is_signed_watch && !crate::http::authorized(&state, &headers) {
-        return perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-            None,
-            false,
-        );
+    // Authorized by PARSED route (see product_auth_gate). The wrapper
+    // already ran this before reading the body; repeating it is cheap
+    // and keeps direct callers safe.
+    if let Some(r) = product_auth_gate(&state, &path, &method, &query, &headers) {
+        return r;
     }
     if let Some(r) = reject_legacy_inputs(&headers, &query, &method) {
         return r;
     }
-    // Verb suffix on the FINAL segment: `name:seal`, `records:batch`.
-    // Only the known verbs are recognized, because a colon is a legal
-    // character in a collection name — treating any trailing `:x` as a
-    // verb would make every such name unaddressable, and `:seel` would
-    // silently mean something other than what was typed. An unknown
-    // verb stays part of the name and answers 404, as it should.
-    const VERBS: [&str; 7] = [
-        "batch", "long-poll", "sse", "pull", "settle", "seal", "scan",
-    ];
-    let (path, verb) = match path.rsplit_once(':') {
-        Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => {
-            (p.to_string(), Some(v.to_string()))
-        }
-        _ => (path, None),
+    let (_, verb) = strip_verb(&path);
+    let verb = verb.map(str::to_string);
+    let route = match classify_route(&path) {
+        Ok(r) => r,
+        Err(r) => return r,
     };
-    // Subresource split (reserved final segments).
-    if let Some((stream, rest)) = split_subresource(&path) {
-        let name = match canonical_name(stream) {
-            Ok(n) => n,
-            Err(r) => return r,
-        };
-        if rest == "records" {
+    match route {
+        ProductRoute::Records { name } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::POST, None) => product_append(state, name, headers, body, false).await,
                 (Method::POST, Some("batch")) => {
@@ -470,16 +619,10 @@ pub async fn product_entry(
                 ),
             };
         }
-        if let Some(cname) = rest.strip_prefix("consumers/") {
-            let Some(cname) = valid_consumer_name(cname) else {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_consumer_name",
-                    "consumer names are one path-safe segment, 1-128 bytes",
-                    None,
-                    false,
-                );
-            };
+        ProductRoute::Consumer {
+            name,
+            consumer: cname,
+        } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::PUT, None) => {
                     product_consumer_put(state, name, cname, headers, body).await
@@ -503,41 +646,48 @@ pub async fn product_entry(
                 ),
             };
         }
-        if rest == "watches" && method == Method::GET {
-            return product_watches_list(state, name).await;
-        }
-        if let Some(wrest) = rest.strip_prefix("watches/") {
-            return match (method.clone(), wrest.split_once("/keys/")) {
-                (Method::GET, Some((w, key_hex))) => {
-                    product_watch_wait(
-                        state,
-                        name,
-                        w.to_string(),
-                        key_hex.to_string(),
-                        headers,
-                        &query,
-                    )
-                    .await
-                }
-                (Method::GET, None) => product_watch_get(state, name, wrest.to_string()).await,
-                _ => perr(
+        ProductRoute::Watches { name } => {
+            return if method == Method::GET {
+                product_watches_list(state, name).await
+            } else {
+                perr(
                     StatusCode::METHOD_NOT_ALLOWED,
                     "method_not_allowed",
                     "watches are read-only (GET)",
                     None,
                     false,
-                ),
+                )
             };
         }
-        return perr(
-            StatusCode::NOT_FOUND,
-            "unknown_route",
-            &format!("unknown product subresource '{rest}'"),
-            None,
-            false,
-        );
+        ProductRoute::Watch { name, watch } => {
+            return if method == Method::GET {
+                product_watch_get(state, name, watch).await
+            } else {
+                perr(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "watches are read-only (GET)",
+                    None,
+                    false,
+                )
+            };
+        }
+        ProductRoute::WatchWait { name, watch, key } => {
+            return if method == Method::GET {
+                product_watch_wait(state, name, watch, key, headers, &query).await
+            } else {
+                perr(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "watches are read-only (GET)",
+                    None,
+                    false,
+                )
+            };
+        }
+        ProductRoute::Collection { .. } => {}
     }
-    let name = match canonical_name(&path) {
+    let name = match canonical_name(&strip_verb(&path).0.to_string()) {
         Ok(n) => n,
         Err(r) => return r,
     };

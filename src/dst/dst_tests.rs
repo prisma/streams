@@ -8940,6 +8940,155 @@ async fn hierarchical_names_do_not_shadow_subresources() {
     engine_shutdown(&state).await;
 }
 
+/// The signed watch URL is the ONE product route that authorizes
+/// itself, and "looks like a watch URL" was decided by substring tests
+/// on the raw path. Collection names are hierarchical, so
+/// `acme/watches/x/keys/y/extra` is a legal COLLECTION whose path
+/// contains every fragment a watch URL has — it, and its `/records`
+/// subresource, skipped the account token entirely. Records could be
+/// read with the encryption key alone, which is exactly the credential
+/// separation the product surface exists to keep.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_the_exact_signed_watch_route_skips_the_token() {
+    let store = mem();
+    let (state, addr) = http_rig_auth(store, "tok").await;
+    let auth = [
+        ("authorization", "Bearer tok"),
+        ("prisma-encryption-key", PRISMA_KEY),
+    ];
+    // A collection whose NAME carries every watch-URL fragment.
+    let evil = "acme/watches/x/keys/y/extra";
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{evil}"),
+        &auth,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{evil}/records"),
+        &auth,
+        br#"{"secret":"x"}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Without the token, with a sig pasted on, every one of these is 401.
+    let key_only = [("prisma-encryption-key", PRISMA_KEY)];
+    for path in [
+        format!("/v1/streams/{evil}?sig=anything"),
+        format!("/v1/streams/{evil}/records?sig=anything"),
+        format!("/v1/streams/{evil}/records?routingKey=&sig=anything"),
+        format!("/v1/streams/{evil}/watches?sig=anything"),
+        format!("/v1/streams/{evil}/consumers/c?sig=anything"),
+        // a watch-shaped path with EXTRA segments after the key
+        "/v1/streams/acme/watches/w/keys/0011223344556677/extra?sig=x".to_string(),
+    ] {
+        let (st, _, b) = preq(addr, "GET", &path, &key_only, b"").await;
+        assert_eq!(
+            st, 401,
+            "token bypass via {path}: {}",
+            String::from_utf8_lossy(&b)
+        );
+    }
+    // The write path is refused too, before any body is read.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{evil}/records?sig=anything"),
+        &key_only,
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 401);
+
+    // The exact signed route still works without a token: create a
+    // collection WITH a watch, derive the URL, present it bare.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wauth",
+        &auth,
+        br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (_, _, b) = preq(addr, "GET", "/v1/streams/wauth", &auth, b"").await;
+    let meta: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let epoch: [u8; 16] = crate::crypto::unhex(meta["epoch"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let khex = crate::product::watch_key_hex("w", &["/id".to_string()], &[r#""a""#.to_string()]);
+    let tok = crate::crypto::touch_token(&key, &epoch);
+    let sig = crate::crypto::wait_url_sig(&crate::crypto::wait_sig_key(&tok, &epoch), &khex);
+    let path =
+        format!("/v1/streams/wauth/watches/w/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}");
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(
+        st,
+        200,
+        "the exact signed route must still self-authorize: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // …but not without the signature.
+    let bare = format!("/v1/streams/wauth/watches/w/keys/{khex}?cursor=now&timeoutMs=150");
+    let (st, _, _) = preq(addr, "GET", &bare, &[], b"").await;
+    assert_eq!(st, 401);
+    engine_shutdown(&state).await;
+}
+
+/// CORS that only answers preflights is not CORS: the browser passes
+/// the OPTIONS and then blocks the response it was asking about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_responses_carry_cors_not_just_preflights() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, h, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cors",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    let expose = |h: &std::collections::HashMap<String, String>| {
+        h.get("access-control-expose-headers").cloned().unwrap_or_default()
+    };
+    assert!(expose(&h).contains("prisma-next-cursor"), "{:?}", expose(&h));
+
+    // an actual GET…
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/cors/records", &key, b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert!(expose(&h).contains("prisma-sealed"));
+    // …a POST…
+    let (st, h, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cors/records",
+        &key,
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    // …and an ERROR, which a browser must be able to read to retry.
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/nope-missing", &key, b"").await;
+    assert_eq!(st, 404);
+    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert!(expose(&h).contains("retry-after"));
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
