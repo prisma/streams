@@ -25,6 +25,43 @@ use crate::crypto::RoutingKeyHash;
 use crate::registry::StreamDesc;
 use crate::sketch::KeyDistribution;
 
+use std::sync::OnceLock as PolicyOnceLock;
+
+/// Scaling policy knobs (moved from the deleted legacy scaler module;
+/// the unified scaler is the only consumer).
+pub struct ScalePolicy {
+    pub eval_secs: u64,
+    /// EWMA window (Pravega-style two-minute rate by default).
+    pub rate_window_secs: f64,
+    pub hot_pct: f64,
+    pub cold_pct: f64,
+    pub hot_evals: u32,
+    pub cold_evals: u32,
+    pub cooldown_secs: i64,
+    pub max_segments: usize,
+}
+
+pub fn policy() -> &'static ScalePolicy {
+    static P: PolicyOnceLock<ScalePolicy> = PolicyOnceLock::new();
+    P.get_or_init(|| ScalePolicy {
+        eval_secs: envf("SCALE_EVAL_SECS", 10.0) as u64,
+        rate_window_secs: envf("SCALE_RATE_WINDOW_SECS", 120.0),
+        hot_pct: envf("SCALE_HOT_PCT", 75.0) / 100.0,
+        cold_pct: envf("SCALE_COLD_PCT", 15.0) / 100.0,
+        hot_evals: envf("SCALE_HOT_EVALS", 2.0) as u32,
+        cold_evals: envf("SCALE_COLD_EVALS", 180.0) as u32,
+        cooldown_secs: envf("SCALE_COOLDOWN_SECS", 600.0) as i64,
+        max_segments: envf("MAX_SEGMENTS_PER_STREAM", 64.0) as usize,
+    })
+}
+
+fn envf(k: &str, d: f64) -> f64 {
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
+}
+
 /// Counters (spec §14).
 pub static SEGMENT_SPLITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static SEGMENT_MERGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -98,12 +135,13 @@ pub fn hot_keys_all() -> Vec<(String, RoutingKeyHash)> {
 pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u64, records: u64) {
     // Streams the scaler must not touch: legacy layouts and profiles
     // whose cursor/journal semantics are per-stream scalar today.
-    let pinned = desc.is_per_key()
-        || desc.scaling
-        || matches!(
-            desc.profile.as_deref(),
-            Some("queue") | Some("state-protocol")
-        );
+    // Pinned profiles keep per-stream scalar cursor/journal semantics
+    // until their per-segment integrations land (the legacy per-key and
+    // scaling layouts were deleted in the clean switch).
+    let pinned = matches!(
+        desc.profile.as_deref(),
+        Some("queue") | Some("state-protocol")
+    );
     let now = crate::shard::now_ms();
     let mut g = state().lock().unwrap();
     // Amortized idle sweep keeps the population honest without a
@@ -135,7 +173,7 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
         }
     }
     let e = g.sketches.entry(key).or_insert_with(|| SegSketch {
-        dist: KeyDistribution::new(seg.lo, seg.hi, crate::scaler::policy().rate_window_secs),
+        dist: KeyDistribution::new(seg.lo, seg.hi, policy().rate_window_secs),
         hot_streak: 0,
         cold_streak: 0,
         profile_pinned: pinned,
@@ -148,7 +186,7 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
 /// One evaluation pass over every sketched segment. Returns the split
 /// decisions taken (stream, seg_id) — the driver executes them.
 fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
-    let pol = crate::scaler::policy();
+    let pol = policy();
     let lim = crate::usage::limits();
     let mut out = Vec::new();
     let mut g = state().lock().unwrap();
@@ -596,7 +634,7 @@ pub(crate) mod failpoints {
 /// The evaluation loop (one per instance).
 pub fn start(st: std::sync::Weak<crate::http::AppState>) {
     tokio::spawn(async move {
-        let eval = crate::scaler::policy().eval_secs.max(1);
+        let eval = policy().eval_secs.max(1);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(eval)).await;
             let Some(st) = st.upgrade() else { return };
@@ -624,7 +662,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 }
                 let mut live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
                 live.sort_by_key(|s| s.lo);
-                let min_age = crate::scaler::policy().cooldown_secs * 1000;
+                let min_age = policy().cooldown_secs * 1000;
                 let now = crate::shard::now_ms();
                 let pair = live.windows(2).find(|w| {
                     w[0].hi == w[1].lo
@@ -674,13 +712,10 @@ mod tests {
             profile: None,
             content_type: "application/json".into(),
             ttl_secs: None,
-            ordering: None,
-            segment_count: 0,
             queue_max_deliveries: None,
             touch_token_fingerprint: None,
             touch_templates: Vec::new(),
             touch_sig_key: None,
-            scaling: false,
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),

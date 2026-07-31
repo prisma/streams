@@ -13,7 +13,6 @@ mod product;
 mod protocol_pin;
 mod queue;
 mod registry;
-mod scaler;
 mod scaler3;
 mod segmap;
 mod shard;
@@ -933,7 +932,6 @@ async fn async_main() -> anyhow::Result<()> {
         );
     }
     http::spawn_billing(state.clone());
-    http::spawn_scaler(state.clone());
     let app = http::router(state);
 
     crate::store_timing::spawn_sentinels();

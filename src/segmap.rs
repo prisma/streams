@@ -30,6 +30,10 @@ pub struct SegmentDesc {
     /// Parent segment ids (1 for a split child, 2 for a merge child).
     #[serde(default)]
     pub predecessors: Vec<u32>,
+    /// Live successors of THIS segment once sealed (spec Stage 3
+    /// §4.2: persisted explicitly, not derived by range intersection).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub successors: Vec<u32>,
     /// Set when sealed: no further appends; readers drain to
     /// `sealed_next_offset` then follow successors.
     #[serde(default)]
@@ -103,6 +107,7 @@ impl SegmentMap {
                 route_hash: [0u8; 16],
                 created_ms: now_ms,
                 predecessors: vec![],
+                successors: Vec::new(),
                 sealed_ms: None,
                 sealed_next_offset: None,
             }],
@@ -123,12 +128,20 @@ impl SegmentMap {
         self.segments.iter().find(|s| s.seg_id == seg_id)
     }
 
-    /// Live successors of a sealed segment: the live segments whose range
-    /// intersects the sealed one's.
+    /// Successors of a sealed segment: the PERSISTED list (written
+    /// atomically with the seal at Phase B — spec Stage 3 §4.2), with
+    /// range-intersection derivation only as a defensive fallback.
     pub fn successors(&self, seg_id: u32) -> Vec<&SegmentDesc> {
         let Some(sealed) = self.get(seg_id) else {
             return vec![];
         };
+        if !sealed.successors.is_empty() {
+            return sealed
+                .successors
+                .iter()
+                .filter_map(|id| self.get(*id))
+                .collect();
+        }
         self.live()
             .filter(|s| s.lo < sealed.hi && sealed.lo < s.hi)
             .collect()
@@ -178,6 +191,7 @@ impl SegmentMap {
         parent.sealed_next_offset = Some(sealed_next_offset);
         let a = self.next_seg_id;
         let b = self.next_seg_id + 1;
+        parent.successors = vec![a, b];
         self.next_seg_id += 2;
         self.segments.push(SegmentDesc {
             seg_id: a,
@@ -187,6 +201,7 @@ impl SegmentMap {
             route_hash: low_route,
             created_ms: now_ms,
             predecessors: vec![seg_id],
+            successors: Vec::new(),
             sealed_ms: None,
             sealed_next_offset: None,
         });
@@ -198,6 +213,7 @@ impl SegmentMap {
             route_hash: high_route,
             created_ms: now_ms,
             predecessors: vec![seg_id],
+            successors: Vec::new(),
             sealed_ms: None,
             sealed_next_offset: None,
         });
@@ -238,12 +254,13 @@ impl SegmentMap {
         } else {
             return Err(MapError::NotAdjacent(a_id, b_id));
         };
+        let c = self.next_seg_id;
         for (id, next) in [(a_id, a_sealed_next), (b_id, b_sealed_next)] {
             let s = self.segments.iter_mut().find(|s| s.seg_id == id).unwrap();
             s.sealed_ms = Some(now_ms);
             s.sealed_next_offset = Some(next);
+            s.successors = vec![c];
         }
-        let c = self.next_seg_id;
         self.next_seg_id += 1;
         self.segments.push(SegmentDesc {
             seg_id: c,
@@ -253,6 +270,7 @@ impl SegmentMap {
             route_hash: child_route,
             created_ms: now_ms,
             predecessors: vec![a_id, b_id],
+            successors: Vec::new(),
             sealed_ms: None,
             sealed_next_offset: None,
         });

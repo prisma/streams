@@ -655,106 +655,6 @@ async fn debug_usage() -> Response {
 /// usage is excluded to avoid self-feedback.
 /// Server-internal segment seal: enqueue a close-only commit (no key
 /// material needed — close writes tail state only) and return the frozen
-/// next_offset. None when the stream/engine is unavailable.
-async fn internal_close(state: Arc<AppState>, name: String) -> Option<u64> {
-    let desc = state.registry.get(&name).await.ok().flatten()?;
-    // Mirror the append path exactly: records are keyed by storage_hash,
-    // but the ENGINE is selected by stream_hash(name) (mismatching them
-    // closed a phantom keyspace on another shard - e2e run 4, next=0).
-    let hash = desc.storage_hash();
-    let engine = state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
-        .await
-        .ok()?;
-    let (tx, rx) = oneshot::channel();
-    let req = AppendReq {
-        enqueued_at: std::time::Instant::now(),
-        hash,
-        route: crate::crypto::stream_hash(&desc.name),
-        entries: vec![],
-        usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
-        routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
-        producer_lineage: Vec::new(),
-        key_version: 0,
-        subkey: [0u8; 32],
-        ts_hint_ms: None,
-        seq: None,
-        bytes: 0,
-        close: true,
-        producer: None,
-        deferred_error: None,
-        touch: None,
-        resp: tx,
-    };
-    engine.try_enqueue(req).ok()?;
-    match rx.await {
-        Ok(Ok(ack)) => Some(ack.next_offset),
-        Ok(Err(crate::shard::AppendErr::Closed { next_offset })) => Some(next_offset),
-        _ => None,
-    }
-}
-
-/// The scaler loop (SCALING.md §2): evaluates every scaled stream this
-/// instance has routed for, on SCALE_EVAL_SECS cadence. CAS on the
-/// segment map arbitrates between instances.
-pub fn spawn_scaler(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let secs = crate::scaler::policy().eval_secs;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
-            let store = state.registry.store();
-            for parent in crate::scaler::scaled_streams() {
-                let mut ewmas = {
-                    crate::scaler::ewma_state()
-                        .lock()
-                        .unwrap()
-                        .remove(&parent)
-                        .unwrap_or_default()
-                };
-                let st = state.clone();
-                let owner_st = state.clone();
-                let outcome = crate::scaler::evaluate_stream(
-                    &store,
-                    &parent,
-                    &mut ewmas,
-                    |seg_name: String| {
-                        let st = st.clone();
-                        async move { internal_close(st, seg_name).await }
-                    },
-                    // Act only on segments whose shard this instance
-                    // serves — its counters are authoritative for exactly
-                    // those, and it can seal them locally. POSSESSION is
-                    // the truth, not the ring: engine_for grandfathers a
-                    // shard it opened before the ring said otherwise
-                    // (fencing arbitrates real conflicts), and a
-                    // ring-only check here leaves such shards evaluated
-                    // by NOBODY (p5: no split for a whole pass).
-                    move |seg_name: &str| {
-                        let hash = crate::crypto::stream_hash(seg_name);
-                        let prefix = shard_for_hash(&owner_st.shard_prefixes, &hash);
-                        if owner_st.shards.read().unwrap().contains_key(&prefix) {
-                            return true;
-                        }
-                        owner_st
-                            .effective_owner(&prefix)
-                            .map(|o| o == owner_st.instance_name)
-                            .unwrap_or(true)
-                    },
-                )
-                .await;
-                if let Some(desc) = outcome {
-                    tracing::info!("scaler: {desc}");
-                }
-                crate::scaler::ewma_state()
-                    .lock()
-                    .unwrap()
-                    .insert(parent, ewmas);
-            }
-        }
-    });
-}
-
 pub fn spawn_billing(state: Arc<AppState>) {
     let Ok(key) = std::env::var("BILLING_STREAM_KEY") else {
         tracing::warn!("BILLING_STREAM_KEY unset; billing emitter disabled");
@@ -903,10 +803,6 @@ pub fn router(state: Arc<AppState>) -> Router {
                     axum::Json(serde_json::json!({"absorb_paused": on}))
                 },
             ),
-        )
-        .route(
-            "/v1/debug/scaler",
-            get(|| async { axum::Json(crate::scaler::debug_snapshot()) }),
         )
         .route("/v1/debug/sleep", get(debug_sleep))
         // Operator dashboard: UNSECURED by explicit product decision (on-call
@@ -1182,56 +1078,6 @@ async fn stream_entry_inner(
         )
         .await;
     }
-    // Segment map (SCALING.md §5): GET /v1/stream/<name>/segments returns
-    // the map + lineage for SDKs and tooling. Requires the stream key
-    // (same proof-of-authorization as reads).
-    if let Some(stream) = name.strip_suffix("/segments") {
-        if method != Method::GET {
-            return err_resp(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET only",
-            );
-        }
-        let desc = match state.registry.get(stream).await {
-            Ok(Some(d)) if desc_alive(&d) => d,
-            Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-            Err(e) => {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
-            }
-        };
-        match check_key(raw_key(&headers, &state), &desc) {
-            KeyCheck::Ok(..) => {}
-            KeyCheck::Missing => {
-                return err_resp(
-                    StatusCode::BAD_REQUEST,
-                    "missing_key",
-                    "Stream-Encryption-Key required",
-                );
-            }
-            _ => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        }
-        if !desc.scaling {
-            return err_resp(
-                StatusCode::CONFLICT,
-                "not_scaled",
-                "stream does not have scaling enabled",
-            );
-        }
-        let hash = crate::crypto::stream_hash(&desc.name);
-        let store = state.registry.store();
-        let map = crate::scaler::load_map(&store, &hash).await;
-        return axum::Json(serde_json::json!({
-            "stream": desc.name,
-            "version": map.version,
-            "segments": map.segments,
-        }))
-        .into_response();
-    }
     // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
     if let Some((stream, route)) = name.split_once("/touch/") {
         return touch_entry(
@@ -1463,17 +1309,10 @@ fn fresh_desc(
         profile,
         content_type,
         ttl_secs,
-        // ROUTING-V3: every stream is key-partitioned with the implicit
-        // single-segment map; ordering/segmentation/scaling are no
-        // longer creation-time choices. The legacy fields stay zeroed
-        // (they exist only to parse pre-v3 descriptors).
-        ordering: None,
-        segment_count: 0,
         queue_max_deliveries: None,
         touch_token_fingerprint: tt_fpr,
         touch_templates,
         touch_sig_key: sig_key,
-        scaling: false,
         segments: None,
         sealed: false,
         watch_definitions: Vec::new(),
@@ -1861,20 +1700,6 @@ async fn create_stream(
         closed_now = true; // preserved on idempotent PUT of a closed stream
     }
 
-    // Scaled stream: persist the initial single-segment map at creation so
-    // segment ages (cooldowns) are real. Idempotent: Create-mode CAS loses
-    // harmlessly if the map already exists.
-    if created && desc.scaling {
-        let m = crate::segmap::SegmentMap::initial("", crate::shard::now_ms());
-        let _ = crate::segmap::save(
-            &state.registry.store(),
-            &crate::crypto::stream_hash(&desc.name),
-            &m,
-            None,
-        )
-        .await;
-    }
-
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -2169,25 +1994,7 @@ async fn append_core(
     // resolve segments in-process below — docs/ROUTING-V3.md §2.)
     let mut desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(other) => {
-            // Lazy child creation: "<parent>#<n>" appears when the scaler
-            // opens a segment; the first append (which carries the stream
-            // key) creates it inheriting the parent's config.
-            if let Some((parent, _)) = name.split_once('#') {
-                if let Ok(Some(pd)) = state.registry.get(parent).await {
-                    if pd.scaling && desc_alive(&pd) && other.is_none() {
-                        let mut ch = headers.clone();
-                        if let Ok(v) = axum::http::HeaderValue::from_str(&pd.content_type) {
-                            ch.insert("content-type", v);
-                        }
-                        let r = create_stream(state.clone(), name.clone(), ch, Bytes::new()).await;
-                        if r.status().is_success() || r.status() == StatusCode::CONFLICT {
-                            return Box::pin(append(state, name, headers, body)).await;
-                        }
-                        return r;
-                    }
-                }
-            }
+        Ok(_) => {
             return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found");
         }
         Err(e) => {
@@ -2198,60 +2005,6 @@ async fn append_core(
             );
         }
     };
-    if desc.scaling && !name.contains('#') {
-        let rk = hdr(&headers, "stream-key").unwrap_or_default();
-        if rk.is_empty() {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "routing_key_required",
-                "scaled streams require a Stream-Key routing key on appends",
-            );
-        }
-        let store = state.registry.store();
-        let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
-            Ok(b) => b,
-            Err(_) => {
-                return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
-            }
-        };
-        for attempt in 0..4u32 {
-            let target = crate::scaler::route(&store, &name, &rk).await;
-            let r = Box::pin(append(
-                state.clone(),
-                target.clone(),
-                headers.clone(),
-                Body::from(body_bytes.clone()),
-            ))
-            .await;
-            // Sealed child mid-transition: refresh the map and follow.
-            if r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed") {
-                crate::scaler::invalidate(&crate::crypto::stream_hash(&name));
-                if attempt >= 1 {
-                    // Still routed to a sealed child after a fresh map
-                    // read: a scaler died between seal and map-save.
-                    // Re-seal (idempotent, returns the frozen offset) and
-                    // publish the missing transition ourselves.
-                    if let Some((_, sid)) = target.rsplit_once('#') {
-                        if let (Ok(seg_id), Some(next)) = (
-                            sid.parse::<u32>(),
-                            internal_close(state.clone(), target.clone()).await,
-                        ) {
-                            crate::scaler::resume_split(&store, &name, seg_id, next).await;
-                        }
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(25 * (attempt as u64 + 1)))
-                    .await;
-                continue;
-            }
-            return r;
-        }
-        return err_resp(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "segment_transition",
-            "segment map transition did not converge; retry",
-        );
-    }
     // Capacity admission is PER SEGMENT (review blocker 1: after a
     // split, each child must get its own inflight budget — a shared
     // per-stream bucket would cap the pair at one segment's capacity).
@@ -2565,7 +2318,7 @@ async fn append_core(
     // streams) keep the plain token byte-for-byte; legacy per-key
     // layouts keep their epoch-prefixed tokens (epoch 0 when n == 1,
     // exactly as before).
-    let segmented = desc.is_per_key() || desc.segments.is_some();
+    let segmented = desc.segments.is_some();
     let tok = |next: u64| {
         if segmented {
             crate::offsets::encode_ep(
@@ -3027,12 +2780,6 @@ async fn read_inner(
             );
         }
     };
-    // A single-segment per-key stream is the degenerate case: totally
-    // ordered, epoch-0 tokens — serve it through the standard path so every
-    // semantic (incl. unkeyed live reads) is byte-identical.
-    if desc.is_per_key() && desc.segment_count.max(1) > 1 {
-        return read_per_key(state, desc, params, headers, head_only).await;
-    }
     // ROUTING-V3 dynamic maps with successors OR an in-flight transition:
     // lineage-aware reads (spec §3.4/§9). A pending transition routes
     // here even at one segment, because the seal-to-publication gap is
@@ -4066,425 +3813,6 @@ async fn read_v3_lineage_inner(
         }
         return r.body(Body::from(body)).unwrap();
     }
-}
-
-async fn read_per_key(
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    params: ReadParams,
-    headers: HeaderMap,
-    head_only: bool,
-) -> Response {
-    let n = desc.segment_count.max(1);
-    let seg_tok = |ord: u32, next: u64| {
-        crate::offsets::encode_ep(
-            ord,
-            if next == 0 {
-                Offset::START
-            } else {
-                Offset(Some(next - 1))
-            },
-        )
-    };
-    // All segments of a per-key stream live in the parent stream's shard
-    // (routing unit = stream; Pravega-style cross-shard segments deferred).
-    let parent_engine = match state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
-        .await
-    {
-        Ok(e) => e,
-        Err(r) => return r,
-    };
-    let seg_handle = |ord: u32| {
-        let hash = desc.segment_hash(ord);
-        (hash, parent_engine.clone())
-    };
-
-    if head_only {
-        // No single end-of-stream offset exists; report the highest-ordinal
-        // segment's tail plus the segment count (spec accommodation #2).
-        let (hash, engine) = seg_handle(n - 1);
-        let (end, closed) = match engine.stream_handle(hash).await {
-            Ok(h) => {
-                let st = h.state.lock().unwrap();
-                (st.durable.next, st.durable.closed)
-            }
-            Err(e) => {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
-            }
-        };
-        let mut r = Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, desc.content_type.clone())
-            .header("Stream-Next-Offset", seg_tok(n - 1, end))
-            .header("Stream-Ordering", "per-key")
-            .header("Stream-Segment-Count", n.to_string())
-            .header(header::CACHE_CONTROL, "no-store");
-        if closed {
-            r = r.header("Stream-Closed", "true");
-        }
-        return r.body(Body::empty()).unwrap();
-    }
-
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-
-    let live = match params.live.as_deref() {
-        None => None,
-        Some("long-poll") | Some("true") => Some("long-poll"),
-        Some("sse") => Some("sse"),
-        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
-    };
-    if live.is_some() && params.offset.is_none() {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "missing_offset",
-            "live reads require offset",
-        );
-    }
-    // Accommodation #1: whole-stream live tails have no single durable
-    // cursor across concurrent segments.
-    if live.is_some() && params.key.is_none() {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "unsupported_on_per_key",
-            "live reads on per-key streams require key=",
-        );
-    }
-
-    // Resolve start (ordinal, position).
-    let parsed = match params.offset.as_deref() {
-        None => Some((0u32, 0u64)),
-        Some("now") => None, // handled per mode below
-        Some(raw) => match crate::offsets::parse_ep(raw) {
-            Ok((e, o)) if e < n => Some((e, o.scan_from())),
-            Ok(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", "unknown segment"),
-            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
-        },
-    };
-
-    if let Some(rk) = params.key.as_deref() {
-        // Keyed read: single-segment chain in v1.
-        let ord = desc.segment_for(rk);
-        let (hash, engine) = seg_handle(ord);
-        state.keys.put(hash, key.clone(), epoch);
-        let handle = match engine.stream_handle(hash).await {
-            Ok(h) => h,
-            Err(e) => {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
-            }
-        };
-        let (mut end, closed) = {
-            let st = handle.state.lock().unwrap();
-            (st.durable.next, st.durable.closed)
-        };
-        let scan_from = match parsed {
-            None => end, // now
-            Some((e, p)) => {
-                if e != ord && params.offset.as_deref() != Some("-1") && !(e == 0 && p == 0) {
-                    return err_resp(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_offset",
-                        "offset segment does not own this key",
-                    );
-                }
-                p
-            }
-        };
-        let mut live_wake = false;
-        if live == Some("long-poll") && scan_from >= end {
-            if !closed {
-                let wait = params
-                    .timeout
-                    .as_deref()
-                    .and_then(parse_duration)
-                    .unwrap_or(Duration::from_secs(3))
-                    .min(MAX_LONG_POLL);
-                let deadline = tokio::time::Instant::now() + wait;
-                loop {
-                    let notified = handle.notify.notified();
-                    end = handle.state.lock().unwrap().durable.next;
-                    if end > scan_from {
-                        live_wake = true;
-                        break;
-                    }
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = tokio::time::sleep_until(deadline) => break,
-                    }
-                }
-            }
-            if end <= scan_from {
-                let mut r = Response::builder()
-                    .status(StatusCode::NO_CONTENT)
-                    .header("Stream-Next-Offset", seg_tok(ord, end))
-                    .header("Stream-Ordering", "per-key")
-                    .header("Stream-Up-To-Date", "true")
-                    .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
-                    .header(header::CACHE_CONTROL, "no-store");
-                if closed {
-                    r = r.header("Stream-Closed", "true");
-                }
-                return r.body(Body::empty()).unwrap();
-            }
-        }
-        if live == Some("sse") {
-            let start = match parsed {
-                None => StartPos::Now,
-                Some((_, p)) => StartPos::At(p),
-            };
-            return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
-        }
-        let out = match read_records(
-            &state,
-            &desc,
-            &key,
-            &epoch,
-            &handle,
-            &engine,
-            scan_from,
-            Some(rk),
-            // A woken live read returns a fresh commit group, not a
-            // backlog: the small budget keeps the response — and the
-            // consumer's next-poll rearm — proportional to it.
-            if live_wake {
-                tail_max_bytes()
-            } else {
-                MAX_READ_BYTES
-            },
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        };
-        return per_key_body(
-            &desc,
-            out,
-            ord,
-            scan_from,
-            closed,
-            seg_tok,
-            live.is_some(),
-            &params,
-        );
-    }
-
-    // Unkeyed: segment-sequential replay (accommodation: per-segment order).
-    let (mut ord, mut pos) = match parsed {
-        None => {
-            // offset=now: tail of the highest ordinal (HEAD semantics).
-            let (hash, engine) = seg_handle(n - 1);
-            let end = match engine.stream_handle(hash).await {
-                Ok(h) => h.state.lock().unwrap().durable.next,
-                Err(e) => {
-                    return err_resp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                    );
-                }
-            };
-            let body: Body = if desc.is_json() {
-                Body::from("[]")
-            } else {
-                Body::empty()
-            };
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, desc.content_type.clone())
-                .header("Stream-Next-Offset", seg_tok(n - 1, end))
-                .header("Stream-Ordering", "per-key")
-                .header("Stream-Up-To-Date", "true")
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(body)
-                .unwrap();
-        }
-        Some(v) => v,
-    };
-    let mut recs: Vec<PlainRec> = Vec::new();
-    let mut budget = MAX_READ_BYTES;
-    let mut last_tok = None;
-    let mut up_to_date = false;
-    let mut closed_at_end = false;
-    loop {
-        let (hash, engine) = seg_handle(ord);
-        state.keys.put(hash, key.clone(), epoch);
-        let handle = match engine.stream_handle(hash).await {
-            Ok(h) => h,
-            Err(e) => {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
-            }
-        };
-        let closed = handle.state.lock().unwrap().durable.closed;
-        let out = match read_records(
-            &state, &desc, &key, &epoch, &handle, &engine, pos, None, budget,
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        };
-        for r in &out.recs {
-            budget = budget.saturating_sub(r.payload.len());
-        }
-        let consumed = out.last.map(|o| o + 1).unwrap_or(pos);
-        last_tok = Some(seg_tok(ord, consumed));
-        recs.extend(out.recs);
-        if !out.completed || budget == 0 {
-            break;
-        }
-        if ord + 1 < n {
-            ord += 1;
-            pos = 0;
-            continue;
-        }
-        up_to_date = true;
-        closed_at_end = closed;
-        break;
-    }
-    let etag = format!(
-        "\"{}-pk-{}-{}\"",
-        &desc.stream_epoch[..8],
-        last_tok.clone().unwrap_or_default(),
-        up_to_date as u8
-    );
-    if let Some(inm) = hdr(&headers, "if-none-match") {
-        if inm == etag {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header("ETag", etag)
-                .body(Body::empty())
-                .unwrap();
-        }
-    }
-    let body: Bytes = if desc.is_json() {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(b"[");
-        for (i, r) in recs.iter().enumerate() {
-            if i > 0 {
-                buf.extend_from_slice(b",");
-            }
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.extend_from_slice(b"]");
-        buf.freeze()
-    } else {
-        let mut buf = BytesMut::new();
-        for r in &recs {
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.freeze()
-    };
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, desc.content_type.clone())
-        .header(
-            "Stream-Next-Offset",
-            last_tok.unwrap_or_else(|| seg_tok(0, 0)),
-        )
-        .header("Stream-Ordering", "per-key")
-        .header("ETag", etag)
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if up_to_date {
-        r = r.header("Stream-Up-To-Date", "true");
-        if closed_at_end {
-            r = r.header("Stream-Closed", "true");
-        }
-    }
-    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
-        .bytes_out
-        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    r.body(Body::from(body)).unwrap()
-}
-
-fn per_key_body(
-    desc: &StreamDesc,
-    out: ReadOut,
-    ord: u32,
-    scan_from: u64,
-    closed: bool,
-    seg_tok: impl Fn(u32, u64) -> String,
-    is_live: bool,
-    params: &ReadParams,
-) -> Response {
-    let consumed = out.last.map(|o| o + 1).unwrap_or(scan_from);
-    let up_to_date = out.completed;
-    let etag = format!(
-        "\"{}-pk{}-{}-{}\"",
-        &desc.stream_epoch[..8],
-        ord,
-        consumed,
-        out.end
-    );
-    let body: Bytes = if desc.is_json() {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(b"[");
-        for (i, r) in out.recs.iter().enumerate() {
-            if i > 0 {
-                buf.extend_from_slice(b",");
-            }
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.extend_from_slice(b"]");
-        buf.freeze()
-    } else {
-        let mut buf = BytesMut::new();
-        for r in &out.recs {
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.freeze()
-    };
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, desc.content_type.clone())
-        .header("Stream-Next-Offset", seg_tok(ord, consumed))
-        .header("Stream-Ordering", "per-key")
-        .header("ETag", etag)
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if up_to_date {
-        r = r.header("Stream-Up-To-Date", "true");
-        if closed {
-            r = r.header("Stream-Closed", "true");
-        }
-    }
-    if is_live {
-        r = r
-            .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
-            .header(header::CACHE_CONTROL, "no-store");
-    }
-    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
-        .bytes_out
-        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    r.body(Body::from(body)).unwrap()
 }
 
 // ---- queue profile surface (PROFILES.md §7; CF-informed) ----

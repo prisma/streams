@@ -32,14 +32,6 @@ pub struct StreamDesc {
     /// Raw TTL seconds as configured (config-compare + HEAD reporting).
     #[serde(default)]
     pub ttl_secs: Option<u64>,
-    /// Ordering contract: None/"total" = single totally ordered sequence
-    /// (default; unchanged semantics); "per-key" = segmented per-routing-key
-    /// order (PER-KEY-ORDERING.md).
-    #[serde(default)]
-    pub ordering: Option<String>,
-    /// Segment count for per-key streams (v1: static, power of two).
-    #[serde(default)]
-    pub segment_count: u32,
     /// Queue profile: deliveries before a message is settled to the $dlq
     /// routing-key view (default 5).
     #[serde(default)]
@@ -58,12 +50,6 @@ pub struct StreamDesc {
     /// the touch token (observation-forging at worst, never decryption).
     #[serde(default)]
     pub touch_sig_key: Option<String>,
-    /// Pravega-style auto-scaling (SCALING.md): per-key streams only.
-    /// LEGACY (ROUTING-V3): parsed for pre-v3 descriptors so their
-    /// child-stream routing keeps working until PR4 folds them into the
-    /// descriptor-resident map; never written for new streams.
-    #[serde(default)]
-    pub scaling: bool,
     /// ROUTING-V3: the descriptor-resident segment map. `None` is the
     /// implicit single-segment map — segment 0 covers the whole
     /// keyspace and its engine identity IS `storage_hash()`, so a fresh
@@ -177,31 +163,6 @@ impl StreamDesc {
         media_type(&self.content_type) == "application/json"
     }
 
-    pub fn is_per_key(&self) -> bool {
-        self.ordering.as_deref() == Some("per-key")
-    }
-
-    /// Sub-stream identity of one segment of a per-key stream.
-    pub fn segment_hash(&self, ordinal: u32) -> [u8; 16] {
-        crate::crypto::stream_hash(&format!(
-            "{}\u{0}seg\u{0}{}\u{0}{}",
-            self.name, ordinal, self.stream_epoch
-        ))
-    }
-
-    /// Routing key -> segment ordinal (top bits of SHA-256(rk)).
-    /// LEGACY static per-key layout only (ROUTING-V3 resolves through
-    /// `resolve_segment`).
-    pub fn segment_for(&self, routing_key: &str) -> u32 {
-        let n = self.segment_count.max(1);
-        if n == 1 {
-            return 0;
-        }
-        let h = crate::crypto::stream_hash(routing_key);
-        let top = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
-        top >> (32 - n.trailing_zeros())
-    }
-
     /// Fixed-point position of a routing key in the [0,1) keyspace —
     /// the coordinate the segment map partitions. The empty/default key
     /// is an ordinary key at stream_hash("")'s position.
@@ -229,8 +190,6 @@ impl StreamDesc {
     ///
     /// - descriptor-resident dynamic map (`segments: Some`) — the v3
     ///   model; selects the live segment containing the key point;
-    /// - legacy static per-key (`ordering: per-key`, power-of-two
-    ///   `segment_count`) — ordinal mapping, identities unchanged;
     /// - everything else — the implicit single-segment map: segment 0,
     ///   identity `storage_hash()`, parent's shard route. This arm IS
     ///   the old total-order behavior, unchanged to the byte.
@@ -301,23 +260,6 @@ impl StreamDesc {
             }
             // Unreachable for any map save() accepts; fall through to
             // the implicit segment rather than failing the append.
-        }
-        if self.is_per_key() {
-            // Any segment count, INCLUDING 1: a legacy per-key stream's
-            // records live under segment_hash(ordinal) even when the
-            // only ordinal is 0 — falling through to storage_hash would
-            // point at an empty keyspace.
-            let ord = self.segment_for(routing_key);
-            return SegRoute {
-                seg_id: ord,
-                identity: self.segment_hash(ord),
-                shard_route: parent_route,
-                sealed: false,
-                point,
-                key_hash,
-                lo: 0,
-                hi: crate::segmap::KEYSPACE_END,
-            };
         }
         SegRoute {
             seg_id: 0,
@@ -819,13 +761,10 @@ mod tests {
             profile: None,
             content_type: "application/json".into(),
             ttl_secs: None,
-            ordering: None,
-            segment_count: 0,
             queue_max_deliveries: None,
             touch_token_fingerprint: None,
             touch_templates: Vec::new(),
             touch_sig_key: None,
-            scaling: false,
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
@@ -1093,25 +1032,6 @@ mod tests {
         }
     }
 
-    /// Legacy static per-key layouts keep their EXACT identities: the
-    /// ordinal from segment_for and the identity from segment_hash —
-    /// including the n == 1 case, whose records live under
-    /// segment_hash(0), NOT storage_hash().
-    #[test]
-    fn legacy_per_key_resolution_is_identity_preserving() {
-        let mut d = desc("p", "e2", false);
-        d.ordering = Some("per-key".into());
-        for n in [1u32, 2, 8, 64] {
-            d.segment_count = n;
-            for rk in ["", "k1", "hot", "zzzz"] {
-                let r = d.resolve_segment(rk);
-                assert_eq!(r.seg_id, d.segment_for(rk));
-                assert_eq!(r.identity, d.segment_hash(d.segment_for(rk)));
-                assert!(!r.sealed);
-            }
-        }
-    }
-
     /// Descriptor-resident dynamic maps: the live segment containing
     /// the key point wins; seg 0's identity is storage_hash() (old data
     /// stays addressable); sealed segments surface `sealed` so the
@@ -1133,6 +1053,7 @@ mod tests {
             route_hash: [0u8; 16],
             created_ms: 2,
             predecessors: vec![0],
+            successors: Vec::new(),
             sealed_ms: None,
             sealed_next_offset: None,
         });
@@ -1144,6 +1065,7 @@ mod tests {
             route_hash: [0u8; 16],
             created_ms: 2,
             predecessors: vec![0],
+            successors: Vec::new(),
             sealed_ms: None,
             sealed_next_offset: None,
         });
