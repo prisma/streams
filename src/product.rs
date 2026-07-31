@@ -362,11 +362,32 @@ pub async fn product_entry(
             Ok(n) => n,
             Err(r) => return r,
         };
-        let _ = name;
+        if rest == "records" {
+            return match (method.clone(), verb.as_deref()) {
+                (Method::POST, None) => product_append(state, name, headers, body, false).await,
+                (Method::POST, Some("batch")) => {
+                    product_append(state, name, headers, body, true).await
+                }
+                (Method::GET, _) => perr(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "not_implemented",
+                    "product reads land with Stage 6",
+                    None,
+                    false,
+                ),
+                _ => perr(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "records accepts POST (append) and GET (read)",
+                    None,
+                    false,
+                ),
+            };
+        }
         return perr(
             StatusCode::NOT_IMPLEMENTED,
             "not_implemented",
-            &format!("product subresource '{rest}' lands with its stage (spec Stages 2/4/6)"),
+            &format!("product subresource '{rest}' lands with its stage (spec Stage 2)"),
             None,
             false,
         );
@@ -681,6 +702,271 @@ async fn product_seal(state: Arc<AppState>, name: String, _headers: HeaderMap) -
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(json!({ "sealed": true }).to_string()))
         .unwrap()
+}
+
+// ---- Stage 4: append and appendMany ---------------------------------
+
+const MAX_BATCH_RECORDS: usize = 10_000;
+const MAX_ROUTING_KEY_BYTES: usize = 1_024;
+
+/// Both product append routes compile to the ONE committer command the
+/// raw surface uses (spec Stage 4 §4): the handler parses the PRODUCT
+/// contract — explicit single/batch semantics, Prisma-* names — then
+/// drives the shared append path. A single JSON append wraps the value
+/// as [value], the protocol's own one-level flattening rule, so an
+/// array-valued record stays ONE message; a batch passes its elements
+/// straight through.
+async fn product_append(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+    batch: bool,
+) -> Response {
+    let Some(key_b64) = product_key(&headers) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Prisma-Encryption-Key required",
+            None,
+            false,
+        );
+    };
+    let routing_key = headers
+        .get("prisma-routing-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if routing_key.len() > MAX_ROUTING_KEY_BYTES {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_routing_key",
+            "routing key exceeds 1,024 bytes",
+            None,
+            false,
+        );
+    }
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
+    if batch && !is_json {
+        // Spec Stage 4 §2.3: no framed byte-batch format is standardized.
+        return perr(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "batch_unsupported_format",
+            "records:batch requires a JSON stream",
+            None,
+            false,
+        );
+    }
+    // Validation order (Stage 4 §5): JSON syntax and batch shape are
+    // checked BEFORE enqueue; the shared path handles producer
+    // duplicate recognition ahead of later-validation rejections.
+    let (wire_body, count): (Bytes, usize) = if is_json {
+        if batch {
+            let elems: Vec<&serde_json::value::RawValue> = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_body",
+                        &format!("batch must be a JSON array: {e}"),
+                        None,
+                        false,
+                    );
+                }
+            };
+            if elems.is_empty() {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "empty_batch",
+                    "appendMany requires at least one record",
+                    None,
+                    false,
+                );
+            }
+            if elems.len() > MAX_BATCH_RECORDS {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "batch_too_large",
+                    "appendMany accepts at most 10,000 records",
+                    None,
+                    false,
+                );
+            }
+            (body.clone(), elems.len())
+        } else {
+            if serde_json::from_slice::<&serde_json::value::RawValue>(&body).is_err() {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_body",
+                    "append requires one JSON value",
+                    None,
+                    false,
+                );
+            }
+            // [value]: one-level flattening stores exactly one message,
+            // preserving array-valued records (retains a body slice; no
+            // DOM reserialization).
+            let mut w = Vec::with_capacity(body.len() + 2);
+            w.push(b'[');
+            w.extend_from_slice(&body);
+            w.push(b']');
+            (Bytes::from(w), 1)
+        }
+    } else {
+        if body.is_empty() {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "empty_body",
+                "append requires a non-empty body",
+                None,
+                false,
+            );
+        }
+        (body.clone(), 1)
+    };
+
+    // Drive the ONE shared append path with internally-constructed
+    // inputs (this is product parsing feeding the engine surface, not a
+    // legacy-input translator).
+    let mut ih = HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
+        ih.insert("stream-encryption-key", v);
+    }
+    if !routing_key.is_empty() {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&routing_key) {
+            ih.insert("stream-key", v);
+        }
+    }
+    if let Ok(v) = axum::http::HeaderValue::from_str(&desc.content_type) {
+        ih.insert("content-type", v);
+    }
+    for h in ["producer-id", "producer-epoch", "producer-seq"] {
+        if let Some(v) = headers.get(h) {
+            ih.insert(h, v.clone());
+        }
+    }
+    let has_producer = headers.contains_key("producer-id");
+    let raw = crate::http::append(
+        state.clone(),
+        name.clone(),
+        ih,
+        axum::body::Body::from(wire_body),
+    )
+    .await;
+    translate_append_response(
+        &state,
+        &desc,
+        &key_b64,
+        &routing_key,
+        count,
+        has_producer,
+        raw,
+    )
+    .await
+}
+
+/// Map the shared path's protocol response into the product contract:
+/// {cursor, count, duplicate, sealed} on success, the stable product
+/// error schema otherwise.
+#[allow(clippy::too_many_arguments)]
+async fn translate_append_response(
+    state: &Arc<AppState>,
+    desc: &StreamDesc,
+    key_b64: &str,
+    routing_key: &str,
+    count: usize,
+    has_producer: bool,
+    raw: Response,
+) -> Response {
+    let status = raw.status();
+    // The raw route answers 204 for every non-producer append; only a
+    // PRODUCER 204 means duplicate.
+    let dup = has_producer && status == StatusCode::NO_CONTENT;
+    if status.is_success() {
+        let next_tok = raw
+            .headers()
+            .get("stream-next-offset")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let sealed = raw.headers().contains_key("stream-closed");
+        // Decode the raw token into (seg_id, next) — plain tokens are
+        // segment 0, epoch tokens carry their segment.
+        let (seg_id, next) = match crate::offsets::parse_ep(&next_tok) {
+            Ok((e, o)) => (e, o.scan_from()),
+            Err(_) => match crate::offsets::Offset::parse(&next_tok) {
+                Ok(o) => (0, o.scan_from()),
+                Err(_) => (0, 0),
+            },
+        };
+        let cursor = match crate::crypto::StreamKey::from_b64(key_b64) {
+            Ok(k) => {
+                let epoch = desc.epoch_bytes().unwrap_or_default();
+                crate::product_cursor::KeyCursor {
+                    epoch,
+                    key_hash: crate::crypto::stream_hash(routing_key),
+                    seg_id,
+                    offset: next,
+                }
+                .encode(&k)
+            }
+            Err(_) => String::new(),
+        };
+        let _ = state;
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(
+                json!({
+                    "cursor": cursor,
+                    "count": if dup { 0 } else { count },
+                    "duplicate": dup,
+                    "sealed": sealed,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+    }
+    // Error translation: keep the status, restate in the product schema.
+    let (code, message, retryable) = match status.as_u16() {
+        404 => ("not_found", "stream not found", false),
+        403 => ("stale_or_wrong_credentials", "forbidden", false),
+        409 if raw.headers().contains_key("stream-closed") => {
+            ("sealed", "collection is sealed", false)
+        }
+        409 => ("conflict", "producer or configuration conflict", false),
+        413 => ("body_too_large", "request body exceeds the limit", false),
+        429 => ("rate_limited", "admission or rate limit", true),
+        503 => ("temporarily_unavailable", "retry shortly", true),
+        _ => ("append_failed", "append failed", false),
+    };
+    let mut r = perr(status, code, message, None, retryable);
+    if let Some(ra) = raw.headers().get("retry-after") {
+        r.headers_mut().insert("retry-after", ra.clone());
+    }
+    r
 }
 
 #[cfg(test)]

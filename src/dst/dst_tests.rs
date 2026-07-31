@@ -6299,3 +6299,194 @@ async fn product_seal_collection_wide() {
     );
     engine_shutdown(&state).await;
 }
+
+/// Stage 4: payload shape never changes operation meaning — append
+/// stores ONE message (arrays stay array-valued records), appendMany
+/// stores element-wise, both through the one committer path, with the
+/// product response contract.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_append_and_append_many() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // append([1,2,3]) = ONE array-valued message.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "customer-42"),
+        ],
+        b"[1,2,3]",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["count"], 1);
+    assert_eq!(v["duplicate"], false);
+    assert_eq!(v["sealed"], false);
+    let cursor1 = v["cursor"].as_str().unwrap().to_string();
+    assert!(!cursor1.is_empty());
+
+    // appendMany([{a},{b}]) = TWO messages, atomic, contiguous.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records:batch",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "customer-42"),
+        ],
+        br#"[{"id":1},{"id":2}]"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["count"], 2);
+
+    // The key sequence now holds 3 records: [1,2,3], {id:1}, {id:2} —
+    // verified through the RAW keyed read (shared storage).
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/orders?key=customer-42", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "1 array message + 2 batch messages");
+    assert_eq!(recs[0], serde_json::json!([1, 2, 3]));
+    assert_eq!(recs[1]["id"], 1);
+    assert_eq!(recs[2]["id"], 2);
+
+    // The returned cursor decodes and points past the appended records.
+    let key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let desc = state.registry.get("orders").await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let kh = crate::crypto::stream_hash("customer-42");
+    let c = crate::product_cursor::KeyCursor::decode(&cursor1, &key, &epoch, &kh)
+        .expect("cursor decodes");
+    assert_eq!(c.offset, 1, "cursor after the first single append");
+
+    // Validation: empty batch, invalid JSON, oversized routing key.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"[]",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "empty_batch");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{not json",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let long_key = "k".repeat(1025);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", &long_key),
+        ],
+        b"1",
+    )
+    .await;
+    assert_eq!(st, 400);
+
+    // Bytes stream: batch is 405; single stores the body as one record.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/blobs",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"bytes"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"xx",
+    )
+    .await;
+    assert_eq!(st, 405, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"raw-bytes-here",
+    )
+    .await;
+    assert_eq!(st, 200);
+    engine_shutdown(&state).await;
+}
+
+/// Stage 4 §7: a duplicate producer request through the product route
+/// returns duplicate: true and stores nothing twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_append_producer_duplicate() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/pdup",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let hdrs = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "ga"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/pdup/records",
+        &hdrs,
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], false);
+    // Exact retry: recognized as duplicate, nothing stored twice.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/pdup/records",
+        &hdrs,
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true);
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/pdup?key=ga", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "duplicate stored nothing");
+    engine_shutdown(&state).await;
+}

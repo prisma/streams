@@ -10,6 +10,7 @@ mod operator;
 mod postings;
 mod postings_cache;
 mod product;
+mod product_cursor;
 mod protocol_pin;
 mod queue;
 mod registry;

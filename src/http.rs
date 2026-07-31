@@ -1910,7 +1910,12 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 /// pending transition is a genuine user-closed stream and passes
 /// through. Pre-split streams (segments: None — the common case) take
 /// the core path directly with zero overhead.
-async fn append(state: Arc<AppState>, name: String, headers: HeaderMap, body: Body) -> Response {
+pub(crate) async fn append(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
         Ok(Some(d)) if d
