@@ -385,8 +385,48 @@ retention COGS gates pass (54.0% / 43.2%). Total workload COGS
 reaches those ratios only when retained history dominates fixed WAL
 and request costs — the measured 1-month totals were 88.4% / 97.8%.
 The asymptote is a production projection, not a measured total-COGS
-pass; a break-even model over retained GiB, read frequency, key
-activity, retention months and Compute CPU is tracked work.
+pass. The break-even model below states exactly when the total gate
+holds.
+
+### Production break-even model
+
+Prices: Class A $4.50/M, Class B $0.36/M, storage $0.02/GiB-month,
+CPU $0.03/vCPU-hour. Measured invariants from the campaign: history
+stored ratio 0.51–0.54× of covering at batch 1 (0.43× at batch 10);
+write Class A, read Class B and CPU at parity (gates above). Per
+stored GiB-month with keyed drains at frequency `f` (fraction of the
+stored data fully drained per month) and record size `z`:
+
+```
+storage_cov = 2.04 x $0.02        = $0.0408
+storage_v3  = 1.04 x (1+r_p) x $0.02 ≈ $0.0208
+reads(f,z)  ≈ f x (2^30/z) x $0.36e-6      (parity, both arms)
+ratio(f,z)  = (0.0208 + reads) / (0.0408 + reads)
+```
+
+Fixed WAL Class A per ingested GiB (~64 flush PUTs at 16 MiB SSTs ≈
+$0.0003) and CPU deltas (measured ≈ 0) are negligible against the
+byte-month terms. Solving ratio ≤ 60% at z = 1 KiB:
+
+```
+f ≤ ~0.05   — total COGS gate holds when at most ~5% of stored
+              data is keyed-drained per month (≈ 25k key-drains
+              per stored GiB-month at 2 KiB keys)
+```
+
+Postures (z = 1 KiB): archive / event-log replay-rarely (f→0) →
+**51%**; balanced (f = 0.05) → **60%**; the spec's hot activity model
+(100 active keys per 5-minute window over 1M keys ≈ 0.86 drains per
+key-month, f ≈ 0.86) → **~97%** — which independently reproduces the
+measured 1-month totals (97.8% at batch 10), validating the model.
+Larger records move the break-even up linearly (B-ops per GiB fall
+with z): at z = 100 KiB, f ≤ ~2.4 full drains per stored GiB-month.
+
+Bottom line: postings are strictly ≤ covering at every posture (reads
+at parity, storage strictly less, write side structurally identical);
+the ≤60% TOTAL claim is a storage-dominated-posture claim — retention
+months ≥ 1 and monthly keyed-drain volume under ~5% of the store at
+1 KiB records — and should be quoted with those conditions.
 
 ### Review disposition (30d0a4b)
 
