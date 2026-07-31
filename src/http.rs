@@ -820,7 +820,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/operator/data.json", get(crate::operator::data))
         .route("/operator/runbook", get(crate::operator::runbook))
         .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
-        .route("/v1/streams", axum::routing::get(product_list_axum))
+        .route(
+            "/v1/streams",
+            axum::routing::get(product_list_axum).options(product_preflight),
+        )
         .route("/v1/streams/{*name}", any(product_entry_axum))
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
@@ -974,6 +977,20 @@ async fn ds_reserved() -> Response {
         "reserved",
         "__ds is the reserved Durable Streams control namespace",
     )
+}
+
+/// Browser preflight for the catalog route (the wildcard product route
+/// answers its own inside product_entry).
+async fn product_preflight() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("access-control-allow-origin", "*")
+        .header("access-control-allow-methods", "GET, OPTIONS")
+        .header("access-control-allow-headers", "*")
+        .header("access-control-expose-headers", "*")
+        .header("access-control-max-age", "600")
+        .body(Body::empty())
+        .unwrap()
 }
 
 async fn product_list_axum(

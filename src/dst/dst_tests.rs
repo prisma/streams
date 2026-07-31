@@ -4517,11 +4517,37 @@ async fn http_rig_opts(
     http_rig_full(store, prefixes, shard_cfg, 0).await
 }
 
+/// A rig whose AppState carries an account token, for the negative
+/// authorization matrix.
+async fn http_rig_auth(
+    store: Arc<dyn ObjectStore>,
+    token: &str,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        Some(token.to_string()),
+    )
+    .await
+}
+
 async fn http_rig_full(
     store: Arc<dyn ObjectStore>,
     prefixes: Vec<String>,
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None).await
+}
+
+async fn http_rig_inner(
+    store: Arc<dyn ObjectStore>,
+    prefixes: Vec<String>,
+    shard_cfg: crate::shard::ShardConfig,
+    per_segment_slots: i64,
+    auth: Option<String>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let registry = crate::registry::Registry::new(store.clone());
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -4602,7 +4628,7 @@ async fn http_rig_full(
         keys,
         touch,
         default_key: None,
-        auth_token: None,
+        auth_token: auth,
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let app = crate::http::router(state.clone());
@@ -8750,5 +8776,119 @@ async fn fork_lifecycle_and_stitched_reads() {
         st, 404,
         "last fork's deletion cascades the source to gone-gone"
     );
+    engine_shutdown(&state).await;
+}
+
+/// SECURITY (audit P0): the account token gates EVERY product
+/// operation when configured. The encryption key is a separate
+/// credential and never substitutes for it. The one exception is the
+/// signed watch observation URL — an explicit delegated capability.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_requires_the_account_token() {
+    let store = mem();
+    let (state, addr) = http_rig_auth(store, "s3cret").await;
+    let bear = |t: &'static str| ("authorization", t);
+    let ok = [
+        ("authorization", "Bearer s3cret"),
+        ("prisma-encryption-key", PRISMA_KEY),
+    ];
+    // Create needs the token; the key alone is not enough.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sec",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        401,
+        "key without token must not create: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "unauthorized");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sec",
+        &[bear("Bearer wrong"), ("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 401, "wrong token rejected");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sec",
+        &ok,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "token + key creates");
+
+    // Every other product operation: tokenless is 401.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/sec/records", &ok, b"{\"n\":1}").await;
+    assert_eq!(st, 200);
+    for (m, path, body) in [
+        ("GET", "/v1/streams/sec", &b""[..]),
+        ("POST", "/v1/streams/sec/records", &b"{\"n\":2}"[..]),
+        ("POST", "/v1/streams/sec/records:batch", &b"[{\"n\":3}]"[..]),
+        ("GET", "/v1/streams/sec/records", &b""[..]),
+        (
+            "GET",
+            "/v1/streams/sec/records:long-poll?waitMs=50",
+            &b""[..],
+        ),
+        ("GET", "/v1/streams/sec:scan", &b""[..]),
+        ("PUT", "/v1/streams/sec/consumers/w", &b"{}"[..]),
+        ("GET", "/v1/streams/sec/consumers/w", &b""[..]),
+        ("POST", "/v1/streams/sec/consumers/w:pull", &b"{}"[..]),
+        ("POST", "/v1/streams/sec/consumers/w:settle", &b"{}"[..]),
+        ("DELETE", "/v1/streams/sec/consumers/w", &b""[..]),
+        ("GET", "/v1/streams/sec/watches", &b""[..]),
+        ("GET", "/v1/streams", &b""[..]),
+        ("POST", "/v1/streams/sec:seal", &b"{}"[..]),
+        ("DELETE", "/v1/streams/sec", &b""[..]),
+    ] {
+        let (st, _, _) = preq(
+            addr,
+            m,
+            path,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            body,
+        )
+        .await;
+        assert_eq!(st, 401, "{m} {path} must require the account token");
+    }
+    // The stream still exists (no tokenless delete/seal took effect).
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sec", &ok, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["sealed"], false, "tokenless seal must not have landed");
+
+    // Token + WRONG key is 403 (authorization passes, key access fails).
+    let wrong_key = "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg";
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/sec/records",
+        &[bear("Bearer s3cret"), ("prisma-encryption-key", wrong_key)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 403, "token ok, key wrong -> 403");
+
+    // Browser preflight is answered WITHOUT credentials (a preflight
+    // never carries them) and advertises the product headers.
+    let (st, h, _) = preq(addr, "OPTIONS", "/v1/streams/sec/records", &[], b"").await;
+    assert!(st == 200 || st == 204, "preflight status {st}");
+    assert!(
+        h.get("access-control-allow-headers").is_some(),
+        "preflight must allow the product headers"
+    );
+    let (st, _, _) = preq(addr, "OPTIONS", "/v1/streams", &[], b"").await;
+    assert!(st == 200 || st == 204, "catalog preflight status {st}");
     engine_shutdown(&state).await;
 }

@@ -362,6 +362,43 @@ pub async fn product_entry(
     query: String,
     body: Bytes,
 ) -> Response {
+    // Browser preflight: answered before authorization, because a
+    // preflight carries no credentials by definition (the browser sends
+    // Authorization only on the actual request).
+    if method == Method::OPTIONS {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("access-control-allow-origin", "*")
+            .header(
+                "access-control-allow-methods",
+                "GET, PUT, POST, DELETE, OPTIONS",
+            )
+            .header("access-control-allow-headers", "*")
+            .header("access-control-expose-headers", "*")
+            .header("access-control-max-age", "600")
+            .body(Body::empty())
+            .unwrap();
+    }
+    // ACCOUNT authorization (spec Stage 8 §14: the token authorizes
+    // account/product operations; the encryption key is a SEPARATE
+    // credential that proves record access). Every product operation
+    // requires it when one is configured — the ONE deliberate exception
+    // is the signed watch observation URL, an explicit delegated
+    // capability, which authorizes itself and is checked inside the
+    // watch handler.
+    let is_signed_watch = path.contains("/watches/")
+        && path.contains("/keys/")
+        && method == Method::GET
+        && query.split('&').any(|kv| kv.starts_with("sig="));
+    if !is_signed_watch && !crate::http::authorized(&state, &headers) {
+        return perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+            None,
+            false,
+        );
+    }
     if let Some(r) = reject_legacy_inputs(&headers, &query) {
         return r;
     }
@@ -3030,8 +3067,7 @@ async fn product_watch_wait(
 /// One object-store LIST over the registry prefix; no per-stream GET
 /// fan-out beyond the descriptors the page returns.
 pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMap) -> Response {
-    // Management-plane listing honors the account token when one is
-    // configured (spec Stage 8 §14: token authorizes account ops).
+    // Its own route entry (not through product_entry): gate it here.
     if !crate::http::authorized(&state, &headers) {
         return perr(
             StatusCode::UNAUTHORIZED,
