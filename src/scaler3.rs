@@ -711,6 +711,7 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
+        watch_sig_key: None,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),

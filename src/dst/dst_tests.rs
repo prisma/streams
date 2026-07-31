@@ -8676,6 +8676,149 @@ async fn product_seal_final_needs_no_caller_producer() {
     engine_shutdown(&state).await;
 }
 
+/// A signed watch URL is a DURABLE capability. The signature is checked
+/// against the verifier persisted in the descriptor at create — not
+/// against a cached stream key — so an issued URL keeps working on a
+/// process that has never seen the collection, after a restart, and for
+/// a collection nobody has appended to in days. The second rig here is
+/// exactly that stranger: same store, cold caches, no key ever
+/// presented to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
+    let store = mem();
+    let (state, addr) = http_rig(store.clone()).await;
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wsig",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+
+    // Derive exactly the way the SDK does: metadata carries the
+    // incarnation salt, and everything else comes from the stream key.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/wsig", &[], b"").await;
+    assert_eq!(st, 200);
+    let meta: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let epoch_hex = meta["epoch"].as_str().expect("epoch exposed for watches");
+    let epoch: [u8; 16] = crate::crypto::unhex(epoch_hex).unwrap().try_into().unwrap();
+    let key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let khex = crate::product::watch_key_hex(
+        "by-customer",
+        &["/customerId".to_string()],
+        &[r#""c1""#.to_string()],
+    );
+    let tok = crate::crypto::touch_token(&key, &epoch);
+    let sig = crate::crypto::wait_url_sig(&crate::crypto::wait_sig_key(&tok, &epoch), &khex);
+
+    // A second server over the same store: never saw the key, never
+    // absorbed a record, never issued this URL.
+    let (state2, addr2) = http_rig(store).await;
+    let path = format!("/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}");
+    let (st, _, b) = preq(addr2, "GET", &path, &[], b"").await;
+    assert_eq!(st, 200, "cold process must verify: {}", String::from_utf8_lossy(&b));
+
+    // A forged signature is refused, on both.
+    let bad = format!("/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig=0000000000000000");
+    let (st, _, _) = preq(addr2, "GET", &bad, &[], b"").await;
+    assert_eq!(st, 403);
+    let (st, _, _) = preq(addr, "GET", &bad, &[], b"").await;
+    assert_eq!(st, 403);
+    engine_shutdown(&state).await;
+    engine_shutdown(&state2).await;
+}
+
+/// Dead-letter delivery writes with the SOURCE collection's key, so the
+/// link is only meaningful between collections that share one. The gate
+/// is at configuration time, where the caller can still act on it —
+/// otherwise the mismatch surfaces much later as a poisoned key that
+/// can never drain, with every DLQ append refused in silence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dead_letter_link_requires_a_shared_key() {
+    const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    for (name, key) in [
+        ("dlq-src", PRISMA_KEY),
+        ("dlq-same", PRISMA_KEY),
+        ("dlq-other", OTHER_KEY),
+    ] {
+        let (st, _, b) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/{name}"),
+            &[("prisma-encryption-key", key)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201, "{name}: {}", String::from_utf8_lossy(&b));
+    }
+    let put_dlq = |target: &str| {
+        let body = format!(r#"{{"deadLetterStream":"{target}"}}"#);
+        async move {
+            preq(
+                addr,
+                "PUT",
+                "/v1/streams/dlq-src/consumers/w",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("content-type", "application/json"),
+                ],
+                body.as_bytes(),
+            )
+            .await
+        }
+    };
+    let code = |b: &[u8]| -> String {
+        serde_json::from_slice::<serde_json::Value>(b)
+            .ok()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_string))
+            .unwrap_or_default()
+    };
+
+    let (st, _, b) = put_dlq("dlq-missing").await;
+    assert_eq!(st, 400);
+    assert_eq!(code(&b), "unknown_dead_letter_stream");
+
+    let (st, _, b) = put_dlq("dlq-src").await;
+    assert_eq!(st, 400, "self-DLQ is a delivery loop");
+    assert_eq!(code(&b), "invalid_config");
+
+    let (st, _, b) = put_dlq("dlq-other").await;
+    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "dead_letter_key_mismatch");
+
+    let (st, _, b) = put_dlq("dlq-same").await;
+    assert!(st == 200 || st == 201, "{}", String::from_utf8_lossy(&b));
+
+    // Sealing the target closes the link for anyone configuring it next.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/dlq-same:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dlq-src/consumers/w2",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        br#"{"deadLetterStream":"dlq-same"}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    assert_eq!(code(&b), "dead_letter_sealed");
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
@@ -9591,6 +9734,7 @@ async fn catalog_pages_without_scanning_the_world() {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
+            watch_sig_key: None,
             layout_version: crate::registry::LAYOUT_VERSION,
         };
         state.registry.create(d).await.unwrap();

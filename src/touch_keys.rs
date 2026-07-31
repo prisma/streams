@@ -1,22 +1,39 @@
-//! State Protocol touch-key derivation (live.md §"64-bit routing keys").
-//! Pure functions shared by the server and clients/benchmarks.
+//! Touch-key derivation. These are the CROSS-LANGUAGE contract behind
+//! watch keys: the SDK derives the very same values so it can build a
+//! signed observation URL offline, without a round trip and without
+//! ever handling template ids or HMAC keys (spec Stage 2 §3.3/§3.5).
+//! So the layouts below are normative, and the hash is SHA-256 —
+//! available to every client runtime through WebCrypto, and the same
+//! same construction the routing keyspace already uses
+//! (`segmap::key_point`). The digest's first 8 bytes, big-endian, are
+//! the 64-bit key.
 //!
-//!   tableKey(entity)              = XXH3_64("tbl\0" + entity)
-//!   templateId(entity, fields)    = XXH3_64("tpl\0" + entity + "\0" + join(sortedFields, "\0"))
-//!   watchKey(templateId, args...) = XXH3_64("key\0" + templateIdBytesBE + "\0" + join(args, "\0"))
+//!   h64(b)                        = be_u64(SHA256(b)[..8])
+//!   tableKey(entity)              = h64("tbl\0" + entity)
+//!   templateId(entity, fields)    = h64("tpl\0" + entity + "\0" + join(sortedFields, "\0"))
+//!   watchKey(templateId, args...) = h64("key\0" + templateIdBytesBE + "\0" + join(args, "\0"))
 //!
 //! 64-bit keys are encoded as 16 lowercase hex chars; the journal's hot-path
-//! key IDs are the low 32 bits of the 64-bit key (or xxh32 of the raw string
+//! key IDs are the low 32 bits of the 64-bit key (or h64 of the raw string
 //! for non-hex16 keys).
+//!
+//! These identify, they do not authorize: a collision costs at most one
+//! spurious invalidation (the journal already answers "resync" when it
+//! cannot prove a hit), while the observation capability itself is the
+//! HMAC signature on the URL.
 
-use xxhash_rust::xxh3::xxh3_64;
-use xxhash_rust::xxh32::xxh32;
+use sha2::{Digest, Sha256};
+
+fn h64(buf: &[u8]) -> u64 {
+    let d = Sha256::digest(buf);
+    u64::from_be_bytes(d[..8].try_into().expect("32-byte digest"))
+}
 
 pub fn table_key(entity: &str) -> u64 {
     let mut buf = Vec::with_capacity(4 + entity.len());
     buf.extend_from_slice(b"tbl\0");
     buf.extend_from_slice(entity.as_bytes());
-    xxh3_64(&buf)
+    h64(&buf)
 }
 
 /// `fields` must be sorted by name before calling (canonical form).
@@ -31,7 +48,7 @@ pub fn template_id(entity: &str, sorted_fields: &[String]) -> u64 {
         }
         buf.extend_from_slice(f.as_bytes());
     }
-    xxh3_64(&buf)
+    h64(&buf)
 }
 
 /// Args must be encoded in sorted-field order.
@@ -43,7 +60,7 @@ pub fn watch_key(template_id: u64, args: &[String]) -> u64 {
         buf.push(0);
         buf.extend_from_slice(a.as_bytes());
     }
-    xxh3_64(&buf)
+    h64(&buf)
 }
 
 pub fn key_hex(key: u64) -> String {
@@ -57,7 +74,7 @@ pub fn key_id_of(key: &str) -> u32 {
             return v as u32;
         }
     }
-    xxh32(key.as_bytes(), 0)
+    h64(key.as_bytes()) as u32
 }
 
 pub fn key_id_of_u64(key: u64) -> u32 {

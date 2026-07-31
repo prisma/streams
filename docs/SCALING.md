@@ -18,7 +18,8 @@ Terminology maps Pravega concepts onto what the codebase already has:
 | Epoch / segment lineage | **segment map v(N)**: successor/predecessor records per split/merge | no (new) |
 | Auto-scale policy | per-segment target = the per-shard service limits (5 MB/s, 1 000 req/s, 5 000 rec/s) | limits + telemetry exist |
 
-Key space: `k = xxh3(routing_key) / 2^64 ∈ [0,1)`. A stream's **segment
+Key space: `k = be_u64(SHA256(routing_key)[..8]) / 2^64 ∈ [0,1)`
+(`segmap::key_point`). A stream's **segment
 map** is a total partition of `[0,1)` into segments, each with:
 
 ```

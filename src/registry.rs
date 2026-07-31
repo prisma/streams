@@ -85,6 +85,16 @@ pub struct StreamDesc {
     /// created without watches; JSON streams only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watch_definitions: Vec<WatchDefinition>,
+    /// Verifier for signed watch-observation URLs, base64 of
+    /// `crypto::wait_sig_key`. Written once at create, from the key the
+    /// creator presented; the server never holds the stream key itself,
+    /// so without this it could not check a signature at all. It is a
+    /// verifier for an OBSERVATION capability and nothing more:
+    /// possession forges "this key changed" notifications, never
+    /// decryption, append, consumer or management rights. Persisting it
+    /// is what makes a signed URL outlive the process that issued it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_sig_key: Option<String>,
     /// Storage-layout generation (spec: pre-launch clean switch). New
     /// descriptors write LAYOUT_VERSION; a reader that finds any OTHER
     /// value — including 0, the serde default every pre-cutover
@@ -925,6 +935,7 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
+        watch_sig_key: None,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),

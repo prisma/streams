@@ -291,9 +291,10 @@ impl SegmentMap {
     }
 }
 
-/// Hash a routing key into the segment keyspace. Uses the same xxh3-free
-/// stack as the rest of the codebase: first 8 bytes of the stream_hash
-/// SHA-256 construction over the routing key.
+/// Hash a routing key into the segment keyspace: first 8 bytes of the
+/// stream_hash SHA-256 construction over the routing key — the same
+/// construction touch_keys uses, so the whole codebase derives 64-bit
+/// ids one way.
 pub fn key_point(routing_key: &str) -> u64 {
     let h = crate::crypto::stream_hash(routing_key);
     u64::from_be_bytes(h[..8].try_into().unwrap())

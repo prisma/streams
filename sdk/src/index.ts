@@ -319,12 +319,21 @@ async function req(
   path: string,
   headers: Record<string, string>,
   body?: BodyInit,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
   if (ctx.token) h["authorization"] = `Bearer ${ctx.token}`;
   for (let attempt = 0; ; attempt++) {
-    const res = await ctx.fetch(`${ctx.base}${path}`, { method, headers: h, body });
+    // The signal reaches fetch itself, so an abort ends the in-flight
+    // long poll instead of leaving it running until its timeout.
+    const res = await ctx.fetch(`${ctx.base}${path}`, {
+      method,
+      headers: h,
+      body,
+      signal,
+    });
     if ((res.status === 429 || res.status === 503) && attempt < 3) {
+      if (signal?.aborted) return res;
       const ra = Number(res.headers.get("retry-after") ?? "1");
       await new Promise((r) => setTimeout(r, Math.min(ra, 5) * 1000));
       continue;
@@ -400,6 +409,8 @@ export class Stream<T = unknown> {
   private ctx: Ctx;
   readonly name: string;
   private key: string;
+  private defsCache?: Promise<WatchDefinition[]>;
+  private epochCache?: Promise<string>;
 
   constructor(ctx: Ctx, name: string, key: string) {
     this.ctx = ctx;
@@ -617,8 +628,60 @@ export class Stream<T = unknown> {
 
   // ---- watches (spec Stage 2 §3) ------------------------------------
 
-  watch(name: string, watchKeyHex: string): Watch {
-    return new Watch(this.ctx, this, name, watchKeyHex);
+  /**
+   * A watch on one set of field values — `watch("by-customer", ["c1"])`,
+   * with the values in the definition's declared field order. The key
+   * and the URL signature are derived here from the stream key, so the
+   * result can be handed to a browser as a plain URL that needs no
+   * credentials and can observe nothing else.
+   */
+  async watch(name: string, values: unknown[] = []): Promise<Watch> {
+    const defs = await this._definitions();
+    const def = defs.find((d) => d.name === name);
+    if (!def) {
+      throw new StreamsError(
+        404,
+        "unknown_watch",
+        `no watch definition named ${JSON.stringify(name)} on ${this.name}`,
+        false,
+      );
+    }
+    if (values.length !== def.fields.length) {
+      throw new StreamsError(
+        400,
+        "invalid_watch_values",
+        `watch ${JSON.stringify(name)} declares ${def.fields.length} field(s) ` +
+          `(${def.fields.join(", ")}); got ${values.length} value(s)`,
+        false,
+      );
+    }
+    const keyHex = await deriveWatchKey(name, def.fields, values);
+    const sig = await watchUrlSig(this.key, await this._epoch(), keyHex);
+    return new Watch(this.ctx, this, name, keyHex, sig);
+  }
+
+  /** Definitions are immutable for one incarnation, so fetch them once. */
+  private async _definitions(): Promise<WatchDefinition[]> {
+    if (!this.defsCache) this.defsCache = this.watches();
+    return this.defsCache;
+  }
+
+  private async _epoch(): Promise<string> {
+    if (!this.epochCache) {
+      this.epochCache = this.metadata().then((m) => {
+        const e = (m as StreamMetadata & { epoch?: string }).epoch;
+        if (!e) {
+          throw new StreamsError(
+            400,
+            "no_watches",
+            `${this.name} was created without watch definitions`,
+            false,
+          );
+        }
+        return e;
+      });
+    }
+    return this.epochCache;
   }
 
   async watches(): Promise<WatchDefinition[]> {
@@ -897,43 +960,208 @@ export class Consumer<T> {
 }
 
 // ---------------------------------------------------------------------
+// Watch-key derivation and URL signing.
+//
+// A signed observation URL is built entirely on the client, from the
+// stream key it already holds — no round trip, and the caller never
+// handles template ids, journal cursors or HMAC keys (spec Stage 2
+// §3.3/§3.5). Every step mirrors the server byte for byte:
+// `src/touch_keys.rs` for the key layouts, `src/crypto.rs` for the
+// signature chain. Changing either side alone silently stops matching,
+// so the smoke test derives a key here and asserts the server agrees.
+
+function subtle(): SubtleCrypto {
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (!c?.subtle) {
+    throw new Error(
+      "WebCrypto is required to derive watch URLs (Node 18+, or a browser over HTTPS)",
+    );
+  }
+  return c.subtle;
+}
+
+const TE = new TextEncoder();
+
+function bytesOf(...parts: (Uint8Array | string)[]): Uint8Array {
+  const chunks = parts.map((p) => (typeof p === "string" ? TE.encode(p) : p));
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function hexToBytes(h: string): Uint8Array {
+  const out = new Uint8Array(h.length >> 1);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * WebCrypto takes a BufferSource. Handing it the backing ArrayBuffer
+ * keeps this compiling across TypeScript versions, which disagree about
+ * whether a Uint8Array's buffer might be shared.
+ */
+function ab(b: Uint8Array): ArrayBuffer {
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+}
+
+function toHex(b: Uint8Array): string {
+  return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** h64: the first 8 bytes of SHA-256, big-endian, as 16 lowercase hex. */
+async function h64Hex(buf: Uint8Array): Promise<string> {
+  const d = new Uint8Array(await subtle().digest("SHA-256", ab(buf)));
+  return toHex(d.subarray(0, 8));
+}
+
+/**
+ * Canonical value encoding for watch keys. Compact JSON, so "1", 1,
+ * true and null are all distinct — with two rules that keep JavaScript
+ * and the server byte-identical: object keys are sorted, and a whole
+ * number is written without a fractional part.
+ */
+export function canonicalWatchValue(v: unknown): string {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) throw new Error("watch values must be finite");
+    return String(v);
+  }
+  if (typeof v === "string") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalWatchValue).join(",")}]`;
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    const keys = Object.keys(o).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalWatchValue(o[k])}`).join(",")}}`;
+  }
+  throw new Error(`cannot encode ${typeof v} as a watch value`);
+}
+
+/** watchKey = h64("key\0" + templateIdBE + ("\0" + arg)*), field order as declared. */
+export async function deriveWatchKey(
+  watchName: string,
+  fields: string[],
+  values: unknown[],
+): Promise<string> {
+  const tplHex = await h64Hex(
+    bytesOf("tpl\0", watchName, "\0", fields.join("\0")),
+  );
+  const args = values.map(canonicalWatchValue).map((a) => `\0${a}`).join("");
+  return h64Hex(bytesOf("key\0", hexToBytes(tplHex), args));
+}
+
+async function hkdf32(
+  ikm: Uint8Array,
+  salt: Uint8Array,
+  info: string,
+): Promise<Uint8Array> {
+  const k = await subtle().importKey("raw", ab(ikm), "HKDF", false, ["deriveBits"]);
+  const bits = await subtle().deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: ab(salt), info: ab(TE.encode(info)) },
+    k,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+/**
+ * The observation capability for one watch key: an HMAC over the key,
+ * under a signing key two HKDF steps below the stream key. It grants
+ * observation and nothing else — no decryption, append, consumer or
+ * management rights — and the server verifies it against the verifier
+ * it persisted at create.
+ */
+async function watchUrlSig(
+  encryptionKeyB64: string,
+  epochHex: string,
+  watchKeyHex: string,
+): Promise<string> {
+  const epoch = hexToBytes(epochHex);
+  const token = await hkdf32(b64ToBytes(encryptionKeyB64), epoch, "touch-capability-v1");
+  const sigKey = await hkdf32(token, epoch, "wait-sig-v1");
+  const mac = await subtle().importKey(
+    "raw",
+    ab(sigKey),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const out = new Uint8Array(
+    await subtle().sign("HMAC", mac, ab(bytesOf("wait-url\0", watchKeyHex))),
+  );
+  return toHex(out.subarray(0, 8));
+}
+
+// ---------------------------------------------------------------------
 // Watch observation
 
 export class Watch {
   private ctx: Ctx;
   private stream: Stream<unknown>;
   readonly name: string;
-  private watchKeyHex: string;
+  /** The derived 64-bit watch key, 16 lowercase hex. */
+  readonly key: string;
+  /** The observation capability for this key. */
+  readonly sig: string;
 
   constructor(
     ctx: Ctx,
     stream: Stream<unknown>,
     name: string,
-    watchKeyHex: string,
+    key: string,
+    sig: string,
   ) {
     this.ctx = ctx;
     this.stream = stream;
     this.name = name;
-    this.watchKeyHex = watchKeyHex;
+    this.key = key;
+    this.sig = sig;
+  }
+
+  /**
+   * The absolute observation URL. Safe to hand to an untrusted client:
+   * it carries no stream key and no account token, and observes this
+   * one key only.
+   */
+  url(options?: { cursor?: string; timeoutMs?: number }): string {
+    return `${this.ctx.base}${this.path(options)}`;
+  }
+
+  private path(options?: { cursor?: string; timeoutMs?: number }): string {
+    const q = new URLSearchParams();
+    q.set("cursor", options?.cursor ?? "now");
+    if (options?.timeoutMs) q.set("timeoutMs", String(options.timeoutMs));
+    q.set("sig", this.sig);
+    return this.stream._path(
+      `/watches/${encodeURIComponent(this.name)}/keys/${this.key}?${q}`,
+    );
   }
 
   async wait(options?: {
     cursor?: string;
     timeoutMs?: number;
-    sig?: string;
+    signal?: AbortSignal;
   }): Promise<WatchEvent> {
-    const q = new URLSearchParams();
-    q.set("cursor", options?.cursor ?? "now");
-    if (options?.timeoutMs) q.set("timeoutMs", String(options.timeoutMs));
-    if (options?.sig) q.set("sig", options.sig);
-    const headers = options?.sig ? {} : this.stream._kh();
     const res = await req(
       this.ctx,
       "GET",
-      this.stream._path(
-        `/watches/${encodeURIComponent(this.name)}/keys/${this.watchKeyHex}?${q}`,
-      ),
-      headers,
+      this.path(options),
+      {},
+      undefined,
+      options?.signal,
     );
     if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as WatchEvent;
@@ -941,7 +1169,6 @@ export class Watch {
 
   async *subscribe(options?: {
     from?: string;
-    sig?: string;
     signal?: AbortSignal;
   }): AsyncIterable<WatchEvent> {
     let cursor = options?.from ?? "now";
@@ -950,7 +1177,7 @@ export class Watch {
       const ev = await this.wait({
         cursor,
         timeoutMs: 25000,
-        sig: options?.sig,
+        signal: options?.signal,
       });
       cursor = ev.cursor;
       if (ev.invalidated) yield ev;

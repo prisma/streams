@@ -1562,6 +1562,7 @@ fn fresh_desc(
         segments: None,
         sealed: false,
         watch_definitions: Vec::new(),
+        watch_sig_key: None,
         layout_version: crate::registry::LAYOUT_VERSION,
     }
 }

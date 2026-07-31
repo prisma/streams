@@ -583,6 +583,18 @@ async fn product_create(
             cfg.expires_at_ms,
         );
         d.watch_definitions = cfg.watches.clone();
+        // Persist the URL-signature verifier now, while a key holder is
+        // here to derive it from. The server never stores the stream
+        // key, so this is its only chance: after create, a signed watch
+        // URL must verify on any process, cold, with nothing cached.
+        if let Some(ep) = d.epoch_bytes() {
+            use base64::Engine;
+            let tok = crate::crypto::touch_token(&key, &ep);
+            d.watch_sig_key = Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(crate::crypto::wait_sig_key(&tok, &ep)),
+            );
+        }
         d.layout_version = LAYOUT_VERSION;
         d
     };
@@ -726,6 +738,12 @@ fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {
     }
     if !desc.watch_definitions.is_empty() {
         out["watches"] = serde_json::to_value(&desc.watch_definitions).unwrap();
+        // The incarnation salt. Not a secret — it is the HKDF salt, and
+        // it grants nothing on its own — but a client needs it to
+        // derive watch-observation signatures from the stream key
+        // without a round trip. Only collections that HAVE watches
+        // carry it, since nothing else uses it client-side.
+        out["epoch"] = json!(desc.stream_epoch);
     }
     Response::builder()
         .status(status)
@@ -2298,6 +2316,69 @@ async fn product_consumer_put(
                 false,
             );
         }
+        // DLQ capability model. A dead-letter record is written with the
+        // SOURCE stream's encryption key, because that is the only key
+        // the delivery path holds — there is no key-exchange step and
+        // the server never stores stream keys. So the target must be a
+        // real, writable collection under THAT key, and configuring the
+        // link requires presenting a key valid for both. Validating it
+        // here turns a silent, permanent delivery block (the poisoned
+        // key stays leased forever while every DLQ append 403s) into an
+        // error the caller sees while it can still fix it.
+        if d == name {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_config",
+                "deadLetterStream must not be the source collection",
+                None,
+                false,
+            );
+        }
+        let target = match state.registry.get(&d).await {
+            Ok(Some(t)) if crate::http::desc_alive(&t) && !crate::http::initializing(&t) => t,
+            Ok(_) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "unknown_dead_letter_stream",
+                    "deadLetterStream does not exist; create it first, with the same encryption key",
+                    None,
+                    false,
+                );
+            }
+            Err(_) => {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "unavailable",
+                    "registry unavailable",
+                    None,
+                    true,
+                );
+            }
+        };
+        if target.sealed || target.sealing.is_some() {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "dead_letter_sealed",
+                "deadLetterStream is sealed and cannot accept dead-letter records",
+                None,
+                false,
+            );
+        }
+        let same_key = product_key(&headers).is_some_and(|kb| {
+            matches!(
+                crate::http::check_key(Some(&kb), &target),
+                crate::http::KeyCheck::Ok(..)
+            )
+        });
+        if !same_key {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "dead_letter_key_mismatch",
+                "deadLetterStream uses a different encryption key; dead-letter delivery writes with the source collection's key",
+                None,
+                false,
+            );
+        }
         cfg.dead_letter_stream = Some(d);
     }
     let out = match consumer_config_op(
@@ -2511,8 +2592,10 @@ async fn dlq_and_settle(
     seg_id: u32,
     poisoned: &[(u64, u32, u32, [u8; 16])],
     by_off: &std::collections::HashMap<u64, (String, Bytes)>,
-) -> usize {
+) -> (usize, usize) {
     let mut settled = 0usize;
+    // Deliveries the target refused for a reason retrying cannot fix.
+    let mut blocked = 0usize;
     for (off, lgen, attempts, kh) in poisoned {
         if let Some(dlq) = &cfg.dead_letter_stream {
             let Some((rkey, payload)) = by_off.get(off) else {
@@ -2555,7 +2638,24 @@ async fn dlq_and_settle(
                 product_append(state.clone(), dlq.clone(), ih, Bytes::from(body), false).await;
             if !resp.status().is_success() {
                 // DLQ append not durable: leave the lease; the key stays
-                // blocked and a later pass retries idempotently.
+                // blocked and a later pass retries idempotently. The
+                // link is validated when the consumer is configured, so
+                // a client-error status here means the target drifted
+                // afterwards (deleted, re-created under another key,
+                // sealed). That never resolves on its own, so say it
+                // out loud instead of blocking the key in silence.
+                let st = resp.status();
+                if st.is_client_error() && st != StatusCode::TOO_MANY_REQUESTS {
+                    blocked += 1;
+                    tracing::warn!(
+                        stream = %desc.name,
+                        consumer = %cname,
+                        dead_letter_stream = %dlq,
+                        status = st.as_u16(),
+                        "dead-letter delivery permanently refused; the key stays blocked \
+                         until the target accepts the source collection's key again"
+                    );
+                }
                 continue;
             }
         }
@@ -2580,7 +2680,7 @@ async fn dlq_and_settle(
             settled += 1;
         }
     }
-    settled
+    (settled, blocked)
 }
 
 async fn product_consumer_pull(
@@ -2729,7 +2829,7 @@ async fn product_consumer_pull(
                 }
             };
             if !poisoned.is_empty() {
-                dlq_and_settle(
+                let _ = dlq_and_settle(
                     &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
                     &poisoned, &by_off,
                 )
@@ -2894,6 +2994,7 @@ async fn product_consumer_settle(
     }
     let (mut acked, mut retried, mut extended, mut dlq, mut backlog, mut stale) =
         (0usize, 0usize, 0usize, 0usize, 0u64, 0usize);
+    let mut dlq_blocked = 0usize;
     for (sid, (acks, retries, extends)) in per_seg {
         let Some((seg_id, identity, route, _)) = lineage.iter().find(|(s, ..)| *s == sid).copied()
         else {
@@ -2966,11 +3067,13 @@ async fn product_consumer_settle(
                     by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
                 }
             }
-            dlq += dlq_and_settle(
+            let (d, b) = dlq_and_settle(
                 &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
                 &poisoned, &by_off,
             )
             .await;
+            dlq += d;
+            dlq_blocked += b;
         }
     }
     Response::builder()
@@ -2981,6 +3084,9 @@ async fn product_consumer_settle(
             json!({
                 "acked": acked, "retried": retried, "extended": extended,
                 "dlq": dlq, "stale": stale + stale_local, "backlog": backlog,
+                // Non-zero means the dead-letter target is refusing the
+                // source collection's key: those keys stay blocked.
+                "dlqBlocked": dlq_blocked,
             })
             .to_string(),
         ))
@@ -3002,8 +3108,47 @@ pub(crate) fn watch_pinned(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
 /// serialization, so "1" (string), 1 (number), true, null, arrays and
 /// objects are all distinct. A missing pointer produces NO key for the
 /// definition.
+///
+/// This encoding is NORMATIVE and cross-language — the SDK derives the
+/// same watch key offline (see `sdk/src/index.ts`), so the two must
+/// agree byte for byte. Two places where a naive `to_string()` would
+/// not: object keys are sorted (serde's map already is, JavaScript's
+/// is not), and a float with no fractional part is written as an
+/// integer, because serde writes `1.0` where JSON.stringify writes `1`.
+fn canonical_arg(v: &serde_json::Value) -> String {
+    use serde_json::Value as V;
+    match v {
+        V::Number(n) => match n.as_f64() {
+            Some(f) if n.as_i64().is_none() && n.as_u64().is_none() && f.fract() == 0.0 => {
+                format!("{}", f as i64)
+            }
+            _ => n.to_string(),
+        },
+        V::Array(a) => {
+            let items: Vec<String> = a.iter().map(canonical_arg).collect();
+            format!("[{}]", items.join(","))
+        }
+        V::Object(m) => {
+            let mut keys: Vec<&String> = m.keys().collect();
+            keys.sort();
+            let items: Vec<String> = keys
+                .iter()
+                .map(|k| {
+                    format!(
+                        "{}:{}",
+                        V::String((*k).clone()),
+                        canonical_arg(m.get(*k).unwrap_or(&V::Null))
+                    )
+                })
+                .collect();
+            format!("{{{}}}", items.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
 fn watch_arg(v: Option<&serde_json::Value>) -> Option<String> {
-    v.map(|x| x.to_string())
+    v.map(canonical_arg)
 }
 
 /// The 64-bit watch key for (definition, extracted values), hex16 on
@@ -3196,25 +3341,34 @@ async fn product_watch_wait(
     };
     // Auth: the derived URL sig (observation capability), or the full
     // encryption key.
+    // The sig chain is derivable by any stream-key holder, offline:
+    //   touch_token(key, epoch) -> wait_sig_key -> wait_url_sig(keyHex).
+    // The server holds no stream keys, so it verifies against the
+    // wait_sig_key persisted in the descriptor at create. That is what
+    // makes an issued URL durable: it keeps working across restarts,
+    // on a process that has never seen this stream, and for a
+    // collection that has not been appended to in days.
     let sig_ok = q.get("sig").is_some_and(|sig| {
-        // The sig chain is derivable by any stream-key holder:
-        // touch_token(key, epoch) -> wait_sig_key -> wait_url_sig(hex).
-        // The server needs the key fingerprint only to find the key…
-        // which it does NOT hold. Instead the capability is verified
-        // against a sig key derived at CREATE time? No — derive from
-        // the presented material: the sig itself must match a key
-        // derived from the STREAM key, which only the descriptor's
-        // fingerprint can witness. The server cannot derive it without
-        // the stream key, so sig verification uses the key cache: the
-        // absorber has the stream key for any stream that has appended.
-        match state.keys.get(&desc.storage_hash()) {
-            Some((k, e)) => {
-                let tok = crate::crypto::touch_token(&k, &e);
-                let sk = crate::crypto::wait_sig_key(&tok, &e);
-                crate::crypto::wait_url_sig(&sk, &key_hex) == sig.trim().to_ascii_lowercase()
-            }
-            None => false,
-        }
+        use base64::Engine;
+        let Some(stored) = desc.watch_sig_key.as_deref() else {
+            return false;
+        };
+        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(stored) else {
+            return false;
+        };
+        let Ok(sk) = <[u8; 32]>::try_from(raw.as_slice()) else {
+            return false;
+        };
+        let expect = crate::crypto::wait_url_sig(&sk, &key_hex);
+        // Constant-time: a byte-at-a-time comparison would leak the
+        // signature one probe at a time to a caller who can time it.
+        let got = sig.trim().to_ascii_lowercase();
+        expect.len() == got.len()
+            && expect
+                .bytes()
+                .zip(got.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
     });
     if !sig_ok {
         let key_ok = product_key(&headers).is_some_and(|kb| {

@@ -95,12 +95,38 @@ for (const m of batch.messages) m.ack();
 const settled = await batch.settle();
 check("settle acks", settled.acked === 2);
 
-// Watch: derive nothing client-side — use the server's key derivation via
-// a wait on the coarse key? The SDK takes a precomputed watchKey hex;
-// compute it the documented way is server-side; here we just verify the
-// definitions endpoint.
+// Watch: the SDK derives the watch key and signs the observation URL
+// offline. This only works if the client's derivation matches the
+// server's byte for byte, so the round trip below is the real test of
+// both — plus the persisted signature verifier.
 const defs = await orders.watches();
 check("watch definitions listed", defs[0]?.name === "by-customer");
+
+const watch = await orders.watch("by-customer", ["c7"]);
+check("watch key derived client-side", /^[0-9a-f]{16}$/.test(watch.key), watch.key);
+const pending = watch.wait({ cursor: "now", timeoutMs: 10000 });
+await new Promise((r) => setTimeout(r, 300));
+await orders.append({ customerId: "c7", n: 0 }, { routingKey: "c7" });
+const ev = await Promise.race([
+  pending,
+  new Promise((r) => setTimeout(() => r({ invalidated: false, reason: "timeout" }), 12000)),
+]);
+check("signed watch URL observes the derived key", ev.invalidated === true, JSON.stringify(ev));
+
+// The URL is a standalone capability: no key, no token, no SDK.
+const bare = await fetch(watch.url({ timeoutMs: 1000 }));
+check("watch URL needs no credentials", bare.status === 200, `status ${bare.status}`);
+// A tampered signature is refused.
+const forged = await fetch(watch.url({ timeoutMs: 1000 }).replace(/sig=\w{4}/, "sig=0000"));
+check("forged signature refused", forged.status === 403, `status ${forged.status}`);
+// Wrong value count is caught before any request.
+let cardinality = false;
+try {
+  await orders.watch("by-customer", ["a", "b"]);
+} catch (e) {
+  cardinality = e.code === "invalid_watch_values";
+}
+check("watch value cardinality checked", cardinality);
 
 // Seal with a final record; subscribe termination; catalog.
 await orders.seal({ final: { customerId: "c1", done: true }, routingKey: "c1" });
