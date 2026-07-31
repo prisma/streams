@@ -695,6 +695,9 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
+            soft_deleted: false,
+            forked_from: None,
+            fork_refs: 0,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
     }

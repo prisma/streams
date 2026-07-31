@@ -8672,3 +8672,83 @@ async fn dual_surface_equivalence_corpus() {
     assert_eq!(st, 400, "case 12b: raw offset on the product route");
     engine_shutdown(&state).await;
 }
+
+/// Pinned DS fork contract (regression net for the conformance suite):
+/// stitched reads across the boundary, source independence, sub-offset
+/// materialization, soft-delete 410s, and the reference cascade.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_lifecycle_and_stitched_reads() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    // Source: three records.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fsrc",
+        &ct,
+        br#"[{"n":0},{"n":1},{"n":2}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    // Fork at record 2 (server-returned tokens are opaque; use the
+    // reference zero-literal + JSON sub semantics: 0 + sub 2).
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/ffork",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "/v1/stream/fsrc"),
+            ("stream-fork-offset", "0000000000000000_0000000000000000"),
+            ("stream-fork-sub-offset", "2"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Fork sees the inherited prefix only.
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/ffork", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 2, "{recs:?}");
+    // Appends to fork and source are independent.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/ffork", &ct, br#"[{"f":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/fsrc", &ct, br#"[{"s":9}]"#).await;
+    assert!(st == 200 || st == 204);
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/ffork", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3);
+    assert_eq!(recs[2]["f"], 1, "fork's own append after the prefix");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/fsrc", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 4, "source unaffected by the fork's append");
+
+    // Soft-delete: the source with a live fork answers 410 directly,
+    // the fork still reads; deleting the fork cascades the source away.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fsrc", &[], b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/fsrc", &[], b"").await;
+    assert_eq!(st, 410, "soft-deleted source is GONE, not missing");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fsrc", &ct, b"").await;
+    assert_eq!(st, 409, "re-creation blocked while forks live");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/ffork", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        recs.len(),
+        3,
+        "fork reads inherited data past the soft delete"
+    );
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/ffork", &[], b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/fsrc", &[], b"").await;
+    assert_eq!(
+        st, 404,
+        "last fork's deletion cascades the source to gone-gone"
+    );
+    engine_shutdown(&state).await;
+}

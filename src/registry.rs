@@ -23,6 +23,21 @@ pub struct StreamDesc {
     pub expires_at_ms: Option<i64>,
     #[serde(default)]
     pub deleted: bool,
+    /// Fork lifecycle (pinned DS protocol): the stream's data is
+    /// retained for its live forks, but direct access answers 410 and
+    /// re-creation is blocked while references exist.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub soft_deleted: bool,
+    /// Fork parentage (pinned DS protocol): records below `fork_offset`
+    /// are served from the ancestor chain; this stream's own records
+    /// begin at `fork_offset` (a binary sub-offset materializes the
+    /// partial record there at creation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<ForkRef>,
+    /// Live direct forks of THIS stream (delete decrements; reaching
+    /// zero on a soft-deleted stream cascades the hard delete).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub fork_refs: u32,
     /// Configured content type (create-time config; appends must match).
     #[serde(default = "default_content_type")]
     pub content_type: String,
@@ -59,6 +74,27 @@ pub struct StreamDesc {
 /// reads. There are no layout bridges: opening a namespace written by a
 /// different layout is refused (pre-launch hard cutover).
 pub const LAYOUT_VERSION: u32 = 3;
+
+/// Fork parentage (pinned DS protocol fork contract).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ForkRef {
+    /// Source stream NAME (path form normalized away at parse).
+    pub source: String,
+    /// Source incarnation at fork time (stale references are integrity
+    /// errors, not silent cross-incarnation reads).
+    pub source_epoch: String,
+    /// The fork boundary in the SHARED record numbering: ancestor chain
+    /// serves [0, fork_offset), own records start at fork_offset.
+    pub fork_offset: u64,
+    /// The sub-offset as REQUESTED (idempotent-PUT identity only;
+    /// its effect is baked into fork_offset / the materialized record).
+    #[serde(default)]
+    pub fork_sub: u64,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
 
 /// One immutable watch definition (spec Stage 2 §3.2): a name plus the
 /// ordered JSON-pointer fields whose canonical extracted values derive
@@ -736,6 +772,9 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
+            soft_deleted: false,
+            forked_from: None,
+            fork_refs: 0,
             layout_version: LAYOUT_VERSION,
         }
     }

@@ -59,6 +59,17 @@ since the 239-test run — no regressions from the product-surface work):
 These are the open items of the final release gate (task #87). The
 239 tests of the previous baseline remain green within the 265.
 
+## Run 2026-07-31 (later) — FULL SUITE GREEN
+
+After implementing forks, sliding TTL, per-data SSE control pairing,
+the CORS preflight, and 413-for-oversized: **332 passed, 0 failed,
+6 skipped (338)** — the complete pinned 0.3.6 suite. Notable finds on
+the way: the TTL slide CAS raced the close path's descriptor seal
+(single-shot cas_update lost to a 412; fixed with a bounded retry),
+and per-request slide spawns herded the registry under rapid op
+sequences (fixed with an in-flight-slide set; this also cleared the
+property-test timeout).
+
 ## Results
 
 | configuration | result |

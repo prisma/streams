@@ -1505,6 +1505,35 @@ impl ShardEngine {
     /// Durable consumer-cursor hint for the pull pre-read window. A
     /// stale value only widens the window; the committer's
     /// stop-at-uncovered rule keeps leasing exact.
+    /// Create the tail row for a FORK's storage identity: its own
+    /// record space begins at the fork boundary — nothing below exists
+    /// under this identity (inherited records are served from the
+    /// ancestor chain). No-op when the tail already exists (idempotent
+    /// PUT retries).
+    pub async fn seed_fork_tail(
+        &self,
+        hash: [u8; 16],
+        route: [u8; 16],
+        at: u64,
+    ) -> Result<(), slatedb::Error> {
+        if self.db.get(tail_key(&hash)).await?.is_some() {
+            return Ok(());
+        }
+        let t = TailFields {
+            next: at,
+            absorbed: at,
+            trimmed: at,
+            trim_safe_to: at,
+            history_v2: true,
+            route,
+            ..Default::default()
+        };
+        self.db
+            .put(&tail_key(&hash)[..], &encode_tail(&t)[..])
+            .await
+            .map(|_| ())
+    }
+
     pub async fn queue_cursor(
         &self,
         hash: [u8; 16],
