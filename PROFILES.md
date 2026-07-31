@@ -1,5 +1,12 @@
 # Profiles on the SlateDB architecture
 
+> **Status: historical.** Profiles were removed by the product-surface
+> hard cutover (Stage 1): there are no profile hooks, no `queue`/`touch`
+> routes and no profile fields in the descriptor. The current surface is
+> `handover/prisma_streams_surface_spec_prelaunch_hard_cutover/` and
+> `docs/RELEASE-PRODUCT-SURFACE.md`. Kept because the reasoning behind
+> the consumer-group and watch designs started here.
+
 How the profile model from the Bun/TS implementation (`generic`, `evlog`,
 `metrics`, `otel-traces`, `state-protocol`) maps onto the new architecture
 ([SPEC.md](./SPEC.md)), which small semantic changes we should take while

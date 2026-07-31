@@ -1,5 +1,13 @@
 # Prisma Streams on SlateDB — Architecture & Specification
 
+> **Status: pre-cutover for the API surface.** The engine, storage and
+> operational material below is current. The customer-facing API is
+> not: the product surface, its routes, the typed creation document,
+> consumer groups, watches and the layout-version gate are specified in
+> `handover/prisma_streams_surface_spec_prelaunch_hard_cutover/` and
+> reported in `docs/RELEASE-PRODUCT-SURFACE.md`. Where the two disagree
+> about the API, those documents win.
+
 A multi-tenant Durable Streams service built on [SlateDB](https://slatedb.io)
 (object-store-native LSM), running on Prisma Compute, storing everything in
 Tigris. This document is the spec of record: decisions, architecture,
