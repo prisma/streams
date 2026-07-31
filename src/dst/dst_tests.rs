@@ -390,6 +390,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
                     id: pid.clone(),
                     epoch: 1,
                     seq: 0,
+                    request_hash: None,
                 }),
                 None,
             )
@@ -428,6 +429,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
                     id: pid.clone(),
                     epoch: 1,
                     seq: 0,
+                    request_hash: None,
                 }),
                 None,
             )
@@ -485,6 +487,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
                     id: pid.clone(),
                     epoch: 1,
                     seq: 1,
+                    request_hash: None,
                 }),
                 None,
             )
@@ -561,6 +564,7 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
                 id: pid.clone(),
                 epoch: 1,
                 seq: 0,
+                request_hash: None,
             }),
             Some(std::time::Duration::from_millis(300)),
         )
@@ -584,6 +588,7 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
                 id: pid.clone(),
                 epoch: 1,
                 seq: 0,
+                request_hash: None,
             }),
             None,
         )
@@ -675,6 +680,7 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
                 id: pid.clone(),
                 epoch: 1,
                 seq: 0,
+                request_hash: None,
             }),
             Some(std::time::Duration::from_secs(1)),
         )
@@ -701,6 +707,7 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
                 id: pid.clone(),
                 epoch: 1,
                 seq: 0,
+                request_hash: None,
             }),
             None,
         )
@@ -1908,6 +1915,7 @@ async fn ring_ordering_paging_and_duplicates_at_offset_level() {
         id: "ring-dup".into(),
         epoch: 1,
         seq: 0,
+        request_hash: None,
     };
     let first = w
         .attempt_with_deadline(&engine, hash, &key, "o", "dup-body", Some(pr.clone()), None)
@@ -4435,6 +4443,7 @@ async fn producer_retries_across_a_split_commit_once() {
                         id: "prod-1".into(),
                         epoch: 1,
                         seq,
+                        request_hash: None,
                     })
                 },
                 deferred_error: None,
@@ -5449,6 +5458,7 @@ async fn producer_lanes_scoped_per_routing_key() {
                         id: "prod-x".into(),
                         epoch: 1,
                         seq,
+                        request_hash: None,
                     })
                 },
                 deferred_error: None,
@@ -7272,5 +7282,224 @@ async fn product_scan_bytes_stream() {
         .decode(items[0]["valueB64"].as_str().unwrap())
         .unwrap();
     assert_eq!(raw, b"\x00\x01\xffraw");
+    engine_shutdown(&state).await;
+}
+
+/// Stage 5 §7: the product checkpoint records the request hash — an
+/// exact retry is a duplicate answering with the ORIGINAL cursor; the
+/// same tuple with a different request is 409 producer_sequence_reused;
+/// gaps and stale epochs carry the product taxonomy. The raw standards
+/// route never compares bodies (pinned protocol).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_producer_hash_discipline() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/ph",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let hdr = |seq: &'static str| {
+        vec![
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "g"),
+            ("producer-id", "checkout"),
+            ("producer-epoch", "1"),
+            ("producer-seq", seq),
+        ]
+    };
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("0"),
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let c0 = v["cursor"].as_str().unwrap().to_string();
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("1"),
+        b"{\"n\":2}",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Move the tail past the checkpoint with a plain (non-producer)
+    // append, then retry the LATEST seq: the duplicate's cursor must
+    // name the ORIGINAL commit (offset 2 = after n:2 at offset 1), not
+    // the tail (offset 3). Older seqs degrade to the tail — the
+    // checkpoint retains only the latest result (spec §7 last_result).
+    let plain = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+    ];
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/ph/records", &plain, b"{\"n\":3}").await;
+    assert_eq!(st, 200);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("1"),
+        b"{\"n\":2}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true);
+    let desc = state.registry.get("ph").await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let kh = crate::crypto::stream_hash("g");
+    let kc = crate::product_cursor::KeyCursor::decode(
+        v["cursor"].as_str().unwrap(),
+        &skey(),
+        &epoch,
+        &kh,
+    )
+    .unwrap();
+    assert_eq!(
+        kc.offset, 2,
+        "duplicate cursor = original commit, not the tail"
+    );
+    let kc0 = crate::product_cursor::KeyCursor::decode(&c0, &skey(), &epoch, &kh).unwrap();
+    assert_eq!(kc0.offset, 1, "first append's cursor");
+
+    // Older-seq retry: still a duplicate (no reuse conflict).
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("0"),
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true);
+
+    // Same tuple, different body: 409 producer_sequence_reused, nothing
+    // stored.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("1"),
+        b"{\"n\":99}",
+    )
+    .await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_sequence_reused");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/ph/records?routingKey=g",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "the reused sequence stored nothing");
+
+    // Gap: 409 producer_gap with expected/received details.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &hdr("5"),
+        b"{\"n\":5}",
+    )
+    .await;
+    assert_eq!(st, 409);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_gap");
+    assert_eq!(v["error"]["details"]["expected"], 2);
+    assert_eq!(v["error"]["details"]["received"], 5);
+
+    // Stale epoch: 403 stale_producer_epoch with the current epoch.
+    let stale = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/ph/records", &stale, b"{\"n\":0}").await;
+    assert_eq!(st, 403);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "stale_producer_epoch");
+    assert_eq!(v["error"]["details"]["currentEpoch"], 1);
+
+    // Raw standards route: the pinned protocol's duplicate contract
+    // does NOT compare bodies — same tuple, different body, still 204.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/rawdup",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let rawh = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[1]").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[2]").await;
+    assert_eq!(st, 204, "raw duplicate never compares bodies");
+    engine_shutdown(&state).await;
+}
+
+/// Stage 5 §8: the request hash follows the routing key's predecessor
+/// chain — after a split, an exact retry on the successor deduplicates
+/// and a reused sequence with a different body still conflicts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_producer_hash_survives_split() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/psp",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let hdrs = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "ga"),
+        ("producer-id", "svc"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/psp/records", &hdrs, b"{\"a\":1}").await;
+    assert_eq!(st, 200);
+    assert!(crate::scaler3::execute_split(&state, "psp", 0, 0x8000_0000_0000_0000).await);
+    // Exact retry lands on the successor: chain lookup finds the row
+    // (with its hash) on the sealed parent.
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/psp/records", &hdrs, b"{\"a\":1}").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true, "retry across the split deduplicates");
+    // Same tuple, different body: the hash traveled too.
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/psp/records", &hdrs, b"{\"a\":2}").await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_sequence_reused");
     engine_shutdown(&state).await;
 }

@@ -732,7 +732,14 @@ pub fn spawn_billing(state: Arc<AppState>) {
                 continue;
             }
             let body = serde_json::to_vec(&recs).unwrap_or_default();
-            let resp = append(state.clone(), name.clone(), hdrs.clone(), Body::from(body)).await;
+            let resp = append(
+                state.clone(),
+                name.clone(),
+                hdrs.clone(),
+                Body::from(body),
+                None,
+            )
+            .await;
             if resp.status().is_success() {
                 for (h, cur) in staged {
                     prev.insert(h, cur);
@@ -1105,7 +1112,7 @@ async fn stream_entry_inner(
             };
             create_stream(state, name, headers, body).await
         }
-        Method::POST => append(state, name, headers, body).await,
+        Method::POST => append(state, name, headers, body, None).await,
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => delete_stream(state, name).await,
@@ -1256,7 +1263,12 @@ fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerRe
             }
             let epoch = parse_uint_strict(&e).ok_or("invalid Producer-Epoch")?;
             let seq = parse_uint_strict(&s).ok_or("invalid Producer-Seq")?;
-            Ok(Some(crate::shard::ProducerReq { id, epoch, seq }))
+            Ok(Some(crate::shard::ProducerReq {
+                id,
+                epoch,
+                seq,
+                request_hash: None,
+            }))
         }
         _ => Err("Producer-Id, Producer-Epoch and Producer-Seq must be sent together".into()),
     }
@@ -1922,6 +1934,7 @@ pub(crate) async fn append(
     name: String,
     headers: HeaderMap,
     body: Body,
+    product_hash: Option<[u8; 16]>,
 ) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
@@ -1931,7 +1944,7 @@ pub(crate) async fn append(
             .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
     );
     if !wrapped {
-        return append_core(state, name, headers, body).await;
+        return append_core(state, name, headers, body, product_hash).await;
     }
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -1943,6 +1956,7 @@ pub(crate) async fn append(
             name.clone(),
             headers.clone(),
             Body::from(body_bytes.clone()),
+            product_hash,
         )
         .await;
         if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
@@ -1975,6 +1989,7 @@ async fn append_core(
     name: String,
     headers: HeaderMap,
     body: Body,
+    product_hash: Option<[u8; 16]>,
 ) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
@@ -2022,10 +2037,13 @@ async fn append_core(
         }
     };
 
-    let producer = match parse_producer(&headers) {
+    let mut producer = match parse_producer(&headers) {
         Ok(p) => p,
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),
     };
+    if let (Some(p), Some(h)) = (producer.as_mut(), product_hash) {
+        p.request_hash = Some(h);
+    }
     let close = want_close(&headers);
     let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -2338,6 +2356,9 @@ async fn append_core(
             let mut r = Response::builder()
                 .status(status)
                 .header("Stream-Next-Offset", tok(ack.next_offset));
+            if product_hash.is_some() {
+                r = r.header("x-ack-last-offset", ack.last_offset.to_string());
+            }
             if let Some((pe, ps)) = ack.producer {
                 r = r
                     .header("Producer-Epoch", pe.to_string())
@@ -2389,6 +2410,11 @@ async fn append_core(
             StatusCode::BAD_REQUEST,
             "producer_epoch_seq",
             "a new epoch must start at seq 0",
+        ),
+        Err(AppendErr::ProducerSeqReused) => err_resp(
+            StatusCode::CONFLICT,
+            "producer_sequence_reused",
+            "same producer sequence with a different request",
         ),
         Err(AppendErr::CtMismatch) => err_resp(
             StatusCode::CONFLICT,

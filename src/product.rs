@@ -861,11 +861,30 @@ async fn product_append(
         }
     }
     let has_producer = headers.contains_key("producer-id");
+    // Stage 5 §7: the product request hash covers (operation kind,
+    // routing key, content type, body bytes, seal flag) — computed over
+    // the PRODUCT body, before any wire re-shaping.
+    let request_hash: [u8; 16] = {
+        use sha2::{Digest, Sha256};
+        let mut hx = Sha256::new();
+        hx.update(if batch {
+            b"\x01batch\x00".as_slice()
+        } else {
+            b"\x01single\x00".as_slice()
+        });
+        hx.update((routing_key.len() as u64).to_le_bytes());
+        hx.update(routing_key.as_bytes());
+        hx.update(desc.content_type.as_bytes());
+        hx.update([0u8]); // seal flag (stream.seal({final}) arrives in Stage 8)
+        hx.update(&body);
+        hx.finalize()[..16].try_into().unwrap()
+    };
     let raw = crate::http::append(
         state.clone(),
         name.clone(),
         ih,
         axum::body::Body::from(wire_body),
+        has_producer.then_some(request_hash),
     )
     .await;
     translate_append_response(
@@ -907,13 +926,28 @@ async fn translate_append_response(
         let sealed = raw.headers().contains_key("stream-closed");
         // Decode the raw token into (seg_id, next) — plain tokens are
         // segment 0, epoch tokens carry their segment.
-        let (seg_id, next) = match crate::offsets::parse_ep(&next_tok) {
+        let (seg_id, tail_next) = match crate::offsets::parse_ep(&next_tok) {
             Ok((e, o)) => (e, o.scan_from()),
             Err(_) => match crate::offsets::Offset::parse(&next_tok) {
                 Ok(o) => (0, o.scan_from()),
                 Err(_) => (0, 0),
             },
         };
+        // The internal ack header carries the ORIGINAL commit offset —
+        // on a duplicate that is the first attempt's position, which is
+        // what read-your-write resumes from (spec Stage 5 §7 "return
+        // the original result"). Clamped to the live tail: a duplicate
+        // answered from a sealed predecessor's row reports an offset in
+        // the predecessor's space, and a cursor past the live tail
+        // would silently skip records.
+        let next = raw
+            .headers()
+            .get("x-ack-last-offset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|_| dup)
+            .map(|last| (last.wrapping_add(1)).min(tail_next))
+            .unwrap_or(tail_next);
         let cursor = match crate::crypto::StreamKey::from_b64(key_b64) {
             Ok(k) => {
                 let epoch = desc.epoch_bytes().unwrap_or_default();
@@ -943,21 +977,88 @@ async fn translate_append_response(
             ))
             .unwrap();
     }
-    // Error translation: keep the status, restate in the product schema.
-    let (code, message, retryable) = match status.as_u16() {
-        404 => ("not_found", "stream not found", false),
-        403 => ("stale_or_wrong_credentials", "forbidden", false),
-        409 if raw.headers().contains_key("stream-closed") => {
-            ("sealed", "collection is sealed", false)
-        }
-        409 => ("conflict", "producer or configuration conflict", false),
-        413 => ("body_too_large", "request body exceeds the limit", false),
-        429 => ("rate_limited", "admission or rate limit", true),
-        503 => ("temporarily_unavailable", "retry shortly", true),
-        _ => ("append_failed", "append failed", false),
+    // Error translation: lift the machine code from the shared path's
+    // error body where one exists (the producer taxonomy — spec Stage 5
+    // §9 — depends on it), else map by status.
+    let retry_after = raw.headers().get("retry-after").cloned();
+    let sealed_hdr = raw.headers().contains_key("stream-closed");
+    let expected = raw
+        .headers()
+        .get("producer-expected-seq")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let received = raw
+        .headers()
+        .get("producer-received-seq")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let cur_epoch = raw
+        .headers()
+        .get("producer-epoch")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let raw_code = match axum::body::to_bytes(raw.into_body(), 64 * 1024).await {
+        Ok(b) => serde_json::from_slice::<serde_json::Value>(&b)
+            .ok()
+            .and_then(|v| v["error"]["code"].as_str().map(str::to_string)),
+        Err(_) => None,
     };
-    let mut r = perr(status, code, message, None, retryable);
-    if let Some(ra) = raw.headers().get("retry-after") {
+    let (code, message, details, retryable): (&str, &str, Option<serde_json::Value>, bool) =
+        match raw_code.as_deref() {
+            Some("producer_seq_gap") => (
+                "producer_gap",
+                "producer sequence gap",
+                Some(json!({"expected": expected, "received": received})),
+                false,
+            ),
+            Some("producer_stale_epoch") => (
+                "stale_producer_epoch",
+                "producer epoch is stale",
+                Some(json!({"currentEpoch": cur_epoch})),
+                false,
+            ),
+            Some("producer_sequence_reused") => (
+                "producer_sequence_reused",
+                "same producer sequence with a different request",
+                None,
+                false,
+            ),
+            Some("producer_epoch_seq") => (
+                "producer_epoch_must_start_at_zero",
+                "a new producer epoch must start at sequence 0",
+                None,
+                false,
+            ),
+            Some("stream_closed") => ("sealed", "collection is sealed", None, false),
+            Some("content_type_mismatch") => (
+                "content_type_mismatch",
+                "content type mismatch",
+                None,
+                false,
+            ),
+            _ => match status.as_u16() {
+                404 => ("not_found", "stream not found", None, false),
+                403 => ("stale_or_wrong_credentials", "forbidden", None, false),
+                409 if sealed_hdr => ("sealed", "collection is sealed", None, false),
+                409 => (
+                    "conflict",
+                    "producer or configuration conflict",
+                    None,
+                    false,
+                ),
+                413 => (
+                    "body_too_large",
+                    "request body exceeds the limit",
+                    None,
+                    false,
+                ),
+                429 => ("rate_limited", "admission or rate limit", None, true),
+                503 => ("temporarily_unavailable", "retry shortly", None, true),
+                _ => ("append_failed", "append failed", None, false),
+            },
+        };
+    let mut r = perr(status, code, message, details, retryable);
+    if let Some(ra) = retry_after {
         r.headers_mut().insert("retry-after", ra.clone());
     }
     r

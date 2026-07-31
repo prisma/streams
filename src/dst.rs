@@ -893,6 +893,7 @@ impl Workload {
             // The engine reached a decision before committing anything.
             Ok(Err(
                 AppendErr::SeqConflict { .. }
+                | AppendErr::ProducerSeqReused
                 | AppendErr::ProducerGap { .. }
                 | AppendErr::ProducerStale { .. }
                 | AppendErr::ProducerEpochSeq
@@ -977,6 +978,7 @@ impl Workload {
             }
             Ok(Err(
                 AppendErr::SeqConflict { .. }
+                | AppendErr::ProducerSeqReused
                 | AppendErr::ProducerGap { .. }
                 | AppendErr::ProducerStale { .. }
                 | AppendErr::ProducerEpochSeq
@@ -1054,6 +1056,7 @@ impl Workload {
                 id: format!("dst-producer-{rk}"),
                 epoch: 1,
                 seq: pseq,
+                request_hash: None,
             });
             let engine = engines[(attempt as usize).min(engines.len() - 1)];
             log.issued.insert((op, attempt));

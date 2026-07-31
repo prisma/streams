@@ -221,12 +221,15 @@ pub struct StreamState {
     pub applied: TailFields,
     /// Producer idempotence state: id -> (epoch, highest seq). Loaded from
     /// the durable `q` keys on first use, applied by the committer.
-    /// producer id -> (epoch, seq, last_offset of that seq's commit).
+    /// producer id -> (epoch, seq, last_offset of that seq's commit,
+    /// request hash of that commit — zeros when none was recorded).
     /// The offset makes a duplicate ack return the ORIGINAL committed
     /// offset instead of whatever the tail happens to be when the retry
     /// arrives — with interleaved appends those differ, and clients use
-    /// the ack offset for read-your-write.
-    pub producers: HashMap<([u8; 16], String), (u64, u64, u64)>,
+    /// the ack offset for read-your-write. The hash backs the product
+    /// surface's 409 producer_sequence_reused (same tuple, different
+    /// request).
+    pub producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
     /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
     /// lazily from the durable `s` rows and applied by the committer.
     pub seqs: HashMap<[u8; 16], String>,
@@ -291,6 +294,11 @@ pub struct ProducerReq {
     pub id: String,
     pub epoch: u64,
     pub seq: u64,
+    /// Product-surface request hash (spec Stage 5 §7): 16 bytes over
+    /// (operation kind, routing key, content type, body bytes, seal
+    /// flag). None on the raw standards route — the pinned protocol's
+    /// duplicate contract does not compare bodies.
+    pub request_hash: Option<[u8; 16]>,
 }
 
 /// Validation failures that must be deferred until after the producer
@@ -355,6 +363,9 @@ pub enum AppendErr {
     SeqConflict {
         current: Option<String>,
     },
+    /// Product surface only: same (producer, epoch, seq) with a
+    /// DIFFERENT request hash (spec Stage 5 §7).
+    ProducerSeqReused,
     Closed {
         next_offset: u64,
     },
@@ -1364,14 +1375,25 @@ impl ShardEngine {
         lineage: &[[u8; 16]],
         key_hash: &[u8; 16],
         pid: &str,
-    ) -> Result<Option<(u64, u64, u64)>, slatedb::Error> {
+    ) -> Result<Option<(u64, u64, u64, [u8; 16])>, slatedb::Error> {
         for identity in std::iter::once(own).chain(lineage.iter()) {
             match self.db.get(producer_key(identity, key_hash, pid)).await? {
+                Some(v) if v.len() >= 40 => {
+                    let mut h = [0u8; 16];
+                    h.copy_from_slice(&v[24..40]);
+                    return Ok(Some((
+                        u64::from_le_bytes(v[0..8].try_into().unwrap()),
+                        u64::from_le_bytes(v[8..16].try_into().unwrap()),
+                        u64::from_le_bytes(v[16..24].try_into().unwrap()),
+                        h,
+                    )));
+                }
                 Some(v) if v.len() >= 24 => {
                     return Ok(Some((
                         u64::from_le_bytes(v[0..8].try_into().unwrap()),
                         u64::from_le_bytes(v[8..16].try_into().unwrap()),
                         u64::from_le_bytes(v[16..24].try_into().unwrap()),
+                        [0u8; 16],
                     )));
                 }
                 Some(v) if v.len() >= 16 => {
@@ -1383,6 +1405,7 @@ impl ShardEngine {
                         u64::from_le_bytes(v[0..8].try_into().unwrap()),
                         u64::from_le_bytes(v[8..16].try_into().unwrap()),
                         u64::MAX,
+                        [0u8; 16],
                     )));
                 }
                 _ => {}
@@ -1772,7 +1795,7 @@ impl ShardEngine {
             handle: Arc<StreamHandle>,
             fields: TailFields,
             base: TailFields,
-            producers: HashMap<([u8; 16], String), (u64, u64, u64)>,
+            producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
             seqs: HashMap<[u8; 16], String>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
@@ -1882,7 +1905,7 @@ impl ShardEngine {
                     let mut prod_echo: Option<(u64, u64)> = None;
                     if let Some(pr) = &req.producer {
                         match local.producers.get(&(req.key_hash, pr.id.clone())).copied() {
-                            Some((ce, cs, coff)) => {
+                            Some((ce, cs, coff, chash)) => {
                                 if pr.epoch < ce {
                                     let _ = req
                                         .resp
@@ -1890,6 +1913,26 @@ impl ShardEngine {
                                     continue;
                                 }
                                 if pr.epoch == ce && pr.seq <= cs {
+                                    // Product-surface reuse check (spec
+                                    // Stage 5 §7): the SAME tuple with a
+                                    // DIFFERENT request is a caller bug,
+                                    // not a duplicate. Only enforceable
+                                    // for the latest sequence (older
+                                    // hashes are not retained), and only
+                                    // when both sides recorded a hash —
+                                    // the raw protocol's duplicate
+                                    // contract never compares bodies.
+                                    if pr.seq == cs
+                                        && chash != [0u8; 16]
+                                        && req
+                                            .producer
+                                            .as_ref()
+                                            .and_then(|p| p.request_hash)
+                                            .is_some_and(|h| h != chash)
+                                    {
+                                        let _ = req.resp.send(Err(AppendErr::ProducerSeqReused));
+                                        continue;
+                                    }
                                     // Duplicate: answer with the ORIGINAL
                                     // committed offset when the stored
                                     // producer row carries it (24-byte
@@ -2010,14 +2053,16 @@ impl ShardEngine {
                         } else {
                             local.fields.next + req.entries.len() as u64 - 1
                         };
+                        let rhash = pr.request_hash.unwrap_or([0u8; 16]);
                         local.producers.insert(
                             (req.key_hash, pr.id.clone()),
-                            (pr.epoch, pr.seq, commit_last),
+                            (pr.epoch, pr.seq, commit_last, rhash),
                         );
-                        let mut v = Vec::with_capacity(24);
+                        let mut v = Vec::with_capacity(40);
                         v.extend_from_slice(&pr.epoch.to_le_bytes());
                         v.extend_from_slice(&pr.seq.to_le_bytes());
                         v.extend_from_slice(&commit_last.to_le_bytes());
+                        v.extend_from_slice(&rhash);
                         wb.put(producer_key(&hash, &req.key_hash, &pr.id), v);
                     }
                     if req.close {
