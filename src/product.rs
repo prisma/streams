@@ -1262,11 +1262,6 @@ async fn product_append_inner(
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
         ih.insert("stream-encryption-key", v);
     }
-    if !routing_key.is_empty() {
-        if let Ok(v) = axum::http::HeaderValue::from_str(&routing_key) {
-            ih.insert("stream-key", v);
-        }
-    }
     if let Ok(v) = axum::http::HeaderValue::from_str(&desc.content_type) {
         ih.insert("content-type", v);
     }
@@ -1306,6 +1301,7 @@ async fn product_append_inner(
         ih,
         axum::body::Body::from(wire_body),
         has_producer.then_some(request_hash),
+        Some(routing_key.clone()),
     )
     .await;
     translate_append_response(
@@ -3336,9 +3332,32 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(100)
         .clamp(1, 1000);
-    let after = q.get("cursor").cloned().unwrap_or_default();
-    let descs = match state.registry.list(10_000).await {
-        Ok(v) => v,
+    // Opaque cursor (audit P0): the wire form is not an editable stream
+    // name. It encodes the position to continue from.
+    let after: Option<String> = match q.get("cursor").filter(|c| !c.is_empty()) {
+        None => None,
+        Some(c) => {
+            use base64::Engine;
+            match base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(c.as_bytes())
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+            {
+                Some(n) => Some(n),
+                None => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_cursor",
+                        "invalid catalog cursor",
+                        None,
+                        false,
+                    );
+                }
+            }
+        }
+    };
+    let page = match state.registry.list_page(after.as_deref(), limit).await {
+        Ok(p) => p,
         Err(e) => {
             return perr(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3349,26 +3368,27 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
             );
         }
     };
-    let mut names: Vec<&StreamDesc> = descs.iter().collect();
-    names.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut out = Vec::new();
-    let mut next_cursor: Option<String> = None;
-    for d in names.into_iter().filter(|d| d.name > after) {
-        if out.len() >= limit {
-            let last: &serde_json::Value = &out[out.len() - 1];
-            next_cursor = Some(last["name"].as_str().unwrap_or("").to_string());
-            break;
+    let items: Vec<serde_json::Value> = page
+        .streams
+        .iter()
+        .map(|d| {
+            json!({
+                "name": d.name,
+                "contentType": d.content_type,
+                "sealed": d.sealed,
+                "createdAt": d.created_ms,
+            })
+        })
+        .collect();
+    let mut body = json!({ "streams": items });
+    // A cursor is offered only when the page filled — an underfull page
+    // is the end of the catalog.
+    if page.streams.len() == limit {
+        if let Some(n) = page.next_after {
+            use base64::Engine;
+            body["cursor"] =
+                json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(n.as_bytes()));
         }
-        out.push(json!({
-            "name": d.name,
-            "contentType": d.content_type,
-            "sealed": d.sealed,
-            "createdAt": d.created_ms,
-        }));
-    }
-    let mut body = json!({"streams": out});
-    if let Some(c) = next_cursor {
-        body["cursor"] = json!(c);
     }
     Response::builder()
         .status(StatusCode::OK)

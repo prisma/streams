@@ -738,6 +738,7 @@ pub fn spawn_billing(state: Arc<AppState>) {
                 hdrs.clone(),
                 Body::from(body),
                 None,
+                None,
             )
             .await;
             if resp.status().is_success() {
@@ -1078,7 +1079,7 @@ async fn stream_entry_inner(
             };
             create_stream(state, name, headers, body).await
         }
-        Method::POST => append(state, name, headers, body, None).await,
+        Method::POST => append(state, name, headers, body, None, None).await,
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => delete_stream(state, name).await,
@@ -1921,6 +1922,7 @@ async fn create_stream(
     // Creation-request identity (audit P0): a replayed PUT hashes
     // identically, so it JOINS an in-flight initialization instead of
     // observing the descriptor and skipping the work.
+    let needs_init = !body.is_empty() || close || fork_src_hdr.is_some();
     let create_hash: String = {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -2046,7 +2048,7 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
-            fresh.init = Some(crate::registry::InitState {
+            fresh.init = needs_init.then(|| crate::registry::InitState {
                 request_hash: create_hash.clone(),
                 claimed_ms: now_ms(),
             });
@@ -2079,7 +2081,7 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
-            fresh.init = Some(crate::registry::InitState {
+            fresh.init = needs_init.then(|| crate::registry::InitState {
                 request_hash: create_hash.clone(),
                 claimed_ms: now_ms(),
             });
@@ -2324,7 +2326,7 @@ async fn create_stream(
     // source reference, initial content, close-on-create) has landed.
     // Until this CAS, a replay resumes instead of observing a stream
     // whose content never arrived.
-    if created {
+    if created && needs_init {
         if let Err(e) = state
             .registry
             .cas_update_retry(&name, |d| {
@@ -2501,6 +2503,7 @@ pub(crate) async fn append(
     headers: HeaderMap,
     body: Body,
     product_hash: Option<[u8; 16]>,
+    product_key: Option<String>,
 ) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
@@ -2510,7 +2513,7 @@ pub(crate) async fn append(
             .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
     );
     if !wrapped {
-        return append_core(state, name, headers, body, product_hash).await;
+        return append_core(state, name, headers, body, product_hash, product_key).await;
     }
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -2523,6 +2526,7 @@ pub(crate) async fn append(
             headers.clone(),
             Body::from(body_bytes.clone()),
             product_hash,
+            product_key.clone(),
         )
         .await;
         if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
@@ -2532,7 +2536,7 @@ pub(crate) async fn append(
         let Ok(Some(d)) = state.registry.get(&name).await else {
             return r;
         };
-        let rk = hdr(&headers, "stream-key").unwrap_or_default();
+        let rk = product_key.clone().unwrap_or_default();
         let seg = d.resolve_segment(&rk);
         let pending = d.segments.as_ref().is_some_and(|m| m.pending.is_some());
         if pending {
@@ -2556,6 +2560,7 @@ async fn append_core(
     headers: HeaderMap,
     body: Body,
     product_hash: Option<[u8; 16]>,
+    product_key: Option<String>,
 ) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
@@ -2614,25 +2619,40 @@ async fn append_core(
         p.request_hash = Some(h);
     }
     let close = want_close(&headers);
-    // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative.
-    // A sealed (or sealing) collection refuses appends even when some
-    // segment engine has not observed its close yet — without this, a
-    // physically-open segment accepted writes while product metadata
-    // already reported sealed. The seal operation's own final record
-    // arrives with `close`, which the Sealing state permits.
-    if desc.sealed || (desc.sealing.is_some() && !close) {
-        let mut r = err_resp(StatusCode::CONFLICT, "stream_closed", "stream is closed");
-        r.headers_mut().insert(
-            "stream-closed",
-            axum::http::HeaderValue::from_static("true"),
-        );
-        return r;
-    }
     let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
     };
     let close_only = close && body.is_empty();
+
+    // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative,
+    // so a sealed collection refuses NEW records even when a segment
+    // engine has not observed its close yet. Requests whose pinned
+    // answer is idempotent success — close-only retries and producer
+    // requests, whose duplicate check must still return 204 — are
+    // deferred to the committer, which owns that decision and answers
+    // 409 with Stream-Next-Offset when they are genuinely new writes.
+    if (desc.sealed || desc.sealing.is_some()) && !close_only && producer.is_none() {
+        // The pinned closure contract requires Stream-Next-Offset on
+        // the 409, so read the sealed tail before answering.
+        let seg0 = desc.resolve_segment("");
+        let next = match state.engine_for(&seg0.shard_route).await {
+            Ok(e) => match e.stream_handle(seg0.identity).await {
+                Ok(h) => h.state.lock().unwrap().durable.next,
+                Err(_) => 0,
+            },
+            Err(_) => 0,
+        };
+        let mut r = err_resp(StatusCode::CONFLICT, "stream_closed", "stream is closed");
+        r.headers_mut().insert(
+            "stream-closed",
+            axum::http::HeaderValue::from_static("true"),
+        );
+        if let Ok(v) = axum::http::HeaderValue::from_str(&tail_token(next)) {
+            r.headers_mut().insert("stream-next-offset", v);
+        }
+        return r;
+    }
 
     // Content-Type: required on POST with a body; must match the stream's
     // configured media type (case-insensitive; parameters ignored). A
@@ -2744,7 +2764,22 @@ async fn append_core(
         crate::usage::counters(&name_hash)
     };
 
-    let routing_key = hdr(&headers, "stream-key").unwrap_or_default();
+    // STANDARDS ISOLATION (audit P0): the singular route IS the
+    // default-key Durable Stream — one strict sequence before and after
+    // any product split. Routing keys belong to the plural product
+    // route; the removed extension is rejected, never honored, so the
+    // raw sequence can never absorb another key's records.
+    if hdr(&headers, "stream-key").is_some() {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unknown_field",
+            "Stream-Key was removed: routing keys live on /v1/streams (Prisma-Routing-Key)",
+        );
+    }
+    // The product route passes its routing key as an internal
+    // PARAMETER; the raw route has none and is therefore always the
+    // default-key sequence.
+    let routing_key = product_key.clone().unwrap_or_default();
     // ROUTING-V3 §1: an absent key is the empty/default key, and the
     // sole ordering guarantee is per-routing-key order. Resolution
     // picks the owning segment — the implicit single segment for every
@@ -3534,10 +3569,23 @@ async fn read_fork_inner(
 async fn read(
     state: Arc<AppState>,
     name: String,
-    params: ReadParams,
+    mut params: ReadParams,
     headers: HeaderMap,
     head_only: bool,
 ) -> Response {
+    // STANDARDS ISOLATION (audit P0): the singular route reads exactly
+    // the DEFAULT routing key's sequence — never a segment-sequential
+    // replay of every key after a product split, and never another
+    // key's records before one. `?key=` was a pre-cutover extension and
+    // is rejected rather than honored.
+    if params.key.as_deref().is_some_and(|k| !k.is_empty()) {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unknown_field",
+            "?key= was removed: keyed reads live on /v1/streams (routingKey)",
+        );
+    }
+    params.key = Some(String::new());
     read_inner(
         state,
         name,
@@ -4732,7 +4780,6 @@ async fn read_v3_lineage_inner(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, desc.content_type.clone())
                 .header("Stream-Next-Offset", seg_tok(sg.seg_id, end.checked_sub(1)))
-                .header("Stream-Segment-Map-Version", map.version.to_string())
                 .header(header::CACHE_CONTROL, "no-store");
             if closed && is_last && !seal_gap {
                 r = r.header("Stream-Closed", "true");
@@ -4802,8 +4849,6 @@ async fn read_v3_lineage_inner(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, desc.content_type.clone())
             .header("Stream-Next-Offset", next_token)
-            .header("Stream-Ordering", "per-key")
-            .header("Stream-Segment-Map-Version", map.version.to_string())
             .header(header::CACHE_CONTROL, "no-store")
             .header("Cross-Origin-Resource-Policy", "cross-origin");
         if up_to_date && !seal_gap {

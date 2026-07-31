@@ -4744,14 +4744,33 @@ async fn read_page(
     std::collections::HashMap<String, String>,
     Vec<serde_json::Value>,
 ) {
-    let mut path = format!("/v1/stream/{stream}?x=1");
-    if let Some(k) = key {
-        path.push_str(&format!("&key={k}"));
-    }
-    if let Some(t) = tok {
-        path.push_str(&format!("&offset={t}"));
-    }
-    let (st, h, b) = hreq(addr, "GET", &path, &[], b"").await;
+    // Keyed pages go through the PRODUCT route (the singular route is
+    // the default-key view only); the product route's cursor parameter
+    // accepts the same opaque tokens the lineage reader emits, so these
+    // tests still drive the lineage machinery directly.
+    let (st, h, b) = match key {
+        Some(k) => {
+            let mut path = format!("/v1/streams/{stream}/records?routingKey={k}");
+            if let Some(t) = tok {
+                path.push_str(&format!("&cursor={t}"));
+            }
+            preq(
+                addr,
+                "GET",
+                &path,
+                &[("prisma-encryption-key", PRISMA_KEY)],
+                b"",
+            )
+            .await
+        }
+        None => {
+            let mut path = format!("/v1/stream/{stream}?x=1");
+            if let Some(t) = tok {
+                path.push_str(&format!("&offset={t}"));
+            }
+            hreq(addr, "GET", &path, &[], b"").await
+        }
+    };
     let recs = if b.is_empty() {
         Vec::new()
     } else {
@@ -4776,12 +4795,21 @@ async fn drain_no_closure(
         let (st, h, recs) = read_page(addr, stream, key, tok.as_deref()).await;
         assert!(st == 200 || st == 204, "page status {st}");
         assert!(
-            !h.contains_key("stream-closed"),
+            !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
             "a transition must never report closure (headers: {h:?})"
         );
         out.extend(recs);
-        let nxt = h.get("stream-next-offset").cloned();
-        let utd = h.get("stream-up-to-date").map(|v| v == "true") == Some(true);
+        // Keyed pages come from the product surface (Prisma-*), keyless
+        // ones from the raw surface (Stream-*).
+        let nxt = h
+            .get("prisma-next-cursor")
+            .or_else(|| h.get("stream-next-offset"))
+            .cloned();
+        let utd = h
+            .get("prisma-up-to-date")
+            .or_else(|| h.get("stream-up-to-date"))
+            .map(|v| v == "true")
+            == Some(true);
         if utd || nxt.is_none() || nxt == tok {
             return (out, h);
         }
@@ -4829,12 +4857,15 @@ async fn rig_in_seal_gap(
     assert!(st == 200 || st == 201, "create {st}");
     for i in 0..per_key {
         for k in ["ga", "gb"] {
-            let body = serde_json::json!([{ "k": k, "n": i }]).to_string();
-            let (st, _, _) = hreq(
+            let body = serde_json::json!({ "k": k, "n": i }).to_string();
+            let (st, _, _) = preq(
                 addr,
                 "POST",
-                &format!("/v1/stream/{stream}"),
-                &[("stream-key", k), ("content-type", "application/json")],
+                &format!("/v1/streams/{stream}/records"),
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -4920,7 +4951,7 @@ async fn seal_gap_get_never_reports_closure() {
         let (st, h, recs) = read_page(addr, "gapget", Some("ga"), tok.as_deref()).await;
         assert!(st == 200 || st == 204, "gap page status {st}");
         assert!(
-            !h.contains_key("stream-closed"),
+            !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
             "seal gap reported closure: {h:?}"
         );
         assert!(
@@ -4928,7 +4959,10 @@ async fn seal_gap_get_never_reports_closure() {
             "seal gap reported finality: {h:?}"
         );
         got += recs.len();
-        let nxt = h.get("stream-next-offset").cloned();
+        let nxt = h
+            .get("prisma-next-cursor")
+            .or_else(|| h.get("stream-next-offset"))
+            .cloned();
         if nxt.is_none() || nxt == tok {
             break;
         }
@@ -4945,7 +4979,9 @@ async fn seal_gap_get_never_reports_closure() {
     let (recs, last) = drain_no_closure(addr, "gapget", Some("ga")).await;
     assert_eq!(recs.len(), 6);
     assert_eq!(
-        last.get("stream-up-to-date").map(String::as_str),
+        last.get("prisma-up-to-date")
+            .or_else(|| last.get("stream-up-to-date"))
+            .map(String::as_str),
         Some("true"),
         "published lineage ends Up-To-Date"
     );
@@ -4959,7 +4995,7 @@ async fn seal_gap_head_no_closure() {
     let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/gaphead", &[], b"").await;
     assert_eq!(st, 200);
     assert!(
-        !h.contains_key("stream-closed"),
+        !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
         "HEAD reported closure in the gap: {h:?}"
     );
     crate::scaler3::failpoints::release_before_publish();
@@ -4967,7 +5003,7 @@ async fn seal_gap_head_no_closure() {
     await_published(&state, "gaphead").await;
     let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/gaphead", &[], b"").await;
     assert_eq!(st, 200);
-    assert!(!h.contains_key("stream-closed"));
+    assert!(!h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"));
 }
 
 /// A long-poll already parked at the tail when the seal lands must wake
@@ -4987,12 +5023,15 @@ async fn seal_gap_long_poll_wakes_without_closure() {
     .await;
     assert!(st == 200 || st == 201, "create {st}");
     for i in 0..3 {
-        let body = serde_json::json!([{ "k": "ga", "n": i }]).to_string();
-        hreq(
+        let body = serde_json::json!({ "k": "ga", "n": i }).to_string();
+        preq(
             addr,
             "POST",
-            "/v1/stream/gappoll",
-            &[("stream-key", "ga"), ("content-type", "application/json")],
+            "/v1/streams/gappoll/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "ga"),
+            ],
             body.as_bytes(),
         )
         .await;
@@ -5025,7 +5064,7 @@ async fn seal_gap_long_poll_wakes_without_closure() {
     let (st, h, _) = poll.await.unwrap();
     assert!(st == 200 || st == 204, "poll woke with {st}");
     assert!(
-        !h.contains_key("stream-closed"),
+        !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
         "seal wake reported closure: {h:?}"
     );
     crate::scaler3::failpoints::release_before_publish();
@@ -5042,7 +5081,10 @@ async fn seal_gap_cold_read_mid_gap() {
     let (state, addr, _guard, split) = rig_in_seal_gap("gapcold", 4).await;
     let (st, h, recs) = read_page(addr, "gapcold", Some("gb"), None).await;
     assert_eq!(st, 200);
-    assert!(!h.contains_key("stream-closed"), "{h:?}");
+    assert!(
+        !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
+        "{h:?}"
+    );
     assert!(!h.contains_key("stream-up-to-date"), "{h:?}");
     assert_eq!(recs.len(), 4, "gap serves everything below the seal");
     crate::scaler3::failpoints::release_before_publish();
@@ -5061,7 +5103,7 @@ async fn seal_gap_cancel_then_retry() {
         use tokio::io::AsyncWriteExt;
         let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
         let req = format!(
-            "GET /v1/stream/gapcancel?key=ga HTTP/1.1\r\nhost: x\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+            "GET /v1/streams/gapcancel/records?routingKey=ga HTTP/1.1\r\nhost: x\r\nprisma-encryption-key: {RIG_KEY_B64}\r\n\r\n"
         );
         s.write_all(req.as_bytes()).await.unwrap();
         drop(s); // vanish without reading the response
@@ -5069,7 +5111,10 @@ async fn seal_gap_cancel_then_retry() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let (st, h, recs) = read_page(addr, "gapcancel", Some("ga"), None).await;
     assert_eq!(st, 200);
-    assert!(!h.contains_key("stream-closed"), "{h:?}");
+    assert!(
+        !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
+        "{h:?}"
+    );
     assert_eq!(
         recs.len(),
         4,
@@ -5101,12 +5146,15 @@ async fn seal_gap_stale_descriptor_redispatches() {
     .await;
     assert!(st == 200 || st == 201, "create {st}");
     for i in 0..4 {
-        let body = serde_json::json!([{ "k": "ga", "n": i }]).to_string();
-        hreq(
+        let body = serde_json::json!({ "k": "ga", "n": i }).to_string();
+        preq(
             addr,
             "POST",
-            "/v1/stream/gapstale",
-            &[("stream-key", "ga"), ("content-type", "application/json")],
+            "/v1/streams/gapstale/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "ga"),
+            ],
             body.as_bytes(),
         )
         .await;
@@ -5150,7 +5198,7 @@ async fn seal_gap_stale_descriptor_redispatches() {
     let (st, h, recs) = read_page(addr, "gapstale", Some("ga"), None).await;
     assert_eq!(st, 200);
     assert!(
-        !h.contains_key("stream-closed"),
+        !h.contains_key("stream-closed") && !h.contains_key("prisma-sealed"),
         "stale descriptor let closure through: {h:?}"
     );
     assert_eq!(recs.len(), 4);
@@ -5603,9 +5651,9 @@ async fn blast_keys(
                         conn.as_mut().unwrap()
                     }
                 };
-                let body = format!("[{{\"c\":{c},\"i\":{i}}}]");
+                let body = format!("{{\"c\":{c},\"i\":{i}}}");
                 let req = format!(
-                    "POST /v1/stream/{stream} HTTP/1.1\r\nhost: x\r\nstream-encryption-key: {RIG_KEY_B64}\r\nstream-key: {k}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    "POST /v1/streams/{stream}/records HTTP/1.1\r\nhost: x\r\nprisma-encryption-key: {RIG_KEY_B64}\r\nprisma-routing-key: {k}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
                     body.len()
                 );
                 if sck.write_all(req.as_bytes()).await.is_err() {
@@ -5705,12 +5753,15 @@ async fn split_children_land_on_distinct_engines() {
     let mut per_key = std::collections::HashMap::new();
     for round in 0..12 {
         for k in &keys {
-            let body = format!("[{{\"k\":\"{k}\",\"n\":{round}}}]");
-            let (st, _, _) = hreq(
+            let body = format!("{{\"k\":\"{k}\",\"n\":{round}}}");
+            let (st, _, _) = preq(
                 addr,
                 "POST",
-                "/v1/stream/cap-routes",
-                &[("stream-key", k), ("content-type", "application/json")],
+                "/v1/streams/cap-routes/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -5744,12 +5795,15 @@ async fn split_children_land_on_distinct_engines() {
     // across the lineage.
     for round in 12..20 {
         for k in &keys {
-            let body = format!("[{{\"k\":\"{k}\",\"n\":{round}}}]");
-            let (st, _, _) = hreq(
+            let body = format!("{{\"k\":\"{k}\",\"n\":{round}}}");
+            let (st, _, _) = preq(
                 addr,
                 "POST",
-                "/v1/stream/cap-routes",
-                &[("stream-key", k), ("content-type", "application/json")],
+                "/v1/streams/cap-routes/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -5779,6 +5833,11 @@ async fn split_children_land_on_distinct_engines() {
 /// deliver >= 1.8x — with zero client-visible errors and exact counts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn post_split_throughput_scales() {
+    // A capacity RATIO is only valid when the measurement owns the
+    // machine: run serialized against the other heavy tests (the
+    // parallel suite's CPU contention pushed a real 1.8x+ split to a
+    // measured 1.77). This serializes the measurement; it does not
+    // relax the gate.
     let _l = gap_lock().lock().await;
     let inner = mem();
     let store: Arc<dyn ObjectStore> = FaultStore::uniform(
@@ -5899,12 +5958,15 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
         pk: &mut std::collections::HashMap<String, usize>,
     ) {
         for k in keys {
-            let body = format!("[{{\"k\":\"{k}\",\"n\":{round}}}]");
-            let (st, _, _) = hreq(
+            let body = format!("{{\"k\":\"{k}\",\"n\":{round}}}");
+            let (st, _, _) = preq(
                 addr,
                 "POST",
-                "/v1/stream/mergeback",
-                &[("stream-key", k), ("content-type", "application/json")],
+                "/v1/streams/mergeback/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -5975,7 +6037,9 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
         assert_eq!(ns.len(), per_key[&k.to_string()], "exact count for {k}");
         assert!(ns.windows(2).all(|w| w[0] < w[1]), "order for {k}: {ns:?}");
         assert_eq!(
-            last.get("stream-up-to-date").map(String::as_str),
+            last.get("prisma-up-to-date")
+                .or_else(|| last.get("stream-up-to-date"))
+                .map(String::as_str),
             Some("true")
         );
     }
@@ -6002,12 +6066,15 @@ async fn sse_follows_lineage_across_split() {
     assert!(st == 200 || st == 201);
     for r in 0..5 {
         for k in ["ga", "gb"] {
-            let body = format!("[{{\"k\":\"{k}\",\"n\":{r}}}]");
-            hreq(
+            let body = format!("{{\"k\":\"{k}\",\"n\":{r}}}");
+            preq(
                 addr,
                 "POST",
-                "/v1/stream/sselin",
-                &[("stream-key", k), ("content-type", "application/json")],
+                "/v1/streams/sselin/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -6016,12 +6083,15 @@ async fn sse_follows_lineage_across_split() {
     assert!(crate::scaler3::execute_split(&state, "sselin", 0, 0x8000_0000_0000_0000).await);
     for r in 5..10 {
         for k in ["ga", "gb"] {
-            let body = format!("[{{\"k\":\"{k}\",\"n\":{r}}}]");
-            let (st, _, _) = hreq(
+            let body = format!("{{\"k\":\"{k}\",\"n\":{r}}}");
+            let (st, _, _) = preq(
                 addr,
                 "POST",
-                "/v1/stream/sselin",
-                &[("stream-key", k), ("content-type", "application/json")],
+                "/v1/streams/sselin/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
                 body.as_bytes(),
             )
             .await;
@@ -6031,7 +6101,7 @@ async fn sse_follows_lineage_across_split() {
 
     let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "GET /v1/stream/sselin?key=ga&live=sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        "GET /v1/streams/sselin/records:sse?routingKey=ga HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {RIG_KEY_B64}\r\n\r\n"
     );
     sck.write_all(req.as_bytes()).await.unwrap();
     let mut buf = vec![0u8; 8192];
@@ -6430,7 +6500,14 @@ async fn product_append_and_append_many() {
 
     // The key sequence now holds 3 records: [1,2,3], {id:1}, {id:2} —
     // verified through the RAW keyed read (shared storage).
-    let (st, _, b) = hreq(addr, "GET", "/v1/stream/orders?key=customer-42", &[], b"").await;
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/orders/records?routingKey=customer-42",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
     assert_eq!(st, 200);
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 3, "1 array message + 2 batch messages");
@@ -6558,7 +6635,14 @@ async fn product_append_producer_duplicate() {
     assert_eq!(st, 200);
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["duplicate"], true);
-    let (st, _, b) = hreq(addr, "GET", "/v1/stream/pdup?key=ga", &[], b"").await;
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/pdup/records?routingKey=ga",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
     assert_eq!(st, 200);
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 1, "duplicate stored nothing");
@@ -9272,5 +9356,229 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     assert!(st == 404 || st == 410 || st == 204, "retried delete: {st}");
     let (st, _, _) = hreq(addr, "GET", "/v1/stream/fk-src", &[], b"").await;
     assert_eq!(st, 404, "last fork released -> source cascades away");
+    engine_shutdown(&state).await;
+}
+
+/// AUDIT P0: the singular route is the DEFAULT-KEY Durable Stream, and
+/// stays one strict sequence while the product surface writes other
+/// keys and splits the collection underneath it. The required
+/// cross-surface test: product keys + split, raw default-key traffic,
+/// raw reads see exactly their own records with resumable cursors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_route_is_the_default_key_view_across_splits() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dualkey", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+
+    // Raw (default-key) and product (other keys) traffic interleaved.
+    for i in 0..3 {
+        let body = format!("[{{\"raw\":{i}}}]");
+        let (st, _, _) = hreq(addr, "POST", "/v1/stream/dualkey", &ct, body.as_bytes()).await;
+        assert!(st == 200 || st == 204);
+        for k in ["ka", "kb"] {
+            let body = format!("{{\"k\":\"{k}\",\"n\":{i}}}");
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/dualkey/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                body.as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200);
+        }
+    }
+    // Before the split: the raw read sees ONLY its own records.
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/dualkey", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "raw sees only the default key: {recs:?}");
+    assert!(recs.iter().all(|r| r.get("raw").is_some()));
+
+    // Split the collection through the product surface.
+    assert!(crate::scaler3::execute_split(&state, "dualkey", 0, 0x8000_0000_0000_0000).await);
+    for i in 3..6 {
+        let body = format!("[{{\"raw\":{i}}}]");
+        let (st, _, _) = hreq(addr, "POST", "/v1/stream/dualkey", &ct, body.as_bytes()).await;
+        assert!(st == 200 || st == 204, "raw append after split: {st}");
+        for k in ["ka", "kb"] {
+            let body = format!("{{\"k\":\"{k}\",\"n\":{i}}}");
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/dualkey/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                body.as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200);
+        }
+    }
+
+    // AFTER the split the raw route is STILL the default-key sequence:
+    // every record, in order, nothing from other keys — paginated with
+    // resumable raw offsets.
+    let mut seen: Vec<i64> = Vec::new();
+    let mut tok: Option<String> = None;
+    for _ in 0..16 {
+        let path = match &tok {
+            None => "/v1/stream/dualkey".to_string(),
+            Some(t) => format!("/v1/stream/dualkey?offset={t}"),
+        };
+        let (st, h, b) = hreq(addr, "GET", &path, &[], b"").await;
+        assert_eq!(st, 200, "raw page after split");
+        let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+        for r in &recs {
+            assert!(r.get("k").is_none(), "another key's record leaked: {r}");
+            seen.push(r["raw"].as_i64().unwrap());
+        }
+        if h.get("stream-up-to-date").map(String::as_str) == Some("true") {
+            break;
+        }
+        let nxt = h.get("stream-next-offset").cloned();
+        if nxt == tok || nxt.is_none() {
+            break;
+        }
+        tok = nxt;
+    }
+    assert_eq!(
+        seen,
+        (0..6).collect::<Vec<i64>>(),
+        "default-key order across the split"
+    );
+
+    // Live reads on the raw route keep working after the split (one
+    // key, one lineage — no keyless-live impossibility).
+    let (st, h, _) = hreq(
+        addr,
+        "GET",
+        "/v1/stream/dualkey?offset=now&live=long-poll&timeout=200ms",
+        &[],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204, "raw long-poll after split: {st}");
+    assert!(
+        !h.contains_key("stream-ordering"),
+        "no internals leak to the raw route"
+    );
+    assert!(!h.contains_key("stream-segment-map-version"));
+
+    // The removed keyed extensions are rejected, not honored.
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/dualkey?key=ka", &[], b"").await;
+    assert_eq!(st, 400, "?key= is removed from the raw route");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dualkey",
+        &[("content-type", "application/json"), ("stream-key", "ka")],
+        br#"[{"x":1}]"#,
+    )
+    .await;
+    assert_eq!(st, 400, "Stream-Key is removed from the raw route");
+    engine_shutdown(&state).await;
+}
+
+/// AUDIT P0: the catalog paginates without scanning the world. With
+/// far more streams than one page, listing walks them in NAME order
+/// through provider continuation, every stream is reachable (nothing
+/// falls outside a fixed window), pages never restart from the
+/// beginning, and a page's descriptor GETs are bounded by the page
+/// size — not by the catalog size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_pages_without_scanning_the_world() {
+    let inner = mem();
+    let counting = FaultStore::uniform(inner, 7, FaultPlan::new(0, 0, 0));
+    let store: Arc<dyn ObjectStore> = counting.clone();
+    let (state, addr) = http_rig(store).await;
+    // 1,200 streams: an order of magnitude more than one page, and
+    // enough that a scan-everything implementation is obvious in the
+    // request count.
+    const N: usize = 1_200;
+    for i in 0..N {
+        let name = format!("cat-{i:05}");
+        let d = crate::registry::StreamDesc {
+            name: name.clone(),
+            stream_epoch: format!("{:032x}", i),
+            key_fingerprint: "fp".into(),
+            created_ms: 1,
+            expires_at_ms: None,
+            deleted: false,
+            soft_deleted: false,
+            forked_from: None,
+            fork_children: Vec::new(),
+            init: None,
+            sealing: None,
+            seal_op: None,
+            content_type: "application/json".into(),
+            ttl_secs: None,
+            segments: None,
+            sealed: false,
+            watch_definitions: Vec::new(),
+            layout_version: crate::registry::LAYOUT_VERSION,
+        };
+        state.registry.create(d).await.unwrap();
+    }
+    // Page through the whole catalog.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let ops_before = counting.ops();
+    let mut pages = 0usize;
+    for _ in 0..64 {
+        let path = match &cursor {
+            None => "/v1/streams?limit=100".to_string(),
+            Some(c) => format!("/v1/streams?limit=100&cursor={c}"),
+        };
+        let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        let names: Vec<String> = v["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect();
+        pages += 1;
+        seen.extend(names);
+        match v["cursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+    let ops_after = counting.ops();
+    assert_eq!(
+        seen.len(),
+        N,
+        "every stream is reachable, got {} in {pages} pages",
+        seen.len()
+    );
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(seen, sorted, "catalog pages walk in name order");
+    sorted.dedup();
+    assert_eq!(sorted.len(), N, "no stream is listed twice");
+    // Cost: a scan-everything implementation costs pages * N GETs
+    // (12 * 1200 = 14,400 here). Page-local cost is ~N total.
+    let per_page_budget = (N + pages * 40) as u64;
+    assert!(
+        ops_after - ops_before < per_page_budget,
+        "catalog cost must be page-local: {} store ops for {pages} pages over {N} streams",
+        ops_after - ops_before
+    );
+    // A cursor is opaque (not a bare, editable stream name).
+    let (_, _, b) = preq(addr, "GET", "/v1/streams?limit=10", &[], b"").await;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let c = v["cursor"].as_str().unwrap();
+    assert!(!c.starts_with("cat-"), "cursor must be opaque, got {c}");
     engine_shutdown(&state).await;
 }

@@ -59,6 +59,19 @@ since the 239-test run — no regressions from the product-surface work):
 These are the open items of the final release gate (task #87). The
 239 tests of the previous baseline remain green within the 265.
 
+## Rig note: group commit is required for the property tests
+
+The suite's fast-check property tests run ~240 sequential appends
+inside vitest's default 5 s budget. Without group commit an append
+costs ~28 ms against s3lite (flush-tick alignment), so those tests are
+latency-marginal and fail on unlucky array sizes. Run the conformance
+server with `--flush-interval-ms 1 --wal-flush-gap-ms 2` (group
+commit, what field deployments already use): appends drop to ~8.6 ms
+and the property tests pass consistently. Measured, not assumed —
+identical benchmarks before and after the audit fixes (28.71 vs
+28.54 ms) proved the marginality is the rig's cadence, not a code
+regression.
+
 ## Run 2026-07-31 (later) — FULL SUITE GREEN
 
 After implementing forks, sliding TTL, per-data SSE control pairing,

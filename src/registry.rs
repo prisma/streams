@@ -375,11 +375,24 @@ struct CachedDesc {
     etag: Option<String>,
 }
 
+/// ORDER-PRESERVING descriptor path (audit P0). The catalog must
+/// paginate a million streams with provider continuation and page-local
+/// GETs, which requires the object key to sort exactly as the stream
+/// name does. Hex of the name's UTF-8 bytes is order-preserving
+/// (fixed-width per byte, and '0'..'9' < 'a'..'f'), unambiguous, and
+/// legal in every object key — at the cost of readability in the
+/// bucket, which the descriptor's own `name` field restores. A
+/// hash-keyed path (the pre-audit scheme) sorts randomly, which is why
+/// listing had to scan and sort everything.
 fn desc_path(name: &str) -> ObjPath {
-    // Hash-keyed path: names are arbitrary UTF-8; the descriptor carries the
-    // real name. Two hex chars of fan-out keep prefixes listable.
-    let h = hex(&stream_hash(name));
-    ObjPath::from(format!("registry/by-name/{}/{}.json", &h[..2], h))
+    ObjPath::from(format!("registry/by-name/{}.json", hex(name.as_bytes())))
+}
+
+/// One page of the stream catalog.
+pub struct CatalogPage {
+    pub streams: Vec<StreamDesc>,
+    /// Name to continue after, when more may follow.
+    pub next_after: Option<String>,
 }
 
 impl Registry {
@@ -727,6 +740,56 @@ impl Registry {
         if let Some(e) = self.cache.lock().unwrap().get_mut(name) {
             e.at -= self.cache_ttl + Duration::from_secs(1);
         }
+    }
+
+    /// Paginated catalog (audit P0): ONE listing continued at the
+    /// provider, and a GET only for the descriptors on THIS page.
+    /// Streams outside any fixed prefix window are reachable, and a
+    /// page costs O(limit) Class B requests instead of O(all streams).
+    pub async fn list_page(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CatalogPage, object_store::Error> {
+        use futures_util::TryStreamExt;
+        let prefix = ObjPath::from("registry/by-name");
+        // The offset is exclusive and compares by key, which sorts
+        // exactly as the name does under the hex encoding.
+        let offset =
+            after.map(|n| ObjPath::from(format!("registry/by-name/{}.json", hex(n.as_bytes()))));
+        let mut stream = match &offset {
+            Some(o) => self.store.list_with_offset(Some(&prefix), o),
+            None => self.store.list(Some(&prefix)),
+        };
+        let mut out = Vec::new();
+        let mut last_name = None;
+        // Live descriptors only; a tombstoned or fork-retained name is
+        // not a listable stream. Scanning past them is bounded by their
+        // density, so cap the walk.
+        let mut scanned = 0usize;
+        while out.len() < limit && scanned < limit.saturating_mul(8) + 64 {
+            let Some(meta) = stream.try_next().await? else {
+                return Ok(CatalogPage {
+                    streams: out,
+                    next_after: None,
+                });
+            };
+            scanned += 1;
+            if let Ok(r) = self.store.get(&meta.location).await {
+                if let Ok(raw) = r.bytes().await {
+                    if let Ok(d) = decode_desc(&raw) {
+                        last_name = Some(d.name.clone());
+                        if !d.deleted && !d.soft_deleted {
+                            out.push(d);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(CatalogPage {
+            streams: out,
+            next_after: last_name,
+        })
     }
 
     pub async fn list(&self, limit: usize) -> Result<Vec<StreamDesc>, object_store::Error> {
