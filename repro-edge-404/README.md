@@ -206,3 +206,10 @@ Minor, but they cost time during the above:
   `wss://api.prisma.io/v1/deployments/<cpv_…>/logs` directly works and
   is how we got the boot logs above. Without that workaround a deploy
   in this state is completely opaque.
+
+## Retry log
+
+| when (UTC) | trigger | result |
+|---|---|---|
+| 2026-07-31 ~13:56 | platform incident reported resolved | still 404, both PoPs; streams deploy 404 through a 16-min poll while its boot log showed the listen line |
+| 2026-07-31 14:04–14:12 | Compute team reported a fix deployed; validation soak requested | **still 404, both PoPs.** Fresh projects, hello app, `running` status, service+version domains: `ap-southeast-1` `proj_o2b68ynwbkuxwr3p2qy1kak5` / `cpv_ecxxd9081pkacp7nrs1hmdn5` / `cv-4a61045dc444.sin` + `gnltj55esgx2z3tfuzjiyowm.sin` — 15/15 polls 404 over 120 s (224 s from deploy start). `eu-central-1` `proj_b2royi5vm9b7vz4wvciza8km` / `cpv_tlo6yyb4xpb0vg9vfi67wwyb` / `cv-4f2843e0ff13.fra` + `ez6zkorrv4yq2dpeetr9p9kb.fra` — 15/15 polls 404 (222 s). The planned 30-minute SIN+FRA validation soak was gated on these canaries and aborted without deploying. |
