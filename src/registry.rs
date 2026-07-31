@@ -34,10 +34,13 @@ pub struct StreamDesc {
     /// partial record there at creation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ForkRef>,
-    /// Live direct forks of THIS stream (delete decrements; reaching
-    /// zero on a soft-deleted stream cascades the hard delete).
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub fork_refs: u32,
+    /// Live direct forks of THIS stream, by unique fork id (audit P0:
+    /// an anonymous counter cannot be released idempotently — a retried
+    /// delete double-decremented and a lost update leaked a reference
+    /// forever). Install and release are set operations, so both are
+    /// naturally idempotent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fork_children: Vec<String>,
     /// Durable creation state (audit P0). A descriptor is published
     /// BEFORE its initial content, fork tail, and source reference
     /// exist; without this, a replayed PUT could observe the
@@ -139,10 +142,24 @@ pub struct ForkRef {
     /// its effect is baked into fork_offset / the materialized record).
     #[serde(default)]
     pub fork_sub: u64,
+    /// This fork's unique id in the SOURCE's child set — the handle for
+    /// idempotent reference install/release.
+    #[serde(default)]
+    pub fork_id: String,
 }
 
-fn is_zero_u32(v: &u32) -> bool {
-    *v == 0
+impl ForkRef {
+    /// Identity for the idempotent-PUT compare: everything the CALLER
+    /// specified. `fork_id` is server-generated (this incarnation's
+    /// epoch) and must not make a replayed create look different.
+    pub fn same_identity(&self, other: &ForkRef) -> bool {
+        self.source == other.source
+            && self.fork_offset == other.fork_offset
+            && self.fork_sub == other.fork_sub
+            && (self.source_epoch == other.source_epoch
+                || other.source_epoch.is_empty()
+                || self.source_epoch.is_empty())
+    }
 }
 
 /// One immutable watch definition (spec Stage 2 §3.2): a name plus the
@@ -847,7 +864,7 @@ mod tests {
             watch_definitions: Vec::new(),
             soft_deleted: false,
             forked_from: None,
-            fork_refs: 0,
+            fork_children: Vec::new(),
             init: None,
             sealing: None,
             seal_op: None,

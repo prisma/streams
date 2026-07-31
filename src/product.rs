@@ -639,14 +639,34 @@ async fn product_create(
         },
         Some(_) => match state
             .registry
-            .recreate(&name, build_fresh(), |d| !crate::http::desc_alive(d))
+            .recreate(&name, build_fresh(), |d| {
+                // Never replace a descriptor that still backs live
+                // forks (audit P0: the product path replaced the
+                // soft-deleted/expired sources the raw path blocks,
+                // because desc_alive() is false for both).
+                !crate::http::desc_alive(d) && !d.soft_deleted && d.fork_children.is_empty()
+            })
             .await
         {
             Ok((true, d)) => (true, d),
-            Ok((false, winner)) => match validate_live(winner) {
-                Ok(d) => (false, d),
-                Err(r) => return r,
-            },
+            Ok((false, winner)) => {
+                // The predicate declined: either a live winner (normal
+                // idempotent path) or a retained fork source, which is
+                // a conflict rather than a config mismatch.
+                if winner.soft_deleted || !winner.fork_children.is_empty() {
+                    return perr(
+                        StatusCode::CONFLICT,
+                        "gone",
+                        "name is retained for live forks",
+                        None,
+                        false,
+                    );
+                }
+                match validate_live(winner) {
+                    Ok(d) => (false, d),
+                    Err(r) => return r,
+                }
+            }
             Err(e) => {
                 return perr(
                     StatusCode::INTERNAL_SERVER_ERROR,

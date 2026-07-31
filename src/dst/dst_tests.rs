@@ -9148,3 +9148,129 @@ async fn seal_is_a_resumable_transition() {
     assert_eq!(st, 409, "descriptor seal is authoritative (raw)");
     engine_shutdown(&state).await;
 }
+
+/// AUDIT P0: the fork lifecycle is idempotent and recoverable.
+/// References are installed and released BY ID (a retried delete is a
+/// no-op, not a double-release); a stale source incarnation is an
+/// integrity error, not a silent cross-incarnation read; the product
+/// create path cannot overwrite a retained source; and members of a
+/// fork chain never split.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fk-src",
+        &ct,
+        br#"[{"n":0},{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    // Two identical fork PUTs (a replay): one reference, not two.
+    let fh = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "/v1/stream/fk-src"),
+        ("stream-fork-offset", "0000000000000000_0000000000000000"),
+        ("stream-fork-sub-offset", "1"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fk-a", &fh, b"").await;
+    assert_eq!(st, 201);
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fk-a", &fh, b"").await;
+    assert!(st == 200 || st == 201, "idempotent fork PUT: {st}");
+    let src = state.registry.get("fk-src").await.unwrap().unwrap();
+    assert_eq!(
+        src.fork_children.len(),
+        1,
+        "one reference per fork: {:?}",
+        src.fork_children
+    );
+    let child = state.registry.get("fk-a").await.unwrap().unwrap();
+    let fref = child.forked_from.as_ref().unwrap();
+    assert!(!fref.fork_id.is_empty(), "the fork stamps its own id");
+    assert_eq!(
+        fref.source_epoch, src.stream_epoch,
+        "source incarnation recorded"
+    );
+
+    // Neither member of the chain may split (stitched reads resolve one
+    // segment per ancestor).
+    assert!(
+        !crate::scaler3::execute_split(&state, "fk-src", 0, 0x8000_0000_0000_0000).await,
+        "a stream with live forks must not split"
+    );
+    assert!(
+        !crate::scaler3::execute_split(&state, "fk-a", 0, 0x8000_0000_0000_0000).await,
+        "a fork must not split"
+    );
+
+    // A stale source incarnation is an integrity error, never a silent
+    // read of a recreated source.
+    state
+        .registry
+        .cas_update_retry("fk-a", |d| {
+            d.forked_from.as_mut().unwrap().source_epoch =
+                "ffffffffffffffffffffffffffffffff".into();
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("fk-a");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/fk-a", &[], b"").await;
+    assert_eq!(
+        st,
+        500,
+        "stale source epoch must fail loudly: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // Restore the true epoch and confirm the read works again.
+    let true_epoch = src.stream_epoch.clone();
+    state
+        .registry
+        .cas_update_retry("fk-a", |d| {
+            d.forked_from.as_mut().unwrap().source_epoch = true_epoch.clone();
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("fk-a");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/fk-a", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "inherited prefix");
+
+    // Soft-delete the source; the PRODUCT create path must not replace
+    // a name that still backs a live fork (the raw path already blocks
+    // it).
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fk-src", &[], b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/fk-src",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        409,
+        "product create must not overwrite a retained source: {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // A RETRIED delete of the fork releases exactly once; the cascade
+    // then removes the retained source.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fk-a", &[], b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fk-a", &[], b"").await;
+    assert!(st == 404 || st == 410 || st == 204, "retried delete: {st}");
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/fk-src", &[], b"").await;
+    assert_eq!(st, 404, "last fork released -> source cascades away");
+    engine_shutdown(&state).await;
+}

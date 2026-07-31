@@ -130,6 +130,13 @@ pub fn hot_keys_all() -> Vec<(String, RoutingKeyHash)> {
 /// Feed one admitted append into the segment's sketch. Cheap: one map
 /// lookup + a few EWMA bumps under a short lock.
 pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u64, records: u64) {
+    // Fork chains stay single-segment (audit P0): stitched fork
+    // reads resolve each ancestor through its ONE empty-key segment,
+    // so a post-fork split would make inherited data unreadable.
+    // Both a fork and a stream that HAS forks are pinned.
+    if desc.forked_from.is_some() || !desc.fork_children.is_empty() {
+        return;
+    }
     let now = crate::shard::now_ms();
     let mut g = state().lock().unwrap();
     // Amortized idle sweep keeps the population honest without a
@@ -339,6 +346,15 @@ pub async fn execute_split(
     let ok = st
         .registry
         .cas_update(name, |d| {
+            // Fork chains stay single-segment (audit P0): stitched fork
+            // reads resolve each ancestor through its ONE empty-key
+            // segment, so a post-fork split would make inherited data
+            // unreadable. Both a fork and a stream that HAS forks are
+            // pinned — enforced HERE, at the transition itself, so a
+            // direct scaler call cannot bypass it.
+            if d.forked_from.is_some() || !d.fork_children.is_empty() {
+                return false;
+            }
             let map = d.segments.get_or_insert_with(|| {
                 crate::segmap::SegmentMap::initial("", crate::shard::now_ms())
             });
@@ -697,7 +713,7 @@ mod tests {
             watch_definitions: Vec::new(),
             soft_deleted: false,
             forked_from: None,
-            fork_refs: 0,
+            fork_children: Vec::new(),
             init: None,
             sealing: None,
             seal_op: None,

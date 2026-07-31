@@ -1189,7 +1189,7 @@ fn creating_resp() -> Response {
 pub(crate) fn gone_or_missing(desc: Option<&StreamDesc>) -> Response {
     if let Some(d) = desc {
         let expired_with_forks = !d.deleted
-            && d.fork_refs > 0
+            && !d.fork_children.is_empty()
             && d.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
         if d.soft_deleted || expired_with_forks {
             return err_resp(
@@ -1234,20 +1234,41 @@ fn fork_chain_of(
     let state_reg = state.clone();
     let desc = desc.clone();
     Box::pin(async move {
+        // Bounded, cycle-free, and epoch-checked (audit P0): a stale
+        // reference must be an integrity error, never a silent read of
+        // a RECREATED source incarnation.
+        const MAX_FORK_DEPTH: usize = 64;
         let mut chain: Vec<(StreamDesc, u64, [u8; 16])> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cur = desc;
         loop {
+            if chain.len() >= MAX_FORK_DEPTH {
+                return Err("fork chain exceeds the maximum depth".into());
+            }
+            if !seen.insert(format!("{}\u{0}{}", cur.name, cur.stream_epoch)) {
+                return Err("fork chain contains a cycle".into());
+            }
             let boundary = cur.forked_from.as_ref().map(|f| f.fork_offset).unwrap_or(0);
             let epoch = cur.epoch_bytes().ok_or("bad epoch in fork chain")?;
-            let parent = cur.forked_from.as_ref().map(|f| f.source.clone());
+            let parent = cur
+                .forked_from
+                .as_ref()
+                .map(|f| (f.source.clone(), f.source_epoch.clone()));
             chain.push((cur, boundary, epoch));
             match parent {
                 None => break,
-                Some(src) => {
-                    cur = match state_reg.registry.get(&src).await {
+                Some((src, want_epoch)) => {
+                    let d = match state_reg.registry.get(&src).await {
                         Ok(Some(d)) if !d.deleted => d,
                         _ => return Err(format!("fork source '{src}' is gone")),
                     };
+                    if !want_epoch.is_empty() && d.stream_epoch != want_epoch {
+                        return Err(format!(
+                            "fork source '{src}' is a different incarnation                              (expected {want_epoch}, found {})",
+                            d.stream_epoch
+                        ));
+                    }
+                    cur = d;
                 }
             }
         }
@@ -1531,7 +1552,7 @@ fn fresh_desc(
         deleted: false,
         soft_deleted: false,
         forked_from: None,
-        fork_refs: 0,
+        fork_children: Vec::new(),
         init: None,
         sealing: None,
         seal_op: None,
@@ -1892,6 +1913,9 @@ async fn create_stream(
         source_epoch: fc.source_desc.stream_epoch.clone(),
         fork_offset: fc.boundary,
         fork_sub: fc.sub,
+        // The fork's unique id in the source's child set: this
+        // incarnation's epoch, stamped after the descriptor exists.
+        fork_id: String::new(),
     });
 
     // Creation-request identity (audit P0): a replayed PUT hashes
@@ -1938,7 +1962,12 @@ async fn create_stream(
             // user-visible config, so the idempotent-PUT compare ignores
             // the legacy fields — a headerless re-PUT of a pre-v3
             // per-key stream is config-identical, not a conflict.
-            if !same_ct || d.ttl_secs != ttl_secs || d.forked_from != expected_fork_ref {
+            let same_fork = match (&d.forked_from, &expected_fork_ref) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a.same_identity(b),
+                _ => false,
+            };
+            if !same_ct || d.ttl_secs != ttl_secs || !same_fork {
                 return Err(err_resp(
                     StatusCode::CONFLICT,
                     "config_mismatch",
@@ -1992,7 +2021,7 @@ async fn create_stream(
         },
         Some(d)
             if d.soft_deleted
-                || (d.fork_refs > 0
+                || (!d.fork_children.is_empty()
                     && !d.deleted
                     && d.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false)) =>
         {
@@ -2123,10 +2152,45 @@ async fn create_stream(
                     &e.to_string(),
                 );
             }
+            // Install the reference by unique id (idempotent set
+            // insert). A CAS that DECLINES means the source vanished or
+            // was tombstoned in the race — the audit found that treated
+            // as success, leaving a live fork pointing at a deleted
+            // source. The presence check below is the actual proof.
+            let fork_id = desc.stream_epoch.clone();
+            // Stamp the id into our OWN ForkRef so release can name it.
+            if desc
+                .forked_from
+                .as_ref()
+                .is_some_and(|f| f.fork_id.is_empty())
+            {
+                let fid = fork_id.clone();
+                if let Err(e) = state
+                    .registry
+                    .cas_update_retry(&name, |d| match d.forked_from.as_mut() {
+                        Some(f) if f.fork_id.is_empty() => {
+                            f.fork_id = fid.clone();
+                            true
+                        }
+                        _ => false,
+                    })
+                    .await
+                {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
+                state.registry.invalidate(&name);
+            }
             if let Err(e) = state
                 .registry
                 .cas_update_retry(&fc.source, |d| {
-                    d.fork_refs += 1;
+                    if d.deleted || d.fork_children.iter().any(|c| c == &fork_id) {
+                        return false;
+                    }
+                    d.fork_children.push(fork_id.clone());
                     true
                 })
                 .await
@@ -2136,6 +2200,24 @@ async fn create_stream(
                     "internal",
                     &e.to_string(),
                 );
+            }
+            state.registry.invalidate(&fc.source);
+            match state.registry.get(&fc.source).await {
+                Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
+                Ok(_) => {
+                    return err_resp(
+                        StatusCode::CONFLICT,
+                        "fork_source_gone",
+                        "fork source disappeared before the reference was installed",
+                    );
+                }
+                Err(e) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
             }
             materialize_entry = fc.materialize.clone();
         }
@@ -2310,24 +2392,31 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 fn release_fork_ref(
     state: &Arc<AppState>,
     src: &str,
+    fork_id: &str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
     let state = state.clone();
     let src = src.to_string();
+    let fork_id = fork_id.to_string();
     Box::pin(async move {
+        // Release BY ID: a retried delete removes an id that is already
+        // gone (a no-op), where an anonymous decrement would have
+        // double-released and freed a still-live fork's data.
         state
             .registry
             .cas_update_retry(&src, |x| {
-                if x.fork_refs > 0 {
-                    x.fork_refs -= 1;
-                }
-                true
+                let before = x.fork_children.len();
+                x.fork_children.retain(|c| c != &fork_id);
+                x.fork_children.len() != before
             })
             .await
             .map_err(|e| e.to_string())?;
         state.registry.invalidate(&src);
         if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
             let src_expired = after.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
-            if after.fork_refs == 0 && (after.soft_deleted || src_expired) && !after.deleted {
+            if after.fork_children.is_empty()
+                && (after.soft_deleted || src_expired)
+                && !after.deleted
+            {
                 state
                     .registry
                     .update(&src, |x| {
@@ -2336,8 +2425,8 @@ fn release_fork_ref(
                     })
                     .await
                     .map_err(|e| e.to_string())?;
-                if let Some(gp) = after.forked_from.as_ref().map(|f| f.source.clone()) {
-                    release_fork_ref(&state, &gp).await?;
+                if let Some(gf) = after.forked_from.as_ref() {
+                    release_fork_ref(&state, &gf.source, &gf.fork_id).await?;
                 }
             }
         }
@@ -2361,8 +2450,11 @@ fn delete_lifecycle(
             Some(d) => d,
             None => return Ok(()),
         };
-        let parent = d.forked_from.as_ref().map(|f| f.source.clone());
-        if d.fork_refs > 0 {
+        let parent = d
+            .forked_from
+            .as_ref()
+            .map(|f| (f.source.clone(), f.fork_id.clone()));
+        if !d.fork_children.is_empty() {
             state
                 .registry
                 .update(&name, |x| x.soft_deleted = true)
@@ -2375,8 +2467,8 @@ fn delete_lifecycle(
             .update(&name, |x| x.deleted = true)
             .await
             .map_err(|e| e.to_string())?;
-        if let Some(src) = parent {
-            release_fork_ref(&state, &src).await?;
+        if let Some((src, fid)) = parent {
+            release_fork_ref(&state, &src, &fid).await?;
         }
         Ok(())
     })
