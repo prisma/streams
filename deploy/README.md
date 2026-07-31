@@ -99,9 +99,23 @@ domain, while a service deployed a week earlier still answered 200
 through the same edge. The logs showed the full healthy boot each time
 (`assembled … e_machine=62`, `listening on 0.0.0.0:8080`), so the app
 was never the problem. Distinguish this from the single-service zombie
-before you burn deploys on it: probe an OLD running service first. If
-it answers and yours does not, the edge is not registering new
-services, and no amount of redeploying will help.
+before you burn deploys on it, with three cheap checks:
+
+1. **Probe an OLD running service.** If it answers 200 and yours does
+   not, redeploying yours will not help.
+2. **Deploy a hello-world bun app** (fifteen lines, `Bun.serve` on
+   `process.env.PORT ?? 8080`). If that 404s too, nothing about your
+   app is involved. Do this before debugging your own boot path.
+3. **Stream the failing service's logs while pinging it.** A
+   scaled-to-zero instance boots and logs when woken — the platform
+   answers 404 during that window, which looks identical from outside.
+   Zero new log lines under load means the request never reaches the
+   machine, i.e. the edge has no mapping, not a slow wake.
+
+DNS is not the discriminator: failing and working hostnames resolve to
+the same edge IPs, and the failure is a canned 404 page served BY the
+edge. Note also that the platform sets no `PORT` (the container env is
+`HOME,PATH,TERM`), so 8080 is convention, not configuration.
 
 **`services destroy` takes the id as a POSITIONAL argument.** `--service
 cps_…` is silently wrong: the command fails with `appId: must be an

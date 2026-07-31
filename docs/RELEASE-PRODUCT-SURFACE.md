@@ -87,6 +87,27 @@ It has not run against Compute. Four deployments were made today
 | 3 | API-created (fresh service) | ap-southeast-1 / sin | running | 404 |
 | 4 | CLI-created project | us-east-1 / ewr | running | 404 |
 
+This was then isolated with a control: a **fifteen-line hello-world bun
+app** — no Rust binary, no downloader, no environment — deployed the
+same way. It boots (`hello app listening on 0.0.0.0:8080`) and its
+domain 404s exactly like ours, in a brand-new project AND in an old
+project whose own services still answer 200. So the cause is not this
+repo, not the wrapper, not the project, and not the PoP.
+
+Three further observations narrow it to edge publication:
+
+- **DNS is fine.** The failing and working hostnames resolve to the
+  same edge IPs. The failing one gets a canned 404 HTML page *from the
+  edge*, with an `etag` — the edge is answering, it just has no backend
+  for that hostname.
+- **It is not scale-to-zero.** Streaming a failing service's logs live
+  while pinging it produced zero new lines across five requests. A
+  sleeping instance would boot and log; these requests never reach the
+  machine at all.
+- **The platform sets no `PORT`.** The environment inside the container
+  is `HOME,PATH,TERM`; 8080 is convention, and both the hello app and
+  streams-slate bind it. Not a port mismatch.
+
 The binary is not the cause, and neither is the wrapper. Deployment
 logs show the full healthy boot every time:
 
@@ -104,9 +125,19 @@ than the management API. A service deployed on 2026-07-24 still answers
 `/health` with 200 through the same edge. So the platform is up, and
 newly created services are not being registered at it.
 
+**Diagnosis: newly created services are not being published to the
+edge router.** The control plane accepts the deploy and reports
+`running`, the machine boots and listens, and the edge never learns the
+hostname. Every service deployed before this started still routes, and
+a deploy from earlier the same day (the pre-audit field campaign) ran a
+full 14/14 smoke over the WAN — so this began during 2026-07-31, before
+10:51 UTC.
+
 That is a platform-side condition. Everything provisioned for the
-attempt has been destroyed and verified gone (4 services, 2 buckets,
-2 projects; project GETs 404, zero `audit-gate` buckets remain).
+attempt and for the isolation has been destroyed and verified gone
+(6 services, 2 buckets, 3 projects; project GETs 404, zero `audit-gate`
+or `hello-probe` resources remain, and the pre-existing services we
+probed are untouched and still answer 200).
 
 **To close this gate** when new services route again:
 
