@@ -162,6 +162,22 @@ Still failing, at **2026-07-31 ~13:30–13:55Z**:
 | streams-slate, version `cpv_u43ji6483c1cgszdgo4rkxxh` | us-east-1 / ewr | **404 for 16 minutes** (~60 polls) |
 | control `cv-e5430a308d96.sin.prisma.build` (pre-existing) | sin | 200, unchanged |
 
+### Every region, one run
+
+All six Compute regions, hello-world app, one fresh project, 2-minute
+poll each (2026-07-31 ~14:00-15:00Z):
+
+| region | PoP | result |
+|---|---|---|
+| us-east-1 | ewr | 404 |
+| us-west-1 | sjc | 404 |
+| eu-central-1 | fra | 404 |
+| eu-west-3 | cdg | 404 |
+| ap-northeast-1 | nrt | 404 |
+| ap-southeast-1 | sin | 404 |
+
+Six for six. Not regional.
+
 The 16-minute poll was deliberately patient in case publication is
 merely slow after a fix. That version's boot log is normal and ends
 with `streams-slate listening on 0.0.0.0:8080`, so the behaviour is

@@ -1048,7 +1048,11 @@ async fn product_seal(
                 h.update(doc.routing_key.clone().unwrap_or_default().as_bytes());
                 crate::crypto::hex(&h.finalize()[..16])
             };
-            match enter_sealing(&state, &name, &op_id).await {
+            let intent = crate::registry::SealIntent::Final {
+                routing_key: doc.routing_key.clone().unwrap_or_default(),
+                final_committed: false,
+            };
+            match enter_sealing(&state, &name, &op_id, intent).await {
                 Ok(()) => {}
                 // Empty message = this exact seal already completed.
                 Err(m) if m.is_empty() => {
@@ -1107,6 +1111,12 @@ async fn product_seal(
             if !resp.status().is_success() {
                 return resp;
             }
+            // The record is durable: record that BEFORE any segment
+            // closes, so the transition can be finished by anyone from
+            // here on and by nobody else before.
+            if let Err(e) = mark_final_committed(&state, &name, &op_id).await {
+                return perr(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e, None, true);
+            }
             return match run_seal(&state, &name, Some(op_id)).await {
                 Ok(()) => Response::builder()
                     .status(StatusCode::OK)
@@ -1129,7 +1139,12 @@ async fn product_seal(
 
 /// Enter Sealing for a seal-with-final operation. A different seal
 /// already in flight is a conflict; the SAME operation resumes.
-async fn enter_sealing(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
+async fn enter_sealing(
+    state: &Arc<AppState>,
+    name: &str,
+    op_id: &str,
+    intent: crate::registry::SealIntent,
+) -> Result<(), String> {
     let desc = match state.registry.get(name).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,
         _ => return Ok(()),
@@ -1156,9 +1171,34 @@ async fn enter_sealing(state: &Arc<AppState>, name: &str, op_id: &str) -> Result
             }
             d.sealing = Some(crate::registry::SealState {
                 operation_id: op_id.to_string(),
+                intent: intent.clone(),
                 claimed_ms: crate::shard::now_ms(),
             });
             true
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state.registry.invalidate(name);
+    Ok(())
+}
+
+/// Record that a final-bearing seal's record is durable. Must happen
+/// before any segment closes: after this the transition can be finished
+/// by anyone, and before it, only by the operation that owes the record.
+async fn mark_final_committed(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
+    state
+        .registry
+        .cas_update_retry(name, |d| match &mut d.sealing {
+            Some(sl) if sl.operation_id == op_id => match &mut sl.intent {
+                crate::registry::SealIntent::Final {
+                    final_committed, ..
+                } if !*final_committed => {
+                    *final_committed = true;
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -1238,6 +1278,18 @@ pub(crate) async fn run_seal(
     if desc.sealed {
         return Ok(()); // terminal
     }
+    // A seal that still owes a final record may only be completed by
+    // that operation. A plain `:seal` arriving after a crashed
+    // seal-with-final used to close the segments and publish Sealed,
+    // dropping the final record for good.
+    if let Some(sl) = &desc.sealing {
+        if sl.owes_final() && op.as_deref() != Some(sl.operation_id.as_str()) {
+            return Err(
+                "a seal with a final record is in flight; retry that request to finish it"
+                    .into(),
+            );
+        }
+    }
     // 1. Publish the INTENT. Appends are refused from here on, so no
     //    record can land after a segment is closed and before Sealed.
     if desc.sealing.is_none() {
@@ -1249,6 +1301,9 @@ pub(crate) async fn run_seal(
                 }
                 d.sealing = Some(crate::registry::SealState {
                     operation_id: op.clone().unwrap_or_default(),
+                    // Reaching run_seal directly means there is nothing
+                    // outstanding but the segment closes.
+                    intent: crate::registry::SealIntent::Empty,
                     claimed_ms: crate::shard::now_ms(),
                 });
                 true

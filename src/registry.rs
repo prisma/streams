@@ -118,7 +118,44 @@ pub struct SealState {
     /// Identifies the sealing request (its final-record identity), so a
     /// retry resumes rather than appending a second final record.
     pub operation_id: String,
+    /// WHAT this seal promised. Without it a plain `:seal` arriving
+    /// after a crashed seal-with-final would close every segment and
+    /// publish Sealed — permanently dropping the final record the first
+    /// operation was committed to writing.
+    #[serde(default)]
+    pub intent: SealIntent,
     pub claimed_ms: i64,
+}
+
+/// What an in-flight seal owes the collection before it may publish
+/// `Sealed`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SealIntent {
+    /// Close the segments; nothing else outstanding.
+    #[default]
+    Empty,
+    /// One final record must be durable first.
+    Final {
+        routing_key: String,
+        /// Set — durably, before any segment closes — once the final
+        /// record is committed. Only then may the seal complete.
+        final_committed: bool,
+    },
+}
+
+impl SealState {
+    /// A seal that still owes a final record. Any OTHER seal request
+    /// must refuse to finish it.
+    pub fn owes_final(&self) -> bool {
+        matches!(
+            self.intent,
+            SealIntent::Final {
+                final_committed: false,
+                ..
+            }
+        )
+    }
 }
 
 /// Creation-in-progress marker (audit P0). Absent = Ready.
