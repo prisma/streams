@@ -5902,16 +5902,18 @@ async fn post_split_throughput_scales() {
     // measure round trips, not capacity, and mask the split entirely.
     blast_keys(addr, "cap-scale", &keys, 48, 0.5).await;
     // Capacity is a MAXIMUM-achievable property, so each phase takes
-    // the best of two windows. A contended host depresses samples
+    // the best of three windows. A contended host depresses samples
     // one-sidedly — the post-split phase needs two committers' worth of
     // CPU, so noise lands there and only ever understates the ratio
     // (observed: 1.78 with three other servers running, 1.82-1.91
     // quiet). Best-of-two removes that bias without relaxing the gate:
     // a real capacity regression fails both windows.
     let before = {
-        let a = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
-        let b = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
-        a.max(b)
+        let mut best = 0;
+        for _ in 0..3 {
+            best = best.max(blast_keys(addr, "cap-scale", &keys, 48, 2.5).await);
+        }
+        best
     };
 
     assert!(
@@ -5936,9 +5938,11 @@ async fn post_split_throughput_scales() {
     // Warm the child committers, then measure.
     blast_keys(addr, "cap-scale", &keys, 48, 0.5).await;
     let after = {
-        let a = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
-        let b = blast_keys(addr, "cap-scale", &keys, 48, 2.5).await;
-        a.max(b)
+        let mut best = 0;
+        for _ in 0..3 {
+            best = best.max(blast_keys(addr, "cap-scale", &keys, 48, 2.5).await);
+        }
+        best
     };
 
     let ratio = after as f64 / before.max(1) as f64;

@@ -2730,6 +2730,7 @@ async fn product_consumer_put(
                 false,
             );
         }
+        cfg.dead_letter_epoch = Some(target.stream_epoch.clone());
         cfg.dead_letter_stream = Some(d);
     }
     let out = match consumer_config_op(
@@ -2947,8 +2948,27 @@ async fn dlq_and_settle(
     let mut settled = 0usize;
     // Deliveries the target refused for a reason retrying cannot fix.
     let mut blocked = 0usize;
+    // The target must still be the incarnation that was configured.
+    let dlq_identity_ok = match (&cfg.dead_letter_stream, &cfg.dead_letter_epoch) {
+        (Some(dlq), Some(want)) => match state.registry.get(dlq).await {
+            Ok(Some(t)) => &t.stream_epoch == want,
+            _ => false,
+        },
+        _ => true,
+    };
     for (off, lgen, attempts, kh) in poisoned {
         if let Some(dlq) = &cfg.dead_letter_stream {
+            if !dlq_identity_ok {
+                blocked += 1;
+                tracing::warn!(
+                    stream = %desc.name,
+                    consumer = %cname,
+                    dead_letter_stream = %dlq,
+                    "dead-letter target is a different incarnation than the one \
+                     configured; refusing to deliver"
+                );
+                continue;
+            }
             let Some((rkey, payload)) = by_off.get(off) else {
                 // Outside this pass's read window; a later pull retries.
                 continue;

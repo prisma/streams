@@ -9,7 +9,9 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 **One gate is outstanding.** Everything the appendix defines passes,
 carries an explicit posture, or — for the post-audit cloud re-run — is
 blocked on a platform condition that is not ours to fix and has not
-been re-verified. Details in "Cloud gate" below. Until that run lands,
+been re-verified. Two audit rounds have been answered in full; the
+second is summarized below and is the reason to read the first round's
+"pass" claims as of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
 this release is not fully gated, and the report says so rather than
 rounding up.
 
@@ -157,7 +159,44 @@ Deploy with `SCALE_EVAL_SECS=5 SCALE_RATE_WINDOW_SECS=10
 SCALE_HOT_PCT=1 SCALE_HOT_EVALS=1 SCALE_COOLDOWN_SECS=5` so the split
 case is deterministic inside a timebox.
 
-## What the audit response changed
+## Second audit round (2026-07-31)
+
+A follow-up audit of the first response found that "all ten items are
+addressed" was not supported by the code: an account-authentication
+bypass, creation that could still expose or corrupt incomplete
+resources, seal-with-final that could lose its record, producer writes
+passing through sealing, fork references that could leak durably, and
+raw fork reads that violated default-key isolation. It was right on
+every count. What changed:
+
+| finding | fix |
+|---|---|
+| Signed-watch exception selected by substring, before route parsing — `acme/watches/x/keys/y/extra` and its `/records` skipped the bearer token | requests are classified into an exact `ProductRoute` first; only `WatchWait` with a signature self-authorizes |
+| Up to 32 MiB buffered before authentication | the gate runs on path/method/query/headers, before the body is read |
+| CORS on preflights only — the browser passed OPTIONS then blocked the answer | every plural-route response carries CORS and exposes the product's own headers |
+| `/v1/segments` unauthenticated | takes the account token |
+| `initializing()` expired with the claim, so an abandoned create served as complete after 15 s | readiness is `init.is_none()`; claim staleness only decides who may REDO the work |
+| A replay under a different key could resume an initialization and write content the descriptor's fingerprint cannot decrypt | both resume paths check the key; `InitState` records the fingerprint it was claimed under |
+| Half-built collections appeared in metadata and the catalog | excluded from both |
+| `SealState` did not record what the seal owed, so a plain `:seal` could finish a final-bearing one and drop the record | `SealIntent::Final` with a `final_committed` flag set durably before any segment closes; only the owner may complete it |
+| New producer sequences accepted during Sealing/Sealed | the refusal rides on the request and the committer applies it after duplicate detection |
+| Raw close sealed the collection after closing its segment, and swallowed the failure | the intent is published first; a failed seal answers 503 and stays resumable |
+| Splits/merges not fenced by sealing | both CAS closures refuse sealed or sealing descriptors |
+| Raw fork reads returned every routing key | stitched reads and sub-offset materialization filter to the empty key |
+| Fork reference installed without checking the source's epoch/lifecycle/topology, and a refused install was ignored | the CAS validates all of it and a refusal answers 409 `fork_source_changed` |
+| Fork deletion not resumable — a crash after the tombstone leaked the parent's reference forever | the debt is recorded before the tombstone and any later delete settles it |
+| Catalog: an underfull page read as end-of-catalog; expired/initializing not filtered; transient errors skipped silently | pagination continues while the PROVIDER has more; those states are filtered; a vanished descriptor is skipped and any other failure fails the page |
+| `Stream.subscribe()` never passed its AbortSignal to fetch | it does, and the retry sleeps are abortable |
+| Watch derivation used bare `atob`, breaking URL-safe keys | keys are normalized before decoding |
+| SDK claimed Bun/Deno/browsers with only Node gated | Bun and Deno now run the same installed-package smoke in CI; browsers are documented as expected, not verified |
+| DLQ target identified by name only | the configured incarnation is pinned and checked at delivery |
+
+The catalog cursor is opaque (base64url of the continuation name), not
+signed — an earlier version of this report said signed, which was
+wrong. It carries no authority: the catalog is bearer-authenticated on
+every request.
+
+## What the first audit response changed
 
 | audit finding | outcome |
 |---|---|

@@ -107,6 +107,12 @@ pub struct ConsumerConfig {
     pub max_attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dead_letter_stream: Option<String>,
+    /// The target's incarnation at configuration time. A name alone is
+    /// not an identity: delete the DLQ, recreate it with the same name
+    /// and key, and poison records would silently start going to a
+    /// different resource than the one that was approved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_epoch: Option<String>,
     #[serde(default = "d_batch")]
     pub max_batch_records: u16,
 }
@@ -125,6 +131,7 @@ impl Default for ConsumerConfig {
             visibility_timeout_ms: d_vis(),
             max_attempts: d_att(),
             dead_letter_stream: None,
+            dead_letter_epoch: None,
             max_batch_records: d_batch(),
         }
     }
