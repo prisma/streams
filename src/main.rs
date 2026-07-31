@@ -770,6 +770,7 @@ async fn async_main() -> anyhow::Result<()> {
                             tail_ring_bytes,
                             handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
                             handle_max_resident,
+                            shared_postings_cache: Some(crate::postings_cache::process_cache()),
                             ..Default::default()
                         },
                         absorb_tx,

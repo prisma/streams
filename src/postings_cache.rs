@@ -28,8 +28,36 @@ use slatedb::Db;
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 use crate::postings::{AbsRun, BUCKET_OFFSETS};
 
-/// Default decoded-byte budget per shard engine (spec §7.1).
-pub const POSTINGS_CACHE_BYTES: usize = 16 * 1024 * 1024;
+/// Default PROCESS-WIDE decoded-byte budget (spec §7.1; review finding
+/// 7: one budget for the whole process — engines share one cache in
+/// production via `process_cache`, sized by env POSTINGS_CACHE_BYTES).
+pub const POSTINGS_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Estimated heap overhead per cache entry beyond the raw runs: the
+/// 32-byte key, HashMap bucket, Entry, Arc<PostingsSlice> header and
+/// allocator slack. The budget must account for what the process
+/// actually holds, not just run payloads (review finding 7).
+pub const ENTRY_OVERHEAD_BYTES: usize = 176;
+
+/// Bound on tracked per-segment warm records (each ~120 B): past this,
+/// the least-recent record is dropped — losing a warm record only
+/// weakens future claims (fresh installs fall back to chunk-only), it
+/// never breaks one already made.
+pub const WARM_MAX_SEGMENTS: usize = 8_192;
+
+/// The process-shared cache (production wiring). Tests build private
+/// per-engine caches instead so their counters stay hermetic.
+pub fn process_cache() -> Arc<PostingsCache> {
+    static C: std::sync::OnceLock<Arc<PostingsCache>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let bytes = std::env::var("POSTINGS_CACHE_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(POSTINGS_CACHE_BYTES);
+        PostingsCache::new(bytes)
+    })
+    .clone()
+}
 /// Idle eviction horizon (spec §7.1).
 pub const POSTINGS_CACHE_IDLE: Duration = Duration::from_secs(600);
 /// Cold-load forward window (spec §7.2).
@@ -71,6 +99,13 @@ struct SegWarm {
     from: u64,
     to: u64,
     clean: bool,
+    /// True while EVERY key of every chunk since `from` was actually
+    /// installed. Write-admission may skip cold keys once the cache
+    /// passes its admission line — after the first skip, a FRESH
+    /// install can no longer claim from-0 coverage (its key might have
+    /// had skipped matches). Extends and the demand bridge stay valid:
+    /// existing entries are always extended.
+    admitted_all: bool,
     touched: Instant,
 }
 
@@ -174,10 +209,32 @@ impl PostingsCache {
         let mut installs = 0u64;
         let mut extends = 0u64;
         let mut g = self.inner.lock().unwrap();
+        // Write-admission line (review finding 7): a million cold keys
+        // must not churn the cache to dodge one first-read miss each.
+        // Under half the budget, admit every fresh install (small and
+        // medium key populations stay fully warm — the campaign shape);
+        // over it, only EXTEND existing entries. The first skipped
+        // install permanently downgrades this segment's fresh-claim
+        // strength.
+        let admit_fresh = g.total_bytes < self.max_bytes / 2;
+        if g.warm.len() >= WARM_MAX_SEGMENTS && !g.warm.contains_key(&inc.0) {
+            // Bounded warm tracking: drop the least-recent record.
+            // Losing one only weakens FUTURE claims (fresh installs fall
+            // back to chunk-only), never an already-made one.
+            if let Some(k) = g
+                .warm
+                .iter()
+                .min_by_key(|(_, w)| w.touched)
+                .map(|(k, _)| *k)
+            {
+                g.warm.remove(&k);
+            }
+        }
         let w = g.warm.entry(inc.0).or_insert(SegWarm {
             from: chunk_from,
             to: chunk_from,
             clean: true,
+            admitted_all: true,
             touched: now,
         });
         if w.to != chunk_from {
@@ -187,16 +244,21 @@ impl PostingsCache {
                 from: chunk_from,
                 to: chunk_from,
                 clean: true,
+                admitted_all: true,
                 touched: now,
             };
         }
         w.to = chunk_to;
         w.touched = now;
-        let (w_from, w_clean) = (w.from, w.clean);
+        if !admit_fresh {
+            w.admitted_all = false;
+        }
+        let (w_from, w_clean, w_admitted) = (w.from, w.clean, w.admitted_all);
         // Fresh installs claim absence-of-earlier-matches only from the
-        // warm base, and only from 0: a base above 0 means history below
-        // it predates this process, which we never saw.
-        let fresh_from = if w_clean && w_from == 0 {
+        // warm base, only from 0, and only while NO install was ever
+        // skipped: a skipped key's matches were never recorded, so
+        // absence stops being proof.
+        let fresh_from = if w_clean && w_admitted && w_from == 0 {
             0
         } else {
             chunk_from
@@ -226,7 +288,8 @@ impl PostingsCache {
                     let cut = s.indexed_to_offset;
                     let fresh: Vec<AbsRun> = runs.into_iter().filter(|r| r.start >= cut).collect();
                     crate::postings::append_page_runs(&mut merged, fresh);
-                    let decoded = merged.len() * std::mem::size_of::<AbsRun>();
+                    let decoded =
+                        merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let slice = Arc::new(PostingsSlice {
                         first_bucket: s.first_bucket,
                         last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
@@ -246,7 +309,10 @@ impl PostingsCache {
                     extends += 1;
                 }
                 None => {
-                    let decoded = runs.len() * std::mem::size_of::<AbsRun>();
+                    if !admit_fresh {
+                        continue; // over the admission line: extends only
+                    }
+                    let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let slice = Arc::new(PostingsSlice {
                         first_bucket: fresh_from / BUCKET_OFFSETS,
                         last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
@@ -411,6 +477,7 @@ impl PostingsCache {
                         want_bucket,
                         target,
                         tx,
+                        false,
                     );
                     let mut rx = {
                         let g = self.inner.lock().unwrap();
@@ -484,6 +551,7 @@ impl PostingsCache {
     /// budget, then notifies waiters. Corruption publishes NOTHING (the
     /// waiters' direct load rediscovers it and serves the envelope).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn spawn_load(
         self: &Arc<Self>,
         part: Arc<Db>,
@@ -494,6 +562,7 @@ impl PostingsCache {
         want_bucket: u64,
         target_offset: u64,
         tx: tokio::sync::watch::Sender<bool>,
+        is_prefetch: bool,
     ) {
         let cache = self.clone();
         tokio::spawn(async move {
@@ -518,11 +587,13 @@ impl PostingsCache {
                                 .filter(|r| r.start >= cut)
                                 .collect();
                             crate::postings::append_page_runs(&mut merged, fresh);
-                            let bytes = merged.len() * std::mem::size_of::<AbsRun>();
+                            let bytes =
+                                merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                             (merged, s.first_bucket, s.covered_from, bytes)
                         }
                         _ => {
-                            let bytes = new_runs.len() * std::mem::size_of::<AbsRun>();
+                            let bytes = new_runs.len() * std::mem::size_of::<AbsRun>()
+                                + ENTRY_OVERHEAD_BYTES;
                             // Store loads prove coverage at bucket
                             // granularity: every bucket from start_bucket
                             // was scanned in full.
@@ -577,7 +648,9 @@ impl PostingsCache {
                 }
             }
             drop(g);
-            cache.prefetch_completed.fetch_add(0, Ordering::Relaxed);
+            if is_prefetch {
+                cache.prefetch_completed.fetch_add(1, Ordering::Relaxed);
+            }
             let _ = tx.send(true);
         });
     }
@@ -627,6 +700,7 @@ impl PostingsCache {
             slice.first_bucket,
             target,
             tx,
+            true,
         );
     }
 
@@ -905,6 +979,73 @@ mod tests {
         );
     }
 
+    /// Review finding 7's scale shape, cache-level and suite-sized (the
+    /// field campaign runs the full 1M x 32-engine version): a large
+    /// cold key population written through 32 segments must not blow
+    /// the ONE process budget; a small active read set stays >= 90%
+    /// warm after each key's first read; inactive keys do not hold
+    /// long-lived entries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn million_key_shape_holds_process_budget() {
+        let part = mem_db("wt/scale").await;
+        let budget = 2 * 1024 * 1024usize;
+        let cache = PostingsCache::new(budget);
+        // 32 segments x 4,000 keys/segment x 8 chunks: 128k distinct
+        // keys pushed through write-through installs.
+        let per_seg_keys = 4_000u64;
+        for seg in 0..32u8 {
+            let inc = SegmentHash([seg.wrapping_add(50); 16]);
+            for chunk in 0..8u64 {
+                let base = chunk * 1_000;
+                let per_key: Vec<([u8; 16], Vec<AbsRun>)> = (0..per_seg_keys / 8)
+                    .map(|i| {
+                        let key_id = chunk * (per_seg_keys / 8) + i;
+                        let mut kh = [seg; 16];
+                        kh[..8].copy_from_slice(&key_id.to_le_bytes());
+                        (kh, vec![run(base + i, 2)])
+                    })
+                    .collect();
+                cache.install_chunk(inc, base, base + 1_000, per_key);
+            }
+        }
+        let (bytes, entries) = {
+            let g = cache.inner.lock().unwrap();
+            (g.total_bytes, g.slices.len())
+        };
+        assert!(
+            bytes <= budget,
+            "process budget must hold: {bytes} > {budget}"
+        );
+        assert!(
+            entries < 128_000 / 4,
+            "cold keys must not all hold entries (entries={entries})"
+        );
+
+        // Active read set: 100 keys, 20 reads each. After each key's
+        // FIRST read, everything must be a hit.
+        let inc = SegmentHash([50; 16]);
+        let route = RouteHash([0; 16]);
+        let mut first_reads = 0u64;
+        for key_id in 0..100u64 {
+            let mut kh = [0u8; 16];
+            kh[..8].copy_from_slice(&key_id.to_le_bytes());
+            first_reads += 1;
+            for _ in 0..20 {
+                let _ = cache
+                    .runs_for(&part, route, inc, RoutingKeyHash(kh), 0, 8_000, 8_000)
+                    .await
+                    .unwrap();
+            }
+        }
+        let hits = cache.hits.load(Ordering::Relaxed);
+        let total_reads = 100 * 20;
+        let warm_reads = total_reads - first_reads; // first read may load
+        assert!(
+            hits >= warm_reads * 9 / 10,
+            "active-set warm hit rate >= 90%: hits={hits} warm={warm_reads}"
+        );
+    }
+
     /// Evicting any entry of a segment poisons its absence proof: a key
     /// evicted and later reinstalled fresh must not claim from 0.
     #[tokio::test]
@@ -913,19 +1054,27 @@ mod tests {
         let cache = PostingsCache::new(1); // clamps to the 1 MiB floor
         let (_, inc, kh) = ids(4);
         let (_, _, other) = ids(9);
-        // Fill past the budget so the victim loop runs: ~32 B per run.
-        let fat: Vec<AbsRun> = (0..40_000u64).map(|i| run(i * 2, 1)).collect();
-        cache.install_chunk(inc, 0, 100_000, vec![(kh.0, fat.clone())]);
-        cache.install_chunk(inc, 100_000, 200_000, vec![(other.0, fat)]);
+        // Write-admission stops FRESH installs at half budget, so the
+        // over-budget pressure comes from an EXTEND (extends always
+        // apply to existing entries).
+        cache.install_chunk(inc, 0, 100, vec![(kh.0, vec![run(5, 1)])]);
+        cache.install_chunk(inc, 100, 200, vec![(other.0, vec![run(150, 1)])]);
+        let fat: Vec<AbsRun> = (0..40_000u64).map(|i| run(200 + i * 2, 1)).collect();
+        cache.install_chunk(inc, 200, 200_000, vec![(kh.0, fat)]);
         assert!(
             cache.evictions.load(Ordering::Relaxed) >= 1,
             "budget must evict"
         );
-        // The first key was evicted; reinstall it fresh in the next
-        // contiguous chunk. Its from-0 read must consult the store.
-        cache.install_chunk(inc, 200_000, 200_100, vec![(kh.0, vec![run(200_050, 1)])]);
+        // The evicted key reinstalls fresh in the next contiguous chunk:
+        // it must claim only the chunk, so a from-0 read hits the store.
+        cache.install_chunk(
+            inc,
+            200_000,
+            200_100,
+            vec![(other.0, vec![run(200_050, 1)])],
+        );
         let loads_before = cache.index_loads.load(Ordering::Relaxed);
-        let _ = runs_of(&cache, &part, 4, 0, 200_100).await;
+        let _ = runs_of(&cache, &part, 9, 0, 200_100).await;
         assert!(
             cache.index_loads.load(Ordering::Relaxed) > loads_before,
             "poisoned segment must not serve absence from the warm claim"

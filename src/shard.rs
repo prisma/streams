@@ -502,6 +502,11 @@ pub struct ShardConfig {
     pub trim_global_budget: u64,
     /// Decoded postings-slice cache budget (spec §7.1), bytes.
     pub postings_cache_bytes: usize,
+    /// Process-shared postings cache (review finding 7: ONE budget for
+    /// the whole process, not one per engine — 32 engines x 16 MiB was
+    /// a nominal 512 MiB). main.rs passes the global; tests pass None
+    /// for hermetic per-engine caches (counters stay isolated).
+    pub shared_postings_cache: Option<Arc<crate::postings_cache::PostingsCache>>,
 }
 
 impl Default for ShardConfig {
@@ -520,6 +525,7 @@ impl Default for ShardConfig {
             handle_max_resident: 65_536,
             trim_global_budget: 65_536,
             postings_cache_bytes: crate::postings_cache::POSTINGS_CACHE_BYTES,
+            shared_postings_cache: None,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
@@ -779,7 +785,9 @@ impl ShardEngine {
             trim_deletes_max_batch: AtomicU64::new(0),
             trim_deletes_total: AtomicU64::new(0),
             absorb_lane_dropped: AtomicU64::new(0),
-            postings_cache: crate::postings_cache::PostingsCache::new(cfg.postings_cache_bytes),
+            postings_cache: cfg.shared_postings_cache.clone().unwrap_or_else(|| {
+                crate::postings_cache::PostingsCache::new(cfg.postings_cache_bytes)
+            }),
             flush_wake: Notify::new(),
             pump_wake: Notify::new(),
             absorb_tx,
