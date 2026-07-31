@@ -64,8 +64,20 @@ pub struct StreamDesc {
     pub segments: Option<crate::segmap::SegmentMap>,
     /// Product-surface vNext (spec Stage 1/3): the collection's durable
     /// seal state. Monotonic; set only through the seal lifecycle.
+    /// `sealed` is the terminal bit; `sealing` names an in-flight seal
+    /// (audit P0) so a crash between the final append, the segment
+    /// closes and publication is resumable and never leaves a
+    /// descriptor claiming sealed over writable segments.
     #[serde(default)]
     pub sealed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealing: Option<SealState>,
+    /// The operation id of the seal that COMPLETED (audit P0): a
+    /// repeated seal-with-final carrying the same final record is
+    /// idempotent success, while a different final record against a
+    /// sealed collection is a conflict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seal_op: Option<String>,
     /// Immutable watch definitions (spec Stage 2/7). Empty for streams
     /// created without watches; JSON streams only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -84,6 +96,17 @@ pub struct StreamDesc {
 /// reads. There are no layout bridges: opening a namespace written by a
 /// different layout is refused (pre-launch hard cutover).
 pub const LAYOUT_VERSION: u32 = 3;
+
+/// Seal-in-progress marker (audit P0). Present = Sealing: normal
+/// appends are refused, only the matching seal operation may write its
+/// final record, and any request observing it resumes the transition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SealState {
+    /// Identifies the sealing request (its final-record identity), so a
+    /// retry resumes rather than appending a second final record.
+    pub operation_id: String,
+    pub claimed_ms: i64,
+}
 
 /// Creation-in-progress marker (audit P0). Absent = Ready.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -826,6 +849,8 @@ mod tests {
             forked_from: None,
             fork_refs: 0,
             init: None,
+            sealing: None,
+            seal_op: None,
             layout_version: LAYOUT_VERSION,
         }
     }

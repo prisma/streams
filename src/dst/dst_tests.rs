@@ -9019,3 +9019,132 @@ async fn create_replay_never_loses_the_initial_body() {
     );
     engine_shutdown(&state).await;
 }
+
+/// AUDIT P0: sealing is a durable, resumable transition. A collection
+/// stuck in Sealing (a crashed sealer) refuses ordinary appends on BOTH
+/// surfaces, and the next seal request finishes the job. A sealed
+/// descriptor is authoritative even if a segment engine has not
+/// observed its close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_is_a_resumable_transition() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealtx",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealtx/records",
+        &pk,
+        b"{\"n\":0}",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Plant a Sealing intent (a sealer that died before closing the
+    // segments and publishing Sealed).
+    state
+        .registry
+        .cas_update_retry("sealtx", |d| {
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: "op-1".into(),
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("sealtx");
+
+    // Ordinary appends are refused on both surfaces WHILE sealing.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealtx/records",
+        &pk,
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 409, "product append during Sealing");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealtx",
+        &[("content-type", "application/json")],
+        br#"[{"n":2}]"#,
+    )
+    .await;
+    assert_eq!(st, 409, "raw append during Sealing");
+    // Metadata still reports NOT sealed: the transition has not
+    // completed, so nothing may claim it has.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sealtx", &pk, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["sealed"], false, "Sealing is not Sealed");
+
+    // Any seal request resumes and completes the transition.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/sealtx:seal", &pk, b"{}").await;
+    assert!(st == 200 || st == 204);
+    let d = state.registry.get("sealtx").await.unwrap().unwrap();
+    assert!(d.sealed, "resumed seal publishes Sealed");
+    assert!(d.sealing.is_none(), "the intent is cleared");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealtx/records",
+        &pk,
+        b"{\"n\":3}",
+    )
+    .await;
+    assert_eq!(st, 409, "sealed refuses appends");
+
+    // A sealed DESCRIPTOR is authoritative even when a segment engine
+    // has not observed the close (the audit's "physically open segment
+    // accepted writes" case): plant sealed on a stream whose engine is
+    // still open and prove both surfaces refuse.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealauth",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state
+        .registry
+        .cas_update_retry("sealauth", |d| {
+            d.sealed = true; // descriptor only; engines untouched
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("sealauth");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealauth/records",
+        &pk,
+        b"{\"n\":9}",
+    )
+    .await;
+    assert_eq!(st, 409, "descriptor seal is authoritative (product)");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealauth",
+        &[("content-type", "application/json")],
+        br#"[{"n":9}]"#,
+    )
+    .await;
+    assert_eq!(st, 409, "descriptor seal is authoritative (raw)");
+    engine_shutdown(&state).await;
+}

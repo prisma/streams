@@ -769,6 +769,30 @@ async fn product_seal(
             }
         };
         if let Some(fin) = doc.r#final {
+            // Enter Sealing FIRST (audit P0): ordinary appends are
+            // refused from here, so nothing can land between the final
+            // record and the segment closes. The operation id makes the
+            // final append itself idempotent under retry.
+            let op_id = {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(fin.to_string().as_bytes());
+                h.update(doc.routing_key.clone().unwrap_or_default().as_bytes());
+                crate::crypto::hex(&h.finalize()[..16])
+            };
+            match enter_sealing(&state, &name, &op_id).await {
+                Ok(()) => {}
+                // Empty message = this exact seal already completed.
+                Err(m) if m.is_empty() => {
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::CACHE_CONTROL, "no-store")
+                        .body(Body::from(json!({ "sealed": true }).to_string()))
+                        .unwrap();
+                }
+                Err(m) => return perr(StatusCode::CONFLICT, "sealed", &m, None, false),
+            }
             let Some(key_b64) = product_key(&headers) else {
                 return perr(
                     StatusCode::BAD_REQUEST,
@@ -792,6 +816,17 @@ async fn product_seal(
                     ih.insert(h, v.clone());
                 }
             }
+            // The final record carries the seal operation as its
+            // producer identity when the caller supplied none, so a
+            // resumed seal never writes a second final record.
+            if !ih.contains_key("producer-id") {
+                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("\u{0}seal\u{0}{op_id}"))
+                {
+                    ih.insert("producer-id", v);
+                    ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
+                    ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
+                }
+            }
             let resp = product_append_sealing(
                 state.clone(),
                 name.clone(),
@@ -802,9 +837,63 @@ async fn product_seal(
             if !resp.status().is_success() {
                 return resp;
             }
+            return match run_seal(&state, &name, Some(op_id)).await {
+                Ok(()) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Body::from(json!({ "sealed": true }).to_string()))
+                    .unwrap(),
+                Err(m) => perr(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &m,
+                    None,
+                    true,
+                ),
+            };
         }
     }
     product_seal_only(state, name, headers).await
+}
+
+/// Enter Sealing for a seal-with-final operation. A different seal
+/// already in flight is a conflict; the SAME operation resumes.
+async fn enter_sealing(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
+    let desc = match state.registry.get(name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        _ => return Ok(()),
+    };
+    if desc.sealed {
+        // Spec §7.3: a duplicate final-append seal returns deduplicated
+        // success; a DIFFERENT final record after sealing is a conflict.
+        if desc.seal_op.as_deref() == Some(op_id) {
+            return Err(String::new()); // sentinel: idempotent, no work
+        }
+        return Err("collection is already sealed".into());
+    }
+    if let Some(sl) = &desc.sealing {
+        if sl.operation_id != op_id {
+            return Err("a different seal operation is in flight".into());
+        }
+        return Ok(());
+    }
+    state
+        .registry
+        .cas_update_retry(name, |d| {
+            if d.sealed || d.sealing.is_some() {
+                return false;
+            }
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: op_id.to_string(),
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state.registry.invalidate(name);
+    Ok(())
 }
 
 /// Descriptor-side collection seal, shared by the product seal route
@@ -841,85 +930,108 @@ pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result
 }
 
 async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
-    let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                );
-            }
-            d
-        }
-        Ok(_) => {
-            return perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            );
-        }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
+    match run_seal(&state, &name, None).await {
+        Ok(()) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(json!({ "sealed": true }).to_string()))
+            .unwrap(),
+        Err(m) => perr(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &m,
+            None,
+            true,
+        ),
+    }
+}
+
+/// The collection seal transition (audit P0). Open -> Sealing -> every
+/// live segment closed -> Sealed. Idempotent and resumable: any request
+/// that observes Sealing finishes the same transition, so a crash
+/// between the final append, the segment closes and publication can
+/// never leave a descriptor claiming sealed over writable segments.
+///
+/// `op` names the seal operation when a final record is part of it, so
+/// a retry resumes instead of appending a second final record.
+pub(crate) async fn run_seal(
+    state: &Arc<AppState>,
+    name: &str,
+    op: Option<String>,
+) -> Result<(), String> {
+    let desc = match state.registry.get(name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => return Ok(()),
+        Err(e) => return Err(e.to_string()),
     };
-    if !desc.sealed {
-        match state
+    if desc.sealed {
+        return Ok(()); // terminal
+    }
+    // 1. Publish the INTENT. Appends are refused from here on, so no
+    //    record can land after a segment is closed and before Sealed.
+    if desc.sealing.is_none() {
+        state
             .registry
-            .cas_update(&name, |d| {
-                if d.sealed {
+            .cas_update_retry(name, |d| {
+                if d.sealed || d.sealing.is_some() {
                     return false;
                 }
-                d.sealed = true;
+                d.sealing = Some(crate::registry::SealState {
+                    operation_id: op.clone().unwrap_or_default(),
+                    claimed_ms: crate::shard::now_ms(),
+                });
                 true
             })
             .await
+            .map_err(|e| e.to_string())?;
+        state.registry.invalidate(name);
+    }
+    // 2. Close every live segment identity. Idempotent per segment.
+    let d = match state.registry.get(name).await {
+        Ok(Some(d)) => d,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let live: Vec<u32> = match &d.segments {
+        Some(m) => m
+            .segments
+            .iter()
+            .filter(|s| s.is_live())
+            .map(|s| s.seg_id)
+            .collect(),
+        None => vec![0],
+    };
+    for seg_id in live {
+        if crate::scaler3::seal_segment_identity(state, &d, seg_id)
+            .await
+            .is_none()
         {
-            Ok(_) => {}
-            Err(e) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                    None,
-                    true,
-                );
+            // A segment that would not close leaves the collection in
+            // Sealing; the next seal request (or retry) resumes it.
+            return Err(format!("segment {seg_id} did not close; seal is resumable"));
+        }
+    }
+    // 3. Publish SEALED only now.
+    state
+        .registry
+        .cas_update_retry(name, |d| {
+            if d.sealed {
+                return false;
             }
-        }
-    }
-    // Seal every live segment identity so appends stop and the raw
-    // default-key view reports Stream-Closed at its tail.
-    state.registry.invalidate(&name);
-    if let Ok(Some(d)) = state.registry.get(&name).await {
-        let live: Vec<u32> = match &d.segments {
-            Some(m) => m
-                .segments
-                .iter()
-                .filter(|s| s.is_live())
-                .map(|s| s.seg_id)
-                .collect(),
-            None => vec![0],
-        };
-        for seg_id in live {
-            crate::scaler3::seal_segment_identity(&state, &d, seg_id).await;
-        }
-    }
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(json!({ "sealed": true }).to_string()))
-        .unwrap()
+            d.sealed = true;
+            d.seal_op = d
+                .sealing
+                .as_ref()
+                .map(|s| s.operation_id.clone())
+                .or(op.clone());
+            d.sealing = None;
+            true
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state.registry.invalidate(name);
+    Ok(())
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
@@ -941,6 +1053,31 @@ async fn product_append_sealing(
     body: Bytes,
 ) -> Response {
     product_append_inner(state, name, headers, body, false, true).await
+}
+
+/// Appends refuse a collection that is sealed OR sealing — only the
+/// seal operation's own final record may write during Sealing, and it
+/// goes through product_append_sealing with seal_after set (audit P0).
+fn refuse_if_sealed(desc: &StreamDesc, is_seal_final: bool) -> Option<Response> {
+    if desc.sealed {
+        return Some(perr(
+            StatusCode::CONFLICT,
+            "sealed",
+            "collection is sealed",
+            None,
+            false,
+        ));
+    }
+    if desc.sealing.is_some() && !is_seal_final {
+        return Some(perr(
+            StatusCode::CONFLICT,
+            "sealed",
+            "collection is being sealed",
+            None,
+            false,
+        ));
+    }
+    None
 }
 
 async fn product_append(
@@ -1016,6 +1153,9 @@ async fn product_append_inner(
             );
         }
     };
+    if let Some(r) = refuse_if_sealed(&desc, seal_after) {
+        return r;
+    }
     let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
     if batch && !is_json {
         // Spec Stage 4 §2.3: no framed byte-batch format is standardized.

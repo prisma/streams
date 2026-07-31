@@ -699,6 +699,8 @@ mod tests {
             forked_from: None,
             fork_refs: 0,
             init: None,
+            sealing: None,
+            seal_op: None,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
     }

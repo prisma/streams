@@ -1533,6 +1533,8 @@ fn fresh_desc(
         forked_from: None,
         fork_refs: 0,
         init: None,
+        sealing: None,
+        seal_op: None,
         content_type,
         ttl_secs,
         segments: None,
@@ -2520,6 +2522,20 @@ async fn append_core(
         p.request_hash = Some(h);
     }
     let close = want_close(&headers);
+    // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative.
+    // A sealed (or sealing) collection refuses appends even when some
+    // segment engine has not observed its close yet — without this, a
+    // physically-open segment accepted writes while product metadata
+    // already reported sealed. The seal operation's own final record
+    // arrives with `close`, which the Sealing state permits.
+    if desc.sealed || (desc.sealing.is_some() && !close) {
+        let mut r = err_resp(StatusCode::CONFLICT, "stream_closed", "stream is closed");
+        r.headers_mut().insert(
+            "stream-closed",
+            axum::http::HeaderValue::from_static("true"),
+        );
+        return r;
+    }
     let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
@@ -2850,8 +2866,8 @@ async fn append_core(
                 // the descriptor's sealed bit must agree with the engine's
                 // closed tail, or product metadata would deny a closure the
                 // raw view reports.
-                if let Err(e) = crate::product::seal_descriptor(&state, &name).await {
-                    tracing::warn!(stream = %name, "descriptor seal after raw close: {e}");
+                if let Err(e) = crate::product::run_seal(&state, &name, None).await {
+                    tracing::warn!(stream = %name, "collection seal after raw close: {e}");
                 }
             }
             let status = if ack.duplicate || close_only || producer.is_none() {
