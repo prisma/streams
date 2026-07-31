@@ -7881,3 +7881,119 @@ async fn product_consumer_dlq_flow() {
     assert!(v["messages"].as_array().unwrap().is_empty());
     engine_shutdown(&state).await;
 }
+
+/// Stage 2a §2.9: consumption across a split — the sealed predecessor's
+/// backlog delivers (and settles) fully before any successor record,
+/// per-key order holds end to end, exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_drains_lineage_across_split() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cl",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cl/consumers/w",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 201);
+    for n in 0..3 {
+        for k in ["ga", "gb"] {
+            let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/cl/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                body.as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200);
+        }
+    }
+    assert!(crate::scaler3::execute_split(&state, "cl", 0, 0x8000_0000_0000_0000).await);
+    for n in 3..6 {
+        for k in ["ga", "gb"] {
+            let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/cl/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                body.as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200);
+        }
+    }
+    // Pull + ack until drained; record delivery order per key.
+    let mut per_key: std::collections::HashMap<String, Vec<i64>> = Default::default();
+    let mut total = 0usize;
+    for _round in 0..40 {
+        let (st, _, b) = preq(
+            addr,
+            "POST",
+            "/v1/streams/cl/consumers/w:pull",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"max":10}"#,
+        )
+        .await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        let msgs = v["messages"].as_array().unwrap().clone();
+        if msgs.is_empty() {
+            if v["backlog"].as_u64() == Some(0) && total == 12 {
+                break;
+            }
+            continue;
+        }
+        let mut acks = Vec::new();
+        for m in &msgs {
+            per_key
+                .entry(m["routingKey"].as_str().unwrap().to_string())
+                .or_default()
+                .push(m["value"]["n"].as_i64().unwrap());
+            total += 1;
+            acks.push(serde_json::json!({"leaseToken": m["leaseToken"]}));
+        }
+        let body = serde_json::json!({"acks": acks}).to_string();
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/cl/consumers/w:settle",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            body.as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    assert_eq!(total, 12, "every record exactly once: {per_key:?}");
+    assert_eq!(
+        per_key["ga"],
+        vec![0, 1, 2, 3, 4, 5],
+        "ga in order across the split"
+    );
+    assert_eq!(
+        per_key["gb"],
+        vec![0, 1, 2, 3, 4, 5],
+        "gb in order across the split"
+    );
+    engine_shutdown(&state).await;
+}

@@ -2018,11 +2018,34 @@ async fn product_consumer_delete(
         .unwrap()
 }
 
-/// The consumer's segment context: single-segment v1 — the lineage
-/// walk (spec §2.9) is the follow-up increment inside this stage.
-fn consumer_segment(desc: &StreamDesc) -> (u32, [u8; 16], [u8; 16]) {
-    let ro = desc.resolve_segment("");
-    (ro.seg_id, ro.identity, ro.shard_route)
+/// Consumer delivery order across segment lineage (spec §2.9): every
+/// segment oldest-first, each (seg_id, identity, route, sealed_end).
+/// A sealed predecessor is fully settled before any successor delivers
+/// — whole-segment draining, which implies the spec's per-key rule
+/// conservatively (successors never deliver a key whose predecessor
+/// backlog is unsettled, because they deliver nothing until the
+/// predecessor is empty).
+fn consumer_segments(desc: &StreamDesc) -> Vec<(u32, [u8; 16], [u8; 16], Option<u64>)> {
+    match &desc.segments {
+        Some(map) if !map.segments.is_empty() => {
+            let mut v: Vec<_> = map.segments.iter().collect();
+            v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
+            v.iter()
+                .map(|sg| {
+                    (
+                        sg.seg_id,
+                        desc.dynamic_segment_identity(sg.seg_id),
+                        desc.segment_route(sg),
+                        sg.sealed_next_offset,
+                    )
+                })
+                .collect()
+        }
+        _ => {
+            let ro = desc.resolve_segment("");
+            vec![(ro.seg_id, ro.identity, ro.shard_route, None)]
+        }
+    }
 }
 
 async fn load_consumer_cfg(
@@ -2193,33 +2216,51 @@ async fn product_consumer_pull(
     let wait = doc.wait_ms.unwrap_or(0).min(25_000);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait);
 
-    let (seg_id, identity, route) = consumer_segment(&desc);
-    let engine = match state.engine_for(&route).await {
-        Ok(e) => e,
-        Err(r) => return translate_read_error(r),
-    };
-    let handle = match engine.stream_handle(identity).await {
-        Ok(h) => h,
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    state.keys.put(identity, skey.clone(), epoch);
+    let lineage = consumer_segments(&desc);
 
-    loop {
-        // Pre-read the candidate window through the MERGED reader
-        // (history-resident backlog included), giving the committer its
-        // offset->key map and this handler the payloads.
-        let cursor = engine.queue_cursor(identity, &cname).await.unwrap_or(0);
-        let out =
-            match crate::http::read_merged(&skey, &epoch, &handle, &engine, cursor, None, 4 << 20)
-                .await
+    'outer: loop {
+        // Walk the lineage oldest-first. A sealed, fully-settled
+        // segment is skipped; a sealed segment with backlog STOPS the
+        // walk (strict predecessor-first — successors of an undrained
+        // predecessor never deliver); an empty LIVE segment yields to
+        // its siblings (split leaves hold disjoint key ranges, so no
+        // ordering constraint exists between them).
+        let mut total_backlog = 0u64;
+        for (seg_id, identity, route, sealed_end) in lineage.iter().copied() {
+            let engine = match state.engine_for(&route).await {
+                Ok(e) => e,
+                Err(r) => return translate_read_error(r),
+            };
+            if let Some(end) = sealed_end {
+                let cursor = engine.queue_cursor(identity, &cname).await.unwrap_or(0);
+                if cursor >= end {
+                    continue; // drained predecessor
+                }
+            }
+            let handle = match engine.stream_handle(identity).await {
+                Ok(h) => h,
+                Err(e) => {
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                        None,
+                        true,
+                    );
+                }
+            };
+            state.keys.put(identity, skey.clone(), epoch);
+            let cursor = engine.queue_cursor(identity, &cname).await.unwrap_or(0);
+            let out = match crate::http::read_merged(
+                &skey,
+                &epoch,
+                &handle,
+                &engine,
+                cursor,
+                None,
+                4 << 20,
+            )
+            .await
             {
                 Ok(o) => o,
                 Err(m) => {
@@ -2232,100 +2273,117 @@ async fn product_consumer_pull(
                     );
                 }
             };
-        let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
-        let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-        let mut covered_to = cursor;
-        for r in &out.recs {
-            keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
-            by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
-            covered_to = covered_to.max(r.off + 1);
-        }
-        let qout = engine
-            .submit_queue(
-                identity,
-                crate::queue::QueueOp::Receive {
-                    consumer: cname.clone(),
-                    max,
-                    visibility_ms: visibility,
-                    max_deliveries: cfg.max_attempts,
-                    dlq_subkey: [0u8; 32],
-                    keyed: true,
-                    keys: keys_map,
-                    covered_to,
-                },
-            )
-            .await;
-        let (leased, backlog, poisoned) = match qout {
-            Ok(crate::queue::QueueOut::Received {
-                leased,
-                backlog,
-                poisoned,
-            }) => (leased, backlog, poisoned),
-            Ok(_) => unreachable!("receive answers Received"),
-            Err(m) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &m,
-                    None,
-                    true,
-                );
+            let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
+            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
+            let mut covered_to = cursor;
+            for r in &out.recs {
+                keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
+                by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
+                covered_to = covered_to.max(r.off + 1);
             }
-        };
-        if !poisoned.is_empty() {
-            dlq_and_settle(
-                &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
-                &poisoned, &by_off,
-            )
-            .await;
-        }
-        if leased.is_empty() && tokio::time::Instant::now() < deadline {
-            let notified = handle.notify.notified();
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep_until(deadline) => {}
+            let qout = engine
+                .submit_queue(
+                    identity,
+                    crate::queue::QueueOp::Receive {
+                        consumer: cname.clone(),
+                        max,
+                        visibility_ms: visibility,
+                        max_deliveries: cfg.max_attempts,
+                        dlq_subkey: [0u8; 32],
+                        keyed: true,
+                        keys: keys_map,
+                        covered_to,
+                    },
+                )
+                .await;
+            let (leased, backlog, poisoned) = match qout {
+                Ok(crate::queue::QueueOut::Received {
+                    leased,
+                    backlog,
+                    poisoned,
+                }) => (leased, backlog, poisoned),
+                Ok(_) => unreachable!("receive answers Received"),
+                Err(m) => {
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &m,
+                        None,
+                        true,
+                    );
+                }
+            };
+            if !poisoned.is_empty() {
+                dlq_and_settle(
+                    &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
+                    &poisoned, &by_off,
+                )
+                .await;
+                // Settling poison may have drained this segment or
+                // unblocked keys — restart the walk.
+                continue 'outer;
             }
-            if tokio::time::Instant::now() < deadline {
-                continue;
+            if !leased.is_empty() {
+                let now = crate::shard::now_ms();
+                let mut messages = Vec::with_capacity(leased.len());
+                for (off, lease_gen, attempts, kh) in &leased {
+                    let Some((rkey, payload)) = by_off.get(off) else {
+                        continue;
+                    };
+                    let msg = crate::product_cursor::MessageId {
+                        epoch,
+                        key_hash: *kh,
+                        seg_id,
+                        offset: *off,
+                    };
+                    let lease = crate::product_cursor::LeaseToken {
+                        msg: msg.clone(),
+                        lease_gen: *lease_gen,
+                        deadline_ms: now + visibility as i64,
+                    };
+                    let value: serde_json::Value = if desc.is_json() {
+                        serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
+                    } else {
+                        use base64::Engine;
+                        serde_json::Value::String(
+                            base64::engine::general_purpose::STANDARD.encode(payload),
+                        )
+                    };
+                    messages.push(json!({
+                        "id": msg.encode(&skey),
+                        "routingKey": rkey,
+                        "attempts": attempts,
+                        "leaseToken": lease.encode(&skey),
+                        "value": value,
+                    }));
+                }
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CACHE_CONTROL, "no-store")
+                    .body(Body::from(
+                        json!({"messages": messages, "backlog": total_backlog + backlog})
+                            .to_string(),
+                    ))
+                    .unwrap();
+            }
+            total_backlog += backlog;
+            if sealed_end.is_some() && backlog > 0 {
+                // Undrained sealed predecessor (all remaining records
+                // leased/blocked): successors must wait.
+                break;
             }
         }
-        let now = crate::shard::now_ms();
-        let mut messages = Vec::with_capacity(leased.len());
-        for (off, lease_gen, attempts, kh) in &leased {
-            let Some((rkey, payload)) = by_off.get(off) else {
-                continue;
-            };
-            let msg = crate::product_cursor::MessageId {
-                epoch,
-                key_hash: *kh,
-                seg_id,
-                offset: *off,
-            };
-            let lease = crate::product_cursor::LeaseToken {
-                msg: msg.clone(),
-                lease_gen: *lease_gen,
-                deadline_ms: now + visibility as i64,
-            };
-            let value: serde_json::Value = if desc.is_json() {
-                serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-            } else {
-                use base64::Engine;
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
-            };
-            messages.push(json!({
-                "id": msg.encode(&skey),
-                "routingKey": rkey,
-                "attempts": attempts,
-                "leaseToken": lease.encode(&skey),
-                "value": value,
-            }));
+        if tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue 'outer;
         }
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-store")
             .body(Body::from(
-                json!({"messages": messages, "backlog": backlog}).to_string(),
+                json!({"messages": [], "backlog": total_backlog}).to_string(),
             ))
             .unwrap();
     }
@@ -2378,110 +2436,129 @@ async fn product_consumer_settle(
             );
         }
     };
-    let (seg_id, identity, route) = consumer_segment(&desc);
+    // Tokens name their segment: group per segment, one committer
+    // settle each. Invalid or foreign tokens are counted, never errors
+    // (spec §2.5).
+    let lineage = consumer_segments(&desc);
     let mut stale_local = 0usize;
-    let mut tok = |t: &str| -> Option<(u64, u32)> {
+    type SegOps = (Vec<(u64, u32)>, Vec<(u64, u32, u64)>, Vec<(u64, u32, u64)>);
+    let mut per_seg: std::collections::HashMap<u32, SegOps> = Default::default();
+    let mut tok = |t: &str| -> Option<(u32, u64, u32)> {
         match crate::product_cursor::LeaseToken::decode(t, &skey, &epoch) {
-            Ok(lt) if lt.msg.seg_id == seg_id => Some((lt.msg.offset, lt.lease_gen)),
+            Ok(lt) if lineage.iter().any(|(sid, ..)| *sid == lt.msg.seg_id) => {
+                Some((lt.msg.seg_id, lt.msg.offset, lt.lease_gen))
+            }
             _ => {
-                // Invalid, foreign, or wrong-segment tokens are counted,
-                // never errors (spec §2.5).
                 stale_local += 1;
                 None
             }
         }
     };
-    let acks: Vec<(u64, u32)> = doc
-        .acks
-        .iter()
-        .filter_map(|i| tok(&i.lease_token))
-        .collect();
-    let retries: Vec<(u64, u32, u64)> = doc
-        .retries
-        .iter()
-        .filter_map(|i| tok(&i.lease_token).map(|(o, g)| (o, g, i.delay_ms.unwrap_or(1_000))))
-        .collect();
-    let extends: Vec<(u64, u32, u64)> = doc
-        .extends
-        .iter()
-        .filter_map(|i| {
-            tok(&i.lease_token).map(|(o, g)| {
-                (
-                    o,
-                    g,
-                    i.visibility_ms.unwrap_or(cfg.visibility_timeout_ms as u64),
-                )
-            })
-        })
-        .collect();
-    let engine = match state.engine_for(&route).await {
-        Ok(e) => e,
-        Err(r) => return translate_read_error(r),
-    };
-    let out = engine
-        .submit_queue(
-            identity,
-            crate::queue::QueueOp::Settle {
-                consumer: cname.clone(),
-                acks,
-                retries,
-                extends,
-                max_deliveries: cfg.max_attempts,
-                dlq_subkey: [0u8; 32],
-                keyed: true,
-            },
-        )
-        .await;
-    let (acked, retried, extended, mut dlq, backlog, stale, poisoned) = match out {
-        Ok(crate::queue::QueueOut::Settled {
-            acked,
-            retried,
-            extended,
-            dlq,
-            backlog,
-            stale,
-            poisoned,
-        }) => (acked, retried, extended, dlq, backlog, stale, poisoned),
-        Ok(_) => unreachable!("settle answers Settled"),
-        Err(m) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &m,
-                None,
-                true,
-            );
+    for i in &doc.acks {
+        if let Some((sid, o, g)) = tok(&i.lease_token) {
+            per_seg.entry(sid).or_default().0.push((o, g));
         }
-    };
-    if !poisoned.is_empty() {
-        // Fetch the poisoned records for the DLQ payloads.
-        let handle = match engine.stream_handle(identity).await {
-            Ok(h) => h,
-            Err(e) => {
+    }
+    for i in &doc.retries {
+        if let Some((sid, o, g)) = tok(&i.lease_token) {
+            per_seg
+                .entry(sid)
+                .or_default()
+                .1
+                .push((o, g, i.delay_ms.unwrap_or(1_000)));
+        }
+    }
+    for i in &doc.extends {
+        if let Some((sid, o, g)) = tok(&i.lease_token) {
+            per_seg.entry(sid).or_default().2.push((
+                o,
+                g,
+                i.visibility_ms.unwrap_or(cfg.visibility_timeout_ms as u64),
+            ));
+        }
+    }
+    let (mut acked, mut retried, mut extended, mut dlq, mut backlog, mut stale) =
+        (0usize, 0usize, 0usize, 0usize, 0u64, 0usize);
+    for (sid, (acks, retries, extends)) in per_seg {
+        let Some((seg_id, identity, route, _)) = lineage.iter().find(|(s, ..)| *s == sid).copied()
+        else {
+            continue;
+        };
+        let engine = match state.engine_for(&route).await {
+            Ok(e) => e,
+            Err(r) => return translate_read_error(r),
+        };
+        let out = engine
+            .submit_queue(
+                identity,
+                crate::queue::QueueOp::Settle {
+                    consumer: cname.clone(),
+                    acks,
+                    retries,
+                    extends,
+                    max_deliveries: cfg.max_attempts,
+                    dlq_subkey: [0u8; 32],
+                    keyed: true,
+                },
+            )
+            .await;
+        let (a, r, e2, d, bl, st2, poisoned) = match out {
+            Ok(crate::queue::QueueOut::Settled {
+                acked,
+                retried,
+                extended,
+                dlq,
+                backlog,
+                stale,
+                poisoned,
+            }) => (acked, retried, extended, dlq, backlog, stale, poisoned),
+            Ok(_) => unreachable!("settle answers Settled"),
+            Err(m) => {
                 return perr(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
-                    &e.to_string(),
+                    &m,
                     None,
                     true,
                 );
             }
         };
-        state.keys.put(identity, skey.clone(), epoch);
-        let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
-        let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-        if let Ok(out) =
-            crate::http::read_merged(&skey, &epoch, &handle, &engine, lo, None, 4 << 20).await
-        {
-            for r in &out.recs {
-                by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
+        acked += a;
+        retried += r;
+        extended += e2;
+        backlog += bl;
+        stale += st2;
+        if poisoned.is_empty() {
+            dlq += d;
+        } else {
+            let handle = match engine.stream_handle(identity).await {
+                Ok(h) => h,
+                Err(e) => {
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                        None,
+                        true,
+                    );
+                }
+            };
+            state.keys.put(identity, skey.clone(), epoch);
+            let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
+            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
+            if let Ok(out) =
+                crate::http::read_merged(&skey, &epoch, &handle, &engine, lo, None, 4 << 20).await
+            {
+                for r in &out.recs {
+                    by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
+                }
             }
+            dlq += dlq_and_settle(
+                &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
+                &poisoned, &by_off,
+            )
+            .await;
         }
-        dlq = dlq_and_settle(
-            &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
-            &poisoned, &by_off,
-        )
-        .await;
     }
     Response::builder()
         .status(StatusCode::OK)
