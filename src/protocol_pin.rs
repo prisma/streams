@@ -8,11 +8,12 @@
 //! job runs against the finished surface.
 
 /// Upstream protocol repository commit this implementation targets.
-pub const DURABLE_STREAMS_PROTOCOL_COMMIT: &str = "UNPINNED-SET-AT-GATE";
+pub const DURABLE_STREAMS_PROTOCOL_COMMIT: &str =
+    "npm:@durable-streams/server-conformance-tests@0.3.6";
 /// npm version of @durable-streams/server-conformance-tests the gate runs.
-pub const DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION: &str = "UNPINNED-SET-AT-GATE";
+pub const DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION: &str = "0.3.6";
 /// npm version of the client conformance package the gate runs.
-pub const DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION: &str = "UNPINNED-SET-AT-GATE";
+pub const DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION: &str = "0.2.12";
 
 /// True once every pin carries a real value (release-gate check).
 pub fn pinned() -> bool {

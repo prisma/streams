@@ -770,6 +770,34 @@ async fn product_seal(
     product_seal_only(state, name, headers).await
 }
 
+/// Descriptor-side collection seal, shared by the product seal route
+/// and the RAW close path (spec Stage 8 §7.4: a raw close seals the
+/// entire collection; §16.3: product seal and raw close agree on one
+/// monotonic state). Idempotent; errors are logged by callers that
+/// cannot surface them.
+pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result<(), String> {
+    let desc = match state.registry.get(name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if desc.sealed {
+        return Ok(());
+    }
+    state
+        .registry
+        .cas_update(name, |d| {
+            if d.sealed {
+                return false;
+            }
+            d.sealed = true;
+            true
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,

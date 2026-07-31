@@ -2057,6 +2057,15 @@ async fn append_core(
             if !ack.duplicate {
                 state.metrics.append(&name, metric_bytes);
             }
+            if close && ack.closed {
+                // Raw close seals the COLLECTION (spec Stage 8 §7.4/§16.3):
+                // the descriptor's sealed bit must agree with the engine's
+                // closed tail, or product metadata would deny a closure the
+                // raw view reports.
+                if let Err(e) = crate::product::seal_descriptor(&state, &name).await {
+                    tracing::warn!(stream = %name, "descriptor seal after raw close: {e}");
+                }
+            }
             let status = if ack.duplicate || close_only || producer.is_none() {
                 StatusCode::NO_CONTENT
             } else {

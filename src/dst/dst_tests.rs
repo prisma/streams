@@ -8465,3 +8465,210 @@ async fn product_seal_final_append_and_catalog() {
     assert!(v["cursor"].is_null(), "final page carries no cursor");
     engine_shutdown(&state).await;
 }
+
+/// Appendix §8: the 12-case dual-surface equivalence corpus — for the
+/// default routing key, equivalent operations through the raw standards
+/// route and the product route resolve to ONE collection incarnation
+/// with identical canonical data and lifecycle state, in both orders.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dual_surface_equivalence_corpus() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let ct = [("content-type", "application/json")];
+
+    // 1. Product create -> raw append -> product read.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/eq1",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/eq1", &ct, br#"[{"c":1}]"#).await;
+    assert!(st == 200 || st == 204, "case 1 raw append {st}");
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/eq1/records", &pk, b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "case 1");
+    assert_eq!(recs[0]["c"], 1);
+
+    // 2. Raw create -> product append (no routing key) -> raw read.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/eq2", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/eq2/records", &pk, br#"{"c":2}"#).await;
+    assert_eq!(st, 200);
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/eq2", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "case 2");
+    assert_eq!(recs[0]["c"], 2);
+
+    // 3. Raw producer append -> product read. 4. Product producer
+    // append -> raw read. One producer scope, one sequence.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/eq3", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let rawp = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/eq3", &rawp, br#"[{"c":3}]"#).await;
+    assert!(st == 200 || st == 204, "case 3 {st}");
+    let prodp = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "1"),
+    ];
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/eq3/records",
+        &prodp,
+        br#"{"c":4}"#,
+    )
+    .await;
+    assert_eq!(
+        st, 200,
+        "case 4: the product append continues the RAW producer's sequence"
+    );
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/eq3/records", &pk, b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 2, "cases 3+4 share one sequence");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/eq3", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 2);
+
+    // 5. Product seal -> raw closed-tail read. 6-adjacent: raw HEAD
+    // reports the closure.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/eq3:seal", &pk, b"{}").await;
+    assert!(st == 200 || st == 204);
+    let (st, h, _) = hreq(addr, "GET", "/v1/stream/eq3", &[], b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        h.get("stream-closed").map(String::as_str),
+        Some("true"),
+        "case 5"
+    );
+
+    // 6. Raw close -> product metadata sealed.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/eq6", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/eq6",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
+        br#"[{"fin":true}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "case 6 close {st}");
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/eq6", &pk, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["sealed"], true, "case 6");
+
+    // 7. Product delete -> raw gone. 8. Raw delete -> product gone.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/eq7",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/eq7", &pk, b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/eq7", &[], b"").await;
+    assert_eq!(st, 404, "case 7");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/eq8", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/eq8", &[], b"").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/eq8", &pk, b"").await;
+    assert_eq!(st, 404, "case 8");
+
+    // 9. Raw TTL create -> product metadata expiry. 10. Product idle
+    // expiry -> raw HEAD TTL.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/eq9",
+        &[("content-type", "application/json"), ("stream-ttl", "3600")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/eq9", &pk, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert!(
+        v["expiry"]["idle"].is_string() || v["expiry"].is_object(),
+        "case 9: product metadata reflects the raw TTL: {v}"
+    );
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/eq10",
+        &pk,
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"1h"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, h, _) = hreq(addr, "HEAD", "/v1/stream/eq10", &[], b"").await;
+    assert_eq!(st, 200);
+    assert!(
+        h.contains_key("stream-ttl"),
+        "case 10: raw HEAD reports TTL"
+    );
+
+    // 11. Product-created JSON stream -> raw JSON array flattening.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/eq11",
+        &pk,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/eq11",
+        &ct,
+        br#"[{"a":1},{"a":2}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/eq11/records", &pk, b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 2, "case 11: raw flattening stored two messages");
+
+    // 12. Token classes never cross: a product cursor is rejected as a
+    // raw offset; a raw offset is rejected as a product cursor.
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/eq11/records", &pk, b"").await;
+    assert_eq!(st, 200);
+    let cursor = h.get("prisma-next-cursor").unwrap().clone();
+    let path = format!("/v1/stream/eq11?offset={cursor}");
+    let (st, _, _) = hreq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 400, "case 12a: product cursor on the raw route");
+    let (st, h, _) = hreq(addr, "GET", "/v1/stream/eq11", &[], b"").await;
+    assert_eq!(st, 200);
+    let raw_off = h.get("stream-next-offset").unwrap().clone();
+    let path = format!("/v1/streams/eq11/records?cursor={raw_off}");
+    let (st, _, _) = preq(addr, "GET", &path, &pk, b"").await;
+    assert_eq!(st, 400, "case 12b: raw offset on the product route");
+    engine_shutdown(&state).await;
+}

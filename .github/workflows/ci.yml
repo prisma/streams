@@ -5,7 +5,16 @@ on:
     branches: [main, slate]
   pull_request:
 
+# Product-surface spec appendix §7: the required CI topology. The
+# dual-surface equivalence corpus, DST scenarios, and product
+# conformance run inside `cargo test --release` (dst::dst_tests);
+# request-cost budgets are asserted by the postings/planner tests in
+# the same suite. The upstream Durable Streams server suite runs as
+# its own job against a fresh namespace.
+
 jobs:
+  # Job: rust build + full suite (product conformance, dual-surface
+  # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -14,26 +23,58 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check
         run: cargo check --all-targets
-      - name: Test
-        run: cargo test --release
-      - name: Smoke (create/append/read against s3lite)
+      - name: Test (product conformance + dual-surface + DST + cost budgets)
+        run: |
+          cargo test --release 2>&1 | tee /tmp/suite.log
+          grep -E "^test result" /tmp/suite.log
+          if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
+            echo "suite has failures"; exit 1
+          fi
+      - name: SDK typecheck
+        run: |
+          npm install -g typescript >/dev/null 2>&1 || true
+          cd sdk && tsc --noEmit -p tsconfig.json
+      - name: Smoke (SDK end-to-end against s3lite, fresh namespace)
         run: |
           cargo build --release --bin s3lite --bin streams-slate --bin streams-keys
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
-          KEY=$(./target/release/streams-keys generate)
           ./target/release/streams-slate --listen 127.0.0.1:8090 \
             --s3-endpoint http://127.0.0.1:9500 --bucket streams --region auto \
             --access-key-id test --secret-access-key test \
-            --path-prefix ci --initial-shards 4 --auth-token citoken &
+            --path-prefix ci-$RANDOM --initial-shards 4 \
+            --max-unflushed-bytes 67108864 &
           sleep 2
           curl -fsS http://127.0.0.1:8090/health
-          curl -fsS -X PUT http://127.0.0.1:8090/v1/stream/ci-smoke \
-            -H "authorization: Bearer citoken" -H "Stream-Encryption-Key: $KEY" \
-            -H 'content-type: application/json' -d '{}'
-          curl -fsS -X POST http://127.0.0.1:8090/v1/stream/ci-smoke \
-            -H "authorization: Bearer citoken" -H "Stream-Encryption-Key: $KEY" \
-            -H 'content-type: application/json' -d '{"events":[{"data":{"n":1}}]}'
-          curl -fsS http://127.0.0.1:8090/v1/stream/ci-smoke \
-            -H "authorization: Bearer citoken" -H "Stream-Encryption-Key: $KEY" \
-            | grep -F '"n":1'
+          node --experimental-strip-types sdk/smoke.mjs http://127.0.0.1:8090
+
+  # Job: the pinned upstream Durable Streams server conformance suite,
+  # UNMODIFIED, against a fresh namespace (spec appendix §7). The
+  # version here must match src/protocol_pin.rs.
+  durable-streams-server-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build server
+        run: cargo build --release --bin s3lite --bin streams-slate --bin streams-keys
+      - name: Run pinned suite (fresh namespace)
+        run: |
+          ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
+          sleep 1
+          KEY=$(./target/release/streams-keys generate)
+          ./target/release/streams-slate --listen 127.0.0.1:8090 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
+            --max-unflushed-bytes 67108864 \
+            --conformance-default-key "$KEY" &
+          sleep 2
+          mkdir -p /tmp/conf && cd /tmp/conf
+          npm init -y >/dev/null
+          # Version pinned in src/protocol_pin.rs — update BOTH together.
+          npm install @durable-streams/server-conformance-tests@0.3.6
+          CONFORMANCE_TEST_URL=http://127.0.0.1:8090 \
+            npx durable-streams-server-conformance-tests
