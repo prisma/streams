@@ -57,6 +57,21 @@ pub struct SpaceSaving8 {
 }
 
 impl SpaceSaving8 {
+    /// Merge two windows into a fresh table (register the guaranteed
+    /// counts of both; totals add). Used for the (current, previous)
+    /// generational view — dominance decisions must see recent load,
+    /// not all history (review finding 8).
+    pub fn merged(&self, other: &SpaceSaving8) -> SpaceSaving8 {
+        let mut out = SpaceSaving8::default();
+        for src in [self, other] {
+            for (k, c, e) in &src.slots {
+                out.add(*k, c.saturating_sub(*e));
+            }
+        }
+        out.total = self.total + other.total;
+        out
+    }
+
     pub fn add(&mut self, key: [u8; 16], amount: u64) {
         self.total += amount;
         if let Some(s) = self.slots.iter_mut().find(|s| s.0 == key) {
@@ -111,6 +126,15 @@ impl Default for Hll64 {
 }
 
 impl Hll64 {
+    /// Register-max merge of two windows.
+    pub fn merged(&self, other: &Hll64) -> Hll64 {
+        let mut out = Hll64::default();
+        for i in 0..64 {
+            out.regs[i] = self.regs[i].max(other.regs[i]);
+        }
+        out
+    }
+
     pub fn add(&mut self, key_hash: &[u8; 16]) {
         let h = u64::from_le_bytes(key_hash[8..16].try_into().expect("hll half"));
         let idx = (h & 0x3f) as usize;
@@ -140,8 +164,17 @@ pub struct KeyDistribution {
     /// Load by key-point subrange of THIS segment's [lo, hi): 64 equal
     /// bins, EWMA'd so the split point reflects RECENT load.
     pub bins: Vec<Ewma>,
+    /// Heavy hitters and distinct counts rotate on the rate window
+    /// (review finding 8: cumulative-forever tables let hours-old
+    /// dominance steer present split decisions). Queries merge the
+    /// (current, previous) generations, so the memory horizon is one
+    /// to two windows.
     pub top_keys: SpaceSaving8,
+    prev_top_keys: SpaceSaving8,
     pub distinct: Hll64,
+    prev_distinct: Hll64,
+    window_ms: i64,
+    window_started_ms: i64,
     pub bytes: Ewma,
     pub reqs: Ewma,
     pub recs: Ewma,
@@ -154,13 +187,40 @@ impl KeyDistribution {
         KeyDistribution {
             bins: vec![Ewma::new(window_secs); 64],
             top_keys: SpaceSaving8::default(),
+            prev_top_keys: SpaceSaving8::default(),
             distinct: Hll64::default(),
+            prev_distinct: Hll64::default(),
+            window_ms: (window_secs.max(1.0) * 1000.0) as i64,
+            window_started_ms: 0,
             bytes: Ewma::new(window_secs),
             reqs: Ewma::new(window_secs),
             recs: Ewma::new(window_secs),
             lo,
             hi,
         }
+    }
+
+    /// Rotate the generational sketches when the rate window elapses.
+    fn maybe_rotate(&mut self, now_ms: i64) {
+        if self.window_started_ms == 0 {
+            self.window_started_ms = now_ms.max(1);
+            return;
+        }
+        if now_ms - self.window_started_ms >= self.window_ms {
+            self.prev_top_keys = std::mem::take(&mut self.top_keys);
+            self.prev_distinct = std::mem::take(&mut self.distinct);
+            self.window_started_ms = now_ms;
+        }
+    }
+
+    /// Heavy-hitter view over the current + previous window.
+    pub fn top_keys_windowed(&self) -> SpaceSaving8 {
+        self.top_keys.merged(&self.prev_top_keys)
+    }
+
+    /// Distinct estimate over the current + previous window.
+    pub fn distinct_windowed(&self) -> f64 {
+        self.distinct.merged(&self.prev_distinct).estimate()
     }
 
     pub fn bin_of(&self, point: u64) -> usize {
@@ -170,6 +230,7 @@ impl KeyDistribution {
     }
 
     pub fn note(&mut self, now_ms: i64, point: u64, key_hash: [u8; 16], bytes: u64, records: u64) {
+        self.maybe_rotate(now_ms);
         let b = self.bin_of(point);
         self.bins[b].add(now_ms, bytes as f64);
         self.top_keys.add(key_hash, bytes.max(1));
@@ -261,6 +322,59 @@ mod tests {
             one.add(&k);
         }
         assert!(one.estimate() < 3.0, "single key must estimate ~1");
+    }
+
+    /// Review finding 8: hours-old dominance must not steer present
+    /// decisions — the heavy-hitter and distinct views rotate with the
+    /// rate window (memory horizon: one to two windows).
+    #[test]
+    fn stale_dominance_decays_across_windows() {
+        let win = 10.0; // seconds
+        let mut d = KeyDistribution::new(0, u64::MAX, win);
+        let a = crate::crypto::stream_hash("old-dominant");
+        let b = crate::crypto::stream_hash("new-traffic");
+        for _ in 0..1000 {
+            d.note(1_000, 10, a, 1_000, 1);
+        }
+        let top0 = d.top_keys_windowed();
+        assert_eq!(top0.top_share().unwrap().0, a);
+        assert!(top0.top_share().unwrap().1 > 0.9);
+
+        // Two full windows later, only B traffic: A must be out of BOTH
+        // generations.
+        for t in [12_000i64, 23_000] {
+            for _ in 0..50 {
+                d.note(t, 20, b, 100, 1);
+            }
+        }
+        let top = d.top_keys_windowed();
+        let (k, share) = top.top_share().unwrap();
+        assert_eq!(k, b, "stale dominant key must age out");
+        assert!(share > 0.9, "recent traffic owns the window: {share}");
+
+        // Distinct view rotates too: thousands of old keys must not pin
+        // the estimate high forever.
+        let mut d2 = KeyDistribution::new(0, u64::MAX, win);
+        for i in 0..5_000u64 {
+            d2.note(
+                1_000,
+                i,
+                crate::crypto::stream_hash(&format!("k{i}")),
+                10,
+                1,
+            );
+        }
+        assert!(d2.distinct_windowed() > 100.0);
+        for t in [12_000i64, 23_000] {
+            for _ in 0..20 {
+                d2.note(t, 5, crate::crypto::stream_hash("solo"), 10, 1);
+            }
+        }
+        assert!(
+            d2.distinct_windowed() < 8.0,
+            "distinct estimate must follow the window: {}",
+            d2.distinct_windowed()
+        );
     }
 
     #[test]

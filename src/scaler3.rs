@@ -32,6 +32,8 @@ pub static INEFFECTIVE_SPLIT_AVOIDED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 pub static SEGMENT_MAP_REFRESHES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+pub static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct SegSketch {
     dist: KeyDistribution,
@@ -108,7 +110,25 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
     }
     let key = (desc.name.clone(), seg.seg_id);
     if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
-        return; // full: cold population; hot streams re-enter post-sweep
+        // Automatic scaling must not silently stop at the cap (review
+        // finding 8): evict the least-recently-fed sketch to admit the
+        // new segment. A displaced hot segment re-enters on its next
+        // append immediately.
+        match g
+            .sketches
+            .iter()
+            .min_by_key(|(_, e)| e.last_fed_ms)
+            .map(|(k, _)| k.clone())
+        {
+            Some(victim) => {
+                g.sketches.remove(&victim);
+                SKETCH_EVICTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            None => {
+                UNTRACKED_APPENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+        }
     }
     let e = g.sketches.entry(key).or_insert_with(|| SegSketch {
         dist: KeyDistribution::new(seg.lo, seg.hi, crate::scaler::policy().rate_window_secs),
@@ -150,15 +170,14 @@ fn evaluate(now_ms: i64) -> Vec<(String, u32, u64)> {
         }
         // Unsplittable single dominant key (spec §5.2): expose, apply
         // the per-key limit, never mint useless segments.
-        let dominated = sk
-            .dist
-            .top_keys
+        let top = sk.dist.top_keys_windowed();
+        let dominated = top
             .top_share()
             .map(|(_, share)| share > 0.5)
             .unwrap_or(false);
-        let plural = sk.dist.top_keys.keys_above(0.15) >= 2 || sk.dist.distinct.estimate() >= 8.0;
+        let plural = top.keys_above(0.15) >= 2 || sk.dist.distinct_windowed() >= 8.0;
         if dominated && !plural {
-            if let Some((k, _)) = sk.dist.top_keys.top_share() {
+            if let Some((k, _)) = top.top_share() {
                 hot_updates.push((name.clone(), Some(RoutingKeyHash(k))));
             }
             INEFFECTIVE_SPLIT_AVOIDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -455,6 +474,66 @@ pub fn stats_json() -> serde_json::Value {
         "segment_merges": SEGMENT_MERGES.load(Relaxed),
         "ineffective_split_avoided": INEFFECTIVE_SPLIT_AVOIDED.load(Relaxed),
         "segment_map_refreshes": SEGMENT_MAP_REFRESHES.load(Relaxed),
+        "sketches": state().lock().unwrap().sketches.len(),
+        "sketch_evictions": SKETCH_EVICTIONS.load(Relaxed),
+        "untracked_appends": UNTRACKED_APPENDS.load(Relaxed),
         "hot_keys": hot,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_desc(name: &str) -> StreamDesc {
+        StreamDesc {
+            name: name.into(),
+            stream_epoch: "00000000000000000000000000000000".into(),
+            key_fingerprint: "fp".into(),
+            created_ms: 1,
+            expires_at_ms: None,
+            deleted: false,
+            profile: None,
+            content_type: "application/json".into(),
+            ttl_secs: None,
+            ordering: None,
+            segment_count: 0,
+            queue_max_deliveries: None,
+            touch_token_fingerprint: None,
+            touch_templates: Vec::new(),
+            touch_sig_key: None,
+            scaling: false,
+            segments: None,
+        }
+    }
+
+    /// Review finding 8: past SKETCH_MAX, new segments must still be
+    /// sketched — the least-recently-fed sketch is evicted (counted),
+    /// never a silent refusal to track.
+    #[test]
+    fn sketch_cap_evicts_instead_of_starving() {
+        let over = SKETCH_MAX + 8;
+        for i in 0..over {
+            let desc = test_desc(&format!("cap-seg-{i}"));
+            let seg = desc.resolve_segment("k");
+            note_append(&desc, &seg, 100, 1);
+        }
+        let (tracked, has_newest) = {
+            let g = state().lock().unwrap();
+            (
+                g.sketches.len(),
+                g.sketches
+                    .contains_key(&(format!("cap-seg-{}", over - 1), 0)),
+            )
+        };
+        assert!(tracked <= SKETCH_MAX, "population bounded: {tracked}");
+        assert!(
+            has_newest,
+            "the newest segment must be tracked — silent starvation is the bug"
+        );
+        assert!(
+            SKETCH_EVICTIONS.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "evictions must be counted"
+        );
+    }
 }
