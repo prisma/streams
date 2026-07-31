@@ -151,6 +151,24 @@ failing deploy was at **2026-07-31T10:51:06Z**. So the change landed
 between those two points, and everything deployed before it keeps
 working.
 
+### Re-tested after the incident was reported resolved
+
+Still failing, at **2026-07-31 ~13:30–13:55Z**:
+
+| test | region | result |
+|---|---|---|
+| hello-world control (`repro.sh`) | us-east-1 / ewr | 404 through 15 attempts |
+| hello-world control (`repro.sh`) | ap-southeast-1 / sin | 404 through 15 attempts |
+| streams-slate, version `cpv_u43ji6483c1cgszdgo4rkxxh` | us-east-1 / ewr | **404 for 16 minutes** (~60 polls) |
+| control `cv-e5430a308d96.sin.prisma.build` (pre-existing) | sin | 200, unchanged |
+
+The 16-minute poll was deliberately patient in case publication is
+merely slow after a fix. That version's boot log is normal and ends
+with `streams-slate listening on 0.0.0.0:8080`, so the behaviour is
+exactly as described above: app up, edge unaware. Whatever the incident
+was, this symptom outlived its resolution — worth checking whether they
+are the same issue at all.
+
 ## What would help
 
 1. Is there a control-plane → edge publication step that can silently

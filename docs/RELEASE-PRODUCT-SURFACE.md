@@ -139,6 +139,13 @@ attempt and for the isolation has been destroyed and verified gone
 or `hello-probe` resources remain, and the pre-existing services we
 probed are untouched and still answer 200).
 
+Re-tested after a platform incident was reported resolved
+(2026-07-31 ~13:30–13:55Z): still failing. Hello-world controls 404 in
+both PoPs, and a fresh streams-slate deployment stayed 404 through a
+deliberately patient 16-minute poll while its boot log showed the
+normal `listening on 0.0.0.0:8080`. All retry resources destroyed and
+verified gone. Full evidence: [`repro-edge-404/`](../repro-edge-404/).
+
 **To close this gate** when new services route again:
 
 ```bash
