@@ -90,6 +90,26 @@ forever.** One generator service did this for three consecutive deploys.
 When redeploys keep zombie-ing, `services destroy` + recreate gets a
 fresh placement and has fixed it every time.
 
+**…except when NO new service routes at all.** On 2026-07-31 four
+deployments — two projects (one created through the management API, one
+through `compute projects create`), two PoPs (ewr and sin) — all
+reported `running` and all answered the platform's "There is no service
+on this URL" on both the service domain and the per-version preview
+domain, while a service deployed a week earlier still answered 200
+through the same edge. The logs showed the full healthy boot each time
+(`assembled … e_machine=62`, `listening on 0.0.0.0:8080`), so the app
+was never the problem. Distinguish this from the single-service zombie
+before you burn deploys on it: probe an OLD running service first. If
+it answers and yours does not, the edge is not registering new
+services, and no amount of redeploying will help.
+
+**`services destroy` takes the id as a POSITIONAL argument.** `--service
+cps_…` is silently wrong: the command fails with `appId: must be an
+optionally cps prefixed cuid or cuid2` and the service survives. It is
+`services destroy cps_… --project proj_…`. A teardown script that uses
+the flag form leaves everything running while reporting nothing
+unusual.
+
 **A missing required env var can look exactly like a boot failure.** A
 clap arg with no default makes the binary exit immediately at startup;
 Compute still reports the version `running` while its domain 404s/503s.
