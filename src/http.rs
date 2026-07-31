@@ -2396,6 +2396,7 @@ async fn create_stream(
                 request_hash: None,
             }),
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
             resp: tx,
@@ -2733,7 +2734,33 @@ async fn append_core(
     // requests, whose duplicate check must still return 204 — are
     // deferred to the committer, which owns that decision and answers
     // 409 with Stream-Next-Offset when they are genuinely new writes.
-    if (desc.sealed || desc.sealing.is_some()) && !close_only && producer.is_none() {
+    // A producer request rides through so the committer can recognise a
+    // retry and answer it with its original result — but it carries the
+    // refusal with it, and the committer applies it to anything that
+    // turns out to be a NEW sequence. Without that, a novel producer
+    // write was accepted while the descriptor said Sealing or Sealed.
+    // The seal's OWN final record is the one write a Sealing collection
+    // still owes. It identifies itself with the in-flight operation id,
+    // and only while that intent has not yet been marked committed —
+    // after that, nothing more may land.
+    let is_owed_final = hdr(&headers, "x-seal-final").is_some_and(|v| {
+        desc.sealing
+            .as_ref()
+            .is_some_and(|sl| sl.operation_id == v && sl.owes_final())
+    });
+    let sealed_reject_new = if (desc.sealed || desc.sealing.is_some())
+        && !close_only
+        && !is_owed_final
+    {
+        Some(if desc.sealed {
+            crate::shard::SealedReject::Sealed
+        } else {
+            crate::shard::SealedReject::Sealing
+        })
+    } else {
+        None
+    };
+    if sealed_reject_new.is_some() && producer.is_none() {
         // The pinned closure contract requires Stream-Next-Offset on
         // the 409, so read the sealed tail before answering.
         let seg0 = desc.resolve_segment("");
@@ -2753,6 +2780,21 @@ async fn append_core(
             r.headers_mut().insert("stream-next-offset", v);
         }
         return r;
+    }
+
+    // A raw close seals the whole COLLECTION, so the intent has to be
+    // durable before any physical segment closes. Publishing it
+    // afterwards left a window where other routing keys' segments were
+    // still writable while this one was already closed, and a failure
+    // in between produced a permanently split-brained collection that
+    // still answered the close with success.
+    // …except for the seal's own final record, whose intent is already
+    // published and whose close is the second half of that same
+    // operation.
+    if close && !desc.sealed && !is_owed_final {
+        if let Err(e) = crate::product::begin_sealing_for_close(&state, &name).await {
+            return err_resp(StatusCode::CONFLICT, "sealed", &e);
+        }
     }
 
     // Content-Type: required on POST with a body; must match the stream's
@@ -3015,6 +3057,7 @@ async fn append_core(
         close,
         producer: producer.clone(),
         deferred_error: deferred,
+        sealed_reject_new,
         touch,
         resp: tx,
     };
@@ -3089,13 +3132,28 @@ async fn append_core(
                 state.metrics.append(&name, metric_bytes);
             }
             touch_ttl(&state, &desc); // writes slide the idle window
-            if close && ack.closed {
+            // The seal's own final record also carries `close`, but that
+            // operation finishes the transition itself — it marks the
+            // record committed first, which is what lets the seal
+            // complete at all. Sealing here would run with no operation
+            // id and be refused by its own intent.
+            if close && ack.closed && !is_owed_final {
                 // Raw close seals the COLLECTION (spec Stage 8 §7.4/§16.3):
                 // the descriptor's sealed bit must agree with the engine's
                 // closed tail, or product metadata would deny a closure the
                 // raw view reports.
                 if let Err(e) = crate::product::run_seal(&state, &name, None).await {
-                    tracing::warn!(stream = %name, "collection seal after raw close: {e}");
+                    // The segment is closed but the collection is not
+                    // sealed. Answering success here is how the two
+                    // surfaces end up permanently disagreeing; the
+                    // transition stays resumable, so say it failed and
+                    // let the caller retry the close.
+                    tracing::error!(stream = %name, "collection seal after raw close: {e}");
+                    return err_resp(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "seal_incomplete",
+                        &format!("the collection seal did not complete: {e}; retry the close"),
+                    );
                 }
             }
             let status = if ack.duplicate || close_only || producer.is_none() {

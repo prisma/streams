@@ -2774,6 +2774,7 @@ async fn append_sized(
         close: false,
         producer: None,
         deferred_error: None,
+        sealed_reject_new: None,
         touch: None,
         resp: tx,
     };
@@ -3196,6 +3197,7 @@ async fn append_n(
         close: false,
         producer: None,
         deferred_error: None,
+        sealed_reject_new: None,
         touch: None,
         resp: tx,
     };
@@ -4059,6 +4061,7 @@ async fn sparse_key_reads_page_with_bounded_spans() {
             close: false,
             producer: None,
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             resp: tx,
         };
@@ -4153,6 +4156,7 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
             close: false,
             producer: None,
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             resp: tx,
         };
@@ -4271,6 +4275,7 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
             close: false,
             producer: None,
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             resp: tx,
         };
@@ -4376,6 +4381,7 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
                 close: false,
                 producer: None,
                 deferred_error: None,
+                sealed_reject_new: None,
                 touch: None,
                 resp: tx,
             };
@@ -4463,6 +4469,7 @@ async fn producer_retries_across_a_split_commit_once() {
                     })
                 },
                 deferred_error: None,
+                sealed_reject_new: None,
                 touch: None,
                 resp: tx,
             };
@@ -5474,6 +5481,7 @@ async fn stream_seq_resolves_through_predecessors() {
                 close,
                 producer: None,
                 deferred_error: None,
+                sealed_reject_new: None,
                 touch: None,
                 resp: tx,
             };
@@ -5569,6 +5577,7 @@ async fn producer_lanes_scoped_per_routing_key() {
                     })
                 },
                 deferred_error: None,
+                sealed_reject_new: None,
                 touch: None,
                 resp: tx,
             };
@@ -9277,6 +9286,182 @@ async fn catalog_paging_survives_dense_dead_entries() {
     engine_shutdown(&state).await;
 }
 
+/// A seal that promised a final record owns the transition until that
+/// record is durable. A plain `:seal` arriving after a crashed
+/// seal-with-final used to close every segment and publish Sealed —
+/// dropping the final record permanently, with both requests reporting
+/// success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_seal_cannot_finish_someone_elses_final() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealint",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // A seal-with-final that published its intent and then died.
+    state
+        .registry
+        .cas_update("sealint", |d| {
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: crate::product::seal_op_id(
+                    &serde_json::json!({"done": true}),
+                    "",
+                ),
+                intent: crate::registry::SealIntent::Final {
+                    routing_key: String::new(),
+                    final_committed: false,
+                },
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("sealint");
+
+    // A plain seal must NOT complete it.
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/sealint:seal", &key, b"").await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    assert!(!d.sealed, "the collection must not be sealed yet");
+    assert!(d.sealing.is_some(), "the intent survives the refusal");
+
+    // A raw close must not either — it would close the segment first.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealint",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(st == 409 || st == 503, "raw close during a final seal: {st}");
+    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    assert!(!d.sealed);
+
+    // The owning operation finishes it: same final, same routing key.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealint:seal",
+        &key,
+        br#"{"final":{"done":true}}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none(), "seal completes: {d:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Producer requests are admitted during Sealing so a RETRY can be
+/// recognised and answered with its original result. That let a
+/// genuinely new sequence through as well: the descriptor said Sealing
+/// while a novel producer write landed. The refusal now rides with the
+/// request and the committer applies it after duplicate detection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn producers_cannot_write_new_records_while_sealing() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/prodseal", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let ph = |seq: u32| {
+        vec![
+            ("content-type", "application/json"),
+            ("producer-id", "p1"),
+            ("producer-epoch", "1"),
+            ("producer-seq", Box::leak(seq.to_string().into_boxed_str()) as &str),
+        ]
+    };
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(0), br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 204, "first producer append: {st}");
+
+    // Enter Sealing without finishing (as a crashed seal would leave it).
+    state
+        .registry
+        .cas_update("prodseal", |d| {
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: String::new(),
+                intent: crate::registry::SealIntent::Empty,
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("prodseal");
+
+    // The RETRY of seq 0 still dedups to success…
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(0), br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 204, "a duplicate must still answer: {st}");
+    // …but a NEW sequence is refused.
+    let (st, _, b) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(1), br#"[{"n":1}]"#).await;
+    assert_eq!(
+        st,
+        409,
+        "a new producer sequence landed during Sealing: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // And nothing was written.
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/prodseal", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap_or_default();
+    assert_eq!(recs.len(), 1, "records after a refused write: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// The scaler must not publish a new writable child while a seal is in
+/// flight: the seal snapshots the live segments, so a successor created
+/// after that snapshot outlives the seal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn topology_transitions_are_fenced_by_sealing() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/fenced",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state
+        .registry
+        .cas_update("fenced", |d| {
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: String::new(),
+                intent: crate::registry::SealIntent::Empty,
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("fenced");
+    assert!(
+        !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
+        "a split started under Sealing"
+    );
+    // …and once sealed, still refused.
+    crate::product::run_seal(&state, "fenced", None).await.unwrap();
+    state.registry.invalidate("fenced");
+    assert!(
+        !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
+        "a split started under Sealed"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
@@ -9808,6 +9993,7 @@ async fn seal_is_a_resumable_transition() {
         .registry
         .cas_update_retry("sealtx", |d| {
             d.sealing = Some(crate::registry::SealState {
+                intent: crate::registry::SealIntent::Empty,
                 operation_id: "op-1".into(),
                 claimed_ms: crate::shard::now_ms(),
             });

@@ -1041,13 +1041,7 @@ async fn product_seal(
             // refused from here, so nothing can land between the final
             // record and the segment closes. The operation id makes the
             // final append itself idempotent under retry.
-            let op_id = {
-                use sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                h.update(fin.to_string().as_bytes());
-                h.update(doc.routing_key.clone().unwrap_or_default().as_bytes());
-                crate::crypto::hex(&h.finalize()[..16])
-            };
+            let op_id = seal_op_id(&fin, doc.routing_key.as_deref().unwrap_or_default());
             let intent = crate::registry::SealIntent::Final {
                 routing_key: doc.routing_key.clone().unwrap_or_default(),
                 final_committed: false,
@@ -1100,6 +1094,11 @@ async fn product_seal(
                     ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
                     ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
                 }
+            }
+            // Mark this append as the record the in-flight seal owes, so
+            // it passes the lifecycle gate that refuses everything else.
+            if let Ok(v) = axum::http::HeaderValue::from_str(&op_id) {
+                ih.insert("x-seal-final", v);
             }
             let resp = product_append_sealing(
                 state.clone(),
@@ -1182,6 +1181,59 @@ async fn enter_sealing(
     Ok(())
 }
 
+/// Identity of a seal-with-final operation: the record it promised,
+/// under the routing key it promised it for. A retry of the same seal
+/// derives the same id and resumes; anything else is a different
+/// operation and may not finish this one.
+pub(crate) fn seal_op_id(final_value: &serde_json::Value, routing_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(final_value.to_string().as_bytes());
+    h.update(routing_key.as_bytes());
+    crate::crypto::hex(&h.finalize()[..16])
+}
+
+/// Publish the Sealing intent for a RAW close, before the physical
+/// segment closes. Refuses when another operation still owes a final
+/// record — that seal must finish first, or its record would be lost.
+pub(crate) async fn begin_sealing_for_close(
+    state: &Arc<AppState>,
+    name: &str,
+) -> Result<(), String> {
+    let desc = match state.registry.get(name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        _ => return Ok(()),
+    };
+    if desc.sealed {
+        return Ok(());
+    }
+    if let Some(sl) = &desc.sealing {
+        if sl.owes_final() {
+            return Err(
+                "a seal with a final record is in flight; finish that request first".into(),
+            );
+        }
+        return Ok(());
+    }
+    state
+        .registry
+        .cas_update_retry(name, |d| {
+            if d.sealed || d.sealing.is_some() {
+                return false;
+            }
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: String::new(),
+                intent: crate::registry::SealIntent::Empty,
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state.registry.invalidate(name);
+    Ok(())
+}
+
 /// Record that a final-bearing seal's record is durable. Must happen
 /// before any segment closes: after this the transition can be finished
 /// by anyone, and before it, only by the operation that owes the record.
@@ -1240,6 +1292,20 @@ pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result
 }
 
 async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
+    // A seal that still owes a final record is a CONFLICT for anyone
+    // else, not an internal failure: the caller has to retry the
+    // operation that carries the record.
+    if let Ok(Some(d)) = state.registry.get(&name).await {
+        if d.sealing.as_ref().is_some_and(|sl| sl.owes_final()) {
+            return perr(
+                StatusCode::CONFLICT,
+                "sealing",
+                "a seal with a final record is in flight; retry that request to finish it",
+                None,
+                true,
+            );
+        }
+    }
     match run_seal(&state, &name, None).await {
         Ok(()) => Response::builder()
             .status(StatusCode::OK)
@@ -1570,7 +1636,7 @@ async fn product_append_inner(
     if let Ok(v) = axum::http::HeaderValue::from_str(&desc.content_type) {
         ih.insert("content-type", v);
     }
-    for h in ["producer-id", "producer-epoch", "producer-seq"] {
+    for h in ["producer-id", "producer-epoch", "producer-seq", "x-seal-final"] {
         if let Some(v) = headers.get(h) {
             ih.insert(h, v.clone());
         }

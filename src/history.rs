@@ -1600,6 +1600,7 @@ mod tests {
                     close: false,
                     producer: None,
                     deferred_error: None,
+                    sealed_reject_new: None,
                     touch: None,
                     resp: tx,
                 };
@@ -1670,6 +1671,7 @@ mod tests {
                 close: false,
                 producer: None,
                 deferred_error: None,
+                sealed_reject_new: None,
                 touch: None,
                 resp: tx,
             };

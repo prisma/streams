@@ -878,6 +878,7 @@ impl Workload {
             close: false,
             producer,
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             resp: tx,
         };
@@ -946,6 +947,7 @@ impl Workload {
             close: false,
             producer,
             deferred_error: None,
+            sealed_reject_new: None,
             touch: None,
             resp: tx,
         };

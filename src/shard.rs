@@ -310,6 +310,13 @@ pub enum DeferredErr {
     BadBody(String),
 }
 
+/// Why a new producer sequence must not be accepted right now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SealedReject {
+    Sealing,
+    Sealed,
+}
+
 pub struct AppendReq {
     pub hash: [u8; 16],
     /// Shard-routing identity (`stream_hash(name)`), persisted into the
@@ -339,6 +346,13 @@ pub struct AppendReq {
     pub close: bool,
     pub producer: Option<ProducerReq>,
     pub deferred_error: Option<DeferredErr>,
+    /// The COLLECTION is sealing or sealed while this physical segment
+    /// may still be open. Producer requests are admitted anyway so a
+    /// retry can be recognised as a duplicate and answered with its
+    /// original result — but a genuinely NEW sequence must be refused,
+    /// which only the committer can tell apart. Evaluated after
+    /// duplicate detection; None for ordinary appends.
+    pub sealed_reject_new: Option<SealedReject>,
     pub touch: Option<TouchFeed>,
     /// Usage counters for the STREAM identity (http-side hash), so
     /// committer-side byte accounting lands on the same row as the
@@ -2019,6 +2033,17 @@ impl ShardEngine {
                                     continue;
                                 }
                             }
+                        }
+                        // Past every duplicate/gap answer above, this is a
+                        // NEW sequence. If the collection is sealing or
+                        // sealed, it must not land: the descriptor-level
+                        // gate cannot make this call, because it cannot
+                        // tell a retry from a new record.
+                        if req.sealed_reject_new.is_some() {
+                            let _ = req.resp.send(Err(AppendErr::Closed {
+                                next_offset: local.fields.next,
+                            }));
+                            continue;
                         }
                         prod_echo = Some((pr.epoch, pr.seq));
                     }

@@ -322,6 +322,7 @@ async fn seal_identity(
         close: true,
         producer: None,
         deferred_error: None,
+        sealed_reject_new: None,
         touch: None,
         resp: tx,
     };
@@ -353,6 +354,14 @@ pub async fn execute_split(
             // pinned — enforced HERE, at the transition itself, so a
             // direct scaler call cannot bypass it.
             if d.forked_from.is_some() || !d.fork_children.is_empty() {
+                return false;
+            }
+            // A sealing or sealed collection has a fixed topology. A
+            // transition that started just before the seal could
+            // otherwise publish a successor AFTER the seal took its
+            // snapshot of live segments — a new writable child under a
+            // collection that already reports Sealed.
+            if d.sealed || d.sealing.is_some() {
                 return false;
             }
             let map = d.segments.get_or_insert_with(|| {
@@ -396,6 +405,14 @@ pub async fn execute_merge(
     let ok = st
         .registry
         .cas_update(name, |d| {
+            // A sealing or sealed collection has a fixed topology. A
+            // transition that started just before the seal could
+            // otherwise publish a successor AFTER the seal took its
+            // snapshot of live segments — a new writable child under a
+            // collection that already reports Sealed.
+            if d.sealed || d.sealing.is_some() {
+                return false;
+            }
             let map = d.segments.get_or_insert_with(|| {
                 crate::segmap::SegmentMap::initial("", crate::shard::now_ms())
             });
