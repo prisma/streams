@@ -2153,10 +2153,12 @@ async fn append_core(
             "segment map transition did not converge; retry",
         );
     }
-    let _stream_slot = match acquire_stream_slot(&state, crate::crypto::stream_hash(&desc.name)) {
-        Ok(s) => s,
-        Err(r) => return r,
-    };
+    // Capacity admission is PER SEGMENT (review blocker 1: after a
+    // split, each child must get its own inflight budget — a shared
+    // per-stream bucket would cap the pair at one segment's capacity).
+    // Contractual accounting (usage counters, admit_append) stays keyed
+    // by the stream name below. The slot is acquired after segment
+    // resolution, further down.
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
         KeyCheck::Ok(k, e) => (k, e),
         KeyCheck::Missing => {
@@ -2319,6 +2321,12 @@ async fn append_core(
     }
     let seg = seg;
     let hash = seg.identity;
+    // Per-SEGMENT capacity slot (see the note at the removed per-stream
+    // acquisition above).
+    let _stream_slot = match acquire_stream_slot(&state, seg.identity) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
     // Predecessor identities for this routing key (nearest-first) —
     // only multi-segment dynamic maps have any.
     let producer_lineage: Vec<[u8; 16]> = match &desc.segments {
@@ -2384,7 +2392,11 @@ async fn append_core(
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash,
-        route: name_hash,
+        // The SEGMENT's physical route, not the parent's: frames, tail
+        // state and postings group under the shard that owns them, and
+        // for split children that is a different shard than the parent
+        // (usage counters stay keyed by the stream name above).
+        route: seg.shard_route,
         entries,
         usage: usage_c,
         routing_key,
@@ -3573,10 +3585,11 @@ async fn read_v3_lineage_inner(
     loop {
         let sg = &lineage[pos];
         let identity = desc.dynamic_segment_identity(sg.seg_id);
-        let engine = match state
-            .engine_for(&crate::crypto::stream_hash(&desc.name))
-            .await
-        {
+        // Each segment lives on ITS OWN shard route (split children get
+        // real routes — review blocker 1); hard-coding the parent route
+        // here read an empty keyspace on the wrong engine for any moved
+        // child.
+        let engine = match state.engine_for(&desc.segment_route(sg)).await {
             Ok(e) => e,
             Err(r) => return r,
         };

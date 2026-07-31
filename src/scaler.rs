@@ -218,7 +218,7 @@ pub async fn resume_split(
     let mid = lo + (hi - lo) / 2;
     let now = crate::shard::now_ms();
     let ok = map
-        .split(seg_id, mid, sealed_next_offset, "", "", now)
+        .split(seg_id, mid, sealed_next_offset, [0u8; 16], [0u8; 16], now)
         .is_ok()
         && segmap::save(store, &hash, &map, etag).await.is_ok();
     invalidate(&hash);
@@ -351,7 +351,9 @@ where
             ));
         }
         let mid = lo + (hi - lo) / 2;
-        if map.split(seg_id, mid, next, "", "", now).is_ok()
+        if map
+            .split(seg_id, mid, next, [0u8; 16], [0u8; 16], now)
+            .is_ok()
             && segmap::save(store, &hash, &map, etag).await.is_ok()
         {
             invalidate(&hash);

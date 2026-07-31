@@ -184,6 +184,31 @@ impl StreamDesc {
     /// Legacy `scaling` descriptors are routed by their child-stream
     /// machinery upstream of this call until PR4 folds them in; this
     /// function never sees their parent appends.
+    /// The physical shard route of one segment: its persisted
+    /// route_hash when assigned (split children get real, independent
+    /// routes — review blocker 1: a split must add capacity, not just
+    /// lineage), the shard-prefix hash for prefix-pinned segments, and
+    /// the parent stream route for the implicit/seg-0 case.
+    pub fn segment_route(&self, seg: &crate::segmap::SegmentDesc) -> [u8; 16] {
+        if seg.route_hash != [0u8; 16] {
+            seg.route_hash
+        } else if seg.shard_prefix.is_empty() {
+            crate::crypto::stream_hash(&self.name)
+        } else {
+            crate::crypto::stream_hash(&seg.shard_prefix)
+        }
+    }
+
+    /// segment_route by id; unknown ids fall back to the parent route
+    /// (the implicit single segment).
+    pub fn segment_route_by_id(&self, seg_id: u32) -> [u8; 16] {
+        self.segments
+            .as_ref()
+            .and_then(|m| m.get(seg_id))
+            .map(|sg| self.segment_route(sg))
+            .unwrap_or_else(|| crate::crypto::stream_hash(&self.name))
+    }
+
     pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
         let parent_route = crate::crypto::stream_hash(&self.name);
         let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
@@ -208,13 +233,7 @@ impl StreamDesc {
                     .max_by_key(|s| (s.created_ms, s.seg_id))
             });
             if let Some(seg) = chosen {
-                let shard_route = if seg.route_hash != [0u8; 16] {
-                    seg.route_hash
-                } else if seg.shard_prefix.is_empty() {
-                    parent_route
-                } else {
-                    crate::crypto::stream_hash(&seg.shard_prefix)
-                };
+                let shard_route = self.segment_route(seg);
                 return SegRoute {
                     seg_id: seg.seg_id,
                     identity: self.dynamic_segment_identity(seg.seg_id),

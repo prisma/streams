@@ -205,7 +205,10 @@ async fn seal_identity(
     seg_id: u32,
 ) -> Option<u64> {
     let identity = desc.dynamic_segment_identity(seg_id);
-    let route = crate::crypto::stream_hash(&desc.name);
+    // The seal must reach the engine that OWNS this segment's appends —
+    // hard-coding the parent route here sealed the wrong shard for any
+    // child with a real route (review blocker 1).
+    let route = desc.segment_route_by_id(seg_id);
     let engine = state.engine_for_scaler(&route).await?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let req = crate::shard::AppendReq {
@@ -304,17 +307,56 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     // resume, so no request blocks on this).
     #[cfg(test)]
     failpoints::pause_before_publish().await;
-    // Phase B: publish successors + clear the intent.
+    // Phase B: publish successors + clear the intent, with REAL routes
+    // (review blocker 1: children on the parent's route add lineage but
+    // zero capacity). The low child inherits the parent's route — its
+    // predecessor data is already local; the high child gets a fresh
+    // deterministic route (stable across CAS retries: derived from the
+    // stream name and the child's seg id) that the ring spreads across
+    // shard prefixes and owners.
+    let prefixes = st.shard_prefixes.clone();
     let published = st
         .registry
         .cas_update(name, |d| {
-            let Some(map) = d.segments.as_mut() else {
-                return false;
-            };
-            if map.pending.as_ref() != Some(&p) {
+            let pending_matches = d
+                .segments
+                .as_ref()
+                .is_some_and(|m| m.pending.as_ref() == Some(&p));
+            if !pending_matches {
                 return false; // someone else already completed it
             }
-            match map.split(seg_id, p.split_at, frozen, "", "", crate::shard::now_ms()) {
+            let low_route = d.segment_route_by_id(seg_id);
+            // The high child's route must land on a DIFFERENT shard
+            // prefix than the parent whenever the topology has one —
+            // otherwise the "split" keeps both children behind the same
+            // serial committer and adds no capacity. Deterministic
+            // salting (same sequence on every CAS retry) walks candidate
+            // routes until the prefix differs; a single-shard topology
+            // accepts the first candidate (capacity comes when shards
+            // do).
+            let child_id = d.segments.as_ref().expect("checked").next_seg_id + 1;
+            let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
+            let mut high_route = [0u8; 16];
+            for salt in 0u32..16 {
+                high_route = crate::crypto::stream_hash(&format!(
+                    "{}\0segroute\0{}\0{}",
+                    d.name, child_id, salt
+                ));
+                if prefixes.len() < 2
+                    || crate::registry::shard_for_hash(&prefixes, &high_route) != parent_prefix
+                {
+                    break;
+                }
+            }
+            let map = d.segments.as_mut().expect("checked above");
+            match map.split(
+                seg_id,
+                p.split_at,
+                frozen,
+                low_route,
+                high_route,
+                crate::shard::now_ms(),
+            ) {
                 Ok(_) => {
                     map.pending = None;
                     true

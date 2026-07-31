@@ -150,14 +150,18 @@ impl SegmentMap {
     /// Split `seg_id` at `split_at` (exclusive upper of the low child).
     /// Seals the parent (sealed_next_offset recorded by the caller once
     /// the shard-side Sealed op commits; passed here for atomicity of the
-    /// map transition) and opens two children on the given shard prefixes.
+    /// map transition) and opens two children on PERSISTED, independent
+    /// shard routes — a split adds physical capacity, not just lineage
+    /// (review blocker 1). The caller picks the routes: the low child
+    /// conventionally inherits the parent's route (its predecessor data
+    /// is already local), the high child moves.
     pub fn split(
         &mut self,
         seg_id: u32,
         split_at: u64,
         sealed_next_offset: u64,
-        low_shard: &str,
-        high_shard: &str,
+        low_route: [u8; 16],
+        high_route: [u8; 16],
         now_ms: i64,
     ) -> Result<(u32, u32), MapError> {
         let parent = self
@@ -179,8 +183,8 @@ impl SegmentMap {
             seg_id: a,
             lo,
             hi: split_at,
-            shard_prefix: low_shard.to_string(),
-            route_hash: [0u8; 16],
+            shard_prefix: String::new(),
+            route_hash: low_route,
             created_ms: now_ms,
             predecessors: vec![seg_id],
             sealed_ms: None,
@@ -190,8 +194,8 @@ impl SegmentMap {
             seg_id: b,
             lo: split_at,
             hi,
-            shard_prefix: high_shard.to_string(),
-            route_hash: [0u8; 16],
+            shard_prefix: String::new(),
+            route_hash: high_route,
             created_ms: now_ms,
             predecessors: vec![seg_id],
             sealed_ms: None,
@@ -293,7 +297,7 @@ mod tests {
     fn split_then_route_then_successors() {
         let mut m = SegmentMap::initial("root", 1);
         let mid = KEYSPACE_END / 2;
-        let (a, b) = m.split(0, mid, 4242, "s-a", "s-b", 2).unwrap();
+        let (a, b) = m.split(0, mid, 4242, [1u8; 16], [2u8; 16], 2).unwrap();
         assert!(m.check_partition());
         assert_eq!(m.route(mid - 1).unwrap().seg_id, a);
         assert_eq!(m.route(mid).unwrap().seg_id, b);
@@ -304,7 +308,7 @@ mod tests {
         assert!(succ.contains(&a) && succ.contains(&b));
         // double split of sealed parent rejected
         assert_eq!(
-            m.split(0, mid / 2, 0, "x", "y", 3).unwrap_err(),
+            m.split(0, mid / 2, 0, [3u8; 16], [4u8; 16], 3).unwrap_err(),
             MapError::AlreadySealed(0)
         );
     }
@@ -312,8 +316,12 @@ mod tests {
     #[test]
     fn recursive_splits_keep_partition() {
         let mut m = SegmentMap::initial("root", 1);
-        let (a, _b) = m.split(0, KEYSPACE_END / 2, 0, "s1", "s2", 2).unwrap();
-        let (c, d) = m.split(a, KEYSPACE_END / 4, 0, "s3", "s4", 3).unwrap();
+        let (a, _b) = m
+            .split(0, KEYSPACE_END / 2, 0, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
+        let (c, d) = m
+            .split(a, KEYSPACE_END / 4, 0, [3u8; 16], [4u8; 16], 3)
+            .unwrap();
         assert!(m.check_partition());
         assert_eq!(m.live().count(), 3);
         assert_eq!(m.route(1).unwrap().seg_id, c);
@@ -323,8 +331,12 @@ mod tests {
     #[test]
     fn merge_adjacent_only() {
         let mut m = SegmentMap::initial("root", 1);
-        let (a, b) = m.split(0, KEYSPACE_END / 2, 0, "s1", "s2", 2).unwrap();
-        let (c, d) = m.split(a, KEYSPACE_END / 4, 0, "s3", "s4", 3).unwrap();
+        let (a, b) = m
+            .split(0, KEYSPACE_END / 2, 0, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
+        let (c, d) = m
+            .split(a, KEYSPACE_END / 4, 0, [3u8; 16], [4u8; 16], 3)
+            .unwrap();
         // c=[0,q) d=[q,mid) b=[mid,end) — c+b not adjacent
         assert_eq!(
             m.merge(c, b, 0, 0, "sx", 4).unwrap_err(),
@@ -341,7 +353,8 @@ mod tests {
     #[test]
     fn serde_round_trip() {
         let mut m = SegmentMap::initial("root", 1);
-        m.split(0, KEYSPACE_END / 2, 7, "a", "b", 2).unwrap();
+        m.split(0, KEYSPACE_END / 2, 7, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
         let j = serde_json::to_string(&m).unwrap();
         let back: SegmentMap = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
@@ -433,7 +446,8 @@ mod persist_tests {
         assert!(etag.is_some());
 
         // CAS update succeeds with the fresh etag...
-        m.split(0, KEYSPACE_END / 2, 9, "a", "b", 2).unwrap();
+        m.split(0, KEYSPACE_END / 2, 9, [1u8; 16], [2u8; 16], 2)
+            .unwrap();
         save(&store, &hash, &m, etag.clone()).await.unwrap();
         // ...and the STALE etag now conflicts (lost-lease safety net).
         assert!(save(&store, &hash, &m, etag).await.is_err());
