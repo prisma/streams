@@ -8211,3 +8211,170 @@ async fn profiles_are_removed_from_every_surface() {
     assert!(st == 200 || st == 201, "raw create ignores unknown headers");
     engine_shutdown(&state).await;
 }
+
+/// Stage 7 §14: the raw PUT and the product create resolve to ONE
+/// stream incarnation. A raw idempotent PUT against a product-created
+/// stream compares protocol config only (watches unchanged); a product
+/// create against a raw-created stream succeeds when the immutable
+/// config matches (empty capability config); equivalent duration
+/// spellings normalize to the same config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typed_creation_dual_contract() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+
+    // Product create with watches, then a raw idempotent PUT.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual1",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"30d"},"watches":[{"name":"w","fields":["/a"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/dual1",
+        &[
+            ("content-type", "application/json"),
+            ("stream-ttl", "2592000"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "raw PUT compares protocol config only: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // Watches survived the raw PUT.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/dual1/watches",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        v["watches"][0]["name"], "w",
+        "raw PUT must not clear watches"
+    );
+
+    // Raw create, then product create with matching config: one
+    // incarnation, not a duplicate; records flow both ways.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/dual2",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual2",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "product open of a raw stream: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dual2",
+        &[("content-type", "application/json")],
+        br#"[{"via":"raw"}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/dual2/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1);
+    assert_eq!(
+        recs[0]["via"], "raw",
+        "one canonical sequence across surfaces"
+    );
+
+    // Different immutable config conflicts (409), never merges.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual2",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"bytes"}}"#,
+    )
+    .await;
+    assert_eq!(st, 409);
+
+    // Equivalent duration spellings normalize identically: create with
+    // 30d, retry with 720h -> 200 (same normalized seconds).
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual3",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"30d"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual3",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"720h"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "30d == 720h after normalization: {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // The product create stored NO records (config is never content).
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/dual3/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert!(recs.is_empty(), "product create must not append its config");
+
+    // Watches on a bytes stream are rejected at creation.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dual4",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"bytes"},"watches":[{"name":"w","fields":["/a"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 400, "watches require JSON");
+    engine_shutdown(&state).await;
+}
