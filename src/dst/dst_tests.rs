@@ -6257,7 +6257,6 @@ async fn product_clean_switch_rejections() {
 /// default-key view observes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_seal_collection_wide() {
-    let _l = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
@@ -6291,7 +6290,7 @@ async fn product_seal_collection_wide() {
     assert_eq!(v["sealed"], true);
 
     // Raw view: further appends refuse; drained read reports closure.
-    let (st, _, _) = hreq(
+    let (st, _, b2) = hreq(
         addr,
         "POST",
         "/v1/stream/sealme",
@@ -6299,7 +6298,12 @@ async fn product_seal_collection_wide() {
         br#"[{"n":2}]"#,
     )
     .await;
-    assert_eq!(st, 409, "sealed collection refuses appends");
+    assert_eq!(
+        st,
+        409,
+        "sealed collection refuses appends: {}",
+        String::from_utf8_lossy(&b2)
+    );
     let (st, h, _) = hreq(addr, "GET", "/v1/stream/sealme", &[], b"").await;
     assert_eq!(st, 200);
     assert_eq!(

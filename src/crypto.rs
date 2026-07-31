@@ -91,11 +91,6 @@ pub fn touch_token(key: &StreamKey, stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32] 
     out
 }
 
-pub fn touch_token_fingerprint(token: &[u8; 32]) -> String {
-    let digest = Sha256::digest(token);
-    hex(&digest[..16])
-}
-
 /// URL-signing key, scoped below the touch token: derived by clients from
 /// the token, stored by the registry so the origin can verify wait-URL
 /// signatures without holding the token itself. Registry exposure grants at

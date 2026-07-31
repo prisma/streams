@@ -13,10 +13,8 @@
 //! Any instance seeing `pending` can resume: the point is persisted,
 //! the frozen offsets are re-read from the sealed identities.
 //!
-//! Scope: implicit-map and dynamic-map streams only. Legacy static
-//! per-key layouts, legacy scaling=auto parents, and the queue /
-//! state-protocol profiles are pinned single-segment until their
-//! spec-§11/§12 integrations land.
+//! Scope: implicit-map and dynamic-map streams (the only kinds after
+//! the clean switch).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -79,7 +77,6 @@ struct SegSketch {
     /// (merge policy input — mergers demand far more patience than
     /// splits to avoid flapping).
     cold_streak: u32,
-    profile_pinned: bool,
     last_fed_ms: i64,
 }
 
@@ -133,15 +130,6 @@ pub fn hot_keys_all() -> Vec<(String, RoutingKeyHash)> {
 /// Feed one admitted append into the segment's sketch. Cheap: one map
 /// lookup + a few EWMA bumps under a short lock.
 pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u64, records: u64) {
-    // Streams the scaler must not touch: legacy layouts and profiles
-    // whose cursor/journal semantics are per-stream scalar today.
-    // Pinned profiles keep per-stream scalar cursor/journal semantics
-    // until their per-segment integrations land (the legacy per-key and
-    // scaling layouts were deleted in the clean switch).
-    let pinned = matches!(
-        desc.profile.as_deref(),
-        Some("queue") | Some("state-protocol")
-    );
     let now = crate::shard::now_ms();
     let mut g = state().lock().unwrap();
     // Amortized idle sweep keeps the population honest without a
@@ -176,7 +164,6 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
         dist: KeyDistribution::new(seg.lo, seg.hi, policy().rate_window_secs),
         hot_streak: 0,
         cold_streak: 0,
-        profile_pinned: pinned,
         last_fed_ms: now,
     });
     e.last_fed_ms = now;
@@ -193,9 +180,6 @@ fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
     let cooldowns = g.last_transition_ms.clone();
     let mut hot_updates: Vec<(String, Option<RoutingKeyHash>)> = Vec::new();
     for ((name, seg_id), sk) in g.sketches.iter_mut() {
-        if sk.profile_pinned {
-            continue;
-        }
         let bytes_rate = sk.dist.bytes.value(now_ms);
         let reqs_rate = sk.dist.reqs.value(now_ms);
         let recs_rate = sk.dist.recs.value(now_ms);
@@ -270,9 +254,6 @@ fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
     // driver validates adjacency and ages against the live map.
     let mut per_stream: HashMap<&String, (usize, bool)> = HashMap::new();
     for ((name, _), sk) in g.sketches.iter() {
-        if sk.profile_pinned {
-            continue;
-        }
         let e = per_stream.entry(name).or_insert((0, true));
         e.0 += 1;
         e.1 &= sk.cold_streak >= pol.hot_evals * 4;
@@ -709,13 +690,8 @@ mod tests {
             created_ms: 1,
             expires_at_ms: None,
             deleted: false,
-            profile: None,
             content_type: "application/json".into(),
             ttl_secs: None,
-            queue_max_deliveries: None,
-            touch_token_fingerprint: None,
-            touch_templates: Vec::new(),
-            touch_sig_key: None,
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),

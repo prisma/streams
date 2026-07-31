@@ -23,33 +23,12 @@ pub struct StreamDesc {
     pub expires_at_ms: Option<i64>,
     #[serde(default)]
     pub deleted: bool,
-    /// Profile kind; None = "generic".
-    #[serde(default)]
-    pub profile: Option<String>,
     /// Configured content type (create-time config; appends must match).
     #[serde(default = "default_content_type")]
     pub content_type: String,
     /// Raw TTL seconds as configured (config-compare + HEAD reporting).
     #[serde(default)]
     pub ttl_secs: Option<u64>,
-    /// Queue profile: deliveries before a message is settled to the $dlq
-    /// routing-key view (default 5).
-    #[serde(default)]
-    pub queue_max_deliveries: Option<u32>,
-    /// Fingerprint of the touch capability token (state-protocol streams):
-    /// authorizes /touch/* without granting payload decryption.
-    #[serde(default)]
-    pub touch_token_fingerprint: Option<String>,
-    /// Pinned touch templates (state-protocol): the stream's query families,
-    /// declared at creation, durable, loaded when the journal opens. There
-    /// is no dynamic template state to lose on restarts or moves.
-    #[serde(default)]
-    pub touch_templates: Vec<PinnedTemplate>,
-    /// Wait-URL signing key (hex, state-protocol): lets the origin verify
-    /// the `sig` capability in collapsible wait URLs. Scoped strictly below
-    /// the touch token (observation-forging at worst, never decryption).
-    #[serde(default)]
-    pub touch_sig_key: Option<String>,
     /// ROUTING-V3: the descriptor-resident segment map. `None` is the
     /// implicit single-segment map — segment 0 covers the whole
     /// keyspace and its engine identity IS `storage_hash()`, so a fresh
@@ -112,12 +91,6 @@ pub struct SegRoute {
     /// This segment's key-point range (sketch bin domain).
     pub lo: u64,
     pub hi: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PinnedTemplate {
-    pub entity: String,
-    pub fields: Vec<String>,
 }
 
 /// Decode a stored descriptor, enforcing the pre-launch clean-switch
@@ -758,13 +731,8 @@ mod tests {
             created_ms: 1,
             expires_at_ms: None,
             deleted,
-            profile: None,
             content_type: "application/json".into(),
             ttl_secs: None,
-            queue_max_deliveries: None,
-            touch_token_fingerprint: None,
-            touch_templates: Vec::new(),
-            touch_sig_key: None,
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),

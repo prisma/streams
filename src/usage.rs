@@ -274,15 +274,30 @@ pub fn admit_append(
     bytes: u64,
     records: u64,
 ) -> Result<std::sync::Arc<Counters>, LimitHit> {
+    admit_append_in(map(), overflow_bucket(), hash, bytes, records)
+}
+
+/// The admission core, parametric over the tracked map and the shared
+/// overflow bucket. Production calls bind the process statics; the
+/// past-the-cap test binds PRIVATE instances so filling a map to
+/// MAX_TRACKED cannot starve concurrent tests' streams through the
+/// real shared bucket (2026-07-31 parallel-suite 429 flake).
+pub(crate) fn admit_append_in(
+    map: &Mutex<HashMap<[u8; 16], StreamUsage>>,
+    overflow: &Mutex<Bucket>,
+    hash: &[u8; 16],
+    bytes: u64,
+    records: u64,
+) -> Result<std::sync::Arc<Counters>, LimitHit> {
     let l = limits();
-    let mut m = map().lock().unwrap();
+    let mut m = map.lock().unwrap();
     let n = m.len();
     if !m.contains_key(hash) && n >= MAX_TRACKED {
         let tick = OVERFLOW_SCAN_TICK.fetch_add(1, Ordering::Relaxed);
         let freed = tick % EVICT_SCAN_EVERY == 0 && evict_one_idle(&mut m, EVICT_IDLE);
         if !freed {
             drop(m);
-            admit_on(&mut overflow_bucket().lock().unwrap(), l, bytes, records)?;
+            admit_on(&mut overflow.lock().unwrap(), l, bytes, records)?;
             OVERFLOW_ADMITS.fetch_add(1, Ordering::Relaxed);
             return Ok(overflow_counters().clone());
         }
@@ -664,10 +679,24 @@ mod tests {
     /// visible.
     #[test]
     fn past_the_cap_limits_still_apply_and_counters_aggregate() {
+        // PRIVATE map + overflow bucket: filling the process-global map
+        // to MAX_TRACKED starved every concurrent test's new stream
+        // through the drained shared bucket (2026-07-31 parallel-suite
+        // 429 flake). The logic under test is identical — the
+        // production entrypoint is a thin binding of the statics onto
+        // admit_append_in.
+        let l0 = limits();
+        let tmap: Mutex<HashMap<[u8; 16], StreamUsage>> = Mutex::new(HashMap::new());
+        let tover: Mutex<Bucket> = Mutex::new(Bucket {
+            bytes: l0.bytes_per_sec * l0.burst_secs,
+            reqs: l0.reqs_per_sec * l0.burst_secs,
+            recs: l0.recs_per_sec * l0.burst_secs,
+            last: Instant::now(),
+        });
         // Fill the map to the cap with distinct hashes.
         {
             let l = limits();
-            let mut m = map().lock().unwrap();
+            let mut m = tmap.lock().unwrap();
             let mut h = [0u8; 16];
             while m.len() < MAX_TRACKED {
                 let i = m.len() as u64;
@@ -684,7 +713,7 @@ mod tests {
                 });
             }
         }
-        assert!(tracked_streams() >= MAX_TRACKED);
+        assert!(tmap.lock().unwrap().len() >= MAX_TRACKED);
 
         // 5,000 distinct NEW streams past the cap: every admit routes
         // through ONE shared bucket, so the aggregate population cannot
@@ -698,7 +727,7 @@ mod tests {
             let mut h = [0u8; 16];
             h[..8].copy_from_slice(&i.to_le_bytes());
             h[8] = 0xFE;
-            match admit_append(&h, 100, 1) {
+            match admit_append_in(&tmap, &tover, &h, 100, 1) {
                 Ok(c) => {
                     admitted += 1;
                     // Account into the Arc ADMISSION returned — the same
@@ -751,12 +780,8 @@ mod tests {
 
         // Idle entries are evictable to make room again.
         assert!(
-            evict_idle_for_test(std::time::Duration::ZERO),
+            evict_one_idle(&mut tmap.lock().unwrap(), std::time::Duration::ZERO),
             "an idle tracked entry must be evictable at cap"
         );
-
-        // The map is a process-global; drain this test's fill so other
-        // usage tests (same binary) see pre-cap behavior.
-        map().lock().unwrap().retain(|h, _| h[8] != 0xCA);
     }
 }

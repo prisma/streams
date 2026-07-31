@@ -93,7 +93,21 @@ pub fn canonical_name(raw: &str) -> Result<String, Response> {
 /// The experimental product names this route REJECTS instead of
 /// translating (spec Stage 8 §5).
 fn reject_legacy_inputs(headers: &HeaderMap, query: &str) -> Option<Response> {
-    for h in ["stream-encryption-key", "stream-key"] {
+    // Removed experimental names are rejected, never translated (spec
+    // Stage 1 §6, Stage 7 §12, Stage 8 §5): credential/routing names,
+    // the profile machinery, and header-based configuration.
+    for h in [
+        "stream-encryption-key",
+        "stream-key",
+        "stream-profile",
+        "stream-touch-templates",
+        "stream-queue-max-deliveries",
+        "stream-ordering",
+        "stream-segments",
+        "stream-scaling",
+        "stream-ttl",
+        "stream-expires-at",
+    ] {
         if headers.contains_key(h) {
             return Some(perr(
                 StatusCode::BAD_REQUEST,

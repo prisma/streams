@@ -1078,30 +1078,6 @@ async fn stream_entry_inner(
             "bearer token required",
         );
     }
-    // Queue subresources: /v1/stream/<name>/queue/{consumer}/{receive,ack,extend}
-    if let Some((stream, route)) = name.split_once("/queue/") {
-        return queue_entry(
-            state,
-            stream.to_string(),
-            route.to_string(),
-            method,
-            headers,
-            body,
-        )
-        .await;
-    }
-    // Touch subresources: /v1/stream/<name>/touch/{meta,key/<hex>}
-    if let Some((stream, route)) = name.split_once("/touch/") {
-        return touch_entry(
-            state,
-            stream.to_string(),
-            route.to_string(),
-            method,
-            headers,
-            params,
-        )
-        .await;
-    }
     match method {
         Method::PUT => {
             let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
@@ -1281,21 +1257,9 @@ fn fresh_desc(
     content_type: String,
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
-    profile: Option<String>,
-    touch_templates: Vec<crate::registry::PinnedTemplate>,
 ) -> StreamDesc {
     let _ = state;
     let epoch = rand_epoch();
-    let (tt_fpr, sig_key) = if profile.as_deref() == Some("state-protocol") {
-        let token = crate::crypto::touch_token(key, &epoch);
-        let sk = crate::crypto::wait_sig_key(&token, &epoch);
-        (
-            Some(crate::crypto::touch_token_fingerprint(&token)),
-            Some(hex(&sk)),
-        )
-    } else {
-        (None, None)
-    };
     StreamDesc {
         name: name.to_string(),
         stream_epoch: hex(&epoch),
@@ -1305,13 +1269,8 @@ fn fresh_desc(
             .map(|t| now_ms() + (t as i64) * 1000)
             .or(expires_at_ms),
         deleted: false,
-        profile,
         content_type,
         ttl_secs,
-        queue_max_deliveries: None,
-        touch_token_fingerprint: tt_fpr,
-        touch_templates,
-        touch_sig_key: sig_key,
         segments: None,
         sealed: false,
         watch_definitions: Vec::new(),
@@ -1330,16 +1289,7 @@ pub(crate) fn fresh_desc_product(
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> StreamDesc {
-    fresh_desc(
-        state,
-        name,
-        key,
-        content_type,
-        ttl_secs,
-        expires_at_ms,
-        None,
-        Vec::new(),
-    )
+    fresh_desc(state, name, key, content_type, ttl_secs, expires_at_ms)
 }
 
 /// R2 ring-ownership check shared by both creation surfaces.
@@ -1445,16 +1395,6 @@ async fn create_stream(
         None => None,
     };
     let close = want_close(&headers);
-    let profile = hdr(&headers, "stream-profile");
-    if let Some(p) = &profile {
-        if !matches!(p.as_str(), "generic" | "state-protocol" | "queue") {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "invalid_profile",
-                "unsupported profile",
-            );
-        }
-    }
     // Opt-in per-key ordering (PER-KEY-ORDERING.md §2). Absent => total
     // order, byte-identical semantics to before this feature existed.
     // ROUTING-V3 (docs/ROUTING-V3.md): one routing model. Every stream
@@ -1471,33 +1411,6 @@ async fn create_stream(
                     "{h} was removed: streams are key-partitioned with \
                      automatic scaling (docs/ROUTING-V3.md)"
                 ),
-            );
-        }
-    }
-    let mut touch_templates: Vec<crate::registry::PinnedTemplate> = Vec::new();
-    if let Some(raw) = hdr(&headers, "stream-touch-templates") {
-        if profile.as_deref() != Some("state-protocol") {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "templates need state-protocol",
-            );
-        }
-        match serde_json::from_str(&raw) {
-            Ok(list) => touch_templates = list,
-            Err(e) => {
-                return err_resp(StatusCode::BAD_REQUEST, "invalid_templates", &e.to_string());
-            }
-        }
-        if touch_templates.len() > crate::touch::MAX_TEMPLATES_PER_STREAM
-            || touch_templates
-                .iter()
-                .any(|t| t.entity.is_empty() || t.fields.is_empty() || t.fields.len() > 3)
-        {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "invalid_templates",
-                "bad template shape/caps",
             );
         }
     }
@@ -1550,18 +1463,14 @@ async fn create_stream(
             // Dead incarnation: recreate with a fresh epoch (fresh keyspace).
             // Predicated CAS — one winner; a loser validates against the
             // winner's live descriptor exactly like an idempotent PUT.
-            let mut fresh = fresh_desc(
+            let fresh = fresh_desc(
                 &state,
                 &name,
                 &key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
-                profile.clone(),
-                touch_templates.clone(),
             );
-            fresh.queue_max_deliveries =
-                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
             match state
                 .registry
                 .recreate(&name, fresh, |d| !desc_alive(d))
@@ -1582,18 +1491,14 @@ async fn create_stream(
             }
         }
         None => {
-            let mut fresh = fresh_desc(
+            let fresh = fresh_desc(
                 &state,
                 &name,
                 &key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
-                profile.clone(),
-                touch_templates.clone(),
             );
-            fresh.queue_max_deliveries =
-                hdr(&headers, "stream-queue-max-deliveries").and_then(|v| v.parse().ok());
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -1731,184 +1636,6 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 }
 
 // ---- state-protocol touch surface (collapsible GET-per-key model) ----
-
-/// /touch/* authorization: a touch capability token (purpose-bound HKDF of
-/// the stream key — observation without decryption) OR the full stream key.
-/// The wait route additionally accepts the URL `sig` capability so that CDN
-/// cache keys are self-authorizing.
-fn touch_authorized(headers: &HeaderMap, state: &AppState, desc: &StreamDesc) -> bool {
-    if let Some(expected) = &desc.touch_token_fingerprint {
-        if let Some(raw) = headers.get("touch-token").and_then(|v| v.to_str().ok()) {
-            if let Some(bytes) = crate::crypto::unhex(raw.trim()) {
-                if let Ok(token) = <[u8; 32]>::try_from(bytes) {
-                    if &crate::crypto::touch_token_fingerprint(&token) == expected {
-                        return true;
-                    }
-                }
-            }
-        }
-        matches!(check_key(raw_key(headers, state), desc), KeyCheck::Ok(..))
-    } else {
-        !matches!(check_key(raw_key(headers, state), desc), KeyCheck::Wrong)
-    }
-}
-
-fn pinned_of(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
-    desc.touch_templates
-        .iter()
-        .map(|t| (t.entity.clone(), t.fields.clone()))
-        .collect()
-}
-
-async fn touch_entry(
-    state: Arc<AppState>,
-    stream: String,
-    route: String,
-    method: Method,
-    headers: HeaderMap,
-    params: ReadParams,
-) -> Response {
-    let desc = match state.registry.get(&stream).await {
-        Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
-    };
-    if desc.profile.as_deref() != Some("state-protocol") {
-        return err_resp(StatusCode::NOT_FOUND, "not_found", "touch is not enabled");
-    }
-
-    // GET /touch/key/{watchKeyHex}?cursor=..&sig=..[&timeout=..]
-    // The collapsible wait: one key per URL, journal-global cursors, the
-    // `sig` URL capability as auth (so CDN cache keys are self-authorizing).
-    if let Some(key_hex) = route.strip_prefix("key/") {
-        if method != Method::GET {
-            return err_resp(
-                StatusCode::METHOD_NOT_ALLOWED,
-                "method_not_allowed",
-                "GET only",
-            );
-        }
-        let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
-        if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "invalid_key",
-                "watch key must be hex16",
-            );
-        }
-        let sig_ok = match (&params.sig, &desc.touch_sig_key) {
-            (Some(sig), Some(stored)) => crate::crypto::unhex(stored)
-                .and_then(|k| <[u8; 32]>::try_from(k).ok())
-                .map(|k| {
-                    crate::crypto::wait_url_sig(&k, &key_hex) == sig.trim().to_ascii_lowercase()
-                })
-                .unwrap_or(false),
-            _ => false,
-        };
-        if !sig_ok && !touch_authorized(&headers, &state, &desc) {
-            return err_resp(
-                StatusCode::FORBIDDEN,
-                "touch_unauthorized",
-                "a valid sig, Touch-Token, or Stream-Encryption-Key is required",
-            );
-        }
-        let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
-        let cursor = params.cursor.as_deref().unwrap_or("now");
-        let timeout = params
-            .timeout
-            .as_deref()
-            .and_then(parse_duration)
-            .unwrap_or(MAX_LONG_POLL)
-            .min(MAX_LONG_POLL);
-        let key_id = crate::touch_keys::key_id_of(&key_hex);
-        let out = journal.wait(cursor, vec![key_id], timeout).await;
-
-        use crate::touch::WaitOutcome;
-        let end_off_enc = |end: u64| {
-            if end == 0 {
-                Offset::START
-            } else {
-                Offset(Some(end - 1))
-            }
-            .encode()
-        };
-        let (body, cache) = match out {
-            // Coalescing (identical in-flight URLs collapsed) delivers the
-            // origin-load win; caching is only a short straggler window.
-            // Measured: long TTLs let desynchronized clients walk a cached
-            // hop-chain one generation at a time, so head wakes cache for
-            // just 2s and everything else is no-store.
-            WaitOutcome::Touched {
-                cursor,
-                end_offset,
-                proven,
-                cacheable,
-            } => (
-                json!({
-                    "touched": true,
-                    "reason": if proven { "touched" } else { "resync" },
-                    "cursor": cursor,
-                    "streamEndOffset": end_off_enc(end_offset),
-                }),
-                if cacheable {
-                    "public, max-age=2"
-                } else {
-                    "no-store"
-                },
-            ),
-            // A touch may still arrive for this (key, cursor): never cache.
-            WaitOutcome::Timeout { cursor, end_offset } => (
-                json!({
-                    "touched": false,
-                    "cursor": cursor,
-                    "streamEndOffset": end_off_enc(end_offset),
-                }),
-                "no-store",
-            ),
-            WaitOutcome::Stale { cursor } => (
-                json!({
-                    "stale": true,
-                    "cursor": cursor,
-                    "error": {"code": "stale", "message": "cursor epoch mismatch; rerun and restart from cursor"},
-                }),
-                "no-store",
-            ),
-        };
-        return (
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, cache),
-            ],
-            body.to_string(),
-        )
-            .into_response();
-    }
-
-    if !touch_authorized(&headers, &state, &desc) {
-        return err_resp(
-            StatusCode::FORBIDDEN,
-            "touch_unauthorized",
-            "a valid Touch-Token or Stream-Encryption-Key is required",
-        );
-    }
-    match (method, route.as_str()) {
-        (Method::GET, "meta") => {
-            let journal = state.touch.journal(desc.storage_hash(), &pinned_of(&desc));
-            (
-                [(header::CONTENT_TYPE, "application/json")],
-                journal.meta().to_string(),
-            )
-                .into_response()
-        }
-        _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown touch route"),
-    }
-}
 
 fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
     let raw = headers.get("stream-timestamp")?.to_str().ok()?;
@@ -2221,30 +1948,9 @@ async fn append_core(
     let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
     state.keys.put(hash, key, epoch);
 
-    // H1 state-protocol hook (unchanged; uses the incarnation hash).
-    let touch = if desc.profile.as_deref() == Some("state-protocol") && !entries.is_empty() {
-        let journal = state.touch.journal(hash, &pinned_of(&desc));
-        let snapshot = journal.snapshot();
-        let mut key_ids: Vec<u32> = Vec::new();
-        for raw in &entries {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {
-                if let Some(mut ids) = crate::touch::TouchJournal::derive_key_ids(&snapshot, &v) {
-                    key_ids.append(&mut ids);
-                }
-            }
-        }
-        key_ids.sort_unstable();
-        key_ids.dedup();
-        if key_ids.is_empty() {
-            None
-        } else {
-            Some(crate::shard::TouchFeed {
-                journal,
-                key_ids,
-                next_offset: 0,
-            })
-        }
-    } else if !desc.watch_definitions.is_empty() && desc.is_json() && !entries.is_empty() {
+    // Watch hook (H1 position, H2 delivery): capability-registered by
+    // the descriptor's immutable watch definitions, never by a profile.
+    let touch = if !desc.watch_definitions.is_empty() && desc.is_json() && !entries.is_empty() {
         // Product watches (spec Stage 2 §3): derive watch keys from the
         // committed JSON records via the immutable definitions; the
         // journal ingests only after durability (H2 hook), preserving
@@ -3993,278 +3699,6 @@ struct QueueReceiveBody {
     #[serde(default)]
     #[serde(rename = "waitMs")]
     wait_ms: Option<u64>,
-}
-
-async fn queue_entry(
-    state: Arc<AppState>,
-    stream: String,
-    route: String,
-    method: Method,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let desc = match state.registry.get(&stream).await {
-        Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
-    };
-    if desc.profile.as_deref() != Some("queue") {
-        return err_resp(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "queue profile not enabled",
-        );
-    }
-    let Some((consumer, verb)) = route.split_once('/') else {
-        return err_resp(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "queue route: {consumer}/{verb}",
-        );
-    };
-    if consumer.is_empty() || consumer.len() > 128 || consumer.contains('\u{0}') {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "invalid_consumer",
-            "bad consumer name",
-        );
-    }
-    if method != Method::POST {
-        return err_resp(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "method_not_allowed",
-            "POST only",
-        );
-    }
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-    let hash = desc.storage_hash();
-    state.keys.put(hash, key.clone(), epoch);
-    let engine = match state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
-        .await
-    {
-        Ok(e) => e,
-        Err(r) => return r,
-    };
-    let handle = match engine.stream_handle(hash).await {
-        Ok(h) => h,
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
-    };
-    let max_deliveries = desc.queue_max_deliveries.unwrap_or(5);
-    let dlq_subkey = derive_subkey(&key, &epoch, "$dlq", 0);
-    let raw = match axum::body::to_bytes(body, 1 << 20).await {
-        Ok(b) => b,
-        Err(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_request", "bad body"),
-    };
-    state.metrics.queue(&stream);
-
-    match verb {
-        "receive" => {
-            let req: QueueReceiveBody = if raw.is_empty() {
-                QueueReceiveBody::default()
-            } else {
-                match serde_json::from_slice(&raw) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return err_resp(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_request",
-                            &e.to_string(),
-                        );
-                    }
-                }
-            };
-            let max = req.batch_size.unwrap_or(5).clamp(1, 100);
-            let visibility = req
-                .visibility_ms
-                .unwrap_or(30_000)
-                .clamp(1_000, 12 * 3600 * 1000);
-            let wait = req.wait_ms.unwrap_or(0).min(25_000);
-            let deadline = tokio::time::Instant::now() + Duration::from_millis(wait);
-            loop {
-                let out = engine
-                    .submit_queue(
-                        hash,
-                        crate::queue::QueueOp::Receive {
-                            consumer: consumer.to_string(),
-                            max,
-                            visibility_ms: visibility,
-                            max_deliveries,
-                            dlq_subkey,
-                            keyed: false,
-                            keys: Default::default(),
-                            covered_to: 0,
-                        },
-                    )
-                    .await;
-                let (leased, backlog) = match out {
-                    Ok(crate::queue::QueueOut::Received {
-                        leased,
-                        backlog,
-                        poisoned: _,
-                    }) => (leased, backlog),
-                    Ok(_) => unreachable!(),
-                    Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-                };
-                if leased.is_empty() && tokio::time::Instant::now() < deadline {
-                    // Long-poll for new messages, then try leasing again.
-                    let notified = handle.notify.notified();
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = tokio::time::sleep_until(deadline) => {}
-                    }
-                    if tokio::time::Instant::now() < deadline {
-                        continue;
-                    }
-                }
-                // Fetch + decrypt payloads for the leased offsets.
-                let mut messages = Vec::with_capacity(leased.len());
-                if !leased.is_empty() {
-                    let lo = leased.iter().map(|(o, _, _, _)| *o).min().unwrap();
-                    let hi = leased.iter().map(|(o, _, _, _)| *o).max().unwrap();
-                    let out = match read_records(
-                        &state,
-                        &desc,
-                        &key,
-                        &epoch,
-                        &handle,
-                        &engine,
-                        lo,
-                        None,
-                        MAX_READ_BYTES,
-                    )
-                    .await
-                    {
-                        Ok(o) => o,
-                        Err(m) => {
-                            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m);
-                        }
-                    };
-                    let by_off: HashMap<u64, &PlainRec> =
-                        out.recs.iter().map(|r| (r.off, r)).collect();
-                    let _ = hi;
-                    for (off, lease_gen, attempts, _kh) in &leased {
-                        let Some(rec) = by_off.get(off) else { continue };
-                        let payload: serde_json::Value = if desc.is_json() {
-                            serde_json::from_slice(&rec.payload).unwrap_or(serde_json::Value::Null)
-                        } else {
-                            use base64::Engine;
-                            serde_json::Value::String(
-                                base64::engine::general_purpose::STANDARD.encode(&rec.payload),
-                            )
-                        };
-                        messages.push(json!({
-                            "id": Offset(Some(*off)).encode(),
-                            "offset": off,
-                            "attempts": attempts,
-                            "leaseToken": format!("{off}:{lease_gen}"),
-                            "body": payload,
-                        }));
-                    }
-                }
-                return (
-                    [
-                        (header::CONTENT_TYPE, "application/json"),
-                        (header::CACHE_CONTROL, "no-store"),
-                    ],
-                    json!({"messages": messages, "backlog": backlog}).to_string(),
-                )
-                    .into_response();
-            }
-        }
-        "ack" => {
-            let req: QueueSettleBody = match serde_json::from_slice(&raw) {
-                Ok(r) => r,
-                Err(e) => {
-                    return err_resp(StatusCode::BAD_REQUEST, "invalid_request", &e.to_string());
-                }
-            };
-            let parse = |t: &str| crate::queue::parse_token(t);
-            let acks = req
-                .acks
-                .iter()
-                .filter_map(|a| parse(&a.lease_token))
-                .collect();
-            let retries = req
-                .retries
-                .iter()
-                .filter_map(|r| parse(&r.lease_token).map(|(o, g)| (o, g, r.delay_ms)))
-                .collect();
-            let extends = req
-                .extends
-                .iter()
-                .filter_map(|r| parse(&r.lease_token).map(|(o, g)| (o, g, r.visibility_ms)))
-                .collect();
-            let out = engine
-                .submit_queue(
-                    hash,
-                    crate::queue::QueueOp::Settle {
-                        consumer: consumer.to_string(),
-                        acks,
-                        retries,
-                        extends,
-                        max_deliveries,
-                        dlq_subkey,
-                        keyed: false,
-                    },
-                )
-                .await;
-            match out {
-                Ok(crate::queue::QueueOut::Settled {
-                    acked,
-                    retried,
-                    extended,
-                    dlq,
-                    backlog,
-                    stale: _,
-                    poisoned: _,
-                }) => (
-                    [
-                        (header::CONTENT_TYPE, "application/json"),
-                        (header::CACHE_CONTROL, "no-store"),
-                    ],
-                    json!({
-                        "acked": acked, "retried": retried, "extended": extended,
-                        "dlq": dlq, "backlog": backlog,
-                    })
-                    .to_string(),
-                )
-                    .into_response(),
-                Ok(_) => unreachable!(),
-                Err(m) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-            }
-        }
-        _ => err_resp(StatusCode::NOT_FOUND, "not_found", "unknown queue verb"),
-    }
 }
 
 // ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
