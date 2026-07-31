@@ -41,5 +41,10 @@ encryption key: dead-letter records are written with the source
 collection's key. The link is checked when the consumer is configured.
 
 Authentication (`token`) belongs to the client; encryption
-(`encryptionKey`) belongs to the stream handle. Zero dependencies;
-Node 18+, Bun, Deno, and browsers.
+(`encryptionKey`) belongs to the stream handle. Zero dependencies.
+
+**Runtimes.** CI runs this package's end-to-end smoke on **Node 18,
+Node 22, Bun and Deno** — those are gated, not asserted. The code uses
+only `fetch`, WebCrypto and web streams, so browsers should work too,
+but no browser is currently in the gate; treat browser support as
+expected rather than verified.

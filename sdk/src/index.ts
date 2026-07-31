@@ -323,6 +323,20 @@ async function errorFrom(res: Response): Promise<StreamsError> {
   return new StreamsError(res.status, code, message, retryable, details);
 }
 
+/** A sleep that ends when the caller aborts, not 25 seconds later. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
 async function req(
   ctx: Ctx,
   method: string,
@@ -579,14 +593,24 @@ export class Stream<T = unknown> {
       );
       let res: Response;
       try {
-        res = await req(this.ctx, "GET", path, this.kh());
+        // The signal reaches fetch, so aborting ends the in-flight
+        // 25-second long poll instead of leaving it running to term.
+        res = await req(
+          this.ctx,
+          "GET",
+          path,
+          this.kh(),
+          undefined,
+          options?.signal,
+        );
       } catch (e) {
         if (options?.signal?.aborted) return;
-        await new Promise((r) => setTimeout(r, 1000));
+        await sleep(1000, options?.signal);
         continue;
       }
       if (res.status === 429 || res.status === 503) {
-        await new Promise((r) => setTimeout(r, 1000));
+        await sleep(1000, options?.signal);
+        if (options?.signal?.aborted) return;
         continue;
       }
       if (!res.ok && res.status !== 204) throw await errorFrom(res);
@@ -1025,7 +1049,11 @@ function bytesOf(...parts: (Uint8Array | string)[]): Uint8Array {
 }
 
 function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
+  // The server accepts URL-safe, unpadded base64 keys; `atob` does not.
+  // Without this a key works for appends and reads and then fails only
+  // when deriving a watch URL.
+  const std = b64.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(std.padEnd(std.length + ((4 - (std.length % 4)) % 4), "="));
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;

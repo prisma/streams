@@ -79,6 +79,29 @@ jobs:
           sleep 2
           cd /tmp/consumer
           STREAMS_SDK=@prisma/streams node $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8091
+      # The SDK claims Bun and Deno too, so gate them rather than assert
+      # them. Both run the same package through the same smoke.
+      - uses: oven-sh/setup-bun@v2
+      - name: Smoke through the package (Bun)
+        run: |
+          ./target/release/streams-slate --listen 127.0.0.1:8092 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket sdkbun-$RANDOM \
+            --max-unflushed-bytes 67108864 &
+          sleep 2
+          cd /tmp/consumer
+          STREAMS_SDK=@prisma/streams bun $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8092
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Smoke through the package (Deno)
+        run: |
+          ./target/release/streams-slate --listen 127.0.0.1:8093 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket sdkdeno-$RANDOM \
+            --max-unflushed-bytes 67108864 &
+          sleep 2
+          cd /tmp/consumer
+          STREAMS_SDK=@prisma/streams deno run -A --node-modules-dir \
+            $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8093
 
   # Job: the pinned upstream Durable Streams server conformance suite,
   # UNMODIFIED, against a fresh namespace (spec appendix §7). The

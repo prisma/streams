@@ -138,6 +138,33 @@ try {
 }
 check("watch value cardinality checked", cardinality);
 
+// Cancellation actually ends the in-flight long poll.
+{
+  const ac = new AbortController();
+  const started = Date.now();
+  const it = orders.subscribe({ routingKey: "nobody", signal: ac.signal });
+  const pump = (async () => {
+    for await (const _ of it) break;
+  })();
+  setTimeout(() => ac.abort(), 300);
+  await Promise.race([pump, new Promise((r) => setTimeout(r, 6000))]);
+  const took = Date.now() - started;
+  check("abort ends the long poll promptly", took < 5000, `${took}ms`);
+}
+
+// A URL-safe base64 key derives the same watch key as its standard form.
+{
+  const urlSafe = encryptionKey.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const alt = client.stream("smoke/orders", { encryptionKey: urlSafe });
+  let derived = null;
+  try {
+    derived = (await alt.watch("by-customer", ["c7"])).key;
+  } catch (e) {
+    derived = `threw: ${e.message}`;
+  }
+  check("base64url keys derive watch keys", derived === watch.key, String(derived));
+}
+
 // Seal with a final record; subscribe termination; catalog.
 await orders.seal({ final: { customerId: "c1", done: true }, routingKey: "c1" });
 const meta = await orders.metadata();
