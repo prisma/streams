@@ -4090,11 +4090,18 @@ async fn queue_entry(
                             visibility_ms: visibility,
                             max_deliveries,
                             dlq_subkey,
+                            keyed: false,
+                            keys: Default::default(),
+                            covered_to: 0,
                         },
                     )
                     .await;
                 let (leased, backlog) = match out {
-                    Ok(crate::queue::QueueOut::Received { leased, backlog }) => (leased, backlog),
+                    Ok(crate::queue::QueueOut::Received {
+                        leased,
+                        backlog,
+                        poisoned: _,
+                    }) => (leased, backlog),
                     Ok(_) => unreachable!(),
                     Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
                 };
@@ -4112,8 +4119,8 @@ async fn queue_entry(
                 // Fetch + decrypt payloads for the leased offsets.
                 let mut messages = Vec::with_capacity(leased.len());
                 if !leased.is_empty() {
-                    let lo = leased.iter().map(|(o, _, _)| *o).min().unwrap();
-                    let hi = leased.iter().map(|(o, _, _)| *o).max().unwrap();
+                    let lo = leased.iter().map(|(o, _, _, _)| *o).min().unwrap();
+                    let hi = leased.iter().map(|(o, _, _, _)| *o).max().unwrap();
                     let out = match read_records(
                         &state,
                         &desc,
@@ -4135,7 +4142,7 @@ async fn queue_entry(
                     let by_off: HashMap<u64, &PlainRec> =
                         out.recs.iter().map(|r| (r.off, r)).collect();
                     let _ = hi;
-                    for (off, lease_gen, attempts) in &leased {
+                    for (off, lease_gen, attempts, _kh) in &leased {
                         let Some(rec) = by_off.get(off) else { continue };
                         let payload: serde_json::Value = if desc.is_json() {
                             serde_json::from_slice(&rec.payload).unwrap_or(serde_json::Value::Null)
@@ -4197,6 +4204,7 @@ async fn queue_entry(
                         extends,
                         max_deliveries,
                         dlq_subkey,
+                        keyed: false,
                     },
                 )
                 .await;
@@ -4207,6 +4215,8 @@ async fn queue_entry(
                     extended,
                     dlq,
                     backlog,
+                    stale: _,
+                    poisoned: _,
                 }) => (
                     [
                         (header::CONTENT_TYPE, "application/json"),

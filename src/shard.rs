@@ -2324,6 +2324,108 @@ impl ShardEngine {
                         let _ = resp.send(Err(m));
                         continue;
                     }
+                    // Config ops (spec Stage 2 §2.2): single-row,
+                    // committer-serialized so the idempotent-create
+                    // compare cannot race itself. Handled before the
+                    // state lock because they read the row directly.
+                    let op = match op {
+                        QueueOp::ConfigPut { consumer, cfg } => {
+                            let key = config_key(&hash, &consumer);
+                            let existing = match self.db.get(&key[..]).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    let _ = resp.send(Err(e.to_string()));
+                                    continue;
+                                }
+                            };
+                            let out = match existing
+                                .and_then(|v| serde_json::from_slice::<ConsumerConfig>(&v).ok())
+                            {
+                                Some(old) if old == cfg => QueueOut::Config {
+                                    cfg: Some(old),
+                                    created: false,
+                                    conflict: false,
+                                },
+                                Some(old) => QueueOut::Config {
+                                    cfg: Some(old),
+                                    created: false,
+                                    conflict: true,
+                                },
+                                None => {
+                                    let enc = serde_json::to_vec(&cfg).unwrap_or_default();
+                                    wb.put(key, enc);
+                                    extra_writes = true;
+                                    QueueOut::Config {
+                                        cfg: Some(cfg),
+                                        created: true,
+                                        conflict: false,
+                                    }
+                                }
+                            };
+                            queue_pending.push((resp, out));
+                            continue;
+                        }
+                        QueueOp::ConfigGet { consumer } => {
+                            let key = config_key(&hash, &consumer);
+                            let cfg = match self.db.get(&key[..]).await {
+                                Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
+                                Err(e) => {
+                                    let _ = resp.send(Err(e.to_string()));
+                                    continue;
+                                }
+                            };
+                            queue_pending.push((
+                                resp,
+                                QueueOut::Config {
+                                    cfg,
+                                    created: false,
+                                    conflict: false,
+                                },
+                            ));
+                            continue;
+                        }
+                        QueueOp::ConfigDelete { consumer } => {
+                            wb.delete(config_key(&hash, &consumer));
+                            // Every state row of this consumer under
+                            // this identity (bounded by ITS rows).
+                            let mut dead: Vec<Vec<u8>> = Vec::new();
+                            for tag in [b'l', b'x'] {
+                                let mut pfx = Vec::with_capacity(18 + consumer.len());
+                                pfx.extend_from_slice(&hash);
+                                pfx.push(tag);
+                                pfx.extend_from_slice(consumer.as_bytes());
+                                pfx.push(0);
+                                if let Ok(mut iter) = self.db.scan_prefix(&pfx[..], ..).await {
+                                    while let Ok(Some(kv)) = iter.next().await {
+                                        dead.push(kv.key.to_vec());
+                                    }
+                                }
+                            }
+                            dead.push(cursor_key(&hash, &consumer));
+                            for k in dead {
+                                wb.delete(k);
+                            }
+                            extra_writes = true;
+                            local
+                                .handle
+                                .state
+                                .lock()
+                                .unwrap()
+                                .queue
+                                .consumers
+                                .remove(&consumer);
+                            queue_pending.push((
+                                resp,
+                                QueueOut::Config {
+                                    cfg: None,
+                                    created: false,
+                                    conflict: false,
+                                },
+                            ));
+                            continue;
+                        }
+                        other => other,
+                    };
                     let now = now_ms();
                     let mut dlq_refs: Vec<(u64, u32)> = Vec::new(); // (orig off, attempts)
                     let (out, dlq_subkey) = {
@@ -2335,9 +2437,26 @@ impl ShardEngine {
                                 visibility_ms,
                                 max_deliveries,
                                 dlq_subkey,
+                                keyed,
+                                keys,
+                                covered_to,
                             } => {
                                 let cs = st.queue.consumers.entry(consumer.clone()).or_default();
                                 let mut leased = Vec::new();
+                                let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
+                                // Per-key FIFO (spec Stage 2 §2.3): a key
+                                // with an ACTIVE lease anywhere blocks its
+                                // later records; a batch leases at most one
+                                // record per key.
+                                let mut blocked: std::collections::HashSet<[u8; 16]> = if keyed {
+                                    cs.leases
+                                        .values()
+                                        .filter(|l| l.deadline_ms > now)
+                                        .map(|l| l.key_hash)
+                                        .collect()
+                                } else {
+                                    Default::default()
+                                };
                                 let mut off = cs.cursor;
                                 let mut steps = 0usize;
                                 while off < local.fields.next
@@ -2345,6 +2464,20 @@ impl ShardEngine {
                                     && steps < max * 8 + 4096
                                 {
                                     steps += 1;
+                                    let kh = if keyed {
+                                        if off >= covered_to {
+                                            break;
+                                        }
+                                        match keys.get(&off) {
+                                            Some(k) => *k,
+                                            // Never lease a record whose key
+                                            // is unknown — it could jump a
+                                            // blocked key's queue.
+                                            None => break,
+                                        }
+                                    } else {
+                                        [0u8; 16]
+                                    };
                                     if cs.acked.contains(&off) {
                                         off += 1;
                                         continue;
@@ -2356,7 +2489,24 @@ impl ShardEngine {
                                             continue; // in flight
                                         }
                                         if l.delivery_count >= max_deliveries {
-                                            // Poison: settle + DLQ reference.
+                                            if keyed {
+                                                // Report; the HTTP layer
+                                                // appends to the DLQ stream
+                                                // durably FIRST, then acks
+                                                // (spec §2.8). The key stays
+                                                // blocked meanwhile.
+                                                poisoned.push((
+                                                    off,
+                                                    l.lease_gen,
+                                                    l.delivery_count,
+                                                    kh,
+                                                ));
+                                                blocked.insert(kh);
+                                                off += 1;
+                                                continue;
+                                            }
+                                            // Profile path: settle + in-stream
+                                            // DLQ reference.
                                             cs.leases.remove(&off);
                                             wb.delete(lease_key(&hash, &consumer, off));
                                             cs.acked.insert(off);
@@ -2367,16 +2517,24 @@ impl ShardEngine {
                                             continue;
                                         }
                                     }
+                                    if keyed && blocked.contains(&kh) {
+                                        off += 1;
+                                        continue;
+                                    }
                                     let lease = Lease {
                                         deadline_ms: now + visibility_ms as i64,
                                         delivery_count: prev.map(|l| l.delivery_count).unwrap_or(0)
                                             + 1,
                                         lease_gen: prev.map(|l| l.lease_gen).unwrap_or(0) + 1,
+                                        key_hash: kh,
                                     };
                                     wb.put(lease_key(&hash, &consumer, off), encode_lease(&lease));
                                     extra_writes = true;
                                     cs.leases.insert(off, lease);
-                                    leased.push((off, lease.lease_gen, lease.delivery_count));
+                                    if keyed {
+                                        blocked.insert(kh);
+                                    }
+                                    leased.push((off, lease.lease_gen, lease.delivery_count, kh));
                                     off += 1;
                                 }
                                 // Advance cursor over settled prefix.
@@ -2391,7 +2549,14 @@ impl ShardEngine {
                                 );
                                 let backlog = (local.fields.next - cs.cursor)
                                     .saturating_sub(cs.acked.len() as u64);
-                                (QueueOut::Received { leased, backlog }, dlq_subkey)
+                                (
+                                    QueueOut::Received {
+                                        leased,
+                                        backlog,
+                                        poisoned,
+                                    },
+                                    dlq_subkey,
+                                )
                             }
                             QueueOp::Settle {
                                 consumer,
@@ -2400,10 +2565,12 @@ impl ShardEngine {
                                 extends,
                                 max_deliveries,
                                 dlq_subkey,
+                                keyed,
                             } => {
                                 let cs = st.queue.consumers.entry(consumer.clone()).or_default();
-                                let (mut a, mut r, mut e2, mut dq) =
-                                    (0usize, 0usize, 0usize, 0usize);
+                                let (mut a, mut r, mut e2, mut dq, mut stale) =
+                                    (0usize, 0usize, 0usize, 0usize, 0usize);
+                                let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
                                 for (off, tok_gen) in acks {
                                     if cs.leases.get(&off).map(|l| l.lease_gen) == Some(tok_gen) {
                                         cs.leases.remove(&off);
@@ -2412,14 +2579,35 @@ impl ShardEngine {
                                         wb.put(ack_key(&hash, &consumer, off), b"");
                                         extra_writes = true;
                                         a += 1;
+                                    } else {
+                                        // Stale tokens are counted, never
+                                        // errors, and cannot touch a newer
+                                        // lease generation (spec §2.5/§2.7).
+                                        stale += 1;
                                     }
                                 }
                                 for (off, tok_gen, delay) in retries {
                                     if let Some(l) = cs.leases.get(&off).copied() {
                                         if l.lease_gen != tok_gen {
+                                            stale += 1;
                                             continue;
                                         }
                                         if l.delivery_count >= max_deliveries {
+                                            if keyed {
+                                                // Report only: the DLQ-stream
+                                                // append precedes the source
+                                                // settle (spec §2.8); the
+                                                // lease stays so the later
+                                                // ack still gen-matches.
+                                                poisoned.push((
+                                                    off,
+                                                    l.lease_gen,
+                                                    l.delivery_count,
+                                                    l.key_hash,
+                                                ));
+                                                dq += 1;
+                                                continue;
+                                            }
                                             cs.leases.remove(&off);
                                             wb.delete(lease_key(&hash, &consumer, off));
                                             cs.acked.insert(off);
@@ -2439,6 +2627,8 @@ impl ShardEngine {
                                             r += 1;
                                         }
                                         extra_writes = true;
+                                    } else {
+                                        stale += 1;
                                     }
                                 }
                                 for (off, tok_gen, vis) in extends {
@@ -2455,7 +2645,11 @@ impl ShardEngine {
                                             );
                                             extra_writes = true;
                                             e2 += 1;
+                                        } else {
+                                            stale += 1;
                                         }
+                                    } else {
+                                        stale += 1;
                                     }
                                 }
                                 while cs.acked.remove(&cs.cursor) {
@@ -2476,9 +2670,16 @@ impl ShardEngine {
                                         extended: e2,
                                         dlq: dq,
                                         backlog,
+                                        stale,
+                                        poisoned,
                                     },
                                     dlq_subkey,
                                 )
+                            }
+                            QueueOp::ConfigPut { .. }
+                            | QueueOp::ConfigGet { .. }
+                            | QueueOp::ConfigDelete { .. } => {
+                                unreachable!("config ops handled before the state lock")
                             }
                         }
                     };

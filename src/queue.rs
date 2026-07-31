@@ -25,6 +25,10 @@ pub struct Lease {
     pub deadline_ms: i64,
     pub delivery_count: u32,
     pub lease_gen: u32,
+    /// Routing-key hash of the leased record — the per-key FIFO
+    /// blocking identity (spec Stage 2 §2.3). Zeros on rows written by
+    /// the un-keyed profile path.
+    pub key_hash: [u8; 16],
 }
 
 #[derive(Debug, Default)]
@@ -69,10 +73,11 @@ pub fn ack_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
 }
 
 pub fn encode_lease(l: &Lease) -> Vec<u8> {
-    let mut v = Vec::with_capacity(16);
+    let mut v = Vec::with_capacity(32);
     v.extend_from_slice(&l.deadline_ms.to_le_bytes());
     v.extend_from_slice(&l.delivery_count.to_le_bytes());
     v.extend_from_slice(&l.lease_gen.to_le_bytes());
+    v.extend_from_slice(&l.key_hash);
     v
 }
 
@@ -80,11 +85,57 @@ pub fn decode_lease(v: &[u8]) -> Option<Lease> {
     if v.len() < 16 {
         return None;
     }
+    let mut key_hash = [0u8; 16];
+    if v.len() >= 32 {
+        key_hash.copy_from_slice(&v[16..32]);
+    }
     Some(Lease {
         deadline_ms: i64::from_le_bytes(v[0..8].try_into().ok()?),
         delivery_count: u32::from_le_bytes(v[8..12].try_into().ok()?),
         lease_gen: u32::from_le_bytes(v[12..16].try_into().ok()?),
+        key_hash,
     })
+}
+
+/// Consumer-group config row (spec Stage 2 §2.2), stored under the
+/// PARENT identity — collection-scoped, unlike per-segment state.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConsumerConfig {
+    #[serde(default = "d_vis")]
+    pub visibility_timeout_ms: u32,
+    #[serde(default = "d_att")]
+    pub max_attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_letter_stream: Option<String>,
+    #[serde(default = "d_batch")]
+    pub max_batch_records: u16,
+}
+fn d_vis() -> u32 {
+    30_000
+}
+fn d_att() -> u32 {
+    5
+}
+fn d_batch() -> u16 {
+    10
+}
+impl Default for ConsumerConfig {
+    fn default() -> Self {
+        ConsumerConfig {
+            visibility_timeout_ms: d_vis(),
+            max_attempts: d_att(),
+            dead_letter_stream: None,
+            max_batch_records: d_batch(),
+        }
+    }
+}
+
+pub fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17 + consumer.len());
+    k.extend_from_slice(hash);
+    k.push(b'C');
+    k.extend_from_slice(consumer.as_bytes());
+    k
 }
 
 /// Parse "<off>:<gen>" lease tokens (permissive: None on malformed).
@@ -102,6 +153,31 @@ pub enum QueueOp {
         /// Subkey for encrypting DLQ reference records (routing key "$dlq"),
         /// derived by the handler which holds the stream key.
         dlq_subkey: [u8; 32],
+        /// Per-key FIFO mode (spec Stage 2 §2.3): skip offsets whose
+        /// routing key has an active lease elsewhere, lease at most one
+        /// offset per key per batch. Product consumers always set this;
+        /// the queue profile keeps offset-FIFO until Stage 1 deletes it.
+        keyed: bool,
+        /// Keyed mode's offset -> routing-key-hash map, pre-read by the
+        /// HTTP layer from the merged (history + tail) reader. The scan
+        /// stops at the first offset not covered — leasing a record
+        /// whose key is unknown could jump a blocked key's queue.
+        keys: std::collections::HashMap<u64, [u8; 16]>,
+        /// Exclusive end of the pre-read coverage.
+        covered_to: u64,
+    },
+    /// Idempotent config create/compare under the PARENT identity.
+    ConfigPut {
+        consumer: String,
+        cfg: ConsumerConfig,
+    },
+    ConfigGet {
+        consumer: String,
+    },
+    /// Delete config + every state row of this consumer under this
+    /// identity.
+    ConfigDelete {
+        consumer: String,
     },
     Settle {
         consumer: String,
@@ -110,15 +186,32 @@ pub enum QueueOp {
         extends: Vec<(u64, u32, u64)>, // (off, gen, visibility_ms)
         max_deliveries: u32,
         dlq_subkey: [u8; 32],
+        /// Product mode: poison candidates are reported (see
+        /// Received.poisoned), never auto-referenced in-stream.
+        keyed: bool,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum QueueOut {
     Received {
-        /// (offset, gen, attempts) for each newly leased message.
-        leased: Vec<(u64, u32, u32)>,
+        /// (offset, gen, attempts, key_hash) for each newly leased
+        /// message.
+        leased: Vec<(u64, u32, u32, [u8; 16])>,
         backlog: u64,
+        /// Keyed mode: at-max-attempts candidates REPORTED, not
+        /// settled — the HTTP layer appends to the DLQ stream durably
+        /// FIRST, then acks the source with the lease token (spec
+        /// §2.8; crash between the two re-runs idempotently). The
+        /// expired lease keeps the key blocked until that completes.
+        /// (offset, lease_gen, attempts, key_hash).
+        poisoned: Vec<(u64, u32, u32, [u8; 16])>,
+    },
+    /// created = true -> 201; equal existing -> 200; None + conflict.
+    Config {
+        cfg: Option<ConsumerConfig>,
+        created: bool,
+        conflict: bool,
     },
     Settled {
         acked: usize,
@@ -126,5 +219,7 @@ pub enum QueueOut {
         extended: usize,
         dlq: usize,
         backlog: u64,
+        stale: usize,
+        poisoned: Vec<(u64, u32, u32, [u8; 16])>,
     },
 }
