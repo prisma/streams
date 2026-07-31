@@ -2244,6 +2244,36 @@ async fn append_core(
                 next_offset: 0,
             })
         }
+    } else if !desc.watch_definitions.is_empty() && desc.is_json() && !entries.is_empty() {
+        // Product watches (spec Stage 2 §3): derive watch keys from the
+        // committed JSON records via the immutable definitions; the
+        // journal ingests only after durability (H2 hook), preserving
+        // the invalidation-after-visibility invariant. One aggregate
+        // journal per COLLECTION (storage identity), coarse across
+        // segments (§3.7).
+        let journal = state
+            .touch
+            .journal(desc.storage_hash(), &crate::product::watch_pinned(&desc));
+        let mut key_ids: Vec<u32> = Vec::new();
+        for raw in &entries {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {
+                key_ids.extend(crate::product::product_watch_ids(
+                    &desc.watch_definitions,
+                    &v,
+                ));
+            }
+        }
+        key_ids.sort_unstable();
+        key_ids.dedup();
+        if key_ids.is_empty() {
+            None
+        } else {
+            Some(crate::shard::TouchFeed {
+                journal,
+                key_ids,
+                next_offset: 0,
+            })
+        }
     } else {
         None
     };

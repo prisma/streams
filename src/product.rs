@@ -417,10 +417,36 @@ pub async fn product_entry(
                 ),
             };
         }
+        if rest == "watches" && method == Method::GET {
+            return product_watches_list(state, name).await;
+        }
+        if let Some(wrest) = rest.strip_prefix("watches/") {
+            return match (method.clone(), wrest.split_once("/keys/")) {
+                (Method::GET, Some((w, key_hex))) => {
+                    product_watch_wait(
+                        state,
+                        name,
+                        w.to_string(),
+                        key_hex.to_string(),
+                        headers,
+                        &query,
+                    )
+                    .await
+                }
+                (Method::GET, None) => product_watch_get(state, name, wrest.to_string()).await,
+                _ => perr(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "watches are read-only (GET)",
+                    None,
+                    false,
+                ),
+            };
+        }
         return perr(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_implemented",
-            &format!("product subresource '{rest}' lands with its stage (spec Stage 2)"),
+            StatusCode::NOT_FOUND,
+            "unknown_route",
+            &format!("unknown product subresource '{rest}'"),
             None,
             false,
         );
@@ -2571,6 +2597,300 @@ async fn product_consumer_settle(
             })
             .to_string(),
         ))
+        .unwrap()
+}
+
+// ---- Stage 2b: watches ----------------------------------------------
+
+/// Journal template registration shape for a stream's immutable watch
+/// definitions.
+pub(crate) fn watch_pinned(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
+    desc.watch_definitions
+        .iter()
+        .map(|w| (w.name.clone(), w.fields.clone()))
+        .collect()
+}
+
+/// Canonical watch-key value encoding (spec Stage 2 §3.3): JSON
+/// serialization, so "1" (string), 1 (number), true, null, arrays and
+/// objects are all distinct. A missing pointer produces NO key for the
+/// definition.
+fn watch_arg(v: Option<&serde_json::Value>) -> Option<String> {
+    v.map(|x| x.to_string())
+}
+
+/// The 64-bit watch key for (definition, extracted values), hex16 on
+/// the wire. Field order is significant and preserved (spec §3.2) —
+/// the definition id hashes fields AS DECLARED.
+pub(crate) fn watch_key_hex(name: &str, fields: &[String], values: &[String]) -> String {
+    let tid = crate::touch_keys::template_id(name, fields);
+    crate::touch_keys::key_hex(crate::touch_keys::watch_key(tid, values))
+}
+
+/// Watch-journal key ids for one committed JSON record.
+pub(crate) fn product_watch_ids(
+    defs: &[crate::registry::WatchDefinition],
+    record: &serde_json::Value,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for def in defs {
+        let mut values = Vec::with_capacity(def.fields.len());
+        let mut complete = true;
+        for ptr in &def.fields {
+            match watch_arg(record.pointer(ptr)) {
+                Some(v) => values.push(v),
+                None => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        if !complete {
+            continue;
+        }
+        let tid = crate::touch_keys::template_id(&def.name, &def.fields);
+        out.push(crate::touch_keys::key_id_of_u64(
+            crate::touch_keys::watch_key(tid, &values),
+        ));
+    }
+    out
+}
+
+fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
+    json!({"name": w.name, "fields": w.fields})
+}
+
+async fn product_watches_list(state: Arc<AppState>, name: String) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let defs: Vec<_> = desc.watch_definitions.iter().map(watch_def_json).collect();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(json!({"watches": defs}).to_string()))
+        .unwrap()
+}
+
+async fn product_watch_get(state: Arc<AppState>, name: String, w: String) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        _ => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+    };
+    match desc.watch_definitions.iter().find(|d| d.name == w) {
+        Some(def) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(watch_def_json(def).to_string()))
+            .unwrap(),
+        None => perr(
+            StatusCode::NOT_FOUND,
+            "unknown_watch",
+            "no such watch definition",
+            None,
+            false,
+        ),
+    }
+}
+
+/// The observation endpoint (spec §3.5): long-poll one watch key. The
+/// URL sig is an OBSERVATION capability derived from the stream key —
+/// it grants no decryption, append, consumer, or management rights;
+/// holders of the stream key authenticate directly.
+async fn product_watch_wait(
+    state: Arc<AppState>,
+    name: String,
+    w: String,
+    key_hex: String,
+    headers: HeaderMap,
+    query: &str,
+) -> Response {
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        _ => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+    };
+    if !desc.watch_definitions.iter().any(|d| d.name == w) {
+        return perr(
+            StatusCode::NOT_FOUND,
+            "unknown_watch",
+            "no such watch definition",
+            None,
+            false,
+        );
+    }
+    let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
+    if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_watch_key",
+            "watch key must be 16 hex chars",
+            None,
+            false,
+        );
+    }
+    let q = parse_query(query);
+    let Some(epoch) = desc.epoch_bytes() else {
+        return perr(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "descriptor missing epoch",
+            None,
+            true,
+        );
+    };
+    // Auth: the derived URL sig (observation capability), or the full
+    // encryption key.
+    let sig_ok = q.get("sig").is_some_and(|sig| {
+        // The sig chain is derivable by any stream-key holder:
+        // touch_token(key, epoch) -> wait_sig_key -> wait_url_sig(hex).
+        // The server needs the key fingerprint only to find the key…
+        // which it does NOT hold. Instead the capability is verified
+        // against a sig key derived at CREATE time? No — derive from
+        // the presented material: the sig itself must match a key
+        // derived from the STREAM key, which only the descriptor's
+        // fingerprint can witness. The server cannot derive it without
+        // the stream key, so sig verification uses the key cache: the
+        // absorber has the stream key for any stream that has appended.
+        match state.keys.get(&desc.storage_hash()) {
+            Some((k, e)) => {
+                let tok = crate::crypto::touch_token(&k, &e);
+                let sk = crate::crypto::wait_sig_key(&tok, &e);
+                crate::crypto::wait_url_sig(&sk, &key_hex) == sig.trim().to_ascii_lowercase()
+            }
+            None => false,
+        }
+    });
+    if !sig_ok {
+        let key_ok = product_key(&headers).is_some_and(|kb| {
+            matches!(
+                crate::http::check_key(Some(&kb), &desc),
+                crate::http::KeyCheck::Ok(..)
+            )
+        });
+        if !key_ok {
+            return perr(
+                StatusCode::FORBIDDEN,
+                "watch_unauthorized",
+                "a valid sig or Prisma-Encryption-Key is required",
+                None,
+                false,
+            );
+        }
+    }
+    // Cache the key for sig derivation on later keyless waits.
+    if let Some(kb) = product_key(&headers) {
+        if let crate::http::KeyCheck::Ok(k, e) = crate::http::check_key(Some(&kb), &desc) {
+            state.keys.put(desc.storage_hash(), k, e);
+        }
+    }
+    let journal = state
+        .touch
+        .journal(desc.storage_hash(), &watch_pinned(&desc));
+    let cursor = q
+        .get("cursor")
+        .map(String::as_str)
+        .unwrap_or("now")
+        .to_string();
+    let timeout = q
+        .get("timeoutMs")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(std::time::Duration::from_secs(25))
+        .min(std::time::Duration::from_secs(25));
+    let key_id = crate::touch_keys::key_id_of(&key_hex);
+    let out = journal.wait(&cursor, vec![key_id], timeout).await;
+
+    use crate::touch::WaitOutcome;
+    let stream_cursor = |end: u64| {
+        let ro = desc.resolve_segment("");
+        crate::product_cursor::KeyCursor {
+            epoch,
+            key_hash: crate::crypto::stream_hash(""),
+            seg_id: ro.seg_id,
+            offset: end,
+        }
+    };
+    let (status, body) = match out {
+        WaitOutcome::Touched {
+            cursor,
+            end_offset,
+            proven,
+            cacheable: _,
+        } => (
+            StatusCode::OK,
+            json!({
+                "invalidated": true,
+                "reason": if proven { "changed" } else { "resync" },
+                "cursor": cursor,
+                "streamCursor": state
+                    .keys
+                    .get(&desc.storage_hash())
+                    .map(|(k, _)| stream_cursor(end_offset).encode(&k)),
+            }),
+        ),
+        WaitOutcome::Stale { cursor } => (
+            StatusCode::OK,
+            json!({
+                // A stale cursor is an explicit RESYNC, never a silent
+                // false (spec §3.5).
+                "invalidated": true,
+                "reason": "resync",
+                "cursor": cursor,
+            }),
+        ),
+        WaitOutcome::Timeout { cursor, end_offset } => (
+            StatusCode::OK,
+            json!({
+                "invalidated": false,
+                "cursor": cursor,
+                "streamCursor": state
+                    .keys
+                    .get(&desc.storage_hash())
+                    .map(|(k, _)| stream_cursor(end_offset).encode(&k)),
+            }),
+        ),
+    };
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body.to_string()))
         .unwrap()
 }
 

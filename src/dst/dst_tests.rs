@@ -7997,3 +7997,151 @@ async fn product_consumer_drains_lineage_across_split() {
     );
     engine_shutdown(&state).await;
 }
+
+/// Stage 2b: watches — definitions listed from the descriptor; a wait
+/// wakes only when a MATCHING record commits (after durability); the
+/// derived URL sig is a valid observation capability; a stale cursor is
+/// an explicit resync.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_watch_wakes_on_matching_append() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wt",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+
+    // Management endpoints.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/wt/watches",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["watches"][0]["name"], "by-customer");
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/wt/watches/by-customer",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/wt/watches/nope",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 404);
+
+    let fields = vec!["/customerId".to_string()];
+    let khex = crate::product::watch_key_hex("by-customer", &fields, &["\"c42\"".to_string()]);
+
+    // Concurrent wait + matching append -> invalidated.
+    let path = format!("/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=5000");
+    let wait = tokio::spawn(async move {
+        preq(
+            addr,
+            "GET",
+            &path,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"",
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/wt/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "c42"),
+        ],
+        b"{\"customerId\":\"c42\",\"total\":9}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, b) = wait.await.unwrap();
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["invalidated"], true, "{v}");
+    let cursor = v["cursor"].as_str().unwrap().to_string();
+
+    // A NON-matching append does not wake this key.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/wt/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "other"),
+        ],
+        b"{\"customerId\":\"other\"}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let path =
+        format!("/v1/streams/wt/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs=300");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        &path,
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["invalidated"], false, "{v}");
+    let cursor = v["cursor"].as_str().unwrap().to_string();
+
+    // Derived URL sig authorizes WITHOUT the encryption key.
+    let skey_local = skey();
+    let desc = state.registry.get("wt").await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let tok = crate::crypto::touch_token(&skey_local, &epoch);
+    let sk = crate::crypto::wait_sig_key(&tok, &epoch);
+    let sig = crate::crypto::wait_url_sig(&sk, &khex);
+    let path = format!(
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs=200&sig={sig}"
+    );
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    // Wrong sig, no key: 403.
+    let path = format!(
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200&sig=deadbeef"
+    );
+    let (st, _, _) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 403);
+
+    // A stale (foreign-epoch) cursor is an explicit resync.
+    let path =
+        format!("/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=999999:1&timeoutMs=200");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        &path,
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["invalidated"], true);
+    assert_eq!(v["reason"], "resync");
+    engine_shutdown(&state).await;
+}
