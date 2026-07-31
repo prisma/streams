@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 use crate::crypto::{
     FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame, hex,
 };
-use crate::history::{KeyCache, read_history};
+use crate::history::KeyCache;
 use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
@@ -73,7 +73,6 @@ pub struct AppState {
     pub registry: Registry,
     /// Single-flight, cancellation-proof history DbReader service — one
     /// per process/store (history.rs).
-    pub hist_readers: Arc<crate::history::HistReaders>,
     pub shard_prefixes: Vec<String>,
     /// Serving map, shared with the fleet loop and the OpenGate's spawned
     /// open tasks (which insert into it directly — see sharddir.rs).
@@ -578,7 +577,6 @@ async fn debug_store(
         // History DbReader service: hits vs misses shows how much
         // per-request manifest traffic the cache absorbs; stale_reopens
         // is bounded by absorb cadence; coalesced proves single-flight.
-        obj.insert("history_readers".into(), state.hist_readers.stats_json());
     }
     axum::Json(snap).into_response()
 }
@@ -1127,24 +1125,6 @@ fn parse_duration(s: &str) -> Option<Duration> {
         return v.parse::<u64>().ok().map(Duration::from_secs);
     }
     s.parse::<u64>().ok().map(Duration::from_secs)
-}
-
-fn parse_expiry(headers: &HeaderMap) -> Result<Option<i64>, String> {
-    let ttl = headers.get("stream-ttl").and_then(|v| v.to_str().ok());
-    let expires = headers
-        .get("stream-expires-at")
-        .and_then(|v| v.to_str().ok());
-    match (ttl, expires) {
-        (Some(_), Some(_)) => Err("at most one of Stream-TTL and Stream-Expires-At".into()),
-        (Some(t), None) => {
-            let d = parse_duration(t).ok_or_else(|| format!("invalid Stream-TTL: {t}"))?;
-            Ok(Some(now_ms() + d.as_millis() as i64))
-        }
-        (None, Some(e)) => chrono::DateTime::parse_from_rfc3339(e)
-            .map(|ts| Some(ts.timestamp_millis()))
-            .map_err(|_| format!("invalid Stream-Expires-At: {e}")),
-        (None, None) => Ok(None),
-    }
 }
 
 /// Extract + validate the request's stream key against the descriptor.
@@ -2443,17 +2423,7 @@ async fn read_records(
     key_filter: Option<&str>,
     max_bytes: usize,
 ) -> Result<ReadOut, String> {
-    read_merged(
-        &state.hist_readers,
-        key,
-        epoch,
-        handle,
-        engine,
-        scan_from,
-        key_filter,
-        max_bytes,
-    )
-    .await
+    read_merged(key, epoch, handle, engine, scan_from, key_filter, max_bytes).await
 }
 
 /// Decode raw stream-key-encrypted frames (v2 history or shard tail —
@@ -2503,7 +2473,6 @@ fn decode_frames_into(
 /// production does.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_merged(
-    hist: &Arc<crate::history::HistReaders>,
     key: &StreamKey,
     epoch: &[u8; 16],
     handle: &Arc<crate::shard::StreamHandle>,
@@ -2551,7 +2520,13 @@ pub(crate) async fn read_merged(
     for _ in 0..16 {
         let hist_upto = boundary.min(end);
         if cursor < hist_upto && budget > 0 {
-            let completed = if hist_v2 {
+            if !hist_v2 {
+                // The v1 per-stream layout was deleted in the clean
+                // switch: an unabsorbed-below-boundary tail without the
+                // v2 flag cannot exist in a fresh namespace.
+                return Err("unsupported_storage_layout: v1 history".into());
+            }
+            let completed = {
                 // v2: the range lives in the shard's SHARED partition,
                 // read through the owner's open Db — no reader open, no
                 // checkpoint, no coverage probe (this Db's flush is what
@@ -2608,19 +2583,6 @@ pub(crate) async fn read_merged(
                     out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
                 }
                 completed
-            } else {
-                let h = read_history(hist, &hash, key, cursor, hist_upto, key_filter, budget)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                for (off, rec) in h.records {
-                    budget = budget.saturating_sub(rec.payload.len());
-                    out.recs.push(PlainRec {
-                        off,
-                        payload: rec.payload,
-                    });
-                    out.last = Some(off);
-                }
-                h.completed
             };
             if !completed {
                 // Byte-truncated, or (v1) the reader cannot prove coverage

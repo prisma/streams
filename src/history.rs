@@ -13,71 +13,18 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
 use bytes::Bytes;
 use object_store::ObjectStore;
 use slatedb::config::{CompressionCodec, Settings, WriteOptions};
-use slatedb::{BlockTransformer, Db, DbReader, WriteBatch};
+use slatedb::{Db, WriteBatch};
 use tokio::sync::mpsc;
 
-use crate::crypto::{
-    RouteHash, SegmentHash, StreamKey, decode_frame, decrypt_frame, derive_subkey, hex,
-};
+use crate::crypto::{RouteHash, SegmentHash, StreamKey, hex};
 use crate::shard::{AbsorbSignal, ShardEngine, now_ms, read_frames_range};
 
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
-pub struct AesBlockTransformer {
-    cipher: Aes256Gcm,
-}
-
-impl AesBlockTransformer {
-    pub fn new(key: &StreamKey) -> AesBlockTransformer {
-        AesBlockTransformer {
-            cipher: Aes256Gcm::new((&key.0).into()),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl BlockTransformer for AesBlockTransformer {
-    async fn encode(&self, data: Bytes) -> Result<Bytes, slatedb::Error> {
-        let mut nonce = [0u8; 12];
-        use rand::RngCore;
-        rand::rng().fill_bytes(&mut nonce);
-        let ct = self
-            .cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &data,
-                    aad: b"",
-                },
-            )
-            .map_err(|_| block_err("block encrypt failed"))?;
-        let mut out = Vec::with_capacity(12 + ct.len());
-        out.extend_from_slice(&nonce);
-        out.extend_from_slice(&ct);
-        Ok(Bytes::from(out))
-    }
-
-    async fn decode(&self, data: Bytes) -> Result<Bytes, slatedb::Error> {
-        if data.len() < 12 {
-            return Err(block_err("block too short"));
-        }
-        let (nonce, ct) = data.split_at(12);
-        let pt = self
-            .cipher
-            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: b"" })
-            .map_err(|_| block_err("block decrypt failed (wrong stream key?)"))?;
-        Ok(Bytes::from(pt))
-    }
-}
-
-/// Test-only absorber pause (D3). Initialized from ABSORB_PAUSE, then
-/// flipped at runtime via /v1/debug/absorb-pause so the ladder can pause
-/// an instance WITHOUT restarting it (a restart moves its shards away).
+/// Operator pause for the whole absorber (fleet runbook).
 pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
     static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
     F.get_or_init(|| {
@@ -90,12 +37,6 @@ pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
 pub fn absorb_paused() -> bool {
     absorb_pause_flag().load(std::sync::atomic::Ordering::Relaxed)
 }
-
-fn block_err(msg: &str) -> slatedb::Error {
-    slatedb::Error::data(msg.to_string())
-}
-
-// ---- history record codec ----
 
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
@@ -126,13 +67,6 @@ fn postings_scan_opts() -> slatedb::config::ScanOptions {
     }
 }
 
-pub fn hist_record_key(offset: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(10);
-    k.extend_from_slice(b"r!");
-    k.extend_from_slice(&offset.to_be_bytes());
-    k
-}
-
 // ---- shared history v2 keyspace (docs/HISTORY-V2.md) ----
 //
 // Route hash FIRST so a shard split can clone the partition by key
@@ -147,52 +81,6 @@ pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<
     k.push(b'r');
     k.extend_from_slice(&offset.to_be_bytes());
     k
-}
-
-pub fn hist_key_index_key(rk: &str, offset: u64) -> Vec<u8> {
-    let rkb = rk.as_bytes();
-    let mut k = Vec::with_capacity(12 + rkb.len());
-    k.extend_from_slice(b"k!");
-    k.extend_from_slice(&(rkb.len() as u16).to_be_bytes());
-    k.extend_from_slice(rkb);
-    k.extend_from_slice(&offset.to_be_bytes());
-    k
-}
-
-pub fn encode_hist_record(ts: i64, key_version: u32, rk: &str, payload: &[u8]) -> Vec<u8> {
-    let rkb = rk.as_bytes();
-    let mut v = Vec::with_capacity(15 + rkb.len() + payload.len());
-    v.push(1);
-    v.extend_from_slice(&ts.to_le_bytes());
-    v.extend_from_slice(&key_version.to_le_bytes());
-    v.extend_from_slice(&(rkb.len() as u16).to_le_bytes());
-    v.extend_from_slice(rkb);
-    v.extend_from_slice(payload);
-    v
-}
-
-pub struct HistRecord {
-    pub ts: i64,
-    pub key_version: u32,
-    pub routing_key: String,
-    pub payload: Bytes,
-}
-
-pub fn decode_hist_record(v: &Bytes) -> Option<HistRecord> {
-    if v.len() < 15 || v[0] != 1 {
-        return None;
-    }
-    let ts = i64::from_le_bytes(v[1..9].try_into().ok()?);
-    let key_version = u32::from_le_bytes(v[9..13].try_into().ok()?);
-    let rk_len = u16::from_le_bytes(v[13..15].try_into().ok()?) as usize;
-    let routing_key = String::from_utf8(v.get(15..15 + rk_len)?.to_vec()).ok()?;
-    let payload = v.slice(15 + rk_len..);
-    Some(HistRecord {
-        ts,
-        key_version,
-        routing_key,
-        payload,
-    })
 }
 
 // ---- settings (D23 maintenance profile + F2 pattern) ----
@@ -401,11 +289,6 @@ pub struct AbsorberConfig {
     /// resident handles. Signals are the fast path; the sweep closes
     /// their gaps (bounded-channel drops under wide backlogs, restarts).
     pub sweep_every: u32,
-    /// Test-only escape hatch: classify every stream as legacy v1 so the
-    /// per-stream lanes, HistReaders coverage machinery and k!-index
-    /// behavior keep their DST coverage — v1 remains a supported layout
-    /// for streams that absorbed before v2 existed.
-    pub force_v1: bool,
     /// Interim sparse-stream policy (cost review round 2 verdict): the
     /// AGE trigger only fires for streams with at least this many
     /// pending bytes. A one-record stream costs ~43 Class A requests to
@@ -445,7 +328,6 @@ impl Default for AbsorberConfig {
             small_pass_bytes: 1024 * 1024,
             concurrency: 6,
             sweep_every: 12,
-            force_v1: false,
             min_age_bytes: 256 * 1024,
             gather_max_bytes: 32 * 1024 * 1024,
         }
@@ -475,58 +357,6 @@ pub(crate) struct GatherOutcome {
     pub(crate) deferred_budget: Vec<[u8; 16]>,
 }
 
-/// Shared post-pass bookkeeping for both lanes: success retires the
-/// pending entry, key-missing backs off slowly (the key arrives with the
-/// next keyed request — hammering every tick just burns CPU across a
-/// wide key-expired backlog), fence-class drops the claim, and other
-/// errors take exponential backoff.
-async fn apply_absorb_result(
-    absorber: &Absorber,
-    pending: &mut HashMap<[u8; 16], PendingAbsorb>,
-    hash: [u8; 16],
-    res: anyhow::Result<bool>,
-    now: Instant,
-) {
-    match res {
-        Ok(absorbed) => {
-            if absorbed {
-                pending.remove(&hash);
-                crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(hash));
-            } else if let Some(p) = pending.get_mut(&hash) {
-                // Key missing (KeyCache TTL or never supplied): the
-                // contract is absorb-on-next-touch — a keyed request
-                // re-fills the cache and the sweep/signal re-drives the
-                // pass. Until then, retry slowly instead of every tick.
-                p.failures = 0;
-                p.retry_after = Some(now + absorber.cfg.tick * 64);
-            }
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            if absorb_error_is_fence(&msg) {
-                tracing::warn!(
-                    "dropping absorb claim for {} (fence-class): {msg}",
-                    hex(&hash)
-                );
-                pending.remove(&hash);
-                absorber.close_db(&hash).await;
-            } else if let Some(p) = pending.get_mut(&hash) {
-                p.failures = p.failures.saturating_add(1);
-                let shift = p.failures.min(6);
-                p.retry_after = Some(now + absorber.cfg.tick * 2u32.pow(shift));
-                // Log at failure 1, 2, 4, 8, ... only.
-                if p.failures.is_power_of_two() {
-                    tracing::warn!(
-                        failures = p.failures,
-                        "absorb failed for {}: {msg}",
-                        hex(&hash)
-                    );
-                }
-            }
-        }
-    }
-}
-
 /// Fence-class absorb errors mean this engine lost the shard to a new owner:
 /// retrying can never succeed and — worse — keeps evicting the rightful
 /// owner's history db in a ping-pong ("the absorption war", 2026-07-20).
@@ -551,7 +381,6 @@ pub struct Absorber {
     /// Small LRU (4) + idle eviction keeps V4's idle-per-DB-overhead
     /// concern bounded; entries are dropped on fence-class errors and on
     /// absorber exit.
-    open_dbs: tokio::sync::Mutex<HashMap<[u8; 16], (Arc<Db>, Instant)>>,
     /// Highest `upto` this absorber has submitted per stream, WITH the
     /// lane that submitted it (true = v2 shared partition). The
     /// published handle state only reflects a submit after the committer
@@ -575,8 +404,6 @@ pub struct Absorber {
 /// passes evict each other's handles at the end of every tick and the
 /// next tick re-opens them (the open IS the per-stream cost being
 /// amortized).
-const HISTORY_DB_LRU: usize = 16;
-const HISTORY_DB_IDLE: Duration = Duration::from_secs(120);
 
 impl Absorber {
     /// Construct without starting the pump — DST tests drive gathers
@@ -592,7 +419,6 @@ impl Absorber {
             shard,
             keys,
             cfg,
-            open_dbs: tokio::sync::Mutex::new(HashMap::new()),
             submitted: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -650,11 +476,6 @@ impl Absorber {
                     // instance rollup reports phantom backlog, and
                     // wide-report treats that rollup as its drain proof.
                     crate::usage::clear_absorb_pending_summary(&absorber.shard.prefix);
-                    let handles: Vec<[u8; 16]> =
-                        absorber.open_dbs.lock().await.keys().copied().collect();
-                    for h in handles {
-                        absorber.close_db(&h).await;
-                    }
                     return;
                 }
                 tokio::select! {
@@ -824,18 +645,11 @@ impl Absorber {
                         // entries simply run next tick. Classification
                         // reads resident handle state (map lookup) and is
                         // itself capped.
-                        const BIG_LANE_PER_TICK: usize = 16;
-                        const SMALL_LANE_PER_TICK: usize = 256;
                         const V2_LANE_PER_TICK: usize = 1024;
                         const CLASSIFY_PER_TICK: usize = 4096;
                         let mut v2_lane: Vec<[u8; 16]> = Vec::new();
-                        let mut small: Vec<([u8; 16], u64)> = Vec::new();
-                        let mut big: Vec<([u8; 16], u64)> = Vec::new();
                         for (hash, bytes) in due.into_iter().take(CLASSIFY_PER_TICK) {
-                            if v2_lane.len() >= V2_LANE_PER_TICK
-                                && small.len() >= SMALL_LANE_PER_TICK
-                                && big.len() >= BIG_LANE_PER_TICK
-                            {
+                            if v2_lane.len() >= V2_LANE_PER_TICK {
                                 break;
                             }
                             let Ok(handle) = absorber.shard.stream_handle(hash).await else {
@@ -864,6 +678,12 @@ impl Absorber {
                             // route 0x00.. and a future route-range split
                             // would classify them into the wrong range.
                             // Such streams keep the v1 per-stream layout.
+                            // The v1 per-stream layout was DELETED in the
+                            // pre-launch clean switch: every stream in a
+                            // fresh namespace carries a route from its
+                            // first append. A zero-route tail with data is
+                            // a bug, not a layout — count it, drop it, and
+                            // never write the deleted format.
                             let v2_eligible = v2flag || (absorbed == 0 && route != [0u8; 16]);
                             #[cfg(test)]
                             if std::env::var("DST_DRAIN_TRACE").is_ok() {
@@ -873,16 +693,18 @@ impl Absorber {
                                     route != [0u8; 16],
                                 );
                             }
-                            if !absorber.cfg.force_v1 && v2_eligible {
-                                if v2_lane.len() < V2_LANE_PER_TICK {
-                                    v2_lane.push(hash);
-                                }
-                            } else if bytes <= absorber.cfg.small_pass_bytes {
-                                if small.len() < SMALL_LANE_PER_TICK {
-                                    small.push((hash, bytes));
-                                }
-                            } else if big.len() < BIG_LANE_PER_TICK {
-                                big.push((hash, bytes));
+                            let _ = bytes;
+                            if v2_eligible {
+                                v2_lane.push(hash);
+                            } else {
+                                ABSORB_ZERO_ROUTE_DROPPED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                tracing::warn!(
+                                    "zero-route tail {} has unabsorbed data; the v1 layout \
+                                     no longer exists — dropping from the absorb queue",
+                                    crate::crypto::hex(&hash[..4]),
+                                );
+                                pending.remove(&hash);
                             }
                         }
                         if !v2_lane.is_empty() && !absorber.shard.is_closed() {
@@ -936,38 +758,6 @@ impl Absorber {
                                 }
                             }
                         }
-                        for (hash, _) in big.into_iter().take(BIG_LANE_PER_TICK) {
-                            if absorber.shard.is_closed() {
-                                break; // exit path above runs on next loop
-                            }
-                            let res = absorber.absorb_one(&hash).await;
-                            apply_absorb_result(&absorber, &mut pending, hash, res, now).await;
-                        }
-                        // Chunked: evict between chunks (never mid-chunk —
-                        // eviction would close a Db a concurrent sibling
-                        // pass is still writing), so open_dbs stays within
-                        // chunk size of the LRU cap.
-                        let chunk = (absorber.cfg.concurrency.max(1) * 2).max(2);
-                        let mut small_iter =
-                            small.into_iter().take(SMALL_LANE_PER_TICK).peekable();
-                        while small_iter.peek().is_some() && !absorber.shard.is_closed() {
-                            use futures_util::StreamExt;
-                            let batch: Vec<_> = small_iter.by_ref().take(chunk).collect();
-                            let a = &absorber;
-                            let results: Vec<([u8; 16], anyhow::Result<bool>)> =
-                                futures_util::stream::iter(batch.into_iter().map(|(hash, _)| {
-                                    async move { (hash, a.absorb_one_small(&hash).await) }
-                                }))
-                                .buffer_unordered(absorber.cfg.concurrency.max(1))
-                                .collect()
-                                .await;
-                            for (hash, res) in results {
-                                apply_absorb_result(&absorber, &mut pending, hash, res, now)
-                                    .await;
-                            }
-                            absorber.evict_idle_dbs().await;
-                        }
-                        absorber.evict_idle_dbs().await;
                     }
                 }
             }
@@ -1234,891 +1024,13 @@ impl Absorber {
         );
         Ok(out)
     }
-
-    /// Serial full-budget pass (the validated hot path). Evicts idle DB
-    /// handles inline, as it always has — safe because big-lane passes
-    /// never overlap another pass.
-    async fn absorb_one(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
-        self.absorb_pass(hash, self.cfg.pass_bytes, true).await
-    }
-
-    /// Small-lane pass: bounded budget, and NO inline eviction — several
-    /// of these run concurrently, and evicting here could close a Db a
-    /// sibling pass is still writing. The tick evicts after the lane.
-    async fn absorb_one_small(&self, hash: &[u8; 16]) -> anyhow::Result<bool> {
-        self.absorb_pass(hash, self.cfg.small_pass_bytes, false)
-            .await
-    }
-
-    /// Close a cached history handle (fence-class failure or eviction).
-    async fn close_db(&self, hash: &[u8; 16]) {
-        // The submit high-water mark travels with the claim: dropping the
-        // claim (fence) must also drop the mark, so a hypothetical
-        // re-acquire re-paces from published state.
-        self.submitted.lock().unwrap().remove(hash);
-        let entry = self.open_dbs.lock().await.remove(hash);
-        if let Some((db, _)) = entry {
-            let _ = db.close().await;
-        }
-    }
-
-    /// LRU + idle eviction: bound resident history DBs to HISTORY_DB_LRU,
-    /// and drop any handle unused for HISTORY_DB_IDLE.
-    async fn evict_idle_dbs(&self) {
-        let mut victims: Vec<(Arc<Db>, [u8; 16])> = Vec::new();
-        {
-            let mut cache = self.open_dbs.lock().await;
-            let now = Instant::now();
-            let idle: Vec<[u8; 16]> = cache
-                .iter()
-                .filter(|(_, (_, last))| now.duration_since(*last) >= HISTORY_DB_IDLE)
-                .map(|(h, _)| *h)
-                .collect();
-            for h in idle {
-                if let Some((db, _)) = cache.remove(&h) {
-                    victims.push((db, h));
-                }
-            }
-            while cache.len() > HISTORY_DB_LRU {
-                let oldest = cache
-                    .iter()
-                    .min_by_key(|(_, (_, last))| *last)
-                    .map(|(h, _)| *h);
-                match oldest {
-                    Some(h) => {
-                        if let Some((db, _)) = cache.remove(&h) {
-                            victims.push((db, h));
-                        }
-                    }
-                    None => break,
-                }
-            }
-        }
-        for (db, _) in victims {
-            let _ = db.close().await;
-        }
-    }
-
-    /// Returns Ok(false) if the stream key isn't available.
-    async fn absorb_pass(
-        &self,
-        hash: &[u8; 16],
-        budget: u64,
-        evict_inline: bool,
-    ) -> anyhow::Result<bool> {
-        let Some((key, epoch)) = self.keys.get(hash) else {
-            return Ok(false);
-        };
-        let handle = self.shard.stream_handle(*hash).await?;
-        let (from, upto) = {
-            let st = handle.state.lock().unwrap();
-            (st.durable.absorbed, st.durable.next)
-        };
-        #[cfg(test)]
-        if std::env::var("DST_DRAIN_TRACE").is_ok() {
-            eprintln!(
-                "V1PASS {} from={from} upto={upto}",
-                crate::crypto::hex(&hash[..4])
-            );
-        }
-        // Skip what we already submitted: the published `absorbed` lags the
-        // committer by durability + dispatch, and re-absorbing that window
-        // is duplicate work (see the `submitted` field note).
-        // Lane-scoped floor (see the field note): a v2 mark here may
-        // describe an advance the layout seal dropped — its range lives
-        // only in the shared partition a v1 stream never reads.
-        let from = {
-            let submitted = self.submitted.lock().unwrap();
-            submitted
-                .get(hash)
-                .and_then(|(u, v2)| (!*v2).then_some(*u))
-                .unwrap_or(0)
-                .max(from)
-        };
-        if from >= upto {
-            return Ok(true);
-        }
-
-        // Read + decrypt the un-absorbed durable range from the shard log.
-        // Reads are issued as disjoint offset windows with bounded
-        // concurrency (offsets below the durable frontier are dense, so
-        // windows partition the log exactly); results are processed in
-        // order so the absorbed boundary stays a contiguous prefix. The
-        // old serial 8 MB chunk loop capped absorption ~10k rec/s.
-        let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
-        let mut items: Vec<(u64, HistRecord)> = Vec::new();
-        let mut pass_bytes = 0u64;
-        // `items` holds the DECRYPTED pass. With v3 (compressed) frames the
-        // raw byte budget alone is a memory landmine: 32 MB of frames can
-        // decompress to ~1 GB of plaintext, which OOM-killed 1 GB instances
-        // before the first history write (sinmax run 9, 2026-07-23). Bound
-        // the pass by plaintext bytes with the same budget.
-        let mut pt_bytes = 0u64;
-        const WINDOW: u64 = 32_768;
-        let mut window_reads = {
-            use futures_util::StreamExt;
-            let shard = self.shard.clone();
-            let handle = handle.clone();
-            futures_util::stream::iter((from..upto).step_by(WINDOW as usize).map(move |s| {
-                let shard = shard.clone();
-                let handle = handle.clone();
-                let e = (s + WINDOW).min(upto);
-                async move {
-                    read_frames_range(&shard, &handle, s, e, 64 * 1024 * 1024)
-                        .await
-                        .map(|r| (e, r))
-                }
-            }))
-            .buffered(4)
-        };
-        use futures_util::StreamExt;
-        while let Some(res) = window_reads.next().await {
-            let (win_end, chunk) = res?;
-            if chunk.frames.is_empty() {
-                break;
-            }
-            pass_bytes += chunk.frames.iter().map(|f| f.len() as u64).sum::<u64>();
-            let last_offset = chunk.last_offset;
-            // Decode+decrypt+decompress is CPU-bound (v3 frames expand up
-            // to ~30x). Run 12 measured the cost of doing it on the async
-            // runtime: tokio timer p99 848 ms vs 3.6 ms on a raw thread —
-            // the whole ack path starved behind these loops. The blocking
-            // pool gets OS preemption instead of cooperative starvation.
-            let key_b = key.clone();
-            let epoch_b = epoch;
-            let hash_b = *hash;
-            let frames = chunk.frames;
-            let subkeys_in = std::mem::take(&mut subkeys);
-            type SubkeyMap = HashMap<(String, u32), [u8; 32]>;
-            let joined = tokio::task::spawn_blocking(
-                move || -> Result<(Vec<(u64, HistRecord)>, SubkeyMap), String> {
-                    let mut subkeys = subkeys_in;
-                    let mut out = Vec::with_capacity(frames.len());
-                    for raw in &frames {
-                        let frame = decode_frame(raw)
-                            .ok_or_else(|| "undecodable frame during absorb".to_string())?;
-                        let sk = *subkeys
-                            .entry((frame.header.routing_key.clone(), frame.header.key_version))
-                            .or_insert_with(|| {
-                                derive_subkey(
-                                    &key_b,
-                                    &epoch_b,
-                                    &frame.header.routing_key,
-                                    frame.header.key_version,
-                                )
-                            });
-                        let pt = decrypt_frame(&sk, &hash_b, &frame, raw)
-                            .map_err(|e| format!("absorb decrypt: {e}"))?;
-                        out.push((
-                            frame.header.offset,
-                            HistRecord {
-                                ts: frame.header.ts_ms,
-                                key_version: frame.header.key_version,
-                                routing_key: frame.header.routing_key,
-                                payload: Bytes::from(pt),
-                            },
-                        ));
-                    }
-                    Ok((out, subkeys))
-                },
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("absorb decode join: {e}"))?;
-            let (decoded, subkeys_back) = joined.map_err(|e| anyhow::anyhow!(e))?;
-            subkeys = subkeys_back;
-            for (offset, rec) in decoded {
-                pt_bytes += rec.payload.len() as u64;
-                items.push((offset, rec));
-            }
-            // A byte-truncated window breaks offset contiguity past its
-            // last frame: stop here; the boundary advances to what we have.
-            let complete = last_offset.map(|l| l + 1 >= win_end).unwrap_or(false);
-            if !complete || pass_bytes >= budget || pt_bytes >= budget {
-                break;
-            }
-        }
-        drop(window_reads);
-        if items.is_empty() {
-            return Ok(true);
-        }
-        let absorbed_upto = items.last().map(|(o, _)| o + 1).unwrap_or(upto);
-
-        // Bulk write through a cached handle (open once, reuse across
-        // passes), explicit flush per pass so the boundary only advances
-        // over durable data. See open_dbs field note for why not
-        // open/close per pass. The OPEN happens outside the cache lock:
-        // it is 1-2 s of manifest round-trips, and the concurrent small
-        // lane exists precisely to overlap that latency across streams —
-        // holding the map lock through it would re-serialize the lane.
-        // Two passes for the same hash never overlap (one pending entry,
-        // due at most once per tick), so a duplicate racing open is not
-        // possible; different hashes racing is the point.
-        let cached = {
-            let mut cache = self.open_dbs.lock().await;
-            if let Some((db, last_used)) = cache.get_mut(hash) {
-                *last_used = Instant::now();
-                Some(db.clone())
-            } else {
-                None
-            }
-        };
-        let db = match cached {
-            Some(db) => db,
-            None => {
-                let path = history_db_path(hash);
-                let store = self.data_store.clone();
-                let k = key.clone();
-                let db = Arc::new(
-                    crate::on_slatedb_rt(async move {
-                        Db::builder(path.as_str(), store)
-                            .with_settings(history_settings())
-                            .with_db_cache(history_cache())
-                            .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
-                            .build()
-                            .await
-                    })
-                    .await?,
-                );
-                self.open_dbs
-                    .lock()
-                    .await
-                    .insert(*hash, (db.clone(), Instant::now()));
-                db
-            }
-        };
-        let mut i = 0;
-        while i < items.len() {
-            let mut wb = WriteBatch::new();
-            let end = (i + self.cfg.batch_puts / 2).min(items.len());
-            for (offset, rec) in &items[i..end] {
-                let value =
-                    encode_hist_record(rec.ts, rec.key_version, &rec.routing_key, &rec.payload);
-                // Unkeyed records get no k! index copy. The index is a
-                // full payload duplicate, so for the common unkeyed
-                // workload it doubled history bytes — twice the SSTs,
-                // compaction traffic and cache pressure for an index that
-                // only an empty-key filter could use (object-store cost
-                // review, item 6). Empty-key filtered reads are served
-                // from the primary r! range instead (read_history).
-                if rec.routing_key.is_empty() {
-                    wb.put(hist_record_key(*offset), value);
-                } else {
-                    wb.put(hist_record_key(*offset), value.clone());
-                    wb.put(hist_key_index_key(&rec.routing_key, *offset), value);
-                }
-            }
-            db.write_with_options(
-                wb,
-                &WriteOptions {
-                    await_durable: false,
-                    ..Default::default()
-                },
-            )
-            .await?;
-            i = end;
-        }
-        db.flush().await?; // wal off => memtable -> L0 (durable)
-        if evict_inline {
-            self.evict_idle_dbs().await;
-        }
-
-        // Advance the readers' boundary (+ budgeted trim) in the shard
-        // log. `pass_bytes` is the raw frame bytes of exactly the items
-        // absorbed — the committer's unabsorbed_bytes decrement.
-        self.shard
-            .submit_absorbed(*hash, absorbed_upto, pass_bytes)
-            .await;
-        {
-            let mut submitted = self.submitted.lock().unwrap();
-            let e = submitted.entry(*hash).or_insert((0, false));
-            if e.1 {
-                *e = (absorbed_upto, false);
-            } else {
-                e.0 = e.0.max(absorbed_upto);
-            }
-        }
-        tracing::info!(
-            "absorbed {} records into {} (upto {})",
-            items.len(),
-            history_db_path(hash),
-            absorbed_upto
-        );
-        Ok(true)
-    }
-}
-
-// ---- history reads ----
-
-pub struct HistoryReadResult {
-    pub records: Vec<(u64, HistRecord)>,
-    pub last_offset: Option<u64>,
-    /// True when the requested range was fully scanned (not byte-truncated):
-    /// the caller may treat everything below `upto` as consumed.
-    pub completed: bool,
-}
-
-/// Read [from, upto) from a stream's history DB (plaintext records).
-/// `key_filter` uses the k! index (contiguous per routing key).
-
-// ---- history DbReader cache -----------------------------------------
-//
-// Every history read used to build a fresh `DbReader`: several manifest
-// GETs, a checkpoint WRITE against the history manifest (readers without
-// an explicit checkpoint maintain their own), and the WAL replay probe —
-// per request, on the user-visible read path. Those are exactly the
-// small-metadata operations Tigris sometimes serves from a remote region
-// (docs/SOAK-REGIONS.md, "metadata trickle"), so each cold read carried a
-// small chance of a transcontinental round trip.
-//
-// The cache keeps one polling reader per (stream, key). Correctness at
-// the absorbed boundary does NOT rely on the reader's poll: before
-// serving a read that requires offsets up to `upto`, the cache proves
-// coverage — `seen_upto >= upto`, or a one-row probe of
-// `hist_record_key(upto - 1)` through the reader — and reopens a fresh
-// reader when the probe misses. A fresh reader must see the range: the
-// absorber flushes the history db (memtable → L0, manifest published)
-// BEFORE the absorbed boundary advances, so any reader opened after the
-// boundary moved observes a manifest that covers it. The probe works for
-// key-filtered reads too, where offset-contiguity checks cannot.
-//
-// Readers are read-only: no fencing concerns. Entries are LRU-capped and
-// idle-evicted like the absorber's writer handles.
-
-/// Per-instance history-reader service. One per object store (production:
-/// one, owned by AppState; DST: one per simulated node/store), which is
-/// what keys readers correctly — the old process-global cache keyed only
-/// (stream, key-disc), so two stores with the same stream hash in one
-/// process would have shared a reader, and simulated nodes could not have
-/// independent open/eviction behavior.
-///
-/// Concurrency contract (the 2026-07-27 review's P0): **all probe and
-/// open work is per-key single-flight and cache-owned.** A caller never
-/// performs the probe/open in its own future; it subscribes to the slot's
-/// watch and a spawned worker does the work, inserts the result into the
-/// map, and only then notifies. Consequences, each load-bearing:
-///
-///   - 64 concurrent cold readers = 1 open, 63 coalesced waiters
-///     (was: 64 opens — the metadata storm the cache exists to prevent,
-///     recreated at request concurrency);
-///   - caller cancellation cannot detach the open: the worker is not the
-///     caller's future, so the reader still lands in the cache with zero
-///     surviving callers (the read-only cousin of the shard
-///     detached-reopen storm, closed the same way as OpenGate);
-///   - a transient probe ERROR is an error, not staleness: the healthy
-///     reader stays cached and the caller sees the error — one flaky GET
-///     must not amplify into eviction + checkpoint cleanup + fresh
-///     manifest/checkpoint traffic (was: `Ok(Some)` vs everything-else);
-///   - replaced and evicted readers are closed explicitly on the SlateDB
-///     runtime, with closes counted, so checkpoint cleanup neither races
-///     the request runtime nor silently leaks.
-pub struct HistReaders {
-    store: Arc<dyn ObjectStore>,
-    map: std::sync::Mutex<HashMap<([u8; 16], u64), Slot>>,
-    cap: usize,
-    idle: Duration,
-    /// Reader manifest-poll interval, ms. Per-instance so DST can pin it
-    /// to an hour and make staleness deterministic without a process-wide
-    /// static (which forced test serialization).
-    poll_ms: u64,
-    pub metrics: HistReaderMetrics,
-}
-
-#[derive(Default)]
-pub struct HistReaderMetrics {
-    pub hits: AtomicU64,
-    pub misses: AtomicU64,
-    pub probes: AtomicU64,
-    pub probe_errors: AtomicU64,
-    pub stale_reopens: AtomicU64,
-    pub opens_started: AtomicU64,
-    pub opens_completed: AtomicU64,
-    pub opens_failed: AtomicU64,
-    pub coalesced: AtomicU64,
-    pub evictions: AtomicU64,
-    pub closes_started: AtomicU64,
-    pub closes_completed: AtomicU64,
-    pub close_failures: AtomicU64,
 }
 
 use std::sync::atomic::AtomicU64;
 
-type SlotResult = Result<(Arc<DbReader>, bool), String>;
-
-enum Slot {
-    Ready(CachedReader),
-    /// A cache-owned worker is probing/refreshing/opening toward
-    /// `target_upto`. Callers subscribe; the worker publishes exactly
-    /// once, AFTER updating the map.
-    Pending {
-        rx: tokio::sync::watch::Receiver<Option<SlotResult>>,
-        target_upto: u64,
-    },
-}
-
-struct CachedReader {
-    reader: Arc<DbReader>,
-    last_used: Instant,
-    /// Offsets `[0, seen_upto)` are proven visible through this reader.
-    seen_upto: u64,
-}
-
-/// Non-cryptographic key discriminator: two requests for the same stream
-/// with different keys must not share a reader (its block transformer is
-/// key-bound).
-fn key_disc(key: &StreamKey) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in key.0.iter() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x1000_0000_1b3);
-    }
-    h
-}
-
-impl HistReaders {
-    pub fn new(store: Arc<dyn ObjectStore>, cap: usize, idle: Duration, poll_ms: u64) -> Arc<Self> {
-        Arc::new(HistReaders {
-            store,
-            map: std::sync::Mutex::new(HashMap::new()),
-            cap: cap.max(1),
-            idle,
-            poll_ms,
-            metrics: HistReaderMetrics::default(),
-        })
-    }
-
-    /// Production defaults; cap/idle env-tunable in main.
-    pub fn with_defaults(store: Arc<dyn ObjectStore>) -> Arc<Self> {
-        HistReaders::new(store, 8, Duration::from_secs(120), 5_000)
-    }
-
-    pub fn stats_json(&self) -> serde_json::Value {
-        use std::sync::atomic::Ordering::Relaxed;
-        let m = &self.metrics;
-        serde_json::json!({
-            "hits": m.hits.load(Relaxed),
-            "misses": m.misses.load(Relaxed),
-            "probes": m.probes.load(Relaxed),
-            "probe_errors": m.probe_errors.load(Relaxed),
-            "stale_reopens": m.stale_reopens.load(Relaxed),
-            "opens_started": m.opens_started.load(Relaxed),
-            "opens_completed": m.opens_completed.load(Relaxed),
-            "opens_failed": m.opens_failed.load(Relaxed),
-            "coalesced": m.coalesced.load(Relaxed),
-            "evictions": m.evictions.load(Relaxed),
-            "closes_started": m.closes_started.load(Relaxed),
-            "closes_completed": m.closes_completed.load(Relaxed),
-            "close_failures": m.close_failures.load(Relaxed),
-            "live_readers": self.map.lock().unwrap().len(),
-        })
-    }
-
-    /// A reader proven to cover `[0, upto)`. Returns `(reader, covered)`;
-    /// `covered = false` means even a freshly opened reader cannot see
-    /// `upto - 1` yet, and the caller must report an honest partial read
-    /// rather than skipping ahead.
-    pub async fn acquire(
-        self: &Arc<Self>,
-        hash: &[u8; 16],
-        key: &StreamKey,
-        upto: u64,
-    ) -> anyhow::Result<(Arc<DbReader>, bool)> {
-        use std::sync::atomic::Ordering::Relaxed;
-        let ck = (*hash, key_disc(key));
-        // Bounded re-checks: each pass either returns, subscribes to a
-        // worker, or starts one. Two workers back-to-back (a refresh
-        // toward a lower upto finishing just as we need a higher one) is
-        // the realistic worst case; five is unreachable without a bug.
-        for _ in 0..5 {
-            let mut wait_rx = {
-                let mut map = self.map.lock().unwrap();
-                match map.get_mut(&ck) {
-                    Some(Slot::Ready(e)) if e.seen_upto >= upto => {
-                        e.last_used = Instant::now();
-                        self.metrics.hits.fetch_add(1, Relaxed);
-                        return Ok((e.reader.clone(), true));
-                    }
-                    Some(Slot::Ready(e)) => {
-                        // Cached but not proven for this boundary: hand
-                        // the probe (and possible reopen) to a worker.
-                        let probe = e.reader.clone();
-                        let (tx, rx) = tokio::sync::watch::channel(None);
-                        map.insert(
-                            ck,
-                            Slot::Pending {
-                                rx: rx.clone(),
-                                target_upto: upto,
-                            },
-                        );
-                        self.spawn_worker(ck, *hash, key.clone(), upto, Some(probe), tx);
-                        rx
-                    }
-                    Some(Slot::Pending { rx, target_upto }) => {
-                        // Someone is already working. If their target
-                        // covers ours, their result is ours; if not, we
-                        // still wait (upto only moves at absorb cadence —
-                        // re-check on the next pass).
-                        let _ = target_upto;
-                        self.metrics.coalesced.fetch_add(1, Relaxed);
-                        rx.clone()
-                    }
-                    None => {
-                        self.metrics.misses.fetch_add(1, Relaxed);
-                        let (tx, rx) = tokio::sync::watch::channel(None);
-                        map.insert(
-                            ck,
-                            Slot::Pending {
-                                rx: rx.clone(),
-                                target_upto: upto,
-                            },
-                        );
-                        self.spawn_worker(ck, *hash, key.clone(), upto, None, tx);
-                        rx
-                    }
-                }
-            };
-            // Await the worker's single publication. If the worker (or
-            // its channel) vanished, loop and re-evaluate.
-            if wait_rx.borrow().is_none() && wait_rx.changed().await.is_err() {
-                continue;
-            }
-            let published = wait_rx.borrow().clone();
-            match published {
-                Some(Ok((reader, covered_target))) => {
-                    // Covering [0, target) covers [0, upto) whenever
-                    // target >= upto; the worker recorded seen_upto, so
-                    // when in doubt one more pass re-checks the map.
-                    let proven = {
-                        let map = self.map.lock().unwrap();
-                        matches!(map.get(&ck), Some(Slot::Ready(e)) if e.seen_upto >= upto)
-                    };
-                    if proven {
-                        return Ok((reader, true));
-                    }
-                    if covered_target {
-                        continue; // their target < ours: go probe for ours
-                    }
-                    return Ok((reader, false));
-                }
-                Some(Err(e)) => return Err(anyhow::anyhow!(e)),
-                None => continue,
-            }
-        }
-        anyhow::bail!("history reader acquire: no stable slot after 5 passes")
-    }
-
-    /// The cache-owned worker: probes the candidate (if any), reopens on
-    /// proven staleness, publishes into the map, THEN notifies. Runs as
-    /// its own task so caller cancellation cannot detach it.
-    fn spawn_worker(
-        self: &Arc<Self>,
-        ck: ([u8; 16], u64),
-        hash: [u8; 16],
-        key: StreamKey,
-        upto: u64,
-        probe_candidate: Option<Arc<DbReader>>,
-        tx: tokio::sync::watch::Sender<Option<SlotResult>>,
-    ) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let svc = self.clone();
-        tokio::spawn(async move {
-            let probe_key = hist_record_key(upto.saturating_sub(1));
-
-            if let Some(reader) = probe_candidate {
-                svc.metrics.probes.fetch_add(1, Relaxed);
-                match reader.get(probe_key.clone()).await {
-                    Ok(Some(_)) => {
-                        let mut map = svc.map.lock().unwrap();
-                        map.insert(
-                            ck,
-                            Slot::Ready(CachedReader {
-                                reader: reader.clone(),
-                                last_used: Instant::now(),
-                                seen_upto: upto,
-                            }),
-                        );
-                        drop(map);
-                        svc.metrics.hits.fetch_add(1, Relaxed);
-                        let _ = tx.send(Some(Ok((reader, true))));
-                        return;
-                    }
-                    Ok(None) => {
-                        // Genuinely stale: its manifest view predates the
-                        // absorbed boundary. Replace it.
-                        svc.metrics.stale_reopens.fetch_add(1, Relaxed);
-                        svc.close_reader(reader);
-                    }
-                    Err(e) => {
-                        // Transient storage trouble is NOT staleness: keep
-                        // the healthy reader cached (unproven for this
-                        // boundary — a later probe will retry) and hand
-                        // the caller the error.
-                        svc.metrics.probe_errors.fetch_add(1, Relaxed);
-                        let mut map = svc.map.lock().unwrap();
-                        map.insert(
-                            ck,
-                            Slot::Ready(CachedReader {
-                                reader,
-                                last_used: Instant::now(),
-                                seen_upto: 0,
-                            }),
-                        );
-                        drop(map);
-                        let _ = tx.send(Some(Err(format!("history probe: {e}"))));
-                        return;
-                    }
-                }
-            }
-
-            // Fresh open (cold miss, or stale replacement).
-            svc.metrics.opens_started.fetch_add(1, Relaxed);
-            let opened = open_history_reader(&svc.store, &hash, &key, svc.poll_ms).await;
-            match opened {
-                Ok(reader) => {
-                    svc.metrics.opens_completed.fetch_add(1, Relaxed);
-                    // A fresh reader must see the boundary (the absorber
-                    // publishes history before advancing it). A probe
-                    // ERROR here is conservative non-coverage: the read
-                    // reports completed=false and the caller re-polls.
-                    let covered = upto == 0 || matches!(reader.get(probe_key).await, Ok(Some(_)));
-                    let mut evicted: Vec<Arc<DbReader>> = Vec::new();
-                    {
-                        let mut map = svc.map.lock().unwrap();
-                        map.insert(
-                            ck,
-                            Slot::Ready(CachedReader {
-                                reader: reader.clone(),
-                                last_used: Instant::now(),
-                                seen_upto: if covered { upto } else { 0 },
-                            }),
-                        );
-                        // LRU + idle eviction. Pending slots are never
-                        // victims: evicting a slot someone is awaiting
-                        // would strand its waiters.
-                        let now = Instant::now();
-                        let mut victims: Vec<([u8; 16], u64)> = map
-                            .iter()
-                            .filter(|(k2, s)| {
-                                **k2 != ck
-                                    && matches!(s, Slot::Ready(e) if now - e.last_used > svc.idle)
-                            })
-                            .map(|(k2, _)| *k2)
-                            .collect();
-                        loop {
-                            let ready_left = map
-                                .iter()
-                                .filter(|(k2, s)| {
-                                    matches!(s, Slot::Ready(_)) && !victims.contains(k2)
-                                })
-                                .count();
-                            if ready_left <= svc.cap {
-                                break;
-                            }
-                            match map
-                                .iter()
-                                .filter(|(k2, s)| {
-                                    **k2 != ck
-                                        && matches!(s, Slot::Ready(_))
-                                        && !victims.contains(k2)
-                                })
-                                .min_by_key(|(_, s)| match s {
-                                    Slot::Ready(e) => e.last_used,
-                                    _ => now,
-                                })
-                                .map(|(k2, _)| *k2)
-                            {
-                                Some(oldest) => victims.push(oldest),
-                                None => break,
-                            }
-                        }
-                        for v in victims {
-                            if let Some(Slot::Ready(e)) = map.remove(&v) {
-                                svc.metrics.evictions.fetch_add(1, Relaxed);
-                                evicted.push(e.reader);
-                            }
-                        }
-                    }
-                    for r in evicted {
-                        svc.close_reader(r);
-                    }
-                    let _ = tx.send(Some(Ok((reader, covered))));
-                }
-                Err(e) => {
-                    svc.metrics.opens_failed.fetch_add(1, Relaxed);
-                    let mut map = svc.map.lock().unwrap();
-                    // Leave no Pending tombstone: the next caller retries.
-                    if matches!(map.get(&ck), Some(Slot::Pending { .. })) {
-                        map.remove(&ck);
-                    }
-                    drop(map);
-                    let _ = tx.send(Some(Err(format!("history reader open: {e}"))));
-                }
-            }
-        });
-    }
-
-    /// Close on the SlateDB runtime (checkpoint cleanup does store I/O and
-    /// must not take quanta on the request runtime), counted so eviction
-    /// lifecycle is provable.
-    fn close_reader(self: &Arc<Self>, reader: Arc<DbReader>) {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.metrics.closes_started.fetch_add(1, Relaxed);
-        let svc = self.clone();
-        tokio::spawn(async move {
-            let r = crate::on_slatedb_rt(async move {
-                match Arc::try_unwrap(reader) {
-                    Ok(r) => r.close().await.map_err(|e| e.to_string()),
-                    // Another holder still reads through it; its Drop
-                    // handles cleanup when they finish.
-                    Err(_still_shared) => Ok(()),
-                }
-            })
-            .await;
-            match r {
-                Ok(()) => svc.metrics.closes_completed.fetch_add(1, Relaxed),
-                Err(_) => svc.metrics.close_failures.fetch_add(1, Relaxed),
-            };
-        });
-    }
-
-    #[cfg(test)]
-    pub fn len_for_tests(&self) -> usize {
-        self.map.lock().unwrap().len()
-    }
-}
-
-async fn open_history_reader(
-    data_store: &Arc<dyn ObjectStore>,
-    hash: &[u8; 16],
-    key: &StreamKey,
-    poll_ms: u64,
-) -> anyhow::Result<Arc<DbReader>> {
-    let path = history_db_path(hash);
-    let store = data_store.clone();
-    let k = key.clone();
-    let reader = crate::on_slatedb_rt(async move {
-        DbReader::builder(path.as_str(), store)
-            .with_options(slatedb::config::DbReaderOptions {
-                manifest_poll_interval: Duration::from_millis(poll_ms),
-                // must exceed 2x poll; also bounds how long an evicted
-                // reader's checkpoint can pin history objects
-                checkpoint_lifetime: Duration::from_millis((poll_ms * 4).max(60_000)),
-                // The absorber flushes (memtable -> L0) before the
-                // absorbed boundary advances, so everything a reader is
-                // allowed to need is already in L0 — skipping WAL replay
-                // removes the reader's WAL reads entirely.
-                skip_wal_replay: true,
-                ..Default::default()
-            })
-            .with_block_transformer(Arc::new(AesBlockTransformer::new(&k)))
-            .build()
-            .await
-    })
-    .await?;
-    Ok(Arc::new(reader))
-}
-
-pub async fn read_history(
-    readers: &Arc<HistReaders>,
-    hash: &[u8; 16],
-    key: &StreamKey,
-    from: u64,
-    upto: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-) -> anyhow::Result<HistoryReadResult> {
-    // Coverage-proven reader via the single-flight service. `covered =
-    // false` means even a fresh reader cannot see `upto - 1` yet; the read
-    // still runs, but reports completed = false so the caller re-polls
-    // instead of skipping the missing tail (which would be a silent gap).
-    let (reader, covered) = readers.acquire(hash, key, upto).await?;
-    let mut out = HistoryReadResult {
-        records: Vec::new(),
-        last_offset: None,
-        completed: covered,
-    };
-    let mut total = 0usize;
-    match key_filter {
-        None => {
-            let mut iter = reader
-                .scan_with_options(
-                    hist_record_key(from)..hist_record_key(upto),
-                    &hist_scan_opts(),
-                )
-                .await?;
-            while let Some(kv) = iter.next().await? {
-                let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
-                if let Some(rec) = decode_hist_record(&kv.value) {
-                    total += rec.payload.len();
-                    out.records.push((off, rec));
-                    out.last_offset = Some(off);
-                    if total >= max_bytes {
-                        out.completed = false;
-                        break;
-                    }
-                }
-            }
-        }
-        // Empty-key filter: unkeyed records carry no k! index copy (the
-        // absorber stopped writing the payload duplicate), so serve from
-        // the primary r! range and filter. For an all-unkeyed stream this
-        // scans exactly the bytes the index copy would have held; only a
-        // mixed stream filtered by "" pays to skip its keyed records.
-        Some("") => {
-            let mut iter = reader
-                .scan_with_options(
-                    hist_record_key(from)..hist_record_key(upto),
-                    &hist_scan_opts(),
-                )
-                .await?;
-            while let Some(kv) = iter.next().await? {
-                let off = u64::from_be_bytes(kv.key[2..10].try_into().expect("hist key"));
-                if let Some(rec) = decode_hist_record(&kv.value) {
-                    if !rec.routing_key.is_empty() {
-                        continue;
-                    }
-                    total += rec.payload.len();
-                    out.records.push((off, rec));
-                    out.last_offset = Some(off);
-                    if total >= max_bytes {
-                        out.completed = false;
-                        break;
-                    }
-                }
-            }
-        }
-        Some(rk) => {
-            let range = hist_key_index_key(rk, from)..hist_key_index_key(rk, upto);
-            let mut iter = reader.scan_with_options(range, &hist_scan_opts()).await?;
-            while let Some(kv) = iter.next().await? {
-                let klen = kv.key.len();
-                let off = u64::from_be_bytes(kv.key[klen - 8..].try_into().expect("k! key"));
-                if let Some(rec) = decode_hist_record(&kv.value) {
-                    total += rec.payload.len();
-                    out.records.push((off, rec));
-                    out.last_offset = Some(off);
-                    if total >= max_bytes {
-                        out.completed = false;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    // The reader is cached and stays open; the service owns its lifecycle.
-    Ok(out)
-}
-
-/// Read [from, upto) of a v2-layout stream from the shard's SHARED
-/// partition, through the owner's open writer Db — no DbReader, no
-/// checkpoint, no coverage probe (the boundary only advances after this
-/// very Db's flush, so the writer's own view always covers it). Returns
-/// RAW encrypted frames; the caller decodes them with the same
-/// machinery as shard-tail frames. `key_filter`: `Some("")` scans the
-/// record range and filters by the plaintext frame header (unkeyed
-/// records carry no index entry); a non-empty filter scans the index.
-/// Postings/read-planner telemetry (ROUTING-V3 §3/§5 gates): postings
-/// vs canonical write bytes, spans per keyed response, scanned vs
-/// matched amplification, and how often the pre-postings fallback ran.
+/// Zero-route tails with unabsorbed data (a bug, not a layout — the v1
+/// per-stream format was deleted in the pre-launch clean switch).
+pub static ABSORB_ZERO_ROUTE_DROPPED: AtomicU64 = AtomicU64::new(0);
 pub static POSTINGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 pub static POSTINGS_PAGES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 pub static POSTINGS_RUNS_WRITTEN: AtomicU64 = AtomicU64::new(0);
@@ -2476,10 +1388,6 @@ async fn read_history2_keyed_envelope(
 
 pub fn absorber_channel() -> (mpsc::Sender<AbsorbSignal>, mpsc::Receiver<AbsorbSignal>) {
     mpsc::channel(65_536)
-}
-
-pub fn ts_now() -> i64 {
-    now_ms()
 }
 
 #[cfg(test)]
