@@ -9,6 +9,8 @@ mod offsets;
 mod operator;
 mod postings;
 mod postings_cache;
+mod product;
+mod protocol_pin;
 mod queue;
 mod registry;
 mod scaler;

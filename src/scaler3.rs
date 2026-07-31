@@ -257,6 +257,16 @@ fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
 /// Seal one segment identity through its committer: an empty close
 /// append. Idempotent — re-closing a closed identity returns the same
 /// frozen next offset via AppendErr::Closed.
+/// Public seal of one segment identity (product lifecycle: collection
+/// seal closes every live segment).
+pub async fn seal_segment_identity(
+    state: &std::sync::Arc<crate::http::AppState>,
+    desc: &StreamDesc,
+    seg_id: u32,
+) -> Option<u64> {
+    seal_identity(state, desc, seg_id).await
+}
+
 async fn seal_identity(
     state: &std::sync::Arc<crate::http::AppState>,
     desc: &StreamDesc,
@@ -672,6 +682,9 @@ mod tests {
             touch_sig_key: None,
             scaling: false,
             segments: None,
+            sealed: false,
+            watch_definitions: Vec::new(),
+            layout_version: crate::registry::LAYOUT_VERSION,
         }
     }
 

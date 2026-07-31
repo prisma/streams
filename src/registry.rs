@@ -72,6 +72,36 @@ pub struct StreamDesc {
     /// split (CAS on the registry object). See docs/ROUTING-V3.md §2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segments: Option<crate::segmap::SegmentMap>,
+    /// Product-surface vNext (spec Stage 1/3): the collection's durable
+    /// seal state. Monotonic; set only through the seal lifecycle.
+    #[serde(default)]
+    pub sealed: bool,
+    /// Immutable watch definitions (spec Stage 2/7). Empty for streams
+    /// created without watches; JSON streams only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch_definitions: Vec<WatchDefinition>,
+    /// Storage-layout generation (spec: pre-launch clean switch). New
+    /// descriptors write LAYOUT_VERSION; a reader that finds any OTHER
+    /// value — including 0, the serde default every pre-cutover
+    /// descriptor deserializes to — refuses the namespace with
+    /// `unsupported_storage_layout` instead of decoding, translating,
+    /// or rewriting it.
+    #[serde(default)]
+    pub layout_version: u32,
+}
+
+/// The storage-layout generation this binary writes and the ONLY one it
+/// reads. There are no layout bridges: opening a namespace written by a
+/// different layout is refused (pre-launch hard cutover).
+pub const LAYOUT_VERSION: u32 = 3;
+
+/// One immutable watch definition (spec Stage 2 §3.2): a name plus the
+/// ordered JSON-pointer fields whose canonical extracted values derive
+/// the watch key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchDefinition {
+    pub name: String,
+    pub fields: Vec<String>,
 }
 
 /// One resolved append/read target under the unified routing model:
@@ -102,6 +132,30 @@ pub struct SegRoute {
 pub struct PinnedTemplate {
     pub entity: String,
     pub fields: Vec<String>,
+}
+
+/// Decode a stored descriptor, enforcing the pre-launch clean-switch
+/// layout gate: any layout_version other than LAYOUT_VERSION — including
+/// 0, which every pre-cutover descriptor deserializes to — refuses the
+/// namespace rather than decoding it (spec §0: no legacy decoders).
+pub(crate) fn decode_desc(raw: &[u8]) -> Result<StreamDesc, object_store::Error> {
+    let d: StreamDesc = serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
+        store: "registry",
+        source: format!("descriptor parse: {e}").into(),
+    })?;
+    if d.layout_version != LAYOUT_VERSION {
+        return Err(object_store::Error::Generic {
+            store: "registry",
+            source: format!(
+                "unsupported_storage_layout: descriptor '{}' has layout {} (this binary \
+                 reads only {}); this namespace was written by a different implementation \
+                 — deploy against a fresh bucket/PATH_PREFIX",
+                d.name, d.layout_version, LAYOUT_VERSION
+            )
+            .into(),
+        });
+    }
+    Ok(d)
 }
 
 fn default_content_type() -> String {
@@ -400,12 +454,12 @@ impl Registry {
                 // Fail CLOSED on a corrupt descriptor: treating it as absent
                 // would let a create/recreate path overwrite a live stream's
                 // identity (key epoch, incarnation) — worse than an error.
-                match serde_json::from_slice::<StreamDesc>(&raw) {
+                match decode_desc(&raw) {
                     Ok(d) => (Some(d), etag),
                     Err(e) => {
                         return Err(object_store::Error::Generic {
                             store: "registry",
-                            source: format!("corrupt descriptor for {name:?}: {e}").into(),
+                            source: format!("descriptor for {name:?}: {e}").into(),
                         });
                     }
                 }
@@ -490,11 +544,7 @@ impl Registry {
             };
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
-            let current: StreamDesc =
-                serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
-                    store: "registry",
-                    source: format!("corrupt descriptor for {name:?}: {e}").into(),
-                })?;
+            let current: StreamDesc = decode_desc(&raw)?;
             if !still_dead(&current) {
                 self.cache_insert(
                     name.to_string(),
@@ -548,11 +598,7 @@ impl Registry {
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
             // Fail CLOSED on corruption (was: treated as missing).
-            let mut desc: StreamDesc =
-                serde_json::from_slice(&raw).map_err(|e| object_store::Error::Generic {
-                    store: "registry",
-                    source: format!("corrupt descriptor during update: {e}").into(),
-                })?;
+            let mut desc: StreamDesc = decode_desc(&raw)?;
             apply(&mut desc);
             let body = serde_json::to_vec(&desc).expect("desc json");
             match self
@@ -600,7 +646,7 @@ impl Registry {
         };
         let etag = got.meta.e_tag.clone();
         let bytes = got.bytes().await?;
-        let mut desc: StreamDesc = serde_json::from_slice(&bytes)?;
+        let mut desc: StreamDesc = decode_desc(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
         if desc.deleted {
             return Ok(false);
         }
@@ -653,7 +699,7 @@ impl Registry {
             }
             if let Ok(r) = self.store.get(&meta.location).await {
                 if let Ok(raw) = r.bytes().await {
-                    if let Ok(d) = serde_json::from_slice::<StreamDesc>(&raw) {
+                    if let Ok(d) = decode_desc(&raw) {
                         if !d.deleted {
                             out.push(d);
                         }
@@ -781,7 +827,38 @@ mod tests {
             touch_sig_key: None,
             scaling: false,
             segments: None,
+            sealed: false,
+            watch_definitions: Vec::new(),
+            layout_version: LAYOUT_VERSION,
         }
+    }
+
+    /// Pre-launch clean switch: a descriptor written by the previous
+    /// experimental layout (no layout_version, or any other value) is
+    /// REFUSED — never decoded, translated, or rewritten.
+    #[tokio::test]
+    async fn layout_gate_refuses_foreign_namespaces() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(store.clone());
+        // Old-shape descriptor: valid JSON, no layout_version field.
+        let old = serde_json::json!({
+            "name": "legacy",
+            "stream_epoch": "00000000000000000000000000000000",
+            "key_fingerprint": "fp",
+            "created_ms": 1,
+            "profile": "queue",
+            "content_type": "application/json",
+        });
+        put_raw(&store, "legacy", old.to_string().as_bytes()).await;
+        let err = reg.get("legacy").await.expect_err("gate must refuse");
+        assert!(
+            err.to_string().contains("unsupported_storage_layout"),
+            "wrong refusal: {err}"
+        );
+        // A current-layout descriptor round-trips.
+        let d = desc("fresh", "00000000000000000000000000000001", false);
+        put_raw(&store, "fresh", &serde_json::to_vec(&d).unwrap()).await;
+        assert!(reg.get("fresh").await.unwrap().is_some());
     }
 
     async fn put_raw(store: &Arc<dyn ObjectStore>, name: &str, body: &[u8]) {

@@ -7178,3 +7178,268 @@ async fn sse_follows_lineage_across_split() {
     drop(sck);
     engine_shutdown(&state).await;
 }
+
+// ---- product-surface foundation (spec Stages 7/8 core + clean switch) --
+
+const PRISMA_KEY: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+
+async fn preq(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    extra: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut req = format!(
+        "{method} {path} HTTP/1.1\r\nhost: {addr}\r\nconnection: close\r\ncontent-length: {}\r\n",
+        body.len()
+    );
+    for (k, v) in extra {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    s.write_all(req.as_bytes()).await.unwrap();
+    s.write_all(body).await.unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("header terminator");
+    let head = String::from_utf8_lossy(&buf[..split]).to_string();
+    let mut lines = head.split("\r\n");
+    let status: u16 = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut headers = std::collections::HashMap::new();
+    for l in lines {
+        if let Some((k, v)) = l.split_once(':') {
+            headers.insert(k.trim().to_lowercase(), v.trim().to_string());
+        }
+    }
+    let mut raw_body = buf[split + 4..].to_vec();
+    if headers.get("transfer-encoding").map(|v| v == "chunked") == Some(true) {
+        let mut out = Vec::new();
+        let mut rest: &[u8] = &raw_body;
+        loop {
+            let Some(le) = rest.windows(2).position(|w| w == b"\r\n") else {
+                break;
+            };
+            let n =
+                usize::from_str_radix(std::str::from_utf8(&rest[..le]).unwrap_or("0").trim(), 16)
+                    .unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            let start = le + 2;
+            out.extend_from_slice(&rest[start..start + n]);
+            rest = &rest[start + n + 2..];
+        }
+        raw_body = out;
+    }
+    (status, headers, raw_body)
+}
+
+/// Typed creation, idempotence, config conflict, metadata shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_create_metadata_roundtrip() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let cfg = br#"{"format":{"kind":"json"},"expiry":{"idle":"30d"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/customers/acme/orders",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        cfg,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["name"], "customers/acme/orders");
+    assert_eq!(v["contentType"], "application/json");
+    assert_eq!(v["sealed"], false);
+    assert_eq!(v["expiry"]["idle"], "2592000s");
+    assert_eq!(v["watches"][0]["name"], "by-customer");
+
+    // Idempotent re-PUT → 200.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/customers/acme/orders",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        cfg,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Different immutable config → 409.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/customers/acme/orders",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"7d"}}"#,
+    )
+    .await;
+    assert_eq!(st, 409);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "config_mismatch");
+    assert_eq!(v["error"]["retryable"], false);
+
+    // Metadata GET: product shape, no internals leaked.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/customers/acme/orders", &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["watches"][0]["fields"][0], "/customerId");
+    let text = String::from_utf8_lossy(&b).to_string();
+    for leak in ["fingerprint", "segment", "route_hash", "layout_version"] {
+        assert!(!text.contains(leak), "metadata leaks {leak}: {text}");
+    }
+    // Unknown config fields rejected (v1 typo guard).
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/typoed",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"},"profile":"queue"}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    engine_shutdown(&state).await;
+}
+
+/// The clean switch rejects experimental product inputs; __ds is
+/// reserved on both surfaces.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_clean_switch_rejections() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    // Legacy header on the product route → 400, never translated.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/legacy",
+        &[("stream-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "unknown_field");
+    // Legacy query names rejected.
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/legacy?key=x", &[], b"").await;
+    assert_eq!(st, 400);
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/legacy?offset=0", &[], b"").await;
+    assert_eq!(st, 400);
+    // Reserved namespace: product name, raw create, raw subpath.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/__ds/x",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/stream/__ds",
+        &[
+            ("stream-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(addr, "GET", "/v1/stream/__ds/subscriptions", &[], b"").await;
+    assert_eq!(st, 404);
+    // Reserved final segments can never be stream names: the path
+    // parses as the records SUBRESOURCE of stream "a" (501 until its
+    // stage lands), so no stream named "a/records" can ever exist.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/a/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 501);
+    engine_shutdown(&state).await;
+}
+
+/// Product seal is durable, idempotent, collection-wide, and the RAW
+/// default-key view observes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_seal_collection_wide() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealme",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Raw append on the default key (shared collection).
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealme",
+        &[("content-type", "application/json")],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "raw append {st}");
+
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/sealme:seal", &[], b"{}").await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/sealme:seal", &[], b"{}").await;
+    assert_eq!(st, 200, "seal is idempotent");
+
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sealme", &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["sealed"], true);
+
+    // Raw view: further appends refuse; drained read reports closure.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sealme",
+        &[("content-type", "application/json")],
+        br#"[{"n":2}]"#,
+    )
+    .await;
+    assert_eq!(st, 409, "sealed collection refuses appends");
+    let (st, h, _) = hreq(addr, "GET", "/v1/stream/sealme", &[], b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        h.get("stream-closed").map(String::as_str),
+        Some("true"),
+        "raw default-key view reports closure: {h:?}"
+    );
+    engine_shutdown(&state).await;
+}

@@ -916,6 +916,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/operator", get(crate::operator::page))
         .route("/operator/data.json", get(crate::operator::data))
         .route("/operator/runbook", get(crate::operator::runbook))
+        .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
+        .route("/v1/streams/{*name}", any(product_entry_axum))
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1088,6 +1090,41 @@ pub struct ReadParams {
     // touch wait params
     cursor: Option<String>,
     sig: Option<String>,
+}
+
+/// Reserved Durable Streams control namespace (appendix §2.6): matched
+/// before any wildcard stream name, never a customer stream. The pinned
+/// baseline's subscription resources mount here when implemented.
+async fn ds_reserved() -> Response {
+    err_resp(
+        StatusCode::NOT_FOUND,
+        "reserved",
+        "__ds is the reserved Durable Streams control namespace",
+    )
+}
+
+/// Prisma product surface (spec Stage 8): everything under /v1/streams/.
+async fn product_entry_axum(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    method: Method,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+) -> Response {
+    let query = req.uri().query().unwrap_or("").to_string();
+    let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => {
+            return crate::product::perr(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
+                "request body exceeds the limit",
+                None,
+                false,
+            );
+        }
+    };
+    crate::product::product_entry(state, name, method, headers, query, body).await
 }
 
 async fn stream_entry(
@@ -1303,7 +1340,7 @@ fn key_version(headers: &HeaderMap) -> u32 {
         .unwrap_or(0)
 }
 
-fn desc_alive(desc: &StreamDesc) -> bool {
+pub(crate) fn desc_alive(desc: &StreamDesc) -> bool {
     !desc.deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
 }
 
@@ -1438,7 +1475,57 @@ fn fresh_desc(
         touch_sig_key: sig_key,
         scaling: false,
         segments: None,
+        sealed: false,
+        watch_definitions: Vec::new(),
+        layout_version: crate::registry::LAYOUT_VERSION,
     }
+}
+
+/// Product-surface descriptor construction (spec Stage 7): no profile,
+/// no touch material — those are capability resources, not creation
+/// config.
+pub(crate) fn fresh_desc_product(
+    state: &AppState,
+    name: &str,
+    key: &StreamKey,
+    content_type: String,
+    ttl_secs: Option<u64>,
+    expires_at_ms: Option<i64>,
+) -> StreamDesc {
+    fresh_desc(
+        state,
+        name,
+        key,
+        content_type,
+        ttl_secs,
+        expires_at_ms,
+        None,
+        Vec::new(),
+    )
+}
+
+/// R2 ring-ownership check shared by both creation surfaces.
+pub(crate) fn ring_owner_check(state: &Arc<AppState>, name: &str) -> Option<Response> {
+    let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(name));
+    if let Some(owner) = state.effective_owner(&prefix) {
+        if owner != state.instance_name {
+            let mut r = err_resp(
+                StatusCode::CONFLICT,
+                "not_ring_owner",
+                &format!("shard {prefix} belongs to {owner}"),
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+                r.headers_mut().insert("streams-replay-to", v);
+            }
+            return Some(r);
+        }
+    }
+    None
+}
+
+/// Product DELETE maps to the one collection-delete implementation.
+pub(crate) async fn product_delete(state: Arc<AppState>, name: String) -> Response {
+    delete_stream(state, name).await
 }
 
 async fn create_stream(
@@ -1447,6 +1534,18 @@ async fn create_stream(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The __ds control namespace is reserved on BOTH surfaces
+    // (appendix §2.6); subpaths are caught by explicit routing, the
+    // bare name here.
+    if name == crate::product::RESERVED_ROOT
+        || name.starts_with(&format!("{}/", crate::product::RESERVED_ROOT))
+    {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "reserved",
+            "__ds is the reserved Durable Streams control namespace",
+        );
+    }
     let Some(raw_key_str) = raw_key(&headers, &state) else {
         return err_resp(
             StatusCode::BAD_REQUEST,
