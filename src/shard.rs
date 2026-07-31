@@ -2443,8 +2443,7 @@ impl ShardEngine {
                         other => other,
                     };
                     let now = now_ms();
-                    let mut dlq_refs: Vec<(u64, u32)> = Vec::new(); // (orig off, attempts)
-                    let (out, dlq_subkey) = {
+                    let out = {
                         let mut st = local.handle.state.lock().unwrap();
                         match op {
                             QueueOp::Receive {
@@ -2452,8 +2451,6 @@ impl ShardEngine {
                                 max,
                                 visibility_ms,
                                 max_deliveries,
-                                dlq_subkey,
-                                keyed,
                                 keys,
                                 covered_to,
                             } => {
@@ -2464,15 +2461,12 @@ impl ShardEngine {
                                 // with an ACTIVE lease anywhere blocks its
                                 // later records; a batch leases at most one
                                 // record per key.
-                                let mut blocked: std::collections::HashSet<[u8; 16]> = if keyed {
-                                    cs.leases
-                                        .values()
-                                        .filter(|l| l.deadline_ms > now)
-                                        .map(|l| l.key_hash)
-                                        .collect()
-                                } else {
-                                    Default::default()
-                                };
+                                let mut blocked: std::collections::HashSet<[u8; 16]> = cs
+                                    .leases
+                                    .values()
+                                    .filter(|l| l.deadline_ms > now)
+                                    .map(|l| l.key_hash)
+                                    .collect();
                                 let mut off = cs.cursor;
                                 let mut steps = 0usize;
                                 while off < local.fields.next
@@ -2480,19 +2474,14 @@ impl ShardEngine {
                                     && steps < max * 8 + 4096
                                 {
                                     steps += 1;
-                                    let kh = if keyed {
-                                        if off >= covered_to {
-                                            break;
-                                        }
-                                        match keys.get(&off) {
-                                            Some(k) => *k,
-                                            // Never lease a record whose key
-                                            // is unknown — it could jump a
-                                            // blocked key's queue.
-                                            None => break,
-                                        }
-                                    } else {
-                                        [0u8; 16]
+                                    if off >= covered_to {
+                                        break;
+                                    }
+                                    // Never lease a record whose key is
+                                    // unknown — it could jump a blocked
+                                    // key's queue.
+                                    let Some(kh) = keys.get(&off).copied() else {
+                                        break;
                                     };
                                     if cs.acked.contains(&off) {
                                         off += 1;
@@ -2505,35 +2494,18 @@ impl ShardEngine {
                                             continue; // in flight
                                         }
                                         if l.delivery_count >= max_deliveries {
-                                            if keyed {
-                                                // Report; the HTTP layer
-                                                // appends to the DLQ stream
-                                                // durably FIRST, then acks
-                                                // (spec §2.8). The key stays
-                                                // blocked meanwhile.
-                                                poisoned.push((
-                                                    off,
-                                                    l.lease_gen,
-                                                    l.delivery_count,
-                                                    kh,
-                                                ));
-                                                blocked.insert(kh);
-                                                off += 1;
-                                                continue;
-                                            }
-                                            // Profile path: settle + in-stream
-                                            // DLQ reference.
-                                            cs.leases.remove(&off);
-                                            wb.delete(lease_key(&hash, &consumer, off));
-                                            cs.acked.insert(off);
-                                            wb.put(ack_key(&hash, &consumer, off), b"");
-                                            dlq_refs.push((off, l.delivery_count));
-                                            extra_writes = true;
+                                            // Report; the HTTP layer appends
+                                            // to the DLQ stream durably
+                                            // FIRST, then acks (spec §2.8).
+                                            // The key stays blocked
+                                            // meanwhile.
+                                            poisoned.push((off, l.lease_gen, l.delivery_count, kh));
+                                            blocked.insert(kh);
                                             off += 1;
                                             continue;
                                         }
                                     }
-                                    if keyed && blocked.contains(&kh) {
+                                    if blocked.contains(&kh) {
                                         off += 1;
                                         continue;
                                     }
@@ -2547,9 +2519,7 @@ impl ShardEngine {
                                     wb.put(lease_key(&hash, &consumer, off), encode_lease(&lease));
                                     extra_writes = true;
                                     cs.leases.insert(off, lease);
-                                    if keyed {
-                                        blocked.insert(kh);
-                                    }
+                                    blocked.insert(kh);
                                     leased.push((off, lease.lease_gen, lease.delivery_count, kh));
                                     off += 1;
                                 }
@@ -2565,14 +2535,11 @@ impl ShardEngine {
                                 );
                                 let backlog = (local.fields.next - cs.cursor)
                                     .saturating_sub(cs.acked.len() as u64);
-                                (
-                                    QueueOut::Received {
-                                        leased,
-                                        backlog,
-                                        poisoned,
-                                    },
-                                    dlq_subkey,
-                                )
+                                QueueOut::Received {
+                                    leased,
+                                    backlog,
+                                    poisoned,
+                                }
                             }
                             QueueOp::Settle {
                                 consumer,
@@ -2580,8 +2547,6 @@ impl ShardEngine {
                                 retries,
                                 extends,
                                 max_deliveries,
-                                dlq_subkey,
-                                keyed,
                             } => {
                                 let cs = st.queue.consumers.entry(consumer.clone()).or_default();
                                 let (mut a, mut r, mut e2, mut dq, mut stale) =
@@ -2609,27 +2574,19 @@ impl ShardEngine {
                                             continue;
                                         }
                                         if l.delivery_count >= max_deliveries {
-                                            if keyed {
-                                                // Report only: the DLQ-stream
-                                                // append precedes the source
-                                                // settle (spec §2.8); the
-                                                // lease stays so the later
-                                                // ack still gen-matches.
-                                                poisoned.push((
-                                                    off,
-                                                    l.lease_gen,
-                                                    l.delivery_count,
-                                                    l.key_hash,
-                                                ));
-                                                dq += 1;
-                                                continue;
-                                            }
-                                            cs.leases.remove(&off);
-                                            wb.delete(lease_key(&hash, &consumer, off));
-                                            cs.acked.insert(off);
-                                            wb.put(ack_key(&hash, &consumer, off), b"");
-                                            dlq_refs.push((off, l.delivery_count));
+                                            // Report only: the DLQ-stream
+                                            // append precedes the source
+                                            // settle (spec §2.8); the lease
+                                            // stays so the later ack still
+                                            // gen-matches.
+                                            poisoned.push((
+                                                off,
+                                                l.lease_gen,
+                                                l.delivery_count,
+                                                l.key_hash,
+                                            ));
                                             dq += 1;
+                                            continue;
                                         } else {
                                             let nl = Lease {
                                                 deadline_ms: now + delay as i64,
@@ -2679,18 +2636,15 @@ impl ShardEngine {
                                 );
                                 let backlog = (local.fields.next - cs.cursor)
                                     .saturating_sub(cs.acked.len() as u64);
-                                (
-                                    QueueOut::Settled {
-                                        acked: a,
-                                        retried: r,
-                                        extended: e2,
-                                        dlq: dq,
-                                        backlog,
-                                        stale,
-                                        poisoned,
-                                    },
-                                    dlq_subkey,
-                                )
+                                QueueOut::Settled {
+                                    acked: a,
+                                    retried: r,
+                                    extended: e2,
+                                    dlq: dq,
+                                    backlog,
+                                    stale,
+                                    poisoned,
+                                }
                             }
                             QueueOp::ConfigPut { .. }
                             | QueueOp::ConfigGet { .. }
@@ -2699,31 +2653,6 @@ impl ShardEngine {
                             }
                         }
                     };
-                    // Append DLQ reference records under routing key "$dlq".
-                    for (orig, attempts) in dlq_refs {
-                        let payload = format!("{{\"offset\":{orig},\"attempts\":{attempts}}}");
-                        let offset = local.fields.next;
-                        let frame = encrypt_frame(
-                            &dlq_subkey,
-                            &hash,
-                            &FrameHeader {
-                                offset,
-                                ts_ms: now,
-                                key_version: 0,
-                                routing_key: "$dlq".to_string(),
-                            },
-                            payload.as_bytes(),
-                        );
-                        let frame = Bytes::from(frame);
-                        if self.ring_enabled {
-                            local.ring_recs.push((offset, frame.clone()));
-                        }
-                        local.fields.unabsorbed_bytes += frame.len() as u64;
-                        wb.put(record_key(&hash, offset), frame);
-                        local.fields.next += 1;
-                        local.fields.logical += payload.len() as u64;
-                        records += 1;
-                    }
                     queue_pending.push((resp, out));
                 }
             }

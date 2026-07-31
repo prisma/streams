@@ -150,18 +150,11 @@ pub enum QueueOp {
         max: usize,
         visibility_ms: u64,
         max_deliveries: u32,
-        /// Subkey for encrypting DLQ reference records (routing key "$dlq"),
-        /// derived by the handler which holds the stream key.
-        dlq_subkey: [u8; 32],
-        /// Per-key FIFO mode (spec Stage 2 §2.3): skip offsets whose
-        /// routing key has an active lease elsewhere, lease at most one
-        /// offset per key per batch. Product consumers always set this;
-        /// the queue profile keeps offset-FIFO until Stage 1 deletes it.
-        keyed: bool,
-        /// Keyed mode's offset -> routing-key-hash map, pre-read by the
-        /// HTTP layer from the merged (history + tail) reader. The scan
-        /// stops at the first offset not covered — leasing a record
-        /// whose key is unknown could jump a blocked key's queue.
+        /// Per-key FIFO (spec Stage 2 §2.3): offset -> routing-key-hash
+        /// map, pre-read by the HTTP layer from the merged (history +
+        /// tail) reader. The scan stops at the first offset not covered
+        /// — leasing a record whose key is unknown could jump a blocked
+        /// key's queue.
         keys: std::collections::HashMap<u64, [u8; 16]>,
         /// Exclusive end of the pre-read coverage.
         covered_to: u64,
@@ -185,10 +178,6 @@ pub enum QueueOp {
         retries: Vec<(u64, u32, u64)>, // (off, gen, delay_ms)
         extends: Vec<(u64, u32, u64)>, // (off, gen, visibility_ms)
         max_deliveries: u32,
-        dlq_subkey: [u8; 32],
-        /// Product mode: poison candidates are reported (see
-        /// Received.poisoned), never auto-referenced in-stream.
-        keyed: bool,
     },
 }
 

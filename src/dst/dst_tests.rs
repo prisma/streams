@@ -8149,3 +8149,65 @@ async fn product_watch_wakes_on_matching_append() {
     assert_eq!(v["reason"], "resync");
     engine_shutdown(&state).await;
 }
+
+/// Stage 1 exit criteria: profile machinery is GONE — removed product
+/// inputs are rejected (never translated), removed routes are unknown,
+/// and the descriptor no longer carries profile fields (enforced at
+/// compile time by their absence; this test pins the wire behavior).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn profiles_are_removed_from_every_surface() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    // Product surface: removed names are 400 unknown_field.
+    for h in [
+        "stream-profile",
+        "stream-touch-templates",
+        "stream-queue-max-deliveries",
+        "stream-ttl",
+    ] {
+        let (st, _, b) = preq(
+            addr,
+            "PUT",
+            "/v1/streams/np",
+            &[("prisma-encryption-key", PRISMA_KEY), (h, "queue")],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 400, "{h}: {}", String::from_utf8_lossy(&b));
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(v["error"]["code"], "unknown_field", "{h}");
+    }
+    // Removed profile routes are plain unknown routes — no alias, no
+    // deprecation surface.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/qs",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    for path in ["/v1/stream/qs/queue/w/receive", "/v1/stream/qs/touch/meta"] {
+        let (st, _, _) = hreq(addr, "POST", path, &[], b"{}").await;
+        assert!(
+            st == 404 || st == 400 || st == 405,
+            "removed route {path} must not exist (got {st})"
+        );
+    }
+    // The raw route IGNORES unknown headers per the pinned protocol —
+    // a Stream-Profile header neither errors nor configures anything.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/qp",
+        &[
+            ("content-type", "application/json"),
+            ("stream-profile", "queue"),
+        ],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "raw create ignores unknown headers");
+    engine_shutdown(&state).await;
+}

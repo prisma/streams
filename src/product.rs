@@ -2193,8 +2193,6 @@ async fn dlq_and_settle(
                     retries: Vec::new(),
                     extends: Vec::new(),
                     max_deliveries: cfg.max_attempts,
-                    dlq_subkey: [0u8; 32],
-                    keyed: true,
                 },
             )
             .await
@@ -2329,8 +2327,6 @@ async fn product_consumer_pull(
                         max,
                         visibility_ms: visibility,
                         max_deliveries: cfg.max_attempts,
-                        dlq_subkey: [0u8; 32],
-                        keyed: true,
                         keys: keys_map,
                         covered_to,
                     },
@@ -2537,8 +2533,6 @@ async fn product_consumer_settle(
                     retries,
                     extends,
                     max_deliveries: cfg.max_attempts,
-                    dlq_subkey: [0u8; 32],
-                    keyed: true,
                 },
             )
             .await;
