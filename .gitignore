@@ -12,6 +12,7 @@ package-lock.json
 # The SDK is a published package: its lockfile is part of the
 # reproducible build (CI runs `npm ci` before packing).
 !sdk/package-lock.json
+!conformance/package-lock.json
 .DS_Store
 ds-data-r2-scale/
 tmp/

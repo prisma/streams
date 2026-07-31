@@ -1,135 +1,107 @@
-# Durable Streams conformance results
+# Durable Streams conformance
 
-Upstream suite: `@durable-streams/server-conformance-tests` (239 tests),
-installed from npm. (A vendored copy with vitest wiring lived in the
-previous TypeScript implementation — available in git history before the
-`slate` branch landed.) Run 2026-07-08 against `streams-slate` with s3lite
-(5 ms injected latency).
+The singular route `/v1/stream/{name}` is a Durable Streams server. This
+is where that claim is tested, against the pinned upstream suite, run
+unmodified.
+
+| pin | value |
+|---|---|
+| suite | `@durable-streams/server-conformance-tests@0.3.6` |
+| recorded in | `src/protocol_pin.rs`, `conformance/package.json` (locked) |
+| expected outcome | `conformance/expected.json` |
+
+Latest run — 2026-07-31, after the audit response (auth, create
+initialization, seal state machine, fork lifecycle, catalog paging,
+route grammar, watch derivation):
+
+**332 passed · 0 failed · 6 skipped (338).**
 
 ## How to run
 
 ```bash
-# emulator + server (fresh bucket per run — the suite assumes a clean namespace)
-./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 5 &
+cargo build --release --bin s3lite --bin streams-slate --bin streams-keys
+./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
 KEY=$(./target/release/streams-keys generate)
 ./target/release/streams-slate --listen 127.0.0.1:8090 \
   --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
+  --max-unflushed-bytes 67108864 \
+  --flush-interval-ms 1 --wal-flush-gap-ms 2 \
   --conformance-default-key "$KEY" &
-
-# suite: install @durable-streams/server-conformance-tests in a scratch
-# directory and run it per its README (it ships an npx CLI; point it at the
-# server with CONFORMANCE_TEST_URL=http://127.0.0.1:8090)
+cd conformance && npm ci && CONFORMANCE_TEST_URL=http://127.0.0.1:8090 npm test
 ```
 
-## Changes required to run the suite (accommodations)
+`npm test` runs the suite and then `check.mjs`, which compares the run
+against `expected.json` — the totals AND the family every skip must
+belong to. A pass count alone would not catch a suite that ran nothing,
+or a test that quietly turned into a skip.
+
+Do not use the package's own `npx durable-streams-server-conformance-tests`
+CLI: its include glob does not match the runner it invokes, so it
+reports zero tests and exits 0. `conformance/conformance.test.mjs`
+imports the entry point directly instead.
+
+## The 6 skipped tests
+
+All six are the OPTIONAL reserved webhook-subscription API
+(`__ds/subscriptions/*`). The suite runs them only when the harness
+passes `subscriptions: true`; this server does not implement them, so
+the harness does not. The product consumer API
+(`/v1/streams/{name}/consumers/…`) covers the same need with leases and
+settlement, and it is the surface the product SDK exposes.
+
+| # | test |
+|---|---|
+| 1 | Reserved subscription APIs › creates and idempotently re-confirms a webhook subscription |
+| 2 | Reserved subscription APIs › rejects unsafe webhook URLs |
+| 3 | Reserved subscription APIs › webhook synchronous done auto-acks the wake snapshot |
+| 4 | Reserved subscription APIs › webhook callback acks and fences stale wake generations |
+| 5 | Reserved subscription APIs › adds and removes explicit subscription streams |
+| 6 | Reserved subscription APIs › pull-wake claim, ack, and release use subscription-scoped leases |
+
+Implementing them re-opens this gate; until then the posture is
+"optional feature not implemented", not "passing".
+
+## Rig requirements
 
 1. **`--conformance-default-key <b64>`** — the suite cannot send custom
-   headers, and this server requires `Stream-Encryption-Key` on every
-   create/append/read. The flag supplies a key for requests that lack the
-   header. Dev/conformance only.
-2. **`--conformance-ordering-segments <N>`** (per-key runs only) — the suite
-   creates streams with plain PUTs, so this applies
-   `Stream-Ordering: per-key` + `Stream-Segments: N` to headerless creates.
-3. A **fresh bucket per run**: suite streams accumulate; reruns against a
-   used namespace hit config-mismatch 409s by design.
+   headers, and this server requires an encryption key on every
+   create/append/read. The flag supplies one for requests that lack the
+   header. Dev and conformance only, never a deployment flag.
+2. **A fresh bucket per run.** Suite streams accumulate; a reused
+   namespace produces config-mismatch 409s by design.
+3. **Group commit** (`--flush-interval-ms 1 --wal-flush-gap-ms 2`). The
+   suite's fast-check property tests run ~240 sequential appends inside
+   vitest's 5 s budget. At the default cadence an append costs ~28 ms
+   against s3lite, so those tests are latency-marginal; with group
+   commit — what field deployments already run — appends drop to
+   ~8.6 ms and they pass consistently. Measured both ways (28.71 vs
+   28.54 ms per append, before and after the audit fixes), so the
+   marginality is the rig's flush cadence and not a code regression.
 
-No changes to the suite itself were needed.
+The suite itself is never modified.
 
+## History
 
-## Run 2026-07-31 — pinned suite 0.3.6 (final-gate baseline run)
-
-Suite: `@durable-streams/server-conformance-tests@0.3.6` (pinned in
-`src/protocol_pin.rs`), 338 tests (grown from 239 since the 2026-07-08
-run). s3lite (2 ms latency), fresh bucket, `--conformance-default-key`,
-`--max-unflushed-bytes 67108864`.
-
-Result: **265 passed, 67 failed, 6 skipped.**
-
-Triage of the 67 (all are pinned-baseline features the suite added
-since the 239-test run — no regressions from the product-surface work):
-
-| family | count | gap |
-|---|---:|---|
-| Fork (creation, sub-offsets, reads across boundaries, recursive, live modes, soft-delete/410 lifecycle, GC cascade, TTL inheritance, JSON mode) | 58 | Forks are NOT implemented — `Stream-Forked-From` headers are accepted as plain creates; no source-prefix reads, no reference lifecycle. The largest remaining protocol feature. |
-| TTL sliding window | 5 | `Stream-TTL` idle expiry must RESET on origin reads/writes/close; we compute `expires_at` once at create and never slide it. |
-| SSE catch-up control pairing | 2 | The 0.3.6 baseline expects a control event after EVERY data event during catch-up; we emit one control per batch. |
-| CORS preflight `If-None-Match` | 1 | `OPTIONS` returns 405; the baseline wants a preflight that allows the header. |
-| Large payload status | 1 | An oversized body answers 429 (admission) where the baseline wants 413 (or 200/204). |
-
-These are the open items of the final release gate (task #87). The
-239 tests of the previous baseline remain green within the 265.
-
-## Rig note: group commit is required for the property tests
-
-The suite's fast-check property tests run ~240 sequential appends
-inside vitest's default 5 s budget. Without group commit an append
-costs ~28 ms against s3lite (flush-tick alignment), so those tests are
-latency-marginal and fail on unlucky array sizes. Run the conformance
-server with `--flush-interval-ms 1 --wal-flush-gap-ms 2` (group
-commit, what field deployments already use): appends drop to ~8.6 ms
-and the property tests pass consistently. Measured, not assumed —
-identical benchmarks before and after the audit fixes (28.71 vs
-28.54 ms) proved the marginality is the rig's cadence, not a code
-regression.
-
-## Run 2026-07-31 (later) — FULL SUITE GREEN
-
-After implementing forks, sliding TTL, per-data SSE control pairing,
-the CORS preflight, and 413-for-oversized: **332 passed, 0 failed,
-6 skipped (338)** — the complete pinned 0.3.6 suite. Notable finds on
-the way: the TTL slide CAS raced the close path's descriptor seal
-(single-shot cas_update lost to a 412; fixed with a bounded retry),
-and per-request slide spawns herded the registry under rapid op
-sequences (fixed with an in-flight-slide set; this also cleared the
-property-test timeout).
-
-## Results
-
-| configuration | result |
-|---|---|
-| total order (default) | **239 / 239** |
-| `ordering: per-key`, 1 segment | **239 / 239** (degenerate case: per-key with one segment is totally ordered and byte-identical to default — served through the standard path) |
-| `ordering: per-key`, 4 segments | **194 / 239** — all 45 failures are the two deviations specified in PER-KEY-ORDERING.md §4, below |
-
-### The 45 expected failures at 4 segments
-
-- **Unkeyed live reads are rejected (`400 unsupported_on_per_key`)** —
-  accommodation #1: the whole-stream tail has no single durable cursor once
-  writes are concurrent across segments. This covers every SSE test, every
-  unkeyed long-poll test, and the `offset=now`+live tests (~42 tests). Keyed
-  live reads (`key=` + long-poll/SSE) work and are exercised by our own e2e.
-- **Closed state is segment-scoped in v1** (~3 tests): a close request
-  routes to its routing key's segment (unkeyed close → the empty-key
-  segment), so stream-wide `Stream-Closed` reporting on unkeyed reads of a
-  multi-segment stream is not implemented. Stream-wide close lands with the
-  split/seal machinery (a seal *is* a close).
-
-## What the baseline run drove into the implementation
-
-Getting from the first run (78/239) to 239/239 implemented, per the upstream
-protocol: content-type as create-time stream config (409 on append/PUT
-mismatch, case-insensitive, parameters stripped); **producer headers** with
-full idempotence semantics (epoch fencing 403, duplicates 204 with highest
-seq echoed, gap 409 with `Producer-Expected/Received-Seq`, strict integer
-grammar, dedupe-before-everything ordering); **closed streams**
-(`Stream-Closed` on PUT/POST, close-only POSTs, 409-after-close with final
-offset, idempotent close, producer-close interactions); **SSE**
-(`live=sse`: exact `event:`/`data:` framing, control events with
-`streamNextOffset`/`streamCursor`/`upToDate`/`streamClosed`, base64
-auto-encoding for binary content types + `Stream-SSE-Data-Encoding`,
-CRLF-injection-safe line splitting, connection close on closed streams);
-`offset=now`; ETag + `If-None-Match` → 304; `Stream-Up-To-Date`,
-`Stream-Cursor` with collision jitter; long-poll `offset` requirement and
-204-timeout shape; strict TTL grammar; **no auto-create on POST** (404);
-JSON batching (top-level array = batch, anything else = one message; empty
-array 400 on POST / allowed on PUT); delete→recreate isolation via
-per-incarnation storage hashes; `Location` on 201; `X-Content-Type-Options:
-nosniff` on all responses; `Cross-Origin-Resource-Policy` on reads;
-`Cache-Control` rules. Two engine fixes fell out: zero-work commit groups
-are ACKed directly (an empty WriteBatch never crosses the durable
-watermark), and long-poll-at-tail on closed streams returns 204 without
-waiting.
-
-Protocol-surface changes worth noting: byte-mode reads now return the
-decrypted appended bytes (protocol-conformant); the ciphertext wire frames
-moved behind an explicit `format=frames`.
+- **2026-07-08** — first baseline, against an earlier 239-test suite:
+  78/239 on the first run, then 239/239. That run drove content-type as
+  create-time config, the full producer-idempotence semantics (epoch
+  fencing, duplicates, gaps, strict grammar, dedupe-before-everything),
+  closed-stream behaviour, SSE framing and control events, `offset=now`,
+  ETag/`If-None-Match`, long-poll shapes, TTL grammar, no-auto-create on
+  POST, JSON batching rules, delete→recreate isolation, and the response
+  header rules. Two engine fixes fell out: zero-work commit groups ack
+  directly, and long-poll at the tail of a closed stream returns 204
+  without waiting.
+- **2026-07-31** — pinned 0.3.6 (338 tests). First run 265/67/6; every
+  failure was a feature the newer baseline had added, not a regression:
+  forks (58), sliding TTL (5), per-data SSE control pairing (2), CORS
+  preflight (1), 413 for oversized bodies (1). Implementing those
+  reached 332/0/6. Two finds worth keeping: the TTL slide raced the
+  close path's descriptor seal (a single-shot CAS lost the 412; fixed
+  with a bounded retry), and per-request slide spawns herded the
+  registry under rapid op sequences (fixed with an in-flight-slide set,
+  which also cleared a property-test timeout).
+- **2026-07-31, after the audit response** — unchanged at 332/0/6,
+  confirming that the product-surface work (bearer auth, seal states,
+  fork lifecycle, catalog paging, suffix route grammar, SHA-256 watch
+  keys) left the protocol surface intact.

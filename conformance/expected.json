@@ -1,0 +1,9 @@
+{
+  "suite": "@durable-streams/server-conformance-tests@0.3.6",
+  "note": "Pinned in src/protocol_pin.rs — update BOTH together, and re-record these numbers from a real run.",
+  "numTotalTests": 338,
+  "numPassedTests": 332,
+  "numFailedTests": 0,
+  "numPendingTests": 6,
+  "skippedAreAllIn": "Reserved subscription APIs"
+}

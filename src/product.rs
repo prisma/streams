@@ -103,7 +103,7 @@ pub fn canonical_name(raw: &str) -> Result<String, Response> {
 
 /// The experimental product names this route REJECTS instead of
 /// translating (spec Stage 8 §5).
-fn reject_legacy_inputs(headers: &HeaderMap, query: &str) -> Option<Response> {
+fn reject_legacy_inputs(headers: &HeaderMap, query: &str, method: &Method) -> Option<Response> {
     // Removed experimental names are rejected, never translated (spec
     // Stage 1 §6, Stage 7 §12, Stage 8 §5): credential/routing names,
     // the profile machinery, and header-based configuration.
@@ -139,6 +139,20 @@ fn reject_legacy_inputs(headers: &HeaderMap, query: &str) -> Option<Response> {
                 StatusCode::BAD_REQUEST,
                 "unknown_field",
                 &format!("'{k}' is not a product-surface query field"),
+                None,
+                false,
+            ));
+        }
+        // Reads take ?routingKey=; appends take the Prisma-Routing-Key
+        // HEADER. A query parameter on an append used to be ignored in
+        // silence, which writes the record to the DEFAULT key and looks
+        // exactly like success — the caller then reads their key back
+        // empty. Say so instead.
+        if k == "routingKey" && !matches!(*method, Method::GET | Method::HEAD) {
+            return Some(perr(
+                StatusCode::BAD_REQUEST,
+                "unknown_field",
+                "routingKey is a query field for reads; appends carry the                  Prisma-Routing-Key header",
                 None,
                 false,
             ));
@@ -410,7 +424,7 @@ pub async fn product_entry(
             false,
         );
     }
-    if let Some(r) = reject_legacy_inputs(&headers, &query) {
+    if let Some(r) = reject_legacy_inputs(&headers, &query, &method) {
         return r;
     }
     // Verb suffix on the FINAL segment: `name:seal`, `records:batch`.

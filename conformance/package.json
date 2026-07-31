@@ -1,0 +1,13 @@
+{
+  "name": "streams-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Runs the pinned Durable Streams server conformance suite against a live streams-slate. Versions must match src/protocol_pin.rs.",
+  "scripts": {
+    "test": "vitest run --reporter=json --outputFile=result.json --reporter=default && node check.mjs"
+  },
+  "dependencies": {
+    "@durable-streams/server-conformance-tests": "0.3.6",
+    "vitest": "4.1.10"
+  }
+}

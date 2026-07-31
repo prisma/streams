@@ -99,14 +99,20 @@ jobs:
           ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
           sleep 1
           KEY=$(./target/release/streams-keys generate)
+          # Group commit is required: the suite's property tests run
+          # ~240 sequential appends inside vitest's 5 s budget, and the
+          # default flush cadence makes them latency-marginal. This is
+          # what field deployments run anyway (see CONFORMANCE.md).
           ./target/release/streams-slate --listen 127.0.0.1:8090 \
             --s3-endpoint http://127.0.0.1:9500 --bucket conf-$RANDOM \
             --max-unflushed-bytes 67108864 \
+            --flush-interval-ms 1 --wal-flush-gap-ms 2 \
             --conformance-default-key "$KEY" &
           sleep 2
-          mkdir -p /tmp/conf && cd /tmp/conf
-          npm init -y >/dev/null
-          # Version pinned in src/protocol_pin.rs — update BOTH together.
-          npm install @durable-streams/server-conformance-tests@0.3.6
-          CONFORMANCE_TEST_URL=http://127.0.0.1:8090 \
-            npx durable-streams-server-conformance-tests
+          # The runner lives in conformance/ with a committed lock and an
+          # exact expected outcome. It does NOT use the package's npx
+          # CLI, whose include glob misses its own runner and exits 0
+          # having run nothing.
+          cd conformance
+          npm ci
+          CONFORMANCE_TEST_URL=http://127.0.0.1:8090 npm test
