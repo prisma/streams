@@ -117,6 +117,11 @@ the same edge IPs, and the failure is a canned 404 page served BY the
 edge. Note also that the platform sets no `PORT` (the container env is
 `HOME,PATH,TERM`), so 8080 is convention, not configuration.
 
+Full write-up, evidence and a scripted re-test:
+[repro-edge-404/](../repro-edge-404/README.md). Run its `repro.sh` to
+find out whether the platform is publishing new services again before
+planning any deploy-dependent work.
+
 **`services destroy` takes the id as a POSITIONAL argument.** `--service
 cps_…` is silently wrong: the command fails with `appId: must be an
 optionally cps prefixed cuid or cuid2` and the service survives. It is

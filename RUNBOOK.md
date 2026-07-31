@@ -474,6 +474,7 @@ drop writes that would have succeeded.
 | symptom | meaning | action |
 |---|---|---|
 | domain + preview 404, version `running`, `logs` hangs empty | **crash-loop zombie**: app exits at/near boot repeatedly, platform gave up silently ([repro-no-restart/](./repro-no-restart/)) | fix the boot cause; redeploy (a deploy always heals). With the §7.2 wrapper the cause is in the boot log |
+| domain + preview 404, version `running`, but the boot log shows the app **listening** and no request ever reaches it | **the edge never published this service** — seen 2026-07-31 for every new service, across projects and PoPs, including a hello-world app ([repro-edge-404/](./repro-edge-404/)) | not fixable from here. Confirm with `repro-edge-404/repro.sh` (hello-world control) before burning deploys; old services keep working, so do NOT redeploy anything you still depend on |
 | single instance dies (OOM/exit/wedge), even under traffic | plaform reprovisions transparently in seconds | nothing — this genuinely works (verified legs 1–5 of the repro) |
 | deploy CLI throws `styleText` import error | Node < 20 resolving the CLI | run `bunx --bun @prisma/compute-cli …` |
 | first requests after idle are slow | scale-to-zero wake + connection-pool warmup | expected; the 4 s pool idle timeout (§3.1) exists for exactly this |
