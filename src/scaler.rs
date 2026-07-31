@@ -393,7 +393,7 @@ where
             ) else {
                 return None;
             };
-            if map.merge(a, b, na, nb, "", now).is_ok()
+            if map.merge(a, b, na, nb, [0u8; 16], now).is_ok()
                 && segmap::save(store, &hash, &map, etag).await.is_ok()
             {
                 invalidate(&hash);

@@ -38,6 +38,10 @@ pub static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::
 struct SegSketch {
     dist: KeyDistribution,
     hot_streak: u32,
+    /// Consecutive evaluations with ALL rates under the quiet line
+    /// (merge policy input — mergers demand far more patience than
+    /// splits to avoid flapping).
+    cold_streak: u32,
     profile_pinned: bool,
     last_fed_ms: i64,
 }
@@ -133,6 +137,7 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
     let e = g.sketches.entry(key).or_insert_with(|| SegSketch {
         dist: KeyDistribution::new(seg.lo, seg.hi, crate::scaler::policy().rate_window_secs),
         hot_streak: 0,
+        cold_streak: 0,
         profile_pinned: pinned,
         last_fed_ms: now,
     });
@@ -142,7 +147,7 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
 
 /// One evaluation pass over every sketched segment. Returns the split
 /// decisions taken (stream, seg_id) — the driver executes them.
-fn evaluate(now_ms: i64) -> Vec<(String, u32, u64)> {
+fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
     let pol = crate::scaler::policy();
     let lim = crate::usage::limits();
     let mut out = Vec::new();
@@ -156,6 +161,15 @@ fn evaluate(now_ms: i64) -> Vec<(String, u32, u64)> {
         let bytes_rate = sk.dist.bytes.value(now_ms);
         let reqs_rate = sk.dist.reqs.value(now_ms);
         let recs_rate = sk.dist.recs.value(now_ms);
+        let quiet = pol.hot_pct * 0.05;
+        let cold = bytes_rate < lim.bytes_per_sec * quiet
+            && reqs_rate < lim.reqs_per_sec * quiet
+            && recs_rate < lim.recs_per_sec * quiet;
+        if cold {
+            sk.cold_streak = sk.cold_streak.saturating_add(1);
+        } else {
+            sk.cold_streak = 0;
+        }
         let hot = bytes_rate > lim.bytes_per_sec * pol.hot_pct
             || reqs_rate > lim.reqs_per_sec * pol.hot_pct
             || recs_rate > lim.recs_per_sec * pol.hot_pct;
@@ -164,6 +178,7 @@ fn evaluate(now_ms: i64) -> Vec<(String, u32, u64)> {
             hot_updates.push((name.clone(), None));
             continue;
         }
+        sk.cold_streak = 0;
         sk.hot_streak += 1;
         if sk.hot_streak < pol.hot_evals {
             continue;
@@ -212,7 +227,31 @@ fn evaluate(now_ms: i64) -> Vec<(String, u32, u64)> {
     for (name, _, _) in &out {
         g.last_transition_ms.insert(name.clone(), now_ms);
     }
-    out
+    // Merge candidates: streams with >= 2 sketched segments, EVERY one
+    // cold for 4x the split patience, respecting the same cooldown. The
+    // driver validates adjacency and ages against the live map.
+    let mut per_stream: HashMap<&String, (usize, bool)> = HashMap::new();
+    for ((name, _), sk) in g.sketches.iter() {
+        if sk.profile_pinned {
+            continue;
+        }
+        let e = per_stream.entry(name).or_insert((0, true));
+        e.0 += 1;
+        e.1 &= sk.cold_streak >= pol.hot_evals * 4;
+    }
+    let merge_candidates: Vec<String> = per_stream
+        .into_iter()
+        .filter(|(name, (n, all_cold))| {
+            *n >= 2
+                && *all_cold
+                && now_ms - cooldowns.get(*name).copied().unwrap_or(0) >= pol.cooldown_secs * 1000
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in &merge_candidates {
+        g.last_transition_ms.insert(name.clone(), now_ms);
+    }
+    (out, merge_candidates)
 }
 
 /// Seal one segment identity through its committer: an empty close
@@ -300,6 +339,48 @@ pub async fn execute_split(
     resume(st, name).await
 }
 
+/// Execute (or resume) one MERGE of two adjacent live segments.
+/// Same two-phase discipline as split: persist the intent, seal both
+/// parents, publish the child. Idempotent at every step.
+pub async fn execute_merge(
+    st: &std::sync::Arc<crate::http::AppState>,
+    name: &str,
+    a_id: u32,
+    b_id: u32,
+) -> bool {
+    let ok = st
+        .registry
+        .cas_update(name, |d| {
+            let map = d.segments.get_or_insert_with(|| {
+                crate::segmap::SegmentMap::initial("", crate::shard::now_ms())
+            });
+            if map.pending.is_some() {
+                return false;
+            }
+            let (Some(a), Some(b)) = (map.get(a_id), map.get(b_id)) else {
+                return false;
+            };
+            let adjacent = a.hi == b.lo || b.hi == a.lo;
+            if !a.is_live() || !b.is_live() || !adjacent {
+                return false;
+            }
+            map.pending = Some(crate::segmap::PendingTransition {
+                kind: "merge".into(),
+                segs: vec![a_id, b_id],
+                split_at: 0,
+                started_ms: crate::shard::now_ms(),
+            });
+            map.version += 1;
+            true
+        })
+        .await
+        .unwrap_or(false);
+    if !ok {
+        return resume(st, name).await;
+    }
+    resume(st, name).await
+}
+
 /// Complete whatever transition the descriptor's `pending` records:
 /// seal the parents (idempotent), then CAS the successor publication.
 /// Safe to call from any instance at any time.
@@ -314,8 +395,10 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     let Some(p) = map.pending.clone() else {
         return false;
     };
-    if p.kind != "split" || p.segs.len() != 1 {
-        return false;
+    match (p.kind.as_str(), p.segs.len()) {
+        ("split", 1) => {}
+        ("merge", 2) => return resume_merge(st, &desc, p).await,
+        _ => return false,
     }
     let seg_id = p.segs[0];
     let Some(frozen) = seal_identity(st, &desc, seg_id).await else {
@@ -405,6 +488,65 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     published
 }
 
+/// Merge completion: seal BOTH parents (idempotent), then publish the
+/// merged child on the low parent's route. Crash-resumable from the
+/// persisted pending intent; the seal-gap read semantics apply to both
+/// parents automatically (pending.segs names them).
+async fn resume_merge(
+    st: &std::sync::Arc<crate::http::AppState>,
+    desc: &StreamDesc,
+    p: crate::segmap::PendingTransition,
+) -> bool {
+    let (a_id, b_id) = (p.segs[0], p.segs[1]);
+    let Some(fa) = seal_identity(st, desc, a_id).await else {
+        return false;
+    };
+    let Some(fb) = seal_identity(st, desc, b_id).await else {
+        return false;
+    };
+    #[cfg(test)]
+    failpoints::pause_before_publish().await;
+    let name = &desc.name;
+    let published = st
+        .registry
+        .cas_update(name, |d| {
+            let pending_matches = d
+                .segments
+                .as_ref()
+                .is_some_and(|m| m.pending.as_ref() == Some(&p));
+            if !pending_matches {
+                return false;
+            }
+            let child_route = d.segment_route_by_id(a_id);
+            let map = d.segments.as_mut().expect("checked");
+            match map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
+                Ok(_) => {
+                    map.pending = None;
+                    true
+                }
+                Err(_) => {
+                    // Already merged (idempotent completion): just clear.
+                    map.pending = None;
+                    map.version += 1;
+                    true
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+    if published {
+        SEGMENT_MERGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut g = state().lock().unwrap();
+            g.sketches.remove(&(name.to_string(), a_id));
+            g.sketches.remove(&(name.to_string(), b_id));
+        }
+        st.registry.invalidate(name);
+        SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    published
+}
+
 /// Test failpoints for the two-phase transition (spec review: the
 /// seal-to-publication gap must be observable deterministically).
 #[cfg(test)]
@@ -448,7 +590,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(eval)).await;
             let Some(st) = st.upgrade() else { return };
-            let decisions = evaluate(crate::shard::now_ms());
+            let (decisions, merges) = evaluate(crate::shard::now_ms());
             for (name, seg_id, split_at) in decisions {
                 let done = execute_split(&st, &name, seg_id, split_at).await;
                 tracing::info!(
@@ -458,6 +600,32 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                     done,
                     "unified scaler split"
                 );
+            }
+            for name in merges {
+                // Validate against the LIVE map: pick the first adjacent
+                // live pair, both older than the cooldown (never merge a
+                // segment the scaler just minted).
+                let Ok(Some(desc)) = st.registry.get(&name).await else {
+                    continue;
+                };
+                let Some(map) = &desc.segments else { continue };
+                if map.pending.is_some() {
+                    continue;
+                }
+                let mut live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
+                live.sort_by_key(|s| s.lo);
+                let min_age = crate::scaler::policy().cooldown_secs * 1000;
+                let now = crate::shard::now_ms();
+                let pair = live.windows(2).find(|w| {
+                    w[0].hi == w[1].lo
+                        && now - w[0].created_ms >= min_age
+                        && now - w[1].created_ms >= min_age
+                });
+                if let Some(w) = pair {
+                    let (a, b) = (w[0].seg_id, w[1].seg_id);
+                    let done = execute_merge(&st, &name, a, b).await;
+                    tracing::info!(stream = %name, a, b, done, "unified scaler merge");
+                }
             }
         }
     });

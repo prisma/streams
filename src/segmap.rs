@@ -206,14 +206,15 @@ impl SegmentMap {
         Ok((a, b))
     }
 
-    /// Merge two ADJACENT live segments into one child on `shard`.
+    /// Merge two ADJACENT live segments into one child on a PERSISTED
+    /// route (same discipline as split — review blocker 1).
     pub fn merge(
         &mut self,
         a_id: u32,
         b_id: u32,
         a_sealed_next: u64,
         b_sealed_next: u64,
-        shard: &str,
+        child_route: [u8; 16],
         now_ms: i64,
     ) -> Result<u32, MapError> {
         let (a_lo, a_hi) = {
@@ -248,8 +249,8 @@ impl SegmentMap {
             seg_id: c,
             lo,
             hi,
-            shard_prefix: shard.to_string(),
-            route_hash: [0u8; 16],
+            shard_prefix: String::new(),
+            route_hash: child_route,
             created_ms: now_ms,
             predecessors: vec![a_id, b_id],
             sealed_ms: None,
@@ -339,10 +340,10 @@ mod tests {
             .unwrap();
         // c=[0,q) d=[q,mid) b=[mid,end) — c+b not adjacent
         assert_eq!(
-            m.merge(c, b, 0, 0, "sx", 4).unwrap_err(),
+            m.merge(c, b, 0, 0, [9u8; 16], 4).unwrap_err(),
             MapError::NotAdjacent(c, b)
         );
-        let e = m.merge(d, b, 1, 2, "sy", 5).unwrap();
+        let e = m.merge(d, b, 1, 2, [9u8; 16], 5).unwrap();
         assert!(m.check_partition());
         assert_eq!(m.live().count(), 2);
         assert_eq!(m.route(KEYSPACE_END / 2).unwrap().seg_id, e);

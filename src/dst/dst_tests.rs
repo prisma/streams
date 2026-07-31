@@ -6949,3 +6949,232 @@ async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
         e.begin_close();
     }
 }
+
+/// Merge execution (review deferral, now implemented): split then merge
+/// back — the merged child covers the full range on a real route, both
+/// children seal, and per-key reads drain exactly across all THREE
+/// generations (parent -> split child -> merged child).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn merge_rejoins_cold_children_with_exact_lineage() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig_opts(
+        store,
+        vec!["00".into(), "01".into()],
+        crate::shard::ShardConfig::default(),
+    )
+    .await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/mergeback",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let keys = ["ga", "gb", "gc", "gd"];
+    let mut per_key: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    async fn append_round(
+        addr: std::net::SocketAddr,
+        keys: &[&str],
+        round: i64,
+        pk: &mut std::collections::HashMap<String, usize>,
+    ) {
+        for k in keys {
+            let body = format!("[{{\"k\":\"{k}\",\"n\":{round}}}]");
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                "/v1/stream/mergeback",
+                &[("stream-key", k), ("content-type", "application/json")],
+                body.as_bytes(),
+            )
+            .await;
+            assert!(st == 200 || st == 204, "append {st}");
+            *pk.entry(k.to_string()).or_insert(0usize) += 1;
+        }
+    }
+    for r in 0..6 {
+        append_round(addr, &keys, r, &mut per_key).await;
+    }
+    assert!(
+        crate::scaler3::execute_split(&state, "mergeback", 0, 0x8000_0000_0000_0000).await,
+        "split"
+    );
+    for r in 6..10 {
+        append_round(addr, &keys, r, &mut per_key).await;
+    }
+    // Merge the two live children back together.
+    state.registry.invalidate("mergeback");
+    let desc = state.registry.get("mergeback").await.unwrap().unwrap();
+    let live: Vec<u32> = {
+        let map = desc.segments.as_ref().unwrap();
+        let mut v: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
+        v.sort_by_key(|s| s.lo);
+        v.iter().map(|s| s.seg_id).collect()
+    };
+    assert_eq!(live.len(), 2);
+    assert!(
+        crate::scaler3::execute_merge(&state, "mergeback", live[0], live[1]).await,
+        "merge executes"
+    );
+    state.registry.invalidate("mergeback");
+    let desc = state.registry.get("mergeback").await.unwrap().unwrap();
+    let map = desc.segments.as_ref().unwrap();
+    assert!(map.pending.is_none());
+    let now_live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
+    assert_eq!(now_live.len(), 1, "one merged child");
+    assert_eq!(
+        (now_live[0].lo, now_live[0].hi),
+        (0, crate::segmap::KEYSPACE_END),
+        "full-range cover"
+    );
+    assert_eq!(now_live[0].predecessors.len(), 2, "merge lineage recorded");
+    assert_ne!(
+        desc.segment_route(now_live[0]),
+        [0u8; 16],
+        "merged child carries a real route"
+    );
+    for id in &live {
+        let sg = map.get(*id).unwrap();
+        assert!(
+            !sg.is_live() && sg.sealed_next_offset.is_some(),
+            "children sealed"
+        );
+    }
+    // Post-merge appends land on the merged child; drains stay exact
+    // and ordered across all three generations.
+    for r in 10..14 {
+        append_round(addr, &keys, r, &mut per_key).await;
+    }
+    for k in &keys {
+        let (recs, last) = drain_no_closure(addr, "mergeback", Some(k)).await;
+        let ns: Vec<i64> = recs
+            .iter()
+            .filter(|r| r["k"] == *k)
+            .map(|r| r["n"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ns.len(), per_key[&k.to_string()], "exact count for {k}");
+        assert!(ns.windows(2).all(|w| w[0] < w[1]), "order for {k}: {ns:?}");
+        assert_eq!(
+            last.get("stream-up-to-date").map(String::as_str),
+            Some("true")
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Keyed SSE follows the lineage (review deferral, now wired): a
+/// subscriber from offset 0 receives every pre-split AND post-split
+/// record for its key in order, then an upToDate control.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sse_follows_lineage_across_split() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/sselin",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    for r in 0..5 {
+        for k in ["ga", "gb"] {
+            let body = format!("[{{\"k\":\"{k}\",\"n\":{r}}}]");
+            hreq(
+                addr,
+                "POST",
+                "/v1/stream/sselin",
+                &[("stream-key", k), ("content-type", "application/json")],
+                body.as_bytes(),
+            )
+            .await;
+        }
+    }
+    assert!(crate::scaler3::execute_split(&state, "sselin", 0, 0x8000_0000_0000_0000).await);
+    for r in 5..10 {
+        for k in ["ga", "gb"] {
+            let body = format!("[{{\"k\":\"{k}\",\"n\":{r}}}]");
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                "/v1/stream/sselin",
+                &[("stream-key", k), ("content-type", "application/json")],
+                body.as_bytes(),
+            )
+            .await;
+            assert!(st == 200 || st == 204);
+        }
+    }
+
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/stream/sselin?key=ga&live=sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 8192];
+    let mut acc: Vec<u8> = Vec::new();
+    let mut ns: Vec<i64> = Vec::new();
+    let mut saw_utd = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    'read: while std::time::Instant::now() < deadline {
+        let n = match tokio::time::timeout(std::time::Duration::from_secs(5), sck.read(&mut buf))
+            .await
+        {
+            Ok(r) => r.expect("sse read"),
+            Err(_) => panic!(
+                "sse read timed out; acc={} bytes, ns={ns:?}, utd={saw_utd}, tail:\n{}",
+                acc.len(),
+                String::from_utf8_lossy(&acc[acc.len().saturating_sub(600)..])
+            ),
+        };
+        if n == 0 {
+            break;
+        }
+        acc.extend_from_slice(&buf[..n]);
+        let text = String::from_utf8_lossy(&acc).to_string();
+        ns.clear();
+        saw_utd = false;
+        for chunk in text.split("\n\n") {
+            let mut is_control = false;
+            for line in chunk.lines() {
+                if line.starts_with("event: control") {
+                    is_control = true;
+                }
+                if let Some(d) = line.strip_prefix("data:") {
+                    if is_control {
+                        if d.contains("\"upToDate\":true") {
+                            saw_utd = true;
+                        }
+                        assert!(
+                            !d.contains("streamClosed"),
+                            "no closure on a live lineage: {d}"
+                        );
+                    } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
+                        // data events carry the JSON-array framing.
+                        let rec = if v.is_array() { v[0].clone() } else { v };
+                        if rec["k"] == "ga" {
+                            ns.push(rec["n"].as_i64().unwrap());
+                        }
+                    }
+                }
+            }
+        }
+        if ns.len() >= 10 && saw_utd {
+            break 'read;
+        }
+    }
+    assert_eq!(
+        ns,
+        (0..10).collect::<Vec<i64>>(),
+        "every generation's records, in order"
+    );
+    assert!(saw_utd, "upToDate control after the drain");
+    drop(sck);
+    engine_shutdown(&state).await;
+}

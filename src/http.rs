@@ -3291,6 +3291,172 @@ fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
     ev
 }
 
+/// sse_control with a pre-encoded (epoch) cursor token — the lineage
+/// streamer's controls name segments, not scalar offsets.
+fn sse_control_tok(next_tok: &str, cursor: Option<&str>, up_to_date: bool, closed: bool) -> String {
+    let mut fields = vec![format!("\"streamNextOffset\":\"{next_tok}\"")];
+    if !closed {
+        fields.push(format!("\"streamCursor\":\"{}\"", interval_cursor(cursor)));
+    }
+    if up_to_date {
+        fields.push("\"upToDate\":true".to_string());
+    }
+    if closed {
+        fields.push("\"streamClosed\":true".to_string());
+    }
+    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sse_lineage_response(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    key: StreamKey,
+    epoch: [u8; 16],
+    lineage: Vec<crate::segmap::SegmentDesc>,
+    mut pos: usize,
+    mut scan_from: u64,
+    rk: String,
+    params: ReadParams,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+    let sse_hash = crate::crypto::stream_hash(&desc.name);
+    let cursor = params.cursor.clone();
+    let seg_tok = |seg_id: u32, next: u64| {
+        crate::offsets::encode_ep(
+            seg_id,
+            if next == 0 {
+                Offset::START
+            } else {
+                Offset(Some(next - 1))
+            },
+        )
+    };
+    tokio::spawn(async move {
+        let mut first = true;
+        'lineage: loop {
+            let sg = &lineage[pos];
+            let identity = desc.dynamic_segment_identity(sg.seg_id);
+            let Ok(engine) = state
+                .engine_for_scaler(&desc.segment_route(sg))
+                .await
+                .ok_or(())
+            else {
+                return;
+            };
+            let Ok(handle) = engine.stream_handle(identity).await else {
+                return;
+            };
+            state.keys.put(identity, key.clone(), epoch);
+            let is_last = pos + 1 >= lineage.len();
+            loop {
+                let (end, closed) = {
+                    let st = handle.state.lock().unwrap();
+                    (st.durable.next, st.durable.closed)
+                };
+                if scan_from == u64::MAX {
+                    scan_from = end; // offset=now on the live tail
+                }
+                let seg_end = sg.sealed_next_offset.unwrap_or(end);
+                let mut sent_any = false;
+                if scan_from < seg_end {
+                    match read_records(
+                        &state,
+                        &desc,
+                        &key,
+                        &epoch,
+                        &handle,
+                        &engine,
+                        scan_from,
+                        Some(&rk),
+                        MAX_READ_BYTES,
+                    )
+                    .await
+                    {
+                        Ok(out) => {
+                            for r in &out.recs {
+                                let ev = sse_data_event(&desc, &r.payload);
+                                if tx.send(Ok(Bytes::from(ev))).await.is_err() {
+                                    return;
+                                }
+                                sent_any = true;
+                            }
+                            if let Some(last) = out.last {
+                                scan_from = (last + 1).min(seg_end.max(scan_from));
+                            }
+                            if !out.completed {
+                                continue; // keep draining before control
+                            }
+                        }
+                        Err(_) => return,
+                    }
+                }
+                if scan_from >= seg_end && !is_last {
+                    // Sealed predecessor drained: hop to the successor.
+                    pos += 1;
+                    scan_from = 0;
+                    continue 'lineage;
+                }
+                let at_end = scan_from >= seg_end;
+                if at_end || sent_any || first {
+                    // A close observed on the LAST segment can be a
+                    // split's seal: genuine closure sends the final
+                    // closed control; a transition ends the connection
+                    // silently and the reconnect follows the successors.
+                    let report_closed =
+                        closed && at_end && genuine_closure(&state, &desc.name, true).await;
+                    let ctl = sse_control_tok(
+                        &seg_tok(sg.seg_id, scan_from),
+                        cursor.as_deref(),
+                        at_end,
+                        report_closed,
+                    );
+                    if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                        return;
+                    }
+                    if closed && at_end {
+                        return;
+                    }
+                }
+                first = false;
+                // Wait for new durable data on the live tail.
+                let notified = handle.notify.notified();
+                let cur_end = handle.state.lock().unwrap().durable.next;
+                if cur_end > scan_from {
+                    continue;
+                }
+                tokio::select! {
+                    _ = notified => {}
+                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                        if tx.send(Ok(Bytes::from(": keep-alive\n\n"))).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let sse_usage = crate::usage::counters(&sse_hash);
+    let stream = futures_util::StreamExt::map(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        move |item| {
+            if let Ok(b) = &item {
+                sse_usage
+                    .bytes_out
+                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            item
+        },
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .body(Body::from_stream(stream))
+        .unwrap()
+}
+
 fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) -> String {
     let mut fields = vec![format!("\"streamNextOffset\":\"{}\"", tail_token(next))];
     if !closed {
@@ -3485,11 +3651,14 @@ async fn read_v3_lineage_inner(
     let live = match params.live.as_deref() {
         None => None,
         Some("long-poll") | Some("true") => Some("long-poll"),
+        Some("sse") if params.key.is_some() => Some("sse"),
         Some("sse") => {
+            // Keyless SSE has the same scalar-cursor impossibility as
+            // keyless long-poll on a segmented stream.
             return err_resp(
                 StatusCode::BAD_REQUEST,
-                "unsupported_on_segmented",
-                "SSE across segment lineage is not supported yet; use long-poll",
+                "keyless_live",
+                "SSE on a segmented stream requires key=",
             );
         }
         Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
@@ -3576,6 +3745,15 @@ async fn read_v3_lineage_inner(
         },
     };
 
+    if live == Some("sse") {
+        // Keyed SSE across lineage (review deferral, now wired): drain
+        // every predecessor's matches, then live-follow the key's live
+        // segment. A seal observed mid-stream that is NOT a genuine
+        // close ends the connection without streamClosed — the
+        // reconnect's fresh dispatch serves the successors.
+        let rk = params.key.clone().unwrap_or_default();
+        return sse_lineage_response(state, desc, key, epoch, lineage, pos, scan_from, rk, params);
+    }
     // Hop forward over already-drained sealed segments so one request
     // always serves records when any exist ahead.
     let seg_tok = |seg_id: u32, last: Option<u64>| match last {

@@ -466,6 +466,30 @@ absorbed key rather than read-interested ones; heavy-hitter and HLL
 sketch state never decays and SKETCH_MAX=4096 silently stops sketching
 new segments.
 
-Deferred (tracked): merge execution, SSE across lineage, queue/state
-profile integration (pinned single-segment), legacy static per-key +
-auto-scaling surface removal.
+Resolved since the review:
+
+- **Merge execution** — implemented: execute_merge + resume(kind=
+  "merge") with the same two-phase seal/publish discipline, children
+  route-assigned, crash-resumable, seal-gap read semantics applying to
+  both parents automatically; a conservative auto-policy (all sketched
+  segments cold at 5% of the hot line for 4x the split patience, both
+  segments older than the cooldown) drives it from the eval loop.
+- **SSE across lineage** — implemented for keyed subscribers: drain
+  every predecessor's matches, then live-follow the key's live
+  segment; a seal that is not a genuine close ends the connection
+  WITHOUT streamClosed and the reconnect follows the successors.
+  Keyless SSE on a segmented stream is 400 keyless_live (same scalar-
+  cursor impossibility as keyless long-poll).
+
+Still deferred, by explicit posture:
+
+- **Queue and state-protocol profiles stay pinned single-segment**
+  (scaler note_append pins them). Their cursor/journal semantics are
+  per-stream scalars today; un-pinning requires the per-segment
+  consumer-state design (spec §11), a product decision — not a gap in
+  the scaling machinery.
+- **Legacy surface removal** (static per-key layouts, scaling=auto
+  parents, the old scaler paths): tracked as its own pre-launch
+  cleanup — the surface spans seven modules with its own test matrix
+  and deletes cleanly only with its creation-time validation and
+  conformance accommodations.
