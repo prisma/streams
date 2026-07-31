@@ -6229,8 +6229,8 @@ async fn product_clean_switch_rejections() {
     let (st, _, _) = preq(addr, "GET", "/v1/stream/__ds/subscriptions", &[], b"").await;
     assert_eq!(st, 404);
     // Reserved final segments can never be stream names: the path
-    // parses as the records SUBRESOURCE of stream "a" (501 until its
-    // stage lands), so no stream named "a/records" can ever exist.
+    // parses as the records SUBRESOURCE of stream "a" (PUT on records
+    // is method_not_allowed), so no stream named "a/records" exists.
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -6239,7 +6239,7 @@ async fn product_clean_switch_rejections() {
         br#"{"format":{"kind":"json"}}"#,
     )
     .await;
-    assert_eq!(st, 501);
+    assert_eq!(st, 405);
     engine_shutdown(&state).await;
 }
 

@@ -86,13 +86,14 @@ impl KeyCursor {
         expect_key_hash: &[u8; 16],
     ) -> Result<KeyCursor, &'static str> {
         let raw = unb64(s).ok_or("invalid_cursor")?;
+        if raw.first() != Some(&KIND_KEY_V1) {
+            // A scan cursor (or protocol offset) on a key endpoint is a
+            // DIFFERENT token class, rejected explicitly — checked
+            // before the length so the class error is stable.
+            return Err("wrong_cursor_kind");
+        }
         if raw.len() != 1 + 16 + 16 + 4 + 8 + MAC_LEN {
             return Err("invalid_cursor");
-        }
-        if raw[0] != KIND_KEY_V1 {
-            // A scan cursor (or protocol offset) on a key endpoint is a
-            // DIFFERENT token class, rejected explicitly.
-            return Err("wrong_cursor_kind");
         }
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
@@ -170,11 +171,14 @@ impl ScanCursor {
             return Err("invalid_cursor");
         }
         let raw = unb64(s).ok_or("invalid_cursor")?;
+        // Class before length: a KEY cursor is shorter than the scan
+        // minimum, so a length-first check would report the wrong error
+        // for the wrong-endpoint case.
+        if raw.first() != Some(&KIND_SCAN_V1) {
+            return Err("wrong_cursor_kind");
+        }
         if raw.len() < 1 + 16 + 8 + 4 + 4 + 8 + 8 + MAC_LEN {
             return Err("invalid_cursor");
-        }
-        if raw[0] != KIND_SCAN_V1 {
-            return Err("wrong_cursor_kind");
         }
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
