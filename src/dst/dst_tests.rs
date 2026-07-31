@@ -8189,7 +8189,10 @@ async fn profiles_are_removed_from_every_surface() {
     .await;
     assert!(st == 200 || st == 201);
     for path in ["/v1/stream/qs/queue/w/receive", "/v1/stream/qs/touch/meta"] {
-        let (st, _, _) = hreq(addr, "POST", path, &[], b"{}").await;
+        // Body-less probes: the 404 path never reads a request body, and
+        // an unread body can turn the server's close into a RST before
+        // the client reads the response (macOS, parallel-suite timing).
+        let (st, _, _) = hreq(addr, "POST", path, &[], b"").await;
         assert!(
             st == 404 || st == 400 || st == 405,
             "removed route {path} must not exist (got {st})"
