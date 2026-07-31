@@ -186,11 +186,21 @@ export class MemoryProducerStateStore implements ProducerStateStore {
 }
 
 export interface ProducerOptions {
-  state: ProducerStateStore;
+  /**
+   * Where sequence state lives. Exactly-once redelivery survives a
+   * restart only if this store does, so it is required unless the
+   * session is declared `ephemeral`.
+   */
+  state?: ProducerStateStore;
   /** Opt-in: claim a fresh epoch on 403 stale-epoch (can fence a live
    * producer sharing this id). */
   autoClaim?: boolean;
-  /** Explicitly ephemeral (suppresses the durable-store expectation). */
+  /**
+   * This session's guarantees end when the process does: state is kept
+   * in memory, and a restart re-appends anything it had not confirmed.
+   * Required when no `state` store is given, so that losing dedup
+   * across restarts is always something you chose.
+   */
   ephemeral?: boolean;
 }
 
@@ -485,8 +495,22 @@ export class Stream<T = unknown> {
 
   // ---- producer sessions (spec Stage 5) -----------------------------
 
-  producer(id: string, options: ProducerOptions): Producer<T> {
-    return new Producer<T>(this, this.ctx, this.name, this.key, id, options);
+  producer(id: string, options: ProducerOptions = {}): Producer<T> {
+    if (!options.state && !options.ephemeral) {
+      throw new StreamsError(
+        400,
+        "producer_state_required",
+        "producer sessions need a durable state store to dedup across " +
+          "restarts: pass { state } — or { ephemeral: true } to accept " +
+          "in-memory state that a restart discards",
+        false,
+      );
+    }
+    const state = options.state ?? new MemoryProducerStateStore();
+    return new Producer<T>(this, this.ctx, this.name, this.key, id, {
+      ...options,
+      state,
+    });
   }
 
   /** @internal producer transport. */
@@ -745,7 +769,7 @@ export class Producer<T> {
   private stream: Stream<T>;
   private streamName: string;
   private id: string;
-  private options: ProducerOptions;
+  private options: ProducerOptions & { state: ProducerStateStore };
 
   constructor(
     stream: Stream<T>,
@@ -753,7 +777,7 @@ export class Producer<T> {
     streamName: string,
     _key: string,
     id: string,
-    options: ProducerOptions,
+    options: ProducerOptions & { state: ProducerStateStore },
   ) {
     this.stream = stream;
     this.streamName = streamName;
@@ -828,6 +852,13 @@ export class Producer<T> {
       await result.catch(() => {});
     });
     this.chains.set(routingKey, next);
+    // Drop the key once its queue drains, or a producer that writes to
+    // many routing keys accumulates one settled promise per key it has
+    // ever touched. Only the tail clears itself, so a chain that grew
+    // while this one ran is left alone.
+    void next.then(() => {
+      if (this.chains.get(routingKey) === next) this.chains.delete(routingKey);
+    });
     return next.then(() => result);
   }
 

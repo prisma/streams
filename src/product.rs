@@ -87,6 +87,17 @@ pub fn canonical_name(raw: &str) -> Result<String, Response> {
             );
         }
     }
+    // A name that itself reads as a subresource path would be
+    // unaddressable: `x/consumers/records` as a COLLECTION can never be
+    // written, because that URL already means consumer "records" on
+    // collection `x`. Refuse it at creation rather than hand out a name
+    // whose own URL points somewhere else.
+    if split_subresource(raw).is_some() {
+        return bad(
+            "invalid_name",
+            "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)",
+        );
+    }
     Ok(raw.to_string())
 }
 
@@ -402,9 +413,19 @@ pub async fn product_entry(
     if let Some(r) = reject_legacy_inputs(&headers, &query) {
         return r;
     }
-    // Verb suffix on the final segment: name:seal, name:scan, …
+    // Verb suffix on the FINAL segment: `name:seal`, `records:batch`.
+    // Only the known verbs are recognized, because a colon is a legal
+    // character in a collection name — treating any trailing `:x` as a
+    // verb would make every such name unaddressable, and `:seel` would
+    // silently mean something other than what was typed. An unknown
+    // verb stays part of the name and answers 404, as it should.
+    const VERBS: [&str; 7] = [
+        "batch", "long-poll", "sse", "pull", "settle", "seal", "scan",
+    ];
     let (path, verb) = match path.rsplit_once(':') {
-        Some((p, v)) if !v.contains('/') => (p.to_string(), Some(v.to_string())),
+        Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => {
+            (p.to_string(), Some(v.to_string()))
+        }
         _ => (path, None),
     };
     // Subresource split (reserved final segments).
@@ -522,21 +543,57 @@ pub async fn product_entry(
     }
 }
 
-/// `customers/acme/orders/records...` → (stream, subresource-with-args).
+/// `customers/acme/orders/records` → (`customers/acme/orders`, `records`).
+///
+/// Collection names are hierarchical, so a subresource is a SUFFIX of
+/// the path, matched against the shapes the product routes actually
+/// define (spec §4.1: "product subresource suffixes are not parsed from
+/// the wildcard name because explicit route matching occurs first").
+/// Searching for the first `/records/` anywhere instead would split
+/// `customers/records/2026/records` after `customers` and address a
+/// collection nobody named.
+///
+/// Shapes are tried longest-first, and a candidate only wins if what
+/// remains is addressable as a collection — that is what resolves
+/// `x/consumers/records`, where the trailing segment is a consumer
+/// named "records" and not a records subresource, since no collection
+/// may be called `x/consumers`.
 fn split_subresource(path: &str) -> Option<(&str, &str)> {
-    for marker in ["/records", "/consumers", "/watches"] {
-        if let Some(idx) = path
-            .find(&format!("{marker}/"))
-            .or_else(|| path.ends_with(marker).then(|| path.len() - marker.len()))
-        {
-            let stream = &path[..idx];
-            let rest = &path[idx + 1..];
-            if !stream.is_empty() {
-                return Some((stream, rest));
-            }
+    let seg: Vec<&str> = path.split('/').collect();
+    let n = seg.len();
+    // (segments consumed from the end, the shape's leading keyword)
+    let shapes: [(usize, &str); 5] = [
+        (4, "watches"), // watches/{watch}/keys/{key}
+        (2, "watches"), // watches/{watch}
+        (2, "consumers"), // consumers/{consumer}
+        (1, "watches"), // watches
+        (1, "records"), // records
+    ];
+    for (take, head) in shapes {
+        if n <= take || seg[n - take] != head {
+            continue;
         }
+        if take == 4 && seg[n - 2] != "keys" {
+            continue;
+        }
+        let stream_len: usize = seg[..n - take].iter().map(|s| s.len() + 1).sum();
+        let stream = &path[..stream_len - 1];
+        if stream.is_empty() || !addressable_name(stream) {
+            continue;
+        }
+        return Some((stream, &path[stream_len..]));
     }
     None
+}
+
+/// Whether a prefix could be a collection name at all. A name may not
+/// end in a reserved subresource word (enforced at create), so a
+/// candidate split that would require one is not a real split.
+fn addressable_name(name: &str) -> bool {
+    !name
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| RESERVED_FINAL_SEGMENTS.contains(&last))
 }
 
 fn product_key(headers: &HeaderMap) -> Option<String> {

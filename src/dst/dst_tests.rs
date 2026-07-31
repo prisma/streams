@@ -8819,6 +8819,127 @@ async fn dead_letter_link_requires_a_shared_key() {
     engine_shutdown(&state).await;
 }
 
+/// Collection names are hierarchical, so the product routes have to be
+/// matched as SUFFIXES. Searching for the first `/records/` in the path
+/// split `customers/records/2026/records` after `customers` — writing
+/// to a collection nobody asked for, or 404ing when it did not exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hierarchical_names_do_not_shadow_subresources() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+
+    // A name whose MIDDLE segments spell subresources is legal.
+    let deep = "customers/records/2026";
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{deep}"),
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{deep}/records"),
+        &key,
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    // The record landed in the deep collection, and `customers` was
+    // never created as a side effect.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        &format!("/v1/streams/{deep}/records"),
+        &key,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1);
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/customers", &key, b"").await;
+    assert_eq!(st, 404, "the prefix must not become a collection");
+
+    // A consumer may be called "records": the suffix that wins is the
+    // one that leaves an addressable collection behind.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/shop",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/shop/consumers/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        b"{}",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "{}", String::from_utf8_lossy(&b));
+
+    // That URL is the consumer route, always — a creation document sent
+    // there is a bad consumer config, never a collection called
+    // `shop/consumers/records`. Which is why such a name is refused
+    // wherever one can still be written down: as a dead-letter target.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/shop/consumers/records",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "invalid_config");
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/shop/consumers/w",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        br#"{"deadLetterStream":"shop/consumers/records"}"#,
+    )
+    .await;
+    assert_eq!(st, 400, "an unaddressable name is not a usable target");
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "invalid_config");
+
+    // A colon is legal in a name; only the known verbs are verbs.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/ns/a:b",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "a colon is part of the name");
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/ns/a:b", &key, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["name"], "ns/a:b");
+    // A mistyped verb addresses a collection that does not exist —
+    // never a different verb, and never the collection without it.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/ns/a:seel", &key, b"").await;
+    assert_eq!(st, 404);
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation

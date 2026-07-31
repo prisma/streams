@@ -60,6 +60,16 @@ try {
 }
 check("sequence reuse conflicts", reused);
 
+// A producer without durable state is a choice, not a default.
+let guarded = false;
+try {
+  orders.producer("stateless", {});
+} catch (e) {
+  guarded = e.code === "producer_state_required";
+}
+check("producer requires state or ephemeral", guarded);
+check("ephemeral producers are allowed", !!orders.producer("eph", { ephemeral: true }));
+
 // Read + pagination + cursor state.
 const page = await orders.read({ routingKey: "c1" });
 check(
