@@ -389,6 +389,14 @@ pub struct PlanCfg {
     pub max_spans: usize,
     pub max_gap_bytes: u64,
     pub max_scan_bytes: u64,
+    /// Preferred scan/matching ratio: a gap coalesce beyond this opens
+    /// a new span instead while span slots remain (spec §5).
+    pub target_amplification: f64,
+    /// HARD scan/matching ceiling for any single coalesce: storage
+    /// savings must never silently shift into Class B read bytes (spec
+    /// §5, review finding 6 — two 1 KiB records around a 60 KiB gap
+    /// used to plan one ~62 KiB scan, ~31x).
+    pub hard_amplification: f64,
 }
 
 impl Default for PlanCfg {
@@ -397,6 +405,8 @@ impl Default for PlanCfg {
             max_spans: 8,
             max_gap_bytes: 64 * 1024,
             max_scan_bytes: 16 * 1024 * 1024,
+            target_amplification: 2.0,
+            hard_amplification: 4.0,
         }
     }
 }
@@ -438,15 +448,34 @@ pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
         let r_end = r.start + r.count as u64;
         let r_bytes = r.matching_bytes;
         let contiguous = plan.spans.last().is_some_and(|s| s.end == r.start);
+        // Amplification guard on gap coalescing: the combined span's
+        // scan/matching ratio must stay under TARGET while span slots
+        // remain (an exact new span is cheaper), and under HARD always —
+        // never trade the storage win for Class B scan bytes.
+        // Contiguous runs add no gap, so they can only improve the
+        // ratio and always coalesce (budget permitting).
+        let at_last_slot = plan.spans.len() >= cfg.max_spans;
+        let amp_ok = |s: &Span| {
+            let gap = if contiguous { 0 } else { r.gap_bytes_before };
+            let scan = (s.scan_bytes + gap + r_bytes) as f64;
+            let matching = (s.matching_bytes + r_bytes) as f64;
+            let limit = if at_last_slot {
+                cfg.hard_amplification
+            } else {
+                cfg.target_amplification
+            };
+            contiguous || scan <= matching * limit
+        };
         match plan.spans.last_mut() {
             Some(s)
                 if (contiguous
                     || (r.gap_bytes_before != GAP_UNKNOWN
                         && r.gap_bytes_before <= cfg.max_gap_bytes))
                     && scan_total + if contiguous { 0 } else { r.gap_bytes_before } + r_bytes
-                        <= cfg.max_scan_bytes =>
+                        <= cfg.max_scan_bytes
+                    && amp_ok(s) =>
             {
-                // Coalesce into the open span (cheap gap).
+                // Coalesce into the open span (cheap, ratio-safe gap).
                 s.end = r_end;
                 s.matching_bytes += r_bytes;
                 let gap = if contiguous { 0 } else { r.gap_bytes_before };
@@ -514,14 +543,74 @@ mod tests {
         }
     }
 
+    /// Review finding 6: tiny matches around a large-but-under-64KiB
+    /// gap must NOT coalesce into one high-amplification scan — the
+    /// hard 4x (and target 2x) ratio gates it.
+    #[test]
+    fn amplification_bound_refuses_expensive_gaps() {
+        let cfg = PlanCfg::default();
+        // The reviewer's example: 1 KiB + 60 KiB gap + 1 KiB = ~31x.
+        let plan = plan_spans(
+            &[run(0, 1, 1024, 0), run(100, 1, 1024, 60 * 1024)],
+            101,
+            &cfg,
+        );
+        assert_eq!(plan.spans.len(), 2, "exact spans, not one 62 KiB scan");
+        assert!(plan.complete);
+        for s in &plan.spans {
+            assert!(
+                (s.scan_bytes as f64) <= (s.matching_bytes as f64) * cfg.hard_amplification,
+                "span amp {}/{} exceeds hard bound",
+                s.scan_bytes,
+                s.matching_bytes,
+            );
+        }
+
+        // A cheap gap (ratio under target) still coalesces.
+        let plan = plan_spans(&[run(0, 4, 4096, 0), run(100, 4, 4096, 2048)], 104, &cfg);
+        assert_eq!(plan.spans.len(), 1, "cheap gap coalesces");
+        assert!(plan.complete);
+    }
+
+    /// One tiny match per postings page across many pages: every span
+    /// stays exact and the plan stays span-bounded with honest partials.
+    #[test]
+    fn fragmented_key_stays_exact_and_bounded() {
+        let cfg = PlanCfg::default();
+        let mut runs = Vec::new();
+        for i in 0..12u64 {
+            // 256 B matches separated by 32 KiB gaps: 129x if coalesced.
+            runs.push(run(i * 1000, 1, 256, if i == 0 { 0 } else { 32 * 1024 }));
+        }
+        let plan = plan_spans(&runs, 12_000, &cfg);
+        assert_eq!(plan.spans.len(), cfg.max_spans, "span-bounded");
+        assert!(!plan.complete, "honest partial past the span budget");
+        assert_eq!(
+            plan.consumed_to,
+            runs[cfg.max_spans - 1].start + 1,
+            "cursor covers exactly the planned prefix"
+        );
+        for s in &plan.spans {
+            assert_eq!(s.scan_bytes, s.matching_bytes, "every span exact");
+        }
+    }
+
+    /// Contiguous runs never trip the amplification guard.
+    #[test]
+    fn contiguous_runs_coalesce_regardless_of_amp() {
+        let cfg = PlanCfg::default();
+        let plan = plan_spans(&[run(0, 2, 200, 0), run(2, 2, 200, GAP_UNKNOWN)], 4, &cfg);
+        assert_eq!(plan.spans.len(), 1);
+        assert!(plan.complete);
+    }
+
     /// Review blocker: a first run fatter than the whole scan budget
     /// must still plan a bounded prefix — never zero spans.
     #[test]
     fn oversized_first_run_plans_bounded_prefix() {
         let cfg = PlanCfg {
-            max_spans: 8,
-            max_gap_bytes: 64 * 1024,
             max_scan_bytes: 16 * 1024 * 1024,
+            ..Default::default()
         };
         // One 32 MiB record: budget/record floor still allows exactly it.
         let plan = plan_spans(&[run(10, 1, 32 * 1024 * 1024, 0)], 11, &cfg);
@@ -544,9 +633,8 @@ mod tests {
     #[test]
     fn oversized_mid_run_partial_keeps_progress() {
         let cfg = PlanCfg {
-            max_spans: 8,
-            max_gap_bytes: 64 * 1024,
             max_scan_bytes: 1024,
+            ..Default::default()
         };
         let plan = plan_spans(
             &[run(0, 2, 400, 0), run(100, 1, 10_000, GAP_UNKNOWN)],
