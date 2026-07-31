@@ -17,6 +17,8 @@ use crate::crypto::StreamKey;
 
 pub const KIND_KEY_V1: u8 = 0x11;
 pub const KIND_SCAN_V1: u8 = 0x21;
+pub const KIND_MSG_V1: u8 = 0x31;
+pub const KIND_LEASE_V1: u8 = 0x41;
 
 const MAC_LEN: usize = 16;
 
@@ -226,6 +228,141 @@ impl ScanCursor {
     }
 }
 
+/// Opaque consumer message identity (spec Stage 2 §2.4): stream
+/// incarnation + routing-key hash + segment + offset, MAC'd like every
+/// product token. Clients never see internal offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageId {
+    pub epoch: [u8; 16],
+    pub key_hash: [u8; 16],
+    pub seg_id: u32,
+    pub offset: u64,
+}
+
+impl MessageId {
+    pub fn encode(&self, key: &StreamKey) -> String {
+        let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
+        p.push(KIND_MSG_V1);
+        p.extend_from_slice(&self.epoch);
+        p.extend_from_slice(&self.key_hash);
+        p.extend_from_slice(&self.seg_id.to_le_bytes());
+        p.extend_from_slice(&self.offset.to_le_bytes());
+        let mac = mac16(&mac_key(key, &self.epoch), &p);
+        p.extend_from_slice(&mac);
+        b64(&p)
+    }
+
+    pub fn decode(
+        s: &str,
+        key: &StreamKey,
+        expect_epoch: &[u8; 16],
+    ) -> Result<MessageId, &'static str> {
+        let raw = unb64(s).ok_or("invalid_message_id")?;
+        if raw.first() != Some(&KIND_MSG_V1) {
+            return Err("wrong_token_kind");
+        }
+        if raw.len() != 1 + 16 + 16 + 4 + 8 + MAC_LEN {
+            return Err("invalid_message_id");
+        }
+        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
+        let mut epoch = [0u8; 16];
+        epoch.copy_from_slice(&payload[1..17]);
+        let want = mac16(&mac_key(key, &epoch), payload);
+        if mac
+            .iter()
+            .zip(want.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+        {
+            return Err("invalid_message_id");
+        }
+        let mut key_hash = [0u8; 16];
+        key_hash.copy_from_slice(&payload[17..33]);
+        let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
+        let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
+        if &epoch != expect_epoch {
+            return Err("invalid_message_id");
+        }
+        Ok(MessageId {
+            epoch,
+            key_hash,
+            seg_id,
+            offset,
+        })
+    }
+}
+
+/// Generation-fenced lease token (spec Stage 2 §2.7): the message
+/// identity plus the lease generation and deadline, unforgeable
+/// without the stream key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseToken {
+    pub msg: MessageId,
+    pub lease_gen: u32,
+    pub deadline_ms: i64,
+}
+
+impl LeaseToken {
+    pub fn encode(&self, key: &StreamKey) -> String {
+        let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + MAC_LEN);
+        p.push(KIND_LEASE_V1);
+        p.extend_from_slice(&self.msg.epoch);
+        p.extend_from_slice(&self.msg.key_hash);
+        p.extend_from_slice(&self.msg.seg_id.to_le_bytes());
+        p.extend_from_slice(&self.msg.offset.to_le_bytes());
+        p.extend_from_slice(&self.lease_gen.to_le_bytes());
+        p.extend_from_slice(&self.deadline_ms.to_le_bytes());
+        let mac = mac16(&mac_key(key, &self.msg.epoch), &p);
+        p.extend_from_slice(&mac);
+        b64(&p)
+    }
+
+    pub fn decode(
+        s: &str,
+        key: &StreamKey,
+        expect_epoch: &[u8; 16],
+    ) -> Result<LeaseToken, &'static str> {
+        let raw = unb64(s).ok_or("invalid_lease_token")?;
+        if raw.first() != Some(&KIND_LEASE_V1) {
+            return Err("wrong_token_kind");
+        }
+        if raw.len() != 1 + 16 + 16 + 4 + 8 + 4 + 8 + MAC_LEN {
+            return Err("invalid_lease_token");
+        }
+        let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
+        let mut epoch = [0u8; 16];
+        epoch.copy_from_slice(&payload[1..17]);
+        let want = mac16(&mac_key(key, &epoch), payload);
+        if mac
+            .iter()
+            .zip(want.iter())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            != 0
+        {
+            return Err("invalid_lease_token");
+        }
+        let mut key_hash = [0u8; 16];
+        key_hash.copy_from_slice(&payload[17..33]);
+        let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
+        let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
+        let lease_gen = u32::from_le_bytes(payload[45..49].try_into().unwrap());
+        let deadline_ms = i64::from_le_bytes(payload[49..57].try_into().unwrap());
+        if &epoch != expect_epoch {
+            return Err("invalid_lease_token");
+        }
+        Ok(LeaseToken {
+            msg: MessageId {
+                epoch,
+                key_hash,
+                seg_id,
+                offset,
+            },
+            lease_gen,
+            deadline_ms,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +430,41 @@ mod tests {
         );
         assert_eq!(
             KeyCursor::decode(&s, &key(), &[1; 16], &[2; 16]).unwrap_err(),
+            "wrong_cursor_kind"
+        );
+    }
+
+    #[test]
+    fn message_and_lease_tokens_roundtrip_and_fence() {
+        let m = MessageId {
+            epoch: [1; 16],
+            key_hash: [2; 16],
+            seg_id: 3,
+            offset: 44,
+        };
+        let ms = m.encode(&key());
+        assert_eq!(MessageId::decode(&ms, &key(), &[1; 16]).unwrap(), m);
+        assert!(MessageId::decode(&ms, &key(), &[9; 16]).is_err());
+        assert!(MessageId::decode(&ms, &StreamKey([8u8; 32]), &[1; 16]).is_err());
+        let lt = LeaseToken {
+            msg: m.clone(),
+            lease_gen: 7,
+            deadline_ms: 123_456,
+        };
+        let ls = lt.encode(&key());
+        assert_eq!(LeaseToken::decode(&ls, &key(), &[1; 16]).unwrap(), lt);
+        // Cross-kind: a lease token is not a message id, a message id
+        // is not a cursor, and vice versa.
+        assert_eq!(
+            MessageId::decode(&ls, &key(), &[1; 16]).unwrap_err(),
+            "wrong_token_kind"
+        );
+        assert_eq!(
+            LeaseToken::decode(&ms, &key(), &[1; 16]).unwrap_err(),
+            "wrong_token_kind"
+        );
+        assert_eq!(
+            KeyCursor::decode(&ms, &key(), &[1; 16], &[2; 16]).unwrap_err(),
             "wrong_cursor_kind"
         );
     }

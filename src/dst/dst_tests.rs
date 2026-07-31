@@ -7503,3 +7503,381 @@ async fn product_producer_hash_survives_split() {
     assert_eq!(v["error"]["code"], "producer_sequence_reused");
     engine_shutdown(&state).await;
 }
+
+/// Stage 2a: consumer config lifecycle — idempotent create, conflict,
+/// get, delete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_config_lifecycle() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cc",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let cfg = br#"{"visibilityTimeoutMs":5000,"maxAttempts":3}"#;
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        cfg,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        cfg,
+    )
+    .await;
+    assert_eq!(st, 200, "identical config is idempotent");
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"visibilityTimeoutMs":9000}"#,
+    )
+    .await;
+    assert_eq!(st, 409);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "consumer_config_conflict");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["visibilityTimeoutMs"], 5000);
+    assert_eq!(v["maxAttempts"], 3);
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/cc/consumers/nope",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 404);
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 204);
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 404);
+    engine_shutdown(&state).await;
+}
+
+/// Stage 2a §2.3: per-key FIFO — a key with an active lease blocks its
+/// later records; other keys flow; the ack unblocks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_per_key_fifo() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cf",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for (k, n) in [("a", 0), ("a", 1), ("b", 0)] {
+        let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/cf/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            body.as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cf/consumers/w",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cf/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"max":10}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    let got: Vec<(String, i64)> = msgs
+        .iter()
+        .map(|m| {
+            (
+                m["routingKey"].as_str().unwrap().to_string(),
+                m["value"]["n"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        vec![("a".into(), 0), ("b".into(), 0)],
+        "a/1 must be blocked behind a/0's active lease"
+    );
+    let a0_token = msgs[0]["leaseToken"].as_str().unwrap().to_string();
+
+    // Ack a/0: a/1 becomes deliverable.
+    let body = format!("{{\"acks\":[{{\"leaseToken\":\"{a0_token}\"}}]}}");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cf/consumers/w:settle",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["acked"], 1);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cf/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"max":10}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["routingKey"], "a");
+    assert_eq!(msgs[0]["value"]["n"], 1);
+    assert_eq!(msgs[0]["attempts"], 1);
+    engine_shutdown(&state).await;
+}
+
+/// Stage 2a §2.7: visibility expiry redelivers with attempts+1; a stale
+/// (superseded) lease token is counted and cannot settle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_expiry_and_stale_fencing() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cv",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cv/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "k"),
+        ],
+        b"{\"n\":0}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cv/consumers/w",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cv/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"visibilityMs":1000}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let first = v["messages"][0]["leaseToken"].as_str().unwrap().to_string();
+    assert_eq!(v["messages"][0]["attempts"], 1);
+
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cv/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"visibilityMs":30000}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["messages"][0]["attempts"], 2, "expired lease redelivers");
+    let fresh = v["messages"][0]["leaseToken"].as_str().unwrap().to_string();
+
+    // The superseded first token is stale: counted, cannot ack.
+    let body = format!("{{\"acks\":[{{\"leaseToken\":\"{first}\"}}]}}");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cv/consumers/w:settle",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["acked"], 0);
+    assert_eq!(v["stale"], 1);
+    // The fresh token acks.
+    let body = format!("{{\"acks\":[{{\"leaseToken\":\"{fresh}\"}}]}}");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cv/consumers/w:settle",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["acked"], 1);
+    engine_shutdown(&state).await;
+}
+
+/// Stage 2a §2.8: exceeding maxAttempts appends ONE record to the
+/// dead-letter stream (durable before the source settles) and the
+/// source message leaves the queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_dlq_flow() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    for s in ["cd", "cd-dlq"] {
+        let path = format!("/v1/streams/{s}");
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &path,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cd/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "p"),
+        ],
+        b"{\"poison\":true}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cd/consumers/w",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"maxAttempts":1,"deadLetterStream":"cd-dlq"}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Attempt 1, then let it expire.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cd/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"visibilityMs":1000}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    // The next pull classifies it poison: DLQ append + source settle.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cd/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert!(
+        v["messages"].as_array().unwrap().is_empty(),
+        "poison is not redelivered"
+    );
+    // DLQ stream holds exactly one record with the source metadata.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/cd-dlq/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "exactly one DLQ record");
+    assert_eq!(recs[0]["sourceStream"], "cd");
+    assert_eq!(recs[0]["consumer"], "w");
+    assert_eq!(recs[0]["routingKey"], "p");
+    assert_eq!(recs[0]["attempts"], 1);
+    assert_eq!(recs[0]["value"]["poison"], true);
+    // Queue is drained: another pull with the key unblocked and empty
+    // backlog.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cd/consumers/w:pull",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert!(v["messages"].as_array().unwrap().is_empty());
+    engine_shutdown(&state).await;
+}

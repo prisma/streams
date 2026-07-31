@@ -1502,6 +1502,22 @@ impl ShardEngine {
         Ok(v.and_then(|b| decode_tail(&b)).map_or(0, |t| t.absorbed))
     }
 
+    /// Durable consumer-cursor hint for the pull pre-read window. A
+    /// stale value only widens the window; the committer's
+    /// stop-at-uncovered rule keeps leasing exact.
+    pub async fn queue_cursor(
+        &self,
+        hash: [u8; 16],
+        consumer: &str,
+    ) -> Result<u64, slatedb::Error> {
+        Ok(self
+            .db
+            .get(crate::queue::cursor_key(&hash, consumer))
+            .await?
+            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])))
+            .unwrap_or(0))
+    }
+
     pub async fn submit_queue(
         &self,
         hash: [u8; 16],
