@@ -85,6 +85,14 @@ pub struct StreamDesc {
     /// created without watches; JSON streams only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub watch_definitions: Vec<WatchDefinition>,
+    /// Cleanup this tombstone still owes its parent. Deletion marks the
+    /// child dead and then releases the parent's reference; a crash in
+    /// between used to leave the parent holding a reference to a fork
+    /// that no longer exists, with no way to notice — a retry bounced
+    /// off the "already dead" check before reaching the release. The
+    /// flag survives on the tombstone, so any later delete finishes it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parent_ref_pending: bool,
     /// Verifier for signed watch-observation URLs, base64 of
     /// `crypto::wait_sig_key`. Written once at create, from the key the
     /// creator presented; the server never holds the stream key itself,
@@ -996,6 +1004,7 @@ mod tests {
             sealed: false,
             watch_definitions: Vec::new(),
         watch_sig_key: None,
+        parent_ref_pending: false,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),

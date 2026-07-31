@@ -1399,7 +1399,12 @@ pub(crate) async fn read_stitched(
             handle_of(state, d).await?
         };
         state.keys.put(handle.hash, key.clone(), *epoch);
-        let part = read_merged(key, epoch, &handle, &engine, cursor, None, budget).await?;
+        // The DEFAULT key only. `None` here meant "every routing key",
+        // so a raw fork of a collection that product clients had
+        // written keyed records to replayed all of them through the
+        // standards route — the one surface whose contract is that it
+        // IS the default-key stream.
+        let part = read_merged(key, epoch, &handle, &engine, cursor, Some(""), budget).await?;
         let mut advanced = false;
         for r in part.recs {
             if r.off >= cap {
@@ -1633,6 +1638,7 @@ fn fresh_desc(
         sealed: false,
         watch_definitions: Vec::new(),
         watch_sig_key: None,
+        parent_ref_pending: false,
         layout_version: crate::registry::LAYOUT_VERSION,
     }
 }
@@ -2287,22 +2293,56 @@ async fn create_stream(
                 }
                 state.registry.invalidate(&name);
             }
-            if let Err(e) = state
+            match state
                 .registry
                 .cas_update_retry(&fc.source, |d| {
-                    if d.deleted || d.fork_children.iter().any(|c| c == &fork_id) {
+                    // The reference is installed on the incarnation the
+                    // child actually forked. Between validating the
+                    // source and getting here it can be recreated,
+                    // start expiring, begin sealing or begin a split —
+                    // and a reference installed on the wrong one leaves
+                    // a child whose data nobody is keeping.
+                    if d.deleted
+                        || d.soft_deleted
+                        || d.init.is_some()
+                        || d.stream_epoch != fc.source_desc.stream_epoch
+                        || d.sealing.is_some()
+                        || d.segments.as_ref().is_some_and(|m| {
+                            m.pending.is_some() || m.segments.iter().filter(|s| s.is_live()).count() > 1
+                        })
+                    {
                         return false;
+                    }
+                    if d.fork_children.iter().any(|c| c == &fork_id) {
+                        return true; // already installed: idempotent
                     }
                     d.fork_children.push(fork_id.clone());
                     true
                 })
                 .await
             {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
+                Ok(true) => {}
+                Ok(false) => {
+                    // The source moved: recreated, deleted, sealing, or
+                    // splitting. The child exists but nothing is
+                    // keeping its data, so refuse rather than hand back
+                    // a fork with no anchor. Deleting the half-made
+                    // child is the delete path's job — which is now
+                    // resumable — so report the conflict and let the
+                    // caller retry against the current source.
+                    return err_resp(
+                        StatusCode::CONFLICT,
+                        "fork_source_changed",
+                        "the fork source changed while the fork was being created; retry",
+                    );
+                }
+                Err(e) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
             }
             state.registry.invalidate(&fc.source);
             match state.registry.get(&fc.source).await {
@@ -2483,6 +2523,14 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
         return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found");
     };
     if !desc_alive(&d) {
+        // A tombstone that still owes its parent a release finishes the
+        // job instead of bouncing: that outstanding reference is what
+        // keeps the source's data alive forever.
+        if d.parent_ref_pending {
+            if let Err(e) = delete_lifecycle(&state, &name).await {
+                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e);
+            }
+        }
         return gone_or_missing(Some(&d));
     }
     match delete_lifecycle(&state, &name).await {
@@ -2558,6 +2606,19 @@ fn delete_lifecycle(
             .forked_from
             .as_ref()
             .map(|f| (f.source.clone(), f.fork_id.clone()));
+        // Already a tombstone with an unpaid debt: just pay it.
+        if d.deleted && d.parent_ref_pending {
+            if let Some((src, fid)) = parent {
+                release_fork_ref(&state, &src, &fid).await?;
+                state
+                    .registry
+                    .update(&name, |x| x.parent_ref_pending = false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                state.registry.invalidate(&name);
+            }
+            return Ok(());
+        }
         if !d.fork_children.is_empty() {
             state
                 .registry
@@ -2566,13 +2627,29 @@ fn delete_lifecycle(
                 .map_err(|e| e.to_string())?;
             return Ok(());
         }
+        // Record the debt BEFORE the tombstone, so a crash between the
+        // two leaves evidence a later delete can act on.
         state
             .registry
-            .update(&name, |x| x.deleted = true)
+            .update(&name, |x| {
+                x.deleted = true;
+                x.parent_ref_pending = parent.is_some();
+            })
             .await
             .map_err(|e| e.to_string())?;
         if let Some((src, fid)) = parent {
             release_fork_ref(&state, &src, &fid).await?;
+            // Released: the tombstone owes nothing more. This is
+            // `update`, not `cas_update`, because the descriptor is
+            // already deleted and CAS refuses tombstones by design —
+            // which is exactly why the debt has to be recorded ON the
+            // tombstone and cleared this way.
+            state
+                .registry
+                .update(&name, |x| x.parent_ref_pending = false)
+                .await
+                .map_err(|e| e.to_string())?;
+            state.registry.invalidate(&name);
         }
         Ok(())
     })

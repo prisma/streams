@@ -9462,6 +9462,127 @@ async fn topology_transitions_are_fenced_by_sealing() {
     engine_shutdown(&state).await;
 }
 
+/// The raw route is the DEFAULT-key stream — including through a fork.
+/// Stitched reads passed no key filter at all, so a raw fork of a
+/// collection that product clients had written keyed records to
+/// replayed every one of them through the standards surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_forks_show_only_the_default_key() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/forkiso", &ct, br#"[{"raw":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    // Product traffic on other routing keys, interleaved with raw.
+    for i in 0..3 {
+        for k in ["ka", "kb"] {
+            let body = format!("{{\"k\":\"{k}\",\"n\":{i}}}");
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/forkiso/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                body.as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200);
+        }
+        let body = format!("[{{\"raw\":{}}}]", i + 1);
+        let (st, _, _) = hreq(addr, "POST", "/v1/stream/forkiso", &ct, body.as_bytes()).await;
+        assert!(st == 200 || st == 204);
+    }
+    // Fork it at the tail and read the fork through the raw route.
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/forkiso", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let (st, _, b) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/forkiso-child",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "forkiso"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    for name in ["forkiso", "forkiso-child"] {
+        let (st, _, b) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+        assert_eq!(st, 200);
+        let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+        assert!(
+            recs.iter().all(|r| r.get("k").is_none()),
+            "{name} leaked another routing key: {recs:?}"
+        );
+        assert_eq!(recs.len(), 4, "{name} default-key records: {recs:?}");
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Deleting a fork tombstones the child and then releases the parent's
+/// reference. A crash in between left the parent pinning data for a
+/// fork that no longer exists — and a retry bounced off the
+/// already-dead check before it could finish the job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_half_deleted_fork_finishes_its_cleanup() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dsrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/dsrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/dchild",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "dsrc"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201);
+    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    assert_eq!(src.fork_children.len(), 1, "the source holds the reference");
+
+    // Simulate the crash: tombstone the child with the debt recorded,
+    // exactly as delete_lifecycle writes it before releasing.
+    state
+        .registry
+        .cas_update("dchild", |d| {
+            d.deleted = true;
+            d.parent_ref_pending = true;
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("dchild");
+    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    assert_eq!(src.fork_children.len(), 1, "the reference is still leaked");
+
+    // A retried DELETE finishes the cleanup rather than bouncing.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/dchild", &[], b"").await;
+    assert!(st == 404 || st == 410 || st == 204, "retry delete: {st}");
+    state.registry.invalidate("dsrc");
+    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    assert!(
+        src.fork_children.is_empty(),
+        "the parent still pins a dead fork: {:?}",
+        src.fork_children
+    );
+    state.registry.invalidate("dchild");
+    let child = state.registry.get("dchild").await.unwrap().unwrap();
+    assert!(!child.parent_ref_pending, "the debt is settled");
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation
@@ -10381,6 +10502,7 @@ async fn catalog_pages_without_scanning_the_world() {
             sealed: false,
             watch_definitions: Vec::new(),
             watch_sig_key: None,
+            parent_ref_pending: false,
             layout_version: crate::registry::LAYOUT_VERSION,
         };
         state.registry.create(d).await.unwrap();

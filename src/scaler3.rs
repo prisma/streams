@@ -729,6 +729,7 @@ mod tests {
             sealed: false,
             watch_definitions: Vec::new(),
         watch_sig_key: None,
+        parent_ref_pending: false,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),
