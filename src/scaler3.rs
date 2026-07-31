@@ -698,6 +698,7 @@ mod tests {
             soft_deleted: false,
             forked_from: None,
             fork_refs: 0,
+            init: None,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
     }

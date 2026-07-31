@@ -814,7 +814,12 @@ async fn product_seal(
 /// cannot surface them.
 pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result<(), String> {
     let desc = match state.registry.get(name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return Err("stream is still being created".into());
+            }
+            d
+        }
         Ok(_) => return Ok(()),
         Err(e) => return Err(e.to_string()),
     };
@@ -837,7 +842,18 @@ pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result
 
 async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         Ok(_) => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -969,7 +985,18 @@ async fn product_append_inner(
         );
     }
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         Ok(_) => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -1445,7 +1472,18 @@ async fn product_read(
         );
     }
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         Ok(_) => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -1646,7 +1684,18 @@ async fn product_scan(
     };
     let q = parse_query(query);
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         Ok(_) => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -1950,7 +1999,18 @@ async fn consumer_ctx(
         ));
     };
     let desc = match state.registry.get(name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return Err(perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                ));
+            }
+            d
+        }
         Ok(_) => {
             return Err(perr(
                 StatusCode::NOT_FOUND,
@@ -2831,7 +2891,18 @@ fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
 
 async fn product_watches_list(state: Arc<AppState>, name: String) -> Response {
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         Ok(_) => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -2862,7 +2933,18 @@ async fn product_watches_list(state: Arc<AppState>, name: String) -> Response {
 
 async fn product_watch_get(state: Arc<AppState>, name: String, w: String) -> Response {
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         _ => {
             return perr(
                 StatusCode::NOT_FOUND,
@@ -2903,7 +2985,18 @@ async fn product_watch_wait(
     query: &str,
 ) -> Response {
     let desc = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
         _ => {
             return perr(
                 StatusCode::NOT_FOUND,

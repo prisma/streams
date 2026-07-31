@@ -3323,10 +3323,26 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
     }
     // Leave the tail of the debt to the PRODUCTION driver: the 5 s flush
     // ticker must finish the job with no help from the test.
+    //
+    // Wait on the INVARIANT (every stream trimmed to its safe target),
+    // not on the debt set being momentarily empty: the debt set is a
+    // work queue, and a stream whose handle is evicted and reloaded
+    // re-enters it, so `trim_stats().0 == 0` is a transient the
+    // maintenance pass can show while work remains — that proxy made
+    // this test flake roughly 1 run in 3 under full-suite load.
     let mut drained = false;
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        if engine.trim_stats().0 == 0 {
+        let mut all = true;
+        for h in &hashes {
+            let st = engine.stream_handle(*h).await.unwrap();
+            let f = { st.state.lock().unwrap().durable.clone() };
+            if f.trimmed < f.trim_safe_to {
+                all = false;
+                break;
+            }
+        }
+        if all && engine.trim_stats().0 == 0 {
             drained = true;
             break;
         }
@@ -4663,7 +4679,16 @@ async fn hreq(
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
     let mut buf = Vec::new();
-    s.read_to_end(&mut buf).await.unwrap();
+    // A peer RESET after a complete response is normal on macOS when
+    // the server closes while the client still has unread request bytes
+    // queued; treat it as end-of-response and let the parse below judge
+    // completeness (a truly truncated read fails at the header
+    // terminator).
+    if let Err(e) = s.read_to_end(&mut buf).await {
+        if e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty() {
+            panic!("response read: {e}");
+        }
+    }
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -6095,7 +6120,16 @@ async fn preq(
     s.write_all(req.as_bytes()).await.unwrap();
     s.write_all(body).await.unwrap();
     let mut buf = Vec::new();
-    s.read_to_end(&mut buf).await.unwrap();
+    // A peer RESET after a complete response is normal on macOS when
+    // the server closes while the client still has unread request bytes
+    // queued; treat it as end-of-response and let the parse below judge
+    // completeness (a truly truncated read fails at the header
+    // terminator).
+    if let Err(e) = s.read_to_end(&mut buf).await {
+        if e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty() {
+            panic!("response read: {e}");
+        }
+    }
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -8890,5 +8924,98 @@ async fn product_requires_the_account_token() {
     );
     let (st, _, _) = preq(addr, "OPTIONS", "/v1/streams", &[], b"").await;
     assert!(st == 200 || st == 204, "catalog preflight status {st}");
+    engine_shutdown(&state).await;
+}
+
+/// AUDIT P0 (the field create anomaly, made deterministic): a replayed
+/// PUT must never observe a published-but-uninitialized descriptor and
+/// answer success for a stream whose initial content never landed. The
+/// replay JOINS the initialization; a DIFFERENT request conflicts; and
+/// reads/appends against an initializing stream get a retryable answer
+/// rather than an empty stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn create_replay_never_loses_the_initial_body() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+
+    // Two identical PUTs racing (an edge replay). Exactly one creates;
+    // BOTH must see the initial content durable when they answer.
+    let a =
+        tokio::spawn(
+            async move { hreq(addr, "PUT", "/v1/stream/replay1", &ct, br#"[{"n":1}]"#).await },
+        );
+    let b =
+        tokio::spawn(
+            async move { hreq(addr, "PUT", "/v1/stream/replay1", &ct, br#"[{"n":1}]"#).await },
+        );
+    let (sa, _, ba) = a.await.unwrap();
+    let (sb, _, bb) = b.await.unwrap();
+    assert!(
+        sa == 201 || sa == 200,
+        "A {sa}: {}",
+        String::from_utf8_lossy(&ba)
+    );
+    assert!(
+        sb == 201 || sb == 200,
+        "B {sb}: {}",
+        String::from_utf8_lossy(&bb)
+    );
+    let (st, _, body) = hreq(addr, "GET", "/v1/stream/replay1", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(recs.len(), 1, "initial body must be durable: {recs:?}");
+    assert_eq!(recs[0]["n"], 1);
+
+    // A descriptor stuck in Initializing (the creator died): reads and
+    // appends are retryable, NOT an empty stream, and the SAME request
+    // resumes it while a different one conflicts.
+    let desc = state.registry.get("replay1").await.unwrap().unwrap();
+    assert!(desc.init.is_none(), "a completed create publishes Ready");
+    // Plant an initializing incarnation by hand (a crashed creator).
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay2", &ct, br#"[{"n":7}]"#).await;
+    assert_eq!(st, 201);
+    state
+        .registry
+        .cas_update("replay2", |d| {
+            d.init = Some(crate::registry::InitState {
+                request_hash: "deadbeef".into(),
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("replay2");
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/replay2", &[], b"").await;
+    assert_eq!(st, 503, "reads of an initializing stream are retryable");
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/replay2", &ct, br#"[{"n":8}]"#).await;
+    assert_eq!(st, 503, "appends to an initializing stream are retryable");
+    // A DIFFERENT creation request conflicts rather than hijacking it.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay2", &ct, br#"[{"other":1}]"#).await;
+    assert_eq!(
+        st, 409,
+        "a different request must not steal an in-flight create"
+    );
+
+    // A STALE claim (dead creator) stops blocking so the name is never
+    // wedged: the same request takes over and completes it.
+    state
+        .registry
+        .cas_update("replay2", |d| {
+            d.init = Some(crate::registry::InitState {
+                request_hash: "deadbeef".into(),
+                claimed_ms: crate::shard::now_ms() - crate::registry::INIT_CLAIM_MS - 1_000,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("replay2");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay2", &ct, br#"[{"other":1}]"#).await;
+    assert_eq!(
+        st, 409,
+        "stale claim + different config is still a config conflict"
+    );
     engine_shutdown(&state).await;
 }

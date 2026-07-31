@@ -38,6 +38,16 @@ pub struct StreamDesc {
     /// zero on a soft-deleted stream cascades the hard delete).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub fork_refs: u32,
+    /// Durable creation state (audit P0). A descriptor is published
+    /// BEFORE its initial content, fork tail, and source reference
+    /// exist; without this, a replayed PUT could observe the
+    /// descriptor, skip initialization, and answer success for a
+    /// stream whose initial body never landed (the 2026-07-31 field
+    /// anomaly). `Initializing` names the operation so a retry with the
+    /// same request joins/resumes it instead of returning early, and a
+    /// different request conflicts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init: Option<InitState>,
     /// Configured content type (create-time config; appends must match).
     #[serde(default = "default_content_type")]
     pub content_type: String,
@@ -74,6 +84,22 @@ pub struct StreamDesc {
 /// reads. There are no layout bridges: opening a namespace written by a
 /// different layout is refused (pre-launch hard cutover).
 pub const LAYOUT_VERSION: u32 = 3;
+
+/// Creation-in-progress marker (audit P0). Absent = Ready.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InitState {
+    /// Identifies the creating request; a retry carrying the same hash
+    /// resumes, a different one conflicts.
+    pub request_hash: String,
+    /// Wall clock of the last claim — a creator that dies leaves this
+    /// stale and the next retry takes over.
+    pub claimed_ms: i64,
+}
+
+/// How long an Initializing claim is honored before another request may
+/// take it over (the creator is a single in-process task; a crash or
+/// cancellation must not wedge the name forever).
+pub const INIT_CLAIM_MS: i64 = 15_000;
 
 /// Fork parentage (pinned DS protocol fork contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -584,10 +610,34 @@ impl Registry {
     /// when `mutate` declined or the descriptor is gone; etag conflicts
     /// error and the caller re-evaluates (another instance decided
     /// first — the same discipline segmap.json used).
+    /// `cas_update` with a bounded retry on the benign precondition
+    /// conflict (another writer touched the descriptor between our read
+    /// and our put). Single-shot CAS lost races three separate times in
+    /// review — the TTL slide, the readiness publication, and fork
+    /// reference accounting — so the retry lives here once.
+    pub async fn cas_update_retry(
+        &self,
+        name: &str,
+        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
+    ) -> anyhow::Result<bool> {
+        let mut last = None;
+        for attempt in 0..5u32 {
+            self.invalidate(name);
+            match self.cas_update(name, &mut mutate).await {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("cas_update_retry exhausted")))
+    }
+
     pub async fn cas_update(
         &self,
         name: &str,
-        mutate: impl FnOnce(&mut StreamDesc) -> bool,
+        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
     ) -> anyhow::Result<bool> {
         let path = desc_path(name);
         let got = match self.store.get(&path).await {
@@ -775,6 +825,7 @@ mod tests {
             soft_deleted: false,
             forked_from: None,
             fork_refs: 0,
+            init: None,
             layout_version: LAYOUT_VERSION,
         }
     }

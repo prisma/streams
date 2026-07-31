@@ -1161,6 +1161,27 @@ pub(crate) fn desc_alive(desc: &StreamDesc) -> bool {
     !desc.deleted && !desc.soft_deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
 }
 
+/// A live descriptor whose initialization has not completed (audit
+/// P0): its content is not durable yet, so readers and appenders get a
+/// retryable answer rather than an empty stream. A stale claim (dead
+/// creator) stops blocking so the name is never wedged.
+pub(crate) fn initializing(desc: &StreamDesc) -> bool {
+    desc.init
+        .as_ref()
+        .is_some_and(|i| now_ms() - i.claimed_ms <= crate::registry::INIT_CLAIM_MS)
+}
+
+fn creating_resp() -> Response {
+    let mut r = err_resp(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "creating",
+        "stream is still being created; retry",
+    );
+    r.headers_mut()
+        .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+    r
+}
+
 /// Not-alive answer per the pinned fork lifecycle: a soft-deleted (or
 /// expired-with-live-forks) stream is GONE (410) — its data still
 /// backs forks and its name cannot be silently reused — while an
@@ -1383,33 +1404,23 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
     tokio::spawn(async move {
         // cas_update is single-shot; a slide can race another descriptor
         // write (e.g. the close path's seal) — retry the benign conflict.
-        for attempt in 0..4u32 {
-            state.registry.invalidate(&name);
-            match state
-                .registry
-                .cas_update(&name, |d| {
-                    if d.ttl_secs.is_none() {
-                        return false;
-                    }
-                    match d.expires_at_ms {
-                        Some(e) if e < target => {
-                            d.expires_at_ms = Some(target);
-                            true
-                        }
-                        _ => false,
-                    }
-                })
-                .await
-            {
-                Ok(_) => break,
-                Err(e) if attempt + 1 < 4 => {
-                    tracing::debug!(stream = %name, attempt, "ttl slide retry: {e}");
-                    tokio::time::sleep(Duration::from_millis(20 << attempt)).await;
+        if let Err(e) = state
+            .registry
+            .cas_update_retry(&name, |d| {
+                if d.ttl_secs.is_none() {
+                    return false;
                 }
-                Err(e) => {
-                    tracing::warn!(stream = %name, "ttl slide lost: {e}");
+                match d.expires_at_ms {
+                    Some(e) if e < target => {
+                        d.expires_at_ms = Some(target);
+                        true
+                    }
+                    _ => false,
                 }
-            }
+            })
+            .await
+        {
+            tracing::warn!(stream = %name, "ttl slide lost: {e}");
         }
         state.registry.invalidate(&name);
         sliding().lock().unwrap().remove(&name);
@@ -1521,6 +1532,7 @@ fn fresh_desc(
         soft_deleted: false,
         forked_from: None,
         fork_refs: 0,
+        init: None,
         content_type,
         ttl_secs,
         segments: None,
@@ -1880,6 +1892,27 @@ async fn create_stream(
         fork_sub: fc.sub,
     });
 
+    // Creation-request identity (audit P0): a replayed PUT hashes
+    // identically, so it JOINS an in-flight initialization instead of
+    // observing the descriptor and skipping the work.
+    let create_hash: String = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(content_type.as_bytes());
+        h.update([0u8]);
+        h.update(ttl_secs.unwrap_or(0).to_le_bytes());
+        h.update(expires_at_ms.unwrap_or(0).to_le_bytes());
+        h.update([u8::from(close)]);
+        h.update((body.len() as u64).to_le_bytes());
+        h.update(&body);
+        if let Some(fr) = &expected_fork_ref {
+            h.update(fr.source.as_bytes());
+            h.update(fr.fork_offset.to_le_bytes());
+            h.update(fr.fork_sub.to_le_bytes());
+        }
+        hex(&h.finalize()[..16])
+    };
+
     // Resolve existing.
     let existing = match state.registry.get(&name).await {
         Ok(v) => v,
@@ -1919,7 +1952,38 @@ async fn create_stream(
             }
             Ok((false, d))
         };
+    // An INITIALIZING descriptor (audit P0): its content is not durable
+    // yet. The same request resumes the work; a different request is a
+    // conflict, not an idempotent hit; a stale claim is taken over.
+    let mut resume_init = false;
+    if let Some(d) = existing.as_ref() {
+        if let Some(init) = &d.init {
+            if !desc_alive(d) {
+                // dead-and-initializing: fall through to the recreate arm
+            } else if init.request_hash != create_hash {
+                let stale = now_ms() - init.claimed_ms > crate::registry::INIT_CLAIM_MS;
+                if !stale {
+                    return err_resp(
+                        StatusCode::CONFLICT,
+                        "creating",
+                        "stream is being created by a different request",
+                    );
+                }
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "config_mismatch",
+                    "stream exists with different config",
+                );
+            } else {
+                resume_init = true;
+            }
+        }
+    }
+
     let (created, desc) = match existing {
+        // Resume: the SAME creation request found its own in-flight
+        // (or abandoned) initialization — redo it idempotently.
+        Some(d) if resume_init => (true, d),
         Some(d) if desc_alive(&d) => match validate_live(d) {
             Ok(v) => v,
             Err(r) => return r,
@@ -1951,6 +2015,10 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
+            fresh.init = Some(crate::registry::InitState {
+                request_hash: create_hash.clone(),
+                claimed_ms: now_ms(),
+            });
             match state
                 .registry
                 .recreate(&name, fresh, |d| !desc_alive(d) && !d.soft_deleted)
@@ -1980,6 +2048,10 @@ async fn create_stream(
                 expires_at_ms,
             );
             fresh.forked_from = expected_fork_ref.clone();
+            fresh.init = Some(crate::registry::InitState {
+                request_hash: create_hash.clone(),
+                claimed_ms: now_ms(),
+            });
             match state.registry.create(fresh).await {
                 Ok((true, d)) => (true, d),
                 Ok((false, d)) => {
@@ -1990,7 +2062,23 @@ async fn create_stream(
                     {
                         return err_resp(StatusCode::CONFLICT, "config_mismatch", "conflict");
                     }
-                    (false, d)
+                    // The winner may still be INITIALIZING (audit P0):
+                    // this replay must JOIN that initialization, not
+                    // answer success for content that is not durable
+                    // yet. Same request -> resume; different request ->
+                    // conflict.
+                    match d.init.as_ref() {
+                        Some(i) if i.request_hash == create_hash => (true, d),
+                        Some(i) if now_ms() - i.claimed_ms <= crate::registry::INIT_CLAIM_MS => {
+                            return err_resp(
+                                StatusCode::CONFLICT,
+                                "creating",
+                                "stream is being created by a different request",
+                            );
+                        }
+                        Some(_) => (true, d), // stale claim: take it over
+                        None => (false, d),
+                    }
                 }
                 Err(e) => {
                     return err_resp(
@@ -2035,7 +2123,7 @@ async fn create_stream(
             }
             if let Err(e) = state
                 .registry
-                .cas_update(&fc.source, |d| {
+                .cas_update_retry(&fc.source, |d| {
                     d.fork_refs += 1;
                     true
                 })
@@ -2065,7 +2153,17 @@ async fn create_stream(
         }
     };
     let mut closed_now = false;
-    if created && (!body.is_empty() || close || materialize_entry.is_some()) {
+    // Resume-safety (audit P0): a resumed initialization must not append
+    // the initial content twice. Own records begin at `base` (0, or the
+    // fork boundary); if the tail already advanced past it, the first
+    // attempt's append is durable and this attempt only republishes
+    // Ready.
+    let own_base = fork_ctx.as_ref().map(|fc| fc.boundary).unwrap_or(0);
+    let initial_content_pending = next <= own_base;
+    if created
+        && initial_content_pending
+        && (!body.is_empty() || close || materialize_entry.is_some())
+    {
         let mut entries: Vec<Bytes> = if body.is_empty() {
             Vec::new()
         } else if desc.is_json() {
@@ -2098,7 +2196,18 @@ async fn create_stream(
             seq: None,
             bytes,
             close,
-            producer: None,
+            // Exactly-once initial content (audit P0): the append
+            // carries a synthetic producer identity derived from the
+            // creation-request hash, so concurrent joiners and resumed
+            // attempts are deduplicated by the SAME committer machinery
+            // that guarantees producer idempotence — rather than by a
+            // read-then-check race.
+            producer: Some(crate::shard::ProducerReq {
+                id: format!("\u{0}init\u{0}{create_hash}"),
+                epoch: 1,
+                seq: 0,
+                request_hash: None,
+            }),
             deferred_error: None,
             touch: None,
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
@@ -2110,7 +2219,7 @@ async fn create_stream(
         match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
             Ok(Ok(Ok(ack))) => {
                 next = ack.next_offset;
-                closed_now = ack.closed;
+                closed_now = ack.closed || close;
             }
             _ => {
                 return err_resp(
@@ -2122,6 +2231,34 @@ async fn create_stream(
         }
     } else if !created && close {
         closed_now = true; // preserved on idempotent PUT of a closed stream
+    } else if created && !initial_content_pending {
+        // Resumed after the content already committed.
+        closed_now = close;
+    }
+
+    // Publish Ready: every durable initialization step (fork tail seed,
+    // source reference, initial content, close-on-create) has landed.
+    // Until this CAS, a replay resumes instead of observing a stream
+    // whose content never arrived.
+    if created {
+        if let Err(e) = state
+            .registry
+            .cas_update_retry(&name, |d| {
+                if d.init.is_none() {
+                    return false;
+                }
+                d.init = None;
+                true
+            })
+            .await
+        {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &format!("publishing stream readiness: {e}"),
+            );
+        }
+        state.registry.invalidate(&name);
     }
 
     let status = if created {
@@ -2177,7 +2314,7 @@ fn release_fork_ref(
     Box::pin(async move {
         state
             .registry
-            .cas_update(&src, |x| {
+            .cas_update_retry(&src, |x| {
                 if x.fork_refs > 0 {
                     x.fork_refs -= 1;
                 }
@@ -2335,6 +2472,9 @@ async fn append_core(
     // (LEGACY path, pre-v3 descriptors only; unified-model streams
     // resolve segments in-process below — docs/ROUTING-V3.md §2.)
     let mut desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if desc_alive(&d) && initializing(&d) => {
+            return creating_resp();
+        }
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(d) => {
             return gone_or_missing(d.as_ref());
@@ -3347,6 +3487,9 @@ pub(crate) async fn read_inner(
             );
         }
     };
+    if initializing(&desc) {
+        return creating_resp();
+    }
     if !head_only {
         touch_ttl(&state, &desc); // sliding idle expiry (HEAD never slides)
     }
