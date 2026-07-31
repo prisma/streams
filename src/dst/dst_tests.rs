@@ -6420,3 +6420,202 @@ async fn long_keyed_run_pages_with_progress() {
     assert!(pages >= 4, "24 MiB through 4 MiB pages (pages={pages})");
     engine.begin_close();
 }
+
+/// Review blocker 4: a sequence the PARENT accepted must conflict on
+/// the child — Stream-Seq resolves through the sealed predecessor
+/// chain (nearest identity wins), and the next sequence continues.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_seq_resolves_through_predecessors() {
+    let store = mem();
+    let key = skey();
+    let parent = [0xD1u8; 16];
+    let child = [0xD2u8; 16];
+    let db = slatedb::Db::builder("dst-seqchain", store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-seqchain".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: Option<&str>, close: bool| {
+        let engine = engine.clone();
+        let key = key.clone();
+        let seq = seq.map(|s| s.to_string());
+        async move {
+            let subkey = crate::crypto::derive_subkey(&key, &identity, "sk", 0);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let req = crate::shard::AppendReq {
+                enqueued_at: std::time::Instant::now(),
+                hash: identity,
+                route: identity,
+                entries: if close {
+                    Vec::new()
+                } else {
+                    vec![bytes::Bytes::from_static(b"{\"s\":1}")]
+                },
+                usage: crate::usage::counters(&identity),
+                routing_key: "sk".to_string(),
+                key_hash: crate::crypto::stream_hash("sk"),
+                producer_lineage: lineage,
+                key_version: 0,
+                subkey,
+                ts_hint_ms: None,
+                seq,
+                bytes: 0,
+                close,
+                producer: None,
+                deferred_error: None,
+                touch: None,
+                resp: tx,
+            };
+            assert!(engine.try_enqueue(req).is_ok());
+            rx.await.expect("resp")
+        }
+    };
+
+    send(parent, vec![], Some("s10"), false)
+        .await
+        .expect("parent accepts s10");
+    send(parent, vec![], None, true).await.expect("seal parent");
+
+    // The parent's lane must gate the child through the chain.
+    match send(child, vec![parent], Some("s10"), false).await {
+        Err(crate::shard::AppendErr::SeqConflict { current }) => {
+            assert_eq!(current.as_deref(), Some("s10"));
+        }
+        other => panic!("s10 on the child must conflict, got {other:?}"),
+    }
+    match send(child, vec![parent], Some("s09"), false).await {
+        Err(crate::shard::AppendErr::SeqConflict { .. }) => {}
+        other => panic!("s09 on the child must conflict, got {other:?}"),
+    }
+    let ack = send(child, vec![parent], Some("s11"), false)
+        .await
+        .expect("s11 advances the chained lane");
+    assert_eq!(ack.last_offset, 0, "first real child record");
+    engine.begin_close();
+}
+
+/// Review finding 5: producer sessions are scoped per ROUTING KEY. One
+/// producer id runs independent sequence lanes on two keys of one
+/// segment, and each lane follows ITS key through a split.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn producer_lanes_scoped_per_routing_key() {
+    let store = mem();
+    let key = skey();
+    let parent = [0xD3u8; 16];
+    let child = [0xD4u8; 16];
+    let db = slatedb::Db::builder("dst-prodkeys", store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-prodkeys".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+    );
+    let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, rk: &str, seq: u64, close: bool| {
+        let engine = engine.clone();
+        let key = key.clone();
+        let rk = rk.to_string();
+        async move {
+            let subkey = crate::crypto::derive_subkey(&key, &identity, &rk, 0);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let req = crate::shard::AppendReq {
+                enqueued_at: std::time::Instant::now(),
+                hash: identity,
+                route: identity,
+                entries: if close {
+                    Vec::new()
+                } else {
+                    vec![bytes::Bytes::from_static(b"{\"p\":1}")]
+                },
+                usage: crate::usage::counters(&identity),
+                routing_key: rk.clone(),
+                key_hash: crate::crypto::stream_hash(&rk),
+                producer_lineage: lineage,
+                key_version: 0,
+                subkey,
+                ts_hint_ms: None,
+                seq: None,
+                bytes: 0,
+                close,
+                producer: if close {
+                    None
+                } else {
+                    Some(crate::shard::ProducerReq {
+                        id: "prod-x".into(),
+                        epoch: 1,
+                        seq,
+                    })
+                },
+                deferred_error: None,
+                touch: None,
+                resp: tx,
+            };
+            assert!(engine.try_enqueue(req).is_ok());
+            rx.await.expect("resp")
+        }
+    };
+
+    // Alternating sequences on two keys, ONE producer id: independent
+    // lanes must both start at 0 and advance without cross-talk.
+    let k1s0 = send(parent, vec![], "k1", 0, false).await.expect("k1 s0");
+    assert!(!k1s0.duplicate);
+    let k2s0 = send(parent, vec![], "k2", 0, false).await.expect("k2 s0");
+    assert!(!k2s0.duplicate, "k2's lane is independent of k1's");
+    let k1s1 = send(parent, vec![], "k1", 1, false).await.expect("k1 s1");
+    assert!(!k1s1.duplicate);
+    let k2s1 = send(parent, vec![], "k2", 1, false).await.expect("k2 s1");
+    assert!(!k2s1.duplicate);
+
+    send(parent, vec![], "k1", 9, true).await.expect("seal");
+
+    // Across the split, each key's duplicate answers with ITS OWN
+    // original offset — not the other key's, not the tail.
+    let d1 = send(child, vec![parent], "k1", 1, false)
+        .await
+        .expect("k1 retry");
+    assert!(d1.duplicate);
+    assert_eq!(d1.last_offset, k1s1.last_offset, "k1's own offset");
+    let d2 = send(child, vec![parent], "k2", 1, false)
+        .await
+        .expect("k2 retry");
+    assert!(d2.duplicate);
+    assert_eq!(d2.last_offset, k2s1.last_offset, "k2's own offset");
+
+    // And fresh sequences continue independently on the child.
+    assert!(
+        !send(child, vec![parent], "k1", 2, false)
+            .await
+            .expect("k1 s2")
+            .duplicate
+    );
+    assert!(
+        !send(child, vec![parent], "k2", 2, false)
+            .await
+            .expect("k2 s2")
+            .duplicate
+    );
+    engine.begin_close();
+}

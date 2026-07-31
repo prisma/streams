@@ -133,10 +133,16 @@ pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-pub fn producer_key(hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17 + producer_id.len());
+pub fn producer_key(hash: &[u8; 16], key_hash: &[u8; 16], producer_id: &str) -> Vec<u8> {
+    // <segment identity> 'q' <routing-key hash> <producer id> — producer
+    // sessions are scoped per ROUTING KEY (review finding 5): one
+    // producer id keeps independent sequence lanes for different keys,
+    // and the scope does not change across a split (each key's lane
+    // follows its key through the predecessor chain).
+    let mut k = Vec::with_capacity(33 + producer_id.len());
     k.extend_from_slice(hash);
     k.push(b'q');
+    k.extend_from_slice(key_hash);
     k.extend_from_slice(producer_id.as_bytes());
     k
 }
@@ -220,7 +226,7 @@ pub struct StreamState {
     /// offset instead of whatever the tail happens to be when the retry
     /// arrives — with interleaved appends those differ, and clients use
     /// the ack offset for read-your-write.
-    pub producers: HashMap<String, (u64, u64, u64)>,
+    pub producers: HashMap<([u8; 16], String), (u64, u64, u64)>,
     /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
     /// lazily from the durable `s` rows and applied by the committer.
     pub seqs: HashMap<[u8; 16], String>,
@@ -1325,14 +1331,34 @@ impl ShardEngine {
     /// commit landed before a split — the caller stages it locally so
     /// the duplicate check answers with the ORIGINAL offset and no new
     /// offset is consumed.
+    /// Split-safe Stream-Seq (review blocker 4): a sequence lane lives
+    /// per (segment, routing key), but a child segment starts empty —
+    /// without consulting its sealed predecessors, a sequence the
+    /// PARENT already accepted would be accepted again on the child.
+    /// Nearest identity wins, exactly like the producer chain.
+    async fn load_seq_chain(
+        &self,
+        own: &[u8; 16],
+        lineage: &[[u8; 16]],
+        key_hash: &[u8; 16],
+    ) -> Result<Option<String>, slatedb::Error> {
+        for identity in std::iter::once(own).chain(lineage.iter()) {
+            if let Some(v) = self.db.get(seq_key(identity, key_hash)).await? {
+                return Ok(String::from_utf8(v.to_vec()).ok());
+            }
+        }
+        Ok(None)
+    }
+
     async fn load_producer_chain(
         &self,
         own: &[u8; 16],
         lineage: &[[u8; 16]],
+        key_hash: &[u8; 16],
         pid: &str,
     ) -> Result<Option<(u64, u64, u64)>, slatedb::Error> {
         for identity in std::iter::once(own).chain(lineage.iter()) {
-            match self.db.get(producer_key(identity, pid)).await? {
+            match self.db.get(producer_key(identity, key_hash, pid)).await? {
                 Some(v) if v.len() >= 24 => {
                     return Ok(Some((
                         u64::from_le_bytes(v[0..8].try_into().unwrap()),
@@ -1738,7 +1764,7 @@ impl ShardEngine {
             handle: Arc<StreamHandle>,
             fields: TailFields,
             base: TailFields,
-            producers: HashMap<String, (u64, u64, u64)>,
+            producers: HashMap<([u8; 16], String), (u64, u64, u64)>,
             seqs: HashMap<[u8; 16], String>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
@@ -1807,10 +1833,11 @@ impl ShardEngine {
                     // Producer state: ensure loaded (durable `q` key) into
                     // the batch-local staging map.
                     if let Some(pr) = &req.producer {
-                        if !local.producers.contains_key(&pr.id) {
+                        let plane = (req.key_hash, pr.id.clone());
+                        if !local.producers.contains_key(&plane) {
                             let shared = {
                                 let st = local.handle.state.lock().unwrap();
-                                st.producers.get(&pr.id).copied()
+                                st.producers.get(&plane).copied()
                             };
                             let loaded = match shared {
                                 Some(v) => Some(v),
@@ -1819,7 +1846,12 @@ impl ShardEngine {
                                 // idempotence, ROUTING-V3 §3.6). Format
                                 // parsing lives in the chain loader.
                                 None => match self
-                                    .load_producer_chain(&hash, &req.producer_lineage, &pr.id)
+                                    .load_producer_chain(
+                                        &hash,
+                                        &req.producer_lineage,
+                                        &req.key_hash,
+                                        &pr.id,
+                                    )
                                     .await
                                 {
                                     Ok(v) => v,
@@ -1831,7 +1863,7 @@ impl ShardEngine {
                                 },
                             };
                             if let Some(v) = loaded {
-                                local.producers.insert(pr.id.clone(), v);
+                                local.producers.insert(plane, v);
                             }
                         }
                     }
@@ -1841,7 +1873,7 @@ impl ShardEngine {
                     // Stream-Seq -> append.
                     let mut prod_echo: Option<(u64, u64)> = None;
                     if let Some(pr) = &req.producer {
-                        match local.producers.get(&pr.id).copied() {
+                        match local.producers.get(&(req.key_hash, pr.id.clone())).copied() {
                             Some((ce, cs, coff)) => {
                                 if pr.epoch < ce {
                                     let _ = req
@@ -1921,9 +1953,12 @@ impl ShardEngine {
                     if let Some(seq) = &req.seq {
                         // ROUTING-V3 §3.6: Stream-Seq is scoped to the
                         // ROUTING KEY. Lazy-load the key's lane (shared
-                        // state, then the durable `s` row); the empty
-                        // key is an ordinary lane, so single-key
-                        // streams behave exactly as before.
+                        // state, then the durable `s` row of THIS
+                        // segment, then the sealed predecessor chain —
+                        // a child must not re-accept a sequence its
+                        // parent already took); the empty key is an
+                        // ordinary lane, so single-key streams behave
+                        // exactly as before.
                         if !local.seqs.contains_key(&req.key_hash) {
                             let shared = {
                                 let st = local.handle.state.lock().unwrap();
@@ -1931,9 +1966,11 @@ impl ShardEngine {
                             };
                             let loaded = match shared {
                                 Some(v) => Some(v),
-                                None => match self.db.get(seq_key(&hash, &req.key_hash)).await {
-                                    Ok(Some(v)) => String::from_utf8(v.to_vec()).ok(),
-                                    Ok(None) => None,
+                                None => match self
+                                    .load_seq_chain(&hash, &req.producer_lineage, &req.key_hash)
+                                    .await
+                                {
+                                    Ok(v) => v,
                                     Err(e) => {
                                         let _ =
                                             req.resp.send(Err(AppendErr::Internal(e.to_string())));
@@ -1965,14 +2002,15 @@ impl ShardEngine {
                         } else {
                             local.fields.next + req.entries.len() as u64 - 1
                         };
-                        local
-                            .producers
-                            .insert(pr.id.clone(), (pr.epoch, pr.seq, commit_last));
+                        local.producers.insert(
+                            (req.key_hash, pr.id.clone()),
+                            (pr.epoch, pr.seq, commit_last),
+                        );
                         let mut v = Vec::with_capacity(24);
                         v.extend_from_slice(&pr.epoch.to_le_bytes());
                         v.extend_from_slice(&pr.seq.to_le_bytes());
                         v.extend_from_slice(&commit_last.to_le_bytes());
-                        wb.put(producer_key(&hash, &pr.id), v);
+                        wb.put(producer_key(&hash, &req.key_hash, &pr.id), v);
                     }
                     if req.close {
                         local.fields.closed = true;
@@ -2505,8 +2543,8 @@ impl ShardEngine {
                 for (_, local) in &locals {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();
-                    for (id, v) in &local.producers {
-                        st.producers.insert(id.clone(), *v);
+                    for (plane, v) in &local.producers {
+                        st.producers.insert(plane.clone(), *v);
                     }
                     for (kh, v) in &local.seqs {
                         st.seqs.insert(*kh, v.clone());
