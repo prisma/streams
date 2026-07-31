@@ -473,7 +473,7 @@ pub async fn product_entry(
         (Method::PUT, None) => product_create(state, name, headers, body).await,
         (Method::GET, None) => product_metadata(state, name).await,
         (Method::DELETE, None) => crate::http::product_delete(state, name).await,
-        (Method::POST, Some("seal")) => product_seal(state, name, headers).await,
+        (Method::POST, Some("seal")) => product_seal(state, name, headers, body).await,
         (Method::GET, Some("scan")) => product_scan(state, name, headers, &query).await,
         _ => perr(
             StatusCode::NOT_FOUND,
@@ -700,7 +700,77 @@ async fn product_metadata(state: Arc<AppState>, name: String) -> Response {
 
 /// Collection seal (Stage 8 §7, v1: seal-only; atomic final append
 /// lands with the lifecycle stage). Durable + monotonic + idempotent.
-async fn product_seal(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
+async fn product_seal(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    // Atomic final append (spec Stage 8 §7.2): {final, routingKey}
+    // rides ONE committer command with the closure — the same
+    // append-and-close the raw protocol defines. Producer headers
+    // dedup a retried final append.
+    if !body.is_empty() {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(deny_unknown_fields, rename_all = "camelCase")]
+        struct SealDoc {
+            #[serde(default)]
+            r#final: Option<serde_json::Value>,
+            #[serde(default)]
+            routing_key: Option<String>,
+        }
+        let doc: SealDoc = match serde_json::from_slice(&body) {
+            Ok(d) => d,
+            Err(e) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_body",
+                    &format!("seal request: {e}"),
+                    None,
+                    false,
+                );
+            }
+        };
+        if let Some(fin) = doc.r#final {
+            let Some(key_b64) = product_key(&headers) else {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "missing_key",
+                    "Prisma-Encryption-Key required",
+                    None,
+                    false,
+                );
+            };
+            let mut ih = HeaderMap::new();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
+                ih.insert("prisma-encryption-key", v);
+            }
+            if let Some(rk) = &doc.routing_key {
+                if let Ok(v) = axum::http::HeaderValue::from_str(rk) {
+                    ih.insert("prisma-routing-key", v);
+                }
+            }
+            for h in ["producer-id", "producer-epoch", "producer-seq"] {
+                if let Some(v) = headers.get(h) {
+                    ih.insert(h, v.clone());
+                }
+            }
+            let resp = product_append_sealing(
+                state.clone(),
+                name.clone(),
+                ih,
+                Bytes::from(fin.to_string()),
+            )
+            .await;
+            if !resp.status().is_success() {
+                return resp;
+            }
+        }
+    }
+    product_seal_only(state, name, headers).await
+}
+
+async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,
         Ok(_) => {
@@ -783,12 +853,32 @@ const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 /// as [value], the protocol's own one-level flattening rule, so an
 /// array-valued record stays ONE message; a batch passes its elements
 /// straight through.
+async fn product_append_sealing(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    product_append_inner(state, name, headers, body, false, true).await
+}
+
 async fn product_append(
     state: Arc<AppState>,
     name: String,
     headers: HeaderMap,
     body: Bytes,
     batch: bool,
+) -> Response {
+    product_append_inner(state, name, headers, body, batch, false).await
+}
+
+async fn product_append_inner(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    body: Bytes,
+    batch: bool,
+    seal_after: bool,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -933,6 +1023,12 @@ async fn product_append(
             ih.insert(h, v.clone());
         }
     }
+    if seal_after {
+        ih.insert(
+            "stream-closed",
+            axum::http::HeaderValue::from_static("true"),
+        );
+    }
     let has_producer = headers.contains_key("producer-id");
     // Stage 5 §7: the product request hash covers (operation kind,
     // routing key, content type, body bytes, seal flag) — computed over
@@ -948,7 +1044,7 @@ async fn product_append(
         hx.update((routing_key.len() as u64).to_le_bytes());
         hx.update(routing_key.as_bytes());
         hx.update(desc.content_type.as_bytes());
-        hx.update([0u8]); // seal flag (stream.seal({final}) arrives in Stage 8)
+        hx.update([u8::from(seal_after)]); // seal flag (spec Stage 5 §7)
         hx.update(&body);
         hx.finalize()[..16].try_into().unwrap()
     };
@@ -2896,6 +2992,69 @@ async fn product_watch_wait(
     };
     Response::builder()
         .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// GET /v1/streams — the paginated product catalog (spec Stage 8 §10).
+/// One object-store LIST over the registry prefix; no per-stream GET
+/// fan-out beyond the descriptors the page returns.
+pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMap) -> Response {
+    // Management-plane listing honors the account token when one is
+    // configured (spec Stage 8 §14: token authorizes account ops).
+    if !crate::http::authorized(&state, &headers) {
+        return perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+            None,
+            false,
+        );
+    }
+    let q = parse_query(&query);
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let after = q.get("cursor").cloned().unwrap_or_default();
+    let descs = match state.registry.list(10_000).await {
+        Ok(v) => v,
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let mut names: Vec<&StreamDesc> = descs.iter().collect();
+    names.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut out = Vec::new();
+    let mut next_cursor: Option<String> = None;
+    for d in names.into_iter().filter(|d| d.name > after) {
+        if out.len() >= limit {
+            let last: &serde_json::Value = &out[out.len() - 1];
+            next_cursor = Some(last["name"].as_str().unwrap_or("").to_string());
+            break;
+        }
+        out.push(json!({
+            "name": d.name,
+            "contentType": d.content_type,
+            "sealed": d.sealed,
+            "createdAt": d.created_ms,
+        }));
+    }
+    let mut body = json!({"streams": out});
+    if let Some(c) = next_cursor {
+        body["cursor"] = json!(c);
+    }
+    Response::builder()
+        .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(body.to_string()))

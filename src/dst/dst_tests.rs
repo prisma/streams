@@ -8378,3 +8378,87 @@ async fn typed_creation_dual_contract() {
     assert_eq!(st, 400, "watches require JSON");
     engine_shutdown(&state).await;
 }
+
+/// Stage 8 §7.2 + §10: seal with an atomic final append (deduped under
+/// a producer retry), and the paginated catalog list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_seal_final_append_and_catalog() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    for s in ["cat-a", "cat-b", "cat-c"] {
+        let path = format!("/v1/streams/{s}");
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &path,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+    }
+    // Seal cat-a with a final record through a producer (retry dedups).
+    let hdrs = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("producer-id", "closer"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let body = br#"{"final":{"type":"completed"},"routingKey":"c1"}"#;
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/cat-a:seal", &hdrs, body).await;
+    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    // Retry the same seal: the final append dedups, seal is idempotent.
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/cat-a:seal", &hdrs, body).await;
+    assert!(st == 200 || st == 204);
+    // Exactly one final record, and the collection is sealed.
+    let (st, h, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/cat-a/records?routingKey=c1",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "final record exactly once");
+    assert_eq!(recs[0]["type"], "completed");
+    assert_eq!(h.get("prisma-sealed").map(String::as_str), Some("true"));
+    // Further appends refuse.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/cat-a/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{\"late\":1}",
+    )
+    .await;
+    assert_eq!(st, 409);
+
+    // Catalog: paginated, name-ordered, sealed flag surfaced.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams?limit=2", &[], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let page1: Vec<String> = v["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(page1, vec!["cat-a", "cat-b"]);
+    assert_eq!(v["streams"][0]["sealed"], true);
+    let cur = v["cursor"].as_str().unwrap().to_string();
+    let path = format!("/v1/streams?limit=2&cursor={cur}");
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let page2: Vec<String> = v["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(page2, vec!["cat-c"]);
+    assert!(v["cursor"].is_null(), "final page carries no cursor");
+    engine_shutdown(&state).await;
+}

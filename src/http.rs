@@ -140,7 +140,7 @@ pub struct AppState {
     pub metrics: Arc<crate::metrics::Metrics>,
 }
 
-fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     match &state.auth_token {
         None => true,
         Some(t) => headers
@@ -795,7 +795,6 @@ fn billing_delta(
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/v1/streams", get(list_streams))
         .route("/v1/segments/{*name}", get(get_segments))
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
@@ -821,6 +820,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/operator/data.json", get(crate::operator::data))
         .route("/operator/runbook", get(crate::operator::runbook))
         .route("/v1/stream/__ds/{*rest}", any(ds_reserved))
+        .route("/v1/streams", axum::routing::get(product_list_axum))
         .route("/v1/streams/{*name}", any(product_entry_axum))
         .route("/v1/stream/{*name}", any(stream_entry))
         .layer(axum::middleware::from_fn_with_state(
@@ -949,41 +949,6 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
         .into_response()
 }
 
-async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-        );
-    }
-    match state.registry.list(1000).await {
-        Ok(streams) => {
-            let body: Vec<_> = streams
-                .iter()
-                .map(|d| {
-                    json!({
-                        "name": d.name,
-                        "profile": "generic",
-                        "created_at_ms": d.created_ms,
-                        "stream_epoch": d.stream_epoch,
-                    })
-                })
-                .collect();
-            (
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&body).unwrap(),
-            )
-                .into_response()
-        }
-        Err(e) => err_resp(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &e.to_string(),
-        ),
-    }
-}
-
 #[derive(Deserialize, Default)]
 pub struct ReadParams {
     pub(crate) offset: Option<String>,
@@ -1009,6 +974,14 @@ async fn ds_reserved() -> Response {
         "reserved",
         "__ds is the reserved Durable Streams control namespace",
     )
+}
+
+async fn product_list_axum(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    crate::product::product_list(state, query.unwrap_or_default(), headers).await
 }
 
 /// Prisma product surface (spec Stage 8): everything under /v1/streams/.
