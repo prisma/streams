@@ -368,13 +368,13 @@ pub async fn product_entry(
                 (Method::POST, Some("batch")) => {
                     product_append(state, name, headers, body, true).await
                 }
-                (Method::GET, _) => perr(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "not_implemented",
-                    "product reads land with Stage 6",
-                    None,
-                    false,
-                ),
+                (Method::GET, None) => product_read(state, name, headers, &query, None).await,
+                (Method::GET, Some("long-poll")) => {
+                    product_read(state, name, headers, &query, Some("long-poll")).await
+                }
+                (Method::GET, Some("sse")) => {
+                    product_read(state, name, headers, &query, Some("sse")).await
+                }
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
                     "method_not_allowed",
@@ -401,13 +401,7 @@ pub async fn product_entry(
         (Method::GET, None) => product_metadata(state, name).await,
         (Method::DELETE, None) => crate::http::product_delete(state, name).await,
         (Method::POST, Some("seal")) => product_seal(state, name, headers).await,
-        (_, Some("scan")) => perr(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_implemented",
-            "scan lands with Stage 6",
-            None,
-            false,
-        ),
+        (Method::GET, Some("scan")) => product_scan(state, name, headers, &query).await,
         _ => perr(
             StatusCode::NOT_FOUND,
             "unknown_route",
@@ -967,6 +961,625 @@ async fn translate_append_response(
         r.headers_mut().insert("retry-after", ra.clone());
     }
     r
+}
+
+// ---- Stage 6: read, subscribe, scan ---------------------------------
+
+const SCAN_TTL_MS: i64 = 6 * 3600 * 1000;
+const SCAN_DEFAULT_BYTES: usize = 4 << 20;
+const READ_MAX_BYTES_CAP: usize = 8 << 20;
+
+/// Query-string map with one-shot percent-decoding of values. Product
+/// SDKs percent-encode routing keys; '+' is NOT treated as a space.
+fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
+    fn pct(v: &str) -> String {
+        let b = v.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() + 1 && i + 2 < b.len() + 1 {
+                let hex = b.get(i + 1..i + 3);
+                if let Some(h) = hex {
+                    if let Ok(x) = u8::from_str_radix(std::str::from_utf8(h).unwrap_or("zz"), 16) {
+                        out.push(x);
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            out.push(b[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+    query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            Some((k.to_string(), pct(v)))
+        })
+        .collect()
+}
+
+fn multi_or_pending(desc: &StreamDesc) -> bool {
+    desc.segments
+        .as_ref()
+        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
+}
+
+/// Product cursor position -> raw offset token, mirroring the raw
+/// dispatch's own token-class rule (plain tokens on the single-segment
+/// path, epoch tokens on the lineage path).
+fn cursor_to_raw_token(desc: &StreamDesc, seg_id: u32, offset: u64) -> String {
+    let off = if offset == 0 {
+        crate::offsets::Offset::START
+    } else {
+        crate::offsets::Offset(Some(offset - 1))
+    };
+    if multi_or_pending(desc) {
+        crate::offsets::encode_ep(seg_id, off)
+    } else {
+        off.encode()
+    }
+}
+
+/// Raw Stream-Next-Offset token -> (segment, next offset). Plain tokens
+/// belong to the stream's sole segment.
+fn raw_token_to_pos(desc: &StreamDesc, rk: &str, tok: &str) -> (u32, u64) {
+    match crate::offsets::parse_ep(tok) {
+        Ok((e, o)) => (e, o.scan_from()),
+        Err(_) => match crate::offsets::Offset::parse(tok) {
+            Ok(o) => (desc.resolve_segment(rk).seg_id, o.scan_from()),
+            Err(_) => (desc.resolve_segment(rk).seg_id, 0),
+        },
+    }
+}
+
+/// Earliest lineage position for a key — where `from: "beginning"`
+/// starts when a live transport needs an explicit token.
+fn start_token(desc: &StreamDesc, rk: &str) -> String {
+    if multi_or_pending(desc) {
+        let point = StreamDesc::key_point(rk);
+        let first = desc
+            .segments
+            .as_ref()
+            .and_then(|m| {
+                m.segments
+                    .iter()
+                    .filter(|sg| sg.contains(point))
+                    .min_by_key(|sg| (sg.created_ms, sg.seg_id))
+            })
+            .map(|sg| sg.seg_id)
+            .unwrap_or(0);
+        crate::offsets::encode_ep(first, crate::offsets::Offset::START)
+    } else {
+        crate::offsets::Offset::START.encode()
+    }
+}
+
+fn translate_read_error(raw: Response) -> Response {
+    let status = raw.status();
+    let (code, message, retryable) = match status.as_u16() {
+        404 => ("not_found", "stream not found", false),
+        403 => ("wrong_key", "encryption key mismatch", false),
+        410 => ("gone", "stream expired or deleted", false),
+        429 => ("rate_limited", "admission or rate limit", true),
+        400 => ("invalid_cursor", "invalid cursor or read position", false),
+        503 => ("temporarily_unavailable", "retry shortly", true),
+        _ => ("read_failed", "read failed", true),
+    };
+    let mut r = perr(status, code, message, None, retryable);
+    if let Some(ra) = raw.headers().get("retry-after") {
+        r.headers_mut().insert("retry-after", ra.clone());
+    }
+    r
+}
+
+/// Product keyed read (spec Stage 6 §2-4): parse the PRODUCT contract —
+/// routingKey, signed cursor, maxBytes — then drive the one shared read
+/// dispatch (lineage traversal, seal-gap discipline, long-poll waiters,
+/// SSE streamers) with internally constructed inputs, and restate the
+/// response in product terms. A product response never carries a
+/// Stream-* header.
+async fn product_read(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    query: &str,
+    live: Option<&'static str>,
+) -> Response {
+    let Some(key_b64) = product_key(&headers) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Prisma-Encryption-Key required",
+            None,
+            false,
+        );
+    };
+    let q = parse_query(query);
+    let rk = q.get("routingKey").cloned().unwrap_or_default();
+    if rk.len() > 1024 {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_routing_key",
+            "routing key exceeds 1,024 bytes",
+            None,
+            false,
+        );
+    }
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
+        crate::http::KeyCheck::Ok(k, e) => (k, e),
+        crate::http::KeyCheck::Wrong => {
+            return perr(
+                StatusCode::FORBIDDEN,
+                "wrong_key",
+                "encryption key mismatch",
+                None,
+                false,
+            );
+        }
+        _ => {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Prisma-Encryption-Key required",
+                None,
+                false,
+            );
+        }
+    };
+    let kh = crate::crypto::stream_hash(&rk);
+
+    // Cursor -> raw offset token. The three token classes are enforced
+    // here: a scan cursor (or garbage) on the key-read endpoint is a
+    // 400, never a misread.
+    let offset: Option<String> = match q.get("cursor").map(String::as_str) {
+        None | Some("") | Some("beginning") => {
+            if live.is_some() {
+                Some(start_token(&desc, &rk))
+            } else {
+                None
+            }
+        }
+        Some("now") => Some("now".to_string()),
+        Some(c) => match crate::product_cursor::KeyCursor::decode(c, &skey, &epoch, &kh) {
+            Ok(kc) => Some(cursor_to_raw_token(&desc, kc.seg_id, kc.offset)),
+            Err("wrong_cursor_kind") => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_cursor",
+                    "cursor is not a key cursor for this endpoint",
+                    None,
+                    false,
+                );
+            }
+            Err(_) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_cursor",
+                    "cursor does not belong to this stream and routing key",
+                    None,
+                    false,
+                );
+            }
+        },
+    };
+    let max_bytes = q
+        .get("maxBytes")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP));
+    let timeout = q
+        .get("waitMs")
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|n| format!("{n}ms"));
+
+    let params = crate::http::ReadParams {
+        offset,
+        format: None,
+        live: live.map(str::to_string),
+        timeout,
+        key: Some(rk.clone()),
+        cursor: None,
+        sig: None,
+        max_bytes,
+    };
+    let mut ih = HeaderMap::new();
+    if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
+        ih.insert("stream-encryption-key", v);
+    }
+    let surface = if live == Some("sse") {
+        crate::http::SseSurface::Product
+    } else {
+        crate::http::SseSurface::Raw
+    };
+    let raw = crate::http::read_inner(state, name, params, ih, false, true, surface).await;
+
+    // SSE connections stream product control frames already; pass the
+    // stream through untouched. Anything else is translated.
+    if raw
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        == Some("text/event-stream")
+    {
+        return raw;
+    }
+    let status = raw.status();
+    if !status.is_success() {
+        return translate_read_error(raw);
+    }
+    let next_tok = raw
+        .headers()
+        .get("stream-next-offset")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let up_to_date = raw.headers().contains_key("stream-up-to-date");
+    let sealed = raw.headers().contains_key("stream-closed");
+    let content_type = raw
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .cloned()
+        .unwrap_or(axum::http::HeaderValue::from_static("application/json"));
+    let (seg_id, next) = raw_token_to_pos(&desc, &rk, &next_tok);
+    let cursor_out = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: kh,
+        seg_id,
+        offset: next,
+    }
+    .encode(&skey);
+    let (parts, body) = raw.into_parts();
+    let mut r = Response::builder()
+        .status(parts.status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("Prisma-Next-Cursor", cursor_out);
+    if up_to_date {
+        r = r.header("Prisma-Up-To-Date", "true");
+    }
+    if sealed {
+        r = r.header("Prisma-Sealed", "true");
+    }
+    r.body(body).unwrap()
+}
+
+/// Segment id -> (engine identity, shard route) for scan resume. The
+/// map only gains segments, so a cursor segment the map no longer knows
+/// is an invalid cursor, not a silent restart.
+fn seg_identity(desc: &StreamDesc, seg_id: u32) -> Option<([u8; 16], [u8; 16])> {
+    match &desc.segments {
+        Some(map) if !map.segments.is_empty() => map
+            .segments
+            .iter()
+            .find(|sg| sg.seg_id == seg_id)
+            .map(|sg| {
+                (
+                    desc.dynamic_segment_identity(seg_id),
+                    desc.segment_route(sg),
+                )
+            }),
+        _ => {
+            let ro = desc.resolve_segment("");
+            (ro.seg_id == seg_id).then_some((ro.identity, ro.shard_route))
+        }
+    }
+}
+
+/// Cross-key snapshot scan (spec Stage 6 §5): deterministic traversal
+/// of the segments captured at snapshot creation, each record that
+/// existed then exactly once, in (creation, segment id, offset) order —
+/// explicitly NOT a cross-key append order. The snapshot lives entirely
+/// in the signed cursor; creating a scan costs no control-plane write.
+async fn product_scan(
+    state: Arc<AppState>,
+    name: String,
+    headers: HeaderMap,
+    query: &str,
+) -> Response {
+    let Some(key_b64) = product_key(&headers) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Prisma-Encryption-Key required",
+            None,
+            false,
+        );
+    };
+    let q = parse_query(query);
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        Ok(_) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
+        crate::http::KeyCheck::Ok(k, e) => (k, e),
+        crate::http::KeyCheck::Wrong => {
+            return perr(
+                StatusCode::FORBIDDEN,
+                "wrong_key",
+                "encryption key mismatch",
+                None,
+                false,
+            );
+        }
+        _ => {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "missing_key",
+                "Prisma-Encryption-Key required",
+                None,
+                false,
+            );
+        }
+    };
+    let now = crate::shard::now_ms();
+
+    let sc = match q
+        .get("cursor")
+        .map(String::as_str)
+        .filter(|c| !c.is_empty())
+    {
+        Some(c) => match crate::product_cursor::ScanCursor::decode(c, &skey, &epoch, now) {
+            Ok(sc) => sc,
+            Err("scan_expired") => {
+                return perr(
+                    StatusCode::GONE,
+                    "scan_expired",
+                    "scan snapshot expired; start a new scan",
+                    None,
+                    false,
+                );
+            }
+            Err("wrong_cursor_kind") => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_cursor",
+                    "cursor is not a scan cursor",
+                    None,
+                    false,
+                );
+            }
+            Err(_) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_cursor",
+                    "invalid scan cursor",
+                    None,
+                    false,
+                );
+            }
+        },
+        None => {
+            // Snapshot creation: every segment in (creation, id) order
+            // with its boundary frozen NOW — later appends and later
+            // successors are excluded by construction.
+            let mut segs: Vec<(u32, u64)> = Vec::new();
+            let map_version = match &desc.segments {
+                Some(map) if !map.segments.is_empty() => {
+                    let mut v: Vec<_> = map.segments.iter().collect();
+                    v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
+                    for sg in v {
+                        let end = match sg.sealed_next_offset {
+                            Some(e) => e,
+                            None => {
+                                let identity = desc.dynamic_segment_identity(sg.seg_id);
+                                let engine = match state.engine_for(&desc.segment_route(sg)).await {
+                                    Ok(e) => e,
+                                    Err(r) => return translate_read_error(r),
+                                };
+                                match engine.stream_handle(identity).await {
+                                    Ok(h) => h.state.lock().unwrap().durable.next,
+                                    Err(e) => {
+                                        return perr(
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            "internal",
+                                            &e.to_string(),
+                                            None,
+                                            true,
+                                        );
+                                    }
+                                }
+                            }
+                        };
+                        segs.push((sg.seg_id, end));
+                    }
+                    map.version
+                }
+                _ => {
+                    let ro = desc.resolve_segment("");
+                    let engine = match state.engine_for(&ro.shard_route).await {
+                        Ok(e) => e,
+                        Err(r) => return translate_read_error(r),
+                    };
+                    let end = match engine.stream_handle(ro.identity).await {
+                        Ok(h) => h.state.lock().unwrap().durable.next,
+                        Err(e) => {
+                            return perr(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                &e.to_string(),
+                                None,
+                                true,
+                            );
+                        }
+                    };
+                    segs.push((ro.seg_id, end));
+                    0
+                }
+            };
+            crate::product_cursor::ScanCursor {
+                epoch,
+                map_version,
+                segments: segs,
+                current_index: 0,
+                current_offset: 0,
+                expires_at_ms: now + SCAN_TTL_MS,
+            }
+        }
+    };
+
+    let max = q
+        .get("maxBytes")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP))
+        .unwrap_or(SCAN_DEFAULT_BYTES);
+    let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
+
+    let mut idx = sc.current_index as usize;
+    let mut off = sc.current_offset;
+    let mut spent = 0usize;
+    let mut body = Vec::with_capacity(4096);
+    body.push(b'[');
+    let mut n_items = 0usize;
+    while idx < sc.segments.len() && spent < max {
+        let (seg_id, snap_end) = sc.segments[idx];
+        if off >= snap_end {
+            idx += 1;
+            off = 0;
+            continue;
+        }
+        let Some((identity, route)) = seg_identity(&desc, seg_id) else {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_cursor",
+                "scan cursor names an unknown segment",
+                None,
+                false,
+            );
+        };
+        let engine = match state.engine_for(&route).await {
+            Ok(e) => e,
+            Err(r) => return translate_read_error(r),
+        };
+        let handle = match engine.stream_handle(identity).await {
+            Ok(h) => h,
+            Err(e) => {
+                return perr(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                    None,
+                    true,
+                );
+            }
+        };
+        state.keys.put(identity, skey.clone(), epoch);
+        let out =
+            match crate::http::read_merged(&skey, &epoch, &handle, &engine, off, None, max - spent)
+                .await
+            {
+                Ok(o) => o,
+                Err(m) => {
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &m,
+                        None,
+                        true,
+                    );
+                }
+            };
+        let mut progressed = false;
+        for r in &out.recs {
+            if r.off >= snap_end {
+                break;
+            }
+            if n_items > 0 {
+                body.push(b',');
+            }
+            body.extend_from_slice(b"{\"routingKey\":");
+            body.extend_from_slice(
+                serde_json::to_string(&r.rkey)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
+            if is_json {
+                body.extend_from_slice(b",\"value\":");
+                body.extend_from_slice(&r.payload);
+            } else {
+                use base64::Engine;
+                body.extend_from_slice(b",\"valueB64\":\"");
+                body.extend_from_slice(
+                    base64::engine::general_purpose::STANDARD
+                        .encode(&r.payload)
+                        .as_bytes(),
+                );
+                body.push(b'"');
+            }
+            body.push(b'}');
+            n_items += 1;
+            spent += r.payload.len() + r.rkey.len() + 24;
+            off = r.off + 1;
+            progressed = true;
+        }
+        if out.completed {
+            // Everything below the snapshot boundary was served (the
+            // durable end only grows past it).
+            off = snap_end;
+        } else if !progressed {
+            break; // budget exhausted mid-record; resume from `off`
+        }
+    }
+    body.push(b']');
+    let complete = idx >= sc.segments.len();
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store");
+    if complete {
+        r = r.header("Prisma-Scan-Complete", "true");
+    } else {
+        let next = crate::product_cursor::ScanCursor {
+            epoch,
+            map_version: sc.map_version,
+            segments: sc.segments.clone(),
+            current_index: idx as u32,
+            current_offset: off,
+            expires_at_ms: sc.expires_at_ms,
+        };
+        r = r.header("Prisma-Next-Scan-Cursor", next.encode(&skey));
+    }
+    r.body(Body::from(body)).unwrap()
 }
 
 #[cfg(test)]

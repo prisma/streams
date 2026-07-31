@@ -160,7 +160,10 @@ impl AppState {
         self.engine_for(hash).await.ok()
     }
 
-    async fn engine_for(self: &Arc<Self>, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
+    pub(crate) async fn engine_for(
+        self: &Arc<Self>,
+        hash: &[u8; 16],
+    ) -> Result<Arc<ShardEngine>, Response> {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         if let Some(e) = self.shards.read().unwrap().get(&prefix) {
             return Ok(e.clone());
@@ -976,14 +979,18 @@ async fn list_streams(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
 
 #[derive(Deserialize, Default)]
 pub struct ReadParams {
-    offset: Option<String>,
-    format: Option<String>,
-    live: Option<String>,
-    timeout: Option<String>,
-    key: Option<String>,
+    pub(crate) offset: Option<String>,
+    pub(crate) format: Option<String>,
+    pub(crate) live: Option<String>,
+    pub(crate) timeout: Option<String>,
+    pub(crate) key: Option<String>,
     // touch wait params
-    cursor: Option<String>,
-    sig: Option<String>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) sig: Option<String>,
+    /// Internal page-budget override (product maxBytes). Skipped by
+    /// serde so the raw query string can never set it.
+    #[serde(skip)]
+    pub(crate) max_bytes: Option<usize>,
 }
 
 /// Reserved Durable Streams control namespace (appendix §2.6): matched
@@ -1128,7 +1135,7 @@ fn parse_duration(s: &str) -> Option<Duration> {
 }
 
 /// Extract + validate the request's stream key against the descriptor.
-enum KeyCheck {
+pub(crate) enum KeyCheck {
     Ok(StreamKey, [u8; 16]),
     Missing,
     Wrong,
@@ -1142,7 +1149,7 @@ fn raw_key<'a>(headers: &'a HeaderMap, state: &'a AppState) -> Option<&'a str> {
         .or(state.default_key.as_deref())
 }
 
-fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
+pub(crate) fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
     let Some(raw) = raw else {
         return KeyCheck::Missing;
     };
@@ -2407,6 +2414,9 @@ async fn append_core(
 pub(crate) struct PlainRec {
     pub(crate) off: u64,
     pub(crate) payload: Bytes,
+    /// Exact routing-key bytes from the frame header (product scan
+    /// surfaces them per record; keyed reads ignore the field).
+    pub(crate) rkey: String,
 }
 
 pub(crate) struct ReadOut {
@@ -2462,6 +2472,7 @@ fn decode_frames_into(
         out.recs.push(PlainRec {
             off: frame.header.offset,
             payload: Bytes::from(pt),
+            rkey: frame.header.routing_key.clone(),
         });
         out.last = Some(
             out.last
@@ -2700,7 +2711,16 @@ async fn read(
     headers: HeaderMap,
     head_only: bool,
 ) -> Response {
-    read_inner(state, name, params, headers, head_only, true).await
+    read_inner(
+        state,
+        name,
+        params,
+        headers,
+        head_only,
+        true,
+        SseSurface::Raw,
+    )
+    .await
 }
 
 /// Standard-path closure discriminator: the engine says CLOSED but our
@@ -2728,13 +2748,14 @@ async fn genuine_closure(state: &Arc<AppState>, name: &str, may_refresh: bool) -
 /// successors). Only the freshest descriptor tells them apart, and only
 /// genuine closure may reach the client: a topology transition may
 /// delay a reader, but it must never look like permanent end-of-stream.
-async fn read_inner(
+pub(crate) async fn read_inner(
     state: Arc<AppState>,
     name: String,
     params: ReadParams,
     headers: HeaderMap,
     head_only: bool,
     may_refresh: bool,
+    surface: SseSurface,
 ) -> Response {
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if desc_alive(&d) => d,
@@ -2758,7 +2779,16 @@ async fn read_inner(
         .as_ref()
         .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
     {
-        return read_v3_lineage_inner(state, desc, params, headers, head_only, may_refresh).await;
+        return read_v3_lineage_inner(
+            state,
+            desc,
+            params,
+            headers,
+            head_only,
+            may_refresh,
+            surface,
+        )
+        .await;
     }
     // Single-segment streams (every unified-model stream until its
     // first split, all total-order streams, legacy per-key n=1) serve
@@ -2789,7 +2819,10 @@ async fn read_inner(
 
     if head_only {
         if closed && !genuine_closure(&state, &name, may_refresh).await {
-            return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+            return Box::pin(read_inner(
+                state, name, params, headers, head_only, false, surface,
+            ))
+            .await;
         }
         let mut r = Response::builder()
             .status(StatusCode::OK)
@@ -2852,7 +2885,10 @@ async fn read_inner(
     };
 
     if live == Some("sse") {
-        return sse_response(state, desc, key, epoch, engine, handle, start, params).await;
+        return sse_response(
+            state, desc, key, epoch, engine, handle, start, params, surface,
+        )
+        .await;
     }
 
     let scan_from = match start {
@@ -2861,8 +2897,10 @@ async fn read_inner(
             // falls through with scan_from = current end.
             if live.is_none() {
                 if closed && !genuine_closure(&state, &name, may_refresh).await {
-                    return Box::pin(read_inner(state, name, params, headers, head_only, false))
-                        .await;
+                    return Box::pin(read_inner(
+                        state, name, params, headers, head_only, false, surface,
+                    ))
+                    .await;
                 }
                 let body: Body = if desc.is_json() {
                     Body::from("[]")
@@ -2920,7 +2958,10 @@ async fn read_inner(
         }
         if end <= scan_from {
             if closed && !genuine_closure(&state, &name, may_refresh).await {
-                return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+                return Box::pin(read_inner(
+                    state, name, params, headers, head_only, false, surface,
+                ))
+                .await;
             }
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
             // a tail probe is billable work even when it returns no bytes
@@ -2952,11 +2993,11 @@ async fn read_inner(
         params.key.as_deref(),
         // Woken live reads carry a fresh commit group, not a backlog:
         // keep the response (and the client's rearm) proportional to it.
-        if live_wake {
+        params.max_bytes.unwrap_or(if live_wake {
             tail_max_bytes()
         } else {
             MAX_READ_BYTES
-        },
+        }),
     )
     .await
     {
@@ -3036,7 +3077,10 @@ async fn read_inner(
     // Stream-Closed — discriminate a split seal from a user close BEFORE
     // metering, so a redispatched read is billed exactly once.
     if up_to_date && closed && !genuine_closure(&state, &name, may_refresh).await {
-        return Box::pin(read_inner(state, name, params, headers, head_only, false)).await;
+        return Box::pin(read_inner(
+            state, name, params, headers, head_only, false, surface,
+        ))
+        .await;
     }
     state.metrics.read(&name, body.len() as u64);
     let mut r = Response::builder()
@@ -3120,8 +3164,31 @@ fn sse_control_tok(next_tok: &str, cursor: Option<&str>, up_to_date: bool, close
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
+/// Which wire contract an SSE connection speaks. The drain/hop/wait
+/// machinery is identical; only the CONTROL frames differ — raw
+/// connections carry protocol offset tokens, product connections carry
+/// signed key cursors (a product control frame must never leak a
+/// Stream-Next-Offset token — appendix §13).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SseSurface {
+    Raw,
+    Product,
+}
+
+/// Product SSE control frame: signed key cursor + product field names.
+fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bool) -> String {
+    let mut fields = vec![format!("\"nextCursor\":\"{cursor_tok}\"")];
+    if up_to_date {
+        fields.push("\"upToDate\":true".to_string());
+    }
+    if sealed {
+        fields.push("\"sealed\":true".to_string());
+    }
+    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn sse_lineage_response(
+pub(crate) fn sse_lineage_response(
     state: Arc<AppState>,
     desc: StreamDesc,
     key: StreamKey,
@@ -3131,10 +3198,12 @@ fn sse_lineage_response(
     mut scan_from: u64,
     rk: String,
     params: ReadParams,
+    surface: SseSurface,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
     let sse_hash = crate::crypto::stream_hash(&desc.name);
     let cursor = params.cursor.clone();
+    let rk_hash = crate::crypto::stream_hash(&rk);
     let seg_tok = |seg_id: u32, next: u64| {
         crate::offsets::encode_ep(
             seg_id,
@@ -3218,12 +3287,25 @@ fn sse_lineage_response(
                     // silently and the reconnect follows the successors.
                     let report_closed =
                         closed && at_end && genuine_closure(&state, &desc.name, true).await;
-                    let ctl = sse_control_tok(
-                        &seg_tok(sg.seg_id, scan_from),
-                        cursor.as_deref(),
-                        at_end,
-                        report_closed,
-                    );
+                    let ctl = match surface {
+                        SseSurface::Raw => sse_control_tok(
+                            &seg_tok(sg.seg_id, scan_from),
+                            cursor.as_deref(),
+                            at_end,
+                            report_closed,
+                        ),
+                        SseSurface::Product => sse_control_product(
+                            &crate::product_cursor::KeyCursor {
+                                epoch,
+                                key_hash: rk_hash,
+                                seg_id: sg.seg_id,
+                                offset: scan_from,
+                            }
+                            .encode(&key),
+                            at_end,
+                            report_closed,
+                        ),
+                    };
                     if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
                         return;
                     }
@@ -3284,6 +3366,7 @@ fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) 
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn sse_response(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -3293,6 +3376,7 @@ async fn sse_response(
     handle: Arc<crate::shard::StreamHandle>,
     start: StartPos,
     params: ReadParams,
+    surface: SseSurface,
 ) -> Response {
     let sse_hash = crate::crypto::stream_hash(&desc.name);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
@@ -3302,6 +3386,10 @@ async fn sse_response(
     };
     let cursor = params.cursor.clone();
     let key_filter = params.key.clone();
+    let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));
+    let ctl_seg_id = desc
+        .resolve_segment(key_filter.as_deref().unwrap_or(""))
+        .seg_id;
 
     tokio::spawn(async move {
         let mut pos = match start {
@@ -3358,7 +3446,20 @@ async fn sse_response(
                 // segmented stream).
                 let report_closed =
                     closed && at_end && genuine_closure(&state, &desc.name, true).await;
-                let ctl = sse_control(pos, cursor.as_deref(), at_end, report_closed);
+                let ctl = match surface {
+                    SseSurface::Raw => sse_control(pos, cursor.as_deref(), at_end, report_closed),
+                    SseSurface::Product => sse_control_product(
+                        &crate::product_cursor::KeyCursor {
+                            epoch,
+                            key_hash: rk_hash,
+                            seg_id: ctl_seg_id,
+                            offset: pos,
+                        }
+                        .encode(&key),
+                        at_end,
+                        report_closed,
+                    ),
+                };
                 if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
                     return;
                 }
@@ -3441,6 +3542,7 @@ async fn read_v3_lineage_inner(
     headers: HeaderMap,
     head_only: bool,
     may_refresh: bool,
+    surface: SseSurface,
 ) -> Response {
     let map = desc.segments.clone().expect("dispatch guaranteed a map");
     let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
@@ -3542,7 +3644,7 @@ async fn read_v3_lineage_inner(
                         }
                     };
                     return Box::pin(read_v3_lineage_inner(
-                        state, fresh, params, headers, head_only, false,
+                        state, fresh, params, headers, head_only, false, surface,
                     ))
                     .await;
                 }
@@ -3565,7 +3667,9 @@ async fn read_v3_lineage_inner(
         // close ends the connection without streamClosed — the
         // reconnect's fresh dispatch serves the successors.
         let rk = params.key.clone().unwrap_or_default();
-        return sse_lineage_response(state, desc, key, epoch, lineage, pos, scan_from, rk, params);
+        return sse_lineage_response(
+            state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
+        );
     }
     // Hop forward over already-drained sealed segments so one request
     // always serves records when any exist ahead.
@@ -3619,7 +3723,7 @@ async fn read_v3_lineage_inner(
             if let Ok(Some(fresh)) = state.registry.get(&desc.name).await {
                 if desc_alive(&fresh) {
                     return Box::pin(read_v3_lineage_inner(
-                        state, fresh, params, headers, head_only, false,
+                        state, fresh, params, headers, head_only, false, surface,
                     ))
                     .await;
                 }
@@ -3715,11 +3819,11 @@ async fn read_v3_lineage_inner(
             &engine,
             scan_from,
             params.key.as_deref(),
-            if live_wake {
+            params.max_bytes.unwrap_or(if live_wake {
                 tail_max_bytes()
             } else {
                 MAX_READ_BYTES
-            },
+            }),
         )
         .await
         {
