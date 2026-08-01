@@ -9895,10 +9895,10 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     // last child, so the production path tombstones B and records its
     // debt — and the failpoint stops it there, before A is released.
     // Nothing about the post-crash state is planted by hand.
-    crate::http::fork_failpoints::stop_after_tombstone(true);
+    crate::http::fork_failpoints::stop_after_tombstone(Some("genB"));
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 204 || st == 200, "delete C: {st}");
-    crate::http::fork_failpoints::stop_after_tombstone(false);
+    crate::http::fork_failpoints::stop_after_tombstone(None);
     state.registry.invalidate("genB");
     let bdesc = state.registry.get("genB").await.unwrap().unwrap();
     assert!(
@@ -9908,8 +9908,10 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     let a = state.registry.get("genA").await.unwrap().unwrap();
     assert_eq!(a.fork_children.len(), 1, "A still pins B");
 
-    // Deleting the tombstoned middle generation settles the debt.
-    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genB", &[], b"").await;
+    // The ORIGINAL request is what a client retries — DELETE C, not the
+    // hidden intermediate name. That retry must walk the cascade it
+    // could not finish.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 404 || st == 410 || st == 204, "resume delete: {st}");
     state.registry.invalidate("genA");
     let a = state.registry.get("genA").await.unwrap().unwrap();
@@ -10419,6 +10421,212 @@ async fn an_impossible_final_never_publishes_an_intent() {
         addr,
         "POST",
         "/v1/streams/impossible:seal",
+        &key,
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    engine_shutdown(&state).await;
+}
+
+/// The SECOND crash boundary of a raw final close: the records are
+/// durable and the segment is closed, but the transition was never
+/// marked committed. An ordinary retry has to cross it. Without a
+/// synthetic identity for a non-producer close, the retry reached the
+/// committer's closed-stream check — which only forgives an empty
+/// close-only — and was refused forever, leaving the collection Sealing
+/// over records it already held.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_final_close_resumes_after_its_records_are_durable() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawmark", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // Real close, real records, real segment close — stopped just before
+    // the transition is marked committed.
+    let closing = [("content-type", "application/json"), ("stream-closed", "true")];
+    let body = br#"[{"n":1},{"n":2}]"#;
+    crate::http::fork_failpoints::stop_before_mark_committed(Some("rawmark"));
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawmark", &closing, body).await;
+    crate::http::fork_failpoints::stop_before_mark_committed(None);
+    assert_eq!(st, 503, "the failpoint should have interrupted the close");
+
+    state.registry.invalidate("rawmark");
+    let d = state.registry.get("rawmark").await.unwrap().unwrap();
+    assert!(!d.sealed, "sealed despite the interruption");
+    assert!(
+        d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
+        "the intent should still owe its final: {:?}",
+        d.sealing
+    );
+
+    // The ordinary retry — same request, no producer, no private header
+    // — must cross the boundary and finish the transition.
+    let (st, _, b) = hreq(addr, "POST", "/v1/stream/rawmark", &closing, body).await;
+    assert!(
+        st == 200 || st == 204,
+        "the retry could not resume after the records were durable: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("rawmark");
+    let d = state.registry.get("rawmark").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none(), "not terminal: {:?}", d.sealing);
+
+    // And the records landed EXACTLY once.
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawmark", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "records duplicated or lost: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// A fork initialization must resume against a source that is being
+/// RETAINED FOR IT. Creation installs the child's reference on the
+/// source before publishing the child Ready; if the source is deleted
+/// in that window it soft-deletes (data kept precisely for this child),
+/// and the retry used to be refused with `fork_source_gone` — leaving
+/// the child permanently Initializing over data preserved to serve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_initialization_resumes_against_a_retained_source() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/retsrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/retsrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let fh = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "retsrc"),
+        ("stream-fork-offset", boundary.as_str()),
+    ];
+    // Create the child: its reference is now installed on the source.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/retchild", &fh, b"").await;
+    assert_eq!(st, 201);
+    let real_hash = state
+        .registry
+        .get("retchild")
+        .await
+        .unwrap()
+        .unwrap()
+        .forked_from
+        .unwrap();
+    assert!(!real_hash.fork_id.is_empty(), "the child stamped its id");
+
+    // Crash before Ready: the child is left Initializing, holding the
+    // parentage it already installed.
+    let hash = crate::http::create_request_hash(
+        "application/json",
+        None,
+        None,
+        false,
+        b"",
+        Some(&real_hash),
+    );
+    state
+        .registry
+        .cas_update("retchild", |d| {
+            d.init = Some(crate::registry::InitState {
+                request_hash: hash.clone(),
+                key_fingerprint: d.key_fingerprint.clone(),
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("retchild");
+
+    // Now the source is deleted. It has a child reference, so it is
+    // RETAINED — soft-deleted, data intact, for this child.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/retsrc", &[], b"").await;
+    assert!(st == 204 || st == 200);
+    let src = state.registry.get("retsrc").await.unwrap().unwrap();
+    assert!(src.soft_deleted && !src.deleted, "source retained: {src:?}");
+
+    // The exact retry must complete the child, not refuse it.
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/retchild", &fh, b"").await;
+    assert!(
+        st == 200 || st == 201,
+        "the child could not resume against its retained source: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("retchild");
+    let child = state.registry.get("retchild").await.unwrap().unwrap();
+    assert!(child.init.is_none(), "the child is still Initializing");
+    // …and it reads its inherited records.
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/retchild", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "inherited data unreadable: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Some final-append rejections can only be decided in the committer —
+/// producer gaps, stale epochs, sequence reuse. When one of those is
+/// definitive, the seal must take its own intent back down: a
+/// collection left Sealing refuses ordinary appends AND cannot be
+/// finished by a plain seal, so the whole stream is bricked by one bad
+/// request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_definitively_refused_final_takes_its_intent_back_down() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/refused",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Complete, syntactically valid producer headers that the committer
+    // rejects: a first sequence of 5 is a gap, and no retry can fix it.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/refused:seal",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p1"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "5"),
+        ],
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert!(
+        st >= 400,
+        "a producer gap should have been refused: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("refused");
+    let d = state.registry.get("refused").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "a refused final left the collection sealing: {:?}",
+        d.sealing
+    );
+
+    // The collection still works: ordinary appends…
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/refused/records",
+        &key,
+        br#"{"ok":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "ordinary appends were bricked");
+    // …and a correct seal still completes.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/refused:seal",
         &key,
         br#"{"final":{"x":1}}"#,
     )

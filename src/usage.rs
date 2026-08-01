@@ -104,6 +104,26 @@ pub(crate) fn evict_idle_for_test(idle: std::time::Duration) -> bool {
     evict_one_idle(&mut map().lock().unwrap(), idle)
 }
 
+/// Whether a request this size can EVER be admitted — capacity, not
+/// current tokens. Waiting cannot fix a body larger than the bucket
+/// itself, so this is a permanent 413 rather than a 429, and callers
+/// that publish durable intent must consult it BEFORE promising
+/// anything.
+///
+/// A rate of zero means the limit is disabled, exactly as the admission
+/// path reads it; treating zero as "capacity zero" would reject every
+/// non-empty record on a deployment that turned the limiter off.
+pub fn permanently_unadmittable(bytes: u64, records: u64) -> Option<&'static str> {
+    let l = limits();
+    if l.bytes_per_sec > 0.0 && bytes as f64 > l.bytes_per_sec * l.burst_secs {
+        return Some("bytes");
+    }
+    if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
+        return Some("records");
+    }
+    None
+}
+
 pub struct Limits {
     pub bytes_per_sec: f64,
     pub reqs_per_sec: f64,

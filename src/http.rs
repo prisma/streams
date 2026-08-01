@@ -1837,8 +1837,34 @@ async fn create_stream(
             .unwrap_or(src_raw)
             .trim_matches('/')
             .to_string();
+        // Is THIS child already mid-initialization against this source?
+        // If so, the source is being retained FOR IT — its reference is
+        // already installed — and refusing a retained source would leave
+        // the child permanently Initializing over data kept expressly to
+        // serve it. Resolve the target's own state before demanding a
+        // live source.
+        let resuming_child = match state.registry.get(&name).await {
+            Ok(Some(c)) => c
+                .init
+                .is_some()
+                .then(|| c.forked_from.clone())
+                .flatten()
+                .filter(|f| f.source == src_name && !f.fork_id.is_empty()),
+            _ => None,
+        };
         let src = match state.registry.get(&src_name).await {
             Ok(Some(d)) if desc_alive(&d) => d,
+            // Retained for this very child: same incarnation, and the
+            // reference this child installed is still on it.
+            Ok(Some(d))
+                if !d.deleted
+                    && resuming_child.as_ref().is_some_and(|f| {
+                        f.source_epoch == d.stream_epoch
+                            && d.fork_children.contains(&f.fork_id)
+                    }) =>
+            {
+                d
+            }
             Ok(Some(d)) if d.soft_deleted => {
                 return err_resp(
                     StatusCode::CONFLICT,
@@ -2317,24 +2343,43 @@ async fn create_stream(
                 .is_some_and(|f| f.fork_id.is_empty())
             {
                 let fid = fork_id.clone();
-                if let Err(e) = state
+                let mut already = false;
+                let stamped = match state
                     .registry
                     .cas_update_retry(&name, |d| match d.forked_from.as_mut() {
                         Some(f) if f.fork_id.is_empty() => {
                             f.fork_id = fid.clone();
                             true
                         }
-                        _ => false,
+                        Some(f) => {
+                            already = f.fork_id == fid;
+                            false
+                        }
+                        None => false,
                     })
                     .await
                 {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return err_resp(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            &e.to_string(),
+                        );
+                    }
+                };
+                state.registry.invalidate(&name);
+                // A declined CAS here means the child was deleted (or
+                // re-forked) underneath us. Installing a source
+                // reference for it anyway would pin the source's data
+                // for a child that no longer exists.
+                if !stamped && !already {
                     return err_resp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
+                        StatusCode::CONFLICT,
+                        "fork_target_changed",
+                        "the fork target changed while it was being created; retry",
                     );
                 }
-                state.registry.invalidate(&name);
             }
             match state
                 .registry
@@ -2345,6 +2390,13 @@ async fn create_stream(
                     // start expiring, begin sealing or begin a split —
                     // and a reference installed on the wrong one leaves
                     // a child whose data nobody is keeping.
+                    // Already installed — idempotent, and checked FIRST:
+                    // a source retained for THIS child is soft-deleted
+                    // by definition, so demanding liveness here refused
+                    // the very retry the retention exists to serve.
+                    if d.fork_children.iter().any(|c| c == &fork_id) {
+                        return !d.deleted && d.stream_epoch == fc.source_desc.stream_epoch;
+                    }
                     if d.deleted
                         || d.soft_deleted
                         || d.init.is_some()
@@ -2355,9 +2407,6 @@ async fn create_stream(
                         })
                     {
                         return false;
-                    }
-                    if d.fork_children.iter().any(|c| c == &fork_id) {
-                        return true; // already installed: idempotent
                     }
                     d.fork_children.push(fork_id.clone());
                     true
@@ -2566,10 +2615,11 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
         return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found");
     };
     if !desc_alive(&d) {
-        // A tombstone that still owes its parent a release finishes the
-        // job instead of bouncing: that outstanding reference is what
-        // keeps the source's data alive forever.
-        if d.parent_ref_pending {
+        // A tombstone finishes any outstanding cleanup instead of
+        // bouncing — its own debt AND any left on the ancestors by an
+        // interrupted cascade. Those references keep whole generations
+        // of data alive forever.
+        if d.deleted {
             if let Err(e) = delete_lifecycle(&state, &name).await {
                 return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e);
             }
@@ -2589,18 +2639,39 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 /// reconstruct the intended post-crash state by hand.
 #[cfg(test)]
 pub(crate) mod fork_failpoints {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
-    pub(crate) static STOP_AFTER_TOMBSTONE: AtomicBool = AtomicBool::new(false);
-
-    /// Abort the cascade right after a generation is tombstoned and its
-    /// debt recorded, before the parent reference is released.
-    pub fn stop_after_tombstone(on: bool) {
-        STOP_AFTER_TOMBSTONE.store(on, Ordering::SeqCst);
+    // Scoped to ONE stream name. A global flag made these unusable in a
+    // parallel suite: an unrelated test doing a close-with-content
+    // tripped over another test's armed failpoint.
+    fn armed_tombstone() -> &'static Mutex<Option<String>> {
+        static M: Mutex<Option<String>> = Mutex::new(None);
+        &M
+    }
+    fn armed_mark() -> &'static Mutex<Option<String>> {
+        static M: Mutex<Option<String>> = Mutex::new(None);
+        &M
     }
 
-    pub(super) fn should_stop_after_tombstone() -> bool {
-        STOP_AFTER_TOMBSTONE.load(Ordering::SeqCst)
+    /// Abort the cascade right after the named generation is tombstoned
+    /// and its debt recorded, before the parent reference is released.
+    pub fn stop_after_tombstone(name: Option<&str>) {
+        *armed_tombstone().lock().unwrap() = name.map(str::to_string);
+    }
+
+    /// Drop a raw close on the named stream AFTER its records are
+    /// durable and the segment is closed, but before the transition is
+    /// marked committed.
+    pub fn stop_before_mark_committed(name: Option<&str>) {
+        *armed_mark().lock().unwrap() = name.map(str::to_string);
+    }
+
+    pub(super) fn should_stop_after_tombstone(name: &str) -> bool {
+        armed_tombstone().lock().unwrap().as_deref() == Some(name)
+    }
+
+    pub(super) fn should_stop_before_mark_committed(name: &str) -> bool {
+        armed_mark().lock().unwrap().as_deref() == Some(name)
     }
 }
 
@@ -2616,6 +2687,27 @@ fn release_fork_ref(
         // Release BY ID: a retried delete removes an id that is already
         // gone (a no-op), where an anonymous decrement would have
         // double-released and freed a still-live fork's data.
+        // If the source is ALREADY a tombstone that still owes its own
+        // parent, settle that debt first. Otherwise retrying the
+        // original delete looks successful while an ancestor stays
+        // pinned forever: the CAS below refuses on a deleted descriptor,
+        // this function returns Ok, and the caller clears its own flag.
+        // Only the hidden intermediate name could repair it, which no
+        // ordinary client knows to ask for.
+        if let Some(cur) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
+            if cur.deleted && cur.parent_ref_pending {
+                if let Some(gp) = cur.forked_from.as_ref() {
+                    release_fork_ref(&state, &gp.source, &gp.fork_id).await?;
+                }
+                state
+                    .registry
+                    .update(&src, |x| x.parent_ref_pending = false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                state.registry.invalidate(&src);
+                return Ok(());
+            }
+        }
         // Release the reference AND decide the source's fate in one CAS,
         // against the children it has at that instant. Splitting the two
         // let a new fork install itself in between and then be orphaned
@@ -2642,7 +2734,7 @@ fn release_fork_ref(
             .map_err(|e| e.to_string())?;
         state.registry.invalidate(&src);
         #[cfg(test)]
-        if tombstoned && fork_failpoints::should_stop_after_tombstone() {
+        if tombstoned && fork_failpoints::should_stop_after_tombstone(&src) {
             // "Crash" here: the tombstone and its debt are durable, the
             // recursive release has not run.
             return Ok(());
@@ -2688,15 +2780,43 @@ fn delete_lifecycle(
         // also how a crashed CASCADE is repaired — an intermediate
         // generation that was tombstoned but never released its own
         // parent is reachable by deleting it again.
-        if d.deleted && d.parent_ref_pending {
-            if let Some((src, fid)) = parent {
-                release_fork_ref(&state, &src, &fid).await?;
+        if d.deleted {
+            if d.parent_ref_pending {
+                if let Some((src, fid)) = parent.clone() {
+                    release_fork_ref(&state, &src, &fid).await?;
+                    state
+                        .registry
+                        .update(&name, |x| x.parent_ref_pending = false)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    state.registry.invalidate(&name);
+                }
+            }
+            // Then walk UP. A crashed cascade leaves the debt on a
+            // hidden intermediate generation, and the only request a
+            // client will ever retry is the original delete of the leaf.
+            // Repairing only this descriptor left the ancestor pinned
+            // and reported success.
+            let mut next = d.forked_from.clone();
+            for _ in 0..64 {
+                let Some(f) = next else { break };
+                let Some(anc) = state.registry.get(&f.source).await.map_err(|e| e.to_string())?
+                else {
+                    break;
+                };
+                if !(anc.deleted && anc.parent_ref_pending) {
+                    break;
+                }
+                if let Some(gp) = anc.forked_from.as_ref() {
+                    release_fork_ref(&state, &gp.source, &gp.fork_id).await?;
+                }
                 state
                     .registry
-                    .update(&name, |x| x.parent_ref_pending = false)
+                    .update(&f.source, |x| x.parent_ref_pending = false)
                     .await
                     .map_err(|e| e.to_string())?;
-                state.registry.invalidate(&name);
+                state.registry.invalidate(&f.source);
+                next = anc.forked_from.clone();
             }
             return Ok(());
         }
@@ -2921,6 +3041,25 @@ async fn append_core(
                 || Some(&sl.operation_id) == seal_auth.as_ref())
     });
 
+    // A raw close that carries content and brings no producer of its own
+    // gets a SYNTHETIC one, derived from its operation identity. Without
+    // it the second crash boundary is unrecoverable: once the records
+    // are durable and the segment is closed, an exact retry reaches the
+    // committer's closed-stream check (which only forgives an empty
+    // close-only) and is refused — so `final_committed` is never
+    // written and the collection stays Sealing over records it already
+    // holds. With it, the retry is recognised as a duplicate BEFORE the
+    // closed check, and can finish the transition.
+    let synthetic_producer = close && !body.is_empty() && producer.is_none();
+    if synthetic_producer {
+        producer = Some(crate::shard::ProducerReq {
+            id: format!("prisma.rawseal.{this_close_op}"),
+            epoch: 1,
+            seq: 0,
+            request_hash: None,
+        });
+    }
+
     // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative,
     // so a sealed collection refuses NEW records even when a segment
     // engine has not observed its close yet. Requests whose pinned
@@ -3063,12 +3202,17 @@ async fn append_core(
     // the lifecycle intent, or the collection is left sealing forever
     // owing a record the limiter will always refuse.
     if close && close_carries_content && deferred.is_none() {
-        let l = crate::usage::limits();
-        if body.len() as f64 > l.bytes_per_sec * l.burst_secs {
+        // Bytes AND records: a batched close with more records than the
+        // record bucket can ever hold is just as permanently refused as
+        // an oversized body, and publishing an intent for it stranded
+        // the collection at 429 forever.
+        if let Some(kind) =
+            crate::usage::permanently_unadmittable(body.len() as u64, entries.len() as u64)
+        {
             return err_resp(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "payload_too_large",
-                "request exceeds the per-stream ingest capacity",
+                &format!("request exceeds the per-stream ingest {kind} capacity"),
             );
         }
     }
@@ -3390,6 +3534,14 @@ async fn append_core(
             //   * a plain close-only just seals.
             if close && ack.closed && seal_auth.is_none() {
                 let owns_final = is_owed_final || close_carries_content;
+                #[cfg(test)]
+                if owns_final && fork_failpoints::should_stop_before_mark_committed(&name) {
+                    return err_resp(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "seal_incomplete",
+                        "failpoint: stopped before marking the final durable",
+                    );
+                }
                 if owns_final {
                     if let Err(e) =
                         crate::product::mark_final_committed(&state, &name, &this_close_op).await
@@ -3411,7 +3563,11 @@ async fn append_core(
                     );
                 }
             }
-            let status = if ack.duplicate || close_only || producer.is_none() {
+            // The synthetic identity is INTERNAL: it must not change
+            // what the protocol says on the wire, so the response is
+            // shaped as if the caller had sent no producer at all.
+            let status = if ack.duplicate || close_only || producer.is_none() || synthetic_producer
+            {
                 StatusCode::NO_CONTENT
             } else {
                 StatusCode::OK
@@ -3422,7 +3578,7 @@ async fn append_core(
             if product_hash.is_some() {
                 r = r.header("x-ack-last-offset", ack.last_offset.to_string());
             }
-            if let Some((pe, ps)) = ack.producer {
+            if let Some((pe, ps)) = ack.producer.filter(|_| !synthetic_producer) {
                 r = r
                     .header("Producer-Epoch", pe.to_string())
                     .header("Producer-Seq", ps.to_string());

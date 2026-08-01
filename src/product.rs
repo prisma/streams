@@ -1163,20 +1163,21 @@ async fn product_seal(
                     false,
                 );
             }
+            // Capacity, measured on the EXACT wire body the append will
+            // build — a single product record travels as `[value]`, two
+            // bytes longer than the value itself, and a value on the
+            // boundary would otherwise pass here and be refused there,
+            // leaving the intent behind.
+            if let Some(kind) =
+                crate::usage::permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
             {
-                // A record larger than the ingest bucket's CAPACITY can
-                // never be admitted, however long the caller waits.
-                let l = crate::usage::limits();
-                let bytes = fin.to_string().len() as f64;
-                if bytes > l.bytes_per_sec * l.burst_secs {
-                    return perr(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "payload_too_large",
-                        "the final record exceeds the per-stream ingest capacity",
-                        None,
-                        false,
-                    );
-                }
+                return perr(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "payload_too_large",
+                    &format!("the final record exceeds the per-stream ingest {kind} capacity"),
+                    None,
+                    false,
+                );
             }
             // Only now: enter Sealing. Ordinary appends are refused from
             // here, so nothing can land between the final record and the
@@ -1237,6 +1238,31 @@ async fn product_seal(
             )
             .await;
             if !resp.status().is_success() {
+                // Definitive rejection: this seal can never deliver the
+                // record it promised, so it must not leave the intent
+                // behind — a collection stuck Sealing refuses ordinary
+                // appends AND cannot be finished by a plain seal.
+                // Producer state (gap, stale epoch, sequence reuse) and
+                // capacity verdicts are only knowable in the committer,
+                // which is why the pre-checks cannot cover them.
+                //
+                // Ambiguous or transient outcomes keep the intent: the
+                // record may yet be durable, and the transition stays
+                // resumable by an exact retry.
+                let st = resp.status();
+                // A 4xx is the committer's verdict on THIS request, and
+                // no retry of it can change the answer — including the
+                // 409s (producer gap, sequence reuse, content-type
+                // mismatch). Only 429 and 408 are about the moment
+                // rather than the request.
+                let definitive = st.is_client_error()
+                    && st != StatusCode::TOO_MANY_REQUESTS
+                    && st != StatusCode::REQUEST_TIMEOUT;
+                if definitive {
+                    if let Err(e) = abandon_seal_intent(&state, &name, &op_id).await {
+                        tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
+                    }
+                }
                 return resp;
             }
             // The record is durable: record that BEFORE any segment
@@ -1465,6 +1491,29 @@ pub(crate) fn seal_op_id_raw(request_hash: &str, routing_key: &str) -> String {
     h.update((request_hash.len() as u64).to_le_bytes());
     h.update(request_hash.as_bytes());
     crate::crypto::hex(&h.finalize()[..16])
+}
+
+/// Release an intent this operation owns and has NOT committed. Only
+/// ever our own, only ever while it still owes its record — a seal that
+/// already wrote its final is finished by `run_seal`, not undone here.
+pub(crate) async fn abandon_seal_intent(
+    state: &Arc<AppState>,
+    name: &str,
+    op_id: &str,
+) -> Result<(), String> {
+    state
+        .registry
+        .cas_update_retry(name, |d| match &d.sealing {
+            Some(sl) if sl.operation_id == op_id && sl.owes_final() => {
+                d.sealing = None;
+                true
+            }
+            _ => false,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state.registry.invalidate(name);
+    Ok(())
 }
 
 /// Record that a final-bearing seal's record is durable. Must happen
