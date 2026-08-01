@@ -9712,6 +9712,309 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     engine_shutdown(&state).await;
 }
 
+/// A fork initialization is claimed against ONE source incarnation. The
+/// creation hash omitted the source epoch, so a retry against a
+/// recreated source hashed identically and resumed the original
+/// initialization — reference installed on the new incarnation while
+/// the child still recorded the old one, which stitched reads only
+/// discover later as an epoch mismatch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fsrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/fsrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let epoch_a = state
+        .registry
+        .get("fsrc")
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
+
+    // A child initialization claimed against incarnation A.
+    let fh = [
+        ("content-type", "application/json"),
+        ("stream-forked-from", "fsrc"),
+        ("stream-fork-offset", boundary.as_str()),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fchild", &fh, b"").await;
+    assert_eq!(st, 201);
+    // Reopen it as an in-flight initialization, as a crash would leave it.
+    state
+        .registry
+        .cas_update("fchild", |d| {
+            d.init = Some(crate::registry::InitState {
+                request_hash: "claimed-against-a".into(),
+                key_fingerprint: d.key_fingerprint.clone(),
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("fchild");
+
+    // The source becomes a DIFFERENT incarnation. A delete+recreate is
+    // the way that happens in the field, but a source pinned by a fork
+    // soft-deletes and refuses recreation, so the incarnation is moved
+    // directly here — the identity rule under test is about the epoch,
+    // not about how it changed.
+    let epoch_b = format!("{:032x}", 0xfeed_beefu64);
+    state
+        .registry
+        .cas_update("fsrc", |d| {
+            d.stream_epoch = epoch_b.clone();
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("fsrc");
+    assert_ne!(epoch_a, epoch_b, "the source must be a new incarnation");
+
+    // Retrying the same fork request must NOT quietly resume the
+    // initialization that was claimed against the old incarnation.
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/fchild", &fh, b"").await;
+    assert!(
+        st == 409 || st == 403,
+        "a fork of a RECREATED source resumed the old initialization: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let child = state.registry.get("fchild").await.unwrap().unwrap();
+    if let Some(f) = &child.forked_from {
+        assert_eq!(
+            f.source_epoch, epoch_a,
+            "the child's recorded parentage changed incarnation"
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Three generations, A <- B <- C, with B already soft-deleted. Deleting
+/// C hard-deletes B, which then owes A a release. A crash in between
+/// used to strand that reference forever: B is dead, so its CAS refuses,
+/// and a retried delete of C reported success having released nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crashed_fork_cascade_can_be_resumed() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/genA", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let fork_of = |src: &str, child: &str| {
+        let src = src.to_string();
+        let child = child.to_string();
+        async move {
+            let (_, h, _) = hreq(addr, "GET", &format!("/v1/stream/{src}"), &[], b"").await;
+            let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+            let (st, _, b) = hreq(
+                addr,
+                "PUT",
+                &format!("/v1/stream/{child}"),
+                &[
+                    ("content-type", "application/json"),
+                    ("stream-forked-from", &src),
+                    ("stream-fork-offset", &boundary),
+                ],
+                b"",
+            )
+            .await;
+            assert_eq!(st, 201, "fork {child}: {}", String::from_utf8_lossy(&b));
+        }
+    };
+    fork_of("genA", "genB").await;
+    fork_of("genB", "genC").await;
+    // B is soft-deleted: alive only because C exists.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genB", &[], b"").await;
+    assert!(st == 204 || st == 200);
+    let b = state.registry.get("genB").await.unwrap().unwrap();
+    assert!(b.soft_deleted && !b.deleted, "B soft-deleted: {b:?}");
+
+    // The crash: B is hard-deleted with its debt to A recorded, but the
+    // release never ran.
+    state
+        .registry
+        .cas_update("genB", |d| {
+            d.soft_deleted = false;
+            d.deleted = true;
+            d.parent_ref_pending = true;
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("genB");
+    let a = state.registry.get("genA").await.unwrap().unwrap();
+    assert_eq!(a.fork_children.len(), 1, "A still pins B");
+
+    // Deleting the tombstoned middle generation settles the debt.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genB", &[], b"").await;
+    assert!(st == 404 || st == 410 || st == 204, "resume delete: {st}");
+    state.registry.invalidate("genA");
+    let a = state.registry.get("genA").await.unwrap().unwrap();
+    assert!(
+        a.fork_children.is_empty(),
+        "A still pins a dead generation: {:?}",
+        a.fork_children
+    );
+    state.registry.invalidate("genB");
+    let b = state.registry.get("genB").await.unwrap().unwrap();
+    assert!(!b.parent_ref_pending, "the debt is settled");
+    engine_shutdown(&state).await;
+}
+
+/// Three seal-request defects the round-3 audit found by reading the
+/// types: a PRESENT `null` final was indistinguishable from an absent
+/// one, the operation identity concatenated record and routing key
+/// without lengths, and the intent went durable before the key was
+/// checked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_requests_are_identified_and_validated_exactly() {
+    const OTHER_KEY: &str = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let mk = |n: &str| {
+        let n = n.to_string();
+        async move {
+            let (st, _, _) = preq(
+                addr,
+                "PUT",
+                &format!("/v1/streams/{n}"),
+                &[("prisma-encryption-key", PRISMA_KEY)],
+                br#"{"format":{"kind":"json"}}"#,
+            )
+            .await;
+            assert_eq!(st, 201);
+        }
+    };
+
+    // 1. `{"final": null}` seals WITH a null record, not without one.
+    mk("sealnull").await;
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealnull:seal",
+        &key,
+        br#"{"final":null}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/sealnull/records", &key, b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        recs,
+        vec![serde_json::Value::Null],
+        "a present null final was dropped"
+    );
+
+    // 2. Operation identity: the audit's collision pair. Concatenating
+    //    record+key made {1,"23"} and {12,"3"} hash the same "123".
+    let a = crate::product::seal_op_id(&serde_json::json!(1), "23");
+    let b2 = crate::product::seal_op_id(&serde_json::json!(12), "3");
+    assert_ne!(a, b2, "distinct seal requests share an operation id");
+
+    // 3. A wrong key must not move the lifecycle at all.
+    mk("sealkey").await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealkey:seal",
+        &[("prisma-encryption-key", OTHER_KEY)],
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert_eq!(st, 403, "wrong key accepted");
+    let d = state.registry.get("sealkey").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "a refused seal published an intent: {:?}",
+        d.sealing
+    );
+    // …and a missing key likewise.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealkey:seal",
+        &[],
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+    state.registry.invalidate("sealkey");
+    let d = state.registry.get("sealkey").await.unwrap().unwrap();
+    assert!(d.sealing.is_none() && !d.sealed);
+    // The right key still works afterwards.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/sealkey:seal",
+        &key,
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    engine_shutdown(&state).await;
+}
+
+/// A raw close that carries content promises those records. Publishing
+/// an EMPTY seal intent for it meant a crash after the intent let a
+/// later close-only finish the seal without them — and a request that
+/// failed validation left the collection sealing forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raw_close_with_content_owes_its_records() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawfin", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A malformed close must not touch the lifecycle.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawfin",
+        &[("content-type", "text/plain"), ("stream-closed", "true")],
+        b"not json",
+    )
+    .await;
+    assert!(st >= 400, "malformed close accepted: {st}");
+    state.registry.invalidate("rawfin");
+    let d = state.registry.get("rawfin").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "a refused close published an intent: {:?}",
+        d.sealing
+    );
+
+    // A valid close WITH content: the records land and the collection
+    // seals as one operation.
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawfin",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        br#"[{"n":1},{"n":2}]"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "close with content: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("rawfin");
+    let d = state.registry.get("rawfin").await.unwrap().unwrap();
+    assert!(d.sealed, "the collection did not seal");
+    assert!(d.sealing.is_none(), "sealing state left behind");
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawfin", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "the close's records are missing: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation

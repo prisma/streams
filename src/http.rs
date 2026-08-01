@@ -1230,6 +1230,15 @@ pub(crate) fn create_request_hash(
     h.update(body);
     if let Some(fr) = fork {
         h.update(fr.source.as_bytes());
+        h.update([0u8]);
+        // The source INCARNATION is part of the identity. Without it, a
+        // retry against a recreated source hashed the same as the
+        // original, so it resumed an initialization whose stored
+        // forked_from still pointed at the previous epoch — reference
+        // installed on incarnation B, child recorded against A, and
+        // stitched reads later failing the epoch check.
+        h.update(fr.source_epoch.as_bytes());
+        h.update([0u8]);
         h.update(fr.fork_offset.to_le_bytes());
         h.update(fr.fork_sub.to_le_bytes());
     }
@@ -2121,6 +2130,21 @@ async fn create_stream(
                         "initialization was claimed under a different key",
                     );
                 }
+                // …and the recorded parentage must still be the one this
+                // request is asking for. The resume path skips
+                // validate_live, which is where forks are normally
+                // compared.
+                match (&d.forked_from, &expected_fork_ref) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) if a.same_identity(b) => {}
+                    _ => {
+                        return err_resp(
+                            StatusCode::CONFLICT,
+                            "fork_source_changed",
+                            "this initialization was claimed against a different fork source",
+                        );
+                    }
+                }
                 resume_init = true;
             }
         }
@@ -2587,16 +2611,32 @@ fn release_fork_ref(
                 && (after.soft_deleted || src_expired)
                 && !after.deleted
             {
+                // Record the grandparent debt in the SAME write that
+                // tombstones this source. A crash between the tombstone
+                // and the recursive release left the grandparent
+                // pinning a fork that no longer exists, and a retried
+                // delete could not repair it: this descriptor is
+                // already dead, so its CAS refuses and the cascade
+                // returns success having released nothing.
+                let owes_parent = after.forked_from.is_some();
                 state
                     .registry
                     .update(&src, |x| {
                         x.soft_deleted = false;
                         x.deleted = true;
+                        x.parent_ref_pending = owes_parent;
                     })
                     .await
                     .map_err(|e| e.to_string())?;
+                state.registry.invalidate(&src);
                 if let Some(gf) = after.forked_from.as_ref() {
                     release_fork_ref(&state, &gf.source, &gf.fork_id).await?;
+                    state
+                        .registry
+                        .update(&src, |x| x.parent_ref_pending = false)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    state.registry.invalidate(&src);
                 }
             }
         }
@@ -2624,7 +2664,10 @@ fn delete_lifecycle(
             .forked_from
             .as_ref()
             .map(|f| (f.source.clone(), f.fork_id.clone()));
-        // Already a tombstone with an unpaid debt: just pay it.
+        // Already a tombstone with an unpaid debt: just pay it. This is
+        // also how a crashed CASCADE is repaired — an intermediate
+        // generation that was tombstoned but never released its own
+        // parent is reachable by deleting it again.
         if d.deleted && d.parent_ref_pending {
             if let Some((src, fid)) = parent {
                 release_fork_ref(&state, &src, &fid).await?;

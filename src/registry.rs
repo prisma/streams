@@ -218,12 +218,15 @@ impl ForkRef {
     /// specified. `fork_id` is server-generated (this incarnation's
     /// epoch) and must not make a replayed create look different.
     pub fn same_identity(&self, other: &ForkRef) -> bool {
+        // Exact, including the incarnation. The empty-epoch wildcard
+        // existed for descriptors written before forks carried one;
+        // under the layout-3 clean namespace there are none, and it let
+        // a fork of a RECREATED source compare equal to a fork of the
+        // original.
         self.source == other.source
+            && self.source_epoch == other.source_epoch
             && self.fork_offset == other.fork_offset
             && self.fork_sub == other.fork_sub
-            && (self.source_epoch == other.source_epoch
-                || other.source_epoch.is_empty()
-                || self.source_epoch.is_empty())
     }
 }
 
@@ -464,6 +467,15 @@ pub struct CatalogPage {
     /// half-built streams, and treating that as the end makes every
     /// live stream after the run unreachable.
     pub exhausted: bool,
+}
+
+/// Recover the stream name from a descriptor object key, so a page can
+/// continue past entries it could not read.
+fn name_from_desc_path(p: &ObjPath) -> Option<String> {
+    let last = p.as_ref().rsplit('/').next()?;
+    let hexed = last.strip_suffix(".json")?;
+    let bytes = crate::crypto::unhex(hexed)?;
+    String::from_utf8(bytes).ok()
 }
 
 impl Registry {
@@ -813,7 +825,7 @@ impl Registry {
         }
     }
 
-    /// Paginated catalog (audit P0): ONE listing continued at the
+/// Paginated catalog (audit P0): ONE listing continued at the
     /// provider, and a GET only for the descriptors on THIS page.
     /// Streams outside any fixed prefix window are reachable, and a
     /// page costs O(limit) Class B requests instead of O(all streams).
@@ -851,6 +863,12 @@ impl Registry {
             // A descriptor that vanished between the listing and the GET
             // is genuinely gone; anything else is a real failure and
             // must not silently advance the cursor past a live stream.
+            // The continuation follows the PROVIDER's key, not the last
+            // descriptor we managed to decode. Advancing only on success
+            // meant a page whose objects all vanished between LIST and
+            // GET ended with no cursor and `exhausted == false`, which
+            // the handler can only report as end-of-catalog.
+            last_name = name_from_desc_path(&meta.location).or(last_name);
             let raw = match self.store.get(&meta.location).await {
                 Ok(r) => r.bytes().await?,
                 Err(object_store::Error::NotFound { .. }) => continue,
@@ -861,7 +879,6 @@ impl Registry {
                 source: format!("catalog: undecodable descriptor at {}: {e}", meta.location)
                     .into(),
             })?;
-            last_name = Some(d.name.clone());
             let expired = d.expires_at_ms.is_some_and(|e| now >= e);
             if !d.deleted && !d.soft_deleted && !expired && d.init.is_none() {
                 out.push(d);

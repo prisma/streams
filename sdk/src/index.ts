@@ -760,26 +760,31 @@ export class Stream<T = unknown> {
       ...this.kh(),
       "content-type": "application/json",
     };
-    // A supplied producer session owns the final record's identity, so
-    // a retried seal deduplicates through the caller's own sequence
-    // rather than the server's fallback identity.
-    if (options?.final !== undefined && options.producer) {
-      Object.assign(
+    const send = async () => {
+      const res = await req(
+        this.ctx,
+        "POST",
+        this.path(":seal"),
         h,
-        await options.producer._sealHeaders(options.routingKey ?? ""),
+        JSON.stringify(doc),
       );
-    }
-    const res = await req(
-      this.ctx,
-      "POST",
-      this.path(":seal"),
-      h,
-      JSON.stringify(doc),
-    );
-    if (!res.ok && res.status !== 204) throw await errorFrom(res);
+      if (!res.ok && res.status !== 204) throw await errorFrom(res);
+    };
+    // A producer-backed final seal consumes a sequence number, so it has
+    // to ride the SAME per-routing-key chain as append/appendMany.
+    // Running it outside meant a concurrent append could read the same
+    // nextSeq and one of the two would be rejected as reuse — or worse,
+    // ordered wrongly against the record that closes the collection.
     if (options?.final !== undefined && options.producer) {
-      await options.producer._sealCommitted(options.routingKey ?? "");
+      const rk = options.routingKey ?? "";
+      await options.producer._chain(rk, async () => {
+        Object.assign(h, await options.producer!._sealHeaders(rk));
+        await send();
+        await options.producer!._sealCommitted(rk);
+      });
+      return;
     }
+    await send();
   }
 
   async delete(): Promise<void> {
@@ -864,6 +869,26 @@ export class Producer<T> {
 
   private scope(routingKey: string): ProducerScope {
     return { stream: this.streamName, producerId: this.id, routingKey };
+  }
+
+  /**
+   * @internal Run `op` in this producer's per-routing-key queue, so
+   * anything that consumes a sequence number is serialized with the
+   * appends — including the final seal.
+   */
+  async _chain<R>(routingKey: string, op: () => Promise<R>): Promise<R> {
+    const prev = this.chains.get(routingKey) ?? Promise.resolve();
+    let out!: Promise<R>;
+    const next = prev.then(async () => {
+      out = op();
+      await out.catch(() => {});
+    });
+    this.chains.set(routingKey, next);
+    void next.then(() => {
+      if (this.chains.get(routingKey) === next) this.chains.delete(routingKey);
+    });
+    await next;
+    return out;
   }
 
   /** Same-key requests serialize in sequence order (spec §5.1). */
