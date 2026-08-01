@@ -538,6 +538,8 @@ pub(crate) fn product_auth_gate(
 /// or a browser client cannot read cursors, sealed state, or Retry-After.
 pub(crate) fn with_product_cors(mut resp: Response) -> Response {
     let h = resp.headers_mut();
+    // Internal plumbing never reaches the wire.
+    h.remove("x-ack-closed");
     if !h.contains_key("access-control-allow-origin") {
         h.insert("access-control-allow-origin", HeaderValue::from_static("*"));
     }
@@ -1183,7 +1185,13 @@ async fn product_seal(
             // here, so nothing can land between the final record and the
             // segment closes, and the operation id makes the final
             // append itself idempotent under retry.
-            let op_id = seal_op_id(&fin, doc.routing_key.as_deref().unwrap_or_default());
+            let hv = |h: &str| headers.get(h).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let (pid, pep, pseq) = (hv("producer-id"), hv("producer-epoch"), hv("producer-seq"));
+            let op_id = seal_op_id_full(
+                &fin,
+                doc.routing_key.as_deref().unwrap_or_default(),
+                (!pid.is_empty()).then_some((pid.as_str(), pep.as_str(), pseq.as_str())),
+            );
             let intent = crate::registry::SealIntent::Final {
                 routing_key: doc.routing_key.clone().unwrap_or_default(),
                 request_hash: op_id.clone(),
@@ -1223,7 +1231,7 @@ async fn product_seal(
                 // Header-SAFE id: a header value may not contain control
                 // bytes, so a NUL-delimited id silently fails to insert
                 // (and the append then loses its producer identity).
-                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("prisma.seal.{op_id}")) {
+                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("{}seal.{op_id}", crate::shard::INTERNAL_PRODUCER_PREFIX)) {
                     ih.insert("producer-id", v);
                     ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
                     ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
@@ -1264,6 +1272,29 @@ async fn product_seal(
                     }
                 }
                 return resp;
+            }
+            // A success is not enough: it must be OUR final write. A
+            // duplicate of some earlier append that did not close the
+            // segment answers 2xx too, and treating that as the final
+            // would seal the collection without ever writing the record
+            // this operation promised.
+            let closed_by_us = resp
+                .headers()
+                .get("x-ack-closed")
+                .and_then(|v| v.to_str().ok())
+                == Some("true");
+            if !closed_by_us {
+                if let Err(e) = abandon_seal_intent(&state, &name, &op_id).await {
+                    tracing::error!(stream = %name, "abandoning a non-closing seal attempt: {e}");
+                }
+                return perr(
+                    StatusCode::CONFLICT,
+                    "producer_sequence_reused",
+                    "this producer sequence already committed a record that did not seal the \
+                     collection; use a fresh sequence for the final record",
+                    None,
+                    false,
+                );
             }
             // The record is durable: record that BEFORE any segment
             // closes, so the transition can be finished by anyone from
@@ -1434,23 +1465,28 @@ where
 /// under the routing key it promised it for. A retry of the same seal
 /// derives the same id and resumes; anything else is a different
 /// operation and may not finish this one.
-pub(crate) fn seal_op_id(final_value: &serde_json::Value, routing_key: &str) -> String {
+pub(crate) fn seal_op_id_full(
+    final_value: &serde_json::Value,
+    routing_key: &str,
+    producer: Option<(&str, &str, &str)>,
+) -> String {
     use sha2::{Digest, Sha256};
-    // Versioned and LENGTH-DELIMITED. Concatenating the record and the
-    // routing key made distinct requests collide: `{"final":1,
-    // "routingKey":"23"}` and `{"final":12,"routingKey":"3"}` both hash
-    // "123", so after the first sealed, the second looked like an
-    // idempotent replay and returned success without ever writing the
-    // record it asked for.
+    // The identity covers the WHOLE attempt, not just the record. Two
+    // requests carrying the same final value under the same key but
+    // different producer coordination are different operations: sharing
+    // one id let a request that was definitively refused tear down the
+    // intent a concurrent valid attempt was still committing under.
     let record = final_value.to_string();
+    let (pid, pep, pseq) = producer.unwrap_or(("", "", ""));
     let mut h = Sha256::new();
-    h.update(b"prisma-seal-v1\0");
-    h.update((routing_key.len() as u64).to_le_bytes());
-    h.update(routing_key.as_bytes());
-    h.update((record.len() as u64).to_le_bytes());
-    h.update(record.as_bytes());
+    h.update(b"prisma-seal-v2\0");
+    for part in [routing_key, &record, pid, pep, pseq] {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
     crate::crypto::hex(&h.finalize()[..16])
 }
+
 
 /// Publish the Sealing intent for a RAW close, before the physical
 /// segment closes. Refuses when another operation still owes a final
@@ -2103,6 +2139,16 @@ async fn translate_append_response(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-store")
+            // Internal, stripped at the edge: whether THIS ack closed the
+            // stream. The seal needs it to tell its own final write from
+            // a duplicate of an earlier, non-closing append.
+            .header(
+                "x-ack-closed",
+                raw.headers()
+                    .get("x-ack-closed")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("false"),
+            )
             .body(Body::from(
                 json!({
                     "cursor": cursor,

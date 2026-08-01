@@ -289,6 +289,13 @@ pub struct TouchFeed {
     pub next_offset: u64,
 }
 
+/// Producer identities the SERVER mints for records a client did not
+/// coordinate (a seal's final append, a raw close carrying content).
+/// They live in the same durable keyspace as public ones, so the wire
+/// parser refuses this prefix — otherwise a caller could pre-create the
+/// row and turn a later final append into a false duplicate.
+pub const INTERNAL_PRODUCER_PREFIX: &str = "\u{0}prisma-internal\u{0}";
+
 #[derive(Debug, Clone)]
 pub struct ProducerReq {
     pub id: String,

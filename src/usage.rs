@@ -121,6 +121,13 @@ pub fn permanently_unadmittable(bytes: u64, records: u64) -> Option<&'static str
     if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
         return Some("records");
     }
+    // The REQUEST bucket too: rates are floats, so a configuration like
+    // 0.1 req/s over a 2 s burst holds 0.2 tokens and can never admit
+    // the one token every request costs. Publishing an intent against
+    // that leaves the collection sealing behind a permanent 429.
+    if l.reqs_per_sec > 0.0 && l.reqs_per_sec * l.burst_secs < 1.0 {
+        return Some("requests");
+    }
     None
 }
 

@@ -9334,15 +9334,17 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         .registry
         .cas_update("sealint", |d| {
             d.sealing = Some(crate::registry::SealState {
-                operation_id: crate::product::seal_op_id(
+                operation_id: crate::product::seal_op_id_full(
                     &serde_json::json!({"done": true}),
                     "",
+                    None,
                 ),
                 intent: crate::registry::SealIntent::Final {
                     routing_key: String::new(),
-                    request_hash: crate::product::seal_op_id(
+                    request_hash: crate::product::seal_op_id_full(
                         &serde_json::json!({"done": true}),
                         "",
+                        None,
                     ),
                     final_committed: false,
                 },
@@ -9974,9 +9976,16 @@ async fn seal_requests_are_identified_and_validated_exactly() {
 
     // 2. Operation identity: the audit's collision pair. Concatenating
     //    record+key made {1,"23"} and {12,"3"} hash the same "123".
-    let a = crate::product::seal_op_id(&serde_json::json!(1), "23");
-    let b2 = crate::product::seal_op_id(&serde_json::json!(12), "3");
+    let a = crate::product::seal_op_id_full(&serde_json::json!(1), "23", None);
+    let b2 = crate::product::seal_op_id_full(&serde_json::json!(12), "3", None);
     assert_ne!(a, b2, "distinct seal requests share an operation id");
+    // …and two attempts that differ ONLY in producer coordination are
+    // different operations, so one cannot tear down the other's intent.
+    let p1 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "0")));
+    let p2 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "5")));
+    let none = crate::product::seal_op_id_full(&serde_json::json!(1), "k", None);
+    assert_ne!(p1, p2, "producer sequence is not part of the seal identity");
+    assert_ne!(p1, none, "producer presence is not part of the seal identity");
 
     // 3. A wrong key must not move the lifecycle at all.
     mk("sealkey").await;
@@ -10630,6 +10639,210 @@ async fn a_definitively_refused_final_takes_its_intent_back_down() {
     )
     .await;
     assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    engine_shutdown(&state).await;
+}
+
+/// The seal machinery mints producer identities for records nobody
+/// coordinated. They share the durable producer keyspace, so a caller
+/// who could NAME one could pre-create its row at sequence 0 and turn a
+/// later final append into a false duplicate — sealing the collection
+/// without ever writing the record. The wire refuses the reserved
+/// prefix, and a duplicate that did not close is never accepted as a
+/// final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn internal_producer_identities_are_unreachable_from_the_wire() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/nsguard",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let reserved = format!("{}seal.whatever", crate::shard::INTERNAL_PRODUCER_PREFIX);
+    // Raw route refuses it…
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/nsguard",
+        &[
+            ("content-type", "application/json"),
+            ("producer-id", reserved.as_str()),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        400,
+        "the wire could name an internal producer: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // …and so does the product route.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/nsguard/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", reserved.as_str()),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 400);
+
+    // A producer whose sequence already committed a NON-closing record
+    // cannot be reused to "seal": the duplicate does not close, so the
+    // seal must refuse rather than mark a final it never wrote.
+    let ph = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("producer-id", "pp"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/nsguard/records", &ph, br#"{"n":1}"#).await;
+    assert_eq!(st, 200);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/nsguard:seal",
+        &ph,
+        br#"{"final":{"n":1}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        409,
+        "a non-closing duplicate was accepted as the final: {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("nsguard");
+    let d = state.registry.get("nsguard").await.unwrap().unwrap();
+    assert!(!d.sealed, "the collection sealed without its final record");
+    assert!(d.sealing.is_none(), "a refused attempt left its intent: {:?}", d.sealing);
+    engine_shutdown(&state).await;
+}
+
+/// A definitive committer verdict on a RAW close must take that close's
+/// own intent back down. The product route already did; the raw one did
+/// not, so a permanent producer gap left the collection sealing —
+/// refusing ordinary writes and unfinishable by a plain close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_raw_close_does_not_strand_the_collection() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawrefuse", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    // Sequence 5 from a brand-new producer is a permanent gap.
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawrefuse",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "5"),
+        ],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st >= 400, "a producer gap should be refused: {st}");
+    let _ = b;
+    state.registry.invalidate("rawrefuse");
+    let d = state.registry.get("rawrefuse").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "a refused raw close stranded the collection: {:?}",
+        d.sealing
+    );
+    // The stream still works.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawrefuse", &ct, br#"[{"n":2}]"#).await;
+    assert!(st == 200 || st == 204, "ordinary appends were bricked: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// Readiness is published by a CAS that REFUSES deleted descriptors, so
+/// an `Ok(false)` there meant "not published", not "ready". Ignoring it
+/// made creation answer 201 for a stream that no longer existed — and
+/// for a fork, the source stayed pinned by a child that was never
+/// published. Driven through the real create path with a failpoint in
+/// the window the audit named: after the source reference is installed,
+/// before readiness.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn creation_does_not_report_success_after_a_concurrent_delete() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/racesrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/racesrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+
+    // Park the fork creation just before it publishes readiness.
+    crate::http::fork_failpoints::park_create_before_ready(Some("racechild"));
+    let creator = {
+        let b = boundary.clone();
+        tokio::spawn(async move {
+            hreq(
+                addr,
+                "PUT",
+                "/v1/stream/racechild",
+                &[
+                    ("content-type", "application/json"),
+                    ("stream-forked-from", "racesrc"),
+                    ("stream-fork-offset", &b),
+                ],
+                b"",
+            )
+            .await
+        })
+    };
+    // Wait until the child descriptor exists and the source has been
+    // pinned — i.e. the creator really is in the window.
+    let mut pinned = false;
+    for _ in 0..200 {
+        state.registry.invalidate("racesrc");
+        if let Ok(Some(d)) = state.registry.get("racesrc").await {
+            if !d.fork_children.is_empty() {
+                pinned = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(pinned, "the creator never reached the readiness window");
+
+    // Delete the child out from under it.
+    let (dst, _, _) = hreq(addr, "DELETE", "/v1/stream/racechild", &[], b"").await;
+    assert!(dst == 204 || dst == 200 || dst == 404 || dst == 410, "delete: {dst}");
+
+    crate::http::fork_failpoints::park_create_before_ready(None);
+    let (st, _, b) = creator.await.unwrap();
+    assert!(
+        st != 201 && st != 200,
+        "creation reported success for a deleted target: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    // …and the source is not left pinned by a child that never existed.
+    state.registry.invalidate("racesrc");
+    let src = state.registry.get("racesrc").await.unwrap().unwrap();
+    assert!(
+        src.fork_children.is_empty(),
+        "source pinned by an unpublished child: {:?}",
+        src.fork_children
+    );
     engine_shutdown(&state).await;
 }
 

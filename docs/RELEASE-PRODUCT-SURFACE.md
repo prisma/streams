@@ -9,7 +9,7 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 **One gate is outstanding.** Everything the appendix defines passes,
 carries an explicit posture, or — for the post-audit cloud re-run — is
 blocked on a platform condition that is not ours to fix and has not
-been re-verified. Five audit rounds have been answered in full; each is summarized
+been re-verified. Six audit rounds have been answered in full; each is summarized
 below, and each is a reason to read an earlier round's "pass" claims as
 of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
 this release is not fully gated, and the report says so rather than
@@ -264,6 +264,19 @@ through the public route.
 | A crashed cascade could only be repaired by deleting a hidden intermediate name | a delete against a tombstone walks the ancestor chain and settles every unpaid debt, so retrying the ORIGINAL delete works |
 | A fork initialization was refused against a source retained FOR IT, leaving the child permanently Initializing | the already-installed reference is checked before the liveness guard; the child's own fork-id CAS is classified |
 | The fork/delete race test was timing-nudged | deterministic: the delete is parked before its decision, the fork install completes, then the delete is released — verified red against the pre-read decision |
+
+## Sixth audit round (2026-08-01)
+
+| finding | fix |
+|---|---|
+| A definitive committer verdict on a RAW close left its intent behind (the product route already cleaned up; the raw one did not) | the raw path abandons its own uncommitted intent on any definitive `AppendErr`; 429/timeout/internal keep it |
+| The seal operation id covered only the record and routing key, so two attempts differing in producer coordination shared one identity — a refused attempt could tear down the intent a valid one was committing under | the identity is versioned v2 and covers the whole attempt: routing key, record bytes, and producer id/epoch/seq |
+| Synthetic producer ids lived in the PUBLIC producer namespace, so a caller could pre-create `prisma.seal.<op>` and turn a later final append into a false duplicate — sealing without the record | internal identities use a reserved prefix the wire parser refuses on both routes |
+| A successful final append was accepted without proving it closed the segment | the internal ack now carries whether THIS write closed; a non-closing duplicate is refused and the intent released |
+| Readiness publication ignored `Ok(false)`, which `cas_update` returns for a deleted descriptor — creation answered 201 for a stream that no longer existed and left the fork source pinned | the outcome is classified, success requires a live ready descriptor at the same incarnation, and an unpublishable initialization gives its source reference back |
+| `permanently_unadmittable` ignored the request bucket (0.1 req/s × 2 s < 1 token) | request capacity is checked too |
+| A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
+| The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
 ## What the first audit response changed
 

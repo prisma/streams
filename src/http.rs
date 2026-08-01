@@ -1622,6 +1622,19 @@ fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerRe
             if id.is_empty() {
                 return Err("Producer-Id must not be empty".into());
             }
+            // The seal machinery synthesizes producer identities for
+            // records a client never coordinates itself. They share the
+            // durable producer keyspace, so the wire must not be able to
+            // name one: a caller who pre-created `prisma.seal.<op>` at
+            // sequence 0 would make a later seal's final append look
+            // like a duplicate — the seal would then "complete" without
+            // ever writing its record.
+            if id.starts_with(crate::shard::INTERNAL_PRODUCER_PREFIX) {
+                return Err(format!(
+                    "Producer-Id must not begin with '{}' (reserved)",
+                    crate::shard::INTERNAL_PRODUCER_PREFIX
+                ));
+            }
             let epoch = parse_uint_strict(&e).ok_or("invalid Producer-Epoch")?;
             let seq = parse_uint_strict(&s).ok_or("invalid Producer-Seq")?;
             Ok(Some(crate::shard::ProducerReq {
@@ -1843,12 +1856,16 @@ async fn create_stream(
         // the child permanently Initializing over data kept expressly to
         // serve it. Resolve the target's own state before demanding a
         // live source.
+        // Ready OR still initializing: either way, if this exact child
+        // already holds a reference on the source, the source is being
+        // retained for it. Restricting this to initializing children
+        // broke idempotence — a completed fork whose response was lost
+        // could not be re-PUT once its source was retained, because the
+        // soft-delete check fired first.
         let resuming_child = match state.registry.get(&name).await {
-            Ok(Some(c)) => c
-                .init
-                .is_some()
-                .then(|| c.forked_from.clone())
-                .flatten()
+            Ok(Some(c)) if !c.deleted => c
+                .forked_from
+                .clone()
                 .filter(|f| f.source == src_name && !f.fork_id.is_empty()),
             _ => None,
         };
@@ -2561,7 +2578,9 @@ async fn create_stream(
     // Until this CAS, a replay resumes instead of observing a stream
     // whose content never arrived.
     if created && needs_init {
-        if let Err(e) = state
+        #[cfg(test)]
+        fork_failpoints::pause_create_before_ready(&name).await;
+        let published = match state
             .registry
             .cas_update_retry(&name, |d| {
                 if d.init.is_none() {
@@ -2572,13 +2591,38 @@ async fn create_stream(
             })
             .await
         {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &format!("publishing stream readiness: {e}"),
-            );
-        }
+            Ok(v) => v,
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &format!("publishing stream readiness: {e}"),
+                );
+            }
+        };
         state.registry.invalidate(&name);
+        // A declined CAS is NOT readiness. `cas_update` refuses a
+        // deleted descriptor, so a delete that won mid-initialization
+        // made this return 201 for a stream that no longer exists — and
+        // if the work had already installed a fork reference, the source
+        // stayed pinned by a child that was never published.
+        if !published {
+            let now = state.registry.get(&name).await.ok().flatten();
+            let live_and_ready = now
+                .as_ref()
+                .is_some_and(|d| desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch);
+            if !live_and_ready {
+                // Compensate: give back the source reference this
+                // initialization installed, so the parent is not held by
+                // a child that will never exist.
+                if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty()) {
+                    if let Err(m) = release_fork_ref(&state, &fr.source, &fr.fork_id).await {
+                        tracing::error!(stream = %name, "releasing an abandoned fork claim: {m}");
+                    }
+                }
+                return gone_or_missing(now.as_ref());
+            }
+        }
     }
 
     let status = if created {
@@ -2684,6 +2728,34 @@ pub(crate) mod fork_failpoints {
     fn gate() -> &'static tokio::sync::Notify {
         static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
         N.get_or_init(tokio::sync::Notify::new)
+    }
+
+    fn parked_ready() -> &'static Mutex<Option<String>> {
+        static M: Mutex<Option<String>> = Mutex::new(None);
+        &M
+    }
+
+    /// Park a creation just before it publishes readiness — after its
+    /// fork reference is installed — so a delete can be made to win
+    /// that window deterministically.
+    pub fn park_create_before_ready(name: Option<&str>) {
+        *parked_ready().lock().unwrap() = name.map(str::to_string);
+        if name.is_none() {
+            gate().notify_waiters();
+        }
+    }
+
+    pub(super) async fn pause_create_before_ready(name: &str) {
+        loop {
+            if parked_ready().lock().unwrap().as_deref() != Some(name) {
+                return;
+            }
+            let n = gate().notified();
+            if parked_ready().lock().unwrap().as_deref() != Some(name) {
+                return;
+            }
+            n.await;
+        }
     }
 
     pub fn park_delete_before_decision(name: Option<&str>) {
@@ -3088,7 +3160,7 @@ async fn append_core(
     let synthetic_producer = close && !body.is_empty() && producer.is_none();
     if synthetic_producer {
         producer = Some(crate::shard::ProducerReq {
-            id: format!("prisma.rawseal.{this_close_op}"),
+            id: format!("{}rawseal.{this_close_op}", crate::shard::INTERNAL_PRODUCER_PREFIX),
             epoch: 1,
             seq: 0,
             request_hash: None,
@@ -3548,6 +3620,32 @@ async fn append_core(
             tail_token(next)
         }
     };
+    // A definitive committer refusal of a raw close means the promised
+    // records can never land, so this operation must take its own
+    // uncommitted intent back down — otherwise the collection is left
+    // Sealing: ordinary writes refused, and a plain close unable to
+    // finish because the intent still owes a record. Only OUR claim, and
+    // only while it still owes; 429/408 keep it, because the write may
+    // yet succeed on a retry.
+    if let Err(e) = &outcome {
+        let definitive = matches!(
+            e,
+            AppendErr::SeqConflict { .. }
+                | AppendErr::ProducerSeqReused
+                | AppendErr::ProducerGap { .. }
+                | AppendErr::ProducerStale { .. }
+                | AppendErr::ProducerEpochSeq
+                | AppendErr::CtMismatch
+                | AppendErr::BadBody(_)
+        );
+        if close && close_carries_content && definitive {
+            if let Err(m) =
+                crate::product::abandon_seal_intent(&state, &name, &this_close_op).await
+            {
+                tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
+            }
+        }
+    }
     match outcome {
         Ok(ack) => {
             if !ack.duplicate {
@@ -3613,6 +3711,12 @@ async fn append_core(
             if product_hash.is_some() {
                 r = r.header("x-ack-last-offset", ack.last_offset.to_string());
             }
+            // Internal: did THIS ack close the stream? A duplicate of an
+            // earlier non-closing append also answers 2xx, and the seal
+            // must tell those apart before treating the write as its
+            // final record. Unconditional — a seal without a caller
+            // producer carries no product hash.
+            r = r.header("x-ack-closed", if ack.closed { "true" } else { "false" });
             if let Some((pe, ps)) = ack.producer.filter(|_| !synthetic_producer) {
                 r = r
                     .header("Producer-Epoch", pe.to_string())
