@@ -9900,7 +9900,7 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     crate::http::fork_failpoints::stop_after_tombstone(Some("genB"));
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 204 || st == 200, "delete C: {st}");
-    crate::http::fork_failpoints::stop_after_tombstone(None);
+    crate::http::fork_failpoints::stop_after_tombstone_off("genB");
     state.registry.invalidate("genB");
     let bdesc = state.registry.get("genB").await.unwrap().unwrap();
     assert!(
@@ -10102,36 +10102,30 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawcrash", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
 
-    // Simulate the crash point: the close published its Final intent and
-    // died before the append. The intent is exactly what the server
-    // writes — identity computed from the request's own bytes.
+    // The REAL crash point, driven through the real code: the close
+    // publishes its Final intent and the process dies before the
+    // append. Planting a hand-built SealState here would prove only
+    // that the resume path reads a struct the test wrote — not that the
+    // server writes the same identity the retry recomputes, which is
+    // the whole contract under test.
     let body = br#"[{"n":1},{"n":2}]"#;
-    let request_hash = crate::http::create_request_hash(
-        "application/json",
-        None,
-        None,
-        true,
+    crate::http::fork_failpoints::stop_after_seal_intent(Some("rawcrash"));
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawcrash",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
         body,
-        None,
-    );
-    let op = crate::product::seal_op_id_raw(&request_hash, "");
-    state
-        .registry
-        .cas_update("rawcrash", |d| {
-            d.sealing = Some(crate::registry::SealState {
-                operation_id: op.clone(),
-                intent: crate::registry::SealIntent::Final {
-                    routing_key: String::new(),
-                    request_hash: request_hash.clone(),
-                    final_committed: false,
-                },
-                claimed_ms: crate::shard::now_ms(),
-            });
-            true
-        })
-        .await
-        .unwrap();
+    )
+    .await;
+    assert_eq!(st, 503, "the failpoint did not stop the close");
+    crate::http::fork_failpoints::stop_after_seal_intent_off("rawcrash");
     state.registry.invalidate("rawcrash");
+    let d = state.registry.get("rawcrash").await.unwrap().unwrap();
+    let sl = d.sealing.clone().expect("no intent survived the crash");
+    assert!(sl.owes_final(), "the crash left no owed final: {:?}", sl.intent);
+    let op = sl.operation_id.clone();
+    assert!(!d.sealed, "the collection sealed without its record");
 
     // An UNRELATED write is refused while the collection owes its final.
     let (st, _, _) = hreq(
@@ -10344,7 +10338,7 @@ async fn fork_creation_and_source_deletion_serialize() {
     assert_eq!(fst, 201, "fork install: {}", String::from_utf8_lossy(&fb));
 
     // Release the delete: it must now SEE the child.
-    crate::http::fork_failpoints::park_delete_before_decision(None);
+    crate::http::fork_failpoints::release_delete_before_decision("rsrc");
     let (dst, _, _) = del.await.unwrap();
     assert!(dst == 204 || dst == 200, "delete: {dst}");
 
@@ -10457,7 +10451,7 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     let body = br#"[{"n":1},{"n":2}]"#;
     crate::http::fork_failpoints::stop_before_mark_committed(Some("rawmark"));
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawmark", &closing, body).await;
-    crate::http::fork_failpoints::stop_before_mark_committed(None);
+    crate::http::fork_failpoints::stop_before_mark_committed_off("rawmark");
     assert_eq!(st, 503, "the failpoint should have interrupted the close");
 
     state.registry.invalidate("rawmark");
@@ -10570,14 +10564,18 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
     engine_shutdown(&state).await;
 }
 
-/// Some final-append rejections can only be decided in the committer —
-/// producer gaps, stale epochs, sequence reuse. When one of those is
-/// definitive, the seal must take its own intent back down: a
-/// collection left Sealing refuses ordinary appends AND cannot be
-/// finished by a plain seal, so the whole stream is bricked by one bad
-/// request.
+/// A producer gap is a verdict about ORDERING, not about this request:
+/// the predecessor may already be inside the server, so an exact retry
+/// can still succeed and the intent must survive to be resumed.
+///
+/// It used to be treated as definitive, which lost the promised record
+/// whenever the predecessor was merely late. Retaining it introduces
+/// the opposite hazard — an operation that is simply gone holding the
+/// collection Sealing forever — so recovery is a TIMEOUT: past
+/// `SEAL_CLAIM_MS` another seal may take the claim over. Never a guess
+/// about whether a verdict was terminal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_definitively_refused_final_takes_its_intent_back_down() {
+async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -10613,13 +10611,16 @@ async fn a_definitively_refused_final_takes_its_intent_back_down() {
     );
     state.registry.invalidate("refused");
     let d = state.registry.get("refused").await.unwrap().unwrap();
-    assert!(
-        d.sealing.is_none() && !d.sealed,
-        "a refused final left the collection sealing: {:?}",
-        d.sealing
-    );
+    let sl = d
+        .sealing
+        .clone()
+        .expect("an ordering verdict tore down the intent its retry needs");
+    assert!(sl.owes_final(), "the intent stopped owing its record");
+    assert!(!d.sealed);
 
-    // The collection still works: ordinary appends…
+    // While that claim stands the collection IS sealing, so an ordinary
+    // append is refused. That is the state machine working, not a brick
+    // — the next assertion is what makes it recoverable.
     let (st, _, _) = preq(
         addr,
         "POST",
@@ -10628,8 +10629,33 @@ async fn a_definitively_refused_final_takes_its_intent_back_down() {
         br#"{"ok":1}"#,
     )
     .await;
-    assert_eq!(st, 200, "ordinary appends were bricked");
-    // …and a correct seal still completes.
+    assert_eq!(st, 409, "an ordinary append landed during Sealing: {st}");
+
+    // A second seal cannot steal a live claim…
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/refused:seal",
+        &key,
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert_eq!(st, 409, "a live claim was taken over");
+
+    // …but an ABANDONED one is taken over, so no single bad request can
+    // hold a collection Sealing forever.
+    state
+        .registry
+        .cas_update("refused", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("refused");
     let (st, _, b) = preq(
         addr,
         "POST",
@@ -10638,7 +10664,15 @@ async fn a_definitively_refused_final_takes_its_intent_back_down() {
         br#"{"final":{"x":1}}"#,
     )
     .await;
-    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    assert!(
+        st == 200 || st == 204,
+        "an abandoned claim was never released: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("refused");
+    let d = state.registry.get("refused").await.unwrap().unwrap();
+    assert!(d.sealed, "the takeover did not reach Sealed");
+    assert!(d.sealing.is_none(), "sealing state left behind");
     engine_shutdown(&state).await;
 }
 
@@ -10732,10 +10766,18 @@ async fn internal_producer_identities_are_unreachable_from_the_wire() {
     engine_shutdown(&state).await;
 }
 
-/// A definitive committer verdict on a RAW close must take that close's
-/// own intent back down. The product route already did; the raw one did
-/// not, so a permanent producer gap left the collection sealing —
-/// refusing ordinary writes and unfinishable by a plain close.
+/// The two verdicts a RAW close can get from the committer, and the two
+/// different things it must do with its intent.
+///
+/// A verdict about THIS REQUEST — a content-type mismatch, a malformed
+/// body, a reused sequence — can never be changed by retrying it, so
+/// the close takes its own intent back down rather than leave a
+/// collection Sealing over a record nobody can deliver.
+///
+/// A verdict about ORDERING keeps the intent, because the predecessor
+/// may still be admitted (see
+/// `a_transient_producer_gap_does_not_lose_the_promised_record`), and
+/// is released by the claim timeout instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_raw_close_does_not_strand_the_collection() {
     let store = mem();
@@ -10743,8 +10785,33 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawrefuse", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    // Sequence 5 from a brand-new producer is a permanent gap.
+
+    // A verdict about the request itself: the descriptor's content type
+    // is JSON, and no retry of this close will change that.
     let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawrefuse",
+        &[("content-type", "text/plain"), ("stream-closed", "true")],
+        b"not json",
+    )
+    .await;
+    assert!(st >= 400, "a content-type mismatch was accepted: {st}");
+    let _ = b;
+    state.registry.invalidate("rawrefuse");
+    let d = state.registry.get("rawrefuse").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none() && !d.sealed,
+        "a definitively refused raw close stranded the collection: {:?}",
+        d.sealing
+    );
+    // The stream still works.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawrefuse", &ct, br#"[{"n":2}]"#).await;
+    assert!(st == 200 || st == 204, "ordinary appends were bricked: {st}");
+
+    // An ordering verdict behaves the other way: sequence 5 from a
+    // brand-new producer is a gap, and the intent stays for the retry.
+    let (st, _, _) = hreq(
         addr,
         "POST",
         "/v1/stream/rawrefuse",
@@ -10759,17 +10826,407 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     )
     .await;
     assert!(st >= 400, "a producer gap should be refused: {st}");
-    let _ = b;
     state.registry.invalidate("rawrefuse");
     let d = state.registry.get("rawrefuse").await.unwrap().unwrap();
     assert!(
-        d.sealing.is_none() && !d.sealed,
-        "a refused raw close stranded the collection: {:?}",
+        d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
+        "an ordering verdict discarded the intent its retry needs: {:?}",
         d.sealing
     );
-    // The stream still works.
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawrefuse", &ct, br#"[{"n":2}]"#).await;
-    assert!(st == 200 || st == 204, "ordinary appends were bricked: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// The reason an ordering verdict may not tear the intent down: the
+/// missing predecessor can already be INSIDE the server, admitted while
+/// the collection was still open and merely not yet committed. The old
+/// behaviour answered the gap and discarded the intent in the same
+/// breath, so the exact retry — the one request that could still
+/// deliver the promised record — was refused as a new write and the
+/// record was lost.
+///
+/// Driven through the real committer with the predecessor parked
+/// between admission and enqueue, so the close genuinely observes the
+/// gap and the predecessor genuinely lands afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/gapwin", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // The predecessor: admitted against an OPEN descriptor, then parked
+    // before it reaches the queue.
+    let before = crate::http::fork_failpoints::parked_append_count();
+    crate::http::fork_failpoints::park_append_before_enqueue(Some("gapwin"));
+    let pre = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/gapwin",
+            &[
+                ("content-type", "application/json"),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"[{"pre":1}]"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_append_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the predecessor never reached the window");
+
+    // The close carries sequence 1 and reaches the committer first, so
+    // it observes a gap that is about to stop being true.
+    let close_hdrs = [
+        ("content-type", "application/json"),
+        ("stream-closed", "true"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "1"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/gapwin", &close_hdrs, br#"[{"fin":1}]"#).await;
+    assert_eq!(st, 409, "the close should have seen the gap: {st}");
+    state.registry.invalidate("gapwin");
+    let d = state.registry.get("gapwin").await.unwrap().unwrap();
+    assert!(
+        d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
+        "the gap response cleared the final intent: {:?}",
+        d.sealing
+    );
+
+    // Release the predecessor: it was admitted before the intent, so it
+    // still lands.
+    crate::http::fork_failpoints::release_append_before_enqueue("gapwin");
+    let (st, _, b) = pre.await.unwrap();
+    assert!(
+        st == 200 || st == 204,
+        "the predecessor was lost: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // Now the exact retry — same bytes, same producer coordination —
+    // recognises its own intent and finishes the transition.
+    let (st, _, b) = hreq(addr, "POST", "/v1/stream/gapwin", &close_hdrs, br#"[{"fin":1}]"#).await;
+    assert!(
+        st == 200 || st == 204,
+        "the exact retry could not resume: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("gapwin");
+    let d = state.registry.get("gapwin").await.unwrap().unwrap();
+    assert!(d.sealed, "the collection did not reach Sealed");
+    assert!(d.sealing.is_none(), "sealing state left behind");
+
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/gapwin", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    let finals = recs.iter().filter(|r| r.get("fin").is_some()).count();
+    assert_eq!(finals, 1, "the promised record is not present exactly once: {recs:?}");
+    assert_eq!(recs.len(), 3, "records lost or duplicated: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
+// ABA: a name outlives its contents. Every in-flight lifecycle
+// operation is issued against ONE incarnation, and a liveness check
+// ("is this descriptor still alive?") cannot tell "still mine" from
+// "deleted and recreated while I was parked". Each of these parks a
+// real operation in its real window, deletes the stream, recreates it,
+// and requires the parked operation to decline rather than apply its
+// decision to a stranger.
+// ---------------------------------------------------------------
+
+/// Create → delete → recreate, with BOTH creators in the readiness
+/// window and carrying the SAME request bytes. Only the incarnation
+/// distinguishes them, which is the point: a check on liveness, or on
+/// "is an initialization with my request hash outstanding", cannot
+/// tell them apart. The stale creator must decline, and — the
+/// observable that makes this more than a tautology — the LIVE creator
+/// must still succeed. Without the fence the stale one clears the
+/// replacement's claim, publishing it as ready before its records land
+/// and leaving its rightful creator to fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let body = br#"[{"n":1}]"#;
+
+    let before = crate::http::fork_failpoints::parked_create_count();
+    crate::http::fork_failpoints::park_create_before_ready(Some("abacreate"));
+    let stale =
+        tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
+    let mut first_epoch = String::new();
+    for _ in 0..300 {
+        state.registry.invalidate("abacreate");
+        if crate::http::fork_failpoints::parked_create_count() > before {
+            if let Ok(Some(d)) = state.registry.get("abacreate").await {
+                first_epoch = d.stream_epoch.clone();
+            }
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!first_epoch.is_empty(), "the first creator never reached its window");
+
+    // Delete it out from under that creator, then create the same name
+    // again from the same bytes. The replacement parks in the same
+    // window, so both are in flight at once.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/abacreate", &[], b"").await;
+    assert!(st == 204 || st == 200 || st == 404 || st == 410, "delete: {st}");
+    let live =
+        tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
+    let mut second_epoch = String::new();
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_create_count() > before + 1 {
+            state.registry.invalidate("abacreate");
+            if let Ok(Some(d)) = state.registry.get("abacreate").await {
+                second_epoch = d.stream_epoch.clone();
+            }
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!second_epoch.is_empty(), "the replacement never reached the window");
+    assert_ne!(second_epoch, first_epoch, "the incarnation never changed");
+
+    // Release both.
+    crate::http::fork_failpoints::release_create_before_ready("abacreate");
+    let (stale_st, _, sb) = stale.await.unwrap();
+    let (live_st, _, lb) = live.await.unwrap();
+    assert!(
+        stale_st != 200 && stale_st != 201,
+        "the stale creator reported success across incarnations: {stale_st} {}",
+        String::from_utf8_lossy(&sb)
+    );
+    assert!(
+        live_st == 200 || live_st == 201,
+        "the rightful creator was defeated by a stale one: {live_st} {}",
+        String::from_utf8_lossy(&lb)
+    );
+
+    state.registry.invalidate("abacreate");
+    let d = state.registry.get("abacreate").await.unwrap().unwrap();
+    assert_eq!(d.stream_epoch, second_epoch, "the surviving incarnation is not the live one");
+    assert!(d.init.is_none(), "the replacement was left initializing");
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/abacreate", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs, vec![serde_json::json!({"n": 1})], "the replacement lost its content: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Seal → delete → recreate. A seal is issued against the incarnation
+/// the caller asked to close; applying it to a replacement closes a
+/// collection nobody asked to close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seal_in_flight_never_closes_a_later_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abaseal", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // Crash a close between its intent and its records, so a real
+    // Sealing claim exists and is owed a record.
+    crate::http::fork_failpoints::stop_after_seal_intent(Some("abaseal"));
+    let body = br#"[{"fin":1}]"#;
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/abaseal",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        body,
+    )
+    .await;
+    assert_eq!(st, 503, "the failpoint did not stop the close");
+    crate::http::fork_failpoints::stop_after_seal_intent_off("abaseal");
+    state.registry.invalidate("abaseal");
+    let old = state.registry.get("abaseal").await.unwrap().unwrap();
+    assert!(old.sealing.as_ref().is_some_and(|sl| sl.owes_final()));
+
+    // Delete and recreate: the intent belongs to an incarnation that no
+    // longer exists.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/abaseal", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abaseal", &ct, br#"[{"n":9}]"#).await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    state.registry.invalidate("abaseal");
+    let fresh = state.registry.get("abaseal").await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, old.stream_epoch, "the incarnation never changed");
+    assert!(fresh.sealing.is_none(), "the replacement inherited a seal claim");
+    assert!(!fresh.sealed, "the replacement was born sealed");
+
+    // A seal request that resolved its descriptor BEFORE the delete now
+    // reaches its claim. The collection under that name is alive, open
+    // and topologically quiet — every check but one says go — so the
+    // incarnation is the only thing standing between a stranger's seal
+    // and a collection nobody asked to close.
+    let claim = crate::product::enter_sealing_cas(
+        &state,
+        "abaseal",
+        "stale-op",
+        &crate::registry::SealIntent::Empty,
+        &old.stream_epoch,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(claim, crate::product::EnterSeal::Missing),
+        "a seal issued against a dead incarnation claimed its replacement: {claim:?}"
+    );
+    state.registry.invalidate("abaseal");
+    let d = state.registry.get("abaseal").await.unwrap().unwrap();
+    assert!(d.sealing.is_none(), "a stale seal installed its intent: {:?}", d.sealing);
+    assert!(!d.sealed, "a stale seal closed the replacement");
+    assert_eq!(d.stream_epoch, fresh.stream_epoch, "the incarnation changed again");
+
+    // The replacement's own seal still works.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/abaseal",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204, "the replacement could not be sealed: {st}");
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/abaseal", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs[0], serde_json::json!({"n": 9}), "content crossed incarnations: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Delete → recreate → the parked delete resumes. It must not delete
+/// the replacement: the caller asked to delete what was there when they
+/// asked, and a name is not an identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_delete_never_removes_a_later_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("abadel");
+    let first = state.registry.get("abadel").await.unwrap().unwrap().stream_epoch;
+
+    // Park a delete just before it decides.
+    crate::http::fork_failpoints::park_delete_before_decision(Some("abadel"));
+    let deleter =
+        tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/abadel", &[], b"").await });
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+    // Delete and recreate underneath it, through a SECOND delete that
+    // is not parked (the failpoint is armed for the parked one only —
+    // release it, let the first finish, then rebuild).
+    crate::http::fork_failpoints::release_delete_before_decision("abadel");
+    let (st, _, _) = deleter.await.unwrap();
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    state.registry.invalidate("abadel");
+    let second = state.registry.get("abadel").await.unwrap().unwrap();
+    assert_ne!(second.stream_epoch, first, "the incarnation never changed");
+    assert!(!second.deleted && !second.soft_deleted, "the replacement was born deleted");
+
+    // A delete decision issued against the FIRST incarnation is exactly
+    // what the fence has to decline. Drive it directly: the request
+    // path has already resolved its descriptor by this point, so this
+    // is the same CAS the parked deleter would have run.
+    let outcome = state
+        .registry
+        .cas_update_incarnation_outcome("abadel", &first, |x| {
+            x.deleted = true;
+            true
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
+        "a stale delete decision was applied: {outcome:?}"
+    );
+    state.registry.invalidate("abadel");
+    let d = state.registry.get("abadel").await.unwrap().unwrap();
+    assert!(!d.deleted, "the replacement was deleted by a stale decision");
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/abadel", &[], b"").await;
+    assert_eq!(st, 200, "the replacement is gone");
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs, vec![serde_json::json!({"n": 1})], "content crossed incarnations: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Fork parentage across an ABA of the SOURCE. The fork id is stamped
+/// on the child by a CAS; if the child is deleted and recreated while
+/// that stamp is in flight, the stamp must not land on the replacement
+/// and pin a source it was never forked from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abasrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/abasrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/abachild",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "abasrc"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "fork: {st}");
+    state.registry.invalidate("abachild");
+    let forked = state.registry.get("abachild").await.unwrap().unwrap();
+    let stale_epoch = forked.stream_epoch.clone();
+    assert!(forked.forked_from.is_some(), "the child has no parentage");
+
+    // Replace the child: an ordinary collection under the same name,
+    // with no parent at all.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/abachild", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abachild", &ct, br#"[{"n":7}]"#).await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    state.registry.invalidate("abachild");
+    let fresh = state.registry.get("abachild").await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, stale_epoch, "the incarnation never changed");
+    assert!(fresh.forked_from.is_none(), "the replacement inherited parentage");
+
+    // The in-flight stamp from the deleted fork, replayed. It carries
+    // the epoch it was issued against, so the fence declines it.
+    let outcome = state
+        .registry
+        .cas_update_incarnation_outcome("abachild", &stale_epoch, |d| {
+            d.forked_from = Some(crate::registry::ForkRef {
+                source: "abasrc".into(),
+                source_epoch: String::new(),
+                fork_offset: 0,
+                fork_sub: 0,
+                fork_id: "stale".into(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
+        "a stale fork stamp was applied: {outcome:?}"
+    );
+    state.registry.invalidate("abachild");
+    let d = state.registry.get("abachild").await.unwrap().unwrap();
+    assert!(d.forked_from.is_none(), "the replacement was pinned to a stranger");
     engine_shutdown(&state).await;
 }
 
@@ -10828,7 +11285,7 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
     let (dst, _, _) = hreq(addr, "DELETE", "/v1/stream/racechild", &[], b"").await;
     assert!(dst == 204 || dst == 200 || dst == 404 || dst == 410, "delete: {dst}");
 
-    crate::http::fork_failpoints::park_create_before_ready(None);
+    crate::http::fork_failpoints::release_create_before_ready("racechild");
     let (st, _, b) = creator.await.unwrap();
     assert!(
         st != 201 && st != 200,

@@ -192,6 +192,23 @@ pub struct InitState {
 /// cancellation must not wedge the name forever).
 pub const INIT_CLAIM_MS: i64 = 15_000;
 
+/// How long a seal claim holds the collection before ANOTHER seal may
+/// take it over.
+///
+/// A seal intent is deliberately not torn down by an ordering verdict
+/// (a producer gap, a stale epoch): the missing predecessor may already
+/// be inside the server, and an exact retry must still be able to
+/// finish the transition it started. That leaves one hazard — an
+/// operation that is simply gone, holding a collection Sealing over a
+/// record it will never deliver. A claim older than this is treated as
+/// abandoned, so recovery is a timeout, never a guess about whether a
+/// verdict was terminal.
+///
+/// The window only has to outlast a request that is genuinely in
+/// flight between its intent CAS and its committer verdict; past that,
+/// every client has long since given up.
+pub const SEAL_CLAIM_MS: i64 = 15_000;
+
 /// Fork parentage (pinned DS protocol fork contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForkRef {
@@ -457,6 +474,17 @@ fn desc_path(name: &str) -> ObjPath {
 }
 
 /// One page of the stream catalog.
+/// Why a generation-fenced mutation did not apply.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IncarnationCas {
+    Applied,
+    /// The mutation itself declined (its own precondition failed).
+    Declined,
+    /// The name now holds a DIFFERENT stream: this operation belongs to
+    /// an incarnation that no longer exists, and must not touch it.
+    IncarnationChanged,
+}
+
 pub struct CatalogPage {
     pub streams: Vec<StreamDesc>,
     /// Name to continue after, when more may follow.
@@ -751,6 +779,60 @@ impl Registry {
     /// and our put). Single-shot CAS lost races three separate times in
     /// review — the TTL slide, the readiness publication, and fork
     /// reference accounting — so the retry lives here once.
+    /// A descriptor mutation FENCED to one incarnation.
+    ///
+    /// `cas_update`/`cas_update_retry` address a stream by NAME, and a
+    /// name outlives the resource: delete it, recreate it, and the same
+    /// name now holds a different stream. Any operation that paused in
+    /// between — a creator about to publish readiness, a seal about to
+    /// close, a delete about to tombstone — would then apply its
+    /// decision to the REPLACEMENT. That is the classic ABA, and no
+    /// amount of per-call-site care fixes it, so the fence lives here:
+    /// every lifecycle mutation states the incarnation it belongs to,
+    /// and a descriptor that has moved on refuses it.
+    ///
+    /// Returns `Ok(false)` both when the mutation declined and when the
+    /// incarnation changed; callers that must tell those apart use
+    /// [`Self::cas_update_incarnation_outcome`].
+    pub async fn cas_update_incarnation(
+        &self,
+        name: &str,
+        expected_epoch: &str,
+        mutate: impl FnMut(&mut StreamDesc) -> bool,
+    ) -> anyhow::Result<bool> {
+        Ok(matches!(
+            self.cas_update_incarnation_outcome(name, expected_epoch, mutate)
+                .await?,
+            IncarnationCas::Applied
+        ))
+    }
+
+    pub async fn cas_update_incarnation_outcome(
+        &self,
+        name: &str,
+        expected_epoch: &str,
+        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
+    ) -> anyhow::Result<IncarnationCas> {
+        let mut moved = false;
+        let applied = self
+            .cas_update_retry(name, |d| {
+                if d.stream_epoch != expected_epoch {
+                    moved = true;
+                    return false;
+                }
+                moved = false;
+                mutate(d)
+            })
+            .await?;
+        Ok(if applied {
+            IncarnationCas::Applied
+        } else if moved {
+            IncarnationCas::IncarnationChanged
+        } else {
+            IncarnationCas::Declined
+        })
+    }
+
     pub async fn cas_update_retry(
         &self,
         name: &str,

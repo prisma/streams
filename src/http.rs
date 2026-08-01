@@ -2363,7 +2363,10 @@ async fn create_stream(
                 let mut already = false;
                 let stamped = match state
                     .registry
-                    .cas_update_retry(&name, |d| match d.forked_from.as_mut() {
+                    .cas_update_incarnation(&name, &desc.stream_epoch, |d| match d
+                        .forked_from
+                        .as_mut()
+                    {
                         Some(f) if f.fork_id.is_empty() => {
                             f.fork_id = fid.clone();
                             true
@@ -2582,9 +2585,16 @@ async fn create_stream(
         fork_failpoints::pause_create_before_ready(&name).await;
         let published = match state
             .registry
-            .cas_update_retry(&name, |d| {
-                if d.init.is_none() {
-                    return false;
+            .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
+                // Our OWN claim, on OUR incarnation. Clearing `init`
+                // because "something is initializing" let a paused
+                // creator publish readiness for a stream that had since
+                // been deleted and recreated — announcing the
+                // replacement as ready before its own initial records,
+                // fork seed or close-on-create had landed.
+                match d.init.as_ref() {
+                    Some(i) if i.request_hash == create_hash => {}
+                    _ => return false,
                 }
                 d.init = None;
                 true
@@ -2683,100 +2693,202 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 /// reconstruct the intended post-crash state by hand.
 #[cfg(test)]
 pub(crate) mod fork_failpoints {
+    use std::collections::HashSet;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Scoped to ONE stream name. A global flag made these unusable in a
-    // parallel suite: an unrelated test doing a close-with-content
-    // tripped over another test's armed failpoint.
-    fn armed_tombstone() -> &'static Mutex<Option<String>> {
-        static M: Mutex<Option<String>> = Mutex::new(None);
-        &M
+    // Every failpoint holds a SET of stream names, never a single slot.
+    // Two things went wrong with one slot: a global flag tripped
+    // unrelated tests (an ordinary close-with-content walking into
+    // another test's armed abort), and then — once they were scoped by
+    // name — a second test arming the SAME failpoint for a DIFFERENT
+    // stream silently disarmed the first, so its request sailed through
+    // the window it was supposed to be parked in. Arming and releasing
+    // are per name, so a parallel suite composes.
+    fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
+        static M: [Mutex<Option<HashSet<String>>>; 6] = [
+            Mutex::new(None),
+            Mutex::new(None),
+            Mutex::new(None),
+            Mutex::new(None),
+            Mutex::new(None),
+            Mutex::new(None),
+        ];
+        &M[which]
     }
-    fn armed_mark() -> &'static Mutex<Option<String>> {
-        static M: Mutex<Option<String>> = Mutex::new(None);
-        &M
+    const TOMBSTONE: usize = 0;
+    const MARK: usize = 1;
+    const READY: usize = 2;
+    const APPEND: usize = 3;
+    const DELETE: usize = 4;
+    const SEAL_INTENT: usize = 5;
+
+    fn set(which: usize, name: Option<&str>) {
+        let mut g = armed(which).lock().unwrap();
+        match name {
+            Some(n) => {
+                g.get_or_insert_with(HashSet::new).insert(n.to_string());
+            }
+            // `None` releases only what this process armed for the
+            // caller's own name in practice; tests that need surgical
+            // release call `release`.
+            None => *g = None,
+        }
+        drop(g);
+        if name.is_none() {
+            gate().notify_waiters();
+        }
     }
+
+    fn release(which: usize, name: &str) {
+        if let Some(s) = armed(which).lock().unwrap().as_mut() {
+            s.remove(name);
+        }
+        gate().notify_waiters();
+    }
+
+    fn is_armed(which: usize, name: &str) -> bool {
+        armed(which)
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|s| s.contains(name))
+    }
+
+    fn gate() -> &'static tokio::sync::Notify {
+        static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+        N.get_or_init(tokio::sync::Notify::new)
+    }
+
+    /// Wait until this failpoint is released for `name`, counting the
+    /// arrival exactly once so a test can OBSERVE that the request
+    /// really is in the window instead of sleeping and hoping.
+    async fn park(which: usize, name: &str, counter: &'static AtomicUsize) {
+        let mut counted = false;
+        loop {
+            if !is_armed(which, name) {
+                return;
+            }
+            if !counted {
+                counted = true;
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            let n = gate().notified();
+            if !is_armed(which, name) {
+                return;
+            }
+            n.await;
+        }
+    }
+
+    static PARKED_APPEND: AtomicUsize = AtomicUsize::new(0);
+    static PARKED_CREATE: AtomicUsize = AtomicUsize::new(0);
+    static PARKED_DELETE: AtomicUsize = AtomicUsize::new(0);
 
     /// Abort the cascade right after the named generation is tombstoned
     /// and its debt recorded, before the parent reference is released.
     pub fn stop_after_tombstone(name: Option<&str>) {
-        *armed_tombstone().lock().unwrap() = name.map(str::to_string);
+        set(TOMBSTONE, name);
     }
 
     /// Drop a raw close on the named stream AFTER its records are
     /// durable and the segment is closed, but before the transition is
     /// marked committed.
     pub fn stop_before_mark_committed(name: Option<&str>) {
-        *armed_mark().lock().unwrap() = name.map(str::to_string);
+        set(MARK, name);
+    }
+
+    /// Drop a raw close right after its Sealing intent is durable and
+    /// BEFORE the records are appended — the crash boundary an ordinary
+    /// retry has to recover from.
+    pub fn stop_after_seal_intent(name: Option<&str>) {
+        set(SEAL_INTENT, name);
+    }
+
+    pub(super) fn should_stop_after_seal_intent(name: &str) -> bool {
+        is_armed(SEAL_INTENT, name)
+    }
+
+    pub fn stop_after_tombstone_off(name: &str) {
+        release(TOMBSTONE, name);
+    }
+
+    pub fn stop_before_mark_committed_off(name: &str) {
+        release(MARK, name);
+    }
+
+    pub fn stop_after_seal_intent_off(name: &str) {
+        release(SEAL_INTENT, name);
     }
 
     pub(super) fn should_stop_after_tombstone(name: &str) -> bool {
-        armed_tombstone().lock().unwrap().as_deref() == Some(name)
+        is_armed(TOMBSTONE, name)
     }
 
     pub(super) fn should_stop_before_mark_committed(name: &str) -> bool {
-        armed_mark().lock().unwrap().as_deref() == Some(name)
-    }
-
-    // Park a delete just before it decides soft-versus-hard, so a
-    // concurrent fork installation can be made to win DETERMINISTICALLY
-    // rather than by racing timers.
-    fn parked_delete() -> &'static Mutex<Option<String>> {
-        static M: Mutex<Option<String>> = Mutex::new(None);
-        &M
-    }
-    fn gate() -> &'static tokio::sync::Notify {
-        static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
-        N.get_or_init(tokio::sync::Notify::new)
-    }
-
-    fn parked_ready() -> &'static Mutex<Option<String>> {
-        static M: Mutex<Option<String>> = Mutex::new(None);
-        &M
+        is_armed(MARK, name)
     }
 
     /// Park a creation just before it publishes readiness — after its
     /// fork reference is installed — so a delete can be made to win
     /// that window deterministically.
     pub fn park_create_before_ready(name: Option<&str>) {
-        *parked_ready().lock().unwrap() = name.map(str::to_string);
-        if name.is_none() {
-            gate().notify_waiters();
-        }
+        set(READY, name);
+    }
+
+    /// Release the creation park for ONE name, leaving other tests'
+    /// arms intact.
+    pub fn release_create_before_ready(name: &str) {
+        release(READY, name);
+    }
+
+    pub fn parked_create_count() -> usize {
+        PARKED_CREATE.load(Ordering::SeqCst)
     }
 
     pub(super) async fn pause_create_before_ready(name: &str) {
-        loop {
-            if parked_ready().lock().unwrap().as_deref() != Some(name) {
-                return;
-            }
-            let n = gate().notified();
-            if parked_ready().lock().unwrap().as_deref() != Some(name) {
-                return;
-            }
-            n.await;
-        }
+        park(READY, name, &PARKED_CREATE).await;
     }
 
+    /// Park an ordinary append AFTER admission — its lifecycle verdict
+    /// already decided against an OPEN descriptor — and before it is
+    /// enqueued. That is the window in which a concurrent close can
+    /// publish its seal intent and reach the committer first, so its
+    /// producer sequence observes a gap the parked predecessor is about
+    /// to fill.
+    pub fn park_append_before_enqueue(name: Option<&str>) {
+        set(APPEND, name);
+    }
+
+    pub fn release_append_before_enqueue(name: &str) {
+        release(APPEND, name);
+    }
+
+    pub fn parked_append_count() -> usize {
+        PARKED_APPEND.load(Ordering::SeqCst)
+    }
+
+    pub(super) async fn pause_append_before_enqueue(name: &str) {
+        park(APPEND, name, &PARKED_APPEND).await;
+    }
+
+    /// Park a delete just before it decides soft-versus-hard, so a
+    /// concurrent fork installation can be made to win DETERMINISTICALLY
+    /// rather than by racing timers.
     pub fn park_delete_before_decision(name: Option<&str>) {
-        *parked_delete().lock().unwrap() = name.map(str::to_string);
-        if name.is_none() {
-            gate().notify_waiters();
-        }
+        set(DELETE, name);
+    }
+
+    pub fn release_delete_before_decision(name: &str) {
+        release(DELETE, name);
+    }
+
+    pub fn parked_delete_count() -> usize {
+        PARKED_DELETE.load(Ordering::SeqCst)
     }
 
     pub(super) async fn pause_delete_before_decision(name: &str) {
-        loop {
-            let armed = parked_delete().lock().unwrap().as_deref() == Some(name);
-            if !armed {
-                return;
-            }
-            let n = gate().notified();
-            if parked_delete().lock().unwrap().as_deref() != Some(name) {
-                return;
-            }
-            n.await;
-        }
+        park(DELETE, name, &PARKED_DELETE).await;
     }
 }
 
@@ -2937,9 +3049,10 @@ fn delete_lifecycle(
         #[cfg(test)]
         fork_failpoints::pause_delete_before_decision(&name).await;
         let mut hard_deleted = false;
+        let epoch = d.stream_epoch.clone();
         state
             .registry
-            .cas_update_retry(&name, |x| {
+            .cas_update_incarnation(&name, &epoch, |x| {
                 if x.deleted {
                     return false;
                 }
@@ -3135,10 +3248,25 @@ async fn append_core(
     // same envelope the intent stores. An exact retry of a crashed raw
     // close therefore recognises ITSELF as the owed final — no private
     // header, no producer opt-in required.
-    let this_close_op = crate::product::seal_op_id_raw(
-        &create_request_hash(&desc.content_type, None, None, true, &body, None),
-        &product_key.clone().unwrap_or_default(),
-    );
+    // The identity of THIS close: the whole semantic request, not just
+    // its payload. Two closes with the same body and routing key but
+    // different producer coordination are different operations — sharing
+    // one id let a request that was refused tear down the intent another
+    // one owned, and the promised final record was lost.
+    let this_close_op = {
+        let hv = |h: &str| hdr(&headers, h).unwrap_or_default();
+        crate::product::seal_op_id_semantic(
+            &create_request_hash(&desc.content_type, None, None, true, &body, None),
+            &product_key.clone().unwrap_or_default(),
+            &[
+                hv("producer-id"),
+                hv("producer-epoch"),
+                hv("producer-seq"),
+                hv("stream-seq"),
+                hv("stream-timestamp"),
+            ],
+        )
+    };
     // Owed-final authorization: either this request IS the intent's
     // record (computed identity matches) or an internal caller passed
     // the trusted operation id. Nothing a client sends can assert it.
@@ -3338,19 +3466,24 @@ async fn append_core(
         } else {
             crate::registry::SealIntent::Final {
                 routing_key: product_key.clone().unwrap_or_default(),
-                request_hash: create_request_hash(
-                    &desc.content_type,
-                    None,
-                    None,
-                    true,
-                    &body,
-                    None,
-                ),
+                // THE operation id — the same semantic identity the
+                // append computes for itself, so a retry recognises its
+                // own intent and nothing else can claim it.
+                request_hash: this_close_op.clone(),
                 final_committed: false,
             }
         };
         if let Err(e) = crate::product::begin_sealing_for_close(&state, &name, intent).await {
             return err_resp(StatusCode::CONFLICT, "sealed", &e);
+        }
+        #[cfg(test)]
+        if fork_failpoints::should_stop_after_seal_intent(&name) {
+            // The crash boundary: intent durable, records not written.
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "failpoint",
+                "stopped after the seal intent",
+            );
         }
     }
 
@@ -3526,6 +3659,10 @@ async fn append_core(
 
     let bytes = entries.iter().map(|e| e.len()).sum();
     let metric_bytes = bytes as u64;
+    #[cfg(test)]
+    if !close {
+        fork_failpoints::pause_append_before_enqueue(&name).await;
+    }
     let (tx, rx) = oneshot::channel();
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
@@ -3628,15 +3765,20 @@ async fn append_core(
     // only while it still owes; 429/408 keep it, because the write may
     // yet succeed on a retry.
     if let Err(e) = &outcome {
+        // A gap is NOT terminal: the missing predecessor may already be
+        // admitted and staging inside this very commit group, which
+        // would make an exact retry succeed. Tearing the intent down on
+        // that verdict can drop a final record another request is still
+        // completing. Gaps and stale epochs therefore keep the intent
+        // and let the client retry exactly; only verdicts about the
+        // REQUEST ITSELF — a malformed body, the wrong content type, a
+        // sequence reused with different content — are terminal.
         let definitive = matches!(
             e,
-            AppendErr::SeqConflict { .. }
-                | AppendErr::ProducerSeqReused
-                | AppendErr::ProducerGap { .. }
-                | AppendErr::ProducerStale { .. }
-                | AppendErr::ProducerEpochSeq
+            AppendErr::ProducerSeqReused
                 | AppendErr::CtMismatch
                 | AppendErr::BadBody(_)
+                | AppendErr::SeqConflict { .. }
         );
         if close && close_carries_content && definitive {
             if let Err(m) =

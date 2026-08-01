@@ -1224,19 +1224,6 @@ async fn product_seal(
                     ih.insert(h, v.clone());
                 }
             }
-            // The final record carries the seal operation as its
-            // producer identity when the caller supplied none, so a
-            // resumed seal never writes a second final record.
-            if !ih.contains_key("producer-id") {
-                // Header-SAFE id: a header value may not contain control
-                // bytes, so a NUL-delimited id silently fails to insert
-                // (and the append then loses its producer identity).
-                if let Ok(v) = axum::http::HeaderValue::from_str(&format!("{}seal.{op_id}", crate::shard::INTERNAL_PRODUCER_PREFIX)) {
-                    ih.insert("producer-id", v);
-                    ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
-                    ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
-                }
-            }
             let resp = product_append_sealing(
                 state.clone(),
                 name.clone(),
@@ -1263,9 +1250,20 @@ async fn product_seal(
                 // 409s (producer gap, sequence reuse, content-type
                 // mismatch). Only 429 and 408 are about the moment
                 // rather than the request.
+                // A producer GAP or stale epoch is a verdict about
+                // ORDERING, and the missing predecessor may already be
+                // admitted inside the server — an exact retry can still
+                // succeed, so the intent stays. Only verdicts about this
+                // request itself are terminal.
+                let (resp, code) = take_error_code(resp).await;
+                let ordering = matches!(
+                    code.as_deref(),
+                    Some("producer_gap") | Some("producer_stale_epoch") | Some("producer_epoch_seq")
+                );
                 let definitive = st.is_client_error()
                     && st != StatusCode::TOO_MANY_REQUESTS
-                    && st != StatusCode::REQUEST_TIMEOUT;
+                    && st != StatusCode::REQUEST_TIMEOUT
+                    && !ordering;
                 if definitive {
                     if let Err(e) = abandon_seal_intent(&state, &name, &op_id).await {
                         tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
@@ -1355,11 +1353,20 @@ pub(crate) async fn enter_sealing_cas(
     name: &str,
     op_id: &str,
     intent: &crate::registry::SealIntent,
+    expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
     let mut outcome = EnterSeal::Missing;
     let installed = state
         .registry
         .cas_update(name, |d| {
+            // A seal belongs to the incarnation it was issued
+            // against. The name can be deleted and recreated
+            // while this operation is in flight, and sealing the
+            // replacement closes a stream nobody asked to close.
+            if d.stream_epoch != expect_epoch {
+                outcome = EnterSeal::Missing;
+                return false;
+            }
             if !crate::http::desc_alive(d) {
                 outcome = EnterSeal::Missing;
                 return false;
@@ -1373,13 +1380,29 @@ pub(crate) async fn enter_sealing_cas(
                 return false;
             }
             if let Some(sl) = &d.sealing {
+                // An owed final belongs to the operation that promised
+                // it — until that operation is demonstrably gone. Only
+                // a claim older than SEAL_CLAIM_MS may be taken over,
+                // and taking it over REPLACES the intent, so the new
+                // operation owes its own record and the old one can no
+                // longer finish a transition it never completed.
+                let abandoned =
+                    crate::shard::now_ms() - sl.claimed_ms > crate::registry::SEAL_CLAIM_MS;
                 outcome = if sl.operation_id == op_id {
                     EnterSeal::AlreadyOurs
-                } else if sl.owes_final() {
+                } else if sl.owes_final() && !abandoned {
                     EnterSeal::Conflicting(
                         "a seal with a final record is in flight; retry that request to finish it"
                             .into(),
                     )
+                } else if sl.owes_final() {
+                    d.sealing = Some(crate::registry::SealState {
+                        operation_id: op_id.to_string(),
+                        intent: intent.clone(),
+                        claimed_ms: crate::shard::now_ms(),
+                    });
+                    outcome = EnterSeal::Installed;
+                    return true;
                 } else if op_id.is_empty() {
                     // A plain close joins a plain sealing.
                     EnterSeal::AlreadyOurs
@@ -1419,9 +1442,10 @@ pub(crate) async fn claim_seal(
     name: &str,
     op_id: &str,
     intent: &crate::registry::SealIntent,
+    expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
     for _ in 0..6 {
-        match enter_sealing_cas(state, name, op_id, intent).await? {
+        match enter_sealing_cas(state, name, op_id, intent, expect_epoch).await? {
             EnterSeal::PendingTopology => {
                 // Finish the transition, then race for the intent again.
                 crate::scaler3::resume(state, name).await;
@@ -1439,7 +1463,11 @@ async fn enter_sealing(
     op_id: &str,
     intent: crate::registry::SealIntent,
 ) -> Result<(), String> {
-    match claim_seal(state, name, op_id, &intent).await? {
+    let epoch = match state.registry.get(name).await {
+        Ok(Some(d)) => d.stream_epoch,
+        _ => return Ok(()),
+    };
+    match claim_seal(state, name, op_id, &intent, &epoch).await? {
         EnterSeal::Installed | EnterSeal::AlreadyOurs => Ok(()),
         // Empty message = this exact seal already completed.
         EnterSeal::AlreadyCompleted => Err(String::new()),
@@ -1488,6 +1516,55 @@ pub(crate) fn seal_op_id_full(
 }
 
 
+/// Identity of a raw close that carries content. The raw surface has
+/// no typed final record, so the identity is the create-request hash
+/// plus EVERY coordination input the committer can rule on: producer
+/// trio, explicit sequence, timestamp. Two closes that agree on all of
+/// it are the same operation and may resume each other; anything else
+/// is a different one and may not finish this seal.
+pub(crate) fn seal_op_id_semantic(
+    request_hash: &str,
+    routing_key: &str,
+    coordination: &[String],
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"prisma-seal-raw-v2\0");
+    for part in std::iter::once(routing_key)
+        .chain(std::iter::once(request_hash))
+        .chain(coordination.iter().map(|s| s.as_str()))
+    {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
+    crate::crypto::hex(&h.finalize()[..16])
+}
+
+/// Read an error response's `error.code` without consuming it: the
+/// committer's verdict is only in the body, and the caller still has to
+/// return the response verbatim.
+async fn take_error_code(resp: Response) -> (Response, Option<String>) {
+    let (parts, body) = resp.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(b) => b,
+        // Unreadable body: no verdict, so the caller treats it as one
+        // it cannot classify — which keeps the intent.
+        Err(_) => return (Response::from_parts(parts, Body::empty()), None),
+    };
+    let code = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("error")?
+                .get("code")?
+                .as_str()
+                .map(|s| s.to_string())
+        });
+    (
+        Response::from_parts(parts, Body::from(bytes)),
+        code,
+    )
+}
+
 /// Publish the Sealing intent for a RAW close, before the physical
 /// segment closes. Refuses when another operation still owes a final
 /// record — that seal must finish first, or its record would be lost.
@@ -1496,15 +1573,17 @@ pub(crate) async fn begin_sealing_for_close(
     name: &str,
     intent: crate::registry::SealIntent,
 ) -> Result<(), String> {
+    // The intent's request_hash IS the operation id: one identity,
+    // computed once by the request that owns it.
     let op = match &intent {
         crate::registry::SealIntent::Empty => String::new(),
-        crate::registry::SealIntent::Final {
-            routing_key,
-            request_hash,
-            ..
-        } => seal_op_id_raw(request_hash, routing_key),
+        crate::registry::SealIntent::Final { request_hash, .. } => request_hash.clone(),
     };
-    match claim_seal(state, name, &op, &intent).await? {
+    let epoch = match state.registry.get(name).await {
+        Ok(Some(d)) => d.stream_epoch,
+        _ => return Ok(()),
+    };
+    match claim_seal(state, name, &op, &intent, &epoch).await? {
         EnterSeal::Installed | EnterSeal::AlreadyOurs | EnterSeal::AlreadyCompleted => Ok(()),
         EnterSeal::AlreadySealed => Ok(()), // already terminal; the close is a no-op
         EnterSeal::Missing => Ok(()),
@@ -1515,19 +1594,6 @@ pub(crate) async fn begin_sealing_for_close(
     }
 }
 
-/// Operation identity for a raw close that carries content: the same
-/// versioned, length-delimited envelope the product seal uses, over the
-/// request's own bytes.
-pub(crate) fn seal_op_id_raw(request_hash: &str, routing_key: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(b"prisma-seal-v1-raw\0");
-    h.update((routing_key.len() as u64).to_le_bytes());
-    h.update(routing_key.as_bytes());
-    h.update((request_hash.len() as u64).to_le_bytes());
-    h.update(request_hash.as_bytes());
-    crate::crypto::hex(&h.finalize()[..16])
-}
 
 /// Release an intent this operation owns and has NOT committed. Only
 /// ever our own, only ever while it still owes its record — a seal that
@@ -1561,9 +1627,13 @@ pub(crate) async fn mark_final_committed(
     op_id: &str,
 ) -> Result<(), String> {
     let mut already = false;
+    let epoch = match state.registry.get(name).await {
+        Ok(Some(d)) => d.stream_epoch,
+        _ => return Ok(()),
+    };
     let marked = state
         .registry
-        .cas_update_retry(name, |d| match &mut d.sealing {
+        .cas_update_incarnation(name, &epoch, |d| match &mut d.sealing {
             Some(sl) if sl.operation_id == op_id => match &mut sl.intent {
                 crate::registry::SealIntent::Final {
                     final_committed, ..
@@ -1713,7 +1783,15 @@ pub(crate) async fn run_seal(
     //    the collection, because phase B then refuses to finish it.
     let op_id = op.clone().unwrap_or_default();
     if desc.sealing.is_none() || desc.sealing.as_ref().is_some_and(|s| s.operation_id != op_id) {
-        match claim_seal(state, name, &op_id, &crate::registry::SealIntent::Empty).await? {
+        match claim_seal(
+            state,
+            name,
+            &op_id,
+            &crate::registry::SealIntent::Empty,
+            &desc.stream_epoch,
+        )
+        .await?
+        {
             EnterSeal::Installed
             | EnterSeal::AlreadyOurs
             | EnterSeal::AlreadyCompleted
