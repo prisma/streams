@@ -50,17 +50,22 @@ const json = async (res) => {
 {
   const name = `gate/auth-${stamp}`;
   const body = JSON.stringify({ format: { kind: "json" } });
-  const anon = await P(name, {
-    method: "PUT",
-    headers: { "prisma-encryption-key": key },
-    body,
-  });
-  const wrong = await P(name, {
-    method: "PUT",
-    headers: { "prisma-encryption-key": key, authorization: "Bearer not-the-token" },
-    body,
-  });
+  // Only send these when there is a token to violate. Against a
+  // tokenless deployment they are not "skipped" — they SUCCEED, and
+  // the create below then answers 200 as an idempotent replay of a
+  // collection this gate made itself. That looked like a server bug
+  // for exactly as long as it took to read the gate.
   if (token) {
+    const anon = await P(name, {
+      method: "PUT",
+      headers: { "prisma-encryption-key": key },
+      body,
+    });
+    const wrong = await P(name, {
+      method: "PUT",
+      headers: { "prisma-encryption-key": key, authorization: "Bearer not-the-token" },
+      body,
+    });
     check("anonymous product request refused", anon.status === 401, `status ${anon.status}`);
     check("wrong bearer token refused", wrong.status === 401, `status ${wrong.status}`);
   } else {
