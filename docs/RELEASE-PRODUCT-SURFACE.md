@@ -278,6 +278,27 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Seventh audit round (2026-08-01)
+
+| finding | fix |
+|---|---|
+| A raw close derived its operation identity two ways — the whole semantic request when checking, content + routing key when publishing the intent — so an exact retry could not recognise its own intent and the collection answered `seal_incomplete` to the only request that could finish it | the intent's `request_hash` **is** the operation id, computed once by the request that owns it; the second derivation is deleted |
+| A producer gap or stale epoch was treated as definitive and tore the intent down, losing the promised record whenever the missing predecessor was merely late — it may already be admitted inside the server | ordering verdicts keep the intent for the exact retry; only verdicts about the request itself (content-type mismatch, malformed body, sequence reuse) take it down |
+| Retaining an intent lets an operation that is simply gone hold a collection Sealing forever | a claim older than `SEAL_CLAIM_MS` (15 s) is abandoned: another seal takes it over and REPLACES the intent. Recovery is a timeout, never a guess about whether a verdict was terminal |
+| In-flight lifecycle decisions checked liveness, which cannot distinguish "still mine" from "deleted and recreated while I was parked" | every one is fenced by the incarnation it was issued against — create readiness, fork-id stamp, delete, seal claim, final-committed (`cas_update_incarnation` / `IncarnationCas`) |
+| The crash-resume test planted a hand-built `SealState` instead of driving the code that writes one | a failpoint stops the close between its intent and its records; the ABA cases park real operations in real windows |
+
+### The observable contract this settles
+
+A close that carries content and is refused for **ordering** leaves
+the collection `Sealing`, and ordinary appends are refused with 409
+while that claim stands. This is deliberate: the collection is sealing,
+and the exact retry must still be able to deliver the promised record.
+It is bounded — after 15 s the claim is abandoned and any subsequent
+seal takes it over — so no single bad request can hold a collection
+open-but-unwritable indefinitely. A close refused for a reason that
+retrying cannot change releases the intent immediately.
+
 ## What the first audit response changed
 
 | audit finding | outcome |
@@ -321,3 +342,7 @@ tested by the pinned suite; the plural route is a separate product API.
 - Conformance runs through `conformance/`, never the package's npx CLI
   (its include glob misses its own runner and exits 0 having run
   nothing).
+- A collection stuck in `Sealing` recovers by itself: retry the close
+  that owns it (the exact same request finishes the transition), or
+  wait 15 s and seal it — the abandoned claim is taken over. There is
+  no operator intervention and no repair tool, by design.

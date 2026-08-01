@@ -9897,7 +9897,7 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     // last child, so the production path tombstones B and records its
     // debt — and the failpoint stops it there, before A is released.
     // Nothing about the post-crash state is planted by hand.
-    crate::http::fork_failpoints::stop_after_tombstone(Some("genB"));
+    crate::http::fork_failpoints::stop_after_tombstone("genB");
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 204 || st == 200, "delete C: {st}");
     crate::http::fork_failpoints::stop_after_tombstone_off("genB");
@@ -10109,7 +10109,7 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     // server writes the same identity the retry recomputes, which is
     // the whole contract under test.
     let body = br#"[{"n":1},{"n":2}]"#;
-    crate::http::fork_failpoints::stop_after_seal_intent(Some("rawcrash"));
+    crate::http::fork_failpoints::stop_after_seal_intent("rawcrash");
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -10318,7 +10318,7 @@ async fn fork_creation_and_source_deletion_serialize() {
     let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
 
     // Park the delete before its decision, then start it.
-    crate::http::fork_failpoints::park_delete_before_decision(Some("rsrc"));
+    crate::http::fork_failpoints::park_delete_before_decision("rsrc");
     let del = tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await });
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
@@ -10449,7 +10449,7 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     // the transition is marked committed.
     let closing = [("content-type", "application/json"), ("stream-closed", "true")];
     let body = br#"[{"n":1},{"n":2}]"#;
-    crate::http::fork_failpoints::stop_before_mark_committed(Some("rawmark"));
+    crate::http::fork_failpoints::stop_before_mark_committed("rawmark");
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawmark", &closing, body).await;
     crate::http::fork_failpoints::stop_before_mark_committed_off("rawmark");
     assert_eq!(st, 503, "the failpoint should have interrupted the close");
@@ -10858,7 +10858,7 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     // The predecessor: admitted against an OPEN descriptor, then parked
     // before it reaches the queue.
     let before = crate::http::fork_failpoints::parked_append_count();
-    crate::http::fork_failpoints::park_append_before_enqueue(Some("gapwin"));
+    crate::http::fork_failpoints::park_append_before_enqueue("gapwin");
     let pre = tokio::spawn(async move {
         hreq(
             addr,
@@ -10961,7 +10961,7 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     let body = br#"[{"n":1}]"#;
 
     let before = crate::http::fork_failpoints::parked_create_count();
-    crate::http::fork_failpoints::park_create_before_ready(Some("abacreate"));
+    crate::http::fork_failpoints::park_create_before_ready("abacreate");
     let stale =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
     let mut first_epoch = String::new();
@@ -11036,7 +11036,7 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
 
     // Crash a close between its intent and its records, so a real
     // Sealing claim exists and is owed a record.
-    crate::http::fork_failpoints::stop_after_seal_intent(Some("abaseal"));
+    crate::http::fork_failpoints::stop_after_seal_intent("abaseal");
     let body = br#"[{"fin":1}]"#;
     let (st, _, _) = hreq(
         addr,
@@ -11118,7 +11118,7 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     let first = state.registry.get("abadel").await.unwrap().unwrap().stream_epoch;
 
     // Park a delete just before it decides.
-    crate::http::fork_failpoints::park_delete_before_decision(Some("abadel"));
+    crate::http::fork_failpoints::park_delete_before_decision("abadel");
     let deleter =
         tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/abadel", &[], b"").await });
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
@@ -11248,7 +11248,7 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
     let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
 
     // Park the fork creation just before it publishes readiness.
-    crate::http::fork_failpoints::park_create_before_ready(Some("racechild"));
+    crate::http::fork_failpoints::park_create_before_ready("racechild");
     let creator = {
         let b = boundary.clone();
         tokio::spawn(async move {

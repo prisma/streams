@@ -2723,21 +2723,16 @@ pub(crate) mod fork_failpoints {
     const DELETE: usize = 4;
     const SEAL_INTENT: usize = 5;
 
-    fn set(which: usize, name: Option<&str>) {
-        let mut g = armed(which).lock().unwrap();
-        match name {
-            Some(n) => {
-                g.get_or_insert_with(HashSet::new).insert(n.to_string());
-            }
-            // `None` releases only what this process armed for the
-            // caller's own name in practice; tests that need surgical
-            // release call `release`.
-            None => *g = None,
-        }
-        drop(g);
-        if name.is_none() {
-            gate().notify_waiters();
-        }
+    // Arming and releasing are BOTH per name, and there is deliberately
+    // no "release everything": that is what let one test disarm
+    // another's failpoint, and the request it was supposed to park
+    // sailed straight through the window.
+    fn set(which: usize, name: &str) {
+        armed(which)
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashSet::new)
+            .insert(name.to_string());
     }
 
     fn release(which: usize, name: &str) {
@@ -2787,21 +2782,21 @@ pub(crate) mod fork_failpoints {
 
     /// Abort the cascade right after the named generation is tombstoned
     /// and its debt recorded, before the parent reference is released.
-    pub fn stop_after_tombstone(name: Option<&str>) {
+    pub fn stop_after_tombstone(name: &str) {
         set(TOMBSTONE, name);
     }
 
     /// Drop a raw close on the named stream AFTER its records are
     /// durable and the segment is closed, but before the transition is
     /// marked committed.
-    pub fn stop_before_mark_committed(name: Option<&str>) {
+    pub fn stop_before_mark_committed(name: &str) {
         set(MARK, name);
     }
 
     /// Drop a raw close right after its Sealing intent is durable and
     /// BEFORE the records are appended — the crash boundary an ordinary
     /// retry has to recover from.
-    pub fn stop_after_seal_intent(name: Option<&str>) {
+    pub fn stop_after_seal_intent(name: &str) {
         set(SEAL_INTENT, name);
     }
 
@@ -2832,7 +2827,7 @@ pub(crate) mod fork_failpoints {
     /// Park a creation just before it publishes readiness — after its
     /// fork reference is installed — so a delete can be made to win
     /// that window deterministically.
-    pub fn park_create_before_ready(name: Option<&str>) {
+    pub fn park_create_before_ready(name: &str) {
         set(READY, name);
     }
 
@@ -2856,7 +2851,7 @@ pub(crate) mod fork_failpoints {
     /// publish its seal intent and reach the committer first, so its
     /// producer sequence observes a gap the parked predecessor is about
     /// to fill.
-    pub fn park_append_before_enqueue(name: Option<&str>) {
+    pub fn park_append_before_enqueue(name: &str) {
         set(APPEND, name);
     }
 
@@ -2875,7 +2870,7 @@ pub(crate) mod fork_failpoints {
     /// Park a delete just before it decides soft-versus-hard, so a
     /// concurrent fork installation can be made to win DETERMINISTICALLY
     /// rather than by racing timers.
-    pub fn park_delete_before_decision(name: Option<&str>) {
+    pub fn park_delete_before_decision(name: &str) {
         set(DELETE, name);
     }
 
