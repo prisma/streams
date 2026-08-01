@@ -10297,64 +10297,62 @@ async fn a_seal_never_installs_over_a_pending_transition() {
 }
 
 /// A first fork installing its reference must serialize against a
-/// concurrent delete of the source. Deciding soft-versus-hard from a
-/// descriptor read BEFORE the write let both win: the fork installed
-/// its reference and the delete tombstoned the source anyway, leaving a
-/// live fork whose parent is hard-deleted.
+/// concurrent delete of the source. Deterministic, not timing-nudged:
+/// the delete is parked immediately before it decides soft-versus-hard,
+/// the fork install is allowed to complete, and only then is the delete
+/// released. Deciding that from a descriptor read taken BEFORE the
+/// write let both win — the fork installed its reference and the delete
+/// tombstoned the source anyway, leaving a live fork anchored to a
+/// hard-deleted parent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fork_creation_and_source_deletion_serialize() {
-    for attempt in 0..12 {
-        let store = mem();
-        let (state, addr) = http_rig(store).await;
-        let ct = [("content-type", "application/json")];
-        let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rsrc", &ct, br#"[{"n":0}]"#).await;
-        assert!(st == 200 || st == 201);
-        let (_, h, _) = hreq(addr, "GET", "/v1/stream/rsrc", &[], b"").await;
-        let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rsrc", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/rsrc", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
 
-        // Fire the fork and the delete together, with the ordering
-        // nudged both ways across attempts.
-        let fork = tokio::spawn(async move {
-            if attempt % 2 == 1 {
-                tokio::time::sleep(std::time::Duration::from_micros(200)).await;
-            }
-            hreq(
-                addr,
-                "PUT",
-                "/v1/stream/rchild",
-                &[
-                    ("content-type", "application/json"),
-                    ("stream-forked-from", "rsrc"),
-                    ("stream-fork-offset", &boundary),
-                ],
-                b"",
-            )
-            .await
-        });
-        let del = tokio::spawn(async move {
-            if attempt % 2 == 0 {
-                tokio::time::sleep(std::time::Duration::from_micros(200)).await;
-            }
-            hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await
-        });
-        let (fst, _, _) = fork.await.unwrap();
-        let _ = del.await.unwrap();
+    // Park the delete before its decision, then start it.
+    crate::http::fork_failpoints::park_delete_before_decision(Some("rsrc"));
+    let del = tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await });
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-        state.registry.invalidate("rsrc");
-        state.registry.invalidate("rchild");
-        let src = state.registry.get("rsrc").await.unwrap().unwrap();
-        let child = state.registry.get("rchild").await.unwrap();
-        let child_live = child
-            .as_ref()
-            .is_some_and(|c| !c.deleted && fst == 201);
-        if child_live {
-            assert!(
-                !src.deleted,
-                "attempt {attempt}: a live fork is anchored to a HARD-deleted source"
-            );
-        }
-        engine_shutdown(&state).await;
-    }
+    // With the delete held there, the fork installs its reference.
+    let (fst, _, fb) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/rchild",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "rsrc"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(fst, 201, "fork install: {}", String::from_utf8_lossy(&fb));
+
+    // Release the delete: it must now SEE the child.
+    crate::http::fork_failpoints::park_delete_before_decision(None);
+    let (dst, _, _) = del.await.unwrap();
+    assert!(dst == 204 || dst == 200, "delete: {dst}");
+
+    state.registry.invalidate("rsrc");
+    let src = state.registry.get("rsrc").await.unwrap().unwrap();
+    assert!(
+        !src.deleted,
+        "a live fork is anchored to a HARD-deleted source: {src:?}"
+    );
+    assert!(src.soft_deleted, "the source should be retained: {src:?}");
+    assert_eq!(src.fork_children.len(), 1, "the child reference survived");
+    // The child can still read its inherited data.
+    let (st, _, b) = hreq(addr, "GET", "/v1/stream/rchild", &[], b"").await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 1, "inherited data unreadable: {recs:?}");
+    engine_shutdown(&state).await;
 }
 
 /// A seal intent must never be published for a final record the append

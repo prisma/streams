@@ -2673,6 +2673,39 @@ pub(crate) mod fork_failpoints {
     pub(super) fn should_stop_before_mark_committed(name: &str) -> bool {
         armed_mark().lock().unwrap().as_deref() == Some(name)
     }
+
+    // Park a delete just before it decides soft-versus-hard, so a
+    // concurrent fork installation can be made to win DETERMINISTICALLY
+    // rather than by racing timers.
+    fn parked_delete() -> &'static Mutex<Option<String>> {
+        static M: Mutex<Option<String>> = Mutex::new(None);
+        &M
+    }
+    fn gate() -> &'static tokio::sync::Notify {
+        static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+        N.get_or_init(tokio::sync::Notify::new)
+    }
+
+    pub fn park_delete_before_decision(name: Option<&str>) {
+        *parked_delete().lock().unwrap() = name.map(str::to_string);
+        if name.is_none() {
+            gate().notify_waiters();
+        }
+    }
+
+    pub(super) async fn pause_delete_before_decision(name: &str) {
+        loop {
+            let armed = parked_delete().lock().unwrap().as_deref() == Some(name);
+            if !armed {
+                return;
+            }
+            let n = gate().notified();
+            if parked_delete().lock().unwrap().as_deref() != Some(name) {
+                return;
+            }
+            n.await;
+        }
+    }
 }
 
 fn release_fork_ref(
@@ -2829,6 +2862,8 @@ fn delete_lifecycle(
         //
         // The debt is recorded in the SAME write as the tombstone, so a
         // crash between them is impossible.
+        #[cfg(test)]
+        fork_failpoints::pause_delete_before_decision(&name).await;
         let mut hard_deleted = false;
         state
             .registry

@@ -9,7 +9,7 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 **One gate is outstanding.** Everything the appendix defines passes,
 carries an explicit posture, or — for the post-audit cloud re-run — is
 blocked on a platform condition that is not ours to fix and has not
-been re-verified. Four audit rounds have been answered in full; each is summarized
+been re-verified. Five audit rounds have been answered in full; each is summarized
 below, and each is a reason to read an earlier round's "pass" claims as
 of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
 this release is not fully gated, and the report says so rather than
@@ -253,6 +253,17 @@ epoch mattered), the cascade test hand-built the post-crash state, and
 the raw-close test never paused after the intent. They now use the real
 hash, a real failpoint inside the production cascade, and a resume
 through the public route.
+
+## Fifth audit round (2026-08-01)
+
+| finding | fix |
+|---|---|
+| A raw final close could not be resumed once its records were durable: no producer identity meant the retry hit the committer's closed-stream check and was refused forever | such a close carries a synthetic identity derived from its own operation id, so the retry is recognised as a duplicate first. The identity is internal — the wire response is unchanged (the first attempt leaked it and broke close-with-final-append in the DS suite) |
+| A definitively refused final left its intent behind, bricking the collection | a 4xx that is not 429/408 is the committer's verdict on that request, so the seal abandons its own uncommitted intent; transient outcomes keep it |
+| Capacity pre-checks were inexact: value length rather than wire bytes, no record count, and a disabled limit read as zero capacity | one shared predicate — exact wire bytes, record count, and zero means disabled |
+| A crashed cascade could only be repaired by deleting a hidden intermediate name | a delete against a tombstone walks the ancestor chain and settles every unpaid debt, so retrying the ORIGINAL delete works |
+| A fork initialization was refused against a source retained FOR IT, leaving the child permanently Initializing | the already-installed reference is checked before the liveness guard; the child's own fork-id CAS is classified |
+| The fork/delete race test was timing-nudged | deterministic: the delete is parked before its decision, the fork install completes, then the delete is released — verified red against the pre-read decision |
 
 ## What the first audit response changed
 
