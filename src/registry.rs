@@ -146,6 +146,10 @@ pub enum SealIntent {
     /// One final record must be durable first.
     Final {
         routing_key: String,
+        /// Identity of the request that owes the record, so only an
+        /// exact retry of THAT request may complete the transition.
+        #[serde(default)]
+        request_hash: String,
         /// Set — durably, before any segment closes — once the final
         /// record is committed. Only then may the seal complete.
         final_committed: bool,

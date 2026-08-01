@@ -1001,7 +1001,16 @@ async fn product_preflight() -> Response {
         .status(StatusCode::NO_CONTENT)
         .header("access-control-allow-origin", "*")
         .header("access-control-allow-methods", "GET, OPTIONS")
-        .header("access-control-allow-headers", "*")
+        .header(
+            // `*` does not authorize Authorization: it is a
+            // forbidden-wildcard request header, so a bearer request
+            // fails preflight unless the name is listed.
+            "access-control-allow-headers",
+            "authorization, content-type, stream-encryption-key, \
+             stream-closed, stream-ttl, stream-forked-from, \
+             stream-fork-offset, stream-fork-sub-offset, \
+             producer-id, producer-epoch, producer-seq, if-none-match",
+        )
         .header("access-control-expose-headers", "*")
         .header("access-control-max-age", "600")
         .body(Body::empty())
@@ -1116,7 +1125,16 @@ async fn stream_entry_inner(
                 "access-control-allow-methods",
                 "GET, PUT, POST, HEAD, DELETE, OPTIONS",
             )
-            .header("access-control-allow-headers", "*")
+            .header(
+                // `*` does not authorize Authorization: it is a
+                // forbidden-wildcard request header, so a bearer request
+                // fails preflight unless the name is listed.
+                "access-control-allow-headers",
+                "authorization, content-type, stream-encryption-key, \
+                 stream-closed, stream-ttl, stream-forked-from, \
+                 stream-fork-offset, stream-fork-sub-offset, \
+                 producer-id, producer-epoch, producer-seq, if-none-match",
+            )
             .header("access-control-max-age", "600")
             .body(Body::empty())
             .unwrap(),
@@ -2865,14 +2883,9 @@ async fn append_core(
     // still writable while this one was already closed, and a failure
     // in between produced a permanently split-brained collection that
     // still answered the close with success.
-    // …except for the seal's own final record, whose intent is already
-    // published and whose close is the second half of that same
-    // operation.
-    if close && !desc.sealed && !is_owed_final {
-        if let Err(e) = crate::product::begin_sealing_for_close(&state, &name).await {
-            return err_resp(StatusCode::CONFLICT, "sealed", &e);
-        }
-    }
+
+    // (the raw close intent is published further down, once every
+    // deterministic error has been ruled out — see `close_intent`)
 
     // Content-Type: required on POST with a body; must match the stream's
     // configured media type (case-insensitive; parameters ignored). A
@@ -2934,6 +2947,38 @@ async fn append_core(
             }
         } else {
             entries = vec![body.clone()];
+        }
+    }
+
+    let close_carries_content = !entries.is_empty();
+    // The raw close publishes its lifecycle intent HERE: after content
+    // type, body parsing and every other deterministic refusal, so a
+    // request that answers 400 can never leave the collection stuck in
+    // Sealing owing a record nobody will write.
+    //
+    // A close that CARRIES CONTENT is a final-bearing seal, exactly like
+    // the product's seal-with-final: the promise is "these records, then
+    // closed". Publishing Empty for it meant a crash after the intent
+    // let a later close-only finish the seal without them.
+    if close && !desc.sealed && !is_owed_final && deferred.is_none() {
+        let intent = if entries.is_empty() {
+            crate::registry::SealIntent::Empty
+        } else {
+            crate::registry::SealIntent::Final {
+                routing_key: product_key.clone().unwrap_or_default(),
+                request_hash: create_request_hash(
+                    &desc.content_type,
+                    None,
+                    None,
+                    true,
+                    &body,
+                    None,
+                ),
+                final_committed: false,
+            }
+        };
+        if let Err(e) = crate::product::begin_sealing_for_close(&state, &name, intent).await {
+            return err_resp(StatusCode::CONFLICT, "sealed", &e);
         }
     }
 
@@ -3214,7 +3259,27 @@ async fn append_core(
             // record committed first, which is what lets the seal
             // complete at all. Sealing here would run with no operation
             // id and be refused by its own intent.
-            if close && ack.closed && !is_owed_final {
+            // A raw close that carried content owns a final-bearing
+            // intent: its records are durable now, so record that before
+            // finishing the transition. A close-only carries Empty and
+            // needs no marking.
+            if close && ack.closed && !is_owed_final && close_carries_content {
+                let op = crate::product::seal_op_id_raw(
+                    &create_request_hash(&desc.content_type, None, None, true, &body, None),
+                    &product_key.clone().unwrap_or_default(),
+                );
+                if let Err(e) = crate::product::mark_final_committed(&state, &name, &op).await {
+                    tracing::error!(stream = %name, "marking the raw close's final durable: {e}");
+                }
+                if let Err(e) = crate::product::run_seal(&state, &name, Some(op)).await {
+                    tracing::error!(stream = %name, "collection seal after raw close: {e}");
+                    return err_resp(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "seal_incomplete",
+                        &format!("the collection seal did not complete: {e}; retry the close"),
+                    );
+                }
+            } else if close && ack.closed && !is_owed_final {
                 // Raw close seals the COLLECTION (spec Stage 8 §7.4/§16.3):
                 // the descriptor's sealed bit must agree with the engine's
                 // closed tail, or product metadata would deny a closure the

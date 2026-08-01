@@ -575,7 +575,15 @@ pub async fn product_entry(
                 "access-control-allow-methods",
                 "GET, PUT, POST, DELETE, OPTIONS",
             )
-            .header("access-control-allow-headers", "*")
+            // Authorization is a forbidden-wildcard request header: a
+            // browser does NOT treat `*` as covering it, so a bearer
+            // request fails preflight even though everything else works.
+            .header(
+                "access-control-allow-headers",
+                "authorization, content-type, prisma-encryption-key, \
+                 prisma-routing-key, producer-id, producer-epoch, producer-seq, \
+                 if-none-match",
+            )
             .header("access-control-expose-headers", "*")
             .header("access-control-max-age", "600")
             .body(Body::empty())
@@ -1019,8 +1027,13 @@ async fn product_seal(
         #[derive(serde::Deserialize, Default)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
         struct SealDoc {
-            #[serde(default)]
-            r#final: Option<serde_json::Value>,
+            // Double Option: serde collapses a PRESENT `null` into
+            // `None`, so `{"final": null}` silently became a seal with
+            // no final record — dropping a perfectly valid JSON null
+            // that the SDK sends whenever T admits it. The outer layer
+            // is presence, the inner is the value.
+            #[serde(default, deserialize_with = "deserialize_some")]
+            r#final: Option<Option<serde_json::Value>>,
             #[serde(default)]
             routing_key: Option<String>,
         }
@@ -1036,14 +1049,72 @@ async fn product_seal(
                 );
             }
         };
-        if let Some(fin) = doc.r#final {
-            // Enter Sealing FIRST (audit P0): ordinary appends are
-            // refused from here, so nothing can land between the final
-            // record and the segment closes. The operation id makes the
-            // final append itself idempotent under retry.
+        if let Some(fin) = doc.r#final.map(|v| v.unwrap_or(serde_json::Value::Null)) {
+            // EVERY deterministic error first. Publishing the intent
+            // before validating let a request that could never complete
+            // — no key, wrong key, unusable routing key — leave the
+            // collection permanently Sealing, owing a final record from
+            // a caller who was refused.
+            let Some(key_b64) = product_key(&headers) else {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "missing_key",
+                    "Prisma-Encryption-Key required",
+                    None,
+                    false,
+                );
+            };
+            match state.registry.get(&name).await {
+                Ok(Some(d)) if crate::http::desc_alive(&d) => {
+                    if crate::http::initializing(&d) {
+                        return perr(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "creating",
+                            "stream is still being created; retry",
+                            None,
+                            true,
+                        );
+                    }
+                    if !matches!(
+                        crate::http::check_key(Some(&key_b64), &d),
+                        crate::http::KeyCheck::Ok(..)
+                    ) {
+                        return perr(
+                            StatusCode::FORBIDDEN,
+                            "wrong_key",
+                            "encryption key mismatch",
+                            None,
+                            false,
+                        );
+                    }
+                }
+                Ok(_) => {
+                    return perr(
+                        StatusCode::NOT_FOUND,
+                        "not_found",
+                        "stream not found",
+                        None,
+                        false,
+                    );
+                }
+                Err(e) => {
+                    return perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                        None,
+                        true,
+                    );
+                }
+            }
+            // Only now: enter Sealing. Ordinary appends are refused from
+            // here, so nothing can land between the final record and the
+            // segment closes, and the operation id makes the final
+            // append itself idempotent under retry.
             let op_id = seal_op_id(&fin, doc.routing_key.as_deref().unwrap_or_default());
             let intent = crate::registry::SealIntent::Final {
                 routing_key: doc.routing_key.clone().unwrap_or_default(),
+                request_hash: op_id.clone(),
                 final_committed: false,
             };
             match enter_sealing(&state, &name, &op_id, intent).await {
@@ -1059,15 +1130,6 @@ async fn product_seal(
                 }
                 Err(m) => return perr(StatusCode::CONFLICT, "sealed", &m, None, false),
             }
-            let Some(key_b64) = product_key(&headers) else {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "missing_key",
-                    "Prisma-Encryption-Key required",
-                    None,
-                    false,
-                );
-            };
             let mut ih = HeaderMap::new();
             if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
                 ih.insert("prisma-encryption-key", v);
@@ -1181,15 +1243,34 @@ async fn enter_sealing(
     Ok(())
 }
 
+/// Distinguishes an ABSENT field from one present as `null`.
+fn deserialize_some<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
 /// Identity of a seal-with-final operation: the record it promised,
 /// under the routing key it promised it for. A retry of the same seal
 /// derives the same id and resumes; anything else is a different
 /// operation and may not finish this one.
 pub(crate) fn seal_op_id(final_value: &serde_json::Value, routing_key: &str) -> String {
     use sha2::{Digest, Sha256};
+    // Versioned and LENGTH-DELIMITED. Concatenating the record and the
+    // routing key made distinct requests collide: `{"final":1,
+    // "routingKey":"23"}` and `{"final":12,"routingKey":"3"}` both hash
+    // "123", so after the first sealed, the second looked like an
+    // idempotent replay and returned success without ever writing the
+    // record it asked for.
+    let record = final_value.to_string();
     let mut h = Sha256::new();
-    h.update(final_value.to_string().as_bytes());
+    h.update(b"prisma-seal-v1\0");
+    h.update((routing_key.len() as u64).to_le_bytes());
     h.update(routing_key.as_bytes());
+    h.update((record.len() as u64).to_le_bytes());
+    h.update(record.as_bytes());
     crate::crypto::hex(&h.finalize()[..16])
 }
 
@@ -1199,45 +1280,86 @@ pub(crate) fn seal_op_id(final_value: &serde_json::Value, routing_key: &str) -> 
 pub(crate) async fn begin_sealing_for_close(
     state: &Arc<AppState>,
     name: &str,
+    intent: crate::registry::SealIntent,
 ) -> Result<(), String> {
-    let desc = match state.registry.get(name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-        _ => return Ok(()),
+    let want_op = match &intent {
+        crate::registry::SealIntent::Empty => String::new(),
+        crate::registry::SealIntent::Final {
+            routing_key,
+            request_hash,
+            ..
+        } => seal_op_id_raw(request_hash, routing_key),
     };
-    if desc.sealed {
-        return Ok(());
-    }
-    if let Some(sl) = &desc.sealing {
-        if sl.owes_final() {
-            return Err(
-                "a seal with a final record is in flight; finish that request first".into(),
-            );
+    // The CAS decides. Reading the descriptor first is only an early
+    // out; the loop below re-reads after every refusal, because a
+    // declined CAS means somebody else moved the state — treating that
+    // as success let a raw close proceed against a descriptor it had
+    // loaded before another operation won the transition.
+    for _ in 0..5 {
+        let desc = match state.registry.get(name).await {
+            Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+            _ => return Ok(()),
+        };
+        if desc.sealed {
+            return Ok(());
         }
-        return Ok(());
-    }
-    state
-        .registry
-        .cas_update_retry(name, |d| {
-            if d.sealed || d.sealing.is_some() {
-                return false;
+        if let Some(sl) = &desc.sealing {
+            if sl.operation_id == want_op {
+                return Ok(()); // ours already
             }
-            d.sealing = Some(crate::registry::SealState {
-                operation_id: String::new(),
-                intent: crate::registry::SealIntent::Empty,
-                claimed_ms: crate::shard::now_ms(),
-            });
-            true
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
-    Ok(())
+            if sl.owes_final() {
+                return Err(
+                    "a seal with a final record is in flight; finish that request first".into(),
+                );
+            }
+            if want_op.is_empty() {
+                return Ok(()); // a plain close joins a plain sealing
+            }
+            return Err("a different seal operation is in flight".into());
+        }
+        let installed = state
+            .registry
+            .cas_update_retry(name, |d| {
+                if d.sealed || d.sealing.is_some() {
+                    return false;
+                }
+                d.sealing = Some(crate::registry::SealState {
+                    operation_id: want_op.clone(),
+                    intent: intent.clone(),
+                    claimed_ms: crate::shard::now_ms(),
+                });
+                true
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        state.registry.invalidate(name);
+        if installed {
+            return Ok(());
+        }
+        // Declined: somebody else changed the descriptor. Re-read and
+        // classify rather than assuming our intent is in place.
+    }
+    Err("could not publish the seal intent; retry".into())
+}
+
+/// Operation identity for a raw close that carries content: the same
+/// versioned, length-delimited envelope the product seal uses, over the
+/// request's own bytes.
+pub(crate) fn seal_op_id_raw(request_hash: &str, routing_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"prisma-seal-v1-raw\0");
+    h.update((routing_key.len() as u64).to_le_bytes());
+    h.update(routing_key.as_bytes());
+    h.update((request_hash.len() as u64).to_le_bytes());
+    h.update(request_hash.as_bytes());
+    crate::crypto::hex(&h.finalize()[..16])
 }
 
 /// Record that a final-bearing seal's record is durable. Must happen
 /// before any segment closes: after this the transition can be finished
 /// by anyone, and before it, only by the operation that owes the record.
-async fn mark_final_committed(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
+pub(crate) async fn mark_final_committed(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
     state
         .registry
         .cas_update_retry(name, |d| match &mut d.sealing {
@@ -1348,13 +1470,51 @@ pub(crate) async fn run_seal(
     // that operation. A plain `:seal` arriving after a crashed
     // seal-with-final used to close the segments and publish Sealed,
     // dropping the final record for good.
+    // Closing is forbidden while a final record is owed — by ANYONE,
+    // including the operation that owes it. The owner marks the record
+    // durable first (`mark_final_committed`), which is what clears this;
+    // making the rule depend on caller identity meant a matching op id
+    // could close the segments with the record still unwritten.
     if let Some(sl) = &desc.sealing {
-        if sl.owes_final() && op.as_deref() != Some(sl.operation_id.as_str()) {
-            return Err(
+        if sl.owes_final() {
+            return Err(if op.as_deref() == Some(sl.operation_id.as_str()) {
+                "this seal has not committed its final record yet".into()
+            } else {
                 "a seal with a final record is in flight; retry that request to finish it"
-                    .into(),
-            );
+                    .to_string()
+            });
         }
+    }
+    // A topology transition in flight is resolved BEFORE the seal
+    // takes its snapshot of live segments. Otherwise the two interleave:
+    // the seal closes what it can see, publishes Sealed, and the
+    // transition's phase B then publishes a fresh live child. Phase B
+    // now refuses once the lifecycle has moved, and this is the other
+    // half — finish the transition first so the snapshot is complete.
+    let mut desc = desc;
+    for _ in 0..5 {
+        if !desc
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_some())
+        {
+            break;
+        }
+        crate::scaler3::resume(state, name).await;
+        state.registry.invalidate(name);
+        desc = match state.registry.get(name).await {
+            Ok(Some(d)) => d,
+            _ => return Ok(()),
+        };
+    }
+    if desc
+        .segments
+        .as_ref()
+        .is_some_and(|m| m.pending.is_some())
+    {
+        return Err(
+            "a split or merge is in flight and did not settle; the seal is resumable".into(),
+        );
     }
     // 1. Publish the INTENT. Appends are refused from here on, so no
     //    record can land after a segment is closed and before Sealed.
@@ -1379,6 +1539,7 @@ pub(crate) async fn run_seal(
         state.registry.invalidate(name);
     }
     // 2. Close every live segment identity. Idempotent per segment.
+    state.registry.invalidate(name);
     let d = match state.registry.get(name).await {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(()),
@@ -1403,11 +1564,15 @@ pub(crate) async fn run_seal(
             return Err(format!("segment {seg_id} did not close; seal is resumable"));
         }
     }
-    // 3. Publish SEALED only now.
+    // 3. Publish SEALED only now — and only if no topology transition
+    //    reappeared while the segments were closing.
     state
         .registry
         .cas_update_retry(name, |d| {
             if d.sealed {
+                return false;
+            }
+            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
                 return false;
             }
             d.sealed = true;

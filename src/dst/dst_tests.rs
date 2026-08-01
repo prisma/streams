@@ -9320,6 +9320,10 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
                 ),
                 intent: crate::registry::SealIntent::Final {
                     routing_key: String::new(),
+                    request_hash: crate::product::seal_op_id(
+                        &serde_json::json!({"done": true}),
+                        "",
+                    ),
                     final_committed: false,
                 },
                 claimed_ms: crate::shard::now_ms(),
@@ -9584,6 +9588,127 @@ async fn a_half_deleted_fork_finishes_its_cleanup() {
     state.registry.invalidate("dchild");
     let child = state.registry.get("dchild").await.unwrap().unwrap();
     assert!(!child.parent_ref_pending, "the debt is settled");
+    engine_shutdown(&state).await;
+}
+
+/// The exact interleaving the round-3 audit specified: a split that has
+/// already published its intent and sealed the parent, parked before
+/// publishing successors, while the collection seals underneath it.
+/// Fencing only the START of a transition left this open — phase B
+/// would resume and publish live children under a Sealed collection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/parked",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for k in ["a", "b", "c", "d"] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/parked/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            format!("{{\"k\":\"{k}\"}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+
+    // Park every resume between the parent seal and the successor CAS,
+    // then start a split: it publishes pending, seals the parent, waits.
+    crate::scaler3::failpoints::arm_before_publish();
+    let split = {
+        let st2 = state.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&st2, "parked", 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    // Wait for the intent to become durable.
+    let mut pending = false;
+    for _ in 0..100 {
+        state.registry.invalidate("parked");
+        if let Ok(Some(d)) = state.registry.get("parked").await {
+            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+                pending = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(pending, "the split never published its intent");
+
+    // Seal the collection while the split is parked. The seal resolves
+    // the transition first rather than snapshotting around it.
+    let sealer = {
+        let st2 = state.clone();
+        tokio::spawn(async move { crate::product::run_seal(&st2, "parked", None).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    crate::scaler3::failpoints::release_before_publish();
+    let _ = split.await;
+    let seal_result = sealer.await.unwrap();
+
+    // Whatever order they settled in, the end state must be coherent:
+    // if the collection is sealed, nothing may be live and unclosed, and
+    // no transition may be left dangling.
+    state.registry.invalidate("parked");
+    let d = state.registry.get("parked").await.unwrap().unwrap();
+    if d.sealed {
+        assert!(
+            !d.segments.as_ref().is_some_and(|m| m.pending.is_some()),
+            "sealed with a transition still pending: {:?}",
+            d.segments
+        );
+        // The invariant is behavioural, not representational: whatever
+        // segments exist, NOTHING may write. Keys are checked across the
+        // whole keyspace, since a successor published by the parked
+        // split would own half of it.
+        for k in ["late", "a", "b", "c", "d", "zz", "q7"] {
+            let (st, _, b) = preq(
+                addr,
+                "POST",
+                "/v1/streams/parked/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("prisma-routing-key", k),
+                ],
+                br#"{"late":1}"#,
+            )
+            .await;
+            assert_eq!(
+                st,
+                409,
+                "append on key {k} accepted after Sealed: {}",
+                String::from_utf8_lossy(&b)
+            );
+        }
+        // The raw (default-key) surface agrees.
+        let (st, _, _) = hreq(
+            addr,
+            "POST",
+            "/v1/stream/parked",
+            &[("content-type", "application/json")],
+            br#"[{"late":1}]"#,
+        )
+        .await;
+        assert_eq!(st, 409, "raw append accepted after Sealed");
+    } else {
+        // The seal declined because the transition was in flight: that
+        // is the other legal outcome, and it must say so.
+        assert!(seal_result.is_err(), "unsealed but the seal reported success");
+    }
     engine_shutdown(&state).await;
 }
 

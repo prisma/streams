@@ -482,6 +482,16 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     let published = st
         .registry
         .cas_update(name, |d| {
+            // Phase B is a SECOND durable step, so it re-checks the
+            // lifecycle. Fencing only phase A left this race: publish
+            // pending -> seal the parent -> pause -> the collection
+            // seals (snapshotting the segments it can see) -> phase B
+            // resumes and publishes live children UNDER a sealed
+            // collection. Once sealed, no topology operation may create
+            // another live segment.
+            if d.sealed || d.sealing.is_some() {
+                return false;
+            }
             let pending_matches = d
                 .segments
                 .as_ref()
@@ -572,6 +582,16 @@ async fn resume_merge(
     let published = st
         .registry
         .cas_update(name, |d| {
+            // Phase B is a SECOND durable step, so it re-checks the
+            // lifecycle. Fencing only phase A left this race: publish
+            // pending -> seal the parent -> pause -> the collection
+            // seals (snapshotting the segments it can see) -> phase B
+            // resumes and publishes live children UNDER a sealed
+            // collection. Once sealed, no topology operation may create
+            // another live segment.
+            if d.sealed || d.sealing.is_some() {
+                return false;
+            }
             let pending_matches = d
                 .segments
                 .as_ref()

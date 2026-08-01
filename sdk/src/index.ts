@@ -359,7 +359,10 @@ async function req(
     if ((res.status === 429 || res.status === 503) && attempt < 3) {
       if (signal?.aborted) return res;
       const ra = Number(res.headers.get("retry-after") ?? "1");
-      await new Promise((r) => setTimeout(r, Math.min(ra, 5) * 1000));
+      // Abort-aware: a plain setTimeout here made cancellation wait out
+      // the backoff — up to ~15 s across three attempts.
+      await sleep(Math.min(ra, 5) * 1000, signal);
+      if (signal?.aborted) return res;
       continue;
     }
     return res;
