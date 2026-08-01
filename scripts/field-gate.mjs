@@ -1,9 +1,13 @@
-// The audit's cloud gate: the five behaviours that only mean something
-// against real infrastructure — a real object store, a real network,
-// real concurrency between processes. Everything here has a
-// deterministic sibling in the rust suite; this run proves the same
-// invariants hold when the store is Tigris and the client is a
-// continent away.
+// The cloud gate: the five behaviours that only mean something against
+// real infrastructure — a real object store, a real network, real
+// concurrency between processes.
+//
+// SCOPE, precisely: these are REPLAY and coexistence checks, plus one
+// genuine auto-split. Nothing here kills or restarts the server, so it
+// does not exercise crash recovery at durable boundaries; that is what
+// the failpoint tests in the rust suite are for. Read a pass here as
+// "the contract holds over the WAN against Tigris", not as "the
+// lifecycle survives a crash".
 //
 //   node scripts/field-gate.mjs <base-url>
 //     STREAMS_TOKEN  bearer token the service was deployed with
@@ -112,9 +116,12 @@ const json = async (res) => {
   check("…and appends nothing", Array.isArray(recs2) && recs2.length === 1, JSON.stringify(recs2));
 }
 
-// --- 3. seal, interrupted and resumed ---------------------------------
-// A client that never saw its response retries the seal. The final
-// record must not double, and the collection must end up sealed.
+// --- 3. seal REPLAY (not a crash test) --------------------------------
+// A client that never saw its response retries the seal. This proves
+// response-replay idempotence over a real network — it does NOT prove
+// crash recovery, which needs failpoints inside the process; those live
+// in the rust suite (a_plain_seal_cannot_finish_someone_elses_final,
+// a_raw_close_with_content_owes_its_records).
 {
   const name = `gate/seal-${stamp}`;
   await P(name, {
@@ -130,7 +137,7 @@ const json = async (res) => {
   const seal = JSON.stringify({ final: { done: true }, routingKey: "" });
   const s1 = await P(`${name}:seal`, { method: "POST", headers: headers(), body: seal });
   const s2 = await P(`${name}:seal`, { method: "POST", headers: headers(), body: seal });
-  check("seal is idempotent under replay", s1.ok && s2.ok, `${s1.status}/${s2.status}`);
+  check("seal replay is idempotent", s1.ok && s2.ok, `${s1.status}/${s2.status}`);
   const recs = await json(await P(`${name}/records`, { headers: headers() }));
   const finals = (recs ?? []).filter((r) => r.done === true);
   check("exactly one final record", finals.length === 1, JSON.stringify(recs));
@@ -144,9 +151,12 @@ const json = async (res) => {
   check("sealed collection refuses appends", late.status === 409, `status ${late.status}`);
 }
 
-// --- 4. fork, interrupted and resumed ---------------------------------
+// --- 4. fork REPLAY (not a crash test) --------------------------------
 // Forks are a raw-protocol feature: create one, read through the
-// boundary, then replay the same create the way a crashed client would.
+// boundary, then replay the same create. Again: replay idempotence, not
+// crash recovery — see a_crashed_fork_cascade_can_be_resumed and
+// a_fork_initialization_is_bound_to_its_source_incarnation for the
+// durable-boundary cases.
 {
   const src = `gate/fork-src-${stamp}`;
   const fork = `gate/fork-${stamp}`;
@@ -165,7 +175,7 @@ const json = async (res) => {
   const f1 = await R(fork, { method: "PUT", headers: forkHeaders });
   check("fork created", f1.status === 201 || f1.status === 200, `status ${f1.status}`);
   const f2 = await R(fork, { method: "PUT", headers: forkHeaders });
-  check("fork create replays idempotently", f2.status === 200 || f2.status === 201, `status ${f2.status}`);
+  check("fork create replay is idempotent", f2.status === 200 || f2.status === 201, `status ${f2.status}`);
   const through = await R(fork, { headers: kh });
   const text = await through.text();
   check(

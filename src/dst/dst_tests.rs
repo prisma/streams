@@ -5902,7 +5902,15 @@ async fn post_split_throughput_scales() {
     // measure round trips, not capacity, and mask the split entirely.
     blast_keys(addr, "cap-scale", &keys, 48, 0.5).await;
     // Capacity is a MAXIMUM-achievable property, so each phase takes
-    // the best of three windows. A contended host depresses samples
+    // the best of three windows.
+    //
+    // This is a MECHANISM check, not performance evidence: it proves
+    // that a split gives each child an independent admission budget on
+    // a shared, noisy host. Best-of-N is the right shape for that and
+    // the wrong shape for a published number — a fleet capacity claim
+    // needs isolated instances, paired steady-state windows, medians
+    // and a lower confidence bound, which is what the field campaign
+    // measures (docs/ROUTING-V3.md §11). A contended host depresses samples
     // one-sidedly — the post-split phase needs two committers' worth of
     // CPU, so noise lands there and only ever understates the ratio
     // (observed: 1.78 with three other servers running, 1.82-1.91

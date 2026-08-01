@@ -9,9 +9,9 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 **One gate is outstanding.** Everything the appendix defines passes,
 carries an explicit posture, or — for the post-audit cloud re-run — is
 blocked on a platform condition that is not ours to fix and has not
-been re-verified. Two audit rounds have been answered in full; the
-second is summarized below and is the reason to read the first round's
-"pass" claims as of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
+been re-verified. Three audit rounds have been answered in full; each is summarized
+below, and each is a reason to read an earlier round's "pass" claims as
+of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
 this release is not fully gated, and the report says so rather than
 rounding up.
 
@@ -195,6 +195,41 @@ The catalog cursor is opaque (base64url of the continuation name), not
 signed — an earlier version of this report said signed, which was
 wrong. It carries no authority: the catalog is bearer-authenticated on
 every request.
+
+## Third audit round (2026-08-01)
+
+A third audit found that round 2's lifecycle records were durable but
+some multi-step transitions still were not linearizable or resumable
+across every durable boundary. Correct again. What changed:
+
+| finding | fix |
+|---|---|
+| Splits/merges fenced only at phase A; phase-B publication could add live children under a Sealed collection | both phase-B CAS closures refuse sealed/sealing, and a seal resolves any pending transition before snapshotting live segments and refuses to publish Sealed while one exists |
+| Raw close-with-content published `SealIntent::Empty`, so a crash could seal without the promised records | it publishes a Final intent keyed by the request's own content hash and marks the record durable before closing |
+| Lifecycle intents published before validation — a 400 left the collection sealing forever | raw close and product seal both validate every deterministic error first |
+| `begin_sealing_for_close` ignored its CAS result, so a losing racer continued on a stale descriptor | the CAS outcome is classified: ours, joinable, conflicting, or retry |
+| `run_seal` could close segments for a matching op id while the final was still uncommitted | closing is refused while a final is owed, by anyone |
+| `{"final": null}` silently sealed with no record | presence-aware parsing (`Option<Option<Value>>`) |
+| `seal_op_id` concatenated record and routing key — `{1,"23"}` and `{12,"3"}` collided | versioned, length-delimited envelope |
+| Fork initialization identity omitted the source epoch, so a retry against a recreated source resumed the old claim | the epoch is in the hash, resumes re-check parentage, and the empty-epoch wildcard is gone |
+| The recursive delete cascade recorded no debt for intermediate generations | the debt is written in the same update that tombstones them |
+| Catalog continuation advanced only on a successful GET, so an all-vanished page read as end-of-catalog | the continuation follows the provider's key |
+| Producer-backed final seal ran outside the producer chain | it rides the same per-routing-key queue as appends |
+| `Access-Control-Allow-Headers: *` does not authorize Authorization | all three preflight handlers list the header names |
+| Retry backoff in the shared request helper was not abortable | it uses the abort-aware sleep |
+
+Two scope corrections the same audit asked for, both now stated where
+they belong:
+
+- **The field gate is a replay-and-coexistence harness, not a crash
+  test.** Its "interrupted" cases issue duplicate requests over a real
+  network; nothing kills the server. Crash recovery at durable
+  boundaries is covered by failpoint tests in the rust suite. The
+  script says so at the top.
+- **The post-split capacity gate is a mechanism check.** Best-of-three
+  windows suit a shared, noisy host and do not constitute performance
+  evidence; a fleet capacity claim needs isolated instances, paired
+  steady-state windows, medians and a lower confidence bound.
 
 ## What the first audit response changed
 
