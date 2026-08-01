@@ -5955,9 +5955,21 @@ async fn post_split_throughput_scales() {
 
     let ratio = after as f64 / before.max(1) as f64;
     eprintln!("capacity gate: before={before} after={after} ratio={ratio:.2}");
+    // On failure, say which failure it is. A depressed BASELINE means the
+    // host was busy (other servers, another suite), not that a split
+    // stopped adding capacity — and reading one as the other has now
+    // cost two suite runs.
     assert!(
         ratio >= 1.8,
-        "post-split throughput must be >= 1.8x (before={before} after={after} ratio={ratio:.2})"
+        "post-split throughput must be >= 1.8x (before={before} after={after} \
+         ratio={ratio:.2}). Baseline {before} rps{}",
+        if before < 480 {
+            " is below the ~530-560 single-segment plateau this rig reaches when \
+             idle: the host was loaded, re-run with nothing else on it before \
+             treating this as a capacity regression"
+        } else {
+            " is in the normal range, so this is a real capacity regression"
+        }
     );
     engine_shutdown(&state).await;
 }
@@ -9752,11 +9764,28 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fchild", &fh, b"").await;
     assert_eq!(st, 201);
     // Reopen it as an in-flight initialization, as a crash would leave it.
+    // The REAL request hash the server computes for this fork against
+    // incarnation A. Planting an arbitrary string would make the retry
+    // conflict on the hash alone and prove nothing about the epoch.
+    let hash_against_a = crate::http::create_request_hash(
+        "application/json",
+        None,
+        None,
+        false,
+        b"",
+        Some(&crate::registry::ForkRef {
+            source: "fsrc".into(),
+            source_epoch: epoch_a.clone(),
+            fork_offset: 1,
+            fork_sub: 0,
+            fork_id: String::new(),
+        }),
+    );
     state
         .registry
         .cas_update("fchild", |d| {
             d.init = Some(crate::registry::InitState {
-                request_hash: "claimed-against-a".into(),
+                request_hash: hash_against_a.clone(),
                 key_fingerprint: d.key_fingerprint.clone(),
                 claimed_ms: crate::shard::now_ms(),
             });
@@ -9790,6 +9819,27 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
         st == 409 || st == 403,
         "a fork of a RECREATED source resumed the old initialization: {st} {}",
         String::from_utf8_lossy(&b)
+    );
+    // The hash the SAME request computes against incarnation B must
+    // differ from the one recorded against A — that difference is the
+    // mechanism under test, not the conflict above.
+    let hash_against_b = crate::http::create_request_hash(
+        "application/json",
+        None,
+        None,
+        false,
+        b"",
+        Some(&crate::registry::ForkRef {
+            source: "fsrc".into(),
+            source_epoch: epoch_b.clone(),
+            fork_offset: 1,
+            fork_sub: 0,
+            fork_id: String::new(),
+        }),
+    );
+    assert_ne!(
+        hash_against_a, hash_against_b,
+        "the creation hash ignores the source incarnation"
     );
     let child = state.registry.get("fchild").await.unwrap().unwrap();
     if let Some(f) = &child.forked_from {
@@ -9841,19 +9891,20 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     let b = state.registry.get("genB").await.unwrap().unwrap();
     assert!(b.soft_deleted && !b.deleted, "B soft-deleted: {b:?}");
 
-    // The crash: B is hard-deleted with its debt to A recorded, but the
-    // release never ran.
-    state
-        .registry
-        .cas_update("genB", |d| {
-            d.soft_deleted = false;
-            d.deleted = true;
-            d.parent_ref_pending = true;
-            true
-        })
-        .await
-        .unwrap();
+    // The crash, through the REAL cascade: deleting C makes B lose its
+    // last child, so the production path tombstones B and records its
+    // debt — and the failpoint stops it there, before A is released.
+    // Nothing about the post-crash state is planted by hand.
+    crate::http::fork_failpoints::stop_after_tombstone(true);
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete C: {st}");
+    crate::http::fork_failpoints::stop_after_tombstone(false);
     state.registry.invalidate("genB");
+    let bdesc = state.registry.get("genB").await.unwrap().unwrap();
+    assert!(
+        bdesc.deleted && bdesc.parent_ref_pending,
+        "the cascade did not tombstone B with its debt in one write: {bdesc:?}"
+    );
     let a = state.registry.get("genA").await.unwrap().unwrap();
     assert_eq!(a.fork_children.len(), 1, "A still pins B");
 
@@ -10021,6 +10072,287 @@ async fn a_raw_close_with_content_owes_its_records() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     assert_eq!(recs.len(), 3, "the close's records are missing: {recs:?}");
     engine_shutdown(&state).await;
+}
+
+/// A raw close that carries content must survive a crash BETWEEN the
+/// lifecycle intent and the append — recoverable by an ordinary retry
+/// of the same request, with no private headers and no producer opt-in.
+/// The old design recognised the owed record only by an `x-seal-final`
+/// header that the product path inserted internally, so a real client's
+/// retry was rejected as a new write and the collection stayed stuck
+/// owing a record nobody could deliver. That header was also accepted
+/// from the wire, which let any caller smuggle a record into a sealing
+/// collection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawcrash", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // Simulate the crash point: the close published its Final intent and
+    // died before the append. The intent is exactly what the server
+    // writes — identity computed from the request's own bytes.
+    let body = br#"[{"n":1},{"n":2}]"#;
+    let request_hash = crate::http::create_request_hash(
+        "application/json",
+        None,
+        None,
+        true,
+        body,
+        None,
+    );
+    let op = crate::product::seal_op_id_raw(&request_hash, "");
+    state
+        .registry
+        .cas_update("rawcrash", |d| {
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: op.clone(),
+                intent: crate::registry::SealIntent::Final {
+                    routing_key: String::new(),
+                    request_hash: request_hash.clone(),
+                    final_committed: false,
+                },
+                claimed_ms: crate::shard::now_ms(),
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("rawcrash");
+
+    // An UNRELATED write is refused while the collection owes its final.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawcrash",
+        &ct,
+        br#"[{"other":1}]"#,
+    )
+    .await;
+    assert_eq!(st, 409, "an unrelated write landed during Sealing");
+
+    // …and so is a caller trying to assert the private authorization.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawcrash",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+            ("x-seal-final", op.as_str()),
+        ],
+        br#"[{"smuggled":1}]"#,
+    )
+    .await;
+    assert_eq!(st, 400, "x-seal-final was accepted from the wire");
+
+    // The ORDINARY retry — same request, no special headers — resumes.
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawcrash",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        body,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "the exact retry could not resume: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("rawcrash");
+    let d = state.registry.get("rawcrash").await.unwrap().unwrap();
+    assert!(d.sealed, "the collection did not reach Sealed");
+    assert!(d.sealing.is_none(), "sealing state left behind");
+    let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawcrash", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "the promised records are missing: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// A seal intent installed OVER a pending split deadlocks the
+/// collection: phase B refuses to publish because the collection is
+/// sealing, and the seal cannot finish because the transition never
+/// clears. The intent CAS is the serialization point — it installs only
+/// over a topologically quiet descriptor, resolving the transition
+/// first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_seal_never_installs_over_a_pending_transition() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/deadl",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for k in ["a", "b"] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/deadl/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            format!("{{\"k\":\"{k}\"}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+
+    // Park a split in phase B: pending is durable, the parent is sealed,
+    // successors are not published.
+    crate::scaler3::failpoints::arm_before_publish();
+    let split = {
+        let st2 = state.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&st2, "deadl", 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    let mut pending = false;
+    for _ in 0..100 {
+        state.registry.invalidate("deadl");
+        if let Ok(Some(d)) = state.registry.get("deadl").await {
+            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+                pending = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(pending, "the split never published its intent");
+
+    // A seal-with-final arriving now must NOT install its intent over
+    // the pending transition. It either resolves it and seals, or it
+    // refuses — never "sealing forever with pending work".
+    let sealer = {
+        let st2 = state.clone();
+        tokio::spawn(async move {
+            preq(
+                addr,
+                "POST",
+                "/v1/streams/deadl:seal",
+                &[("prisma-encryption-key", PRISMA_KEY)],
+                br#"{"final":{"done":true}}"#,
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // While the split is still parked, the descriptor must never hold
+    // BOTH a sealing intent and pending work.
+    state.registry.invalidate("deadl");
+    if let Ok(Some(d)) = state.registry.get("deadl").await {
+        let both = d.sealing.is_some() && d.segments.as_ref().is_some_and(|m| m.pending.is_some());
+        assert!(!both, "deadlock state: sealing over pending {:?}", d.segments);
+    }
+    crate::scaler3::failpoints::release_before_publish();
+    let _ = split.await;
+    let (st, _, b) = sealer.await.unwrap();
+
+    state.registry.invalidate("deadl");
+    let d = state.registry.get("deadl").await.unwrap().unwrap();
+    assert!(
+        !(d.sealing.is_some() && d.segments.as_ref().is_some_and(|m| m.pending.is_some())),
+        "ended deadlocked: sealing={:?} segments={:?}",
+        d.sealing,
+        d.segments
+    );
+    if st == 200 || st == 204 {
+        // Success must mean terminal, not "in progress".
+        assert!(
+            d.sealed && d.sealing.is_none(),
+            "reported success without reaching Sealed: {} {:?}",
+            String::from_utf8_lossy(&b),
+            d.sealing
+        );
+    } else {
+        // A refusal is fine — but then it must be resumable, and a
+        // retry after the transition settles must succeed.
+        let (st2, _, b2) = preq(
+            addr,
+            "POST",
+            "/v1/streams/deadl:seal",
+            &key,
+            br#"{"final":{"done":true}}"#,
+        )
+        .await;
+        assert!(
+            st2 == 200 || st2 == 204,
+            "the seal did not become possible again: {st2} {}",
+            String::from_utf8_lossy(&b2)
+        );
+    }
+    engine_shutdown(&state).await;
+}
+
+/// A first fork installing its reference must serialize against a
+/// concurrent delete of the source. Deciding soft-versus-hard from a
+/// descriptor read BEFORE the write let both win: the fork installed
+/// its reference and the delete tombstoned the source anyway, leaving a
+/// live fork whose parent is hard-deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_creation_and_source_deletion_serialize() {
+    for attempt in 0..12 {
+        let store = mem();
+        let (state, addr) = http_rig(store).await;
+        let ct = [("content-type", "application/json")];
+        let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rsrc", &ct, br#"[{"n":0}]"#).await;
+        assert!(st == 200 || st == 201);
+        let (_, h, _) = hreq(addr, "GET", "/v1/stream/rsrc", &[], b"").await;
+        let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+
+        // Fire the fork and the delete together, with the ordering
+        // nudged both ways across attempts.
+        let fork = tokio::spawn(async move {
+            if attempt % 2 == 1 {
+                tokio::time::sleep(std::time::Duration::from_micros(200)).await;
+            }
+            hreq(
+                addr,
+                "PUT",
+                "/v1/stream/rchild",
+                &[
+                    ("content-type", "application/json"),
+                    ("stream-forked-from", "rsrc"),
+                    ("stream-fork-offset", &boundary),
+                ],
+                b"",
+            )
+            .await
+        });
+        let del = tokio::spawn(async move {
+            if attempt % 2 == 0 {
+                tokio::time::sleep(std::time::Duration::from_micros(200)).await;
+            }
+            hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await
+        });
+        let (fst, _, _) = fork.await.unwrap();
+        let _ = del.await.unwrap();
+
+        state.registry.invalidate("rsrc");
+        state.registry.invalidate("rchild");
+        let src = state.registry.get("rsrc").await.unwrap().unwrap();
+        let child = state.registry.get("rchild").await.unwrap();
+        let child_live = child
+            .as_ref()
+            .is_some_and(|c| !c.deleted && fst == 201);
+        if child_live {
+            assert!(
+                !src.deleted,
+                "attempt {attempt}: a live fork is anchored to a HARD-deleted source"
+            );
+        }
+        engine_shutdown(&state).await;
+    }
 }
 
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the

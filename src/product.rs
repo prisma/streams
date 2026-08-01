@@ -1157,16 +1157,12 @@ async fn product_seal(
                     ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
                 }
             }
-            // Mark this append as the record the in-flight seal owes, so
-            // it passes the lifecycle gate that refuses everything else.
-            if let Ok(v) = axum::http::HeaderValue::from_str(&op_id) {
-                ih.insert("x-seal-final", v);
-            }
             let resp = product_append_sealing(
                 state.clone(),
                 name.clone(),
                 ih,
                 Bytes::from(fin.to_string()),
+                op_id.clone(),
             )
             .await;
             if !resp.status().is_success() {
@@ -1200,34 +1196,74 @@ async fn product_seal(
 
 /// Enter Sealing for a seal-with-final operation. A different seal
 /// already in flight is a conflict; the SAME operation resumes.
-async fn enter_sealing(
+/// What a seal-intent CAS actually did. A declined CAS is not a
+/// failure and not a success — it is information, and treating it as
+/// either is how a collection ends up stuck (Sealing over a pending
+/// split, which phase B then refuses to finish) or how a client is told
+/// `{"sealed": true}` about a descriptor that is still mid-transition.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum EnterSeal {
+    Installed,
+    /// This exact operation already owns the IN-FLIGHT transition.
+    AlreadyOurs,
+    /// This exact operation already finished: answer idempotent success.
+    AlreadyCompleted,
+    /// Somebody else's seal is already terminal.
+    AlreadySealed,
+    /// A topology transition is in flight; resolve it and retry.
+    PendingTopology,
+    /// Somebody else's seal owns the collection.
+    Conflicting(String),
+    Missing,
+}
+
+/// Install a seal intent, classifying every outcome. THE serialization
+/// point: it installs only over a descriptor that is open, unclaimed
+/// and topologically quiet, so once it wins, phase A cannot start a new
+/// transition (phase A refuses sealing) and phase B cannot publish one
+/// (phase B refuses sealing).
+pub(crate) async fn enter_sealing_cas(
     state: &Arc<AppState>,
     name: &str,
     op_id: &str,
-    intent: crate::registry::SealIntent,
-) -> Result<(), String> {
-    let desc = match state.registry.get(name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-        _ => return Ok(()),
-    };
-    if desc.sealed {
-        // Spec §7.3: a duplicate final-append seal returns deduplicated
-        // success; a DIFFERENT final record after sealing is a conflict.
-        if desc.seal_op.as_deref() == Some(op_id) {
-            return Err(String::new()); // sentinel: idempotent, no work
-        }
-        return Err("collection is already sealed".into());
-    }
-    if let Some(sl) = &desc.sealing {
-        if sl.operation_id != op_id {
-            return Err("a different seal operation is in flight".into());
-        }
-        return Ok(());
-    }
-    state
+    intent: &crate::registry::SealIntent,
+) -> Result<EnterSeal, String> {
+    let mut outcome = EnterSeal::Missing;
+    let installed = state
         .registry
-        .cas_update_retry(name, |d| {
-            if d.sealed || d.sealing.is_some() {
+        .cas_update(name, |d| {
+            if !crate::http::desc_alive(d) {
+                outcome = EnterSeal::Missing;
+                return false;
+            }
+            if d.sealed {
+                outcome = if d.seal_op.as_deref() == Some(op_id) && !op_id.is_empty() {
+                    EnterSeal::AlreadyCompleted
+                } else {
+                    EnterSeal::AlreadySealed
+                };
+                return false;
+            }
+            if let Some(sl) = &d.sealing {
+                outcome = if sl.operation_id == op_id {
+                    EnterSeal::AlreadyOurs
+                } else if sl.owes_final() {
+                    EnterSeal::Conflicting(
+                        "a seal with a final record is in flight; retry that request to finish it"
+                            .into(),
+                    )
+                } else if op_id.is_empty() {
+                    // A plain close joins a plain sealing.
+                    EnterSeal::AlreadyOurs
+                } else {
+                    EnterSeal::Conflicting("a different seal operation is in flight".into())
+                };
+                return false;
+            }
+            // Topology must be quiet BEFORE the intent exists. Installing
+            // over a pending transition deadlocks the collection.
+            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+                outcome = EnterSeal::PendingTopology;
                 return false;
             }
             d.sealing = Some(crate::registry::SealState {
@@ -1235,12 +1271,57 @@ async fn enter_sealing(
                 intent: intent.clone(),
                 claimed_ms: crate::shard::now_ms(),
             });
+            outcome = EnterSeal::Installed;
             true
         })
         .await
         .map_err(|e| e.to_string())?;
     state.registry.invalidate(name);
-    Ok(())
+    Ok(if installed {
+        EnterSeal::Installed
+    } else {
+        outcome
+    })
+}
+
+/// Drive [`enter_sealing_cas`] to a decision, resolving topology when it
+/// is what stands in the way.
+pub(crate) async fn claim_seal(
+    state: &Arc<AppState>,
+    name: &str,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+) -> Result<EnterSeal, String> {
+    for _ in 0..6 {
+        match enter_sealing_cas(state, name, op_id, intent).await? {
+            EnterSeal::PendingTopology => {
+                // Finish the transition, then race for the intent again.
+                crate::scaler3::resume(state, name).await;
+                state.registry.invalidate(name);
+            }
+            other => return Ok(other),
+        }
+    }
+    Err("a split or merge kept the collection busy; the seal is resumable".into())
+}
+
+async fn enter_sealing(
+    state: &Arc<AppState>,
+    name: &str,
+    op_id: &str,
+    intent: crate::registry::SealIntent,
+) -> Result<(), String> {
+    match claim_seal(state, name, op_id, &intent).await? {
+        EnterSeal::Installed | EnterSeal::AlreadyOurs => Ok(()),
+        // Empty message = this exact seal already completed.
+        EnterSeal::AlreadyCompleted => Err(String::new()),
+        EnterSeal::AlreadySealed => Err("collection is already sealed".into()),
+        EnterSeal::Conflicting(m) => Err(m),
+        EnterSeal::Missing => Ok(()),
+        EnterSeal::PendingTopology => {
+            Err("a split or merge is in flight; the seal is resumable".into())
+        }
+    }
 }
 
 /// Distinguishes an ABSENT field from one present as `null`.
@@ -1282,7 +1363,7 @@ pub(crate) async fn begin_sealing_for_close(
     name: &str,
     intent: crate::registry::SealIntent,
 ) -> Result<(), String> {
-    let want_op = match &intent {
+    let op = match &intent {
         crate::registry::SealIntent::Empty => String::new(),
         crate::registry::SealIntent::Final {
             routing_key,
@@ -1290,56 +1371,15 @@ pub(crate) async fn begin_sealing_for_close(
             ..
         } => seal_op_id_raw(request_hash, routing_key),
     };
-    // The CAS decides. Reading the descriptor first is only an early
-    // out; the loop below re-reads after every refusal, because a
-    // declined CAS means somebody else moved the state — treating that
-    // as success let a raw close proceed against a descriptor it had
-    // loaded before another operation won the transition.
-    for _ in 0..5 {
-        let desc = match state.registry.get(name).await {
-            Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-            _ => return Ok(()),
-        };
-        if desc.sealed {
-            return Ok(());
+    match claim_seal(state, name, &op, &intent).await? {
+        EnterSeal::Installed | EnterSeal::AlreadyOurs | EnterSeal::AlreadyCompleted => Ok(()),
+        EnterSeal::AlreadySealed => Ok(()), // already terminal; the close is a no-op
+        EnterSeal::Missing => Ok(()),
+        EnterSeal::Conflicting(m) => Err(m),
+        EnterSeal::PendingTopology => {
+            Err("a split or merge is in flight; retry the close".into())
         }
-        if let Some(sl) = &desc.sealing {
-            if sl.operation_id == want_op {
-                return Ok(()); // ours already
-            }
-            if sl.owes_final() {
-                return Err(
-                    "a seal with a final record is in flight; finish that request first".into(),
-                );
-            }
-            if want_op.is_empty() {
-                return Ok(()); // a plain close joins a plain sealing
-            }
-            return Err("a different seal operation is in flight".into());
-        }
-        let installed = state
-            .registry
-            .cas_update_retry(name, |d| {
-                if d.sealed || d.sealing.is_some() {
-                    return false;
-                }
-                d.sealing = Some(crate::registry::SealState {
-                    operation_id: want_op.clone(),
-                    intent: intent.clone(),
-                    claimed_ms: crate::shard::now_ms(),
-                });
-                true
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        state.registry.invalidate(name);
-        if installed {
-            return Ok(());
-        }
-        // Declined: somebody else changed the descriptor. Re-read and
-        // classify rather than assuming our intent is in place.
     }
-    Err("could not publish the seal intent; retry".into())
 }
 
 /// Operation identity for a raw close that carries content: the same
@@ -1359,8 +1399,13 @@ pub(crate) fn seal_op_id_raw(request_hash: &str, routing_key: &str) -> String {
 /// Record that a final-bearing seal's record is durable. Must happen
 /// before any segment closes: after this the transition can be finished
 /// by anyone, and before it, only by the operation that owes the record.
-pub(crate) async fn mark_final_committed(state: &Arc<AppState>, name: &str, op_id: &str) -> Result<(), String> {
-    state
+pub(crate) async fn mark_final_committed(
+    state: &Arc<AppState>,
+    name: &str,
+    op_id: &str,
+) -> Result<(), String> {
+    let mut already = false;
+    let marked = state
         .registry
         .cas_update_retry(name, |d| match &mut d.sealing {
             Some(sl) if sl.operation_id == op_id => match &mut sl.intent {
@@ -1370,14 +1415,28 @@ pub(crate) async fn mark_final_committed(state: &Arc<AppState>, name: &str, op_i
                     *final_committed = true;
                     true
                 }
-                _ => false,
+                _ => {
+                    already = true; // ours, already marked
+                    false
+                }
             },
             _ => false,
         })
         .await
         .map_err(|e| e.to_string())?;
     state.registry.invalidate(name);
-    Ok(())
+    if marked || already {
+        return Ok(());
+    }
+    // Declined and not ours: the intent we were completing is gone or
+    // belongs to someone else. Saying nothing here let the caller close
+    // segments for a record this operation never owned.
+    match state.registry.get(name).await {
+        Ok(Some(d)) if d.sealed => Ok(()), // already terminal
+        Ok(Some(_)) => Err("the seal intent this record belongs to is no longer in flight".into()),
+        Ok(None) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Descriptor-side collection seal, shared by the product seal route
@@ -1491,52 +1550,27 @@ pub(crate) async fn run_seal(
     // transition's phase B then publishes a fresh live child. Phase B
     // now refuses once the lifecycle has moved, and this is the other
     // half — finish the transition first so the snapshot is complete.
-    let mut desc = desc;
-    for _ in 0..5 {
-        if !desc
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.pending.is_some())
-        {
-            break;
+    // 1. Claim the transition. This CAS — not a preceding read — is the
+    //    serialization point: it installs only over an open, unclaimed,
+    //    topologically quiet descriptor, resolving a pending split or
+    //    merge first. Installing Sealing over pending work deadlocked
+    //    the collection, because phase B then refuses to finish it.
+    let op_id = op.clone().unwrap_or_default();
+    if desc.sealing.is_none() || desc.sealing.as_ref().is_some_and(|s| s.operation_id != op_id) {
+        match claim_seal(state, name, &op_id, &crate::registry::SealIntent::Empty).await? {
+            EnterSeal::Installed
+            | EnterSeal::AlreadyOurs
+            | EnterSeal::AlreadyCompleted
+            | EnterSeal::AlreadySealed
+            | EnterSeal::Missing => {}
+            EnterSeal::Conflicting(m) => return Err(m),
+            EnterSeal::PendingTopology => {
+                return Err(
+                    "a split or merge is in flight and did not settle; the seal is resumable"
+                        .into(),
+                );
+            }
         }
-        crate::scaler3::resume(state, name).await;
-        state.registry.invalidate(name);
-        desc = match state.registry.get(name).await {
-            Ok(Some(d)) => d,
-            _ => return Ok(()),
-        };
-    }
-    if desc
-        .segments
-        .as_ref()
-        .is_some_and(|m| m.pending.is_some())
-    {
-        return Err(
-            "a split or merge is in flight and did not settle; the seal is resumable".into(),
-        );
-    }
-    // 1. Publish the INTENT. Appends are refused from here on, so no
-    //    record can land after a segment is closed and before Sealed.
-    if desc.sealing.is_none() {
-        state
-            .registry
-            .cas_update_retry(name, |d| {
-                if d.sealed || d.sealing.is_some() {
-                    return false;
-                }
-                d.sealing = Some(crate::registry::SealState {
-                    operation_id: op.clone().unwrap_or_default(),
-                    // Reaching run_seal directly means there is nothing
-                    // outstanding but the segment closes.
-                    intent: crate::registry::SealIntent::Empty,
-                    claimed_ms: crate::shard::now_ms(),
-                });
-                true
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-        state.registry.invalidate(name);
     }
     // 2. Close every live segment identity. Idempotent per segment.
     state.registry.invalidate(name);
@@ -1566,7 +1600,7 @@ pub(crate) async fn run_seal(
     }
     // 3. Publish SEALED only now — and only if no topology transition
     //    reappeared while the segments were closing.
-    state
+    let published = state
         .registry
         .cas_update_retry(name, |d| {
             if d.sealed {
@@ -1587,7 +1621,31 @@ pub(crate) async fn run_seal(
         .await
         .map_err(|e| e.to_string())?;
     state.registry.invalidate(name);
-    Ok(())
+    // Success is PROVEN, never assumed. The CAS above declines when a
+    // transition reappeared or another writer moved the state, and
+    // returning Ok regardless told clients `{"sealed": true}` about a
+    // descriptor that was still Sealing with a split pending.
+    let final_state = match state.registry.get(name).await {
+        Ok(Some(d)) => d,
+        Ok(None) => return Ok(()), // gone: nothing left to seal
+        Err(e) => return Err(e.to_string()),
+    };
+    if !crate::http::desc_alive(&final_state) {
+        return Ok(());
+    }
+    if final_state.sealed && final_state.sealing.is_none() {
+        return Ok(());
+    }
+    let _ = published;
+    Err(format!(
+        "the seal did not reach a terminal state (sealed={}, sealing={}, pending={}); it is resumable",
+        final_state.sealed,
+        final_state.sealing.is_some(),
+        final_state
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_some())
+    ))
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
@@ -1607,8 +1665,9 @@ async fn product_append_sealing(
     name: String,
     headers: HeaderMap,
     body: Bytes,
+    op_id: String,
 ) -> Response {
-    product_append_inner(state, name, headers, body, false, true).await
+    product_append_inner(state, name, headers, body, false, true, Some(op_id)).await
 }
 
 /// Appends refuse a collection that is sealed OR sealing — only the
@@ -1643,7 +1702,7 @@ async fn product_append(
     body: Bytes,
     batch: bool,
 ) -> Response {
-    product_append_inner(state, name, headers, body, batch, false).await
+    product_append_inner(state, name, headers, body, batch, false, None).await
 }
 
 async fn product_append_inner(
@@ -1653,6 +1712,8 @@ async fn product_append_inner(
     body: Bytes,
     batch: bool,
     seal_after: bool,
+    // TRUSTED: the seal operation whose final record this is.
+    seal_auth: Option<String>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -1801,7 +1862,7 @@ async fn product_append_inner(
     if let Ok(v) = axum::http::HeaderValue::from_str(&desc.content_type) {
         ih.insert("content-type", v);
     }
-    for h in ["producer-id", "producer-epoch", "producer-seq", "x-seal-final"] {
+    for h in ["producer-id", "producer-epoch", "producer-seq"] {
         if let Some(v) = headers.get(h) {
             ih.insert(h, v.clone());
         }
@@ -1838,6 +1899,9 @@ async fn product_append_inner(
         axum::body::Body::from(wire_body),
         has_producer.then_some(request_hash),
         Some(routing_key.clone()),
+        // The seal's own final record authorizes itself through this
+        // trusted parameter, not through a header a client could send.
+        seal_auth.clone(),
     )
     .await;
     translate_append_response(

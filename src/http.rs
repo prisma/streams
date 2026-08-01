@@ -753,6 +753,7 @@ pub fn spawn_billing(state: Arc<AppState>) {
                 Body::from(body),
                 None,
                 None,
+                None,
             )
             .await;
             if resp.status().is_success() {
@@ -1114,7 +1115,7 @@ async fn stream_entry_inner(
             };
             create_stream(state, name, headers, body).await
         }
-        Method::POST => append(state, name, headers, body, None, None).await,
+        Method::POST => append(state, name, headers, body, None, None, None).await,
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => delete_stream(state, name).await,
@@ -2583,6 +2584,26 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 
 /// Release one fork reference on `src`; cascades hard deletion up the
 /// chain when a soft-deleted (or expired) source loses its last fork.
+/// Test-only fault injection for the fork cascade. Real functions, real
+/// durable writes — the point is to stop BETWEEN them rather than
+/// reconstruct the intended post-crash state by hand.
+#[cfg(test)]
+pub(crate) mod fork_failpoints {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub(crate) static STOP_AFTER_TOMBSTONE: AtomicBool = AtomicBool::new(false);
+
+    /// Abort the cascade right after a generation is tombstoned and its
+    /// debt recorded, before the parent reference is released.
+    pub fn stop_after_tombstone(on: bool) {
+        STOP_AFTER_TOMBSTONE.store(on, Ordering::SeqCst);
+    }
+
+    pub(super) fn should_stop_after_tombstone() -> bool {
+        STOP_AFTER_TOMBSTONE.load(Ordering::SeqCst)
+    }
+}
+
 fn release_fork_ref(
     state: &Arc<AppState>,
     src: &str,
@@ -2595,40 +2616,39 @@ fn release_fork_ref(
         // Release BY ID: a retried delete removes an id that is already
         // gone (a no-op), where an anonymous decrement would have
         // double-released and freed a still-live fork's data.
+        // Release the reference AND decide the source's fate in one CAS,
+        // against the children it has at that instant. Splitting the two
+        // let a new fork install itself in between and then be orphaned
+        // by an unconditional tombstone.
+        let mut tombstoned = false;
         state
             .registry
             .cas_update_retry(&src, |x| {
                 let before = x.fork_children.len();
                 x.fork_children.retain(|c| c != &fork_id);
-                x.fork_children.len() != before
+                let removed = x.fork_children.len() != before;
+                let expired = x.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
+                let should_tombstone =
+                    x.fork_children.is_empty() && (x.soft_deleted || expired) && !x.deleted;
+                if should_tombstone {
+                    x.soft_deleted = false;
+                    x.deleted = true;
+                    x.parent_ref_pending = x.forked_from.is_some();
+                    tombstoned = true;
+                }
+                removed || should_tombstone
             })
             .await
             .map_err(|e| e.to_string())?;
         state.registry.invalidate(&src);
-        if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
-            let src_expired = after.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
-            if after.fork_children.is_empty()
-                && (after.soft_deleted || src_expired)
-                && !after.deleted
-            {
-                // Record the grandparent debt in the SAME write that
-                // tombstones this source. A crash between the tombstone
-                // and the recursive release left the grandparent
-                // pinning a fork that no longer exists, and a retried
-                // delete could not repair it: this descriptor is
-                // already dead, so its CAS refuses and the cascade
-                // returns success having released nothing.
-                let owes_parent = after.forked_from.is_some();
-                state
-                    .registry
-                    .update(&src, |x| {
-                        x.soft_deleted = false;
-                        x.deleted = true;
-                        x.parent_ref_pending = owes_parent;
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
-                state.registry.invalidate(&src);
+        #[cfg(test)]
+        if tombstoned && fork_failpoints::should_stop_after_tombstone() {
+            // "Crash" here: the tombstone and its debt are durable, the
+            // recursive release has not run.
+            return Ok(());
+        }
+        if tombstoned {
+            if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
                 if let Some(gf) = after.forked_from.as_ref() {
                     release_fork_ref(&state, &gf.source, &gf.fork_id).await?;
                     state
@@ -2680,24 +2700,38 @@ fn delete_lifecycle(
             }
             return Ok(());
         }
-        if !d.fork_children.is_empty() {
-            state
-                .registry
-                .update(&name, |x| x.soft_deleted = true)
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        // Record the debt BEFORE the tombstone, so a crash between the
-        // two leaves evidence a later delete can act on.
+        // Soft-versus-hard is decided INSIDE the CAS, against the
+        // children the descriptor has at that instant. Deciding it from
+        // an earlier read raced fork creation: a concurrent first fork
+        // could install its reference between the read and the write,
+        // and the unconditional update tombstoned the source anyway —
+        // leaving a live fork anchored to a hard-deleted parent.
+        //
+        // The debt is recorded in the SAME write as the tombstone, so a
+        // crash between them is impossible.
+        let mut hard_deleted = false;
         state
             .registry
-            .update(&name, |x| {
-                x.deleted = true;
-                x.parent_ref_pending = parent.is_some();
+            .cas_update_retry(&name, |x| {
+                if x.deleted {
+                    return false;
+                }
+                if !x.fork_children.is_empty() {
+                    x.soft_deleted = true;
+                    hard_deleted = false;
+                } else {
+                    x.deleted = true;
+                    x.parent_ref_pending = x.forked_from.is_some();
+                    hard_deleted = true;
+                }
+                true
             })
             .await
             .map_err(|e| e.to_string())?;
+        state.registry.invalidate(&name);
+        if !hard_deleted {
+            return Ok(());
+        }
         if let Some((src, fid)) = parent {
             release_fork_ref(&state, &src, &fid).await?;
             // Released: the tombstone owes nothing more. This is
@@ -2744,6 +2778,10 @@ pub(crate) async fn append(
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
+    // TRUSTED, internal only: this call is the final record a seal
+    // intent owes, identified by its operation id. Never derived from a
+    // request header — see the `x-seal-final` refusal in append_core.
+    seal_auth: Option<String>,
 ) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
@@ -2753,7 +2791,7 @@ pub(crate) async fn append(
             .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
     );
     if !wrapped {
-        return append_core(state, name, headers, body, product_hash, product_key).await;
+        return append_core(state, name, headers, body, product_hash, product_key, seal_auth).await;
     }
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -2767,6 +2805,7 @@ pub(crate) async fn append(
             Body::from(body_bytes.clone()),
             product_hash,
             product_key.clone(),
+            seal_auth.clone(),
         )
         .await;
         if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
@@ -2801,6 +2840,7 @@ async fn append_core(
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
+    seal_auth: Option<String>,
 ) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
@@ -2864,6 +2904,22 @@ async fn append_core(
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
     };
     let close_only = close && body.is_empty();
+    // This request's own seal identity: content hash + routing key, the
+    // same envelope the intent stores. An exact retry of a crashed raw
+    // close therefore recognises ITSELF as the owed final — no private
+    // header, no producer opt-in required.
+    let this_close_op = crate::product::seal_op_id_raw(
+        &create_request_hash(&desc.content_type, None, None, true, &body, None),
+        &product_key.clone().unwrap_or_default(),
+    );
+    // Owed-final authorization: either this request IS the intent's
+    // record (computed identity matches) or an internal caller passed
+    // the trusted operation id. Nothing a client sends can assert it.
+    let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
+        sl.owes_final()
+            && (sl.operation_id == this_close_op
+                || Some(&sl.operation_id) == seal_auth.as_ref())
+    });
 
     // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative,
     // so a sealed collection refuses NEW records even when a segment
@@ -2878,14 +2934,22 @@ async fn append_core(
     // turns out to be a NEW sequence. Without that, a novel producer
     // write was accepted while the descriptor said Sealing or Sealed.
     // The seal's OWN final record is the one write a Sealing collection
-    // still owes. It identifies itself with the in-flight operation id,
-    // and only while that intent has not yet been marked committed —
-    // after that, nothing more may land.
-    let is_owed_final = hdr(&headers, "x-seal-final").is_some_and(|v| {
-        desc.sealing
-            .as_ref()
-            .is_some_and(|sl| sl.operation_id == v && sl.owes_final())
-    });
+    // still owes. Its identity is COMPUTED from this request — content
+    // hash and routing key — and compared with the durable intent.
+    //
+    // It used to be asserted by an `x-seal-final` request header, which
+    // was wrong twice over: any caller could send it (knowing the id was
+    // enough to smuggle an arbitrary record into a sealing collection),
+    // and no ordinary client sends it, so an exact retry after a crash
+    // was rejected as a new write and the collection stayed stuck owing
+    // a record nobody could deliver.
+    if headers.contains_key("x-seal-final") {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unknown_field",
+            "x-seal-final is not a request header",
+        );
+    }
     let sealed_reject_new = if (desc.sealed || desc.sealing.is_some())
         && !close_only
         && !is_owed_final
@@ -3302,37 +3366,29 @@ async fn append_core(
             // record committed first, which is what lets the seal
             // complete at all. Sealing here would run with no operation
             // id and be refused by its own intent.
-            // A raw close that carried content owns a final-bearing
-            // intent: its records are durable now, so record that before
-            // finishing the transition. A close-only carries Empty and
-            // needs no marking.
-            if close && ack.closed && !is_owed_final && close_carries_content {
-                let op = crate::product::seal_op_id_raw(
-                    &create_request_hash(&desc.content_type, None, None, true, &body, None),
-                    &product_key.clone().unwrap_or_default(),
-                );
-                if let Err(e) = crate::product::mark_final_committed(&state, &name, &op).await {
-                    tracing::error!(stream = %name, "marking the raw close's final durable: {e}");
+            // Who finishes the collection transition:
+            //   * the PRODUCT seal completes its own (it marks the
+            //     record durable, then seals) — recognised by the
+            //     trusted seal_auth parameter;
+            //   * a raw close owns whatever intent matches its own
+            //     computed identity, including a retry that is resuming
+            //     one published before a crash;
+            //   * a plain close-only just seals.
+            if close && ack.closed && seal_auth.is_none() {
+                let owns_final = is_owed_final || close_carries_content;
+                if owns_final {
+                    if let Err(e) =
+                        crate::product::mark_final_committed(&state, &name, &this_close_op).await
+                    {
+                        tracing::error!(stream = %name, "marking the close's final durable: {e}");
+                    }
                 }
-                if let Err(e) = crate::product::run_seal(&state, &name, Some(op)).await {
-                    tracing::error!(stream = %name, "collection seal after raw close: {e}");
-                    return err_resp(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "seal_incomplete",
-                        &format!("the collection seal did not complete: {e}; retry the close"),
-                    );
-                }
-            } else if close && ack.closed && !is_owed_final {
-                // Raw close seals the COLLECTION (spec Stage 8 §7.4/§16.3):
-                // the descriptor's sealed bit must agree with the engine's
-                // closed tail, or product metadata would deny a closure the
-                // raw view reports.
-                if let Err(e) = crate::product::run_seal(&state, &name, None).await {
+                let op = owns_final.then(|| this_close_op.clone());
+                if let Err(e) = crate::product::run_seal(&state, &name, op).await {
                     // The segment is closed but the collection is not
-                    // sealed. Answering success here is how the two
-                    // surfaces end up permanently disagreeing; the
-                    // transition stays resumable, so say it failed and
-                    // let the caller retry the close.
+                    // sealed. Answering success is how the two surfaces
+                    // end up permanently disagreeing; the transition
+                    // stays resumable, so say it failed.
                     tracing::error!(stream = %name, "collection seal after raw close: {e}");
                     return err_resp(
                         StatusCode::SERVICE_UNAVAILABLE,
