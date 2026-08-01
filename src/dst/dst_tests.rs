@@ -10355,6 +10355,78 @@ async fn fork_creation_and_source_deletion_serialize() {
     }
 }
 
+/// A seal intent must never be published for a final record the append
+/// path will always refuse — that leaves the collection sealing
+/// forever, owing something undeliverable. Every deterministic refusal
+/// is decided first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_impossible_final_never_publishes_an_intent() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/impossible",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let untouched = |label: &'static str| {
+        let state = state.clone();
+        async move {
+            state.registry.invalidate("impossible");
+            let d = state.registry.get("impossible").await.unwrap().unwrap();
+            assert!(
+                d.sealing.is_none() && !d.sealed,
+                "{label} published a lifecycle intent: {:?}",
+                d.sealing
+            );
+        }
+    };
+
+    // Routing key past the limit.
+    let long = "k".repeat(2000);
+    let body = format!(r#"{{"final":{{"x":1}},"routingKey":"{long}"}}"#);
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/impossible:seal", &key, body.as_bytes()).await;
+    assert_eq!(st, 400, "oversized routing key accepted");
+    untouched("an oversized routing key").await;
+
+    // Routing key that cannot travel as a header value.
+    let body = "{\"final\":{\"x\":1},\"routingKey\":\"bad\\u0001key\"}";
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/impossible:seal", &key, body.as_bytes()).await;
+    assert_eq!(st, 400, "control character in the routing key accepted");
+    untouched("an untransmittable routing key").await;
+
+    // A partial producer trio.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/impossible:seal",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p"),
+        ],
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert_eq!(st, 400, "partial producer headers accepted");
+    untouched("a partial producer trio").await;
+
+    // And a valid one still seals.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/impossible:seal",
+        &key,
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
+    engine_shutdown(&state).await;
+}
+
 /// Appendix §8: the 12-case dual-surface equivalence corpus — for the
 /// default routing key, equivalent operations through the raw standards
 /// route and the product route resolve to ONE collection incarnation

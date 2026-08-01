@@ -9,7 +9,7 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 **One gate is outstanding.** Everything the appendix defines passes,
 carries an explicit posture, or — for the post-audit cloud re-run — is
 blocked on a platform condition that is not ours to fix and has not
-been re-verified. Three audit rounds have been answered in full; each is summarized
+been re-verified. Four audit rounds have been answered in full; each is summarized
 below, and each is a reason to read an earlier round's "pass" claims as
 of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
 this release is not fully gated, and the report says so rather than
@@ -230,6 +230,29 @@ they belong:
   windows suit a shared, noisy host and do not constitute performance
   evidence; a fleet capacity claim needs isolated instances, paired
   steady-state windows, medians and a lower confidence bound.
+
+## Fourth audit round (2026-08-01)
+
+A fourth audit found that round 3's transitions were durable
+individually but still not linearizable across their full lifecycle.
+Correct again.
+
+| finding | fix |
+|---|---|
+| A seal intent could install OVER a pending split — phase B then refuses to publish, and the collection is stuck sealing with work that never clears | the seal-intent CAS is the serialization point: it installs only over an open, unclaimed, topologically quiet descriptor, resolving the transition first |
+| `run_seal` ignored its CAS result and reported `{"sealed":true}` over a still-Sealing descriptor | success is proven by a fresh read (sealed set, sealing clear, no pending) or it is an error |
+| `enter_sealing`/`mark_final_committed` ignored declined CAS | every outcome is classified (`EnterSeal`) |
+| `x-seal-final` was an external header that authorized a write into a sealing collection, and no ordinary client sends it — so a crashed raw close could not be resumed by a retry | the owed final is identified by the request's own content hash and routing key, or a trusted internal parameter; the header is refused from the wire |
+| Seal intents published before routing-key/producer/capacity validation, so an impossible final left the collection sealing forever | every deterministic refusal is decided first, on both surfaces |
+| Fork deletion decided soft-versus-hard from a stale read, so a concurrent first fork could be orphaned | removal, inspection, tombstone and debt happen in ONE CAS |
+
+Three round-3 tests were also weaker than their comments claimed, which
+the audit was right to call out: the fork-incarnation test planted an
+arbitrary request hash (it would have conflicted whether or not the
+epoch mattered), the cascade test hand-built the post-crash state, and
+the raw-close test never paused after the intent. They now use the real
+hash, a real failpoint inside the production cascade, and a resume
+through the public route.
 
 ## What the first audit response changed
 

@@ -3058,6 +3058,20 @@ async fn append_core(
     }
 
     let close_carries_content = !entries.is_empty();
+    // A body larger than the ingest bucket's CAPACITY can never be
+    // admitted — that is a permanent 413, and it must be decided BEFORE
+    // the lifecycle intent, or the collection is left sealing forever
+    // owing a record the limiter will always refuse.
+    if close && close_carries_content && deferred.is_none() {
+        let l = crate::usage::limits();
+        if body.len() as f64 > l.bytes_per_sec * l.burst_secs {
+            return err_resp(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "request exceeds the per-stream ingest capacity",
+            );
+        }
+    }
     // The raw close publishes its lifecycle intent HERE: after content
     // type, body parsing and every other deterministic refusal, so a
     // request that answers 400 can never leave the collection stuck in

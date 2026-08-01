@@ -1107,6 +1107,77 @@ async fn product_seal(
                     );
                 }
             }
+            // Everything that can PERMANENTLY prevent the promised
+            // append, checked before the promise is made. A seal intent
+            // that names a record the append path will always reject
+            // leaves the collection sealing forever, owing something
+            // undeliverable.
+            let rk = doc.routing_key.clone().unwrap_or_default();
+            if rk.len() > MAX_ROUTING_KEY_BYTES {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_routing_key",
+                    "routing key exceeds 1,024 bytes",
+                    None,
+                    false,
+                );
+            }
+            if axum::http::HeaderValue::from_str(&rk).is_err() {
+                // It travels as a header on the internal append; a value
+                // that cannot be one would silently land on the DEFAULT
+                // key while the durable intent names another.
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_routing_key",
+                    "routing key contains characters that cannot be transmitted",
+                    None,
+                    false,
+                );
+            }
+            for h in ["producer-id", "producer-epoch", "producer-seq"] {
+                if let Some(v) = headers.get(h) {
+                    if v.to_str().is_err() {
+                        return perr(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_producer",
+                            &format!("{h} is not a valid header value"),
+                            None,
+                            false,
+                        );
+                    }
+                }
+            }
+            let has_any_producer = ["producer-id", "producer-epoch", "producer-seq"]
+                .iter()
+                .any(|h| headers.contains_key(*h));
+            if has_any_producer
+                && !["producer-id", "producer-epoch", "producer-seq"]
+                    .iter()
+                    .all(|h| headers.contains_key(*h))
+            {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_producer",
+                    "producer requests need Producer-Id, Producer-Epoch and Producer-Seq",
+                    None,
+                    false,
+                );
+            }
+            {
+                // A record larger than the ingest bucket's CAPACITY can
+                // never be admitted, however long the caller waits.
+                let l = crate::usage::limits();
+                let bytes = fin.to_string().len() as f64;
+                if bytes > l.bytes_per_sec * l.burst_secs {
+                    return perr(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "payload_too_large",
+                        "the final record exceeds the per-stream ingest capacity",
+                        None,
+                        false,
+                    );
+                }
+            }
             // Only now: enter Sealing. Ordinary appends are refused from
             // here, so nothing can land between the final record and the
             // segment closes, and the operation id makes the final
