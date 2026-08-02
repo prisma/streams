@@ -12084,29 +12084,179 @@ async fn idempotent_successes_wait_for_durability() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
     assert_eq!(recs.len(), 2, "exactly once: {recs:?}");
 
-    // Idempotent close-only: same contract. Close it (durable), hold
-    // dispatch, and require the RETRY to wait out the barrier of any
-    // in-flight work rather than answer from applied state.
-    let (st, _, _) = hreq(
-        addr,
-        "POST",
-        "/v1/stream/dur10",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
-        b"",
-    )
-    .await;
+    // Idempotent close-only: same contract, driven through the same
+    // window. The ORIGINAL close is applied but held pre-durability;
+    // its exact retry reads closed=true from applied state and must
+    // stay pending behind the original's barrier.
+    let guard = engine.test_hold_dispatch();
+    let close1 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur10",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            b"",
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!close1.is_finished(), "the close released while dispatch held");
+    let close2 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur10",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            b"",
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !close2.is_finished(),
+        "an idempotent close answered from applied, non-durable state"
+    );
+    drop(guard);
+    let (st, _, _) = close1.await.unwrap();
     assert!(st == 200 || st == 204, "close: {st}");
-    let (st, _, _) = hreq(
-        addr,
-        "POST",
-        "/v1/stream/dur10",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
-        b"",
-    )
-    .await;
+    let (st, _, _) = close2.await.unwrap();
     assert!(st == 200 || st == 204, "idempotent close retry: {st}");
     engine_shutdown(&state).await;
 }
+
+/// A DEFINITIVE conflict is a statement about committed state. A
+/// sequence-reuse verdict read from a producer row that another
+/// request staged in the same (or an undispatched) group must wait
+/// for that state's durability — answering early and losing the write
+/// hands the client a permanent verdict about state that never
+/// existed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn state_dependent_conflicts_wait_for_durability() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/conf11",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state.registry.invalidate("conf11");
+    let desc = state.registry.get("conf11").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Original held pre-durability.
+    let guard = engine.test_hold_dispatch();
+    let ph = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let orig = tokio::spawn(async move {
+        preq(addr, "POST", "/v1/streams/conf11/records", &ph, br#"{"x":1}"#).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!orig.is_finished());
+
+    // Same tuple, DIFFERENT body: the product surface's reuse check
+    // yields a definitive 409 — whose truth is the original's row.
+    let reuse = tokio::spawn(async move {
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/conf11/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"{"x":"different"}"#,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !reuse.is_finished(),
+        "a definitive conflict answered before the state it judges was durable"
+    );
+    drop(guard);
+    let (st, _, _) = orig.await.unwrap();
+    assert_eq!(st, 200, "original");
+    let (st, _, b) = reuse.await.unwrap();
+    assert_eq!(
+        st,
+        409,
+        "sequence reuse should be a conflict: {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// The maintenance sweep must never weaken a fence: a fence has no
+/// safe wall-clock expiry while the queue it protects has no maximum
+/// residence. (The round-10 six-hour pruning was removed for exactly
+/// this reason; this test pins the property against its return.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_outlives_the_maintenance_sweep() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sweep11", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("sweep11");
+    let desc = state.registry.get("sweep11").await.unwrap().unwrap();
+    let epoch = desc.stream_epoch.clone();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    let closed = crate::http::fence_segment_for_key(&state, "sweep11", &epoch, "", 10)
+        .await
+        .unwrap();
+    assert!(!closed);
+    // Run the SAME maintenance the production sweep runs — eviction —
+    // then a stale generation-9 close must still be refused.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = crate::shard::AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash: identity,
+        route,
+        entries: vec![bytes::Bytes::from_static(b"{\"stale\":1}")],
+        routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
+        key_version: 0,
+        subkey: [7u8; 32],
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 11,
+        close: true,
+        seal_gen: Some(9),
+        seal_fence_to: None,
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        usage: crate::usage::counters(&identity),
+        resp: tx,
+    };
+    assert!(engine.try_enqueue(req).is_ok());
+    let refused = matches!(rx.await.unwrap(), Err(crate::shard::AppendErr::SealSuperseded));
+    assert!(refused, "the sweep weakened the fence");
+    engine_shutdown(&state).await;
+}
+
+
 
 /// The product final append proves its WHOLE execution token —
 /// incarnation, operation, generation — against the current

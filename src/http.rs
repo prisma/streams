@@ -4167,8 +4167,16 @@ async fn append_core(
                     }
                 }
                 let op = owns_final.then(|| this_close_op.clone());
+                // An owner drives the transition under ITS generation
+                // (the one its marked claim holds). A plain close-only
+                // passes None and adopts whatever generation the shared
+                // Empty claim holds NOW — concurrent plain closes renew
+                // the claim as they join, and a close that pinned its
+                // own admission-time generation would fail publication
+                // against a sibling's renewal.
+                let run_gen = if owns_final { raw_seal_gen } else { None };
                 if let Err(e) =
-                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, raw_seal_gen)
+                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, run_gen)
                         .await
                 {
                     // The segment is closed but the collection is not

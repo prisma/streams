@@ -614,7 +614,10 @@ struct InFlightGroup {
     reqs: u32,
     records_n: u32,
     bytes: u64,
-    acks: Vec<(oneshot::Sender<Result<AppendAck, AppendErr>>, AppendAck)>,
+    acks: Vec<(
+        oneshot::Sender<Result<AppendAck, AppendErr>>,
+        Result<AppendAck, AppendErr>,
+    )>,
     queue_acks: Vec<(
         oneshot::Sender<Result<crate::queue::QueueOut, String>>,
         crate::queue::QueueOut,
@@ -642,14 +645,20 @@ pub struct ShardEngine {
     history2: tokio::sync::OnceCell<Arc<Db>>,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     /// Seal fences by segment identity — ENGINE-level, deliberately
-    /// outside the evictable [`StreamHandle`]: an AppendReq waiting in
+    /// outside the evictable [`StreamHandle`], and deliberately WITHOUT
+    /// any expiry: an AppendReq has no maximum queue residence (a
+    /// timed-out HTTP handler drops only its receiver, and backpressure
+    /// can hold the queue arbitrarily long), so no wall-clock bound on
+    /// a fence is a proof about the request it exists to stop. One u64
+    /// per ever-fenced segment, for the engine's lifetime, is the
+    /// price of that proof; the map dies with the queue it protects. an AppendReq waiting in
     /// the committer channel holds only the stream hash, so a handle
     /// can be idle-evicted (or displaced by the resident cap) while a
     /// stale claim-authorized write is still queued, and a fence that
     /// lived in the handle would be reborn as zero when the committer
     /// reloaded it. This map dies with the engine and its queue —
     /// which is the exact lifetime the fence protects.
-    seal_fences: Mutex<HashMap<[u8; 16], (u64, i64)>>,
+    seal_fences: Mutex<HashMap<[u8; 16], u64>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
     /// Serializes durable-dispatch between the pump (post-flush barrier)
@@ -1125,9 +1134,6 @@ impl ShardEngine {
                     if !idle.is_zero() || ticker.handle_max_resident > 0 {
                         let evicted =
                             ticker.evict_idle_handles(idle, ticker.handle_max_resident);
-                            // Fences long past any queued request's
-                            // possible residence (P2: bound the map).
-                            ticker.prune_seal_fences(std::time::Duration::from_secs(6 * 3600));
                         if evicted > 0 {
                             tracing::debug!(
                                 shard = %ticker.prefix,
@@ -1662,19 +1668,6 @@ impl ShardEngine {
     /// were dropped. A later touch reloads durable state from the shard
     /// DB, and the dirty-stream index keeps unabsorbed evictees
     /// discoverable.
-    /// Prune seal fences whose age exceeds any possible residence of a
-    /// stale request in this engine's queue. A fence only has work to
-    /// do while a pre-takeover append can still be dequeued; hours
-    /// later, either it committed refusal long ago or the engine (and
-    /// its queue) has been recycled. Bounds the map without ever
-    /// weakening a fence that could still matter. Returns survivors.
-    pub fn prune_seal_fences(&self, max_age: std::time::Duration) -> usize {
-        let cutoff = now_ms() - max_age.as_millis() as i64;
-        let mut f = self.seal_fences.lock().unwrap();
-        f.retain(|_, (_, stamped)| *stamped >= cutoff);
-        f.len()
-    }
-
     pub fn evict_idle_handles(&self, idle: std::time::Duration, max_resident: usize) -> usize {
         let mut map = self.streams.lock().unwrap();
         let before = map.len();
@@ -1917,13 +1910,23 @@ impl ShardEngine {
         }
 
         let mut wb = WriteBatch::new();
-        let mut pending: Vec<(oneshot::Sender<Result<AppendAck, AppendErr>>, AppendAck)> =
-            Vec::new();
+        // Every response whose TRUTH depends on batch-local or applied
+        // state — success or refusal alike (round 11). A conflict
+        // derived from a producer row another request staged in this
+        // very group is not a fact until that group commits; answering
+        // it early and then losing the write hands the client a
+        // definitive verdict about state that never existed.
+        let mut pending: Vec<(
+            oneshot::Sender<Result<AppendAck, AppendErr>>,
+            Result<AppendAck, AppendErr>,
+        )> = Vec::new();
         // Fence responses: durability-barriered separately, because a
         // fence-only group persists nothing of its own — its barrier is
         // whatever is already in flight.
-        let mut fence_acks: Vec<(oneshot::Sender<Result<AppendAck, AppendErr>>, AppendAck)> =
-            Vec::new();
+        let mut fence_acks: Vec<(
+            oneshot::Sender<Result<AppendAck, AppendErr>>,
+            Result<AppendAck, AppendErr>,
+        )> = Vec::new();
         let mut locals: HashMap<[u8; 16], Local> = HashMap::new();
         let mut records = 0u64;
         let mut touches: Vec<TouchFeed> = Vec::new();
@@ -1993,19 +1996,18 @@ impl ShardEngine {
                     if let Some(g) = req.seal_fence_to {
                         {
                             let mut f = self.seal_fences.lock().unwrap();
-                            let e = f.entry(hash).or_insert((0, 0));
-                            e.0 = e.0.max(g);
-                            e.1 = now_ms();
+                            let e = f.entry(hash).or_insert(0);
+                            *e = (*e).max(g);
                         }
                         fence_acks.push((
                             req.resp,
-                            AppendAck {
+                            Ok(AppendAck {
                                 last_offset: local.fields.next.wrapping_sub(1),
                                 next_offset: local.fields.next,
                                 closed: local.fields.closed,
                                 producer: None,
                                 duplicate: false,
-                            },
+                            }),
                         ));
                         continue;
                     }
@@ -2055,9 +2057,10 @@ impl ShardEngine {
                         match local.producers.get(&(req.key_hash, pr.id.clone())).copied() {
                             Some((ce, cs, coff, chash)) => {
                                 if pr.epoch < ce {
-                                    let _ = req
-                                        .resp
-                                        .send(Err(AppendErr::ProducerStale { current_epoch: ce }));
+                                    pending.push((
+                                        req.resp,
+                                        Err(AppendErr::ProducerStale { current_epoch: ce }),
+                                    ));
                                     continue;
                                 }
                                 if pr.epoch == ce && pr.seq <= cs {
@@ -2078,7 +2081,7 @@ impl ShardEngine {
                                             .and_then(|p| p.request_hash)
                                             .is_some_and(|h| h != chash)
                                     {
-                                        let _ = req.resp.send(Err(AppendErr::ProducerSeqReused));
+                                        pending.push((req.resp, Err(AppendErr::ProducerSeqReused)));
                                         continue;
                                     }
                                     // Duplicate: answer with the ORIGINAL
@@ -2106,34 +2109,40 @@ impl ShardEngine {
                                     // write fails.
                                     pending.push((
                                         req.resp,
-                                        AppendAck {
+                                        Ok(AppendAck {
                                             last_offset: last,
                                             next_offset: local.fields.next,
                                             closed: local.fields.closed,
                                             producer: Some((ce, cs)),
                                             duplicate: true,
-                                        },
+                                        }),
                                     ));
                                     continue;
                                 }
                                 if pr.epoch > ce && pr.seq != 0 {
-                                    let _ = req.resp.send(Err(AppendErr::ProducerEpochSeq));
+                                    pending.push((req.resp, Err(AppendErr::ProducerEpochSeq)));
                                     continue;
                                 }
                                 if pr.epoch == ce && pr.seq > cs + 1 {
-                                    let _ = req.resp.send(Err(AppendErr::ProducerGap {
-                                        expected: cs + 1,
-                                        received: pr.seq,
-                                    }));
+                                    pending.push((
+                                        req.resp,
+                                        Err(AppendErr::ProducerGap {
+                                            expected: cs + 1,
+                                            received: pr.seq,
+                                        }),
+                                    ));
                                     continue;
                                 }
                             }
                             None => {
                                 if pr.seq != 0 {
-                                    let _ = req.resp.send(Err(AppendErr::ProducerGap {
-                                        expected: 0,
-                                        received: pr.seq,
-                                    }));
+                                    pending.push((
+                                        req.resp,
+                                        Err(AppendErr::ProducerGap {
+                                            expected: 0,
+                                            received: pr.seq,
+                                        }),
+                                    ));
                                     continue;
                                 }
                             }
@@ -2144,9 +2153,12 @@ impl ShardEngine {
                         // gate cannot make this call, because it cannot
                         // tell a retry from a new record.
                         if req.sealed_reject_new.is_some() {
-                            let _ = req.resp.send(Err(AppendErr::Closed {
-                                next_offset: local.fields.next,
-                            }));
+                            pending.push((
+                                req.resp,
+                                Err(AppendErr::Closed {
+                                    next_offset: local.fields.next,
+                                }),
+                            ));
                             continue;
                         }
                         prod_echo = Some((pr.epoch, pr.seq));
@@ -2161,18 +2173,21 @@ impl ShardEngine {
                             // on non-durable state (round 10).
                             pending.push((
                                 req.resp,
-                                AppendAck {
+                                Ok(AppendAck {
                                     last_offset: local.fields.next.wrapping_sub(1),
                                     next_offset: local.fields.next,
                                     closed: true,
                                     producer: None,
                                     duplicate: false,
-                                },
+                                }),
                             ));
                         } else {
-                            let _ = req.resp.send(Err(AppendErr::Closed {
-                                next_offset: local.fields.next,
-                            }));
+                            pending.push((
+                                req.resp,
+                                Err(AppendErr::Closed {
+                                    next_offset: local.fields.next,
+                                }),
+                            ));
                         }
                         continue;
                     }
@@ -2217,9 +2232,12 @@ impl ShardEngine {
                         }
                         if let Some(cur) = local.seqs.get(&req.key_hash) {
                             if seq <= cur {
-                                let _ = req.resp.send(Err(AppendErr::SeqConflict {
-                                    current: Some(cur.clone()),
-                                }));
+                                pending.push((
+                                    req.resp,
+                                    Err(AppendErr::SeqConflict {
+                                        current: Some(cur.clone()),
+                                    }),
+                                ));
                                 continue;
                             }
                         }
@@ -2240,7 +2258,7 @@ impl ShardEngine {
                             .lock()
                             .unwrap()
                             .get(&hash)
-                            .map(|(g, _)| *g)
+                            .copied()
                             .unwrap_or(0);
                         let stale = match (req.seal_gen, req.close) {
                             (Some(g), _) => g < fence,
@@ -2281,13 +2299,13 @@ impl ShardEngine {
                     if req.entries.is_empty() {
                         pending.push((
                             req.resp,
-                            AppendAck {
+                            Ok(AppendAck {
                                 last_offset: local.fields.next.wrapping_sub(1),
                                 next_offset: local.fields.next,
                                 closed: local.fields.closed,
                                 producer: prod_echo,
                                 duplicate: false,
-                            },
+                            }),
                         ));
                         continue;
                     }
@@ -2350,13 +2368,13 @@ impl ShardEngine {
                     }
                     pending.push((
                         req.resp,
-                        AppendAck {
+                        Ok(AppendAck {
                             last_offset: local.fields.next - 1,
                             next_offset: local.fields.next,
                             closed: local.fields.closed,
                             producer: prod_echo,
                             duplicate: false,
-                        },
+                        }),
                     ));
                 }
                 CommitOp::Absorbed {
@@ -2910,8 +2928,8 @@ impl ShardEngine {
                     last.acks.append(&mut fence_acks);
                 } else {
                     drop(infl);
-                    for (resp, ack) in fence_acks.drain(..) {
-                        let _ = resp.send(Ok(ack));
+                    for (resp, res) in fence_acks.drain(..) {
+                        let _ = resp.send(res);
                     }
                 }
             }
@@ -2933,8 +2951,8 @@ impl ShardEngine {
                 last.queue_acks.append(&mut queue_pending);
             } else {
                 drop(infl);
-                for (resp, ack) in pending {
-                    let _ = resp.send(Ok(ack));
+                for (resp, res) in pending {
+                    let _ = resp.send(res);
                 }
                 for (resp, out) in queue_pending {
                     let _ = resp.send(Ok(out));
@@ -3206,8 +3224,8 @@ impl ShardEngine {
                 handle.state.lock().unwrap().durable = fields.clone();
                 handle.notify.notify_waiters();
             }
-            for (resp, ack) in group.acks {
-                let _ = resp.send(Ok(ack));
+            for (resp, res) in group.acks {
+                let _ = resp.send(res);
             }
             for (resp, out) in group.queue_acks {
                 let _ = resp.send(Ok(out));

@@ -278,6 +278,26 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Eleventh audit round (2026-08-02)
+
+| finding | fix |
+|---|---|
+| The round-10 six-hour fence expiry was unsafe: an AppendReq has no maximum queue residence (a timed-out handler drops only its receiver; backpressure can hold the queue arbitrarily long), so a wall-clock timer proves nothing about the request a fence exists to stop | pruning REMOVED. Fences live for the engine's lifetime — one u64 per ever-fenced segment, dying with the exact queue they protect. A bounded cleanup would need queue-progress proof, not elapsed time |
+| Definitive conflicts (sequence reuse, producer gap/stale/epoch, Stream-Seq conflict, closed) were still answered from batch-local or applied state — a crash before the group write left a client holding a permanent verdict about state that never existed | the barrier rule now covers RESULTS, not just successes: `pending` carries `Result<AppendAck, AppendErr>`; state-dependent refusals ride the same durability barrier, and a failed group write returns the group's failure instead of a conflict judged against unwritten state. Request-intrinsic errors (malformed body, content-type, syntax) stay immediate |
+| Concurrent plain closes could 503 each other: each join RENEWS the shared Empty claim, and a close that pinned its admission-time generation failed publication against a sibling's renewal | a plain close-only passes no generation into run_seal and ADOPTS the standing one; only a final-bearing owner pins its own |
+
+### Deterministic gates added
+
+* `state_dependent_conflicts_wait_for_durability` — a sequence-reuse
+  409 must stay pending while the row it judges is applied but not
+  durable (red: "a definitive conflict answered before the state it
+  judges was durable").
+* `idempotent_successes_wait_for_durability` now drives the close-only
+  branch through the same held-dispatch window (red proven for both
+  halves).
+* `a_fence_outlives_the_maintenance_sweep` — pins the no-expiry
+  property against any future "cleanup" (red: sweep clearing fences).
+
 ## Tenth audit round (2026-08-02)
 
 The fence passed; the review moved one layer down and found the same
