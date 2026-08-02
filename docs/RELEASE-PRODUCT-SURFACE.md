@@ -278,6 +278,19 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Tenth audit round (2026-08-02)
+
+The fence passed; the review moved one layer down and found the same
+disease in older tissue: two committer fast paths still answered
+before durability, and the product seal's incarnation binding stopped
+at the claim.
+
+| finding | fix |
+|---|---|
+| Producer-duplicate and idempotent close-only answers were sent immediately from batch-local or applied state — a retry could observe "durably committed" for a record whose group write later failed, and a concurrent exact seal retry could mark, close and publish Sealed off a duplicate whose original was never durable | no successful answer whose truth depends on non-durable state leaves before its barrier. Duplicate and close-only acks ride the group's `pending` (failed with the group if its write fails); any ack in a write-free group attaches to the NEWEST in-flight group, exactly like a fence; only with nothing in flight is the observed state already durable and the answer immediate |
+| The product seal carried its validated epoch into the claim but dropped it before the final append: `product_append_inner` refetched the descriptor by name, so a seal claimed on incarnation A could write its final into a same-name same-key replacement and physically close the replacement's segment (only the mark failed, after the damage) | the final append carries a typed execution token (`SealAuthz { op_id, generation, epoch }`) and refuses to run unless the CURRENT descriptor matches all three; a trusted final also never enters the raw-close claim path — without the token check, the red run showed the replacement fully SEALED by the stranger's final |
+| The fence map had no bound | entries are timestamped and pruned after 6 h — far beyond any queued request's possible residence — on the same sweep that drives handle eviction; the map stays engine-level (the safety scope) |
+
 ## Ninth audit round (2026-08-02)
 
 Round 8 introduced the right concepts; round 9 makes the fence what

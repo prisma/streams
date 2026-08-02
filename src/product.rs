@@ -1236,6 +1236,8 @@ async fn product_seal(
                     ih.insert(h, v.clone());
                 }
             }
+            #[cfg(test)]
+            crate::http::fork_failpoints::pause_product_final_before_append(&name).await;
             let resp = product_append_sealing(
                 state.clone(),
                 name.clone(),
@@ -1243,6 +1245,7 @@ async fn product_seal(
                 Bytes::from(fin.to_string()),
                 op_id.clone(),
                 ticket.generation,
+                ticket.epoch.clone(),
             )
             .await;
             if !resp.status().is_success() {
@@ -2310,8 +2313,22 @@ async fn product_append_sealing(
     body: Bytes,
     op_id: String,
     generation: u64,
+    epoch: String,
 ) -> Response {
-    product_append_inner(state, name, headers, body, false, true, Some((op_id, generation))).await
+    product_append_inner(
+        state,
+        name,
+        headers,
+        body,
+        false,
+        true,
+        Some(crate::http::SealAuthz {
+            op_id,
+            generation,
+            epoch,
+        }),
+    )
+    .await
 }
 
 /// Appends refuse a collection that is sealed OR sealing — only the
@@ -2357,8 +2374,8 @@ async fn product_append_inner(
     batch: bool,
     seal_after: bool,
     // TRUSTED: the seal operation whose final record this is, with the
-    // claim generation its write is fenced under.
-    seal_auth: Option<(String, u64)>,
+    // claim generation and incarnation its write is fenced under.
+    seal_auth: Option<crate::http::SealAuthz>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(

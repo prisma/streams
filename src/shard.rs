@@ -649,7 +649,7 @@ pub struct ShardEngine {
     /// lived in the handle would be reborn as zero when the committer
     /// reloaded it. This map dies with the engine and its queue —
     /// which is the exact lifetime the fence protects.
-    seal_fences: Mutex<HashMap<[u8; 16], u64>>,
+    seal_fences: Mutex<HashMap<[u8; 16], (u64, i64)>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
     /// Serializes durable-dispatch between the pump (post-flush barrier)
@@ -1125,6 +1125,9 @@ impl ShardEngine {
                     if !idle.is_zero() || ticker.handle_max_resident > 0 {
                         let evicted =
                             ticker.evict_idle_handles(idle, ticker.handle_max_resident);
+                            // Fences long past any queued request's
+                            // possible residence (P2: bound the map).
+                            ticker.prune_seal_fences(std::time::Duration::from_secs(6 * 3600));
                         if evicted > 0 {
                             tracing::debug!(
                                 shard = %ticker.prefix,
@@ -1659,6 +1662,19 @@ impl ShardEngine {
     /// were dropped. A later touch reloads durable state from the shard
     /// DB, and the dirty-stream index keeps unabsorbed evictees
     /// discoverable.
+    /// Prune seal fences whose age exceeds any possible residence of a
+    /// stale request in this engine's queue. A fence only has work to
+    /// do while a pre-takeover append can still be dequeued; hours
+    /// later, either it committed refusal long ago or the engine (and
+    /// its queue) has been recycled. Bounds the map without ever
+    /// weakening a fence that could still matter. Returns survivors.
+    pub fn prune_seal_fences(&self, max_age: std::time::Duration) -> usize {
+        let cutoff = now_ms() - max_age.as_millis() as i64;
+        let mut f = self.seal_fences.lock().unwrap();
+        f.retain(|_, (_, stamped)| *stamped >= cutoff);
+        f.len()
+    }
+
     pub fn evict_idle_handles(&self, idle: std::time::Duration, max_resident: usize) -> usize {
         let mut map = self.streams.lock().unwrap();
         let before = map.len();
@@ -1977,8 +1993,9 @@ impl ShardEngine {
                     if let Some(g) = req.seal_fence_to {
                         {
                             let mut f = self.seal_fences.lock().unwrap();
-                            let e = f.entry(hash).or_insert(0);
-                            *e = (*e).max(g);
+                            let e = f.entry(hash).or_insert((0, 0));
+                            e.0 = e.0.max(g);
+                            e.1 = now_ms();
                         }
                         fence_acks.push((
                             req.resp,
@@ -2075,13 +2092,28 @@ impl ShardEngine {
                                     } else {
                                         local.fields.next.wrapping_sub(1)
                                     };
-                                    let _ = req.resp.send(Ok(AppendAck {
-                                        last_offset: last,
-                                        next_offset: local.fields.next,
-                                        closed: local.fields.closed,
-                                        producer: Some((ce, cs)),
-                                        duplicate: true,
-                                    }));
+                                    // DURABILITY-BARRIERED (round 10):
+                                    // this success is a statement that
+                                    // the original write is durable —
+                                    // but the row it was read from may
+                                    // be batch-local staging (same
+                                    // group) or applied-not-yet-durable
+                                    // state. The ack rides the group
+                                    // pipeline like every other
+                                    // success: answered after the
+                                    // barrier that actually covers it,
+                                    // failed with the group if its
+                                    // write fails.
+                                    pending.push((
+                                        req.resp,
+                                        AppendAck {
+                                            last_offset: last,
+                                            next_offset: local.fields.next,
+                                            closed: local.fields.closed,
+                                            producer: Some((ce, cs)),
+                                            duplicate: true,
+                                        },
+                                    ));
                                     continue;
                                 }
                                 if pr.epoch > ce && pr.seq != 0 {
@@ -2121,14 +2153,22 @@ impl ShardEngine {
                     }
                     if local.fields.closed {
                         if req.close && req.entries.is_empty() && req.producer.is_none() {
-                            // Idempotent close-only.
-                            let _ = req.resp.send(Ok(AppendAck {
-                                last_offset: local.fields.next.wrapping_sub(1),
-                                next_offset: local.fields.next,
-                                closed: true,
-                                producer: None,
-                                duplicate: false,
-                            }));
+                            // Idempotent close-only — but "the segment
+                            // is closed" may have been established by
+                            // an earlier op in THIS group or by an
+                            // applied-not-yet-durable one. Barriered
+                            // like every success whose truth depends
+                            // on non-durable state (round 10).
+                            pending.push((
+                                req.resp,
+                                AppendAck {
+                                    last_offset: local.fields.next.wrapping_sub(1),
+                                    next_offset: local.fields.next,
+                                    closed: true,
+                                    producer: None,
+                                    duplicate: false,
+                                },
+                            ));
                         } else {
                             let _ = req.resp.send(Err(AppendErr::Closed {
                                 next_offset: local.fields.next,
@@ -2200,7 +2240,7 @@ impl ShardEngine {
                             .lock()
                             .unwrap()
                             .get(&hash)
-                            .copied()
+                            .map(|(g, _)| *g)
                             .unwrap_or(0);
                         let stale = match (req.seal_gen, req.close) {
                             (Some(g), _) => g < fence,
@@ -2880,13 +2920,25 @@ impl ShardEngine {
             return;
         }
         if !changed && records == 0 && touches.is_empty() && !extra_writes {
-            // Nothing to persist (e.g. zero-entry append): nothing can move
-            // the durable watermark either, so ACK directly.
-            for (resp, ack) in pending {
-                let _ = resp.send(Ok(ack));
-            }
-            for (resp, out) in queue_pending {
-                let _ = resp.send(Ok(out));
+            // Nothing persisted by THIS group — but the truths in these
+            // acks (duplicate answers, idempotent closes, zero-entry
+            // tails) were read from batch-local or applied state that
+            // an EARLIER group may not have made durable yet. They join
+            // the newest in-flight barrier, exactly like a fence-only
+            // group; only when nothing is in flight is the observed
+            // state already durable and the answer immediate.
+            let mut infl = self.in_flight.lock().unwrap();
+            if let Some(last) = infl.last_mut() {
+                last.acks.append(&mut pending);
+                last.queue_acks.append(&mut queue_pending);
+            } else {
+                drop(infl);
+                for (resp, ack) in pending {
+                    let _ = resp.send(Ok(ack));
+                }
+                for (resp, out) in queue_pending {
+                    let _ = resp.send(Ok(out));
+                }
             }
             return;
         }

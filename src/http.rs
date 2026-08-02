@@ -2713,7 +2713,8 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 10] = [
+        static M: [Mutex<Option<HashSet<String>>>; 11] = [
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2737,6 +2738,7 @@ pub(crate) mod fork_failpoints {
     const CLOSE_MARK: usize = 7;
     const CLOSE_HELD: usize = 8;
     const PROD_SEAL: usize = 9;
+    const PROD_FINAL: usize = 10;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -2975,6 +2977,26 @@ pub(crate) mod fork_failpoints {
 
     pub async fn pause_product_seal_before_claim(name: &str) {
         park(PROD_SEAL, name, &PARKED_PROD_SEAL).await;
+    }
+
+    /// Park a product seal AFTER its claim is installed and BEFORE its
+    /// final append — the claim-to-append gap in which the whole
+    /// incarnation can be replaced under the same key.
+    pub fn park_product_final_before_append(name: &str) {
+        set(PROD_FINAL, name);
+    }
+
+    pub fn release_product_final_before_append(name: &str) {
+        release(PROD_FINAL, name);
+    }
+
+    pub fn parked_product_final_count() -> usize {
+        PARKED_PROD_FINAL.load(Ordering::SeqCst)
+    }
+    static PARKED_PROD_FINAL: AtomicUsize = AtomicUsize::new(0);
+
+    pub async fn pause_product_final_before_append(name: &str) {
+        park(PROD_FINAL, name, &PARKED_PROD_FINAL).await;
     }
 
     /// Park a delete just before it decides soft-versus-hard, so a
@@ -3226,7 +3248,7 @@ pub(crate) async fn append(
     // TRUSTED, internal only: this call is the final record a seal
     // intent owes, identified by its operation id. Never derived from a
     // request header — see the `x-seal-final` refusal in append_core.
-    seal_auth: Option<(String, u64)>,
+    seal_auth: Option<SealAuthz>,
 ) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
@@ -3276,6 +3298,20 @@ pub(crate) async fn append(
         "segment_transition",
         "segment map transition did not converge; retry",
     )
+}
+
+/// The TRUSTED execution token a product seal's final append carries:
+/// the operation, the claim generation, and the incarnation the whole
+/// seal was validated against. The append refuses to run unless the
+/// CURRENT descriptor still matches all three — an epoch-less token
+/// let a seal claimed on incarnation A write its final record into
+/// (and physically close a segment of) a same-name, same-key
+/// replacement created while the request was in flight.
+#[derive(Debug, Clone)]
+pub(crate) struct SealAuthz {
+    pub op_id: String,
+    pub generation: u64,
+    pub epoch: String,
 }
 
 /// Raise the seal fence on the segment a routing key resolves to, and
@@ -3345,7 +3381,7 @@ async fn append_core(
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
-    seal_auth: Option<(String, u64)>,
+    seal_auth: Option<SealAuthz>,
 ) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
@@ -3446,16 +3482,37 @@ async fn append_core(
     // Owed-final authorization: either this request IS the intent's
     // record (computed identity matches) or an internal caller passed
     // the trusted operation id. Nothing a client sends can assert it.
+    // A TRUSTED product final proves its whole execution token before
+    // anything else: same incarnation, same claim, same generation. It
+    // owns a typed transition — if the token no longer matches (the
+    // collection was deleted and recreated, or the claim was taken
+    // over), the append must not run at all: not write the record, not
+    // close a segment, and never fall through into the raw-close claim
+    // path on a stranger's descriptor.
+    if let Some(auth) = &seal_auth {
+        let holds = desc.stream_epoch == auth.epoch
+            && desc.sealing.as_ref().is_some_and(|sl| {
+                sl.operation_id == auth.op_id && sl.claim_generation == auth.generation
+            });
+        if !holds {
+            return err_resp(
+                StatusCode::CONFLICT,
+                "seal_superseded",
+                "the seal this final record belongs to no longer holds its claim",
+            );
+        }
+    }
     let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
         sl.owes_final()
             && (sl.operation_id == this_close_op
-                || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|(op, _)| op.as_str()))
+                || Some(sl.operation_id.as_str())
+                    == seal_auth.as_ref().map(|a| a.op_id.as_str()))
     });
     // The generation this request's claim-authorized writes will carry.
     // Filled by whichever path holds the claim: the trusted internal
     // seal (its ticket), an owed-final resume (renewed below), or a
     // fresh close (begin_sealing_for_close's install).
-    let mut raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|(_, g)| *g);
+    let mut raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|a| a.generation);
     if is_owed_final && seal_auth.is_none() {
         // RESUME of a crashed close: renew the claim before appending.
         // Renewal re-allocates the generation, so the resume can never
@@ -3663,7 +3720,7 @@ async fn append_core(
     // the product's seal-with-final: the promise is "these records, then
     // closed". Publishing Empty for it meant a crash after the intent
     // let a later close-only finish the seal without them.
-    if close && !desc.sealed && !is_owed_final && deferred.is_none() {
+    if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
         let intent = if entries.is_empty() {
             crate::registry::SealIntent::Empty
         } else {

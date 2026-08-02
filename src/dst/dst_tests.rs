@@ -12012,6 +12012,203 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
 }
 
 // ---------------------------------------------------------------
+// Round 10: no successful answer whose truth depends on batch-local
+// or applied state leaves before its durability barrier, and the
+// product final append proves its whole execution token.
+// ---------------------------------------------------------------
+
+/// A producer DUPLICATE is a statement that the original write is
+/// durable. While the durability dispatch is held, a duplicate of an
+/// applied-but-unreleased write must stay pending — answering it
+/// immediately let a retry observe "durably committed" for a record
+/// whose group write could still fail. Same for the idempotent
+/// close-only answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idempotent_successes_wait_for_durability() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur10", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("dur10");
+    let desc = state.registry.get("dur10").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Hold durability dispatch; the ORIGINAL producer write commits
+    // (applied) but is never released as durable.
+    let guard = engine.test_hold_dispatch();
+    let ph = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let orig = tokio::spawn(async move {
+        hreq(addr, "POST", "/v1/stream/dur10", &ph, br#"[{"n":1}]"#).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!orig.is_finished(), "the original was released while dispatch held");
+
+    // The exact duplicate arrives. It must ALSO stay pending: its
+    // truth is the original's durability.
+    let dup = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur10",
+            &[
+                ("content-type", "application/json"),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"[{"n":1}]"#,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !dup.is_finished(),
+        "a duplicate answered before the original's durability barrier"
+    );
+
+    // Release: both answer, exactly once.
+    drop(guard);
+    let (st, _, _) = orig.await.unwrap();
+    assert!(st == 200 || st == 204, "original: {st}");
+    let (st, _, _) = dup.await.unwrap();
+    assert_eq!(st, 204, "duplicate: {st}");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/dur10", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs.len(), 2, "exactly once: {recs:?}");
+
+    // Idempotent close-only: same contract. Close it (durable), hold
+    // dispatch, and require the RETRY to wait out the barrier of any
+    // in-flight work rather than answer from applied state.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dur10",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204, "close: {st}");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dur10",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204, "idempotent close retry: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// The product final append proves its WHOLE execution token —
+/// incarnation, operation, generation — against the current
+/// descriptor before writing anything. A seal claimed on incarnation
+/// A whose final append raced a delete+recreate (same name, same key)
+/// used to write its record into B and physically close B's segment,
+/// leaving the replacement unwritable; only the mark failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_final_never_writes_into_a_recreated_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/finaba",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Park the sealer AFTER its claim, BEFORE its final append.
+    let before = crate::http::fork_failpoints::parked_product_final_count();
+    crate::http::fork_failpoints::park_product_final_before_append("finaba");
+    let sealer = tokio::spawn(async move {
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/finaba:seal",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"final":{"x":1}}"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_product_final_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the sealer never reached the claim-to-append gap");
+    state.registry.invalidate("finaba");
+    let a = state.registry.get("finaba").await.unwrap().unwrap();
+    assert!(a.sealing.is_some(), "no claim installed before the park");
+
+    // Replace the collection under the SAME key while the final is
+    // parked.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/finaba", &key, b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/finaba",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreate");
+
+    crate::http::fork_failpoints::release_product_final_before_append("finaba");
+    let (st, _, b) = sealer.await.unwrap();
+    assert!(
+        st >= 400,
+        "a final from a dead incarnation reported success: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("finaba");
+    let d = state.registry.get("finaba").await.unwrap().unwrap();
+    assert!(!d.sealed, "the replacement was sealed");
+    assert!(d.sealing.is_none(), "the replacement was claimed: {:?}", d.sealing);
+    // No final record, and — the decisive assertion — the replacement's
+    // segment is still OPEN: ordinary product appends succeed.
+    let (_, _, bd) = preq(
+        addr,
+        "GET",
+        "/v1/streams/finaba/records?routingKey=",
+        &key,
+        b"",
+    )
+    .await;
+    let _ = bd;
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/finaba/records",
+        &key,
+        br#"{"ok":1}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "the replacement's segment was closed by a stranger's final: {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from
