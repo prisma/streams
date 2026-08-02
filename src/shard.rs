@@ -666,6 +666,10 @@ pub struct ShardEngine {
     /// exclusive via the in_flight lock; this additionally keeps tail
     /// state updates applying in seq order across the two callers.
     dispatch_gate: Mutex<()>,
+    #[cfg(test)]
+    fail_group_for: Mutex<Option<std::collections::HashSet<[u8; 16]>>>,
+    #[cfg(test)]
+    fail_group_tripped: std::sync::atomic::AtomicUsize,
     /// Pump telemetry: flushes issued, requests acked at the pump's own
     /// barrier, gather windows taken. acked/flushes is the requests-per-
     /// WAL figure the flush-scheduling change is judged by.
@@ -821,6 +825,10 @@ impl ShardEngine {
             history2: tokio::sync::OnceCell::new(),
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            fail_group_for: Mutex::new(None),
+            #[cfg(test)]
+            fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
             tx,
             in_flight: Mutex::new(Vec::new()),
             dispatch_gate: Mutex::new(()),
@@ -1927,6 +1935,13 @@ impl ShardEngine {
             oneshot::Sender<Result<AppendAck, AppendErr>>,
             Result<AppendAck, AppendErr>,
         )> = Vec::new();
+        // Client appends seen by THIS group (DST): the group-write
+        // failpoint fires only for groups carrying a client write for
+        // the armed identity — maintenance ops (absorber, trim) touch
+        // the same stream's locals and must not consume the arm.
+        #[cfg(test)]
+        let mut client_append_hashes: std::collections::HashSet<[u8; 16]> =
+            std::collections::HashSet::new();
         let mut locals: HashMap<[u8; 16], Local> = HashMap::new();
         let mut records = 0u64;
         let mut touches: Vec<TouchFeed> = Vec::new();
@@ -1981,6 +1996,8 @@ impl ShardEngine {
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
                 CommitOp::Append(req) => {
+                    #[cfg(test)]
+                    client_append_hashes.insert(hash);
                     // Fence message: a takeover raising the segment's
                     // minimum claim generation. The RAISE is immediate
                     // (later ops in this very group already see it),
@@ -2963,6 +2980,42 @@ impl ShardEngine {
 
         let encode_us = group_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
         let group_bytes: u64 = locals.iter().map(|(_, l)| l.appended_bytes).sum();
+        // Deterministic group-write failure (DST): everything this
+        // group promised — acks, duplicates, idempotent closes,
+        // state-dependent refusals, fence reports — fails together,
+        // through the exact same lines a real write error takes.
+        #[cfg(test)]
+        {
+            let tripped = {
+                let mut armed = self.fail_group_for.lock().unwrap();
+                match armed.as_mut() {
+                    Some(set) => {
+                        let hit: Vec<[u8; 16]> = set
+                            .iter()
+                            .filter(|h| client_append_hashes.contains(*h))
+                            .copied()
+                            .collect();
+                        for h in &hit {
+                            set.remove(h);
+                        }
+                        !hit.is_empty()
+                    }
+                    None => false,
+                }
+            };
+            if tripped {
+                self.fail_group_tripped
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let msg = "failpoint: group write failed".to_string();
+                for (resp, _) in pending {
+                    let _ = resp.send(Err(AppendErr::Internal(msg.clone())));
+                }
+                for (resp, _) in queue_pending {
+                    let _ = resp.send(Err(msg.clone()));
+                }
+                return;
+            }
+        }
         let write_t0 = std::time::Instant::now();
         // Publish the write start so admission can observe a blocked commit
         // pipeline (L0-full / unflushed-full backpressure blocks this await;
@@ -3167,6 +3220,26 @@ impl ShardEngine {
         }
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
+    }
+
+    /// Test hook: fail the next commit group that contains an op for
+    /// the given segment identity — the deterministic stand-in for a
+    /// WriteBatch that reaches the store and dies. One-shot; the
+    /// tripped counter is the entered-proof a test asserts instead of
+    /// assuming its failpoint fired.
+    #[cfg(test)]
+    pub fn fail_next_group_for(&self, identity: [u8; 16]) {
+        self.fail_group_for
+            .lock()
+            .unwrap()
+            .get_or_insert_with(std::collections::HashSet::new)
+            .insert(identity);
+    }
+
+    #[cfg(test)]
+    pub fn group_failures_tripped(&self) -> usize {
+        self.fail_group_tripped
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Test hook: hold the dispatch gate. While held, NEITHER the acker

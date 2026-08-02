@@ -2199,7 +2199,7 @@ async fn create_stream(
         }
     }
 
-    let (created, desc) = match existing {
+    let (created, mut desc) = match existing {
         // Resume: the SAME creation request found its own in-flight
         // (or abandoned) initialization — redo it idempotently.
         Some(d) if resume_init => (true, d),
@@ -2405,7 +2405,17 @@ async fn create_stream(
                         "the fork target changed while it was being created; retry",
                     );
                 }
+                // Reflect the stamp into the LOCAL snapshot: the
+                // readiness give-back names the reference through
+                // `desc.forked_from.fork_id`, and a stale empty id
+                // silently skipped the release — the source stayed
+                // pinned by a child deleted mid-creation (FRK-013).
+                if let Some(f) = desc.forked_from.as_mut() {
+                    f.fork_id = fork_id.clone();
+                }
             }
+            #[cfg(test)]
+            fork_failpoints::pause_fork_before_source_ref(&name).await;
             match state
                 .registry
                 .cas_update_retry(&fc.source, |d| {
@@ -2525,6 +2535,8 @@ async fn create_stream(
         }
         let subkey = derive_subkey(&key, &epoch_bytes, "", 0);
         let bytes = entries.iter().map(|e| e.len()).sum();
+        #[cfg(test)]
+        fork_failpoints::pause_init_before_seed(&name).await;
         let (tx, rx) = oneshot::channel();
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
@@ -2713,7 +2725,9 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 11] = [
+        static M: [Mutex<Option<HashSet<String>>>; 13] = [
+            Mutex::new(None),
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2739,6 +2753,8 @@ pub(crate) mod fork_failpoints {
     const CLOSE_HELD: usize = 8;
     const PROD_SEAL: usize = 9;
     const PROD_FINAL: usize = 10;
+    const FORK_REF: usize = 11;
+    const INIT_SEED: usize = 12;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -2997,6 +3013,47 @@ pub(crate) mod fork_failpoints {
 
     pub async fn pause_product_final_before_append(name: &str) {
         park(PROD_FINAL, name, &PARKED_PROD_FINAL).await;
+    }
+
+    /// Park a fork creation AFTER the child's fork-id stamp and
+    /// BEFORE the source reference installs — the window in which the
+    /// half-made child can be deleted, leaving an install that runs
+    /// for a child that no longer exists.
+    pub fn park_fork_before_source_ref(name: &str) {
+        set(FORK_REF, name);
+    }
+
+    pub fn release_fork_before_source_ref(name: &str) {
+        release(FORK_REF, name);
+    }
+
+    pub fn parked_fork_ref_count() -> usize {
+        PARKED_FORK_REF.load(Ordering::SeqCst)
+    }
+    static PARKED_FORK_REF: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) async fn pause_fork_before_source_ref(name: &str) {
+        park(FORK_REF, name, &PARKED_FORK_REF).await;
+    }
+
+    /// Park a creation's INITIAL-CONTENT append before it enqueues —
+    /// the window in which a test arms the group-write failure with
+    /// the descriptor's real identity, deterministically.
+    pub fn park_init_before_seed(name: &str) {
+        set(INIT_SEED, name);
+    }
+
+    pub fn release_init_before_seed(name: &str) {
+        release(INIT_SEED, name);
+    }
+
+    pub fn parked_init_seed_count() -> usize {
+        PARKED_INIT_SEED.load(Ordering::SeqCst)
+    }
+    static PARKED_INIT_SEED: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) async fn pause_init_before_seed(name: &str) {
+        park(INIT_SEED, name, &PARKED_INIT_SEED).await;
     }
 
     /// Park a delete just before it decides soft-versus-hard, so a

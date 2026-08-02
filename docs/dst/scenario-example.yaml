@@ -1,0 +1,77 @@
+schema_version: 1
+name: seal-fence-waits-for-prior-remote-durability
+root_seed: 9981723
+event_budget: 50000
+
+world:
+  nodes: 1
+  router: typed
+  stores:
+    latency_profile: tigris-measured
+  clock: deterministic
+
+setup:
+  - create_collection:
+      name: orders
+      key: key-A
+  - append:
+      collection: orders
+      routing_key: customer-1
+      records: [{id: 1}]
+
+steps:
+  - arm_failpoint:
+      point: commit.after_applied_before_remote_durable
+      selector:
+        stream: orders
+      action: pause
+
+  - start_seal:
+      id: old-final
+      collection: orders
+      final: {id: 2}
+      routing_key: customer-1
+
+  - await_failpoint:
+      point: commit.after_applied_before_remote_durable
+      selector:
+        stream: orders
+
+  - start_seal_takeover:
+      id: takeover
+      collection: orders
+
+  - assert_checkpoint:
+      expectations:
+        takeover_terminal: false
+        collection_sealed: false
+        old_final_committed: false
+
+  - release_failpoint:
+      point: commit.after_applied_before_remote_durable
+      selector:
+        stream: orders
+
+liveness:
+  heal_all: true
+  event_budget: 10000
+
+required_mechanisms:
+  - id: seal_takeover
+    min: 1
+  - id: fence_waited_for_durability
+    min: 1
+  - id: remote_durable_advanced
+    min: 1
+
+invariants:
+  - D1
+  - L6
+  - L7
+  - L13
+  - L15
+
+budgets:
+  max_wal_puts: 4
+  max_live_tasks: 32
+  max_open_shard_dbs: 1

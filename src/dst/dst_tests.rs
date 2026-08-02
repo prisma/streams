@@ -12359,6 +12359,585 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
 }
 
 // ---------------------------------------------------------------
+// DST expansion, workstream 2 (L1-now): deterministic group-write
+// failure. Everything a commit group promised fails together, and
+// nothing answered from its staging can outlive it.
+// ---------------------------------------------------------------
+
+/// DUR-002: a duplicate's success is the original's durability. If the
+/// group carrying the original FAILS, a same-group duplicate fails
+/// with it — and a later retry never observes `duplicate: true` for a
+/// row that was never written. Order-independent: whichever group the
+/// second request lands in, the forbidden outcome is a duplicate
+/// verdict grounded in the failed group's staging.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_group_write_fails_its_duplicate_too() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur002", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("dur002");
+    let desc = state.registry.get("dur002").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    engine.fail_next_group_for(identity);
+    let ph = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let r1 = tokio::spawn(async move {
+        hreq(addr, "POST", "/v1/stream/dur002", &ph, br#"[{"a":1}]"#).await
+    });
+    let r2 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur002",
+            &[
+                ("content-type", "application/json"),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"[{"a":1}]"#,
+        )
+        .await
+    });
+    let (s1, _, _) = r1.await.unwrap();
+    let (s2, h2, _) = r2.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    // At least one request rode the failed group.
+    assert!(
+        s1 >= 500 || s2 >= 500,
+        "nobody saw the failed write: {s1} {s2}"
+    );
+    // The forbidden outcome: a success shaped as a DUPLICATE while the
+    // original's write failed. (A 204 on the raw route marks the
+    // duplicate answer; a fresh original answers 200.)
+    if s1 >= 500 {
+        assert_ne!(s2, 204, "a duplicate verdict outlived its failed original");
+    }
+    let _ = h2;
+    // Ground truth after the storm: one more exact retry either finds
+    // the row durable (someone committed: answers duplicate) or
+    // commits as the original — and the record count agrees.
+    let (s3, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dur002",
+        &[
+            ("content-type", "application/json"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"a":1}]"#,
+    )
+    .await;
+    assert!(s3 == 200 || s3 == 204, "recovery: {s3}");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/dur002", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    let payloads = recs.iter().filter(|r| r.get("a").is_some()).count();
+    assert_eq!(payloads, 1, "exactly-once violated: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// DUR-004 + SEL-021 in one deterministic shape: a close whose group
+/// write FAILS, with a fence in flight. The fence must answer failure
+/// or closed=false — NEVER closed=true off staging that died — the
+/// close must not report success, its intent survives (a write error
+/// is ambiguous), and the exact retry recovers the seal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sel021", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("sel021");
+    let desc = state.registry.get("sel021").await.unwrap().unwrap();
+    let epoch = desc.stream_epoch.clone();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Deterministic order: park the close after its intent, arm the
+    // failure, fence AT THE CLAIM'S OWN GENERATION (raising the fence
+    // without superseding the close), then release.
+    let before = crate::http::fork_failpoints::parked_close_count();
+    crate::http::fork_failpoints::park_close_before_enqueue("sel021");
+    let body = br#"[{"fin":1}]"#;
+    let close = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/sel021",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            body,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_close_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the close never parked");
+    state.registry.invalidate("sel021");
+    let claim = state
+        .registry
+        .get("sel021")
+        .await
+        .unwrap()
+        .unwrap()
+        .sealing
+        .expect("no claim installed");
+    let fence = crate::http::fence_segment_for_key(
+        &state,
+        "sel021",
+        &epoch,
+        "",
+        claim.claim_generation,
+    )
+    .await;
+    match fence {
+        Ok(closed) => assert!(!closed, "closed=true before any close committed"),
+        Err(_) => {}
+    }
+    engine.fail_next_group_for(identity);
+    crate::http::fork_failpoints::release_close_before_enqueue("sel021");
+    let (cs, _, _) = close.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(cs >= 400, "the close reported success for a failed write: {cs}");
+    // A write failure is AMBIGUOUS: the intent stays for the retry.
+    state.registry.invalidate("sel021");
+    let d = state.registry.get("sel021").await.unwrap().unwrap();
+    assert!(
+        d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
+        "the ambiguous failure tore down the intent: {:?}",
+        d.sealing
+    );
+    assert!(!d.sealed, "sealed off a failed write");
+    // The exact retry recovers: renews the claim, lands the record,
+    // seals the collection.
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sel021",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        body,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "the exact retry could not recover: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("sel021");
+    let d = state.registry.get("sel021").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none());
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/sel021", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    let fins = recs.iter().filter(|r| r.get("fin").is_some()).count();
+    assert_eq!(fins, 1, "exactly one final after the failed write: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// DUR-008: a Stream-Seq conflict judged against a lane another
+/// request staged is not a fact until that staging is durable. If the
+/// verdict escaped a failed group, the client would hold a permanent
+/// "sequence taken" for a sequence that never existed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [
+        ("content-type", "application/json"),
+        ("stream-seq", "s1"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur008", &[("content-type", "application/json")], br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("dur008");
+    let desc = state.registry.get("dur008").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    engine.fail_next_group_for(identity);
+    let w1 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur008",
+            &[("content-type", "application/json"), ("stream-seq", "s1")],
+            br#"[{"a":1}]"#,
+        )
+        .await
+    });
+    let (s2, _, _) = hreq(addr, "POST", "/v1/stream/dur008", &ct, br#"[{"b":1}]"#).await;
+    let (s1, _, _) = w1.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(s1 >= 500 || s2 >= 500, "nobody saw the failed write: {s1} {s2}");
+    // If either got the CONFLICT verdict, the sequence it was judged
+    // against must actually be durable: an exact probe must still
+    // conflict. A conflict with no durable ground is the bug.
+    if s1 == 409 || s2 == 409 {
+        let (sp, _, _) = hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur008",
+            &[("content-type", "application/json"), ("stream-seq", "s1")],
+            br#"[{"probe":1}]"#,
+        )
+        .await;
+        assert_eq!(sp, 409, "a conflict verdict had no durable ground");
+    }
+    engine_shutdown(&state).await;
+}
+
+/// CRT-007: a create whose INITIAL CONTENT write fails must not
+/// publish Ready — and the exact replay resumes the same
+/// initialization and delivers the content exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn create_replay_recovers_from_a_failed_initial_write() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+
+    // Park the initial-content append pre-enqueue so the failpoint can
+    // be armed with the descriptor's real identity, deterministically.
+    let before = crate::http::fork_failpoints::parked_init_seed_count();
+    crate::http::fork_failpoints::park_init_before_seed("crt007");
+    let body = br#"[{"seed":1},{"seed":2}]"#;
+    let creator =
+        tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/crt007", &ct, body).await });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_init_seed_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the initial append never reached the park");
+    state.registry.invalidate("crt007");
+    let desc = state.registry.get("crt007").await.unwrap().unwrap();
+    assert!(desc.init.is_some(), "no initialization claim");
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+    engine.fail_next_group_for(identity);
+    crate::http::fork_failpoints::release_init_before_seed("crt007");
+
+    let (cs, _, _) = creator.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    // 408 (outcome unknown) and 5xx are both honest here — anything
+    // but success.
+    assert!(cs >= 400, "create reported success over a failed seed write: {cs}");
+    state.registry.invalidate("crt007");
+    let d = state.registry.get("crt007").await.unwrap().unwrap();
+    assert!(
+        d.init.is_some(),
+        "a failed initialization published readiness"
+    );
+
+    // The exact replay resumes and completes.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/crt007", &ct, body).await;
+    assert!(st == 200 || st == 201, "replay: {st}");
+    state.registry.invalidate("crt007");
+    let d = state.registry.get("crt007").await.unwrap().unwrap();
+    assert!(d.init.is_none(), "replay did not publish readiness");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/crt007", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs.len(), 2, "seed content exactly once: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// SEL-019: merge phase B refuses to publish under a sealing
+/// collection — the merge stays pending and resumable, and completes
+/// once the seal claim clears. (The split half has been pinned since
+/// round 3; this is its mirror.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn merge_phase_b_declines_under_sealing() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sel019",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for k in ["a", "b"] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/sel019/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            format!("{{\"k\":\"{k}\"}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    assert!(
+        crate::scaler3::execute_split(&state, "sel019", 0, 0x8000_0000_0000_0000).await,
+        "split failed"
+    );
+    state.registry.invalidate("sel019");
+    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    let live: Vec<u32> = d
+        .segments
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .filter(|s| s.is_live())
+        .map(|s| s.seg_id)
+        .collect();
+    assert_eq!(live.len(), 2);
+
+    // Park the merge between parent seal and publication; plant a
+    // sealing claim in the window (planting bypasses the entry guard
+    // on purpose — the guard is the OTHER direction of this fence).
+    crate::scaler3::failpoints::arm_before_publish();
+    let (st2, a, b) = (state.clone(), live[0], live[1]);
+    let merge =
+        tokio::spawn(
+            async move { crate::scaler3::execute_merge(&st2, "sel019", a, b).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    state
+        .registry
+        .cas_update("sel019", |d| {
+            d.seal_gen_counter += 1;
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: "seal-x".into(),
+                intent: crate::registry::SealIntent::Empty,
+                claimed_ms: crate::shard::now_ms(),
+                claim_generation: d.seal_gen_counter,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("sel019");
+    crate::scaler3::failpoints::release_before_publish();
+    let done = merge.await.unwrap();
+    assert!(!done, "merge published under a sealing collection");
+    state.registry.invalidate("sel019");
+    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    assert!(
+        d.segments.as_ref().is_some_and(|m| m.pending.is_some()),
+        "the pending merge was lost instead of retained"
+    );
+
+    // Clear the claim; the merge resumes to completion.
+    state
+        .registry
+        .cas_update("sel019", |d| {
+            d.sealing = None;
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("sel019");
+    assert!(crate::scaler3::resume(&state, "sel019").await, "resume failed");
+    state.registry.invalidate("sel019");
+    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    let live_after = d
+        .segments
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .filter(|s| s.is_live())
+        .count();
+    assert_eq!(live_after, 1, "merge did not complete after the seal cleared");
+    engine_shutdown(&state).await;
+}
+
+/// SEL-027: two finals with the SAME bytes but different producer
+/// coordination are different operations. The second must not join
+/// the first's claim, and its refusal must not tear that claim down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sel027", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    let before = crate::http::fork_failpoints::parked_close_count();
+    crate::http::fork_failpoints::park_close_before_enqueue("sel027");
+    let body = br#"[{"fin":1}]"#;
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/sel027",
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            body,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_close_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never parked");
+    state.registry.invalidate("sel027");
+    let a_claim = state
+        .registry
+        .get("sel027")
+        .await
+        .unwrap()
+        .unwrap()
+        .sealing
+        .expect("A published no claim");
+
+    // B: same bytes, DIFFERENT sequence — a different operation.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/sel027",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "1"),
+        ],
+        body,
+    )
+    .await;
+    assert_eq!(st, 409, "B should conflict with A's live claim: {st}");
+    state.registry.invalidate("sel027");
+    let now_claim = state
+        .registry
+        .get("sel027")
+        .await
+        .unwrap()
+        .unwrap()
+        .sealing
+        .expect("B's refusal tore down A's claim");
+    assert_eq!(now_claim.operation_id, a_claim.operation_id);
+    assert!(now_claim.owes_final(), "A's promise was cleared");
+
+    crate::http::fork_failpoints::release_close_before_enqueue("sel027");
+    let (st, _, b) = a.await.unwrap();
+    assert!(st == 200 || st == 204, "A: {st} {}", String::from_utf8_lossy(&b));
+    state.registry.invalidate("sel027");
+    let d = state.registry.get("sel027").await.unwrap().unwrap();
+    assert!(d.sealed);
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/sel027", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    let fins = recs.iter().filter(|r| r.get("fin").is_some()).count();
+    assert_eq!(fins, 1, "exactly one final: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// FRK-013: the child is deleted in the stamp-to-source-ref window.
+/// The late reference install must not pin the source to a child that
+/// no longer exists: the creator fails, the source keeps no children,
+/// and the source hard-deletes cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk13src", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/frk13src", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+
+    let before = crate::http::fork_failpoints::parked_fork_ref_count();
+    crate::http::fork_failpoints::park_fork_before_source_ref("frk13child");
+    let b2 = boundary.clone();
+    let creator = tokio::spawn(async move {
+        hreq(
+            addr,
+            "PUT",
+            "/v1/stream/frk13child",
+            &[
+                ("content-type", "application/json"),
+                ("stream-forked-from", "frk13src"),
+                ("stream-fork-offset", &b2),
+            ],
+            b"",
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_fork_ref_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the creator never reached the stamp-to-ref window");
+
+    // Delete the half-made child while the reference is uninstalled.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13child", &[], b"").await;
+    assert!(st == 204 || st == 200 || st == 404 || st == 410, "delete: {st}");
+
+    crate::http::fork_failpoints::release_fork_before_source_ref("frk13child");
+    let (cs, _, cb) = creator.await.unwrap();
+    assert!(
+        cs != 200 && cs != 201,
+        "creation reported success for a deleted child: {cs} {}",
+        String::from_utf8_lossy(&cb)
+    );
+    // The source holds no reference to the dead child…
+    state.registry.invalidate("frk13src");
+    let src = state.registry.get("frk13src").await.unwrap().unwrap();
+    assert!(
+        src.fork_children.is_empty(),
+        "a dead child pinned the source: {:?}",
+        src.fork_children
+    );
+    // …and hard-deletes cleanly (a leaked ref would soft-delete it).
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13src", &[], b"").await;
+    assert!(st == 204 || st == 200, "source delete: {st}");
+    state.registry.invalidate("frk13src");
+    let gone = state.registry.get("frk13src").await.unwrap();
+    assert!(
+        gone.is_none() || gone.as_ref().is_some_and(|d| d.deleted && !d.soft_deleted),
+        "the source was retained by a leaked reference: {gone:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from
