@@ -289,14 +289,16 @@ pub async fn seal_segment_identity(
     state: &std::sync::Arc<crate::http::AppState>,
     desc: &StreamDesc,
     seg_id: u32,
+    seal_gen: Option<u64>,
 ) -> Option<u64> {
-    seal_identity(state, desc, seg_id).await
+    seal_identity(state, desc, seg_id, seal_gen).await
 }
 
 async fn seal_identity(
     state: &std::sync::Arc<crate::http::AppState>,
     desc: &StreamDesc,
     seg_id: u32,
+    seal_gen: Option<u64>,
 ) -> Option<u64> {
     let identity = desc.dynamic_segment_identity(seg_id);
     // The seal must reach the engine that OWNS this segment's appends —
@@ -324,6 +326,8 @@ async fn seal_identity(
         deferred_error: None,
         sealed_reject_new: None,
         touch: None,
+        seal_gen,
+        seal_fence_to: None,
         resp: tx,
     };
     if engine.try_enqueue(req).is_err() {
@@ -337,16 +341,37 @@ async fn seal_identity(
 }
 
 /// Execute (or resume) one split end-to-end. Idempotent at every step.
+/// Resolves the CURRENT incarnation and splits it — the entry point for
+/// direct calls that just created or inspected the stream.
 pub async fn execute_split(
     st: &std::sync::Arc<crate::http::AppState>,
     name: &str,
     seg_id: u32,
     split_at: u64,
 ) -> bool {
+    let Ok(Some(d)) = st.registry.get(name).await else {
+        return false;
+    };
+    execute_split_fenced(st, name, &d.stream_epoch, seg_id, split_at).await
+}
+
+/// The fenced form: the split decision was computed from ONE
+/// incarnation's segment map, and a replacement created under the same
+/// name can coincidentally satisfy every structural guard (a fresh
+/// stream's segment 0 is live and spans the full range, so any split
+/// point "fits"). The autonomous scaler always calls this with the
+/// epoch of the descriptor its decision came from.
+pub async fn execute_split_fenced(
+    st: &std::sync::Arc<crate::http::AppState>,
+    name: &str,
+    expect_epoch: &str,
+    seg_id: u32,
+    split_at: u64,
+) -> bool {
     // Phase A: persist the intent (materializing the implicit map).
     let ok = st
         .registry
-        .cas_update(name, |d| {
+        .cas_update_incarnation(name, expect_epoch, |d| {
             // Fork chains stay single-segment (audit P0): stitched fork
             // reads resolve each ancestor through its ONE empty-key
             // segment, so a post-fork split would make inherited data
@@ -381,8 +406,14 @@ pub async fn execute_split(
                 segs: vec![seg_id],
                 split_at,
                 started_ms: crate::shard::now_ms(),
+                seal_gen: 0, // patched below: needs the counter
             });
             map.version += 1;
+            d.seal_gen_counter += 1;
+            let g = d.seal_gen_counter;
+            if let Some(p) = d.segments.as_mut().and_then(|m| m.pending.as_mut()) {
+                p.seal_gen = g;
+            }
             true
         })
         .await
@@ -402,9 +433,24 @@ pub async fn execute_merge(
     a_id: u32,
     b_id: u32,
 ) -> bool {
+    let Ok(Some(d)) = st.registry.get(name).await else {
+        return false;
+    };
+    execute_merge_fenced(st, name, &d.stream_epoch, a_id, b_id).await
+}
+
+/// See [`execute_split_fenced`] — the same incarnation fence, for the
+/// same reason.
+pub async fn execute_merge_fenced(
+    st: &std::sync::Arc<crate::http::AppState>,
+    name: &str,
+    expect_epoch: &str,
+    a_id: u32,
+    b_id: u32,
+) -> bool {
     let ok = st
         .registry
-        .cas_update(name, |d| {
+        .cas_update_incarnation(name, expect_epoch, |d| {
             // A sealing or sealed collection has a fixed topology. A
             // transition that started just before the seal could
             // otherwise publish a successor AFTER the seal took its
@@ -431,8 +477,14 @@ pub async fn execute_merge(
                 segs: vec![a_id, b_id],
                 split_at: 0,
                 started_ms: crate::shard::now_ms(),
+                seal_gen: 0, // patched below: needs the counter
             });
             map.version += 1;
+            d.seal_gen_counter += 1;
+            let g = d.seal_gen_counter;
+            if let Some(p) = d.segments.as_mut().and_then(|m| m.pending.as_mut()) {
+                p.seal_gen = g;
+            }
             true
         })
         .await
@@ -463,7 +515,8 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
         _ => return false,
     }
     let seg_id = p.segs[0];
-    let Some(frozen) = seal_identity(st, &desc, seg_id).await else {
+    let tg = (p.seal_gen > 0).then_some(p.seal_gen);
+    let Some(frozen) = seal_identity(st, &desc, seg_id, tg).await else {
         return false;
     };
     // Deterministic failpoint for the seal-to-publication gap tests:
@@ -570,10 +623,11 @@ async fn resume_merge(
     p: crate::segmap::PendingTransition,
 ) -> bool {
     let (a_id, b_id) = (p.segs[0], p.segs[1]);
-    let Some(fa) = seal_identity(st, desc, a_id).await else {
+    let tg = (p.seal_gen > 0).then_some(p.seal_gen);
+    let Some(fa) = seal_identity(st, desc, a_id, tg).await else {
         return false;
     };
-    let Some(fb) = seal_identity(st, desc, b_id).await else {
+    let Some(fb) = seal_identity(st, desc, b_id, tg).await else {
         return false;
     };
     #[cfg(test)]
@@ -737,6 +791,7 @@ mod tests {
 
     fn test_desc(name: &str) -> StreamDesc {
         StreamDesc {
+            seal_gen_counter: 0,
             name: name.into(),
             stream_epoch: "00000000000000000000000000000000".into(),
             key_fingerprint: "fp".into(),

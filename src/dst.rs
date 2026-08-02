@@ -880,6 +880,8 @@ impl Workload {
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -898,6 +900,7 @@ impl Workload {
                 | AppendErr::ProducerGap { .. }
                 | AppendErr::ProducerStale { .. }
                 | AppendErr::ProducerEpochSeq
+                | AppendErr::SealSuperseded
                 | AppendErr::CtMismatch
                 | AppendErr::BadBody(_),
             )) => Outcome::Rejected,
@@ -949,6 +952,8 @@ impl Workload {
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -984,6 +989,7 @@ impl Workload {
                 | AppendErr::ProducerGap { .. }
                 | AppendErr::ProducerStale { .. }
                 | AppendErr::ProducerEpochSeq
+                | AppendErr::SealSuperseded
                 | AppendErr::CtMismatch
                 | AppendErr::BadBody(_),
             )) => {

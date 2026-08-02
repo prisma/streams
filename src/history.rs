@@ -1602,6 +1602,8 @@ mod tests {
                     deferred_error: None,
                     sealed_reject_new: None,
                     touch: None,
+                    seal_gen: None,
+                    seal_fence_to: None,
                     resp: tx,
                 };
                 let _ = feeder.try_enqueue(req);
@@ -1673,6 +1675,8 @@ mod tests {
                 deferred_error: None,
                 sealed_reject_new: None,
                 touch: None,
+                seal_gen: None,
+                seal_fence_to: None,
                 resp: tx,
             };
             let _ = engine.try_enqueue(req);

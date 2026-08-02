@@ -230,6 +230,12 @@ pub struct StreamState {
     /// surface's 409 producer_sequence_reused (same tuple, different
     /// request).
     pub producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
+    /// Minimum acceptable seal-claim generation for claim-authorized
+    /// appends on this segment. In-memory ONLY, deliberately: the fence
+    /// exists to stop a stale append that is already in this process's
+    /// queue, and a restart drops the queue and the fence together.
+    /// Raised by a takeover's fence message; never lowered.
+    pub seal_fence: u64,
     /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
     /// lazily from the durable `s` rows and applied by the committer.
     pub seqs: HashMap<[u8; 16], String>,
@@ -351,6 +357,20 @@ pub struct AppendReq {
     pub seq: Option<String>,
     pub bytes: usize,
     pub close: bool,
+    /// The seal-claim generation that authorizes this append (present
+    /// on every claim-authorized write: final-bearing closes, plain
+    /// closes that installed an Empty claim, run_seal's segment closes,
+    /// split/merge segment closes). Checked against the segment's
+    /// fence AFTER duplicate detection and BEFORE any record is staged
+    /// or the close applied: a stale generation means the claim this
+    /// append belonged to was taken over, and its write must not land.
+    pub seal_gen: Option<u64>,
+    /// Control message: raise the segment's seal fence to this
+    /// generation and report whether the segment is closed. Processed
+    /// in queue order, so by the time it answers, every append enqueued
+    /// before it has been decided — the answer is a barrier, not a
+    /// snapshot. Entries/close are ignored on fence messages.
+    pub seal_fence_to: Option<u64>,
     pub producer: Option<ProducerReq>,
     pub deferred_error: Option<DeferredErr>,
     /// The COLLECTION is sealing or sealed while this physical segment
@@ -390,6 +410,12 @@ pub enum AppendErr {
     Closed {
         next_offset: u64,
     },
+    /// The seal claim authorizing this append was taken over: its
+    /// generation is below the segment's fence. The write did not
+    /// happen. Retryable — a live owner re-enters the claim (renewing
+    /// its generation) and retries; a dead one's client is told the
+    /// seal was superseded.
+    SealSuperseded,
     ProducerGap {
         expected: u64,
         received: u64,
@@ -1604,6 +1630,7 @@ impl ShardEngine {
             state: Mutex::new(StreamState {
                 durable: tail.clone(),
                 applied: tail,
+                seal_fence: 0,
                 producers: HashMap::new(),
                 seqs: HashMap::new(),
                 queue: crate::queue::QueueState::default(),
@@ -1927,6 +1954,26 @@ impl ShardEngine {
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
                 CommitOp::Append(req) => {
+                    // Fence message: a takeover raising the segment's
+                    // minimum claim generation. Processed in queue
+                    // order, so answering it PROVES every append
+                    // enqueued before it has been decided — the closed
+                    // flag in the reply is a barrier the takeover can
+                    // trust, not a racy snapshot.
+                    if let Some(g) = req.seal_fence_to {
+                        {
+                            let mut st = local.handle.state.lock().unwrap();
+                            st.seal_fence = st.seal_fence.max(g);
+                        }
+                        let _ = req.resp.send(Ok(AppendAck {
+                            last_offset: local.fields.next.wrapping_sub(1),
+                            next_offset: local.fields.next,
+                            closed: local.fields.closed,
+                            producer: None,
+                            duplicate: false,
+                        }));
+                        continue;
+                    }
                     // Producer state: ensure loaded (durable `q` key) into
                     // the batch-local staging map.
                     if let Some(pr) = &req.producer {
@@ -2117,6 +2164,28 @@ impl ShardEngine {
                                 }));
                                 continue;
                             }
+                        }
+                    }
+                    // Seal fence (round 8): a claim-authorized write
+                    // below the segment's fence belongs to a taken-over
+                    // claim, and a fenced segment refuses claimless
+                    // closes outright. Checked AFTER every duplicate
+                    // answer above — a retry of a write that already
+                    // committed is answered with its original result no
+                    // matter what happened to the claim since — and
+                    // BEFORE anything is staged, so a superseded
+                    // operation can neither write its record nor close
+                    // the segment.
+                    {
+                        let fence = local.handle.state.lock().unwrap().seal_fence;
+                        let stale = match (req.seal_gen, req.close) {
+                            (Some(g), _) => g < fence,
+                            (None, true) => fence > 0,
+                            (None, false) => false,
+                        };
+                        if stale {
+                            let _ = req.resp.send(Err(AppendErr::SealSuperseded));
+                            continue;
                         }
                     }
                     // Accept: stage producer + close + records. Entries are

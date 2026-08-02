@@ -1526,12 +1526,16 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
     let target = now + window_ms;
     let state = state.clone();
     let name = desc.name.clone();
+    let expect_epoch = desc.stream_epoch.clone();
     tokio::spawn(async move {
         // cas_update is single-shot; a slide can race another descriptor
         // write (e.g. the close path's seal) — retry the benign conflict.
+        // Incarnation-fenced: a slide spawned against incarnation A must
+        // not extend the expiry of a replacement created under the same
+        // name while the task sat on the runtime.
         if let Err(e) = state
             .registry
-            .cas_update_retry(&name, |d| {
+            .cas_update_incarnation(&name, &expect_epoch, |d| {
                 if d.ttl_secs.is_none() {
                     return false;
                 }
@@ -1661,6 +1665,7 @@ fn fresh_desc(
     StreamDesc {
         name: name.to_string(),
         stream_epoch: hex(&epoch),
+        seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),
         created_ms: now_ms(),
         expires_at_ms: ttl_secs
@@ -2551,6 +2556,8 @@ async fn create_stream(
             sealed_reject_new: None,
             touch: None,
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -2706,7 +2713,10 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 6] = [
+        static M: [Mutex<Option<HashSet<String>>>; 9] = [
+            Mutex::new(None),
+            Mutex::new(None),
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2722,6 +2732,9 @@ pub(crate) mod fork_failpoints {
     const APPEND: usize = 3;
     const DELETE: usize = 4;
     const SEAL_INTENT: usize = 5;
+    const CLOSE_ENQ: usize = 6;
+    const CLOSE_MARK: usize = 7;
+    const CLOSE_HELD: usize = 8;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -2865,6 +2878,81 @@ pub(crate) mod fork_failpoints {
 
     pub(super) async fn pause_append_before_enqueue(name: &str) {
         park(APPEND, name, &PARKED_APPEND).await;
+    }
+
+    /// Park a CLOSE after its seal intent is durable and before it is
+    /// enqueued — the window in which another operation can take over
+    /// an aged claim while this close's write has not yet entered the
+    /// committer's queue.
+    ///
+    /// ONE-SHOT, deliberately: it catches exactly the FIRST close to
+    /// arrive for the name and lets every later one pass. The tests
+    /// that use it park one victim and then drive a SECOND close on
+    /// the same collection; a per-name latch caught that second close
+    /// too and the test deadlocked on its own instrument.
+    pub fn park_close_before_enqueue(name: &str) {
+        set(CLOSE_ENQ, name);
+    }
+
+    /// Release the ONE close currently held for `name`.
+    pub fn release_close_before_enqueue(name: &str) {
+        if let Some(s) = armed(CLOSE_HELD).lock().unwrap().as_mut() {
+            s.remove(name);
+        }
+        gate().notify_waiters();
+    }
+
+    pub fn parked_close_count() -> usize {
+        PARKED_CLOSE.load(Ordering::SeqCst)
+    }
+    static PARKED_CLOSE: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) async fn pause_close_before_enqueue(name: &str) {
+        // Consume the arm (one-shot) and hold until released.
+        {
+            let mut g = armed(CLOSE_ENQ).lock().unwrap();
+            let consumed = g.as_mut().is_some_and(|s| s.remove(name));
+            if !consumed {
+                return;
+            }
+            armed(CLOSE_HELD)
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashSet::new)
+                .insert(name.to_string());
+        }
+        PARKED_CLOSE.fetch_add(1, Ordering::SeqCst);
+        loop {
+            if !is_armed(CLOSE_HELD, name) {
+                return;
+            }
+            let n = gate().notified();
+            if !is_armed(CLOSE_HELD, name) {
+                return;
+            }
+            n.await;
+        }
+    }
+
+    /// Park a close BETWEEN its acknowledged append (records durable,
+    /// segment closed) and mark_final_committed — the window in which
+    /// the whole incarnation can be deleted and recreated underneath a
+    /// still-running handler.
+    pub fn park_close_before_mark(name: &str) {
+        set(CLOSE_MARK, name);
+    }
+
+    pub fn release_close_before_mark(name: &str) {
+        release(CLOSE_MARK, name);
+    }
+
+    pub fn parked_mark_count() -> usize {
+        PARKED_MARK.load(Ordering::SeqCst)
+    }
+    static PARKED_MARK: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) async fn pause_close_before_mark(name: &str) {
+        park(CLOSE_MARK, name, &PARKED_MARK).await;
     }
 
     /// Park a delete just before it decides soft-versus-hard, so a
@@ -3116,7 +3204,7 @@ pub(crate) async fn append(
     // TRUSTED, internal only: this call is the final record a seal
     // intent owes, identified by its operation id. Never derived from a
     // request header — see the `x-seal-final` refusal in append_core.
-    seal_auth: Option<String>,
+    seal_auth: Option<(String, u64)>,
 ) -> Response {
     let wrapped = matches!(
         state.registry.get(&name).await,
@@ -3168,6 +3256,66 @@ pub(crate) async fn append(
     )
 }
 
+/// Raise the seal fence on the segment a routing key resolves to, and
+/// report whether that segment is closed. The message travels the same
+/// queue as appends, so the committer answers it only after deciding
+/// every append enqueued before it — the reply is a BARRIER: after a
+/// `false`, no append below the fence can ever close the segment; a
+/// `true` means the old operation's close already committed.
+pub(crate) async fn fence_segment_for_key(
+    state: &Arc<AppState>,
+    name: &str,
+    expect_epoch: &str,
+    routing_key: &str,
+    fence_to: u64,
+) -> Result<bool, String> {
+    state.registry.invalidate(name);
+    let desc = match state.registry.get(name).await {
+        Ok(Some(d)) if d.stream_epoch == expect_epoch => d,
+        Ok(_) => return Err("the collection this seal was issued against no longer exists".into()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let seg = desc.resolve_segment(routing_key);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state
+        .engine_for(&route)
+        .await
+        .map_err(|_| "segment engine unavailable".to_string())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = AppendReq {
+        enqueued_at: std::time::Instant::now(),
+        hash: identity,
+        route,
+        entries: Vec::new(),
+        routing_key: String::new(),
+        key_hash: crate::crypto::stream_hash(""),
+        producer_lineage: Vec::new(),
+        key_version: 0,
+        subkey: [0u8; 32],
+        ts_hint_ms: None,
+        seq: None,
+        bytes: 0,
+        close: false,
+        seal_gen: None,
+        seal_fence_to: Some(fence_to),
+        producer: None,
+        deferred_error: None,
+        sealed_reject_new: None,
+        touch: None,
+        usage: crate::usage::counters(&route),
+        resp: tx,
+    };
+    engine
+        .try_enqueue(req)
+        .map_err(|_| "append queue full; fence not placed".to_string())?;
+    match rx.await {
+        Ok(Ok(ack)) => Ok(ack.closed),
+        Ok(Err(e)) => Err(format!("fence refused: {e:?}")),
+        Err(_) => Err("fence dropped".into()),
+    }
+}
+
 async fn append_core(
     state: Arc<AppState>,
     name: String,
@@ -3175,7 +3323,7 @@ async fn append_core(
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
-    seal_auth: Option<String>,
+    seal_auth: Option<(String, u64)>,
 ) -> Response {
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
@@ -3250,6 +3398,15 @@ async fn append_core(
     // one owned, and the promised final record was lost.
     let this_close_op = {
         let hv = |h: &str| hdr(&headers, h).unwrap_or_default();
+        // EVERY input that can change what the committer persists or
+        // how it rules is part of the identity. The content type is
+        // the REQUEST's own header — hashing the descriptor's
+        // configured type let a close with the wrong type share the
+        // valid close's identity, join its intent, collect the
+        // deferred ct-mismatch verdict, and tear down an intent that
+        // was never its own. Key version likewise: it is stored in the
+        // frame, so two closes differing only there are different
+        // operations.
         crate::product::seal_op_id_semantic(
             &create_request_hash(&desc.content_type, None, None, true, &body, None),
             &product_key.clone().unwrap_or_default(),
@@ -3259,6 +3416,8 @@ async fn append_core(
                 hv("producer-seq"),
                 hv("stream-seq"),
                 hv("stream-timestamp"),
+                hv("content-type"),
+                hv("stream-key-version"),
             ],
         )
     };
@@ -3268,8 +3427,35 @@ async fn append_core(
     let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
         sl.owes_final()
             && (sl.operation_id == this_close_op
-                || Some(&sl.operation_id) == seal_auth.as_ref())
+                || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|(op, _)| op.as_str()))
     });
+    // The generation this request's claim-authorized writes will carry.
+    // Filled by whichever path holds the claim: the trusted internal
+    // seal (its ticket), an owed-final resume (renewed below), or a
+    // fresh close (begin_sealing_for_close's install).
+    let mut raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|(_, g)| *g);
+    if is_owed_final && seal_auth.is_none() {
+        // RESUME of a crashed close: renew the claim before appending.
+        // Renewal re-allocates the generation, so the resume can never
+        // be fenced out by a takeover reservation that aborted after
+        // this operation's original attempt.
+        match crate::product::renew_owed_claim(&state, &name, &this_close_op, &desc.stream_epoch)
+            .await
+        {
+            Ok(Some(g)) => raw_seal_gen = Some(g),
+            Ok(None) => {
+                // The claim moved between the descriptor read and the
+                // renewal: whoever holds it now decides. Answer as a
+                // conflict rather than write under a claim we lost.
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "sealed",
+                    "the seal this close was resuming has been superseded",
+                );
+            }
+            Err(e) => return err_resp(StatusCode::SERVICE_UNAVAILABLE, "internal", &e),
+        }
+    }
 
     // A raw close that carries content and brings no producer of its own
     // gets a SYNTHETIC one, derived from its operation identity. Without
@@ -3468,8 +3654,15 @@ async fn append_core(
                 final_committed: false,
             }
         };
-        if let Err(e) = crate::product::begin_sealing_for_close(&state, &name, intent).await {
-            return err_resp(StatusCode::CONFLICT, "sealed", &e);
+        match crate::product::begin_sealing_for_close(&state, &name, intent, &desc.stream_epoch)
+            .await
+        {
+            Ok(g) => {
+                if let Some(g) = g {
+                    raw_seal_gen = Some(g);
+                }
+            }
+            Err(e) => return err_resp(StatusCode::CONFLICT, "sealed", &e),
         }
         #[cfg(test)]
         if fork_failpoints::should_stop_after_seal_intent(&name) {
@@ -3657,6 +3850,8 @@ async fn append_core(
     #[cfg(test)]
     if !close {
         fork_failpoints::pause_append_before_enqueue(&name).await;
+    } else {
+        fork_failpoints::pause_close_before_enqueue(&name).await;
     }
     let (tx, rx) = oneshot::channel();
     let req = AppendReq {
@@ -3685,6 +3880,8 @@ async fn append_core(
         deferred_error: deferred,
         sealed_reject_new,
         touch,
+        seal_gen: raw_seal_gen,
+        seal_fence_to: None,
         resp: tx,
     };
     let engine = match state.engine_for(&seg.shard_route).await {
@@ -3776,10 +3973,18 @@ async fn append_core(
                 | AppendErr::SeqConflict { .. }
         );
         if close && close_carries_content && definitive {
-            if let Err(m) =
-                crate::product::abandon_seal_intent(&state, &name, &this_close_op).await
-            {
-                tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
+            if let Some(g) = raw_seal_gen {
+                if let Err(m) = crate::product::abandon_seal_intent(
+                    &state,
+                    &name,
+                    &this_close_op,
+                    &desc.stream_epoch,
+                    g,
+                )
+                .await
+                {
+                    tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
+                }
             }
         }
     }
@@ -3803,7 +4008,22 @@ async fn append_core(
             //     one published before a crash;
             //   * a plain close-only just seals.
             if close && ack.closed && seal_auth.is_none() {
-                let owns_final = is_owed_final || close_carries_content;
+                // Who owns the completion:
+                //   * a FRESH close that carried content (its write is
+                //     the ack) — it marks and seals;
+                //   * a DUPLICATE only when the descriptor says OUR
+                //     operation still owes the record (the crashed
+                //     close's exact retry). A duplicate whose identity
+                //     is NOT the owed one — the protocol's
+                //     close-with-different-body retry, deduplicated by
+                //     producer sequence against an already-sealed
+                //     collection — must answer as the duplicate it is,
+                //     not attempt (and fail) somebody else's mark.
+                let owns_final = is_owed_final || (close_carries_content && !ack.duplicate);
+                #[cfg(test)]
+                if owns_final {
+                    fork_failpoints::pause_close_before_mark(&name).await;
+                }
                 #[cfg(test)]
                 if owns_final && fork_failpoints::should_stop_before_mark_committed(&name) {
                     return err_resp(
@@ -3813,14 +4033,37 @@ async fn append_core(
                     );
                 }
                 if owns_final {
-                    if let Err(e) =
-                        crate::product::mark_final_committed(&state, &name, &this_close_op).await
+                    let g = raw_seal_gen.unwrap_or_default();
+                    if let Err(e) = crate::product::mark_final_committed(
+                        &state,
+                        &name,
+                        &this_close_op,
+                        &desc.stream_epoch,
+                        g,
+                    )
+                    .await
                     {
+                        // The record is durable and the segment closed,
+                        // but the transition could not be recorded as
+                        // owning it — the claim moved, or the whole
+                        // incarnation did. NEVER continue into run_seal
+                        // here: a close issued against a deleted
+                        // incarnation would claim and seal the
+                        // replacement. The transition (whoever owns it
+                        // now) stays resumable.
                         tracing::error!(stream = %name, "marking the close's final durable: {e}");
+                        return err_resp(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "seal_incomplete",
+                            &format!("the final record is durable but the seal could not be recorded: {e}; retry the close"),
+                        );
                     }
                 }
                 let op = owns_final.then(|| this_close_op.clone());
-                if let Err(e) = crate::product::run_seal(&state, &name, op).await {
+                if let Err(e) =
+                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, raw_seal_gen)
+                        .await
+                {
                     // The segment is closed but the collection is not
                     // sealed. Answering success is how the two surfaces
                     // end up permanently disagreeing; the transition
@@ -3868,6 +4111,11 @@ async fn append_core(
             StatusCode::CONFLICT,
             "seq_conflict",
             &format!("Stream-Seq must exceed {}", current.unwrap_or_default()),
+        ),
+        Err(AppendErr::SealSuperseded) => err_resp(
+            StatusCode::CONFLICT,
+            "seal_superseded",
+            "the seal claim authorizing this write was taken over;              retry the close to re-enter the claim",
         ),
         Err(AppendErr::Closed { next_offset }) => {
             let mut r = Response::builder()

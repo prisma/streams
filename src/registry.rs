@@ -73,6 +73,12 @@ pub struct StreamDesc {
     /// descriptor claiming sealed over writable segments.
     #[serde(default)]
     pub sealed: bool,
+    /// Monotonic allocator for seal-claim generations (and topology
+    /// transition closes). Never reset, never reused: a fence set from
+    /// a reservation that later aborted must stay below every future
+    /// allocation, or the fence would block a legitimate later claim.
+    #[serde(default)]
+    pub seal_gen_counter: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealing: Option<SealState>,
     /// The operation id of the seal that COMPLETED (audit P0): a
@@ -133,6 +139,22 @@ pub struct SealState {
     #[serde(default)]
     pub intent: SealIntent,
     pub claimed_ms: i64,
+    /// The claim's EXECUTION TOKEN, allocated from the descriptor's
+    /// monotonic [`StreamDesc::seal_gen_counter`]. `claimed_ms` alone is
+    /// a race timer, not a lease: the old operation's final append can
+    /// still be queued inside a committer when its wall-clock window
+    /// lapses, and nothing about a timestamp stops that append from
+    /// closing the physical segment after somebody else has taken the
+    /// claim over. Every claim-authorized append carries its
+    /// generation; a takeover FENCES the old generation through the
+    /// committer (which reports whether the segment already closed)
+    /// before the new claim installs; the committer refuses any
+    /// claim-carrying append below the fence before writing a record
+    /// or closing a segment. A same-operation retry re-allocates (and
+    /// thereby renews) its generation, so an actively-retrying owner
+    /// can never be fenced out by an aborted takeover's reservation.
+    #[serde(default)]
+    pub claim_generation: u64,
 }
 
 /// What an in-flight seal owes the collection before it may publish
@@ -1095,6 +1117,7 @@ mod tests {
 
     fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {
         StreamDesc {
+            seal_gen_counter: 0,
             name: name.into(),
             stream_epoch: epoch.into(),
             key_fingerprint: "fp".into(),

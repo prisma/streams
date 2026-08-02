@@ -2776,6 +2776,8 @@ async fn append_sized(
         deferred_error: None,
         sealed_reject_new: None,
         touch: None,
+        seal_gen: None,
+        seal_fence_to: None,
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok(), "enqueue");
@@ -3199,6 +3201,8 @@ async fn append_n(
         deferred_error: None,
         sealed_reject_new: None,
         touch: None,
+        seal_gen: None,
+        seal_fence_to: None,
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok(), "enqueue");
@@ -4063,6 +4067,8 @@ async fn sparse_key_reads_page_with_bounded_spans() {
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4158,6 +4164,8 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4277,6 +4285,8 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4383,6 +4393,8 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
                 deferred_error: None,
                 sealed_reject_new: None,
                 touch: None,
+                seal_gen: None,
+                seal_fence_to: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -4471,6 +4483,8 @@ async fn producer_retries_across_a_split_commit_once() {
                 deferred_error: None,
                 sealed_reject_new: None,
                 touch: None,
+                seal_gen: None,
+                seal_fence_to: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -5483,6 +5497,8 @@ async fn stream_seq_resolves_through_predecessors() {
                 deferred_error: None,
                 sealed_reject_new: None,
                 touch: None,
+                seal_gen: None,
+                seal_fence_to: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -5579,6 +5595,8 @@ async fn producer_lanes_scoped_per_routing_key() {
                 deferred_error: None,
                 sealed_reject_new: None,
                 touch: None,
+                seal_gen: None,
+                seal_fence_to: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -9349,6 +9367,7 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
                     final_committed: false,
                 },
                 claimed_ms: crate::shard::now_ms(),
+                claim_generation: 1,
             });
             true
         })
@@ -9422,6 +9441,7 @@ async fn producers_cannot_write_new_records_while_sealing() {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
                 claimed_ms: crate::shard::now_ms(),
+                claim_generation: 1,
             });
             true
         })
@@ -9472,6 +9492,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
                 claimed_ms: crate::shard::now_ms(),
+                claim_generation: 1,
             });
             true
         })
@@ -9483,7 +9504,18 @@ async fn topology_transitions_are_fenced_by_sealing() {
         "a split started under Sealing"
     );
     // …and once sealed, still refused.
-    crate::product::run_seal(&state, "fenced", None).await.unwrap();
+    {
+        let ep = state
+            .registry
+            .get("fenced")
+            .await
+            .unwrap()
+            .unwrap()
+            .stream_epoch;
+        crate::product::run_seal(&state, "fenced", None, &ep, None)
+            .await
+            .unwrap();
+    }
     state.registry.invalidate("fenced");
     assert!(
         !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
@@ -9675,7 +9707,16 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     // the transition first rather than snapshotting around it.
     let sealer = {
         let st2 = state.clone();
-        tokio::spawn(async move { crate::product::run_seal(&st2, "parked", None).await })
+        tokio::spawn(async move {
+            let ep = st2
+                .registry
+                .get("parked")
+                .await
+                .unwrap()
+                .unwrap()
+                .stream_epoch;
+            crate::product::run_seal(&st2, "parked", None, &ep, None).await
+        })
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     crate::scaler3::failpoints::release_before_publish();
@@ -10935,6 +10976,543 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
 }
 
 // ---------------------------------------------------------------
+// Round 8: a seal claim is a LEASE, not a timestamp. These drive the
+// generation fence end to end: the committer refusing a superseded
+// write, the takeover protocol consulting the fence's closed-report,
+// renewal protecting an active owner, and the incarnation fence
+// carried through mark and publication.
+// ---------------------------------------------------------------
+
+/// The committer refuses a superseded close BEFORE writing anything.
+/// A's final-bearing close publishes its intent and parks before its
+/// write enters the queue; its claim ages out; B takes the claim over
+/// (fence sees an undecided, unclosed segment). A's write then arrives
+/// carrying the old generation — it must land nothing and close
+/// nothing, or the collection ends up physically closed behind a
+/// descriptor that says somebody else's seal is still working.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_superseded_close_cannot_write_or_close() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lease1", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A: final-bearing close, parked after its intent, before enqueue.
+    let before = crate::http::fork_failpoints::parked_close_count();
+    crate::http::fork_failpoints::park_close_before_enqueue("lease1");
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/lease1",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            br#"[{"fin":"a"}]"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_close_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never reached the window");
+    state.registry.invalidate("lease1");
+    let d = state.registry.get("lease1").await.unwrap().unwrap();
+    let a_claim = d.sealing.clone().expect("A published no intent");
+    assert!(a_claim.owes_final());
+
+    // A's lease lapses.
+    state
+        .registry
+        .cas_update("lease1", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("lease1");
+
+    // B claims it through the real takeover protocol (reserve, fence,
+    // closed-report, install) — but appends nothing yet: the point is
+    // to catch A's write in flight between B's install and B's own.
+    let epoch = d.stream_epoch.clone();
+    let b_intent = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "b-op".into(),
+        final_committed: false,
+    };
+    let claim = crate::product::claim_seal(&state, "lease1", "b-op", &b_intent, &epoch)
+        .await
+        .unwrap();
+    let b_gen = match claim {
+        crate::product::EnterSeal::Installed { generation } => generation,
+        other => panic!("takeover did not install: {other:?}"),
+    };
+    assert!(b_gen > a_claim.claim_generation, "no fresh generation");
+
+    // A's write proceeds — and must be refused by the fence.
+    crate::http::fork_failpoints::release_close_before_enqueue("lease1");
+    let (st, _, b) = a.await.unwrap();
+    assert!(
+        st >= 400,
+        "a superseded close was accepted: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("lease1");
+    let d = state.registry.get("lease1").await.unwrap().unwrap();
+    assert!(!d.sealed, "the superseded close sealed the collection");
+    assert_eq!(
+        d.sealing.as_ref().map(|s| s.operation_id.as_str()),
+        Some("b-op"),
+        "B's claim did not survive A's fenced write: {:?}",
+        d.sealing
+    );
+    let (_, _, body) = hreq(addr, "GET", "/v1/stream/lease1", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        recs,
+        vec![serde_json::json!({"n": 0})],
+        "the fenced close left records behind: {recs:?}"
+    );
+    // The segment is still writable under B's claim: B's own final
+    // (the exact request whose identity is the claim) can finish. Here
+    // we just prove the segment did not close: an is_owed_final resume
+    // by B's op would be the production path.
+    engine_shutdown(&state).await;
+}
+
+/// The other race outcome: the old close's write COMMITTED before the
+/// takeover fenced. The fence's closed-report says so, and the
+/// takeover must complete the OLD operation's transition instead of
+/// stealing the claim — its record is durable and must not be
+/// stranded behind an unmarked intent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_takeover_completes_an_old_close_that_won() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lease2", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A commits its final and its close, then dies before the mark.
+    crate::http::fork_failpoints::stop_before_mark_committed("lease2");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/lease2",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        br#"[{"fin":"a"}]"#,
+    )
+    .await;
+    assert_eq!(st, 503, "the failpoint did not stop A");
+    crate::http::fork_failpoints::stop_before_mark_committed_off("lease2");
+    state.registry.invalidate("lease2");
+    let d = state.registry.get("lease2").await.unwrap().unwrap();
+    let a_op = d.sealing.clone().expect("A's claim is gone").operation_id;
+
+    // A's lease lapses; B arrives with a DIFFERENT final.
+    state
+        .registry
+        .cas_update("lease2", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("lease2");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/lease2",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        br#"[{"fin":"b"}]"#,
+    )
+    .await;
+    // B cannot succeed as itself — the collection sealed under A.
+    assert!(st >= 400, "B's different final reported success: {st}");
+    state.registry.invalidate("lease2");
+    let d = state.registry.get("lease2").await.unwrap().unwrap();
+    assert!(d.sealed, "the takeover did not complete A's transition");
+    assert_eq!(d.seal_op.as_deref(), Some(a_op.as_str()), "sealed under the wrong operation");
+    assert!(d.sealing.is_none());
+    let (_, _, body) = hreq(addr, "GET", "/v1/stream/lease2", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let a_fin = recs.iter().filter(|r| r.get("fin") == Some(&serde_json::json!("a"))).count();
+    let b_fin = recs.iter().filter(|r| r.get("fin") == Some(&serde_json::json!("b"))).count();
+    assert_eq!((a_fin, b_fin), (1, 0), "wrong final record survived: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// An exact retry RENEWS its lease — fresh timestamp, fresh
+/// generation — so an actively retrying owner can neither be taken
+/// over by wall clock nor fenced out by an aborted reservation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exact_retry_renews_its_lease() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/renew", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("renew");
+    let epoch = state.registry.get("renew").await.unwrap().unwrap().stream_epoch;
+
+    let intent = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "op-r".into(),
+        final_committed: false,
+    };
+    let g1 = match crate::product::claim_seal(&state, "renew", "op-r", &intent, &epoch)
+        .await
+        .unwrap()
+    {
+        crate::product::EnterSeal::Installed { generation } => generation,
+        o => panic!("{o:?}"),
+    };
+    // Lease ages…
+    state
+        .registry
+        .cas_update("renew", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("renew");
+    // …but the owner retries: renewed, and with a HIGHER generation.
+    let g2 = match crate::product::claim_seal(&state, "renew", "op-r", &intent, &epoch)
+        .await
+        .unwrap()
+    {
+        crate::product::EnterSeal::AlreadyOurs { generation } => generation,
+        o => panic!("renewal did not recognise its own claim: {o:?}"),
+    };
+    assert!(g2 > g1, "renewal did not re-allocate: {g1} -> {g2}");
+    // A rival arriving NOW finds a fresh lease and is refused.
+    let rival = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "op-x".into(),
+        final_committed: false,
+    };
+    let out = crate::product::claim_seal(&state, "renew", "op-x", &rival, &epoch)
+        .await
+        .unwrap();
+    assert!(
+        matches!(out, crate::product::EnterSeal::Conflicting(_)),
+        "a renewed lease was taken over: {out:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// mark_final_committed and run_seal are fenced to the incarnation the
+/// close was issued against. A close that committed its records on
+/// incarnation 1, then lost the window between ack and mark to a
+/// delete+recreate, must NOT proceed to claim and seal the
+/// replacement — the exact ABA the round-7 tests could not reach
+/// because they stopped at claim installation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resumed_mark_never_seals_a_later_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/markaba", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A: close with content, parked BETWEEN its acknowledged write and
+    // the mark.
+    let before = crate::http::fork_failpoints::parked_mark_count();
+    crate::http::fork_failpoints::park_close_before_mark("markaba");
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/markaba",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            br#"[{"fin":1}]"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_mark_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never reached the ack-to-mark window");
+
+    // The incarnation vanishes and the name is reborn.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/markaba", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/markaba", &ct, br#"[{"n":9}]"#).await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+
+    // A resumes: mark must fail on the incarnation fence, and the
+    // handler must NOT continue into run_seal.
+    crate::http::fork_failpoints::release_close_before_mark("markaba");
+    let (st, _, b) = a.await.unwrap();
+    assert!(
+        st >= 500,
+        "a close from a dead incarnation reported success: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("markaba");
+    let d = state.registry.get("markaba").await.unwrap().unwrap();
+    assert!(!d.sealed, "the resumed close sealed the replacement");
+    assert!(d.sealing.is_none(), "the resumed close claimed the replacement: {:?}", d.sealing);
+    let (_, _, body) = hreq(addr, "GET", "/v1/stream/markaba", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(recs, vec![serde_json::json!({"n": 9})], "replacement content: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// The operation identity covers the request's OWN content type. A
+/// close with the wrong type but the same body and coordination is a
+/// DIFFERENT operation: it must not join the valid close's intent,
+/// collect the deferred ct-mismatch verdict, and tear down an intent
+/// it never owned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/ctid", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A: valid close, parked pre-enqueue with a live intent.
+    let before = crate::http::fork_failpoints::parked_close_count();
+    crate::http::fork_failpoints::park_close_before_enqueue("ctid");
+    let body = br#"[{"fin":1}]"#;
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/ctid",
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            body,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_close_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "A never parked");
+    state.registry.invalidate("ctid");
+    let a_claim = state
+        .registry
+        .get("ctid")
+        .await
+        .unwrap()
+        .unwrap()
+        .sealing
+        .expect("A published no intent");
+
+    // B: same body, same producer trio, WRONG content type. Its
+    // ct-mismatch verdict is deferred to the committer BECAUSE it
+    // carries a producer — which is exactly why sharing an identity
+    // was fatal: the deferred verdict is definitive.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/ctid",
+        &[
+            ("content-type", "text/plain"),
+            ("stream-closed", "true"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        body,
+    )
+    .await;
+    assert!(st >= 400, "the wrong-type close was accepted: {st}");
+    state.registry.invalidate("ctid");
+    let d = state.registry.get("ctid").await.unwrap().unwrap();
+    let now_claim = d.sealing.as_ref().expect("B tore down A's intent");
+    assert_eq!(
+        now_claim.operation_id, a_claim.operation_id,
+        "the intent no longer belongs to A"
+    );
+    assert!(now_claim.owes_final(), "A's promise was cleared");
+
+    // A completes untouched.
+    crate::http::fork_failpoints::release_close_before_enqueue("ctid");
+    let (st, _, b) = a.await.unwrap();
+    assert!(
+        st == 200 || st == 204,
+        "the valid close could not finish: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("ctid");
+    let d = state.registry.get("ctid").await.unwrap().unwrap();
+    assert!(d.sealed, "A did not seal");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/ctid", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs.len(), 2, "the promised record is missing: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// A plain `:seal` really can recover a collection whose final-bearing
+/// sealer died: the lapsed claim goes through the takeover protocol
+/// (the old write is fenced first), and the old operation's late retry
+/// finds the collection sealed by someone else — never resurrected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_only_takes_over_an_abandoned_final_claim() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rescue", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    // A crashed between intent and write.
+    crate::http::fork_failpoints::stop_after_seal_intent("rescue");
+    let body = br#"[{"fin":1}]"#;
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rescue",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        body,
+    )
+    .await;
+    assert_eq!(st, 503);
+    crate::http::fork_failpoints::stop_after_seal_intent_off("rescue");
+
+    // While the lease is live, a plain :seal is refused…
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(addr, "POST", "/v1/streams/rescue:seal", &key, b"{}").await;
+    assert_eq!(st, 409, "a live final claim was sealed over");
+
+    // …and once it lapses, the SAME plain :seal recovers the stream.
+    state
+        .registry
+        .cas_update("rescue", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("rescue");
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/rescue:seal", &key, b"{}").await;
+    assert!(
+        st == 200 || st == 204,
+        "seal-only could not recover an abandoned claim: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("rescue");
+    let d = state.registry.get("rescue").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none());
+
+    // The dead operation's exact retry is told the truth: sealed by
+    // someone else, its record never landed.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rescue",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        body,
+    )
+    .await;
+    assert!(st >= 400, "the dead sealer's retry was resurrected: {st}");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/rescue", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs, vec![serde_json::json!({"n": 0})], "{recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Scaling decisions and TTL slides are incarnation-fenced like every
+/// other name-scoped background mutation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/stale1", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("stale1");
+    let old = state.registry.get("stale1").await.unwrap().unwrap();
+
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/stale1", &[], b"").await;
+    assert!(st == 204 || st == 200);
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/stale1",
+        &[("content-type", "application/json"), ("stream-ttl", "60")],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    state.registry.invalidate("stale1");
+    let fresh = state.registry.get("stale1").await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, old.stream_epoch);
+    let fresh_exp = fresh.expires_at_ms;
+
+    // A split decision computed from the OLD incarnation's map: every
+    // structural guard passes on the replacement (fresh single segment
+    // spans the full range), so the epoch is the only thing refusing.
+    let did = crate::scaler3::execute_split_fenced(
+        &state,
+        "stale1",
+        &old.stream_epoch,
+        0,
+        0x8000_0000_0000_0000,
+    )
+    .await;
+    assert!(!did, "a stale split decision was applied");
+    state.registry.invalidate("stale1");
+    let d = state.registry.get("stale1").await.unwrap().unwrap();
+    assert!(
+        d.segments.as_ref().is_none_or(|m| m.pending.is_none()),
+        "a stale decision installed pending topology: {:?}",
+        d.segments.as_ref().map(|m| &m.pending)
+    );
+
+    // A TTL slide spawned against the old incarnation: it computes a
+    // huge target from the OLD descriptor's ttl and must not extend
+    // the replacement.
+    let mut fake_old = fresh.clone();
+    fake_old.stream_epoch = old.stream_epoch.clone();
+    fake_old.ttl_secs = Some(3_600);
+    fake_old.expires_at_ms = Some(crate::shard::now_ms() + 1_000);
+    crate::http::touch_ttl(&state, &fake_old);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    state.registry.invalidate("stale1");
+    let d = state.registry.get("stale1").await.unwrap().unwrap();
+    assert_eq!(
+        d.expires_at_ms, fresh_exp,
+        "a stale TTL slide extended the replacement"
+    );
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from
@@ -11837,6 +12415,7 @@ async fn seal_is_a_resumable_transition() {
                 intent: crate::registry::SealIntent::Empty,
                 operation_id: "op-1".into(),
                 claimed_ms: crate::shard::now_ms(),
+                claim_generation: 1,
             });
             true
         })
@@ -12204,6 +12783,7 @@ async fn catalog_pages_without_scanning_the_world() {
     for i in 0..N {
         let name = format!("cat-{i:05}");
         let d = crate::registry::StreamDesc {
+            seal_gen_counter: 0,
             name: name.clone(),
             stream_epoch: format!("{:032x}", i),
             key_fingerprint: "fp".into(),

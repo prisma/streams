@@ -81,6 +81,13 @@ pub struct PendingTransition {
     #[serde(default)]
     pub split_at: u64,
     pub started_ms: i64,
+    /// Seal-claim generation allocated for this transition's parent
+    /// closes (from the descriptor's monotonic counter). Transitions
+    /// and seal claims are mutually exclusive, so the allocation can
+    /// never undercut a live claim — it exists so a parent close is
+    /// always above any fence left behind by an aborted takeover.
+    #[serde(default)]
+    pub seal_gen: u64,
 }
 
 #[derive(Debug, PartialEq)]

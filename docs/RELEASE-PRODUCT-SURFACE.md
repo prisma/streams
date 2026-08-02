@@ -278,6 +278,37 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Eighth audit round (2026-08-02)
+
+The round-7 claim timeout was a race timer, not a lease: nothing
+fenced the old operation's already-queued append out of the committer,
+and the incarnation fence stopped at claim installation. Both
+architectural gaps are closed by ONE mechanism — every seal claim now
+carries an execution token (incarnation + a generation from a
+monotonic per-descriptor allocator), and every step of the execution
+is checked against it.
+
+| finding | fix |
+|---|---|
+| A takeover could steal a claim whose owner's final append was still queued (HTTP timed out at 10 s; the committer kept the write). Whichever write lost the race then saw `stream_closed`, classified it definitive, and removed its own intent — a physically closed segment behind an open descriptor | takeover is a fenced protocol: reserve a generation → push a FENCE message through the target segment's committer queue → consult its closed-report. The fence answers only after every earlier append was decided, so `closed=false` proves the old write can never land (the committer refuses claim-authorized writes below the fence BEFORE staging records or applying a close), and `closed=true` means the old operation won — the takeover completes the OLD transition instead of stealing it |
+| An exact retry did not renew the claim, so an active owner could be taken over mid-flight — and could be fenced out permanently by an aborted takeover's reservation | a same-operation re-entry re-allocates the generation and refreshes the lease; every allocation is above every earlier fence, so an actively retrying owner always clears them |
+| `mark_final_committed` read the CURRENT epoch (proving nothing about the operation's incarnation); `abandon_seal_intent` and `run_seal`'s publication were name-scoped; the raw path continued into `run_seal` after a failed mark — so a close from a deleted incarnation could seal the replacement | mark, abandon, segment closes and publication all require the operation's original epoch AND its claim generation; publication succeeds only while the exact claim this call drove still stands; a failed mark answers 503 `seal_incomplete` and never proceeds |
+| The raw identity hashed the DESCRIPTOR's content type, so a close with the wrong type (whose ct-mismatch verdict is deferred when a producer rides along) shared the valid close's identity, joined its intent, and tore it down with its own definitive verdict; `Stream-Key-Version` likewise absent | the identity covers the request's OWN content-type and key-version headers — every input that affects what the committer persists or how it rules |
+| Split/merge phase CASes and TTL slides were name-scoped background mutations | phase A/B run under the deciding descriptor's epoch (`execute_split_fenced`); transition parent-closes carry a generation allocated in phase A; TTL slides are fenced to the incarnation that spawned them |
+| A plain `:seal` refused ANY outstanding final claim, contradicting the documented recovery ("wait 15 s and seal") | seal-only goes through the same claim path: a LIVE final claim is a 409, a lapsed one is taken over through the fence protocol — recovery by plain seal is now real |
+
+### The lease, precisely
+
+`SEAL_CLAIM_MS` now decides only when a takeover may START. Whether
+the old operation is really gone is decided by the fence: its write
+either committed before the fence (and the takeover completes that
+transition) or can never commit after it (and the claim is replaced).
+No wall-clock reading ever decides the fate of a write.
+
+The fence is in-memory by design: it exists to stop a stale append
+that is already in this process's queue, and a restart drops the
+queue and the fence together.
+
 ## Seventh audit round (2026-08-01)
 
 | finding | fix |
@@ -343,6 +374,8 @@ tested by the pinned suite; the plural route is a separate product API.
   (its include glob misses its own runner and exits 0 having run
   nothing).
 - A collection stuck in `Sealing` recovers by itself: retry the close
-  that owns it (the exact same request finishes the transition), or
-  wait 15 s and seal it — the abandoned claim is taken over. There is
-  no operator intervention and no repair tool, by design.
+  that owns it (the exact same request finishes the transition), or —
+  after the 15 s lease lapses — seal it with a plain `:seal`; the
+  abandoned claim is taken over through a committer fence, so a
+  takeover can never race the dead operation's own late write. There
+  is no operator intervention and no repair tool, by design.
