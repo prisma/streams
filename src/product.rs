@@ -1025,6 +1025,46 @@ async fn product_seal(
     // rides ONE committer command with the closure — the same
     // append-and-close the raw protocol defines. Producer headers
     // dedup a retried final append.
+    // ONE descriptor read for the whole seal request. Its epoch is
+    // what every downstream step — the claim, the final append,
+    // the mark, the publication — is fenced to. Fetching a fresh
+    // epoch later rebound the seal to whatever descriptor owned
+    // the name by then: a delete+recreate under the same key
+    // between validation and claim had the request seal a
+    // replacement nobody asked it to touch.
+    let validated = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
+        Ok(_) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let validated_epoch = validated.stream_epoch.clone();
     if !body.is_empty() {
         #[derive(serde::Deserialize, Default)]
         #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -1066,48 +1106,17 @@ async fn product_seal(
                     false,
                 );
             };
-            match state.registry.get(&name).await {
-                Ok(Some(d)) if crate::http::desc_alive(&d) => {
-                    if crate::http::initializing(&d) {
-                        return perr(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "creating",
-                            "stream is still being created; retry",
-                            None,
-                            true,
-                        );
-                    }
-                    if !matches!(
-                        crate::http::check_key(Some(&key_b64), &d),
-                        crate::http::KeyCheck::Ok(..)
-                    ) {
-                        return perr(
-                            StatusCode::FORBIDDEN,
-                            "wrong_key",
-                            "encryption key mismatch",
-                            None,
-                            false,
-                        );
-                    }
-                }
-                Ok(_) => {
-                    return perr(
-                        StatusCode::NOT_FOUND,
-                        "not_found",
-                        "stream not found",
-                        None,
-                        false,
-                    );
-                }
-                Err(e) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                        None,
-                        true,
-                    );
-                }
+            if !matches!(
+                crate::http::check_key(Some(&key_b64), &validated),
+                crate::http::KeyCheck::Ok(..)
+            ) {
+                return perr(
+                    StatusCode::FORBIDDEN,
+                    "wrong_key",
+                    "encryption key mismatch",
+                    None,
+                    false,
+                );
             }
             // Everything that can PERMANENTLY prevent the promised
             // append, checked before the promise is made. A seal intent
@@ -1197,7 +1206,10 @@ async fn product_seal(
                 request_hash: op_id.clone(),
                 final_committed: false,
             };
-            let ticket = match enter_sealing(&state, &name, &op_id, intent).await {
+            #[cfg(test)]
+            crate::http::fork_failpoints::pause_product_seal_before_claim(&name).await;
+            let ticket =
+                match enter_sealing(&state, &name, &op_id, intent, &validated_epoch).await {
                 Ok(t) => t,
                 // Empty message = this exact seal already completed.
                 Err(m) if m.is_empty() => {
@@ -1345,7 +1357,7 @@ async fn product_seal(
             };
         }
     }
-    product_seal_only(state, name, headers).await
+    product_seal_only(state, name, headers, validated_epoch).await
 }
 
 /// Enter Sealing for a seal-with-final operation. A different seal
@@ -1447,14 +1459,24 @@ pub(crate) async fn enter_sealing_cas(
                     outcome = EnterSeal::AlreadyOurs { generation: g };
                     return true;
                 }
-                outcome = if sl.operation_id == op_id || (op_id.is_empty() && !sl.owes_final()) {
-                    // A plain close joins a plain sealing (both op "");
-                    // it shares the standing generation rather than
-                    // churning descriptor writes per concurrent close.
-                    EnterSeal::AlreadyOurs {
-                        generation: sl.claim_generation,
-                    }
-                } else if sl.owes_final() && abandoned {
+                if sl.operation_id == op_id || (op_id.is_empty() && !sl.owes_final()) {
+                    // A plain close JOINS a non-owing sealing — and the
+                    // join RENEWS, exactly like an owner's retry. A
+                    // standing generation can sit below a fence left
+                    // by a takeover race that lost after fencing; a
+                    // joiner that merely shared it would inherit that
+                    // wedge. Renewal allocates above every fence ever
+                    // set, so whoever actually drives the transition
+                    // can always close the segments.
+                    d.seal_gen_counter += 1;
+                    let g = d.seal_gen_counter;
+                    let sl = d.sealing.as_mut().unwrap();
+                    sl.claim_generation = g;
+                    sl.claimed_ms = crate::shard::now_ms();
+                    outcome = EnterSeal::AlreadyOurs { generation: g };
+                    return true;
+                }
+                outcome = if sl.owes_final() && abandoned {
                     EnterSeal::AbandonedClaim {
                         old_op: sl.operation_id.clone(),
                         old_gen: sl.claim_generation,
@@ -1620,19 +1642,59 @@ async fn take_over_abandoned(
         return Ok(Some(EnterSeal::AlreadySealed));
     }
     // 4. Install the new claim over the (still unchanged) old one.
-    let mut outcome = None;
-    state
+    if install_reserved_claim(
+        state,
+        name,
+        expect_epoch,
+        old_op,
+        old_gen,
+        op_id,
+        intent,
+        reserved,
+    )
+    .await?
+    {
+        return Ok(Some(EnterSeal::Installed {
+            generation: reserved,
+        }));
+    }
+    Ok(None)
+}
+
+/// The takeover's installation CAS: replace the (still unchanged)
+/// lapsed claim with the new one — and ONLY if the caller's
+/// reservation is still the NEWEST allocation. Two takeovers can
+/// reserve against the same lapsed claim (the reservation deliberately
+/// leaves it in place); both fence, and the segment keeps the higher
+/// fence. If the LOWER reservation then installed, the live claim's
+/// generation would sit below the fence and every close it issues
+/// would be refused: a collection held Sealing by its own recovery
+/// protocol. The counter check makes the newest reservation the only
+/// installable one; an older one restarts the protocol from the top.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn install_reserved_claim(
+    state: &Arc<AppState>,
+    name: &str,
+    expect_epoch: &str,
+    old_op: &str,
+    old_gen: u64,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+    reserved: u64,
+) -> Result<bool, String> {
+    let installed = state
         .registry
         .cas_update_incarnation(name, expect_epoch, |d| match &d.sealing {
-            Some(sl) if same_claim(sl) => {
+            Some(sl)
+                if sl.operation_id == old_op
+                    && sl.claim_generation == old_gen
+                    && d.seal_gen_counter == reserved =>
+            {
                 d.sealing = Some(crate::registry::SealState {
                     operation_id: op_id.to_string(),
                     intent: intent.clone(),
                     claimed_ms: crate::shard::now_ms(),
                     claim_generation: reserved,
-                });
-                outcome = Some(EnterSeal::Installed {
-                    generation: reserved,
                 });
                 true
             }
@@ -1641,7 +1703,7 @@ async fn take_over_abandoned(
         .await
         .map_err(|e| e.to_string())?;
     state.registry.invalidate(name);
-    Ok(outcome)
+    Ok(installed)
 }
 
 /// The execution token a claimed seal operates under: the incarnation
@@ -1659,14 +1721,16 @@ async fn enter_sealing(
     name: &str,
     op_id: &str,
     intent: crate::registry::SealIntent,
+    expect_epoch: &str,
 ) -> Result<SealTicket, String> {
-    let epoch = match state.registry.get(name).await {
-        Ok(Some(d)) => d.stream_epoch,
-        _ => return Err("collection not found".into()),
-    };
-    match claim_seal(state, name, op_id, &intent, &epoch).await? {
+    // The epoch is the caller's VALIDATED one — never re-fetched here.
+    // A second lookup between validation and claim was the ABA window.
+    match claim_seal(state, name, op_id, &intent, expect_epoch).await? {
         EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
-            Ok(SealTicket { epoch, generation })
+            Ok(SealTicket {
+                epoch: expect_epoch.to_string(),
+                generation,
+            })
         }
         // Empty message = this exact seal already completed.
         EnterSeal::AlreadyCompleted => Err(String::new()),
@@ -1846,14 +1910,23 @@ pub(crate) async fn abandon_seal_intent(
     // Epoch- and generation-fenced: operation ids do not embed the
     // incarnation, so a name-scoped release could clear an EQUIVALENT
     // intent installed on a recreated stream — or one a takeover had
-    // since re-issued under a new generation.
+    // since re-issued under a new generation. Releasable while the
+    // promise is UNDELIVERED (an owed final, or an Empty claim whose
+    // close turned out to be a spent producer tuple); a final that is
+    // already durable is finished by run_seal, never undone here.
     state
         .registry
         .cas_update_incarnation(name, expect_epoch, |d| match &d.sealing {
             Some(sl)
                 if sl.operation_id == op_id
                     && sl.claim_generation == expect_gen
-                    && sl.owes_final() =>
+                    && !matches!(
+                        sl.intent,
+                        crate::registry::SealIntent::Final {
+                            final_committed: true,
+                            ..
+                        }
+                    ) =>
             {
                 d.sealing = None;
                 true
@@ -1959,29 +2032,22 @@ pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result
     Ok(())
 }
 
-async fn product_seal_only(state: Arc<AppState>, name: String, _headers: HeaderMap) -> Response {
+async fn product_seal_only(
+    state: Arc<AppState>,
+    name: String,
+    _headers: HeaderMap,
+    validated_epoch: String,
+) -> Response {
     // No pre-refusal on an outstanding final-bearing intent: run_seal's
     // claim path answers it properly — a LIVE claim is a 409 conflict,
     // and a lapsed one goes through the takeover protocol, so a plain
     // `:seal` really can recover a collection whose sealer died. (The
     // old pre-check made that impossible and contradicted the
-    // documented recovery story.)
-    let epoch = match state.registry.get(&name).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d.stream_epoch.clone(),
-        Ok(_) => {
-            return perr(StatusCode::NOT_FOUND, "not_found", "collection not found", None, false);
-        }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    match run_seal(&state, &name, None, &epoch, None).await {
+    // documented recovery story.) The epoch is the one the KEY was
+    // validated against, not a fresh read.
+    #[cfg(test)]
+    crate::http::fork_failpoints::pause_product_seal_before_claim(&name).await;
+    match run_seal(&state, &name, None, &validated_epoch, None).await {
         Ok(()) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
@@ -2035,7 +2101,15 @@ pub(crate) async fn run_seal(
         return Err("the collection this seal was issued against no longer exists".into());
     }
     if desc.sealed {
-        return Ok(()); // terminal
+        // Terminal — but only OUR terminal counts as our success. A
+        // caller driving a specific operation must not report
+        // completion because somebody else's seal got there first.
+        if let Some(o) = op.as_deref() {
+            if !o.is_empty() && desc.seal_op.as_deref() != Some(o) {
+                return Err("the collection sealed under a different operation".into());
+            }
+        }
+        return Ok(());
     }
     // An OWED final is decided by the claim path below, not by a
     // pre-read: a live claim answers Conflicting (the caller must let
@@ -2189,7 +2263,20 @@ pub(crate) async fn run_seal(
     if !crate::http::desc_alive(&final_state) {
         return Ok(());
     }
+    // The proof is about THIS incarnation and THIS operation. A
+    // replacement created (and even sealed) under the same name
+    // between publication and this read is somebody else's resource;
+    // reporting success against it violates the very guarantee the
+    // rest of the machine establishes.
+    if final_state.stream_epoch != expect_epoch {
+        return Err("the collection this seal was issued against no longer exists".into());
+    }
     if final_state.sealed && final_state.sealing.is_none() {
+        if let Some(o) = op.as_deref() {
+            if !o.is_empty() && final_state.seal_op.as_deref() != Some(o) {
+                return Err("the collection sealed under a different operation".into());
+            }
+        }
         return Ok(());
     }
     let _ = published;

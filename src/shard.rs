@@ -230,12 +230,6 @@ pub struct StreamState {
     /// surface's 409 producer_sequence_reused (same tuple, different
     /// request).
     pub producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
-    /// Minimum acceptable seal-claim generation for claim-authorized
-    /// appends on this segment. In-memory ONLY, deliberately: the fence
-    /// exists to stop a stale append that is already in this process's
-    /// queue, and a restart drops the queue and the fence together.
-    /// Raised by a takeover's fence message; never lowered.
-    pub seal_fence: u64,
     /// Per-routing-key Stream-Seq lanes (ROUTING-V3 §3.6), loaded
     /// lazily from the durable `s` rows and applied by the committer.
     pub seqs: HashMap<[u8; 16], String>,
@@ -647,6 +641,15 @@ pub struct ShardEngine {
     /// layer, same dynamics as the per-stream v1 DBs.
     history2: tokio::sync::OnceCell<Arc<Db>>,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
+    /// Seal fences by segment identity — ENGINE-level, deliberately
+    /// outside the evictable [`StreamHandle`]: an AppendReq waiting in
+    /// the committer channel holds only the stream hash, so a handle
+    /// can be idle-evicted (or displaced by the resident cap) while a
+    /// stale claim-authorized write is still queued, and a fence that
+    /// lived in the handle would be reborn as zero when the committer
+    /// reloaded it. This map dies with the engine and its queue —
+    /// which is the exact lifetime the fence protects.
+    seal_fences: Mutex<HashMap<[u8; 16], u64>>,
     tx: mpsc::Sender<CommitOp>,
     in_flight: Mutex<Vec<InFlightGroup>>,
     /// Serializes durable-dispatch between the pump (post-flush barrier)
@@ -808,6 +811,7 @@ impl ShardEngine {
             data_store,
             history2: tokio::sync::OnceCell::new(),
             streams: Mutex::new(HashMap::new()),
+            seal_fences: Mutex::new(HashMap::new()),
             tx,
             in_flight: Mutex::new(Vec::new()),
             dispatch_gate: Mutex::new(()),
@@ -1630,7 +1634,6 @@ impl ShardEngine {
             state: Mutex::new(StreamState {
                 durable: tail.clone(),
                 applied: tail,
-                seal_fence: 0,
                 producers: HashMap::new(),
                 seqs: HashMap::new(),
                 queue: crate::queue::QueueState::default(),
@@ -1900,6 +1903,11 @@ impl ShardEngine {
         let mut wb = WriteBatch::new();
         let mut pending: Vec<(oneshot::Sender<Result<AppendAck, AppendErr>>, AppendAck)> =
             Vec::new();
+        // Fence responses: durability-barriered separately, because a
+        // fence-only group persists nothing of its own — its barrier is
+        // whatever is already in flight.
+        let mut fence_acks: Vec<(oneshot::Sender<Result<AppendAck, AppendErr>>, AppendAck)> =
+            Vec::new();
         let mut locals: HashMap<[u8; 16], Local> = HashMap::new();
         let mut records = 0u64;
         let mut touches: Vec<TouchFeed> = Vec::new();
@@ -1955,23 +1963,33 @@ impl ShardEngine {
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
                 CommitOp::Append(req) => {
                     // Fence message: a takeover raising the segment's
-                    // minimum claim generation. Processed in queue
-                    // order, so answering it PROVES every append
-                    // enqueued before it has been decided — the closed
-                    // flag in the reply is a barrier the takeover can
-                    // trust, not a racy snapshot.
+                    // minimum claim generation. The RAISE is immediate
+                    // (later ops in this very group already see it),
+                    // but the RESPONSE is durability-barriered: it
+                    // rides the group ack pipeline, so it reaches the
+                    // taking-over operation only after the durable
+                    // watermark covers every write decided before it.
+                    // Answering from staged state let a takeover read
+                    // closed=true off a WriteBatch that had not been
+                    // written — publish Sealed — and then watch the
+                    // write fail; the closed-report must be a fact
+                    // about DURABLE state or it is not a fact at all.
                     if let Some(g) = req.seal_fence_to {
                         {
-                            let mut st = local.handle.state.lock().unwrap();
-                            st.seal_fence = st.seal_fence.max(g);
+                            let mut f = self.seal_fences.lock().unwrap();
+                            let e = f.entry(hash).or_insert(0);
+                            *e = (*e).max(g);
                         }
-                        let _ = req.resp.send(Ok(AppendAck {
-                            last_offset: local.fields.next.wrapping_sub(1),
-                            next_offset: local.fields.next,
-                            closed: local.fields.closed,
-                            producer: None,
-                            duplicate: false,
-                        }));
+                        fence_acks.push((
+                            req.resp,
+                            AppendAck {
+                                last_offset: local.fields.next.wrapping_sub(1),
+                                next_offset: local.fields.next,
+                                closed: local.fields.closed,
+                                producer: None,
+                                duplicate: false,
+                            },
+                        ));
                         continue;
                     }
                     // Producer state: ensure loaded (durable `q` key) into
@@ -2176,8 +2194,14 @@ impl ShardEngine {
                     // BEFORE anything is staged, so a superseded
                     // operation can neither write its record nor close
                     // the segment.
-                    {
-                        let fence = local.handle.state.lock().unwrap().seal_fence;
+                    if req.seal_gen.is_some() || req.close {
+                        let fence = self
+                            .seal_fences
+                            .lock()
+                            .unwrap()
+                            .get(&hash)
+                            .copied()
+                            .unwrap_or(0);
                         let stale = match (req.seal_gen, req.close) {
                             (Some(g), _) => g < fence,
                             (None, true) => fence > 0,
@@ -2828,6 +2852,28 @@ impl ShardEngine {
                     hash: *hash,
                     appended_bytes: local.appended_bytes,
                 });
+            }
+        }
+        // Fence responses join the barrier that actually covers them:
+        // a group with writes carries them itself; a fence-only group
+        // attaches them to the NEWEST in-flight group (everything the
+        // fence observed was applied by groups at or before it); with
+        // nothing in flight and nothing staged, the observed state is
+        // already durable and the answer goes out now.
+        if !fence_acks.is_empty() {
+            let group_writes = changed || records > 0 || !touches.is_empty() || extra_writes;
+            if group_writes {
+                pending.append(&mut fence_acks);
+            } else {
+                let mut infl = self.in_flight.lock().unwrap();
+                if let Some(last) = infl.last_mut() {
+                    last.acks.append(&mut fence_acks);
+                } else {
+                    drop(infl);
+                    for (resp, ack) in fence_acks.drain(..) {
+                        let _ = resp.send(Ok(ack));
+                    }
+                }
             }
         }
         if pending.is_empty() && !changed && queue_pending.is_empty() {

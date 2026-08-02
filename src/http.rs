@@ -2713,7 +2713,8 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 9] = [
+        static M: [Mutex<Option<HashSet<String>>>; 10] = [
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2735,6 +2736,7 @@ pub(crate) mod fork_failpoints {
     const CLOSE_ENQ: usize = 6;
     const CLOSE_MARK: usize = 7;
     const CLOSE_HELD: usize = 8;
+    const PROD_SEAL: usize = 9;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -2953,6 +2955,26 @@ pub(crate) mod fork_failpoints {
 
     pub(super) async fn pause_close_before_mark(name: &str) {
         park(CLOSE_MARK, name, &PARKED_MARK).await;
+    }
+
+    /// Park a product seal AFTER its key validation and BEFORE its
+    /// claim CAS — the validation-to-claim gap in which the whole
+    /// incarnation can be deleted and recreated under the same key.
+    pub fn park_product_seal_before_claim(name: &str) {
+        set(PROD_SEAL, name);
+    }
+
+    pub fn release_product_seal_before_claim(name: &str) {
+        release(PROD_SEAL, name);
+    }
+
+    pub fn parked_product_seal_count() -> usize {
+        PARKED_PROD_SEAL.load(Ordering::SeqCst)
+    }
+    static PARKED_PROD_SEAL: AtomicUsize = AtomicUsize::new(0);
+
+    pub async fn pause_product_seal_before_claim(name: &str) {
+        park(PROD_SEAL, name, &PARKED_PROD_SEAL).await;
     }
 
     /// Park a delete just before it decides soft-versus-hard, so a
@@ -3994,6 +4016,34 @@ async fn append_core(
                 state.metrics.append(&name, metric_bytes);
             }
             touch_ttl(&state, &desc); // writes slide the idle window
+            // A DUPLICATE that did not close: the producer tuple was
+            // spent by an earlier NON-closing operation, so this close
+            // can never deliver what its intent promised — the tuple
+            // it would deliver under is gone, and every exact retry
+            // will meet the same duplicate answer. The claim this
+            // request installed comes down NOW (epoch- and
+            // generation-fenced, so only our own), or the collection
+            // sits Sealing behind an undeliverable promise until a
+            // takeover discards it. The response stays the protocol's
+            // duplicate answer; the collection stays open.
+            if close && ack.duplicate && !ack.closed {
+                if let Some(g) = raw_seal_gen {
+                    if let Err(m) = crate::product::abandon_seal_intent(
+                        &state,
+                        &name,
+                        &this_close_op,
+                        &desc.stream_epoch,
+                        g,
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            stream = %name,
+                            "releasing a non-closing duplicate's seal intent: {m}"
+                        );
+                    }
+                }
+            }
             // The seal's own final record also carries `close`, but that
             // operation finishes the transition itself — it marks the
             // record committed first, which is what lets the seal

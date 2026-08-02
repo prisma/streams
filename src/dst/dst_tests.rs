@@ -11513,6 +11513,505 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
 }
 
 // ---------------------------------------------------------------
+// Round 9: the fence is a DURABILITY barrier, engine-resident, and
+// only the newest reservation installs. Validation binds the epoch.
+// ---------------------------------------------------------------
+
+/// The fence's closed-report is a fact about DURABLE state. While the
+/// dispatch gate is held (writes applied, durability not yet
+/// released), a takeover's fence must not answer — the observable is
+/// that the old claim stays UNMARKED. Answering from staged state let
+/// the takeover mark a final "committed" off a WriteBatch that could
+/// still fail, and publish Sealed over a record that never existed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_waits_for_durability_before_reporting_closed() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur9", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("dur9");
+    let desc = state.registry.get("dur9").await.unwrap().unwrap();
+    let epoch = desc.stream_epoch.clone();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Hold durability dispatch, then send A's final-bearing close: its
+    // intent lands (registry path), its write commits, but nothing is
+    // released as durable.
+    let guard = engine.test_hold_dispatch();
+    let a = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur9",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            br#"[{"fin":"a"}]"#,
+        )
+        .await
+    });
+    let mut a_claim = None;
+    for _ in 0..300 {
+        state.registry.invalidate("dur9");
+        if let Ok(Some(d)) = state.registry.get("dur9").await {
+            if let Some(sl) = d.sealing.clone() {
+                a_claim = Some(sl);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let a_claim = a_claim.expect("A never published its intent");
+    // Give A's append time to be enqueued and applied (not durable).
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // A's lease lapses; B begins a takeover with its own final.
+    state
+        .registry
+        .cas_update("dur9", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("dur9");
+    let b_intent = crate::registry::SealIntent::Final {
+        routing_key: String::new(),
+        request_hash: "b-op-9".into(),
+        final_committed: false,
+    };
+    let st2 = state.clone();
+    let ep2 = epoch.clone();
+    let b = tokio::spawn(async move {
+        crate::product::claim_seal(&st2, "dur9", "b-op-9", &b_intent, &ep2).await
+    });
+
+    // While durability is held, the takeover MUST NOT have concluded:
+    // the old claim stays exactly as it was — same op, still unmarked.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(!b.is_finished(), "the takeover concluded before durability");
+    state.registry.invalidate("dur9");
+    let d = state.registry.get("dur9").await.unwrap().unwrap();
+    assert!(!d.sealed, "sealed before the record was durable");
+    let sl = d.sealing.clone().expect("the claim vanished mid-takeover");
+    assert_eq!(sl.operation_id, a_claim.operation_id, "the claim moved before durability");
+    assert!(
+        sl.owes_final(),
+        "the final was marked committed before it was durable: {:?}",
+        sl.intent
+    );
+
+    // Release durability: A's close completes its own transition; B's
+    // fence then reports closed=true and B completes/joins A's seal.
+    drop(guard);
+    let (st, _, body) = a.await.unwrap();
+    assert!(st == 200 || st == 204, "A: {st} {}", String::from_utf8_lossy(&body));
+    let b_out = b.await.unwrap().unwrap();
+    assert!(
+        matches!(
+            b_out,
+            crate::product::EnterSeal::AlreadySealed | crate::product::EnterSeal::AlreadyCompleted
+        ),
+        "B did not defer to the close that won: {b_out:?}"
+    );
+    state.registry.invalidate("dur9");
+    let d = state.registry.get("dur9").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none());
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/dur9", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    let fins = recs.iter().filter(|r| r.get("fin").is_some()).count();
+    assert_eq!(fins, 1, "exactly one final: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// Only the NEWEST reservation may install. Two takeovers can reserve
+/// against the same lapsed claim; if the lower one installed, the live
+/// claim's generation would sit below the higher fence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lower_takeover_reservation_cannot_install() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/race9", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    // A crashed final close leaves a lapsed claim.
+    crate::http::fork_failpoints::stop_after_seal_intent("race9");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/race9",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        br#"[{"fin":1}]"#,
+    )
+    .await;
+    assert_eq!(st, 503);
+    crate::http::fork_failpoints::stop_after_seal_intent_off("race9");
+    state
+        .registry
+        .cas_update("race9", |d| {
+            if let Some(sl) = d.sealing.as_mut() {
+                sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
+                return true;
+            }
+            false
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("race9");
+    let d = state.registry.get("race9").await.unwrap().unwrap();
+    let epoch = d.stream_epoch.clone();
+    let old = d.sealing.clone().unwrap();
+
+    // Takeover A reserves (counter -> g_a) and fences, then STALLS.
+    let mut g_a = 0;
+    state
+        .registry
+        .cas_update("race9", |d| {
+            d.seal_gen_counter += 1;
+            g_a = d.seal_gen_counter;
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("race9");
+    let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_a)
+        .await
+        .unwrap();
+    assert!(!closed);
+
+    // Takeover B reserves the NEWER generation and fences.
+    let mut g_b = 0;
+    state
+        .registry
+        .cas_update("race9", |d| {
+            d.seal_gen_counter += 1;
+            g_b = d.seal_gen_counter;
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("race9");
+    assert!(g_b > g_a);
+    let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_b)
+        .await
+        .unwrap();
+    assert!(!closed);
+
+    // A resumes and tries to install its LOWER reservation — through
+    // the PRODUCTION install CAS. It must decline: the counter has
+    // moved past it.
+    let installed_a = crate::product::install_reserved_claim(
+        &state,
+        "race9",
+        &epoch,
+        &old.operation_id,
+        old.claim_generation,
+        "takeover-a",
+        &crate::registry::SealIntent::Empty,
+        g_a,
+    )
+    .await
+    .unwrap();
+    assert!(!installed_a, "a lower reservation installed below a higher fence");
+    state.registry.invalidate("race9");
+    let d = state.registry.get("race9").await.unwrap().unwrap();
+    assert_eq!(
+        d.sealing.as_ref().map(|s| s.claim_generation),
+        Some(old.claim_generation),
+        "the old claim should still stand: {:?}",
+        d.sealing
+    );
+
+    // The stream recovers through the REAL protocol: a plain :seal
+    // takes the lapsed claim over at a generation ≥ every fence.
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/race9:seal", &key, b"{}").await;
+    assert!(
+        st == 200 || st == 204,
+        "recovery seal failed: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("race9");
+    let d = state.registry.get("race9").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none(), "not sealed after recovery");
+    engine_shutdown(&state).await;
+}
+
+/// The fence survives handle eviction: it lives on the ENGINE, not on
+/// the evictable StreamHandle, because a stale queued append carries
+/// only the stream hash and would meet a freshly-reborn handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fence_survives_handle_eviction() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/evict9", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("evict9");
+    let desc = state.registry.get("evict9").await.unwrap().unwrap();
+    let epoch = desc.stream_epoch.clone();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Raise the fence to 10, then evict every idle handle.
+    let closed = crate::http::fence_segment_for_key(&state, "evict9", &epoch, "", 10)
+        .await
+        .unwrap();
+    assert!(!closed);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+
+    // A stale generation-9 close arrives after the rebirth.
+    let (st, b) = {
+        // Drive it as a raw close whose claim generation is BELOW the
+        // fence: enqueue directly, exactly like a queued survivor.
+        let identity = desc.dynamic_segment_identity(seg.seg_id);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash: identity,
+            route,
+            entries: vec![bytes::Bytes::from_static(b"{\"stale\":1}")],
+            routing_key: String::new(),
+            key_hash: crate::crypto::stream_hash(""),
+            producer_lineage: Vec::new(),
+            key_version: 0,
+            subkey: [7u8; 32],
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 11,
+            close: true,
+            seal_gen: Some(9),
+            seal_fence_to: None,
+            producer: None,
+            deferred_error: None,
+            sealed_reject_new: None,
+            touch: None,
+            usage: crate::usage::counters(&identity),
+            resp: tx,
+        };
+        assert!(engine.try_enqueue(req).is_ok());
+        match rx.await.unwrap() {
+            Ok(_) => (200u16, String::new()),
+            Err(e) => (409u16, format!("{e:?}")),
+        }
+    };
+    assert!(b.is_empty() || b.contains("SealSuperseded"), "unexpected refusal: {b}");
+    assert_eq!(st, 409, "a stale close committed after handle eviction");
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/evict9", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs.len(), 1, "the stale write landed: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// The product seal is fenced to the incarnation its KEY was validated
+/// against: a delete+recreate under the SAME key inside the
+/// validation-to-claim gap must not let the request seal the
+/// replacement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealaba",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    let before = crate::http::fork_failpoints::parked_product_seal_count();
+    crate::http::fork_failpoints::park_product_seal_before_claim("sealaba");
+    let sealer = tokio::spawn(async move {
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/sealaba:seal",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"final":{"x":1}}"#,
+        )
+        .await
+    });
+    let mut parked = false;
+    for _ in 0..300 {
+        if crate::http::fork_failpoints::parked_product_seal_count() > before {
+            parked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(parked, "the sealer never reached the validation-to-claim gap");
+
+    // Replace the collection under the SAME key.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/sealaba", &key, b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/sealaba",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreate");
+
+    crate::http::fork_failpoints::release_product_seal_before_claim("sealaba");
+    let (st, _, b) = sealer.await.unwrap();
+    assert!(
+        st >= 400,
+        "a seal validated against a dead incarnation succeeded: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    state.registry.invalidate("sealaba");
+    let d = state.registry.get("sealaba").await.unwrap().unwrap();
+    assert!(!d.sealed, "the replacement was sealed");
+    assert!(d.sealing.is_none(), "the replacement was claimed: {:?}", d.sealing);
+    engine_shutdown(&state).await;
+}
+
+/// A close-with-content whose producer tuple was SPENT by an earlier
+/// non-closing append can never deliver its promise: the duplicate
+/// answer is correct, and the claim it installed comes down with it.
+/// Leaving the intent held the collection Sealing behind an
+/// undeliverable promise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_non_closing_duplicate_releases_its_own_intent() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dup9", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    // Spend the tuple on an ORDINARY append.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dup9",
+        &[
+            ("content-type", "application/json"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+
+    // The same tuple now arrives as a close-with-content.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dup9",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"fin":1}]"#,
+    )
+    .await;
+    assert_eq!(st, 204, "the duplicate answer is the protocol's contract");
+    state.registry.invalidate("dup9");
+    let d = state.registry.get("dup9").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none(),
+        "a non-closing duplicate left its intent behind: {:?}",
+        d.sealing
+    );
+    assert!(!d.sealed);
+    let (_, _, bd) = hreq(addr, "GET", "/v1/stream/dup9", &[], b"").await;
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
+    assert_eq!(recs.len(), 2, "the final body was appended: {recs:?}");
+    // The collection still works.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/dup9", &ct, br#"[{"n":2}]"#).await;
+    assert!(st == 200 || st == 204, "ordinary appends bricked: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// Heat is incarnation-scoped: a recreated stream starts COLD, a
+/// decision carries the epoch of the traffic that justified it, and
+/// run_seal's terminal proof refuses to bless a different operation's
+/// terminal state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heat9", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("heat9");
+    let old = state.registry.get("heat9").await.unwrap().unwrap();
+    // Feed heavy, PLURAL heat under incarnation A: many distinct keys
+    // (a single dominant key trips hot-key suppression, not a split)
+    // at rates far above the default hot thresholds.
+    for i in 0..32 {
+        let sg = old.resolve_segment(&format!("k{i}"));
+        for _ in 0..8 {
+            crate::scaler3::note_append(&old, &sg, 50_000_000, 10_000);
+        }
+    }
+    // Recreate; ONE feed under B resets the sketch cold.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/heat9", &[], b"").await;
+    assert!(st == 204 || st == 200);
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heat9", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("heat9");
+    let fresh = state.registry.get("heat9").await.unwrap().unwrap();
+    let fseg = fresh.resolve_segment("");
+    // One COLD feed under the replacement resets the sketch. Then
+    // hammer the evaluator long enough for any surviving heat to build
+    // the hot streak a split decision needs — with the reset in place,
+    // nothing ever forms; without it, the dead incarnation's traffic
+    // drives a decision within a few passes.
+    crate::scaler3::note_append(&fresh, &fseg, 10, 1);
+    for _ in 0..12 {
+        let (decisions, _) = crate::scaler3::evaluate(crate::shard::now_ms());
+        assert!(
+            !decisions.iter().any(|(n, _, _, _)| n == "heat9"),
+            "a recreated stream inherited the old incarnation's heat: {decisions:?}"
+        );
+    }
+
+    // Terminal proof: seal B under its own operation, then ask
+    // run_seal to bless it as a DIFFERENT operation's completion.
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/heat9",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    state.registry.invalidate("heat9");
+    let d = state.registry.get("heat9").await.unwrap().unwrap();
+    assert!(d.sealed);
+    let err = crate::product::run_seal(
+        &state,
+        "heat9",
+        Some("someone-else".into()),
+        &fresh.stream_epoch,
+        None,
+    )
+    .await;
+    assert!(
+        err.is_err(),
+        "run_seal blessed a different operation's terminal state"
+    );
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from

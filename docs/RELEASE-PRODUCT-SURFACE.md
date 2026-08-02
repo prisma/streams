@@ -278,6 +278,22 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Ninth audit round (2026-08-02)
+
+Round 8 introduced the right concepts; round 9 makes the fence what
+the design claimed it was — durable, non-evictable, and uniquely
+installed — and binds the last unfenced steps to their incarnation.
+
+| finding | fix |
+|---|---|
+| The fence answered from STAGED state (`local.fields` / `applied`), so a takeover could read `closed=true` off a WriteBatch that had not been written — or a WAL that was not remotely durable — mark the old final committed, publish Sealed, and then watch the write fail | the fence RAISE is immediate, but its RESPONSE is durability-barriered: it rides the group ack pipeline (`in_flight` → `dispatch_durable`), so it reaches the takeover only after the durable watermark covers every write decided before it. A fence in a group with writes is answered with that group; a fence-only group attaches to the NEWEST in-flight group; with nothing in flight and nothing staged, the observed state is already durable. A failed group write fails the fence with it |
+| Two takeovers could reserve against the same lapsed claim; the LOWER reservation could install beneath the higher fence, wedging the collection under its own recovery protocol | the installation CAS requires `seal_gen_counter == reserved` — only the newest reservation installs; older ones restart. Joins (a plain close joining a non-owing sealing) now RENEW instead of sharing a possibly-fenced standing generation |
+| The fence lived in the evictable `StreamHandle`; idle eviction or the resident cap re-created it at zero while a stale claim-authorized append was still queued (queued requests carry only the stream hash) | fences live on the ENGINE (`seal_fences` map), which dies exactly with the queue it protects |
+| The product seal validated the key against one descriptor and then fetched a FRESH epoch for the claim — a delete+recreate under the same key inside that gap had the request seal a replacement | one descriptor read per seal request; its epoch threads through claim, append, mark and publication; `enter_sealing` no longer re-fetches |
+| A close-with-content whose producer tuple was spent by an earlier NON-closing append received the duplicate answer and left its final intent behind — a collection Sealing behind an undeliverable promise | a duplicate that did not close releases this request's own epoch+generation-fenced intent and answers as the duplicate it is; the collection stays open |
+| The autonomous scaler's heat survived recreation (sketches keyed by name), and phase-B publication was name-scoped | sketches carry the incarnation that fed them (a feed from a new epoch RESETS the sketch); decisions carry that epoch to `execute_split_fenced`/`execute_merge_fenced`; segments sketched under different incarnations never merge; phase B CASes under the epoch the pending transition was read from |
+| `run_seal` could report success against a replacement (terminal read unfenced) or bless a DIFFERENT operation's terminal state | the terminal proof requires the expected epoch, and a caller driving a named operation errs unless `seal_op` is its own |
+
 ## Eighth audit round (2026-08-02)
 
 The round-7 claim timeout was a race timer, not a lease: nothing

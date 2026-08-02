@@ -71,6 +71,13 @@ pub static SKETCH_EVICTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 pub static UNTRACKED_APPENDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct SegSketch {
+    /// The incarnation this sketch's heat belongs to. A name can be
+    /// deleted and recreated while heat accumulates; a decision made
+    /// from the old incarnation's traffic must neither split the
+    /// replacement nor survive as ballast — a feed from a different
+    /// epoch RESETS the sketch, and the decision carries this epoch to
+    /// the fenced executor.
+    epoch: String,
     dist: KeyDistribution,
     hot_streak: u32,
     /// Consecutive evaluations with ALL rates under the quiet line
@@ -167,19 +174,26 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
             }
         }
     }
-    let e = g.sketches.entry(key).or_insert_with(|| SegSketch {
+    let fresh = || SegSketch {
+        epoch: desc.stream_epoch.clone(),
         dist: KeyDistribution::new(seg.lo, seg.hi, policy().rate_window_secs),
         hot_streak: 0,
         cold_streak: 0,
         last_fed_ms: now,
-    });
+    };
+    let e = g.sketches.entry(key).or_insert_with(fresh);
+    if e.epoch != desc.stream_epoch {
+        // The name was recreated: the accumulated heat belongs to a
+        // collection that no longer exists. Start cold.
+        *e = fresh();
+    }
     e.last_fed_ms = now;
     e.dist.note(now, seg.point, seg.key_hash.0, bytes, records);
 }
 
 /// One evaluation pass over every sketched segment. Returns the split
 /// decisions taken (stream, seg_id) — the driver executes them.
-fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
+pub(crate) fn evaluate(now_ms: i64) -> (Vec<(String, String, u32, u64)>, Vec<(String, String)>) {
     let pol = policy();
     let lim = crate::usage::limits();
     let mut out = Vec::new();
@@ -240,7 +254,7 @@ fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
             INEFFECTIVE_SPLIT_AVOIDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         }
-        out.push((name.clone(), *seg_id, split_at));
+        out.push((name.clone(), sk.epoch.clone(), *seg_id, split_at));
         sk.hot_streak = 0;
     }
     for (name, hk) in hot_updates {
@@ -253,28 +267,33 @@ fn evaluate(now_ms: i64) -> (Vec<(String, u32, u64)>, Vec<String>) {
             }
         }
     }
-    for (name, _, _) in &out {
+    for (name, _, _, _) in &out {
         g.last_transition_ms.insert(name.clone(), now_ms);
     }
     // Merge candidates: streams with >= 2 sketched segments, EVERY one
     // cold for 4x the split patience, respecting the same cooldown. The
     // driver validates adjacency and ages against the live map.
-    let mut per_stream: HashMap<&String, (usize, bool)> = HashMap::new();
+    let mut per_stream: HashMap<&String, (usize, bool, String)> = HashMap::new();
     for ((name, _), sk) in g.sketches.iter() {
-        let e = per_stream.entry(name).or_insert((0, true));
+        let e = per_stream
+            .entry(name)
+            .or_insert((0, true, sk.epoch.clone()));
         e.0 += 1;
         e.1 &= sk.cold_streak >= pol.hot_evals * 4;
+        // Segments sketched under DIFFERENT incarnations never merge:
+        // the decision would be about two different collections.
+        e.1 &= e.2 == sk.epoch;
     }
-    let merge_candidates: Vec<String> = per_stream
+    let merge_candidates: Vec<(String, String)> = per_stream
         .into_iter()
-        .filter(|(name, (n, all_cold))| {
+        .filter(|(name, (n, all_cold, _))| {
             *n >= 2
                 && *all_cold
                 && now_ms - cooldowns.get(*name).copied().unwrap_or(0) >= pol.cooldown_secs * 1000
         })
-        .map(|(name, _)| name.clone())
+        .map(|(name, (_, _, epoch))| (name.clone(), epoch))
         .collect();
-    for name in &merge_candidates {
+    for (name, _) in &merge_candidates {
         g.last_transition_ms.insert(name.clone(), now_ms);
     }
     (out, merge_candidates)
@@ -532,9 +551,13 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     // stream name and the child's seg id) that the ring spreads across
     // shard prefixes and owners.
     let prefixes = st.shard_prefixes.clone();
+    // Phase B is fenced to the incarnation the pending transition was
+    // READ from: mid-resume, the whole collection can be deleted and
+    // recreated, and a name-scoped publication would stamp successors
+    // onto the replacement.
     let published = st
         .registry
-        .cas_update(name, |d| {
+        .cas_update_incarnation(name, &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -635,7 +658,7 @@ async fn resume_merge(
     let name = &desc.name;
     let published = st
         .registry
-        .cas_update(name, |d| {
+        .cas_update_incarnation(name, &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -727,8 +750,12 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
             tokio::time::sleep(std::time::Duration::from_secs(eval)).await;
             let Some(st) = st.upgrade() else { return };
             let (decisions, merges) = evaluate(crate::shard::now_ms());
-            for (name, seg_id, split_at) in decisions {
-                let done = execute_split(&st, &name, seg_id, split_at).await;
+            for (name, epoch, seg_id, split_at) in decisions {
+                // Fenced to the incarnation the HEAT belongs to — a
+                // decision computed from a deleted collection's
+                // traffic declines instead of splitting whatever now
+                // owns the name.
+                let done = execute_split_fenced(&st, &name, &epoch, seg_id, split_at).await;
                 tracing::info!(
                     stream = %name,
                     seg_id,
@@ -737,13 +764,19 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                     "unified scaler split"
                 );
             }
-            for name in merges {
+            for (name, epoch) in merges {
                 // Validate against the LIVE map: pick the first adjacent
                 // live pair, both older than the cooldown (never merge a
-                // segment the scaler just minted).
+                // segment the scaler just minted). The decision is
+                // fenced to the incarnation the cold sketches belong
+                // to — a replacement under the same name is not merged
+                // on a dead collection's silence.
                 let Ok(Some(desc)) = st.registry.get(&name).await else {
                     continue;
                 };
+                if desc.stream_epoch != epoch {
+                    continue;
+                }
                 let Some(map) = &desc.segments else { continue };
                 if map.pending.is_some() {
                     continue;
@@ -759,7 +792,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 });
                 if let Some(w) = pair {
                     let (a, b) = (w[0].seg_id, w[1].seg_id);
-                    let done = execute_merge(&st, &name, a, b).await;
+                    let done = execute_merge_fenced(&st, &name, &epoch, a, b).await;
                     tracing::info!(stream = %name, a, b, done, "unified scaler merge");
                 }
             }
