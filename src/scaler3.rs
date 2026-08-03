@@ -731,8 +731,20 @@ pub(crate) mod failpoints {
         gate().notify_waiters();
     }
 
+    /// Entered-proof: resumes currently parked before publication.
+    pub fn publish_parked_count() -> usize {
+        PUBLISH_PARKED.load(Ordering::SeqCst)
+    }
+    static PUBLISH_PARKED: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
     pub(super) async fn pause_before_publish() {
+        let mut counted = false;
         while ARMED.load(Ordering::SeqCst) {
+            if !counted {
+                counted = true;
+                PUBLISH_PARKED.fetch_add(1, Ordering::SeqCst);
+            }
             let n = gate().notified();
             if !ARMED.load(Ordering::SeqCst) {
                 break;

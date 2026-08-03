@@ -2426,6 +2426,24 @@ async fn create_stream(
                     f.fork_id = fork_id.clone();
                 }
             }
+            // The CHILD must still exist to be worth anchoring: a
+            // half-made child deleted in the stamp-to-install window
+            // must not pin the source at all (FRK-013). This check
+            // closes the ordinary path; the residual window between it
+            // and the install CAS — including a crash inside it — is
+            // repaired by the tombstone's RETAINED debt. The park sits
+            // BETWEEN the check and the install so tests can drive
+            // exactly that window.
+            match state.registry.get(&name).await {
+                Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
+                _ => {
+                    return err_resp(
+                        StatusCode::CONFLICT,
+                        "fork_target_changed",
+                        "the fork target changed while it was being created; retry",
+                    );
+                }
+            }
             #[cfg(test)]
             fork_failpoints::pause_fork_before_source_ref(&name).await;
             match state
@@ -2484,6 +2502,25 @@ async fn create_stream(
                 }
             }
             state.registry.invalidate(&fc.source);
+            #[cfg(test)]
+            fork_failpoints::pause_fork_after_source_ref(&name).await;
+            // Post-install: the child can have been deleted between the
+            // pre-check and the install CAS. Release the reference this
+            // request just installed — its tombstone's retained debt
+            // covers the crash variant of the same window.
+            match state.registry.get(&name).await {
+                Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
+                _ => {
+                    if let Err(m) = release_fork_ref(&state, &fc.source, &fork_id).await {
+                        tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
+                    }
+                    return err_resp(
+                        StatusCode::CONFLICT,
+                        "fork_target_changed",
+                        "the fork target changed while it was being created; retry",
+                    );
+                }
+            }
             match state.registry.get(&fc.source).await {
                 Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
                 Ok(_) => {
@@ -2737,7 +2774,8 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 13] = [
+        static M: [Mutex<Option<HashSet<String>>>; 14] = [
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2767,6 +2805,7 @@ pub(crate) mod fork_failpoints {
     const PROD_FINAL: usize = 10;
     const FORK_REF: usize = 11;
     const INIT_SEED: usize = 12;
+    const FORK_REF_POST: usize = 13;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -3068,6 +3107,27 @@ pub(crate) mod fork_failpoints {
         park(INIT_SEED, name, &PARKED_INIT_SEED).await;
     }
 
+    /// Park a fork creation AFTER its source reference installed and
+    /// BEFORE the child liveness re-check — the exact residual crash
+    /// window of FRK-013. A test that leaves this parked simulates the
+    /// creator process dying with the reference freshly installed.
+    pub fn park_fork_after_source_ref(name: &str) {
+        set(FORK_REF_POST, name);
+    }
+
+    pub fn release_fork_after_source_ref(name: &str) {
+        release(FORK_REF_POST, name);
+    }
+
+    pub fn parked_fork_ref_post_count() -> usize {
+        PARKED_FORK_REF_POST.load(Ordering::SeqCst)
+    }
+    static PARKED_FORK_REF_POST: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) async fn pause_fork_after_source_ref(name: &str) {
+        park(FORK_REF_POST, name, &PARKED_FORK_REF_POST).await;
+    }
+
     /// Park a delete just before it decides soft-versus-hard, so a
     /// concurrent fork installation can be made to win DETERMINISTICALLY
     /// rather than by racing timers.
@@ -3088,11 +3148,22 @@ pub(crate) mod fork_failpoints {
     }
 }
 
+/// Release one fork reference. Returns whether the release is
+/// CONCLUSIVE: the reference was actually removed, or the source is
+/// beyond caring (gone or hard-deleted). An ABSENT reference on a
+/// LIVE source is NOT conclusive — the child's creator may still be
+/// in flight between its stamp and its install, and clearing the
+/// child's debt on that momentary absence is how a crashed creator
+/// orphaned a reference forever (FRK-013 crash hole): the install
+/// landed after the debt was cleared, and nothing could ever repair
+/// it. Callers clear debt only on a conclusive release; retained debt
+/// is settled by any later tombstone DELETE, which retries this
+/// release and finds the late-installed reference.
 fn release_fork_ref(
     state: &Arc<AppState>,
     src: &str,
     fork_id: &str,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
     let state = state.clone();
     let src = src.to_string();
     let fork_id = fork_id.to_string();
@@ -3107,31 +3178,40 @@ fn release_fork_ref(
         // this function returns Ok, and the caller clears its own flag.
         // Only the hidden intermediate name could repair it, which no
         // ordinary client knows to ask for.
-        if let Some(cur) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
-            if cur.deleted && cur.parent_ref_pending {
+        let cur = state.registry.get(&src).await.map_err(|e| e.to_string())?;
+        let Some(cur) = cur else {
+            // Source gone entirely: nothing to release, ever.
+            return Ok(true);
+        };
+        if cur.deleted {
+            if cur.parent_ref_pending {
                 if let Some(gp) = cur.forked_from.as_ref() {
-                    release_fork_ref(&state, &gp.source, &gp.fork_id).await?;
+                    if release_fork_ref(&state, &gp.source, &gp.fork_id).await? {
+                        state
+                            .registry
+                            .update(&src, |x| x.parent_ref_pending = false)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        state.registry.invalidate(&src);
+                    }
                 }
-                state
-                    .registry
-                    .update(&src, |x| x.parent_ref_pending = false)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                state.registry.invalidate(&src);
-                return Ok(());
             }
+            // A hard-deleted source holds no live references.
+            return Ok(true);
         }
         // Release the reference AND decide the source's fate in one CAS,
         // against the children it has at that instant. Splitting the two
         // let a new fork install itself in between and then be orphaned
         // by an unconditional tombstone.
         let mut tombstoned = false;
+        let mut removed_ref = false;
         state
             .registry
             .cas_update_retry(&src, |x| {
                 let before = x.fork_children.len();
                 x.fork_children.retain(|c| c != &fork_id);
                 let removed = x.fork_children.len() != before;
+                removed_ref = removed;
                 let expired = x.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
                 let should_tombstone =
                     x.fork_children.is_empty() && (x.soft_deleted || expired) && !x.deleted;
@@ -3150,22 +3230,23 @@ fn release_fork_ref(
         if tombstoned && fork_failpoints::should_stop_after_tombstone(&src) {
             // "Crash" here: the tombstone and its debt are durable, the
             // recursive release has not run.
-            return Ok(());
+            return Ok(removed_ref);
         }
         if tombstoned {
             if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
                 if let Some(gf) = after.forked_from.as_ref() {
-                    release_fork_ref(&state, &gf.source, &gf.fork_id).await?;
-                    state
-                        .registry
-                        .update(&src, |x| x.parent_ref_pending = false)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    state.registry.invalidate(&src);
+                    if release_fork_ref(&state, &gf.source, &gf.fork_id).await? {
+                        state
+                            .registry
+                            .update(&src, |x| x.parent_ref_pending = false)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        state.registry.invalidate(&src);
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(removed_ref)
     })
 }
 
@@ -3196,13 +3277,18 @@ fn delete_lifecycle(
         if d.deleted {
             if d.parent_ref_pending {
                 if let Some((src, fid)) = parent.clone() {
-                    release_fork_ref(&state, &src, &fid).await?;
-                    state
-                        .registry
-                        .update(&name, |x| x.parent_ref_pending = false)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    state.registry.invalidate(&name);
+                    // Clear the debt only on a CONCLUSIVE release: an
+                    // absent reference on a live source may still be
+                    // installed by a creator in flight, and this very
+                    // retry is what repairs that crash later.
+                    if release_fork_ref(&state, &src, &fid).await? {
+                        state
+                            .registry
+                            .update(&name, |x| x.parent_ref_pending = false)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        state.registry.invalidate(&name);
+                    }
                 }
             }
             // Then walk UP. A crashed cascade leaves the debt on a
@@ -3220,15 +3306,18 @@ fn delete_lifecycle(
                 if !(anc.deleted && anc.parent_ref_pending) {
                     break;
                 }
-                if let Some(gp) = anc.forked_from.as_ref() {
-                    release_fork_ref(&state, &gp.source, &gp.fork_id).await?;
+                let conclusive = match anc.forked_from.as_ref() {
+                    Some(gp) => release_fork_ref(&state, &gp.source, &gp.fork_id).await?,
+                    None => true,
+                };
+                if conclusive {
+                    state
+                        .registry
+                        .update(&f.source, |x| x.parent_ref_pending = false)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    state.registry.invalidate(&f.source);
                 }
-                state
-                    .registry
-                    .update(&f.source, |x| x.parent_ref_pending = false)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                state.registry.invalidate(&f.source);
                 next = anc.forked_from.clone();
             }
             return Ok(());
@@ -3269,18 +3358,22 @@ fn delete_lifecycle(
             return Ok(());
         }
         if let Some((src, fid)) = parent {
-            release_fork_ref(&state, &src, &fid).await?;
-            // Released: the tombstone owes nothing more. This is
-            // `update`, not `cas_update`, because the descriptor is
-            // already deleted and CAS refuses tombstones by design —
-            // which is exactly why the debt has to be recorded ON the
-            // tombstone and cleared this way.
-            state
-                .registry
-                .update(&name, |x| x.parent_ref_pending = false)
-                .await
-                .map_err(|e| e.to_string())?;
-            state.registry.invalidate(&name);
+            // Released CONCLUSIVELY: the tombstone owes nothing more.
+            // This is `update`, not `cas_update`, because the
+            // descriptor is already deleted and CAS refuses tombstones
+            // by design — which is exactly why the debt has to be
+            // recorded ON the tombstone and cleared this way. An
+            // absent-on-live-source release keeps the debt: the
+            // child's creator may still install the reference, and the
+            // next DELETE of this tombstone retries and removes it.
+            if release_fork_ref(&state, &src, &fid).await? {
+                state
+                    .registry
+                    .update(&name, |x| x.parent_ref_pending = false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                state.registry.invalidate(&name);
+            }
         }
         Ok(())
     })

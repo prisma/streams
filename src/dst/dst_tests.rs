@@ -10358,10 +10358,14 @@ async fn fork_creation_and_source_deletion_serialize() {
     let (_, h, _) = hreq(addr, "GET", "/v1/stream/rsrc", &[], b"").await;
     let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
 
-    // Park the delete before its decision, then start it.
+    // Park the delete before its decision, then start it — and PROVE
+    // it parked instead of assuming 80 ms was enough.
+    let dbefore = crate::http::fork_failpoints::parked_delete_count();
     crate::http::fork_failpoints::park_delete_before_decision("rsrc");
     let del = tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await });
-    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    while crate::http::fork_failpoints::parked_delete_count() <= dbefore {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 
     // With the delete held there, the fork installs its reference.
     let (fst, _, fb) = hreq(
@@ -12364,12 +12368,12 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
 // nothing answered from its staging can outlive it.
 // ---------------------------------------------------------------
 
-/// DUR-002: a duplicate's success is the original's durability. If the
-/// group carrying the original FAILS, a same-group duplicate fails
-/// with it — and a later retry never observes `duplicate: true` for a
-/// row that was never written. Order-independent: whichever group the
-/// second request lands in, the forbidden outcome is a duplicate
-/// verdict grounded in the failed group's staging.
+/// DUR-002: original and exact duplicate FORCED into one commit group
+/// (hold-commit gate + enqueue counter as entered-proof), and the
+/// group write fails: BOTH must receive the group failure. This is
+/// the assertion the earlier order-independent version could not
+/// make — and it kills the labeling hole where a premature duplicate
+/// on one side passed the opposite side's check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_group_write_fails_its_duplicate_too() {
     let store = mem();
@@ -12384,7 +12388,10 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
-    engine.fail_next_group_for(identity);
+    // Compose the group deterministically: hold the committer, land
+    // both requests in the queue (counter-proof), arm, release.
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
     let ph = [
         ("content-type", "application/json"),
         ("producer-id", "p"),
@@ -12394,6 +12401,9 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
     let r1 = tokio::spawn(async move {
         hreq(addr, "POST", "/v1/stream/dur002", &ph, br#"[{"a":1}]"#).await
     });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
     let r2 = tokio::spawn(async move {
         hreq(
             addr,
@@ -12409,24 +12419,20 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
         )
         .await
     });
-    let (s1, _, _) = r1.await.unwrap();
-    let (s2, h2, _) = r2.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
-    // At least one request rode the failed group.
-    assert!(
-        s1 >= 500 || s2 >= 500,
-        "nobody saw the failed write: {s1} {s2}"
-    );
-    // The forbidden outcome: a success shaped as a DUPLICATE while the
-    // original's write failed. (A 204 on the raw route marks the
-    // duplicate answer; a fresh original answers 200.)
-    if s1 >= 500 {
-        assert_ne!(s2, 204, "a duplicate verdict outlived its failed original");
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    let _ = h2;
-    // Ground truth after the storm: one more exact retry either finds
-    // the row durable (someone committed: answers duplicate) or
-    // commits as the original — and the record count agrees.
+    engine.fail_next_group_for(identity);
+    drop(hold);
+
+    let (s1, _, _) = r1.await.unwrap();
+    let (s2, _, _) = r2.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(
+        s1 >= 500 && s2 >= 500,
+        "a promise outlived its failed group: {s1} {s2}"
+    );
+    // Recovery: the exact retry commits as the original, exactly once.
     let (s3, _, _) = hreq(
         addr,
         "POST",
@@ -12445,6 +12451,184 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
     let payloads = recs.iter().filter(|r| r.get("a").is_some()).count();
     assert_eq!(payloads, 1, "exactly-once violated: {recs:?}");
+    engine_shutdown(&state).await;
+}
+
+/// DUR-006: sequence REUSE (same tuple, different body) judged against
+/// a row staged in the same failed group. Both requests forced into
+/// one group; both must receive the group failure — never a 409 about
+/// a row that was never written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reuse_verdict_dies_with_its_failed_group() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dur006",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state.registry.invalidate("dur006");
+    let desc = state.registry.get("dur006").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let a = tokio::spawn(async move {
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/dur006/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"{"x":1}"#,
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let b = tokio::spawn(async move {
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/dur006/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("producer-id", "p"),
+                ("producer-epoch", "1"),
+                ("producer-seq", "0"),
+            ],
+            br#"{"x":"DIFFERENT"}"#,
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.fail_next_group_for(identity);
+    drop(hold);
+    let (s1, _, _) = a.await.unwrap();
+    let (s2, _, _) = b.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(
+        s1 >= 500 && s2 >= 500,
+        "a reuse verdict (or its original) outlived the failed group: {s1} {s2}"
+    );
+    // Ground truth: the original retry commits; only THEN is reuse a
+    // durable fact and the different-body request conflicts.
+    let (s3, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/dur006/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"{"x":1}"#,
+    )
+    .await;
+    assert_eq!(s3, 200, "original retry: {s3}");
+    let (s4, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/dur006/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"{"x":"DIFFERENT"}"#,
+    )
+    .await;
+    assert_eq!(s4, 409, "reuse with durable ground: {s4}");
+    engine_shutdown(&state).await;
+}
+
+/// DUR-004: close-only and its exact retry in ONE failed group — both
+/// fail, nothing publishes sealing, and the later plain close seals
+/// exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_group_fails_the_close_and_its_retry_together() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur004", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("dur004");
+    let desc = state.registry.get("dur004").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let c1 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur004",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            b"",
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let c2 = tokio::spawn(async move {
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur004",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            b"",
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.fail_next_group_for(identity);
+    drop(hold);
+    let (s1, _, _) = c1.await.unwrap();
+    let (s2, _, _) = c2.await.unwrap();
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(
+        s1 >= 400 && s2 >= 400,
+        "a close (or its idempotent echo) outlived the failed group: {s1} {s2}"
+    );
+    state.registry.invalidate("dur004");
+    let d = state.registry.get("dur004").await.unwrap().unwrap();
+    assert!(!d.sealed, "sealing published off a failed close");
+    // Recovery.
+    let (s3, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/dur004",
+        &[("content-type", "application/json"), ("stream-closed", "true")],
+        b"",
+    )
+    .await;
+    assert!(s3 == 200 || s3 == 204, "recovery close: {s3}");
+    state.registry.invalidate("dur004");
+    let d = state.registry.get("dur004").await.unwrap().unwrap();
+    assert!(d.sealed && d.sealing.is_none());
     engine_shutdown(&state).await;
 }
 
@@ -12502,20 +12686,35 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         .unwrap()
         .sealing
         .expect("no claim installed");
-    let fence = crate::http::fence_segment_for_key(
-        &state,
-        "sel021",
-        &epoch,
-        "",
-        claim.claim_generation,
-    )
-    .await;
-    match fence {
-        Ok(closed) => assert!(!closed, "closed=true before any close committed"),
-        Err(_) => {}
+    // FORCED same group: hold the committer, release the close into
+    // the queue, land the fence behind it, arm, release. The fence and
+    // the close now share one commit group by construction — the
+    // co-residency SEL-021 demands.
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    crate::http::fork_failpoints::release_close_before_enqueue("sel021");
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let st_f = state.clone();
+    let ep_f = epoch.clone();
+    let g_f = claim.claim_generation;
+    let fence = tokio::spawn(async move {
+        crate::http::fence_segment_for_key(&st_f, "sel021", &ep_f, "", g_f).await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
     engine.fail_next_group_for(identity);
-    crate::http::fork_failpoints::release_close_before_enqueue("sel021");
+    drop(hold);
+    let fence = fence.await.unwrap();
+    match fence {
+        Ok(closed) => assert!(
+            !closed,
+            "the fence reported closed=true off a write that failed"
+        ),
+        Err(_) => {} // failed with its group: equally honest
+    }
     let (cs, _, _) = close.await.unwrap();
     assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
     assert!(cs >= 400, "the close reported success for a failed write: {cs}");
@@ -12718,13 +12917,18 @@ async fn merge_phase_b_declines_under_sealing() {
     // Park the merge between parent seal and publication; plant a
     // sealing claim in the window (planting bypasses the entry guard
     // on purpose — the guard is the OTHER direction of this fence).
+    let pbefore = crate::scaler3::failpoints::publish_parked_count();
     crate::scaler3::failpoints::arm_before_publish();
     let (st2, a, b) = (state.clone(), live[0], live[1]);
     let merge =
         tokio::spawn(
             async move { crate::scaler3::execute_merge(&st2, "sel019", a, b).await },
         );
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Entered-proof: the merge REACHED phase B (parents sealed, parked
+    // before publication) before the seal claim is planted.
+    while crate::scaler3::failpoints::publish_parked_count() <= pbefore {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
     state
         .registry
         .cas_update("sel019", |d| {
@@ -13082,11 +13286,14 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
             addr,
             "POST",
             "/v1/streams/q12/records",
-            &key,
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
             format!("{{\"n\":{i}}}").as_bytes(),
         )
         .await;
-        assert_eq!(st, 200);
+        assert_eq!(st, 200, "append {i}");
     }
     let (st, _, b) = preq(
         addr,
@@ -13114,11 +13321,11 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
         br#"{"max": 3}"#,
     )
     .await;
-    let first_failed = st >= 500;
-    // Whether or not the pull's OWN group carried the armed identity
-    // (batching), the invariant is the same: leases the client can act
-    // on exist only if their write was durable. The exact retry must
-    // see a coherent world.
+    // The selector covers queue operations (round 13), so the pull's
+    // group deterministically trips the arm.
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(st >= 500, "a pull outlived its failed group: {st}");
+    let first_failed = true;
     let _ = b;
     let (st2, _, b2) = preq(
         addr,
@@ -13130,7 +13337,7 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
     .await;
     assert_eq!(st2, 200, "retry pull: {}", String::from_utf8_lossy(&b2));
     let v: serde_json::Value = serde_json::from_slice(&b2).unwrap();
-    let leased = v["records"].as_array().map(|a| a.len()).unwrap_or(0);
+    let leased = v["messages"].as_array().map(|a| a.len()).unwrap_or(0);
     if first_failed {
         // No phantom in-memory leases may block the retry: all three
         // records lease afresh.
@@ -13143,6 +13350,200 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
         // sees them held (per-key FIFO) — equally coherent.
         assert!(leased <= 3);
     }
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
+// Round 13: the fork-reference saga survives a creator crash, and
+// queue settlement joins the phantom audit.
+// ---------------------------------------------------------------
+
+/// FRK-013, crash variant: the creator dies with the source reference
+/// freshly installed (parked forever at the post-install point). The
+/// child's tombstone RETAINED its debt — because its earlier release
+/// found the reference absent on a live source, which is not
+/// conclusive — so the ordinary retry of the child DELETE removes the
+/// late-installed reference and frees the source. No resumed creator,
+/// no repair tool: the retry the client already owns is the repair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk13c", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/frk13c", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+
+    // Park the creator BEFORE the install (child pre-check passed),
+    // delete the child, then let the install land and park the creator
+    // AFTER it — the simulated crash point.
+    let pre = crate::http::fork_failpoints::parked_fork_ref_count();
+    let post = crate::http::fork_failpoints::parked_fork_ref_post_count();
+    crate::http::fork_failpoints::park_fork_before_source_ref("frk13kid");
+    crate::http::fork_failpoints::park_fork_after_source_ref("frk13kid");
+    let b2 = boundary.clone();
+    let _creator = tokio::spawn(async move {
+        hreq(
+            addr,
+            "PUT",
+            "/v1/stream/frk13kid",
+            &[
+                ("content-type", "application/json"),
+                ("stream-forked-from", "frk13c"),
+                ("stream-fork-offset", &b2),
+            ],
+            b"",
+        )
+        .await
+    });
+    while crate::http::fork_failpoints::parked_fork_ref_count() <= pre {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // Child dies in the stamp-to-install window; its tombstone keeps
+    // the debt (the reference is absent on a live source — not
+    // conclusive).
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13kid", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    state.registry.invalidate("frk13kid");
+    let tomb = state.registry.get("frk13kid").await.unwrap().unwrap();
+    assert!(tomb.deleted, "no tombstone");
+    assert!(
+        tomb.parent_ref_pending,
+        "the tombstone cleared its debt on an inconclusive release"
+    );
+
+    // The install lands; the creator "crashes" (stays parked forever).
+    crate::http::fork_failpoints::release_fork_before_source_ref("frk13kid");
+    while crate::http::fork_failpoints::parked_fork_ref_post_count() <= post {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    state.registry.invalidate("frk13c");
+    let src = state.registry.get("frk13c").await.unwrap().unwrap();
+    assert_eq!(
+        src.fork_children.len(),
+        1,
+        "the late install did not land — the crash window is not being tested"
+    );
+
+    // THE REPAIR: the ordinary retry of the child DELETE. Its retained
+    // debt retries the release, finds the late reference, removes it.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13kid", &[], b"").await;
+    assert!(st == 204 || st == 200 || st == 404 || st == 410, "retry delete: {st}");
+    state.registry.invalidate("frk13c");
+    let src = state.registry.get("frk13c").await.unwrap().unwrap();
+    assert!(
+        src.fork_children.is_empty(),
+        "the crashed creator's reference survived the delete retry: {:?}",
+        src.fork_children
+    );
+    // And the source hard-deletes cleanly.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13c", &[], b"").await;
+    assert!(st == 204 || st == 200, "source delete: {st}");
+    state.registry.invalidate("frk13c");
+    let gone = state.registry.get("frk13c").await.unwrap();
+    assert!(
+        gone.is_none() || gone.as_ref().is_some_and(|d| d.deleted && !d.soft_deleted),
+        "the source was retained by the crashed creator's reference: {gone:?}"
+    );
+    // Unpark the "dead" creator so shutdown is clean; its outcome is
+    // irrelevant — the world has already been repaired around it.
+    crate::http::fork_failpoints::release_fork_after_source_ref("frk13kid");
+    engine_shutdown(&state).await;
+}
+
+/// QUE-004: a settlement whose group write fails must leave no
+/// phantom acks — the lease tokens remain valid, and the exact settle
+/// retry acknowledges every one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_settle_leaves_no_phantom_acks() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/que004",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/que004/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200, "append {i}");
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/que004/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/que004/consumers/c1:pull",
+        &key,
+        br#"{"max": 3}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let recs = v["messages"].as_array().cloned().unwrap_or_default();
+    assert_eq!(recs.len(), 3, "{v}");
+    let acks: Vec<serde_json::Value> = recs
+        .iter()
+        .map(|r| serde_json::json!({"leaseToken": r["leaseToken"]}))
+        .collect();
+    let settle_body = serde_json::json!({ "acks": acks }).to_string();
+
+    state.registry.invalidate("que004");
+    let desc = state.registry.get("que004").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+    engine.fail_next_group_for(identity);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/que004/consumers/c1:settle",
+        &key,
+        settle_body.as_bytes(),
+    )
+    .await;
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(st >= 500, "a settlement outlived its failed group: {st}");
+
+    // No phantom acks: the SAME tokens settle successfully on retry.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/que004/consumers/c1:settle",
+        &key,
+        settle_body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200, "settle retry: {}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        v["acked"].as_u64().unwrap_or(0),
+        3,
+        "phantom acks consumed the lease tokens: {v}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -13330,10 +13731,13 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     let first = state.registry.get("abadel").await.unwrap().unwrap().stream_epoch;
 
     // Park a delete just before it decides.
+    let dbefore = crate::http::fork_failpoints::parked_delete_count();
     crate::http::fork_failpoints::park_delete_before_decision("abadel");
     let deleter =
         tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/abadel", &[], b"").await });
-    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    while crate::http::fork_failpoints::parked_delete_count() <= dbefore {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 
     // Delete and recreate underneath it, through a SECOND delete that
     // is not parked (the failpoint is armed for the parked one only —

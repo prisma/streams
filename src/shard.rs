@@ -667,6 +667,10 @@ pub struct ShardEngine {
     /// state updates applying in seq order across the two callers.
     dispatch_gate: Mutex<()>,
     #[cfg(test)]
+    commit_gate: Mutex<()>,
+    #[cfg(test)]
+    appends_enqueued: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
     fail_group_for: Mutex<Option<std::collections::HashSet<[u8; 16]>>>,
     #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
@@ -825,6 +829,10 @@ impl ShardEngine {
             history2: tokio::sync::OnceCell::new(),
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            commit_gate: Mutex::new(()),
+            #[cfg(test)]
+            appends_enqueued: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             fail_group_for: Mutex::new(None),
             #[cfg(test)]
@@ -1194,6 +1202,9 @@ impl ShardEngine {
     }
 
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
+        #[cfg(test)]
+        self.appends_enqueued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // Ack->next-enqueue probe (armed by the pump at ack dispatch): the
         // first request after an ack wave stamps how fast the closed-loop
         // herd reacts — the number the gather window is sized against.
@@ -1782,6 +1793,15 @@ impl ShardEngine {
                 }
                 return;
             }
+            // Test gate: while held, the committer parks HERE — after
+            // taking the first op, before draining the rest — so a test
+            // releases it with N ops queued and gets exactly one group
+            // containing all of them. Deterministic group composition,
+            // the primitive every same-group scenario needs.
+            #[cfg(test)]
+            {
+                let _hold = self.commit_gate.lock().unwrap();
+            }
             let mut ops = vec![first];
             let mut bytes = match &ops[0] {
                 CommitOp::Append(r) => r.bytes,
@@ -1827,6 +1847,29 @@ impl ShardEngine {
                 }
             }
             self.commit_group(ops, &cfg).await;
+        }
+    }
+
+    /// The ONE way a commit group's promises fail: every pending
+    /// result — success or provisional refusal alike — is replaced by
+    /// the group's failure. Used by the real write-error arm and by
+    /// the DST group-failure hook, so the two can never diverge.
+    fn send_group_failure(
+        msg: &str,
+        pending: Vec<(
+            oneshot::Sender<Result<AppendAck, AppendErr>>,
+            Result<AppendAck, AppendErr>,
+        )>,
+        queue_pending: Vec<(
+            oneshot::Sender<Result<crate::queue::QueueOut, String>>,
+            crate::queue::QueueOut,
+        )>,
+    ) {
+        for (resp, _) in pending {
+            let _ = resp.send(Err(AppendErr::Internal(msg.to_string())));
+        }
+        for (resp, _) in queue_pending {
+            let _ = resp.send(Err(msg.to_string()));
         }
     }
 
@@ -2502,6 +2545,8 @@ impl ShardEngine {
                     local.fields.trimmed = local.fields.trimmed.max(trim_to);
                 }
                 CommitOp::Queue { op, resp, .. } => {
+                    #[cfg(test)]
+                    client_append_hashes.insert(hash);
                     use crate::queue::*;
                     // Lazy load of durable consumer state.
                     let loaded = { local.handle.state.lock().unwrap().queue.loaded };
@@ -3019,13 +3064,15 @@ impl ShardEngine {
             if tripped {
                 self.fail_group_tripped
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let msg = "failpoint: group write failed".to_string();
-                for (resp, _) in pending {
-                    let _ = resp.send(Err(AppendErr::Internal(msg.clone())));
-                }
-                for (resp, _) in queue_pending {
-                    let _ = resp.send(Err(msg.clone()));
-                }
+                // Through the SAME sender the real write-error arm
+                // uses: a future change to the production failure path
+                // is exercised by every DST scenario, not silently
+                // diverged from.
+                Self::send_group_failure(
+                    "failpoint: group write failed",
+                    pending,
+                    queue_pending,
+                );
                 return;
             }
         }
@@ -3108,13 +3155,7 @@ impl ShardEngine {
                 self.pump_wake.notify_one();
             }
             Err(e) => {
-                let msg = e.to_string();
-                for (resp, _) in pending {
-                    let _ = resp.send(Err(AppendErr::Internal(msg.clone())));
-                }
-                for (resp, _) in queue_pending {
-                    let _ = resp.send(Err(msg.clone()));
-                }
+                Self::send_group_failure(&e.to_string(), pending, queue_pending);
             }
         }
     }
@@ -3243,6 +3284,25 @@ impl ShardEngine {
     /// WriteBatch that reaches the store and dies. One-shot; the
     /// tripped counter is the entered-proof a test asserts instead of
     /// assuming its failpoint fired.
+    /// Test hook: hold the COMMIT gate. While held, the committer
+    /// takes at most one op and then parks before gathering; releasing
+    /// the guard lets it drain everything queued meanwhile into ONE
+    /// commit group. The companion to `fail_next_group_for` for
+    /// deterministic same-group scenarios.
+    #[cfg(test)]
+    pub fn test_hold_commit(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.commit_gate.lock().unwrap()
+    }
+
+    /// Entered-proof for group-composition tests: client appends (and
+    /// fences) enqueued on this engine so far. A test polls the delta
+    /// instead of sleeping and hoping its request made the queue.
+    #[cfg(test)]
+    pub fn appends_enqueued(&self) -> u64 {
+        self.appends_enqueued
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     #[cfg(test)]
     pub fn fail_next_group_for(&self, identity: [u8; 16]) {
         self.fail_group_for
