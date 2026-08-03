@@ -63,6 +63,10 @@ Deploy **servers first**: `deploy-region.sh <r> gen` reads
 Learned the hard way; a run that violates one of these produces numbers
 that look fine and mean nothing.
 
+0. **Campaign scripts must run on macOS bash 3.2.** No `declare -A`
+   (associative arrays silently parse keys as arithmetic — soak9's
+   monitor died of `us: unbound variable`), no `${arr[@]}` on empty
+   arrays without the `+` guard.
 1. **Deploy regions sequentially.** Parallel `bunx` invocations race on the
    shared package cache and fail with `EEXIST`.
 2. **Never trust a cached URL.** Preview domains are per-version; a
