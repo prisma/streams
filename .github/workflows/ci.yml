@@ -139,3 +139,37 @@ jobs:
           cd conformance
           npm ci
           CONFORMANCE_TEST_URL=http://127.0.0.1:8090 npm test
+
+  # Job: the product field corpus (scripts/field-gate.mjs) — the same
+  # 20 checks the cloud campaign runs, against a local server with
+  # aggressive split thresholds so a real scaler split fires inside CI.
+  # Negative auth, raw create replay, product seal replay, fork replay,
+  # a real automatic split, and raw/product default-key isolation.
+  product-field-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build server
+        run: cargo build --release --bin s3lite --bin streams-slate
+      - name: Run the field gate (auth enabled, deterministic split)
+        run: |
+          ./target/release/s3lite --listen 127.0.0.1:9500 --latency-ms 2 &
+          sleep 1
+          # Low, deterministic scaler thresholds: one hot evaluation
+          # over a 10 s window splits, so the "load drove a real split"
+          # check fires within the gate's own load phase instead of
+          # racing production cadence.
+          SCALE_EVAL_SECS=5 SCALE_RATE_WINDOW_SECS=10 \
+          SCALE_HOT_PCT=1 SCALE_HOT_EVALS=1 SCALE_COOLDOWN_SECS=5 \
+          ./target/release/streams-slate --listen 127.0.0.1:8092 \
+            --s3-endpoint http://127.0.0.1:9500 --bucket fg-$RANDOM \
+            --max-unflushed-bytes 67108864 \
+            --flush-interval-ms 1 --wal-flush-gap-ms 2 \
+            --auth-token ci-gate-token &
+          sleep 2
+          STREAMS_TOKEN=ci-gate-token node scripts/field-gate.mjs http://127.0.0.1:8092

@@ -2511,7 +2511,14 @@ async fn create_stream(
             match state.registry.get(&name).await {
                 Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
                 _ => {
-                    if let Err(m) = release_fork_ref(&state, &fc.source, &fork_id).await {
+                    if let Err(m) = release_fork_ref(
+                        &state,
+                        &fc.source,
+                        &fork_id,
+                        &fc.source_desc.stream_epoch,
+                    )
+                    .await
+                    {
                         tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
                     }
                     return err_resp(
@@ -2694,7 +2701,9 @@ async fn create_stream(
                 // initialization installed, so the parent is not held by
                 // a child that will never exist.
                 if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty()) {
-                    if let Err(m) = release_fork_ref(&state, &fr.source, &fr.fork_id).await {
+                    if let Err(m) =
+                        release_fork_ref(&state, &fr.source, &fr.fork_id, &fr.source_epoch).await
+                    {
                         tracing::error!(stream = %name, "releasing an abandoned fork claim: {m}");
                     }
                 }
@@ -3159,15 +3168,42 @@ pub(crate) mod fork_failpoints {
 /// it. Callers clear debt only on a conclusive release; retained debt
 /// is settled by any later tombstone DELETE, which retries this
 /// release and finds the late-installed reference.
+#[cfg(test)]
+pub(crate) async fn release_fork_ref_for_test(
+    state: &Arc<AppState>,
+    src: &str,
+    fork_id: &str,
+    expect_source_epoch: &str,
+) -> Result<bool, String> {
+    release_fork_ref(state, src, fork_id, expect_source_epoch).await
+}
+
 fn release_fork_ref(
     state: &Arc<AppState>,
     src: &str,
     fork_id: &str,
+    expect_source_epoch: &str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
     let state = state.clone();
     let src = src.to_string();
     let fork_id = fork_id.to_string();
+    let expect_source_epoch = expect_source_epoch.to_string();
     Box::pin(async move {
+        // Incarnation fence (round 14): the reference belongs to the
+        // source INCARNATION the child forked. A delayed cleanup can
+        // run after that name was deleted and recreated; releasing
+        // against — or worse, evaluating expiry/soft-delete lifecycle
+        // conditions against — the REPLACEMENT would corrupt a stream
+        // this fork never touched. A mismatch means the original
+        // source is gone: nothing to release, nothing pinned, so the
+        // release is conclusive. An empty expectation opts out (the
+        // recursive ancestor settle, which already re-reads each hop).
+        if !expect_source_epoch.is_empty() {
+            match state.registry.get(&src).await.map_err(|e| e.to_string())? {
+                Some(cur) if cur.stream_epoch == expect_source_epoch => {}
+                _ => return Ok(true),
+            }
+        }
         // Release BY ID: a retried delete removes an id that is already
         // gone (a no-op), where an anonymous decrement would have
         // double-released and freed a still-live fork's data.
@@ -3186,7 +3222,7 @@ fn release_fork_ref(
         if cur.deleted {
             if cur.parent_ref_pending {
                 if let Some(gp) = cur.forked_from.as_ref() {
-                    if release_fork_ref(&state, &gp.source, &gp.fork_id).await? {
+                    if release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await? {
                         state
                             .registry
                             .update(&src, |x| x.parent_ref_pending = false)
@@ -3208,6 +3244,18 @@ fn release_fork_ref(
         state
             .registry
             .cas_update_retry(&src, |x| {
+                // RESET every out-parameter at the TOP of each attempt.
+                // cas_update_retry re-runs this closure after an
+                // object-store precondition conflict, and a decision
+                // from a LOST attempt must not survive into a winning
+                // one — e.g. attempt 1 tombstones (no children), loses
+                // to a concurrent child install, attempt 2 sees the
+                // child and does NOT tombstone; a stale tombstoned=true
+                // would then release this source's own parent reference
+                // while it is still retained for a live child, breaking
+                // the ancestry chain.
+                tombstoned = false;
+                removed_ref = false;
                 let before = x.fork_children.len();
                 x.fork_children.retain(|c| c != &fork_id);
                 let removed = x.fork_children.len() != before;
@@ -3235,7 +3283,7 @@ fn release_fork_ref(
         if tombstoned {
             if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
                 if let Some(gf) = after.forked_from.as_ref() {
-                    if release_fork_ref(&state, &gf.source, &gf.fork_id).await? {
+                    if release_fork_ref(&state, &gf.source, &gf.fork_id, "").await? {
                         state
                             .registry
                             .update(&src, |x| x.parent_ref_pending = false)
@@ -3269,19 +3317,21 @@ fn delete_lifecycle(
         let parent = d
             .forked_from
             .as_ref()
-            .map(|f| (f.source.clone(), f.fork_id.clone()));
+            .map(|f| (f.source.clone(), f.fork_id.clone(), f.source_epoch.clone()));
         // Already a tombstone with an unpaid debt: just pay it. This is
         // also how a crashed CASCADE is repaired — an intermediate
         // generation that was tombstoned but never released its own
         // parent is reachable by deleting it again.
         if d.deleted {
             if d.parent_ref_pending {
-                if let Some((src, fid)) = parent.clone() {
+                if let Some((src, fid, sep)) = parent.clone() {
                     // Clear the debt only on a CONCLUSIVE release: an
                     // absent reference on a live source may still be
                     // installed by a creator in flight, and this very
-                    // retry is what repairs that crash later.
-                    if release_fork_ref(&state, &src, &fid).await? {
+                    // retry is what repairs that crash later. A source
+                    // recreated since the fork is conclusive too — the
+                    // incarnation this debt was owed to is gone.
+                    if release_fork_ref(&state, &src, &fid, &sep).await? {
                         state
                             .registry
                             .update(&name, |x| x.parent_ref_pending = false)
@@ -3307,7 +3357,9 @@ fn delete_lifecycle(
                     break;
                 }
                 let conclusive = match anc.forked_from.as_ref() {
-                    Some(gp) => release_fork_ref(&state, &gp.source, &gp.fork_id).await?,
+                    Some(gp) => {
+                        release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await?
+                    }
                     None => true,
                 };
                 if conclusive {
@@ -3357,7 +3409,7 @@ fn delete_lifecycle(
         if !hard_deleted {
             return Ok(());
         }
-        if let Some((src, fid)) = parent {
+        if let Some((src, fid, sep)) = parent {
             // Released CONCLUSIVELY: the tombstone owes nothing more.
             // This is `update`, not `cas_update`, because the
             // descriptor is already deleted and CAS refuses tombstones
@@ -3366,7 +3418,7 @@ fn delete_lifecycle(
             // absent-on-live-source release keeps the debt: the
             // child's creator may still install the reference, and the
             // next DELETE of this tombstone retries and removes it.
-            if release_fork_ref(&state, &src, &fid).await? {
+            if release_fork_ref(&state, &src, &fid, &sep).await? {
                 state
                     .registry
                     .update(&name, |x| x.parent_ref_pending = false)
@@ -3522,10 +3574,15 @@ pub(crate) fn final_code_disposition(
         return FinalDisposition::AmbiguousOrTransient;
     }
     match code {
+        // No readable code — an unreadable/absent error body — is
+        // UNKNOWN, and unknown keeps the intent (matching
+        // take_error_code's own contract). Only a NAMED verdict about
+        // the request is definitive; ordering codes stay ambiguous.
+        None => FinalDisposition::AmbiguousOrTransient,
         Some("producer_gap") | Some("producer_epoch_must_start_at_zero") => {
             FinalDisposition::AmbiguousOrTransient
         }
-        _ => FinalDisposition::DefinitivelyRejected,
+        Some(_) => FinalDisposition::DefinitivelyRejected,
     }
 }
 

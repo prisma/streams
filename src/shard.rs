@@ -1632,6 +1632,9 @@ impl ShardEngine {
         op: crate::queue::QueueOp,
     ) -> Result<crate::queue::QueueOut, String> {
         let (tx, rx) = oneshot::channel();
+        #[cfg(test)]
+        self.appends_enqueued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.tx
             .send(CommitOp::Queue { hash, op, resp: tx })
             .await
@@ -1961,6 +1964,17 @@ impl ShardEngine {
             /// failed — exactly the applied-vs-durable split the
             /// producer and tail state already respect.
             queue: Option<crate::queue::QueueState>,
+            /// Batch-local consumer-config overlay (round 14): config
+            /// rows are DB-backed, not handle-cached, so this exists
+            /// purely for SAME-GROUP consistency — a ConfigPut and a
+            /// later ConfigGet/Delete in one group must see each other,
+            /// and the DB (behind an unwritten WriteBatch) cannot show
+            /// them. Some(cfg) = put this group; None = deleted this
+            /// group; absent key = untouched (read the DB). Discarded
+            /// after the group either way: on success the rows are
+            /// durable, on failure they never existed.
+            queue_configs:
+                std::collections::HashMap<String, Option<crate::queue::ConsumerConfig>>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
@@ -2029,6 +2043,7 @@ impl ShardEngine {
                                 producers: HashMap::new(),
                                 seqs: HashMap::new(),
                                 queue: None,
+                                queue_configs: HashMap::new(),
                                 appended_bytes: 0,
                                 ring_recs: Vec::new(),
                             },
@@ -2611,13 +2626,25 @@ impl ShardEngine {
                                     }
                                     Ok(None) => break,
                                     Err(e) => {
-                                        tracing::warn!("queue state scan: {e}");
-                                        break;
+                                        // A truncated scan is a FAILED
+                                        // load, not a smaller queue: a
+                                        // missing lease or ack row would
+                                        // redeliver or double-deliver.
+                                        // Do not install partial state,
+                                        // do not mark loaded — the next
+                                        // request retries the load.
+                                        load_err = Some(e.to_string());
+                                        break 'tags;
                                     }
                                 }
                             }
                         }
-                        local.handle.state.lock().unwrap().queue = fresh;
+                        // Install ONLY a complete load. On failure the
+                        // handle stays loaded=false and the request
+                        // below fails, so the next one reloads.
+                        if load_err.is_none() {
+                            local.handle.state.lock().unwrap().queue = fresh;
+                        }
                     }
                     if let Some(m) = load_err {
                         let _ = resp.send(Err(m));
@@ -2629,17 +2656,23 @@ impl ShardEngine {
                     // state lock because they read the row directly.
                     let op = match op {
                         QueueOp::ConfigPut { consumer, cfg } => {
-                            let key = config_key(&hash, &consumer);
-                            let existing = match self.db.get(&key[..]).await {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    let _ = resp.send(Err(e.to_string()));
-                                    continue;
-                                }
+                            // Existing config: the same-group OVERLAY
+                            // first (a ConfigPut/Delete earlier in this
+                            // group is invisible to the DB behind the
+                            // unwritten batch), else the durable row.
+                            let existing = match local.queue_configs.get(&consumer) {
+                                Some(staged) => staged.clone(),
+                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                    Ok(v) => {
+                                        v.and_then(|v| serde_json::from_slice::<ConsumerConfig>(&v).ok())
+                                    }
+                                    Err(e) => {
+                                        let _ = resp.send(Err(e.to_string()));
+                                        continue;
+                                    }
+                                },
                             };
-                            let out = match existing
-                                .and_then(|v| serde_json::from_slice::<ConsumerConfig>(&v).ok())
-                            {
+                            let out = match existing {
                                 Some(old) if old == cfg => QueueOut::Config {
                                     cfg: Some(old),
                                     created: false,
@@ -2652,8 +2685,11 @@ impl ShardEngine {
                                 },
                                 None => {
                                     let enc = serde_json::to_vec(&cfg).unwrap_or_default();
-                                    wb.put(key, enc);
+                                    wb.put(config_key(&hash, &consumer), enc);
                                     extra_writes = true;
+                                    local
+                                        .queue_configs
+                                        .insert(consumer.clone(), Some(cfg.clone()));
                                     QueueOut::Config {
                                         cfg: Some(cfg),
                                         created: true,
@@ -2665,13 +2701,15 @@ impl ShardEngine {
                             continue;
                         }
                         QueueOp::ConfigGet { consumer } => {
-                            let key = config_key(&hash, &consumer);
-                            let cfg = match self.db.get(&key[..]).await {
-                                Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
-                                Err(e) => {
-                                    let _ = resp.send(Err(e.to_string()));
-                                    continue;
-                                }
+                            let cfg = match local.queue_configs.get(&consumer) {
+                                Some(staged) => staged.clone(),
+                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                    Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
+                                    Err(e) => {
+                                        let _ = resp.send(Err(e.to_string()));
+                                        continue;
+                                    }
+                                },
                             };
                             queue_pending.push((
                                 resp,
@@ -2705,12 +2743,21 @@ impl ShardEngine {
                                 wb.delete(k);
                             }
                             extra_writes = true;
+                            // Stage the deletion into the SAME batch-local
+                            // model every other op sees. Mutating the
+                            // shared handle here published a delete a
+                            // failed write never made durable — and a
+                            // Receive earlier in the group could copy the
+                            // consumer straight back on the success path.
+                            local.queue_configs.insert(consumer.clone(), None);
+                            if local.queue.is_none() {
+                                local.queue =
+                                    Some(local.handle.state.lock().unwrap().queue.clone());
+                            }
                             local
-                                .handle
-                                .state
-                                .lock()
-                                .unwrap()
                                 .queue
+                                .as_mut()
+                                .unwrap()
                                 .consumers
                                 .remove(&consumer);
                             queue_pending.push((
@@ -3294,8 +3341,8 @@ impl ShardEngine {
         self.commit_gate.lock().unwrap()
     }
 
-    /// Entered-proof for group-composition tests: client appends (and
-    /// fences) enqueued on this engine so far. A test polls the delta
+    /// Entered-proof for group-composition tests: client ops — appends,
+    /// fences, and queue submissions — enqueued on this engine so far. A test polls the delta
     /// instead of sleeping and hoping its request made the queue.
     #[cfg(test)]
     pub fn appends_enqueued(&self) -> u64 {

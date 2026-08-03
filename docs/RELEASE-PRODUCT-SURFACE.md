@@ -6,14 +6,31 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 
 ## Verdict
 
-**One gate is outstanding.** Everything the appendix defines passes,
-carries an explicit posture, or — for the post-audit cloud re-run — is
-blocked on a platform condition that is not ours to fix and has not
-been re-verified. Six audit rounds have been answered in full; each is summarized
-below, and each is a reason to read an earlier round's "pass" claims as
-of that date rather than as a standing verdict. Details in "Cloud gate" below. Until that run lands,
-this release is not fully gated, and the report says so rather than
-rounding up.
+**The product-surface, protocol-conformance, cost, and primary
+lifecycle gates pass. Some local work remains open, and one gate is
+externally blocked.** Fourteen audit rounds have been answered in full;
+each is summarized below, and each is a reason to read an earlier
+round's "pass" claims as of that date rather than as a standing
+verdict.
+
+Precisely: the pinned Durable Streams protocol suite, the product
+conformance / dual-surface / DST / cost gates in `cargo test`, the
+field-gate corpus, and the SDK package gate all pass at the head
+commit. **Still open locally** (none of it a known-incorrect behavior,
+all tracked): the deterministic whole-system simulator and its
+remaining catalogue scenarios (SEL-022's true remote-watermark pause,
+the CRT-007 two-joiner variant), the typed incarnation-mutation
+registry API, and the fork-install generation model that would let a
+crashed-before-install creator's tombstone debt converge without a
+DELETE retry. **Externally blocked:** the real-platform cloud campaign,
+on Compute edge publication. Until that campaign lands, this release is
+not fully gated, and the report says so rather than rounding up.
+
+Run `scripts/release-provenance.sh` to bind these claims to the exact
+artifact (server commit, SlateDB pin, SDK tarball SHA, layout version,
+conformance pin, DST scenario count) — the round-14 review caught the
+report naming one commit while the reviewed archive was another, and
+this removes that drift.
 
 Three words are used deliberately and never interchangeably:
 
@@ -277,6 +294,29 @@ through the public route.
 | `permanently_unadmittable` ignored the request bucket (0.1 req/s × 2 s < 1 token) | request capacity is checked too |
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
+
+## Fourteenth audit round (2026-08-03)
+
+The review's verdict — *freeze the surface; make queue operations and
+registry mutations follow one model each* — is the right one, and it
+named two concentrated correctness risks that were both real.
+
+| finding | fix |
+|---|---|
+| Queue **config** ops escaped the round-12 staging discipline: `ConfigDelete` mutated the shared handle (a failed write left the durable consumer while dropping it from memory; a same-group `Receive` could copy it back), and `ConfigPut`/`ConfigGet` read the DB directly, so two puts in one group both saw "missing" and both minted a creation | one batch-local overlay (`Local.queue_configs`) that every config op consults and stages into; `ConfigDelete` mutates the group-local queue, never the handle; published only on write success. A truncated lazy-load is now a FAILED load (no partial state installed as `loaded=true`) |
+| `release_fork_ref` set its `tombstoned`/`removed_ref` flags inside a `cas_update_retry` closure without resetting them per attempt, so a decision from a LOST attempt (tombstone) could survive into a winning one that retained the source for a live child — breaking the ancestry chain | the flags reset at the top of every attempt; only the successful attempt's decision is acted on |
+| Fork-reference release was not incarnation-fenced: a delayed cleanup could evaluate expiry/soft-delete against a RECREATED source | `release_fork_ref` takes the `ForkRef`'s `source_epoch`; a mismatch is conclusive (the original source is gone) — which also lets recreated-source debt converge instead of lingering |
+| `final_code_disposition` treated an unreadable/absent error body as definitive (abandoning the intent), contradicting `take_error_code`'s stated "unknown keeps the intent" | `None` code is now `AmbiguousOrTransient`; only a NAMED request verdict is definitive |
+| The local field gate never ran in CI | a `product-field-gate` job runs the 20-check corpus with a deterministic split |
+| The report named one commit while the reviewed archive was another | `scripts/release-provenance.sh` emits server commit, SlateDB pin, SDK tarball SHA, layout version, conformance pin, and DST scenario count |
+| The top-level README still described the removed product (profiles, `Stream-Encryption-Key`, the singular route as primary) | rewritten around the plural product API, with the raw route labeled the Durable Streams standards surface; `PROFILES.md` moved to `docs/history/`; a client-support statement added (Node 18/22 + Bun + Deno gated, browsers expected-not-verified) |
+
+Deferred to their own arcs, tracked, none a known-incorrect behavior:
+the typed incarnation-mutation registry API (the deeper form of the
+closure-hygiene and epoch-fence fixes above), the fork-install
+generation model (so a crashed-before-install creator's tombstone debt
+converges without a DELETE retry), and the whole-system simulator with
+SEL-022's remote-watermark pause and the CRT-007 two-joiner variant.
 
 ## Twelfth audit round (2026-08-03)
 

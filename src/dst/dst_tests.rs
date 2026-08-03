@@ -13548,6 +13548,229 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
 }
 
 // ---------------------------------------------------------------
+// Round 14: queue config joins the group-local model; fork releases
+// are incarnation-fenced.
+// ---------------------------------------------------------------
+
+/// A failed ConfigDelete must leave the consumer, its leases and its
+/// cursor untouched — it staged into the batch-local overlay, not the
+/// shared handle, so a lost write publishes nothing. And a
+/// Receive→ConfigDelete in one group must leave the consumer DELETED
+/// on success (the state copy-back must not resurrect it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_config_delete_is_group_local() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc14",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc14/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc14/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Lease both records so the consumer has real state to lose.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc14/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let held = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(held, 2);
+
+    // Fail the group carrying the ConfigDelete.
+    state.registry.invalidate("qc14");
+    let desc = state.registry.get("qc14").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+    engine.fail_next_group_for(identity);
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc14/consumers/c1", &key, b"").await;
+    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert!(st >= 500, "a config delete outlived its failed group: {st}");
+
+    // The consumer survives with its leases: a fresh pull leases
+    // NOTHING new (both records still held), which is only true if the
+    // delete published nothing to the handle.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc14/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "the consumer was destroyed by a failed delete");
+    let leased_now = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(99);
+    assert_eq!(leased_now, 0, "a failed delete dropped the consumer's leases");
+    engine_shutdown(&state).await;
+}
+
+/// Two ConfigPut for the same consumer in ONE group: the second must
+/// see the first's staged config (overlay), so exactly one reports
+/// created and an equal repeat is idempotent — the DB behind an
+/// unwritten batch would show both "missing" and mint two creations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_group_config_puts_see_each_other() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc14b",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state.registry.invalidate("qc14b");
+    let desc = state.registry.get("qc14b").await.unwrap().unwrap();
+    let route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    let cfg = br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#;
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let a = tokio::spawn(async move {
+        preq(addr, "PUT", "/v1/streams/qc14b/consumers/dup", &key, cfg).await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let b = tokio::spawn(async move {
+        preq(
+            addr,
+            "PUT",
+            "/v1/streams/qc14b/consumers/dup",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            cfg,
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    drop(hold);
+    let (s1, _, b1) = a.await.unwrap();
+    let (s2, _, b2) = b.await.unwrap();
+    // Createdness is carried by the STATUS: 201 created, 200
+    // idempotent echo. Exactly one creation — never two, which is what
+    // the DB behind an unwritten batch would have minted; and never a
+    // spurious 409 conflict between two IDENTICAL configs.
+    let _ = (&b1, &b2);
+    let codes = [s1, s2];
+    assert_eq!(
+        codes.iter().filter(|&&c| c == 201).count(),
+        1,
+        "expected exactly one creation, got {s1} and {s2}"
+    );
+    assert_eq!(
+        codes.iter().filter(|&&c| c == 200).count(),
+        1,
+        "expected exactly one idempotent echo, got {s1} and {s2}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// A delayed fork-reference release must not act on a RECREATED source:
+/// its incarnation fence means a release against a replaced source is
+/// conclusive (nothing pinned) rather than evaluating that stranger's
+/// lifecycle. Driven at the registry level with the real helper.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk14src", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state.registry.invalidate("frk14src");
+    let old_epoch = state
+        .registry
+        .get("frk14src")
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
+
+    // Recreate the source name at a new incarnation: DELETE (childless,
+    // so a clean hard delete) then PUT.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk14src", &[], b"").await;
+    assert!(st == 204 || st == 200, "delete: {st}");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk14src", &ct, br#"[{"n":9}]"#).await;
+    assert!(st == 200 || st == 201, "recreate: {st}");
+    state.registry.invalidate("frk14src");
+    let fresh = state.registry.get("frk14src").await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, old_epoch);
+
+    // Put the REPLACEMENT into a soft-deleted-with-one-child state, so
+    // a release that ignored the epoch fence WOULD tombstone it.
+    state
+        .registry
+        .cas_update("frk14src", |d| {
+            d.soft_deleted = true;
+            d.fork_children = vec!["ghost".into()];
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("frk14src");
+
+    // A release carrying the OLD source epoch is conclusive and leaves
+    // the replacement untouched — not soft-deleted, not tombstoned.
+    let conclusive = crate::http::release_fork_ref_for_test(&state, "frk14src", "ghost", &old_epoch)
+        .await
+        .unwrap();
+    assert!(conclusive, "a stale release should be conclusive");
+    state.registry.invalidate("frk14src");
+    let d = state.registry.get("frk14src").await.unwrap().unwrap();
+    assert!(!d.deleted, "a stale release tombstoned the replacement");
+    assert_eq!(
+        d.fork_children,
+        vec!["ghost".to_string()],
+        "a stale release mutated the replacement's children"
+    );
+    assert_eq!(d.stream_epoch, fresh.stream_epoch);
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from
