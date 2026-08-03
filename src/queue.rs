@@ -31,14 +31,14 @@ pub struct Lease {
     pub key_hash: [u8; 16],
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ConsumerState {
     pub cursor: u64,
     pub leases: BTreeMap<u64, Lease>,
     pub acked: BTreeSet<u64>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QueueState {
     pub consumers: HashMap<String, ConsumerState>,
     pub loaded: bool,

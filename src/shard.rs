@@ -1910,6 +1910,14 @@ impl ShardEngine {
             base: TailFields,
             producers: HashMap<([u8; 16], String), (u64, u64, u64, [u8; 16])>,
             seqs: HashMap<[u8; 16], String>,
+            /// Batch-local QUEUE state (round 12): consumer cursors,
+            /// leases and acks staged against this group's WriteBatch,
+            /// published to the shared handle only after the write
+            /// succeeds. Mutating the handle in place left phantom
+            /// leases and cursor movement in memory when the write
+            /// failed — exactly the applied-vs-durable split the
+            /// producer and tail state already respect.
+            queue: Option<crate::queue::QueueState>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
@@ -1977,6 +1985,7 @@ impl ShardEngine {
                                 base: applied,
                                 producers: HashMap::new(),
                                 seqs: HashMap::new(),
+                                queue: None,
                                 appended_bytes: 0,
                                 ring_recs: Vec::new(),
                             },
@@ -2672,8 +2681,12 @@ impl ShardEngine {
                         other => other,
                     };
                     let now = now_ms();
+                    if local.queue.is_none() {
+                        local.queue =
+                            Some(local.handle.state.lock().unwrap().queue.clone());
+                    }
                     let out = {
-                        let mut st = local.handle.state.lock().unwrap();
+                        let st_queue = local.queue.as_mut().unwrap();
                         match op {
                             QueueOp::Receive {
                                 consumer,
@@ -2683,7 +2696,7 @@ impl ShardEngine {
                                 keys,
                                 covered_to,
                             } => {
-                                let cs = st.queue.consumers.entry(consumer.clone()).or_default();
+                                let cs = st_queue.consumers.entry(consumer.clone()).or_default();
                                 let mut leased = Vec::new();
                                 let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
                                 // Per-key FIFO (spec Stage 2 §2.3): a key
@@ -2777,7 +2790,7 @@ impl ShardEngine {
                                 extends,
                                 max_deliveries,
                             } => {
-                                let cs = st.queue.consumers.entry(consumer.clone()).or_default();
+                                let cs = st_queue.consumers.entry(consumer.clone()).or_default();
                                 let (mut a, mut r, mut e2, mut dq, mut stale) =
                                     (0usize, 0usize, 0usize, 0usize, 0usize);
                                 let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
@@ -3047,6 +3060,9 @@ impl ShardEngine {
                     for (kh, v) in &local.seqs {
                         st.seqs.insert(*kh, v.clone());
                     }
+                    if let Some(q) = &local.queue {
+                        st.queue = (*q).clone();
+                    }
                 }
                 // Trim-debt bookkeeping: streams whose safe target still
                 // leads their trim cursor stay in (or enter) the
@@ -3234,6 +3250,16 @@ impl ShardEngine {
             .unwrap()
             .get_or_insert_with(std::collections::HashSet::new)
             .insert(identity);
+    }
+
+    /// Fence-map observability (round 12): the map is deliberately
+    /// unbounded (no wall-clock expiry can be proven safe against a
+    /// queue with no residence bound), so its cardinality must be
+    /// visible before it could ever become material.
+    pub fn seal_fence_stats(&self) -> (usize, u64) {
+        let f = self.seal_fences.lock().unwrap();
+        let max = f.values().copied().max().unwrap_or(0);
+        (f.len(), max)
     }
 
     #[cfg(test)]

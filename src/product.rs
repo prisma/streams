@@ -1261,25 +1261,13 @@ async fn product_seal(
                 // record may yet be durable, and the transition stays
                 // resumable by an exact retry.
                 let st = resp.status();
-                // A 4xx is the committer's verdict on THIS request, and
-                // no retry of it can change the answer — including the
-                // 409s (producer gap, sequence reuse, content-type
-                // mismatch). Only 429 and 408 are about the moment
-                // rather than the request.
-                // A producer GAP or stale epoch is a verdict about
-                // ORDERING, and the missing predecessor may already be
-                // admitted inside the server — an exact retry can still
-                // succeed, so the intent stays. Only verdicts about this
-                // request itself are terminal.
                 let (resp, code) = take_error_code(resp).await;
-                let ordering = matches!(
-                    code.as_deref(),
-                    Some("producer_gap") | Some("producer_stale_epoch") | Some("producer_epoch_seq")
-                );
-                let definitive = st.is_client_error()
-                    && st != StatusCode::TOO_MANY_REQUESTS
-                    && st != StatusCode::REQUEST_TIMEOUT
-                    && !ordering;
+                // ONE policy with the raw surface (round 12): the old
+                // inline list here named codes the product translator
+                // never emits, so stale-epoch was "retained" on paper
+                // and definitive in fact.
+                let definitive = crate::http::final_code_disposition(st, code.as_deref())
+                    == crate::http::FinalDisposition::DefinitivelyRejected;
                 if definitive {
                     if let Err(e) = abandon_seal_intent(
                         &state,

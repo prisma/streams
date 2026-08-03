@@ -12938,6 +12938,215 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
 }
 
 // ---------------------------------------------------------------
+// Round 12: one disposition policy; queue state joins the
+// applied/durable discipline.
+// ---------------------------------------------------------------
+
+/// A STALE producer epoch is permanent — epochs never decrease — and
+/// after round 11 the verdict stands on durable state. A seal-with-
+/// final refused as stale must release its own intent NOW: retaining
+/// it held the collection Sealing behind a promise that could never
+/// be delivered, renewable indefinitely by the very request that can
+/// never deliver it. Both surfaces, one policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+
+    // PRODUCT surface.
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/stale12p",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Establish epoch 2.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/stale12p/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p"),
+            ("producer-epoch", "2"),
+            ("producer-seq", "0"),
+        ],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    // Seal with a STALE epoch.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/stale12p:seal",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"{"final":{"x":1}}"#,
+    )
+    .await;
+    assert!(st == 403 || st == 409, "stale epoch should be refused: {st}");
+    state.registry.invalidate("stale12p");
+    let d = state.registry.get("stale12p").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none(),
+        "a permanently-stale final retained its intent: {:?}",
+        d.sealing
+    );
+    assert!(!d.sealed);
+    // Ordinary appends work IMMEDIATELY — no 15-second hostage window.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/stale12p/records",
+        &key,
+        br#"{"n":2}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "ordinary appends held hostage by a stale final");
+
+    // RAW surface, same story.
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/stale12r", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/stale12r",
+        &[
+            ("content-type", "application/json"),
+            ("producer-id", "p"),
+            ("producer-epoch", "2"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/stale12r",
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+            ("producer-id", "p"),
+            ("producer-epoch", "1"),
+            ("producer-seq", "0"),
+        ],
+        br#"[{"fin":1}]"#,
+    )
+    .await;
+    assert!(st >= 400, "stale epoch should be refused: {st}");
+    state.registry.invalidate("stale12r");
+    let d = state.registry.get("stale12r").await.unwrap().unwrap();
+    assert!(
+        d.sealing.is_none(),
+        "raw: a permanently-stale final retained its intent: {:?}",
+        d.sealing
+    );
+    assert!(!d.sealed);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/stale12r", &ct, br#"[{"n":2}]"#).await;
+    assert!(st == 200 || st == 204, "raw appends held hostage: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// Queue consumer state joins the applied/durable discipline: a
+/// receive whose group write FAILS must leave no phantom lease in
+/// memory — the exact retry gets the same records, with fresh leases,
+/// exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_queue_write_leaves_no_phantom_leases() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/q12",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/q12/records",
+            &key,
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/q12/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":5000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "consumer create: {}", String::from_utf8_lossy(&b));
+    state.registry.invalidate("q12");
+    let desc = state.registry.get("q12").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // The pull's lease writes ride a group we fail.
+    engine.fail_next_group_for(identity);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/q12/consumers/c1:pull",
+        &key,
+        br#"{"max": 3}"#,
+    )
+    .await;
+    let first_failed = st >= 500;
+    // Whether or not the pull's OWN group carried the armed identity
+    // (batching), the invariant is the same: leases the client can act
+    // on exist only if their write was durable. The exact retry must
+    // see a coherent world.
+    let _ = b;
+    let (st2, _, b2) = preq(
+        addr,
+        "POST",
+        "/v1/streams/q12/consumers/c1:pull",
+        &key,
+        br#"{"max": 3}"#,
+    )
+    .await;
+    assert_eq!(st2, 200, "retry pull: {}", String::from_utf8_lossy(&b2));
+    let v: serde_json::Value = serde_json::from_slice(&b2).unwrap();
+    let leased = v["records"].as_array().map(|a| a.len()).unwrap_or(0);
+    if first_failed {
+        // No phantom in-memory leases may block the retry: all three
+        // records lease afresh.
+        assert_eq!(
+            leased, 3,
+            "phantom leases from the failed write blocked the retry: {v}"
+        );
+    } else {
+        // The first pull won its race and leased durably; the retry
+        // sees them held (per-key FIFO) — equally coherent.
+        assert!(leased <= 3);
+    }
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
 // ABA: a name outlives its contents. Every in-flight lifecycle
 // operation is issued against ONE incarnation, and a liveness check
 // ("is this descriptor still alive?") cannot tell "still mine" from

@@ -278,6 +278,18 @@ through the public route.
 | A READY fork could not be re-PUT idempotently once its source was retained | the retained-source lookup accepts a matching child whether it is initializing or ready |
 | The fork/delete race test was timing-assisted | superseded by a parked-delete handshake; the readiness race uses the same pattern |
 
+## Twelfth audit round (2026-08-03)
+
+| finding | fix |
+|---|---|
+| The seal-intent cleanup policy predated the generation fencing, and the two surfaces kept separate stringly-typed lists that had DRIFTED: the product list named codes its own translator never emits (`producer_stale_epoch` vs the real `stale_producer_epoch`), so stale-epoch was "retained" in the comment and definitive in fact — while the raw path retained it for real, letting a permanently-stale request hold a collection Sealing and renew its claim indefinitely | ONE typed policy (`FinalDisposition`), shared by both surfaces: gap and epoch-must-start-at-zero stay ambiguous-ordering (the predecessor may be inside the server; the epoch can advance); stale epoch, sequence reuse, Stream-Seq conflict, content/body errors, closed-by-another and superseded release the generation's uncommitted intent NOW. Post-round-11 every verdict is durability-grounded, and post-round-8 the release is generation-fenced — it can never destroy a concurrent exact retry, which owns a newer generation |
+| Queue consumer state (cursors, leases, acks) was mutated in the SHARED handle while its WriteBatch was still being assembled — a failed group write left phantom in-memory leases and cursor movement inconsistent with durable state | queue state joins the applied/durable discipline: staged into a batch-local clone, published to the handle only after the write succeeds — exactly the treatment producer rows and tail state already had |
+| The engine fence map was correct but invisible | `seal_fence_entries` and `seal_fence_max_generation` in the metrics snapshot — the map is deliberately unbounded (no wall-clock expiry can be proven safe), so its cardinality is observable before it could ever matter |
+
+The group-write-failure gates the review asked for landed the previous
+day in the DST expansion (`dca9921`): `fail_next_group_for` +
+DUR-002/008, SEL-021, CRT-007.
+
 ## Eleventh audit round (2026-08-02)
 
 | finding | fix |

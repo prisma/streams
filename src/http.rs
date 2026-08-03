@@ -507,6 +507,16 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         .fold((0usize, 0u64, 0u64, 0u64), |a, v| {
             (a.0 + v.0, a.1.max(v.1), a.2.max(v.2), a.3 + v.3)
         });
+    // Seal-fence rollup (round 12): the map is deliberately unbounded
+    // (no safe wall-clock expiry exists over a queue with no residence
+    // bound), so its size is surfaced before it could ever matter.
+    let (fence_entries, fence_max_gen) = state
+        .shards
+        .read()
+        .unwrap()
+        .values()
+        .map(|e| e.seal_fence_stats())
+        .fold((0usize, 0u64), |a, v| (a.0 + v.0, a.1.max(v.1)));
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
@@ -522,6 +532,8 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "keycache": state.keys.len(),
             "registry_cache": state.registry.cache_len(),
             "metrics": state.metrics.len(),
+            "seal_fence_entries": fence_entries,
+            "seal_fence_max_generation": fence_max_gen,
         },
         "trim": {
             "debt_streams": trim_debt,
@@ -3357,6 +3369,73 @@ pub(crate) async fn append(
     )
 }
 
+/// What a refused FINAL append does to the seal intent it belongs to
+/// — ONE policy, shared verbatim by the raw and product surfaces
+/// (they previously kept separate stringly-typed lists, which drifted:
+/// the product list named codes its own translator never produces, so
+/// stale-epoch was "retained" in the comment and definitive in fact).
+///
+/// After round 11 every one of these verdicts is durability-barriered,
+/// and after round 8 every claim is generation-fenced — so releasing a
+/// definitively-refused generation's intent can never destroy a
+/// concurrent exact retry (the retry renewed to a newer generation the
+/// release cannot name).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum FinalDisposition {
+    /// About the moment or the ordering, not the request: the exact
+    /// retry can still succeed, so the intent stays. Producer gaps
+    /// (the predecessor may already be inside the server) and
+    /// epoch-must-start-at-zero (the producer's epoch can advance and
+    /// make this sequence meaningful) are ordering; timeouts,
+    /// throttles, write failures and ownership moves are the moment.
+    AmbiguousOrTransient,
+    /// About THIS request, forever: epochs never decrease (stale),
+    /// bodies and content types do not change on retry, a reused or
+    /// conflicting sequence row is durable, and a segment closed by
+    /// another operation stays closed. The uncommitted intent comes
+    /// down NOW — retaining it held the collection Sealing behind a
+    /// promise that could never be delivered, renewable indefinitely
+    /// by the very request that can never deliver it.
+    DefinitivelyRejected,
+}
+
+pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposition {
+    use crate::shard::AppendErr::*;
+    match e {
+        ProducerGap { .. } | ProducerEpochSeq => FinalDisposition::AmbiguousOrTransient,
+        ProducerStale { .. }
+        | ProducerSeqReused
+        | CtMismatch
+        | BadBody(_)
+        | SeqConflict { .. }
+        | Closed { .. }
+        | SealSuperseded => FinalDisposition::DefinitivelyRejected,
+        _ => FinalDisposition::AmbiguousOrTransient,
+    }
+}
+
+/// The same policy over the PRODUCT surface's translated wire codes —
+/// the product handler holds a translated Response, not the AppendErr.
+/// The names here are the translator's OUTPUT names, asserted by the
+/// stale-epoch regression on both surfaces.
+pub(crate) fn final_code_disposition(
+    status: StatusCode,
+    code: Option<&str>,
+) -> FinalDisposition {
+    if !status.is_client_error()
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+    {
+        return FinalDisposition::AmbiguousOrTransient;
+    }
+    match code {
+        Some("producer_gap") | Some("producer_epoch_must_start_at_zero") => {
+            FinalDisposition::AmbiguousOrTransient
+        }
+        _ => FinalDisposition::DefinitivelyRejected,
+    }
+}
+
 /// The TRUSTED execution token a product seal's final append carries:
 /// the operation, the claim generation, and the incarnation the whole
 /// seal was validated against. The append refuses to run unless the
@@ -4101,13 +4180,8 @@ async fn append_core(
         // and let the client retry exactly; only verdicts about the
         // REQUEST ITSELF — a malformed body, the wrong content type, a
         // sequence reused with different content — are terminal.
-        let definitive = matches!(
-            e,
-            AppendErr::ProducerSeqReused
-                | AppendErr::CtMismatch
-                | AppendErr::BadBody(_)
-                | AppendErr::SeqConflict { .. }
-        );
+        let definitive =
+            final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
         if close && close_carries_content && definitive {
             if let Some(g) = raw_seal_gen {
                 if let Err(m) = crate::product::abandon_seal_intent(
