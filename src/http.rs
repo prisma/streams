@@ -3235,44 +3235,54 @@ fn release_fork_ref(
             // A hard-deleted source holds no live references.
             return Ok(true);
         }
-        // Release the reference AND decide the source's fate in one CAS,
-        // against the children it has at that instant. Splitting the two
-        // let a new fork install itself in between and then be orphaned
-        // by an unconditional tombstone.
-        let mut tombstoned = false;
-        let mut removed_ref = false;
-        state
+        // Release the reference AND decide the source's fate in one
+        // CAS, against the children it has at that instant. Splitting
+        // the two let a new fork install itself in between and then be
+        // orphaned by an unconditional tombstone.
+        //
+        // Expressed through the TYPED mutation API: `decide` is pure
+        // over an immutable descriptor and RETURNS its verdict, so the
+        // stale-flag-across-retries hazard (round 14) is structurally
+        // impossible — there are no out-parameters to leak from a lost
+        // attempt. The verdict is `(removed_ref, tombstoned)`.
+        let cur_epoch = state
             .registry
-            .cas_update_retry(&src, |x| {
-                // RESET every out-parameter at the TOP of each attempt.
-                // cas_update_retry re-runs this closure after an
-                // object-store precondition conflict, and a decision
-                // from a LOST attempt must not survive into a winning
-                // one — e.g. attempt 1 tombstones (no children), loses
-                // to a concurrent child install, attempt 2 sees the
-                // child and does NOT tombstone; a stale tombstoned=true
-                // would then release this source's own parent reference
-                // while it is still retained for a live child, breaking
-                // the ancestry chain.
-                tombstoned = false;
-                removed_ref = false;
+            .get(&src)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|d| d.stream_epoch)
+            .unwrap_or_default();
+        let outcome = state
+            .registry
+            .mutate_incarnation(&src, &cur_epoch, |x| {
                 let before = x.fork_children.len();
-                x.fork_children.retain(|c| c != &fork_id);
-                let removed = x.fork_children.len() != before;
-                removed_ref = removed;
-                let expired = x.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
-                let should_tombstone =
-                    x.fork_children.is_empty() && (x.soft_deleted || expired) && !x.deleted;
+                let mut next = x.clone();
+                next.fork_children.retain(|c| c != &fork_id);
+                let removed = next.fork_children.len() != before;
+                let expired = next.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
+                let should_tombstone = next.fork_children.is_empty()
+                    && (next.soft_deleted || expired)
+                    && !next.deleted;
                 if should_tombstone {
-                    x.soft_deleted = false;
-                    x.deleted = true;
-                    x.parent_ref_pending = x.forked_from.is_some();
-                    tombstoned = true;
+                    next.soft_deleted = false;
+                    next.deleted = true;
+                    next.parent_ref_pending = next.forked_from.is_some();
                 }
-                removed || should_tombstone
+                if removed || should_tombstone {
+                    crate::registry::Mutation::Write(next, (removed, should_tombstone))
+                } else {
+                    crate::registry::Mutation::Decline((false, false))
+                }
             })
             .await
             .map_err(|e| e.to_string())?;
+        let (removed_ref, tombstoned) = match outcome {
+            crate::registry::MutationResult::Applied(v)
+            | crate::registry::MutationResult::Declined(v) => v,
+            // Source gone or recreated: nothing of ours to release.
+            crate::registry::MutationResult::Missing
+            | crate::registry::MutationResult::IncarnationChanged => (false, false),
+        };
         state.registry.invalidate(&src);
         #[cfg(test)]
         if tombstoned && fork_failpoints::should_stop_after_tombstone(&src) {

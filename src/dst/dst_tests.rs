@@ -12606,8 +12606,24 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     }
     engine.fail_next_group_for(identity);
     drop(hold);
-    let (s1, _, _) = c1.await.unwrap();
-    let (s2, _, _) = c2.await.unwrap();
+    // WATCHDOG, not a wait: this test wedged twice in full-suite runs
+    // (commit pipeline asleep with both acks outstanding, all workers
+    // parked; passes solo). Until that liveness hole is caught in the
+    // act, convert an infinite hang into a red, diagnosable failure.
+    let (r1, r2) = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        async { (c1.await.unwrap(), c2.await.unwrap()) },
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "LIVENESS WEDGE: closes never returned. enqueued_delta={} tripped={} —              the commit pipeline is asleep with acks outstanding (see task notes)",
+            engine.appends_enqueued() - base,
+            engine.group_failures_tripped()
+        )
+    });
+    let (s1, _, _) = r1;
+    let (s2, _, _) = r2;
     assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
     assert!(
         s1 >= 400 && s2 >= 400,
@@ -12617,14 +12633,18 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     let d = state.registry.get("dur004").await.unwrap().unwrap();
     assert!(!d.sealed, "sealing published off a failed close");
     // Recovery.
-    let (s3, _, _) = hreq(
-        addr,
-        "POST",
-        "/v1/stream/dur004",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
-        b"",
+    let (s3, _, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        hreq(
+            addr,
+            "POST",
+            "/v1/stream/dur004",
+            &[("content-type", "application/json"), ("stream-closed", "true")],
+            b"",
+        ),
     )
-    .await;
+    .await
+    .expect("LIVENESS WEDGE: the recovery close never returned");
     assert!(s3 == 200 || s3 == 204, "recovery close: {s3}");
     state.registry.invalidate("dur004");
     let d = state.registry.get("dur004").await.unwrap().unwrap();

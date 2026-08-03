@@ -231,6 +231,26 @@ pub const INIT_CLAIM_MS: i64 = 15_000;
 /// every client has long since given up.
 pub const SEAL_CLAIM_MS: i64 = 15_000;
 
+/// A pure mutation decision for [`Registry::mutate_incarnation`].
+pub enum Mutation<T> {
+    /// Leave the descriptor unchanged; carry a typed reason out.
+    Decline(T),
+    /// Replace the descriptor with this one; carry a typed result out.
+    Write(StreamDesc, T),
+}
+
+/// The outcome of a [`Registry::mutate_incarnation`] call. Every
+/// terminal state is named — no bool that conflates "declined" with
+/// "wrong incarnation" with "gone".
+#[derive(Debug, Clone, PartialEq)]
+pub enum MutationResult<T> {
+    Applied(T),
+    Declined(T),
+    IncarnationChanged,
+    Missing,
+}
+
+
 /// Fork parentage (pinned DS protocol fork contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForkRef {
@@ -855,6 +875,81 @@ impl Registry {
         })
     }
 
+    /// Typed, side-effect-free incarnation-fenced mutation — the
+    /// primitive the audit history kept asking for. The `decide`
+    /// closure is `Fn` over an IMMUTABLE descriptor and returns a
+    /// value, not a bool over `&mut` with captured out-parameters:
+    /// re-running it across an object-store precondition retry is safe
+    /// BY CONSTRUCTION, so a decision from a lost attempt can never
+    /// survive into a winning one (the round-14 `release_fork_ref`
+    /// bug is unrepresentable here). Only the successful attempt's
+    /// result is returned. Incarnation mismatch and a missing
+    /// descriptor are distinct outcomes, never silent declines.
+    /// Tombstones are visible to `decide` (fork-debt cleanup writes
+    /// them) under the same identity discipline.
+    pub async fn mutate_incarnation<T>(
+        &self,
+        name: &str,
+        expected_epoch: &str,
+        decide: impl Fn(&StreamDesc) -> Mutation<T>,
+    ) -> anyhow::Result<MutationResult<T>> {
+        let path = desc_path(name);
+        let mut last: Option<anyhow::Error> = None;
+        for attempt in 0..5u32 {
+            self.invalidate(name);
+            let got = match self.store.get(&path).await {
+                Ok(g) => g,
+                Err(object_store::Error::NotFound { .. }) => {
+                    return Ok(MutationResult::Missing);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let etag = got.meta.e_tag.clone();
+            let bytes = got.bytes().await?;
+            let desc: StreamDesc = decode_desc(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if desc.stream_epoch != expected_epoch {
+                return Ok(MutationResult::IncarnationChanged);
+            }
+            let (next, result) = match decide(&desc) {
+                Mutation::Decline(t) => return Ok(MutationResult::Declined(t)),
+                Mutation::Write(next, t) => (next, t),
+            };
+            let body = serde_json::to_vec(&next)?;
+            let mode = match etag {
+                Some(e_tag) => PutMode::Update(UpdateVersion {
+                    e_tag: Some(e_tag),
+                    version: None,
+                }),
+                None => PutMode::Overwrite,
+            };
+            match self
+                .store
+                .put_opts(
+                    &path,
+                    PutPayload::from(body),
+                    PutOptions {
+                        mode,
+                        ..Default::default()
+                    },
+                )
+                .await
+            {
+                Ok(_) => {
+                    self.invalidate(name);
+                    return Ok(MutationResult::Applied(result));
+                }
+                // Precondition conflict: another writer moved the
+                // descriptor. Re-read and re-decide from scratch —
+                // `decide` is pure, so this is always safe.
+                Err(e) => {
+                    last = Some(e.into());
+                    tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("mutate_incarnation exhausted")))
+    }
+
     pub async fn cas_update_retry(
         &self,
         name: &str,
@@ -1225,6 +1320,158 @@ mod tests {
                 self.not_modified.fetch_add(1, Relaxed);
             }
             r
+        }
+        fn delete_stream(
+            &self,
+            locations: futures_util::stream::BoxStream<'static, object_store::Result<ObjPath>>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<ObjPath>> {
+            self.inner.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            self.inner.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &ObjPath,
+            to: &ObjPath,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    /// MUTATION CANARY for the typed incarnation API. A real
+    /// first-attempt CAS conflict — with the descriptor genuinely
+    /// changed underneath — must make `decide` re-run against the NEW
+    /// state, and only the winning attempt's verdict may escape. This
+    /// is the round-14 `release_fork_ref` bug, made structurally
+    /// impossible: `decide` is pure, so there is no out-parameter to
+    /// leak from the lost attempt.
+    ///
+    /// Scenario: a soft-deleted source with one child C. Attempt 1
+    /// removes C, sees no children, decides to TOMBSTONE — and loses
+    /// the CAS to a concurrent install of child D. Attempt 2 removes C,
+    /// sees D remain, decides NOT to tombstone. The result must be
+    /// "removed, not tombstoned"; the source must survive for D.
+    #[tokio::test]
+    async fn typed_mutation_never_leaks_a_lost_attempts_decision() {
+        let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let conflict = Arc::new(ConflictOnceStore {
+            inner: inner.clone(),
+            armed: std::sync::atomic::AtomicBool::new(false),
+            inject: std::sync::Mutex::new(None),
+        });
+        let reg = Registry::new(conflict.clone());
+        let mut src = desc("src", "e1", false);
+        src.soft_deleted = true;
+        src.fork_children = vec!["C".into()];
+        reg.create(src).await.unwrap();
+
+        // The concurrent install that attempt 1 will lose to: the same
+        // descriptor with child D added (and C still present, since
+        // attempt 1 hasn't committed its removal).
+        let mut installed = desc("src", "e1", false);
+        installed.soft_deleted = true;
+        installed.fork_children = vec!["C".into(), "D".into()];
+        *conflict.inject.lock().unwrap() = Some(serde_json::to_vec(&installed).unwrap());
+        conflict.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let outcome = reg
+            .mutate_incarnation("src", "e1", |x| {
+                let mut next = x.clone();
+                let before = next.fork_children.len();
+                next.fork_children.retain(|c| c != "C");
+                let removed = next.fork_children.len() != before;
+                let should_tombstone =
+                    next.fork_children.is_empty() && next.soft_deleted && !next.deleted;
+                if should_tombstone {
+                    next.deleted = true;
+                    next.soft_deleted = false;
+                }
+                Mutation::Write(next, (removed, should_tombstone))
+            })
+            .await
+            .unwrap();
+
+        match outcome {
+            MutationResult::Applied((removed, tombstoned)) => {
+                assert!(removed, "C should have been removed");
+                assert!(
+                    !tombstoned,
+                    "the lost attempt's tombstone decision leaked into the result"
+                );
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
+        let after = reg.get("src").await.unwrap().unwrap();
+        assert!(!after.deleted, "the source was tombstoned while D still forks it");
+        assert_eq!(after.fork_children, vec!["D".to_string()]);
+    }
+
+    /// Wraps a store to fail the FIRST `put_opts` with a precondition
+    /// error, after first writing an injected body directly to the
+    /// backend — simulating a concurrent writer that wins the CAS.
+    #[derive(Debug)]
+    struct ConflictOnceStore {
+        inner: Arc<dyn ObjectStore>,
+        armed: std::sync::atomic::AtomicBool,
+        inject: std::sync::Mutex<Option<Vec<u8>>>,
+    }
+    impl std::fmt::Display for ConflictOnceStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ConflictOnceStore")
+        }
+    }
+    #[async_trait::async_trait]
+    impl ObjectStore for ConflictOnceStore {
+        async fn put_opts(
+            &self,
+            location: &ObjPath,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            use std::sync::atomic::Ordering::SeqCst;
+            if self.armed.swap(false, SeqCst) {
+                // The concurrent winner lands first... (take the body
+                // out of the lock BEFORE awaiting — a MutexGuard may
+                // not cross an await point).
+                let body = self.inject.lock().unwrap().take();
+                if let Some(body) = body {
+                    self.inner
+                        .put(location, object_store::PutPayload::from(body))
+                        .await?;
+                }
+                // ...so our conditional put loses.
+                return Err(object_store::Error::Precondition {
+                    path: location.to_string(),
+                    source: "conflict-once".into(),
+                });
+            }
+            self.inner.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjPath,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &ObjPath,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
         }
         fn delete_stream(
             &self,
