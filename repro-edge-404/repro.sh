@@ -30,7 +30,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== deploying hello app to $REGION"
-OUT=$($CLI deploy --project "$PROJ" --service-name hello --region "$REGION" 2>&1)
+# --http-port MUST be explicit: flag-less deploys are mapped to port
+# 3000 server-side (2026-08-03 finding), which renders as the same
+# no-service 404 this script exists to detect. Keep the probe honest.
+OUT=$($CLI deploy --project "$PROJ" --service-name hello --region "$REGION" --http-port 8080 2>&1)
 echo "$OUT" | tail -6
 URL=$(echo "$OUT" | grep -o 'https://[a-z0-9.-]*prisma.build' | tail -1)
 CPV=$(echo "$OUT" | grep -o 'cpv_[a-z0-9]*' | head -1)
