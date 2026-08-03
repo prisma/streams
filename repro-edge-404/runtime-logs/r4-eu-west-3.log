@@ -1,0 +1,8 @@
+[2026-08-03T08:19:16Z INFO  spark::app_source] compute.manifest.json not found in /mnt/app/app; downloading source archive
+[2026-08-03T08:19:16Z INFO  spark::app_source] source archive unpacked to /mnt/app/app.tmp
+[2026-08-03T08:19:16Z INFO  spark::vars] vars not found in /mnt/app; downloading encrypted vars
+[2026-08-03T08:19:16Z INFO  spark::vars] vars file downloaded to /mnt/app/vars
+[2026-08-03T08:19:16Z INFO  spark::vars] loaded 0 environment variable(s) from vars file
+[2026-08-03T08:19:16Z INFO  spark] starting bun with entrypoint: bundle/index.js
+[2026-08-03T08:19:16Z INFO  spark::timesync] time-sync maintenance child started (device=/dev/ptp0, file=/uk/libukp/scale_to_zero_disable, interval=600s)
+aighty booting; PORT env = undefined
